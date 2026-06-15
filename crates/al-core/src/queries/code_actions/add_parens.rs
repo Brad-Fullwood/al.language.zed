@@ -19,13 +19,11 @@ pub(super) fn source_action_add_parens(
     // Must end with semicolon and look like a bare identifier call: word chars only, then ';'
     // e.g. "Commit;" or "MyHelper;" — not "Commit();" or "x := Commit;"
     let is_bare_call = {
-        // Strip leading indent
         let s = trimmed;
         // Check pattern: identifier (possibly dotted e.g. Rec.Validate) followed immediately by ';'
         // No '(' anywhere before the ';'
         if let Some(body) = s.strip_suffix(';') {
             let body = body.trim_end();
-            // A bare identifier call: no '(' anywhere, no ':=' assignment
             !body.is_empty()
                 && !body.contains('(')
                 && !body.contains(":=")

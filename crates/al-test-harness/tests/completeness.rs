@@ -148,13 +148,11 @@ async fn test_completeness_a01_diagnostic_ranges_are_valid() {
                 );
             }
 
-            // Diagnostic must have severity
             assert!(
                 diag.get("severity").is_some(),
                 "diagnostic must have severity: {diag}"
             );
 
-            // Diagnostic must have message
             let msg = diag.get("message").and_then(|v| v.as_str());
             assert!(
                 msg.is_some() && !msg.unwrap().is_empty(),

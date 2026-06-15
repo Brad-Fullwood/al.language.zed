@@ -9,7 +9,6 @@ pub mod client;
 pub mod jsonrpc;
 pub mod socket;
 
-// Convenience re-exports
 #[cfg(unix)]
 pub use client::DaemonClient;
 pub use socket::{socket_path, socket_path_with_runtime_dir};

@@ -195,7 +195,6 @@ impl FileIndex {
         if let Some(entry) = self.file_symbols.get(path) {
             return Some(entry.value().clone());
         }
-        // Fallback: extract from cached parse tree
         let (text, tree) = self.get_cached_parse(path)?;
         let symbols: Vec<crate::queries::AlDocumentSymbol> =
             crate::syntax::extract_document_symbols(&tree, &text)

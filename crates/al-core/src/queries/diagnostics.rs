@@ -12,10 +12,6 @@ use url::Url;
 use crate::config::AlConfig;
 use crate::workspace::Workspace;
 
-// ---------------------------------------------------------------------------
-// Transport-agnostic diagnostic types
-// ---------------------------------------------------------------------------
-
 /// Severity of a syntax or lint diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxDiagnosticSeverity {
@@ -39,10 +35,6 @@ pub struct SyntaxDiagnostic {
     pub source: String,
 }
 
-// ---------------------------------------------------------------------------
-// Query
-// ---------------------------------------------------------------------------
-
 /// Compute syntax and lint diagnostics for a single document.
 ///
 /// Uses the DocumentStore parse cache when the document is present; falls back
@@ -62,7 +54,6 @@ pub fn syntax_diagnostics(
     uri: &Url,
     config: &AlConfig,
 ) -> Vec<SyntaxDiagnostic> {
-    // Phase 1: get (or create) the parse tree.
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
         // Document not in DocumentStore. Callers (did_open / did_change) are
         // expected to pre-populate the store, so a cache miss is unexpected.
@@ -79,10 +70,6 @@ pub fn syntax_diagnostics(
     collect_diagnostics_from_tree(&tree, &text, config)
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 fn collect_diagnostics_from_tree(
     tree: &tree_sitter::Tree,
     text: &str,
@@ -92,7 +79,6 @@ fn collect_diagnostics_from_tree(
 
     let source = text.as_bytes();
 
-    // Syntax errors from the parse tree.
     for err in crate::syntax::AlParser::errors_from_tree(tree) {
         let ts_range = err.range;
         diags.push(SyntaxDiagnostic {
@@ -104,7 +90,6 @@ fn collect_diagnostics_from_tree(
         });
     }
 
-    // Lint diagnostics, filtered by config.
     for lint in crate::syntax::lint(tree, text) {
         if !config.is_lint_rule_enabled(&lint.code) {
             continue;
@@ -159,10 +144,6 @@ fn source_line(source: &[u8], row: usize) -> &str {
         .unwrap_or("")
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,7 +158,6 @@ mod tests {
         (ws, uri)
     }
 
-    /// Positive test: AL with a missing closing paren produces at least one error-severity diagnostic.
     #[test]
     fn test_syntax_diagnostics_invalid_al_returns_errors() {
         // Missing closing paren is a well-known trigger for tree-sitter parse errors.
@@ -197,7 +177,6 @@ mod tests {
         );
     }
 
-    /// Negative test: well-formed AL produces no diagnostics.
     #[test]
     fn test_syntax_diagnostics_valid_al_returns_empty() {
         let src = "codeunit 50100 MyCodeunit\n{\n    trigger OnRun()\n    begin\n    end;\n}\n";
@@ -238,7 +217,6 @@ mod tests {
         let uri = Url::parse("file:///nonexistent.al").unwrap();
         let config = AlConfig::default();
         let diags = syntax_diagnostics(&ws, &uri, &config);
-        // A cache-miss on an empty string produces no syntax errors.
         // The important thing is: no panic.
         let _ = diags;
     }
@@ -250,7 +228,6 @@ mod tests {
     fn test_ts_range_to_query_range_converts_to_utf16() {
         let line = "// é好X";
         let source = line.as_bytes();
-        // Column of 'X' as a tree-sitter byte column.
         let byte_col_x = line.find('X').unwrap();
         assert_eq!(byte_col_x, 8); // 2 (//) + 1 ( ) + 2 (é) + 3 (好) = 8 bytes
         let ts_range = tree_sitter::Range {

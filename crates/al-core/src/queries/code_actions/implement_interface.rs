@@ -18,7 +18,6 @@ pub(super) fn source_action_implement_interface(
     let root = tree.root_node();
     let source = text.as_bytes();
 
-    // Find the codeunit object declaration at the cursor position.
     // LSP positions use UTF-16 code units; tree-sitter uses byte offsets.
     let Some(cursor_line) = text.lines().nth(range.start.line as usize) else {
         return Vec::new();
@@ -31,22 +30,17 @@ pub(super) fn source_action_implement_interface(
         None => return Vec::new(),
     };
 
-    // Extract interface names from the implements clause
     let interface_names = extract_interface_names(obj_node, source);
     if interface_names.is_empty() {
         return Vec::new();
     }
 
-    // Collect existing procedure names in this codeunit (case-insensitive)
     let existing_procs = collect_existing_procedures(obj_node, source);
-
-    // Find the insertion point — before the closing `}` of the codeunit body
     let insert_line = find_stub_insertion_line(obj_node);
 
     let mut actions = Vec::new();
 
     for iface_name in &interface_names {
-        // Look up the interface in the symbol index
         let iface_lower = iface_name.to_lowercase();
         let interfaces = workspace
             .symbols
@@ -59,7 +53,6 @@ pub(super) fn source_action_implement_interface(
             None => continue,
         };
 
-        // Filter to missing methods only
         let missing: Vec<_> = iface_entry
             .methods
             .iter()
@@ -74,19 +67,16 @@ pub(super) fn source_action_implement_interface(
             continue;
         }
 
-        // Generate stub text
         let indent = detect_indent(text, insert_line.saturating_sub(1));
         let mut stub_text = String::new();
 
         for method in &missing {
             stub_text.push('\n');
-            // Procedure signature
             stub_text.push_str(&indent);
             stub_text.push_str("procedure ");
             stub_text.push_str(&method.name);
             stub_text.push('(');
 
-            // Parameters
             let param_strs: Vec<String> = method
                 .parameters
                 .iter()
@@ -101,7 +91,6 @@ pub(super) fn source_action_implement_interface(
             stub_text.push_str(&param_strs.join("; "));
             stub_text.push(')');
 
-            // Return type
             if let Some(ref ret) = method.return_type {
                 stub_text.push_str(": ");
                 stub_text.push_str(ret);
@@ -109,7 +98,6 @@ pub(super) fn source_action_implement_interface(
 
             stub_text.push('\n');
 
-            // Body
             stub_text.push_str(&indent);
             stub_text.push_str("begin\n");
             stub_text.push_str(&indent);
@@ -158,11 +146,11 @@ fn find_codeunit_at_point<'a>(
         if point.row < ts_range.start_point.row || point.row > ts_range.end_point.row {
             continue;
         }
-        // Check it's a codeunit
+        // Check it's a codeunit (only kind that can implement interfaces)
         let is_codeunit = child
             .child(0)
             .and_then(|kw| kw.utf8_text(source).ok())
-            .map(|kw| kw.eq_ignore_ascii_case("codeunit"))
+            .map(crate::syntax::language_data::implements_interface_kind)
             .unwrap_or(false);
         if is_codeunit {
             return Some(child);
@@ -236,12 +224,6 @@ fn find_stub_insertion_line(obj_node: tree_sitter::Node) -> u32 {
     obj_node.end_position().row as u32
 }
 
-/// Resolve known field names for the Record variable used in a `with` statement.
-///
-/// Looks up the variable declaration in the file's var sections, extracts the table name,
-/// then returns the table's field names from the symbol index.  Returns an empty Vec if
-/// the table cannot be resolved (field-name pass becomes a no-op).
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,7 +282,6 @@ mod tests {
     fn implement_interface_offered_for_codeunit_with_implements() {
         let ws = Workspace::new();
 
-        // Add interface with two methods
         ws.symbols.add_entries(&[make_interface_entry(
             "IMyInterface",
             vec![

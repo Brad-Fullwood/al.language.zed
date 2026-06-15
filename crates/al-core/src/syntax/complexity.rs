@@ -80,7 +80,6 @@ fn count_cyclomatic_decisions(node: Node, _source: &[u8], count: &mut u32) {
                 *count += 1
             }
             "case_statement" => {
-                // Each case arm adds a branch
                 let mut cursor = current.walk();
                 for child in current.children(&mut cursor) {
                     if child.kind() == "case_branch" {
@@ -116,7 +115,6 @@ fn compute_cognitive(node: Node, _source: &[u8]) -> u32 {
     // Stack holds (node, nesting_depth)
     let mut stack: Vec<(Node, u32)> = Vec::new();
 
-    // Push the initial node's children at nesting 0
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         stack.push((child, 0));

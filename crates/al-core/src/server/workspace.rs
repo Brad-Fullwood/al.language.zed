@@ -50,7 +50,6 @@ pub(crate) async fn initialize_workspace(
     ready_flag: Arc<AtomicBool>,
     init_notify: Arc<tokio::sync::Notify>,
 ) {
-    // Signal that workspace initialization has begun
     client
         .log_message(MessageType::INFO, "AL workspace: initializing...")
         .await;
@@ -173,7 +172,6 @@ pub(crate) async fn initialize_workspace(
                 }
             }
 
-            // Log which packages lack embedded source (outlines rendered automatically)
             log_source_availability(&project.packages);
 
             // Update project reference after any package downloads completed.
@@ -853,7 +851,6 @@ fn zed_has_al_settings() -> bool {
     let Ok(v) = strip_jsonc_comments_and_parse(&content) else {
         return false;
     };
-    // Check lsp.al-lsp exists
     let has_lsp_section = v.get("lsp").and_then(|lsp| lsp.get("al-lsp")).is_some();
     // Check languages.AL.language_servers contains "al-lsp"
     let has_lang_server = v
@@ -884,7 +881,6 @@ pub(crate) fn apply_recommended_settings() -> Result<(), Box<dyn std::error::Err
     let recommended = recommended_al_settings();
     let merged = deep_merge(&current, &recommended);
 
-    // Write back with pretty formatting.
     ensure_parent_dir(&settings_path)?;
     let output = serde_json::to_string_pretty(&merged)?;
     std::fs::write(&settings_path, output)?;

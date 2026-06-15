@@ -40,10 +40,6 @@ pub mod upgrade;
 use crate::symbols::SymbolEntry;
 use url::Url;
 
-// ---------------------------------------------------------------------------
-// Shared node-text extraction helper
-// ---------------------------------------------------------------------------
-
 /// Extract the clean (unquoted) name from a tree-sitter node.
 ///
 /// Returns `None` when the node's text is invalid UTF-8 or empty after stripping
@@ -59,10 +55,6 @@ pub fn node_clean_name<'a>(node: tree_sitter::Node<'_>, source: &'a [u8]) -> Opt
         Some(clean)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Shared parameter-parsing helper
-// ---------------------------------------------------------------------------
 
 /// Parse a procedure detail string such as `"(var SalesHeader: Record; Preview: Boolean): Boolean"`
 /// into a list of `(raw_label, name, type_string)` triples using paren-depth-aware splitting.
@@ -125,10 +117,6 @@ pub fn parse_detail_params(detail: &str) -> Vec<(String, String, String)> {
         })
         .collect()
 }
-
-// ---------------------------------------------------------------------------
-// Shared virtual-file helper
-// ---------------------------------------------------------------------------
 
 /// Create (or look up) the virtual AL file for a symbol index entry and return
 /// its URI and the range of `member_name` within it (or a default range when
@@ -284,10 +272,6 @@ pub(crate) fn scope_label(scope: &crate::syntax::type_resolver::VariableScope) -
     }
 }
 
-// ---------------------------------------------------------------------------
-// Transport-agnostic position/range types
-// ---------------------------------------------------------------------------
-
 /// A position in a document (0-indexed line and character).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Position {
@@ -344,10 +328,6 @@ impl serde::Serialize for WorkspaceEdit {
 
 // LSP wire-type conversions live in `crate::server::conversions` — the
 // transport boundary. Query code must stay lsp_types-free (F-OPEN-267).
-
-// ---------------------------------------------------------------------------
-// Conversions between crate::syntax native types and al-core agnostic types
-// ---------------------------------------------------------------------------
 
 impl From<crate::syntax::types::SyntaxPosition> for Position {
     fn from(p: crate::syntax::types::SyntaxPosition) -> Self {
@@ -426,10 +406,6 @@ mod query_types_tests {
         assert_eq!(v["changes"].as_object().unwrap().len(), 0);
     }
 
-    // -----------------------------------------------------------------------
-    // node_clean_name
-    // -----------------------------------------------------------------------
-
     /// Parse `source` and return the named node whose text equals `target`,
     /// so we can exercise `node_clean_name` against a real tree-sitter node.
     fn first_node_with_text<'a>(
@@ -496,10 +472,6 @@ mod query_types_tests {
         assert_eq!(node_clean_name(node, &bad), None);
     }
 
-    // -----------------------------------------------------------------------
-    // parse_detail_params
-    // -----------------------------------------------------------------------
-
     #[test]
     fn parse_detail_params_basic_named_typed() {
         let params = parse_detail_params("(var SalesHeader: Record; Preview: Boolean): Boolean");
@@ -561,10 +533,6 @@ mod query_types_tests {
         assert_eq!(params[0].1, "A");
     }
 
-    // -----------------------------------------------------------------------
-    // is_procedure_symbol / scope_label
-    // -----------------------------------------------------------------------
-
     #[test]
     fn is_procedure_symbol_true_only_for_function_and_event() {
         assert!(is_procedure_symbol(AlSymbolKind::Function));
@@ -583,10 +551,6 @@ mod query_types_tests {
         assert_eq!(scope_label(&V::SelfImplicit), "self");
         assert_eq!(scope_label(&V::TriggerImplicit), "trigger variable");
     }
-
-    // -----------------------------------------------------------------------
-    // Position / Range conversions
-    // -----------------------------------------------------------------------
 
     #[test]
     fn position_roundtrips_through_syntax() {
@@ -618,10 +582,6 @@ mod query_types_tests {
         assert_eq!(back, r);
     }
 
-    // -----------------------------------------------------------------------
-    // SymbolKind conversions
-    // -----------------------------------------------------------------------
-
     #[test]
     fn syntax_symbol_kind_key_maps_to_struct() {
         use crate::syntax::types::SyntaxSymbolKind as S;
@@ -631,10 +591,6 @@ mod query_types_tests {
         let f: AlSymbolKind = S::Function.into();
         assert_eq!(f, AlSymbolKind::Function);
     }
-
-    // -----------------------------------------------------------------------
-    // Folding range conversions
-    // -----------------------------------------------------------------------
 
     #[test]
     fn syntax_folding_range_kind_converts() {
@@ -653,11 +609,4 @@ mod query_types_tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Inlay hint conversions
-    // -----------------------------------------------------------------------
-
-    // -----------------------------------------------------------------------
-    // DocumentSymbol conversions
-    // -----------------------------------------------------------------------
 }

@@ -87,7 +87,6 @@ pub fn dap_request_kind(config: Value) -> zed::Result<zed::StartDebuggingRequest
     }
 }
 
-/// Convert a DAP config to a debug scenario.
 pub fn dap_config_to_scenario(config: zed::DebugConfig) -> zed::Result<zed::DebugScenario> {
     let mut al_config = serde_json::Map::new();
 

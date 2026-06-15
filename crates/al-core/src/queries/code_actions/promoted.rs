@@ -5,9 +5,7 @@ use url::Url;
 use super::{detect_indent, detect_object_kind, single_edit_ws};
 use super::{AlObjectKind, CodeActionEntry, CodeActionKind, Range, TextEdit};
 
-// ============================================================================
 // T1205: Convert Promoted Actions to actionRef Syntax
-// ============================================================================
 
 /// Detect page actions that use old-style `Promoted = true` / `PromotedCategory` properties
 /// and offer to convert them to the new `actionRef` syntax inside `area(Promoted)`.
@@ -35,13 +33,11 @@ pub(super) fn source_action_convert_promoted_actions(
         _ => return Vec::new(),
     }
 
-    // Collect all actions in the file that have `Promoted = true`
     let promoted_actions = collect_promoted_actions(text);
     if promoted_actions.is_empty() {
         return Vec::new();
     }
 
-    // Check if the cursor line overlaps with any promoted action
     let active: Vec<_> = promoted_actions
         .iter()
         .filter(|a| cursor_line >= a.decl_line && cursor_line <= a.body_end_line)
@@ -84,9 +80,7 @@ fn collect_promoted_actions(text: &str) -> Vec<PromotedActionInfo> {
     let mut i = 0;
     while i < lines.len() {
         let trimmed = lines[i].trim().to_lowercase();
-        // Detect `action(...)` declaration lines
         if trimmed.starts_with("action(") {
-            // Extract the action name
             let raw = lines[i].trim();
             let name = match extract_action_name(raw) {
                 Some(n) => n,
@@ -96,10 +90,8 @@ fn collect_promoted_actions(text: &str) -> Vec<PromotedActionInfo> {
                 }
             };
 
-            // Find the matching closing brace for this action body
             let (body_end, inner_lines) = find_block_extent(&lines, i);
 
-            // Look for `Promoted = true` within the block
             let mut has_promoted = false;
             let mut category: Option<String> = None;
             let mut remove_lines = Vec::new();
@@ -108,13 +100,11 @@ fn collect_promoted_actions(text: &str) -> Vec<PromotedActionInfo> {
                 let lt = lines[il].trim().to_lowercase();
                 if lt.starts_with("promoted") && lt.contains('=') {
                     if !lt.contains("category") && !lt.contains("actiontype") {
-                        // Promoted = true/false
                         if lt.contains("true") {
                             has_promoted = true;
                             remove_lines.push(il);
                         }
                     } else if lt.contains("promotedcategory") {
-                        // PromotedCategory = Process
                         let val = extract_property_value(lines[il]);
                         category = Some(val);
                         remove_lines.push(il);
@@ -203,7 +193,6 @@ fn build_promoted_action_conversion(
 ) -> Option<CodeActionEntry> {
     let mut edits: Vec<TextEdit> = Vec::new();
 
-    // Remove each Promoted/PromotedCategory line
     for &line_no in &pa.remove_lines {
         edits.push(TextEdit {
             range: Range {
@@ -224,7 +213,6 @@ fn build_promoted_action_conversion(
     let actions_end_line = find_actions_block_end(text);
     let category = pa.category.as_deref().unwrap_or("Process");
 
-    // Detect indentation from the action declaration line
     let decl_line_text = text.lines().nth(pa.decl_line).unwrap_or("        ");
     let action_indent_len = decl_line_text.len() - decl_line_text.trim_start().len();
     let action_indent = &decl_line_text[..action_indent_len];
@@ -258,7 +246,6 @@ fn build_promoted_action_conversion(
         new_text: action_ref_text,
     });
 
-    // Sort edits ascending by line
     edits.sort_by_key(|e| e.range.start.line);
 
     Some(CodeActionEntry {
@@ -300,9 +287,7 @@ fn find_actions_block_end(text: &str) -> Option<u32> {
     None
 }
 
-// ============================================================================
 // T1206: Set Default ApplicationArea on Page/Report
-// ============================================================================
 
 /// Offer to add an object-level `ApplicationArea` property to a page or report
 /// and remove redundant field-level properties that duplicate the object default.
@@ -341,25 +326,21 @@ pub(super) fn source_action_set_application_area(
         _ => return None,
     }
 
-    // Check there is no existing object-level ApplicationArea
     if object_has_application_area(text) {
         return None;
     }
 
-    // Collect all field-level ApplicationArea = All lines
     let field_aa_lines = collect_field_application_area_lines(text, "All");
     if field_aa_lines.is_empty() {
         return None;
     }
 
-    // Find insertion point: after the opening `{` of the object body
     let insert_line = find_object_properties_insert_line(text)?;
 
     let indent = detect_indent(text, insert_line.saturating_sub(1));
 
     let mut edits: Vec<TextEdit> = Vec::new();
 
-    // Insert object-level ApplicationArea = All
     edits.push(TextEdit {
         range: Range {
             start: super::Position {
@@ -374,7 +355,6 @@ pub(super) fn source_action_set_application_area(
         new_text: format!("{}ApplicationArea = All;\n", indent),
     });
 
-    // Remove redundant field-level lines
     let mut sorted_lines = field_aa_lines.clone();
     sorted_lines.sort_unstable_by(|a, b| b.cmp(a));
     for ln in &sorted_lines {
@@ -460,9 +440,7 @@ fn find_object_properties_insert_line(text: &str) -> Option<u32> {
     None
 }
 
-// ============================================================================
 // T1207: Fix Old Report Layout to rendering Section
-// ============================================================================
 
 /// Convert legacy `RDLCLayout`/`WordLayout` properties to the new
 /// `rendering { layout(...) { ... } }` section syntax.
@@ -476,13 +454,11 @@ pub(super) fn source_action_fix_report_layout(
 ) -> Option<CodeActionEntry> {
     let cursor_line = range.start.line as usize;
 
-    // Must be inside a report object
     let obj_kind = detect_object_kind(text)?;
     if obj_kind != AlObjectKind::Report {
         return None;
     }
 
-    // Scan the file for legacy layout properties
     let legacy = collect_legacy_layout_properties(text);
     if legacy.is_empty() {
         return None;
@@ -546,7 +522,6 @@ fn build_report_layout_conversion(
 ) -> Option<CodeActionEntry> {
     let mut edits: Vec<TextEdit> = Vec::new();
 
-    // Remove all legacy property lines
     for lp in legacy {
         edits.push(TextEdit {
             range: Range {
@@ -563,13 +538,10 @@ fn build_report_layout_conversion(
         });
     }
 
-    // Find where to insert the `rendering { }` section.
     let insert_line = find_rendering_insert_line(text);
 
-    // Detect indent
     let indent = detect_indent(text, insert_line.saturating_sub(1));
 
-    // Build the rendering block
     let mut rendering_text = format!("{}rendering\n{}{{\n", indent, indent);
     for (idx, lp) in legacy.iter().enumerate() {
         let layout_name = if legacy.len() == 1 {
@@ -607,7 +579,6 @@ fn build_report_layout_conversion(
         new_text: rendering_text,
     });
 
-    // Sort edits ascending by line
     edits.sort_by_key(|e| e.range.start.line);
 
     Some(CodeActionEntry {
@@ -623,7 +594,6 @@ fn build_report_layout_conversion(
 fn find_rendering_insert_line(text: &str) -> u32 {
     let lines: Vec<&str> = text.lines().collect();
 
-    // Look for `requestpage` section
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim().to_lowercase();
         if trimmed == "requestpage" || trimmed.starts_with("requestpage ") {
@@ -862,9 +832,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // Tests for T1206: Set Default ApplicationArea on Page/Report
-    // -----------------------------------------------------------------------
 
     #[test]
     fn t1206_application_area_action_offered_on_page_with_field_aa() {
@@ -1077,9 +1045,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // Tests for T1207: Fix Old Report Layout to rendering Section
-    // -----------------------------------------------------------------------
 
     #[test]
     fn t1207_report_layout_conversion_offered_for_rdlclayout() {

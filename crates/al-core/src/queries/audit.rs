@@ -281,7 +281,6 @@ fn extract_permission_objects(text: &str) -> Vec<String> {
     let mut objects = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim();
-        // Skip comments
         if trimmed.starts_with("//") {
             continue;
         }

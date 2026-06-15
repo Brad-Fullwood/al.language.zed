@@ -205,10 +205,6 @@ impl TestResultStore {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn canonical_path_for(project_root: &std::path::Path) -> PathBuf {
     let hash = short_hash(project_root.to_string_lossy().as_bytes());
     let base = std::env::var_os("XDG_DATA_HOME")
@@ -298,10 +294,6 @@ async fn rewrite_records(
     fs::rename(&tmp_path, path).await?;
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

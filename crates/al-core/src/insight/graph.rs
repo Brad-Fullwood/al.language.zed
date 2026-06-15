@@ -12,6 +12,23 @@ use serde::Serialize;
 
 use crate::symbols::{ObjectKind, SymbolEntry};
 
+/// AL object kinds that can publish events. A subscriber's parsed attribute
+/// names the publisher object but not its kind, so event resolution searches
+/// these kinds in order. Shared by both the package-scoped and workspace-scoped
+/// resolution paths so they can never desync.
+const EVENT_PUBLISHER_KINDS: [ObjectKind; 10] = [
+    ObjectKind::Codeunit,
+    ObjectKind::Table,
+    ObjectKind::Page,
+    ObjectKind::Report,
+    ObjectKind::XmlPort,
+    ObjectKind::Query,
+    ObjectKind::Interface,
+    ObjectKind::TableExtension,
+    ObjectKind::PageExtension,
+    ObjectKind::ReportExtension,
+];
+
 /// A node in the insight graph.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
@@ -107,7 +124,6 @@ pub enum NodeKey {
 /// crates must go through the read-only accessors below. This stops downstream
 /// crates from building on a transient internal layout.
 pub struct InsightGraph {
-    /// The underlying petgraph.
     pub(crate) graph: DiGraph<InsightNode, InsightEdge>,
     /// Lookup table: NodeKey -> Vec<NodeIndex>.
     ///
@@ -223,22 +239,9 @@ impl InsightGraph {
         // Same kind-search order as `resolve_relationships`: well-formed AL
         // declares the publisher type in the attribute, but the parsed node
         // doesn't carry it, so search the kinds that can publish events.
-        const KINDS: [ObjectKind; 10] = [
-            ObjectKind::Codeunit,
-            ObjectKind::Table,
-            ObjectKind::Page,
-            ObjectKind::Report,
-            ObjectKind::XmlPort,
-            ObjectKind::Query,
-            ObjectKind::Interface,
-            ObjectKind::TableExtension,
-            ObjectKind::PageExtension,
-            ObjectKind::ReportExtension,
-        ];
-
         for (sub_idx, obj_lower, evt_lower) in subscribers {
             let mut connected = false;
-            for kind in KINDS {
+            for kind in EVENT_PUBLISHER_KINDS {
                 let key = NodeKey::Event(kind, obj_lower.clone(), evt_lower.clone());
                 let event_indices: Vec<NodeIndex> = self.get_nodes(&key).to_vec();
                 if event_indices.is_empty() {
@@ -255,7 +258,7 @@ impl InsightGraph {
             }
             // No declared event — synthesize one under the target object if
             // the object itself is known (implicit table/page trigger events).
-            for kind in KINDS {
+            for kind in EVENT_PUBLISHER_KINDS {
                 let obj_key = NodeKey::Object(kind, obj_lower.clone());
                 let Some(obj_idx) = self.get_node(&obj_key) else {
                     continue;
@@ -325,7 +328,6 @@ impl InsightGraph {
         let _enter = span.enter();
         let started = std::time::Instant::now();
 
-        // Iterate all symbols
         let all_entries = symbols.all_entries();
 
         for entry in &all_entries {
@@ -479,18 +481,7 @@ impl InsightGraph {
                 let kinds_to_try: Vec<ObjectKind> = if let Some(k) = target_kind {
                     vec![k]
                 } else {
-                    vec![
-                        ObjectKind::Codeunit,
-                        ObjectKind::Table,
-                        ObjectKind::Page,
-                        ObjectKind::Report,
-                        ObjectKind::XmlPort,
-                        ObjectKind::Query,
-                        ObjectKind::Interface,
-                        ObjectKind::TableExtension,
-                        ObjectKind::PageExtension,
-                        ObjectKind::ReportExtension,
-                    ]
+                    EVENT_PUBLISHER_KINDS.to_vec()
                 };
 
                 // sub_idx is resolved once outside the kinds loop.
@@ -1283,11 +1274,9 @@ mod tests {
             },
         );
 
-        // Add a Calls edge from A to B
         g.add_edge(a, b, InsightEdge::Calls);
         assert_eq!(g.edge_count(), 1);
 
-        // Remove all outgoing edges from A
         g.remove_edges_from(a);
         assert_eq!(g.edge_count(), 0);
     }

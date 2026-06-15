@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 // remains backward-compatible with any older client that doesn't emit
 // the field.
 
-/// Default value for the `jsonrpc` field.
 fn default_jsonrpc() -> String {
     "2.0".to_string()
 }

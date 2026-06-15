@@ -18,7 +18,6 @@ pub enum UpgradeIssueKind {
     DataMigration,
     /// Obsoleted symbol that should be replaced.
     ObsoleteSymbol,
-    /// New required permission.
     NewPermission,
 }
 
@@ -26,16 +25,12 @@ pub enum UpgradeIssueKind {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpgradeIssue {
-    /// Category.
     pub kind: UpgradeIssueKind,
-    /// Affected object.
     pub object: String,
     /// Affected member (if applicable).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
-    /// Description of the issue.
     pub description: String,
-    /// Suggested migration action.
     pub migration_hint: String,
     /// Severity: "error", "warning", "info".
     pub severity: String,

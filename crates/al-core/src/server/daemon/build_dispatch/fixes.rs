@@ -58,7 +58,6 @@ pub(in crate::server::daemon) fn dispatch_lint(
     let result = crate::syntax::AlParser::parse_quick(&text);
     let mut diagnostics = crate::syntax::lint(&result.tree, &text);
 
-    // Add parse errors
     for err in &result.errors {
         diagnostics.push(crate::syntax::LintDiagnostic {
             code: "parse-error".to_string(),

@@ -11,9 +11,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-// ---------------------------------------------------------------------------
-// ObjectKind
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ObjectKind {
@@ -96,9 +93,6 @@ impl fmt::Debug for ObjectKind {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Member types
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParameterSymbol {
@@ -156,9 +150,6 @@ pub struct EnumValueSymbol {
     pub name: String,
 }
 
-// ---------------------------------------------------------------------------
-// SymbolEntry
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolEntry {
@@ -183,12 +174,10 @@ pub struct SymbolEntry {
     pub properties: Vec<PropertyValue>,
 }
 
-// ---------------------------------------------------------------------------
 // SymbolIndex — thin in-memory cache populated from daemon JSON-RPC responses.
 //
 // Unlike al-symbols::SymbolIndex (which reads .app files directly), this
 // version is populated by calling the al-lsp daemon's `search` endpoint.
-// ---------------------------------------------------------------------------
 
 /// Lightweight in-memory symbol cache.
 ///

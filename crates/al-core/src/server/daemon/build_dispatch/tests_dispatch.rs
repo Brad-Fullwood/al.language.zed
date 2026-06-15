@@ -141,7 +141,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
     use crate::queries::test_diagnostics::results_to_diagnostics;
     use crate::test_runner::TestRunnerClient;
 
-    // -- Resolve project root from workspace -----------------------------------
     let project_root = match workspace
         .project
         .read()
@@ -155,7 +154,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
         }
     };
 
-    // -- Parse params ----------------------------------------------------------
     let codeunit_id = match params.get("codeunit").and_then(|v| v.as_i64()) {
         Some(n) => match i32::try_from(n) {
             Ok(v) => v,
@@ -310,7 +308,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     use crate::test_engine::session::{RunOptions, TestEvent, TestId, TestSession};
     use tokio::sync::mpsc;
 
-    // -- Resolve project root ---------------------------------------------------
     let project_root = match workspace
         .project
         .read()
@@ -322,7 +319,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         None => return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT),
     };
 
-    // -- Parse params ----------------------------------------------------------
     let codeunit_ids = match params.get("codeunitIds").and_then(|v| v.as_array()) {
         Some(arr) => arr,
         None => {
@@ -504,7 +500,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         }
     }
 
-    // -- Persist results -------------------------------------------------------
     if let Err(e) = ensure_result_store(workspace, &project_root).await {
         tracing::warn!(error = %e, "test_results store init failed; persistence skipped");
     } else if let Some(store_arc) = workspace.test_results.read().ok().and_then(|g| g.clone()) {
@@ -539,7 +534,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         }
     }
 
-    // -- Build response --------------------------------------------------------
     let total: usize = summaries.iter().map(|s| s.total).sum();
     let passed: usize = summaries.iter().map(|s| s.passed).sum();
     let failed: usize = summaries.iter().map(|s| s.failed).sum();

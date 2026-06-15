@@ -128,17 +128,12 @@ impl<'a> TypeResolver<'a> {
         let root = self.tree.root_node();
         self.add_self_implicit_var(root, &mut result);
 
-        // Find the enclosing procedure/trigger at the given position
         let proc_node = self.find_enclosing_procedure(position);
 
         if let Some(proc) = proc_node {
-            // Collect local variables from the var_section within this procedure
             self.collect_local_vars(proc, &mut result);
-
-            // Collect parameters
             self.collect_parameters(proc, &mut result);
 
-            // If this is a trigger, add trigger-only implicit variables
             if proc.kind() == "trigger_declaration" {
                 self.add_trigger_implicit_vars(root, &mut result);
             }
@@ -161,7 +156,6 @@ impl<'a> TypeResolver<'a> {
             self.add_record_implicit_vars_for(table, root, &mut result);
         }
 
-        // Collect global variables from object_var_section(s)
         self.collect_global_vars(root, &mut result);
 
         // Collect dataitem variables from report dataset sections.
@@ -400,7 +394,6 @@ impl<'a> TypeResolver<'a> {
         let type_node = node.child_by_field_name("type")?;
         let (type_name, type_subtype) = self.parse_type_reference(type_node);
 
-        // Check for kw_var child
         let is_var = {
             let mut cursor = node.walk();
             let result = node.children(&mut cursor).any(|c| c.kind() == "kw_var");
@@ -634,11 +627,16 @@ impl<'a> TypeResolver<'a> {
         // F-OPEN-105 short-circuit: most AL files don't contain `dataitem`
         // (only Report and Query objects use it). Skip the line-starts
         // scan entirely when the keyword isn't present. AL keywords are
-        // case-insensitive, so we lowercase the whole text once and check
-        // for `dataitem(` against that — this matches every case variation
-        // (e.g. `dataItem(`, `Dataitem(`) rather than a fixed set of forms.
-        // The line-level parse below uses the same case-insensitive rule.
-        if !text.to_ascii_lowercase().contains("dataitem(") {
+        // case-insensitive, so we scan case-insensitively for `dataitem(` —
+        // this matches every case variation (e.g. `dataItem(`, `Dataitem(`)
+        // without allocating a lowercased copy of the whole file. The
+        // line-level parse below uses the same case-insensitive rule.
+        const DATAITEM: &[u8] = b"dataitem(";
+        if !text
+            .as_bytes()
+            .windows(DATAITEM.len())
+            .any(|w| w.eq_ignore_ascii_case(DATAITEM))
+        {
             return;
         }
 
@@ -777,7 +775,6 @@ impl<'a> TypeResolver<'a> {
                 return;
             }
 
-            // We have both begin and var — look for the trigger line
             if lower.starts_with("trigger ") {
                 trigger_line = Some(i);
                 break;
@@ -790,7 +787,6 @@ impl<'a> TypeResolver<'a> {
             return;
         }
 
-        // If we didn't find the trigger pattern, bail
         if trigger_line.is_none() || var_line.is_none() || begin_line.is_none() {
             return;
         }
@@ -815,7 +811,6 @@ impl<'a> TypeResolver<'a> {
             line_starts.push(cursor);
         }
 
-        // Parse variable declarations between `var` and `begin`
         for line_idx in (var_start + 1)..begin_at {
             if line_idx >= lines.len() {
                 break;

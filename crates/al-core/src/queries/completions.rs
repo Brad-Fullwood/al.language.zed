@@ -470,7 +470,6 @@ mod tests {
 
     #[test]
     fn count_params_works() {
-        // Verify that parse_detail_params (the canonical implementation) counts correctly.
         assert_eq!(super::super::parse_detail_params("()").len(), 0);
         assert_eq!(super::super::parse_detail_params("").len(), 0);
         assert_eq!(super::super::parse_detail_params("(A: Text)").len(), 1);
@@ -491,8 +490,6 @@ mod tests {
             1
         );
     }
-
-    // --- Failure path tests ---
 
     #[test]
     fn completions_empty_for_unopened_document() {
@@ -596,8 +593,6 @@ mod tests {
         }
     }
 
-    // --- CompletionKind serialization: full LSP integer mapping ---
-
     #[test]
     fn completion_kind_serializes_all_variants() {
         // Covers every arm of the hand-written Serialize impl, including the
@@ -627,8 +622,6 @@ mod tests {
             );
         }
     }
-
-    // --- finalize_completion_items: ordering, dedup, sort_text generation ---
 
     #[test]
     fn finalize_dedups_case_insensitively() {
@@ -720,8 +713,6 @@ mod tests {
         let order: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(order, vec!["zzz", "mmm", "aaa"]);
     }
-
-    // --- from_lsp_completion: candidate-kind mapping + field passthrough ---
 
     #[test]
     fn from_lsp_completion_maps_all_kinds() {

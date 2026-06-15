@@ -43,7 +43,6 @@ pub(super) fn source_action_if_to_case(
         &mut common_var,
     );
 
-    // Need 3+ branches and all on the same variable
     if branches.len() < 3 || common_var.is_none() {
         return None;
     }
@@ -100,7 +99,6 @@ fn find_outermost_if_at_point(
 ) -> Option<tree_sitter::Node> {
     let mut node = root.descendant_for_point_range(point, point)?;
 
-    // Walk up to find an if_statement
     while node.kind() != "if_statement" {
         node = node.parent()?;
     }
@@ -173,7 +171,6 @@ fn walk_if_chain(
             }
         }
 
-        // Follow the else branch.
         let Some(alt) = current.child_by_field_name("alternative") else {
             return;
         };
@@ -484,10 +481,6 @@ mod tests {
         let new_text = &edits[0].new_text;
         assert!(new_text.contains("else"), "Should preserve else clause");
     }
-
-    // -----------------------------------------------------------------------
-    // SERIAL bug fixes
-    // -----------------------------------------------------------------------
 
     // Bug: if_to_case indentation loss
     // The generated case statement should preserve the body indentation

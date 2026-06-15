@@ -10,9 +10,6 @@ use serde::Serialize;
 
 use al_protocol::DaemonClient;
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
 
 pub fn print_json<T: Serialize>(value: &T) {
     match serde_json::to_string_pretty(value) {

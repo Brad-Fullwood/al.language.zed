@@ -152,7 +152,6 @@ pub async fn acquire_token(
     };
     let cache_path = token_cache_path(tenant);
 
-    // 1. Try cached token
     if let Some(cached) = load_cached_token(&cache_path, tenant) {
         let now = now_unix();
         if cached.expires_at > now + 60 {
@@ -162,7 +161,6 @@ pub async fn acquire_token(
             return Ok(cached.access_token.clone());
         }
 
-        // 2. Try refresh
         if let Some(ref refresh) = cached.refresh_token {
             debug!(tenant, "Access token expired, refreshing");
             match refresh_token_flow(client, tenant, &client_id, refresh).await {
@@ -179,7 +177,6 @@ pub async fn acquire_token(
         }
     }
 
-    // 3. Interactive sign-in
     let tok = interactive_sign_in(client, tenant, &client_id, &on_message).await?;
     save_cached_token(&cache_path, tenant, &tok);
     info!(tenant, "Acquired BC access token");
@@ -203,13 +200,8 @@ async fn interactive_sign_in(
         }
     }
 
-    // Fallback: device code flow
     device_code_flow(client, tenant, client_id, on_message).await
 }
-
-// ---------------------------------------------------------------------------
-// Authorization Code + PKCE flow
-// ---------------------------------------------------------------------------
 
 async fn browser_auth_flow(
     client: &reqwest::Client,
@@ -217,17 +209,14 @@ async fn browser_auth_flow(
     client_id: &str,
     on_message: &impl Fn(&str),
 ) -> Result<TokenResponse, OAuthError> {
-    // Generate PKCE
     let verifier = generate_code_verifier()?;
     let challenge = pkce_challenge(&verifier);
     let state = generate_random_string(16)?;
 
-    // Start local server on random port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://localhost:{port}");
 
-    // Build authorization URL
     let auth_url = format!(
         "https://login.microsoftonline.com/{}/oauth2/v2.0/authorize?\
          client_id={}&response_type=code&redirect_uri={}&scope={}&\
@@ -240,7 +229,6 @@ async fn browser_auth_flow(
         state,
     );
 
-    // Open browser
     on_message("Opening browser for BC sign-in...");
     if !open_browser(&auth_url) {
         return Err(OAuthError::Protocol {
@@ -249,7 +237,6 @@ async fn browser_auth_flow(
         });
     }
 
-    // Wait for redirect (5 minute timeout)
     let code = tokio::time::timeout(
         Duration::from_secs(300),
         wait_for_auth_callback(&listener, &state),
@@ -257,7 +244,6 @@ async fn browser_auth_flow(
     .await
     .map_err(|_| OAuthError::Expired)??;
 
-    // Exchange auth code for token
     let token_url = format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token");
 
     let resp = client
@@ -325,7 +311,6 @@ async fn wait_for_auth_callback(
     // keep the write half for sending the HTTP response back to the browser.
     let (read_half, mut write_half) = tokio::io::split(stream);
 
-    // Read HTTP request — loop until we have the full header (handles TCP segmentation).
     let request = read_http_request(read_half).await?;
 
     // Parse first line: GET /?code=...&state=... HTTP/1.1
@@ -338,7 +323,6 @@ async fn wait_for_auth_callback(
     let query = path.split('?').nth(1).unwrap_or("");
     let params = parse_query_string(query);
 
-    // Send response page
     let (status_line, body) = if params.contains_key("error") {
         let err = params.get("error").map(|s| s.as_str()).unwrap_or("unknown");
         let desc = params
@@ -384,7 +368,6 @@ async fn wait_for_auth_callback(
         tracing::debug!("OAuth callback: shutdown of browser socket failed: {e}");
     }
 
-    // Check for error
     if let Some(err) = params.get("error") {
         let desc = params.get("error_description").cloned().unwrap_or_default();
         return Err(if err == "access_denied" {
@@ -397,7 +380,6 @@ async fn wait_for_auth_callback(
         });
     }
 
-    // Verify state
     let state = params.get("state").map(|s| s.as_str()).unwrap_or("");
     if state != expected_state {
         return Err(OAuthError::Protocol {
@@ -406,7 +388,6 @@ async fn wait_for_auth_callback(
         });
     }
 
-    // Extract code
     params
         .get("code")
         .cloned()
@@ -415,10 +396,6 @@ async fn wait_for_auth_callback(
             description: "No authorization code in redirect".into(),
         })
 }
-
-// ---------------------------------------------------------------------------
-// Device Code flow (fallback for headless environments)
-// ---------------------------------------------------------------------------
 
 /// Response from the `/devicecode` endpoint.
 #[derive(Debug, Deserialize)]
@@ -469,7 +446,6 @@ async fn device_code_flow(
         .json()
         .await?;
 
-    // Try to open browser with verification_uri_complete (code pre-filled)
     if let Some(ref uri) = dc.verification_uri_complete {
         open_browser(uri);
         on_message(&format!(
@@ -484,7 +460,6 @@ async fn device_code_flow(
         ));
     }
 
-    // Poll token endpoint
     let deadline = SystemTime::now() + Duration::from_secs(dc.expires_in);
     let mut interval = Duration::from_secs(dc.interval);
 
@@ -546,10 +521,6 @@ async fn device_code_flow(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Refresh token flow
-// ---------------------------------------------------------------------------
-
 async fn refresh_token_flow(
     client: &reqwest::Client,
     tenant: &str,
@@ -571,10 +542,6 @@ async fn refresh_token_flow(
 
     handle_token_response(resp).await
 }
-
-// ---------------------------------------------------------------------------
-// PKCE helpers
-// ---------------------------------------------------------------------------
 
 fn generate_code_verifier() -> Result<String, OAuthError> {
     let bytes = random_bytes(32)?;
@@ -643,10 +610,6 @@ fn base64url_encode(data: &[u8]) -> String {
     }
     out
 }
-
-// ---------------------------------------------------------------------------
-// URL helpers
-// ---------------------------------------------------------------------------
 
 /// Escape HTML special characters to prevent XSS in the OAuth redirect page.
 ///
@@ -735,10 +698,6 @@ fn parse_query_string(query: &str) -> std::collections::HashMap<String, String> 
         })
         .collect()
 }
-
-// ---------------------------------------------------------------------------
-// Browser opening
-// ---------------------------------------------------------------------------
 
 /// Spawn `cmd` with `args`, discarding all three standard streams. Returns
 /// whether the spawn succeeded (the child is detached; we never wait on it).
@@ -919,7 +878,6 @@ mod cache_io_tests {
 
     #[test]
     fn save_cached_token_writes_complete_json() {
-        // Positive: a successful save produces a parseable cache file.
         let (_dir, path) = temp_cache_path();
         save_cached_token(&path, "common", &sample_token());
         let content = std::fs::read_to_string(&path).expect("cache file must exist");
@@ -999,7 +957,6 @@ mod cache_io_tests {
 
     #[test]
     fn invalidate_cached_token_removes_file() {
-        // Positive: a cached token exists → invalidate → file is gone.
         let dir = tempfile::tempdir().expect("tempdir");
         // Tenant maps deterministically to a path via token_cache_path,
         // but that path is in ~/.cache. To keep the test hermetic, point
@@ -1088,10 +1045,6 @@ mod zeroize_tests {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Token cache
-// ---------------------------------------------------------------------------
-
 pub fn token_cache_path(tenant: &str) -> PathBuf {
     let cache_dir = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -1125,7 +1078,7 @@ fn create_secure_dir(path: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)
 }
 
-// ── OS secret store (S1) ─────────────────────────────────────────────────────
+// OS secret store (S1)
 //
 // Persist the OAuth bundle in the platform keyring (Secret Service / Keychain /
 // Credential Manager) so the 90-day refresh token is not stored as plaintext on
@@ -1208,7 +1161,6 @@ fn keyring_delete(tenant: &str) -> bool {
 }
 
 fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedToken> {
-    // 1. OS keyring first.
     if let Some(json) = keyring_get(tenant) {
         let json = zeroize::Zeroizing::new(json);
         match serde_json::from_str::<CachedToken>(&json) {
@@ -1295,7 +1247,6 @@ fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
         return;
     }
 
-    // 2. Fallback: hardened 0o600 file.
     debug!(
         tenant,
         "OS keyring unavailable; caching OAuth token to a 0o600 file"
@@ -1408,10 +1359,6 @@ fn now_unix() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
-
-// ---------------------------------------------------------------------------
-// Error helpers
-// ---------------------------------------------------------------------------
 
 /// Parse a token endpoint response: deserialize the body as a `TokenResponse`
 /// on success, otherwise surface the OAuth error from the body.
@@ -1564,10 +1511,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // html_escape — XSS defence on the OAuth redirect page
-    // -----------------------------------------------------------------------
-
     #[test]
     fn html_escape_neutralizes_script_injection() {
         // The redirect page renders server-supplied error/description verbatim;
@@ -1589,10 +1532,6 @@ mod tests {
         assert_eq!(html_escape(s), s);
     }
 
-    // -----------------------------------------------------------------------
-    // percent_decode — malformed-escape edge cases
-    // -----------------------------------------------------------------------
-
     #[test]
     fn percent_decode_handles_truncated_and_invalid_escapes() {
         // A trailing '%' with no following hex digits must be preserved, not
@@ -1604,10 +1543,6 @@ mod tests {
         // Mixed valid + plus-as-space.
         assert_eq!(percent_decode("a%2Bb+c"), "a+b c");
     }
-
-    // -----------------------------------------------------------------------
-    // generate_random_string — length + charset invariants
-    // -----------------------------------------------------------------------
 
     #[test]
     fn generate_random_string_respects_length_and_charset() {
@@ -1621,10 +1556,6 @@ mod tests {
             );
         }
     }
-
-    // -----------------------------------------------------------------------
-    // token_cache_path — filename sanitization
-    // -----------------------------------------------------------------------
 
     #[test]
     fn token_cache_path_sanitizes_unsafe_chars() {
@@ -1649,10 +1580,6 @@ mod tests {
             "12345678-1234-1234-1234-123456789012.json"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // parse_token_error — JSON body vs. opaque fallback
-    // -----------------------------------------------------------------------
 
     #[test]
     fn parse_token_error_extracts_oauth_fields() {
@@ -1681,10 +1608,6 @@ mod tests {
             other => panic!("expected Protocol, got {other:?}"),
         }
     }
-
-    // -----------------------------------------------------------------------
-    // load_cached_token — corrupt vs. valid vs. missing
-    // -----------------------------------------------------------------------
 
     #[test]
     fn load_cached_token_returns_none_for_missing_file() {
@@ -1752,10 +1675,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // handle_token_response — drives a real reqwest::Response from wiremock
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn handle_token_response_parses_success_body() {
         use wiremock::matchers::method;
@@ -1810,10 +1729,6 @@ mod tests {
             other => panic!("expected Protocol error, got {other:?}"),
         }
     }
-
-    // -----------------------------------------------------------------------
-    // acquire_token — pre-network input validation
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn acquire_token_rejects_malformed_tenant_before_network() {

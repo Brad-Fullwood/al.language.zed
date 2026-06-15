@@ -43,19 +43,16 @@ pub(super) fn source_action_add_using(
     text: &str,
     range: Range,
 ) -> Vec<CodeActionEntry> {
-    // Find the word at the cursor position — look for identifiers or quoted names
     let word = extract_word_at_position(text, range);
     if word.is_empty() {
         return Vec::new();
     }
 
-    // Look up matching symbols in the index
     let matches = workspace.symbols.get_by_name(&word);
     if matches.is_empty() {
         return Vec::new();
     }
 
-    // Collect namespaces from matching symbols (skip empty namespaces)
     let mut candidate_namespaces: Vec<String> = matches
         .iter()
         .filter(|e| !e.namespace.is_empty())
@@ -68,13 +65,10 @@ pub(super) fn source_action_add_using(
         return Vec::new();
     }
 
-    // Parse existing using directives and namespace declaration from the file
     let (existing_usings, insert_line) = parse_using_directives(text);
 
-    // Filter out namespaces already imported
     candidate_namespaces.retain(|ns| !existing_usings.iter().any(|u| u.eq_ignore_ascii_case(ns)));
 
-    // Generate one code action per candidate namespace
     candidate_namespaces
         .into_iter()
         .map(|ns| {
@@ -184,7 +178,6 @@ fn try_extract_quoted_identifier(bytes: &[u8], cursor: usize) -> Option<String> 
         }
     }?;
 
-    // Scan right from open_quote+1 to find the closing quote.
     let close_quote = {
         let mut pos = open_quote + 1;
         while pos < bytes.len() && bytes[pos] != b'"' {
@@ -236,7 +229,6 @@ pub(super) fn parse_using_directives(text: &str) -> (Vec<String>, u32) {
             // Extract namespace name: "using Foo.Bar;" -> "Foo.Bar"
             // Strip trailing inline comment before the semicolon (e.g. "using Foo; // comment")
             let after_keyword = trimmed.get(6..).unwrap_or("");
-            // Remove inline comment (// ...) before parsing
             let without_comment = if let Some(pos) = after_keyword.find("//") {
                 &after_keyword[..pos]
             } else {
@@ -254,7 +246,6 @@ pub(super) fn parse_using_directives(text: &str) -> (Vec<String>, u32) {
         }
     }
 
-    // Insert after the last directive line
     let insert_line = if found_any_directive {
         last_directive_line + 1
     } else {
@@ -301,7 +292,6 @@ mod tests {
     fn add_using_offered_for_unresolved_type_in_known_namespace() {
         let ws = Workspace::new();
 
-        // Add a symbol "Customer" in namespace "Microsoft.Sales"
         ws.symbols.add_entries(&[make_entry_with_namespace(
             ObjectKind::Table,
             18,
@@ -343,7 +333,6 @@ codeunit 50100 "My Codeunit"
         assert!(!using_actions.is_empty(), "Should offer 'Add using' action");
         assert!(using_actions[0].title.contains("Microsoft.Sales"));
 
-        // The edit should insert `using Microsoft.Sales;` after the namespace line
         let edit = using_actions[0].edit.as_ref().expect("should have edit");
         let (_, edits) = &edit.changes[0];
         assert!(edits[0].new_text.contains("using Microsoft.Sales;"));
@@ -401,7 +390,6 @@ codeunit 50100 "My Codeunit"
     fn add_using_not_offered_when_no_matching_symbol() {
         let ws = Workspace::new();
 
-        // No symbols added — nothing in the index
         let al_code = r#"namespace MyCompany.MyApp;
 
 codeunit 50100 "My Codeunit"
@@ -483,10 +471,6 @@ codeunit 50100 "My Codeunit"
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Tests for parse_using_directives (insertion point logic)
-    // -----------------------------------------------------------------------
-
     #[test]
     fn insertion_point_after_existing_using_directives() {
         let source =
@@ -514,10 +498,6 @@ codeunit 50100 "My Codeunit"
         assert_eq!(insert_line, 0, "should insert at top when no header");
     }
 
-    // -----------------------------------------------------------------------
-    // Tests for extract_type_name_from_diagnostic
-    // -----------------------------------------------------------------------
-
     #[test]
     fn extract_type_name_from_quoted_al0185_message() {
         assert_eq!(
@@ -543,10 +523,6 @@ codeunit 50100 "My Codeunit"
             Some("PostingGroup".to_string()),
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Tests for namespace_quick_fix_for_diagnostic
-    // -----------------------------------------------------------------------
 
     #[test]
     fn diagnostic_quick_fix_offered_for_al0185() {

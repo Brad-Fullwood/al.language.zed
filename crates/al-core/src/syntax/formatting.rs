@@ -392,7 +392,6 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             single_stmt_depth = 0;
         }
 
-        // Block openers: increase indent
         if trimmed.ends_with('{') {
             indent_level += 1;
         } else if trimmed_lower == "begin" || trimmed_lower.ends_with(" begin") {
@@ -979,10 +978,6 @@ end;
 "#;
         assert_eq!(fmt(input), expected);
     }
-    // -----------------------------------------------------------------------
-    // format_range tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_format_range_no_change_needed() {
         let input = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        Message(\'Hello\');\n    end;\n}";

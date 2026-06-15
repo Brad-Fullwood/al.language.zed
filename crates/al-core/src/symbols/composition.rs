@@ -85,7 +85,6 @@ fn compose(base: Arc<SymbolEntry>, extensions: Vec<Arc<SymbolEntry>>) -> Compose
         }
     }
 
-    // Sort enum values by ordinal
     all_enum_values.sort_by_key(|v| v.ordinal);
 
     ComposedObject {

@@ -17,10 +17,6 @@ use tokio::sync::RwLockReadGuard;
 
 use crate::workspace::Workspace;
 
-// ---------------------------------------------------------------------------
-// SemanticCache — in-memory builtin type index
-// ---------------------------------------------------------------------------
-
 /// In-memory cache of builtin types indexed by name for O(1) lookups.
 ///
 /// Built from the `Vec<BuiltinType>` loaded from the .NET bridge (or disk cache).
@@ -174,10 +170,6 @@ impl Default for SemanticCache {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Builtins + cache population
-// ---------------------------------------------------------------------------
-
 /// Store builtins in the workspace and build the semantic cache.
 ///
 /// This should be called whenever builtins are loaded (from disk cache or bridge).
@@ -208,10 +200,6 @@ pub fn set_builtins(workspace: &Workspace, builtins: Vec<BuiltinType>, version: 
     *builtins_guard = std::sync::Arc::new(builtins);
     *cache_guard = cache;
 }
-
-// ---------------------------------------------------------------------------
-// Bridge lifecycle
-// ---------------------------------------------------------------------------
 
 /// Maximum number of bridge restart attempts before giving up.
 pub const MAX_RESTARTS: u32 = 3;

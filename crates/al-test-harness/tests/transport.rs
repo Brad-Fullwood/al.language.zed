@@ -468,8 +468,6 @@ async fn test_adversarial_read_loop_lf_only_headers_are_accepted() {
 ///
 /// This test always PASSES — it documents the architectural gap rather than
 /// testing runtime behavior.
-// This test documents the architectural gap rather than testing runtime behavior.
-// It asserts nothing meaningful at runtime; the real assertion is compilation.
 #[test]
 #[ignore = "documents a testability gap; no runtime assertion"]
 fn test_adversarial_from_transport_is_not_pub_testability_gap() {
@@ -543,8 +541,6 @@ fn test_file_uri_percent_encodes_reserved_chars() {
 ///
 /// Document the gap: the ordering guarantee cannot be externally verified
 /// without white-box access.
-// This test documents the testability gap for notification ordering.
-// It asserts nothing meaningful at runtime.
 #[test]
 #[ignore = "documents a testability gap; no runtime assertion"]
 fn test_adversarial_drain_notifications_ordering_is_not_externally_verifiable() {

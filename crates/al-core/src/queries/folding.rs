@@ -22,8 +22,6 @@ mod tests {
     use crate::workspace::Workspace;
     use url::Url;
 
-    // --- positive tests ---
-
     #[test]
     fn folding_ranges_returns_ranges_for_open_document() {
         let ws = Workspace::new();
@@ -77,8 +75,6 @@ mod tests {
             region_count
         );
     }
-
-    // --- negative tests ---
 
     #[test]
     fn folding_ranges_missing_uri_returns_none() {

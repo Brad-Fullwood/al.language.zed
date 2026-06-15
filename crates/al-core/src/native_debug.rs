@@ -43,7 +43,6 @@ impl NativeDebugSession {
     pub async fn start(config: BcDebugConfig, access_token: &str) -> Result<Self> {
         let session = BcDebugSession::connect(&config, access_token).await?;
 
-        // Attach and signal configuration done
         session.attach(&config).await?;
         session.configuration_done(&config).await?;
 

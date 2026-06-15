@@ -21,7 +21,6 @@ pub struct SymbolIndex {
     /// Objects keyed by lowercase name. Multiple objects can share a name
     /// (e.g., a Table and a Page with the same name, or objects from different packages).
     by_name: DashMap<String, Vec<Arc<SymbolEntry>>>,
-    /// Objects keyed by (ObjectKind, id).
     by_kind_id: DashMap<(ObjectKind, i32), Vec<Arc<SymbolEntry>>>,
     /// Objects keyed by ObjectKind (secondary index for O(1) kind lookups).
     by_kind: DashMap<ObjectKind, Vec<Arc<SymbolEntry>>>,
@@ -49,7 +48,6 @@ impl Default for SymbolIndex {
 }
 
 impl SymbolIndex {
-    /// Create an empty index.
     pub fn new() -> Self {
         Self {
             by_name: DashMap::new(),
@@ -65,13 +63,11 @@ impl SymbolIndex {
         }
     }
 
-    /// Store a cached source path mapping.
     pub fn cache_source_path(&self, package: String, kind: ObjectKind, id: i32, path: String) {
         self.source_path_cache
             .insert((package.to_lowercase(), kind, id), path);
     }
 
-    /// Retrieve a cached source path mapping.
     pub fn get_cached_source_path(
         &self,
         package: &str,
@@ -83,7 +79,6 @@ impl SymbolIndex {
             .map(|s| s.value().clone())
     }
 
-    /// Check if a package has been indexed for source paths.
     pub fn is_package_indexed(&self, package: &str) -> bool {
         self.app_paths.contains_key(&package.to_lowercase())
     }
@@ -139,7 +134,6 @@ impl SymbolIndex {
             .filter_map(|path| {
                 let path = path.as_ref();
 
-                // Try cache first
                 if let Some(mut pkg) = cache.load(path) {
                     self.app_paths
                         .insert(pkg.name.to_lowercase(), path.to_path_buf());
@@ -147,7 +141,6 @@ impl SymbolIndex {
                     return Some(pkg);
                 }
 
-                // Cache miss — parse from .app file
                 match app_reader::read_app_file(path) {
                     Ok(mut pkg) => {
                         debug!(
@@ -267,7 +260,6 @@ impl SymbolIndex {
         arc
     }
 
-    /// Add a collection of symbol entries to the index.
     pub fn add_entries(&self, entries: &[SymbolEntry]) {
         let new_arcs: Vec<Arc<SymbolEntry>> = entries
             .iter()
@@ -364,13 +356,13 @@ impl SymbolIndex {
     pub fn search_in_package(&self, package_name: &str, query: &str) -> Vec<Arc<SymbolEntry>> {
         let mut results = Vec::new();
         let query_lower = query.to_lowercase();
-        // The package name on the entry might be differently cased, but usually it matches
-        let target_pkg = package_name.to_lowercase();
 
         for entry in self.all.iter() {
             let (arc, name_lower) = entry.value();
+            // The package name on the entry might be differently cased, but
+            // usually matches; compare without allocating a lowercased copy.
             if !arc.synthetic
-                && arc.package.to_lowercase() == target_pkg
+                && arc.package.eq_ignore_ascii_case(package_name)
                 && (query_lower.is_empty() || name_lower.contains(&query_lower))
             {
                 results.push(Arc::clone(arc));
@@ -398,7 +390,6 @@ impl SymbolIndex {
             .and_then(|v| v.first().map(Arc::clone))
     }
 
-    /// Lookup by object kind and ID.
     pub fn get_by_id(&self, kind: ObjectKind, id: i32) -> Vec<Arc<SymbolEntry>> {
         self.by_kind_id
             .get(&(kind, id))
@@ -406,7 +397,6 @@ impl SymbolIndex {
             .unwrap_or_default()
     }
 
-    /// Get all entries of a specific object kind.
     pub fn get_by_kind(&self, kind: ObjectKind) -> Vec<Arc<SymbolEntry>> {
         self.by_kind
             .get(&kind)
@@ -414,7 +404,6 @@ impl SymbolIndex {
             .unwrap_or_default()
     }
 
-    /// Get all extensions that extend a given object name.
     pub fn get_extensions_of(&self, base_name: &str) -> Vec<Arc<SymbolEntry>> {
         let target = base_name.to_lowercase();
         self.by_extends
@@ -438,17 +427,14 @@ impl SymbolIndex {
             .collect()
     }
 
-    /// Total number of indexed entries.
     pub fn len(&self) -> usize {
         self.all.len()
     }
 
-    /// Whether the index is empty.
     pub fn is_empty(&self) -> bool {
         self.all.is_empty()
     }
 
-    /// Get the `.app` file path for a package name.
     pub fn app_path(&self, package_name: &str) -> Option<std::path::PathBuf> {
         self.app_paths
             .get(&package_name.to_lowercase())
@@ -482,7 +468,6 @@ impl SymbolIndex {
         self.composed_cache.retain(|k, _| k.1 != lower);
     }
 
-    /// Invalidate all cached composed views.
     pub fn invalidate_all_composed(&self) {
         self.composed_cache.clear();
     }
@@ -510,15 +495,13 @@ impl SymbolIndex {
     /// uniform — adding a new secondary index requires adding exactly one
     /// `Self::retain_arcs_not_in(&self.new_index, &ptrs);` line below.
     pub fn remove_package_entries(&self, package_name: &str) {
-        let package_lower = package_name.to_lowercase();
-
         // Collect sequence IDs of entries to remove and their Arc pointers.
         let to_remove: Vec<(usize, Arc<SymbolEntry>)> = self
             .all
             .iter()
             .filter_map(|entry| {
                 let (arc, _) = entry.value();
-                if arc.package.to_lowercase() == package_lower {
+                if arc.package.eq_ignore_ascii_case(package_name) {
                     Some((*entry.key(), Arc::clone(arc)))
                 } else {
                     None

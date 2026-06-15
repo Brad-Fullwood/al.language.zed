@@ -13,10 +13,6 @@ use tracing::{debug, warn};
 
 use super::json_util::strip_json_comments;
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
 /// A parsed debug configuration file.
 #[derive(Debug, Clone)]
 pub struct DebugConfigFile {
@@ -63,10 +59,6 @@ pub enum AuthMethod {
     AAD,
 }
 
-// ---------------------------------------------------------------------------
-// Raw JSON types — Zed format (.zed/debug.json)
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ZedDebugConfigJson {
@@ -89,10 +81,6 @@ struct ZedDebugConfigJson {
     #[serde(default)]
     authentication: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// Raw JSON types — VS Code format (.vscode/launch.json)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct VsCodeLaunchJson {
@@ -122,10 +110,6 @@ struct VsCodeLaunchConfigJson {
     #[serde(default)]
     authentication: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// Parsing
-// ---------------------------------------------------------------------------
 
 /// Find and parse debug/launch configuration from the project root.
 ///

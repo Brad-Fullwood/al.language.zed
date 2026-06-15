@@ -539,9 +539,6 @@ pub(crate) fn rename_al_file_and_refresh(
     workspace.invalidate_insight_graph();
     Ok(())
 }
-// ---------------------------------------------------------------------------
-// Snapshot dispatcher
-// ---------------------------------------------------------------------------
 
 pub(in crate::server::daemon) async fn dispatch_snapshot(
     id: u64,
@@ -859,7 +856,6 @@ pub(in crate::server::daemon) fn dispatch_metrics(
         .unwrap_or(15) as u32;
 
     if all {
-        // Compute metrics for all workspace files
         let mut all_results: Vec<serde_json::Value> = Vec::new();
 
         for entry in workspace.file_index.files.iter() {
@@ -958,7 +954,6 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
     };
     let changed = sorted != content;
 
-    // Write back if file was specified and not a dry run
     let dry_run = params
         .get("dryRun")
         .and_then(|v| v.as_bool())
@@ -1021,7 +1016,6 @@ pub(in crate::server::daemon) fn dispatch_organize_files(
         .collect();
 
     for (path, text) in snapshot {
-        // Parse object info from text
         let parsed = crate::syntax::AlParser::parse_quick(&text);
         let obj = match crate::syntax::find_object_declaration(&parsed.tree, &text) {
             Some(o) => o,

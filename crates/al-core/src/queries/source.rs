@@ -69,14 +69,12 @@ pub fn source(
     proc_filter: Option<&str>,
     trigger_filter: Option<&str>,
 ) -> Option<SourceResult> {
-    // 1. Try workspace files first
     if let Some(result) =
         try_workspace_source(workspace, name, kind_filter, proc_filter, trigger_filter)
     {
         return Some(result);
     }
 
-    // 2. Try package source (symbol index)
     try_package_source(workspace, name, kind_filter, proc_filter, trigger_filter)
 }
 
@@ -90,12 +88,10 @@ fn try_workspace_source(
 ) -> Option<SourceResult> {
     let file_path = workspace.file_index.find_by_object_name(name)?;
 
-    // Read the file content
     // SILENT: non-absolute paths can't become file URIs
     let uri = url::Url::from_file_path(&file_path).ok()?;
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, &uri)?;
 
-    // Find the object declaration to get kind and id
     let obj_info = crate::syntax::find_object_declaration(&tree, &text)?;
     let kind: ObjectKind = obj_info.kind.parse().ok()?;
     let id = obj_info.id.unwrap_or(0) as i32;
@@ -109,7 +105,6 @@ fn try_workspace_source(
     let member_filter = proc_filter.or(trigger_filter);
 
     if let Some(member_name) = member_filter {
-        // Extract specific procedure/trigger using tree-sitter
         let root = tree.root_node();
         if let Some((node, sig)) = find_procedure_node(&root, &text, member_name) {
             let start_line = node.start_position().row;
@@ -141,7 +136,6 @@ fn try_workspace_source(
         return None;
     }
 
-    // Full object source
     Some(SourceResult {
         k: kind,
         id,
@@ -173,13 +167,11 @@ fn try_package_source(
 
     let app_path = workspace.symbols.app_path(&entry.package);
 
-    // Try extracting source from .app ZIP
     if let Some(ref path) = app_path {
         if let Ok(source_index) = crate::symbols::source_index::get_or_build(path) {
             if let Some(full_source) = source_index.extract_source_for_entry(entry) {
                 let member_filter = proc_filter.or(trigger_filter);
                 if let Some(member_name) = member_filter {
-                    // Parse and extract specific procedure from package source
                     if let Some((code, sig)) =
                         extract_procedure_from_text(&full_source, member_name)
                     {
@@ -218,7 +210,6 @@ fn try_package_source(
     // Render outline from SymbolReference.json (standard output for packages without source)
     let member_filter = proc_filter.or(trigger_filter);
     if let Some(member_name) = member_filter {
-        // Find specific procedure in symbol entry
         let method = entry
             .methods
             .iter()
@@ -340,10 +331,6 @@ fn extract_procedure_from_text(source: &str, name: &str) -> Option<(String, Stri
     let code = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
     Some((code, sig))
 }
-
-// ---------------------------------------------------------------------------
-// Outline rendering — delegates to crate::symbols::virtual_file::render_outline
-// ---------------------------------------------------------------------------
 
 /// Render a complete outline from a SymbolEntry.
 ///
@@ -487,7 +474,6 @@ pub fn event_source(
         ));
     }
 
-    // 1. Workspace publisher.
     if let Some(pub_path) = workspace.file_index.find_by_object_name(&target_object) {
         if let Some((pub_src, pub_tree)) = workspace.file_index.get_cached_parse(&pub_path) {
             if let Some((decl_line, sig)) =
@@ -507,7 +493,6 @@ pub fn event_source(
         }
     }
 
-    // 2. Package publisher → virtual file.
     let mut candidates = workspace.symbols.get_by_name(&target_object);
     if let Some(kind) = target_kind {
         candidates.retain(|e| e.kind == kind);
@@ -834,16 +819,12 @@ mod tests {
         let outline = render_outline(&entry);
 
         assert!(outline.contains("codeunit 80 \"Sales-Post\""));
-        // Non-local procedure
         assert!(outline
             .contains("    procedure PostSalesDocument(var SalesHeader: Record \"Sales Header\")"));
-        // Local procedure
         assert!(outline.contains(
             "    local procedure ValidateHeader(var SalesHeader: Record \"Sales Header\"): Boolean"
         ));
-        // Event attribute
         assert!(outline.contains("[IntegrationEvent(false, false)]"));
-        // Variables
         assert!(outline.contains("TotalAmount: Decimal"));
     }
 
@@ -1029,7 +1010,6 @@ mod tests {
         // Quoted procedure name: the surrounding quotes are trimmed before compare.
         assert!(find_procedure_node(&root, src, "Do Work").is_some());
 
-        // Non-existent member.
         assert!(find_procedure_node(&root, src, "Nope").is_none());
     }
 

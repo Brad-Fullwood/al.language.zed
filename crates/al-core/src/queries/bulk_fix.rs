@@ -139,10 +139,6 @@ pub fn add_data_classification(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 fn collect_al_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     // Iterative directory walk via an explicit stack. Avoids stack overflow on
@@ -228,9 +224,7 @@ fn inject_application_area(source: &str, value: &str) -> (String, usize) {
         let trimmed = line.trim();
         let lower = trimmed.to_ascii_lowercase();
 
-        // Detect field(...) or action(...) declaration line
         let is_control_decl = lower.starts_with("field(") || lower.starts_with("action(");
-        // Block opens on the same line as the declaration
         let is_control_start = is_control_decl && trimmed.contains('{');
 
         let brace_open_count = trimmed.chars().filter(|&c| c == '{').count();
@@ -247,7 +241,6 @@ fn inject_application_area(source: &str, value: &str) -> (String, usize) {
             is_control_start
         };
 
-        // Check if this line has ApplicationArea
         let has_area = lower.contains("applicationarea");
 
         // Before emitting a closing brace, check if we need to inject
@@ -265,14 +258,12 @@ fn inject_application_area(source: &str, value: &str) -> (String, usize) {
 
         output.push(line.to_string());
 
-        // Update stack for ApplicationArea tracking
         if has_area {
             if let Some(top) = stack.last_mut() {
                 top.1 = true;
             }
         }
 
-        // Push new frames for opened blocks
         if brace_open_count > 0 {
             let opens = brace_open_count.saturating_sub(brace_close_count);
             for _ in 0..opens {
@@ -341,13 +332,11 @@ fn inject_tooltips(source: &str, tooltips: &[(String, String)]) -> (String, usiz
             None
         };
 
-        // Handle closing braces
         if brace_close > 0 && !stack.is_empty() {
             let closes = brace_close.saturating_sub(brace_open);
             for _ in 0..closes {
                 if let Some(ctx) = stack.pop() {
                     if !ctx.has_tooltip && !ctx.field_name.is_empty() {
-                        // Look up tooltip for this field
                         if let Some(tooltip) = find_tooltip(&ctx.field_name, tooltips) {
                             let escaped = tooltip.replace('\'', "''");
                             output.push(format!(
@@ -386,7 +375,6 @@ fn inject_tooltips(source: &str, tooltips: &[(String, String)]) -> (String, usiz
             }
         }
 
-        // Update pending state
         if !trimmed.is_empty() {
             pending_field_name = if lower.starts_with("field(") && !trimmed.contains('{') {
                 field_name.clone()
@@ -433,7 +421,6 @@ fn inject_data_classification(source: &str, value: &str) -> (String, usize) {
         let is_field_decl = lower.starts_with("field(");
         let is_field_start_inline = is_field_decl && trimmed.contains('{');
 
-        // Handle closing braces
         if brace_close > 0 && !stack.is_empty() {
             let closes = brace_close.saturating_sub(brace_open);
             for _ in 0..closes {
@@ -448,7 +435,6 @@ fn inject_data_classification(source: &str, value: &str) -> (String, usize) {
 
         output.push(line.to_string());
 
-        // Track properties
         if lower.contains("dataclassification") {
             if let Some(top) = stack.last_mut() {
                 top.has_classification = true;
@@ -480,7 +466,6 @@ fn inject_data_classification(source: &str, value: &str) -> (String, usize) {
             }
         }
 
-        // Update pending state
         if !trimmed.is_empty() {
             pending_field_block = is_field_decl && !trimmed.contains('{');
         }
@@ -515,7 +500,6 @@ fn extract_field_source_name(line: &str) -> Option<String> {
         return None;
     }
     let source = parts[1].trim();
-    // Strip Rec. prefix
     let source = source.strip_prefix("Rec.").unwrap_or(source);
     let source = source.strip_prefix("rec.").unwrap_or(source);
     let source = source.trim_matches('"').trim();

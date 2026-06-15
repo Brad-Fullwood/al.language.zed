@@ -201,7 +201,7 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
                     match reader.read_line(&mut line).await {
                         Ok(0) => break,
                         Ok(_) => {
-                            eprint!("{}", line); // Also print to our stderr
+                            eprint!("{}", line);
                             if let Some(ref log) = capture_stderr {
                                 let mut f = log.lock().unwrap_or_else(|e| e.into_inner());
                                 use std::io::Write as _;

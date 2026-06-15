@@ -170,7 +170,6 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
                 return local;
             };
 
-            // 1. Find unused procedures
             find_unused_procedures(
                 file_path,
                 file_text,
@@ -182,7 +181,6 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
                 &mut local,
             );
 
-            // 2. Find unused table fields (only for table objects)
             let obj_kind_lower = obj_info.kind.to_lowercase();
             let is_table = crate::syntax::language_data::object_type_by_keyword(&obj_kind_lower)
                 .map(|ot| ot.node_kind == "kw_table")
@@ -198,7 +196,6 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
                 );
             }
 
-            // 3. Find orphaned subscribers
             find_orphaned_subscribers(
                 file_path,
                 file_text,
@@ -321,7 +318,6 @@ fn extract_text_call_names(line: &str) -> Vec<String> {
             continue;
         }
         if b == b'(' && i > 0 {
-            // Walk left over identifier chars.
             let mut start = i;
             while start > 0 {
                 let prev = bytes[start - 1];
@@ -346,9 +342,9 @@ fn extract_text_call_names(line: &str) -> Vec<String> {
 }
 
 /// Extract every `.ident` or `."quoted ident"` member-access pattern from a
-/// single line, returning lowercase names. Skips `//` line comments. Mirrors
-/// the same heuristic as `contains_member_access` but emits ALL names found
-/// so they can populate the workspace-global pre-pass set. F-OPEN-117.
+/// single line, returning lowercase names. Skips `//` line comments. Emits ALL
+/// names found so they can populate the workspace-global pre-pass set
+/// (`all_member_access_names`) the `dead_code()` path uses. F-OPEN-117.
 fn extract_member_access_names(line: &str) -> Vec<String> {
     let trimmed = line.trim_start();
     if trimmed.starts_with("//") {
@@ -434,7 +430,6 @@ fn collect_procedures(
                     let name = name.trim_matches('"').to_string();
                     let line = node.start_position().row as u32 + 1;
 
-                    // Check for IntegrationEvent or BusinessEvent attribute
                     let is_event = has_event_attribute(node, source);
 
                     // `local`/`internal` procedures are unreachable from
@@ -570,49 +565,6 @@ fn find_unused_fields(
             });
         }
     }
-}
-
-/// Returns true if `text` contains a `.<field>` or `."<field>"` member-access
-/// pattern, case-insensitive. Skips line-comments (`//`) so a field name in a
-/// comment does not count as a reference.
-///
-/// Retained for direct callers / future use; the main `dead_code()` path
-/// uses the workspace-global `all_member_access_names` HashSet instead
-/// (F-OPEN-117).
-#[allow(dead_code)]
-fn contains_member_access(text: &str, field_name: &str) -> bool {
-    let name_lower = field_name.to_lowercase();
-    let plain = format!(".{}", name_lower);
-    let quoted = format!(".\"{}\"", name_lower);
-    for line in text.lines() {
-        if line.trim_start().starts_with("//") {
-            continue;
-        }
-        let lower = line.to_lowercase();
-        if !lower.contains(&plain) && !lower.contains(&quoted) {
-            continue;
-        }
-        // Ensure that what follows is a token boundary so `.Name` does NOT
-        // match `.NameOfSomething`. The quoted form is naturally bounded.
-        if lower.contains(&quoted) {
-            return true;
-        }
-        // Walk all occurrences of `.<name>` and require a non-identifier
-        // character (or end-of-line) immediately after.
-        let mut search = lower.as_str();
-        while let Some(pos) = search.find(&plain) {
-            let after = pos + plain.len();
-            let next_ok = match search[after..].chars().next() {
-                None => true,
-                Some(c) => !c.is_alphanumeric() && c != '_',
-            };
-            if next_ok {
-                return true;
-            }
-            search = &search[after..];
-        }
-    }
-    false
 }
 
 /// Extract field names from AL table source text.
@@ -764,7 +716,6 @@ fn collect_event_subscribers(
             node.kind(),
             "procedure_declaration" | "event_procedure_declaration"
         ) {
-            // Check for EventSubscriber attribute
             let attr_text = get_preceding_attribute(node, source);
             if let Some(ref text) = attr_text {
                 if text.to_lowercase().contains("eventsubscriber") {
@@ -820,7 +771,6 @@ fn parse_subscriber_args(attr_text: &str) -> (String, String) {
         _ => "",
     };
 
-    // Split by commas, respecting quoted strings
     let args = split_args(inner);
 
     // arg[1] is the target object (e.g., Codeunit::"Sales-Post" or "Sales-Post")
@@ -828,7 +778,6 @@ fn parse_subscriber_args(attr_text: &str) -> (String, String) {
         .get(1)
         .map(|s| {
             let s = s.trim();
-            // Remove Type:: prefix
             let s = if let Some(pos) = s.find("::") {
                 &s[pos + 2..]
             } else {
@@ -927,7 +876,6 @@ mod tests {
 
         let unused = dead_code(&ws);
 
-        // UnusedHelper is never referenced from any other file
         assert!(
             unused.iter().any(|u| u.name == "UnusedHelper"
                 && u.kind == UnusedKind::Procedure
@@ -1317,12 +1265,10 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------
     // Unit tests for the quote-aware parsing helpers. These functions are on
     // the dead-code hot path and track string-literal state; without direct
     // coverage a refactor to quote handling could silently reintroduce false
     // positives/negatives. (test-gap closed iteration 86)
-    // ---------------------------------------------------------------------
 
     #[test]
     fn extract_text_call_names_basic() {

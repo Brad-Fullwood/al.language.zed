@@ -100,7 +100,7 @@ impl Drop for SocketCleanup {
 
 #[cfg(unix)]
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 #[cfg(unix)]
 const MAX_CONNECTIONS: usize = 64;
 #[cfg(unix)]
@@ -157,7 +157,6 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
         ensure_private_dir(parent)?;
     }
 
-    // Remove stale socket file if it exists
     let _ = tokio::fs::remove_file(&sock_path).await;
 
     let listener = UnixListener::bind(&sock_path)?;
@@ -172,7 +171,6 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     let _ = SOCKET_PATH.set(sock_path.clone());
     let _cleanup = SocketCleanup;
 
-    // Initialize workspace
     let workspace = Arc::new(Workspace::new());
 
     // Register a logging notify sink — daemon has no LSP client, so warnings go to logs.
@@ -435,7 +433,7 @@ async fn handle_connection(
     // correctness debt.
 
     while let Some(line) = read_bounded_line(&mut reader, MAX_MESSAGE_SIZE).await? {
-        let line = line.trim().to_string();
+        let line = line.trim();
         if line.is_empty() {
             continue;
         }
@@ -448,7 +446,7 @@ async fn handle_connection(
         // JSON-RPC 2.0 §5: on parse error the response id MUST be null because
         // the request id is unknown. The typed Response struct uses u64, so we
         // write the parse-error case directly as raw JSON.
-        let req = match serde_json::from_str::<Request>(&line) {
+        let req = match serde_json::from_str::<Request>(line) {
             Ok(r) => r,
             Err(e) => {
                 // Record the parse-error context here. If the write below fails
@@ -815,7 +813,7 @@ pub(crate) fn require_document_text(
 
 /// Ensure a file is loaded in the document store. If not found, read from disk.
 pub(crate) fn ensure_document(workspace: &Workspace, uri: &url::Url) -> Option<()> {
-    if workspace.documents.get_text(uri).is_some() {
+    if workspace.documents.contains(uri) {
         return Some(());
     }
     // Try to read from disk (block_in_place avoids blocking the tokio runtime)

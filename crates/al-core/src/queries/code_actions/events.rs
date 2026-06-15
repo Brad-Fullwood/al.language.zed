@@ -16,7 +16,6 @@ pub(super) fn source_action_move_tooltip(
     let line = text.lines().nth(cursor_line)?;
     let trimmed = line.trim();
 
-    // Must be on a ToolTip property assignment line
     let lower_trimmed = trimmed.to_lowercase();
     if !lower_trimmed.starts_with("tooltip") {
         return None;
@@ -44,7 +43,6 @@ pub(super) fn source_action_move_tooltip(
             .rev()
         {
             let lt = l.trim().to_lowercase();
-            // Count braces to track nesting
             for ch in l.chars() {
                 match ch {
                     '{' => depth += 1,
@@ -52,7 +50,6 @@ pub(super) fn source_action_move_tooltip(
                     _ => {}
                 }
             }
-            // Check if this line starts a page field control
             if lt.starts_with("field(") && i < cursor_line {
                 found = true;
                 break;
@@ -110,7 +107,6 @@ pub(super) fn source_action_convert_event_subscriber(
     // is typically on the same line as the cursor or we look within a small window.
     let cursor_line = range.start.line as usize;
 
-    // Scan a few lines around the cursor for the EventSubscriber attribute.
     // Clamp both bounds against the document length so a stale/extreme cursor
     // line cannot make `search_end - search_start` underflow below.
     let line_count = text.lines().count();
@@ -171,7 +167,6 @@ pub(super) fn source_action_convert_event_subscriber(
         }
     }
 
-    // The event name is the 3rd argument (index 2)
     if args.len() < 3 {
         return None;
     }
@@ -179,7 +174,6 @@ pub(super) fn source_action_convert_event_subscriber(
     let (start_off, end_off) = args[2];
     let arg_text = rest[start_off..end_off].trim();
 
-    // Must be a single-quoted string
     if !arg_text.starts_with('\'') || !arg_text.ends_with('\'') || arg_text.len() < 2 {
         return None;
     }

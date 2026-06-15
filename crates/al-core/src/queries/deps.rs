@@ -93,7 +93,6 @@ impl DependencyGraph {
 /// `app_json` is the raw content of the workspace's app.json.
 /// `packages` is a list of (name, publisher, version, dependencies_json).
 pub fn build_dependency_graph(app_json: &str, packages: &[PackageEntry]) -> DependencyGraph {
-    // Parse root app info from app.json
     let root_app = parse_root_app(app_json);
     let root_deps = parse_deps_from_app_json(app_json);
 
@@ -117,7 +116,6 @@ pub fn build_dependency_graph(app_json: &str, packages: &[PackageEntry]) -> Depe
         });
     }
 
-    // Add edges from root app
     for (dep_name, _, required_ver) in &root_deps {
         edges.push(DepEdge {
             from: root_app.name.clone(),
@@ -126,7 +124,6 @@ pub fn build_dependency_graph(app_json: &str, packages: &[PackageEntry]) -> Depe
         });
     }
 
-    // Add edges from packages
     for (pkg_name, _, _, pkg_deps) in packages {
         for (dep_name, _, required_ver) in pkg_deps {
             edges.push(DepEdge {
@@ -156,7 +153,6 @@ pub fn build_dependency_graph(app_json: &str, packages: &[PackageEntry]) -> Depe
         .into_iter()
         .collect();
 
-    // Find version conflicts
     let conflicts = find_version_conflicts(&edges, &nodes);
 
     DependencyGraph {
@@ -268,7 +264,6 @@ fn find_transitive_deps(
             if edge.from.to_lowercase() == pkg_name_lower {
                 let dep_name_lower = edge.to.to_lowercase();
                 if dep_name_lower != root_name.to_lowercase() {
-                    // Find all nodes matching this display name
                     if let Some(keys) = name_to_keys.get(&dep_name_lower) {
                         for key in keys {
                             if !visited.contains(key) {

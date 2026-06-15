@@ -58,14 +58,6 @@ impl From<Location> for tower_lsp::lsp_types::Location {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// From impls: al-core types -> LSP types (used by al-lsp boundary)
-// ---------------------------------------------------------------------------
-
 impl From<AlSymbolKind> for tower_lsp::lsp_types::SymbolKind {
     fn from(k: AlSymbolKind) -> Self {
         match k {

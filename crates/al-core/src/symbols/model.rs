@@ -11,10 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
-// ---------------------------------------------------------------------------
-// Core symbol types
-// ---------------------------------------------------------------------------
-
 /// The kind of an AL object.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
@@ -384,10 +380,6 @@ pub struct ComposedObject {
     pub all_enum_values: Vec<EnumValueSymbol>,
 }
 
-// ---------------------------------------------------------------------------
-// SymbolReference.json deserialization
-// ---------------------------------------------------------------------------
-
 /// Raw shape of SymbolReference.json from Microsoft .app files.
 /// Field names match the JSON exactly (PascalCase).
 ///
@@ -639,10 +631,6 @@ pub(crate) struct EnumValueJson {
     pub name: String,
 }
 
-// ---------------------------------------------------------------------------
-// Conversion from JSON shapes to model types
-// ---------------------------------------------------------------------------
-
 impl SymbolReferenceJson {
     /// Convert to a flat list of `SymbolEntry` values.
     pub fn into_entries(self, package_name: &str) -> Vec<SymbolEntry> {
@@ -698,7 +686,6 @@ impl SymbolReferenceJson {
             std::collections::HashSet::new();
 
         for (kind, objects) in &collections {
-            // Track existing real enum names
             if matches!(kind, ObjectKind::Enum | ObjectKind::EnumExtension) {
                 for obj in objects {
                     existing_enum_names.insert(obj.name.to_lowercase());
@@ -746,7 +733,7 @@ impl SymbolReferenceJson {
         // named after the field, so type resolution can find it by field/parameter name.
         for ((_obj_kind, _obj_name, field_name), members) in &option_enums {
             if existing_enum_names.contains(&field_name.to_lowercase()) {
-                continue; // Skip if a real enum with this name exists
+                continue;
             }
             let enum_values: Vec<EnumValueSymbol> = members
                 .iter()
@@ -766,17 +753,9 @@ impl SymbolReferenceJson {
                     // enum object. Hidden from search/browse (FB-2).
                     synthetic: true,
                     name: field_name.clone(),
-                    extends: None,
                     package: pkg.clone(),
-                    methods: Vec::new(),
-                    fields: Vec::new(),
-                    controls: Vec::new(),
                     enum_values,
-                    keys: Vec::new(),
-                    properties: Vec::new(),
-                    variables: Vec::new(),
-                    implements: Vec::new(),
-                    namespace: String::new(),
+                    ..Default::default()
                 });
             }
         }
@@ -1042,7 +1021,6 @@ mod tests {
 
         assert_eq!(entries.len(), 5);
 
-        // Table
         let table = entries
             .iter()
             .find(|e| e.kind == ObjectKind::Table)
@@ -1055,12 +1033,10 @@ mod tests {
         assert_eq!(table.methods[0].parameters.len(), 1);
         assert_eq!(table.methods[0].return_type.as_deref(), Some("Boolean"));
 
-        // Page with nested controls
         let page = entries.iter().find(|e| e.kind == ObjectKind::Page).unwrap();
         assert_eq!(page.controls.len(), 1);
         assert_eq!(page.controls[0].children.len(), 1);
 
-        // Codeunit with attributes
         let cu = entries
             .iter()
             .find(|e| e.kind == ObjectKind::Codeunit)
@@ -1069,11 +1045,9 @@ mod tests {
         assert_eq!(cu.methods[0].attributes[0].name, "IntegrationEvent");
         assert_eq!(cu.methods[0].attributes[0].arguments.len(), 2);
 
-        // Enum values
         let en = entries.iter().find(|e| e.kind == ObjectKind::Enum).unwrap();
         assert_eq!(en.enum_values.len(), 2);
 
-        // Table extension
         let ext = entries
             .iter()
             .find(|e| e.kind == ObjectKind::TableExtension)
@@ -1201,7 +1175,6 @@ mod tests {
 
     #[test]
     fn test_all_extension_kinds_roundtrip() {
-        // Every extension kind should map back to its base
         let ext_pairs = [
             (ObjectKind::Table, ObjectKind::TableExtension),
             (ObjectKind::Page, ObjectKind::PageExtension),

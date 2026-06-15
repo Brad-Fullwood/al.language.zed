@@ -70,8 +70,6 @@ pub fn utf16_col_to_byte_offset(line: &str, utf16_col: usize) -> usize {
     line.len()
 }
 
-// ── Shared AST helpers ───────────────────────────────────────────────
-
 /// Extract text from a node, stripping surrounding `"` quotes, returning `None` on empty.
 ///
 /// This is the canonical quote-stripping helper used across the crate.

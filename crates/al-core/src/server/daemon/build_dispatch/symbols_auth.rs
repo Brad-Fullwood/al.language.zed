@@ -58,7 +58,6 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
 
     match cmd {
         "status" => {
-            // Check cached token status for all known tenants
             let tenants = get_project_tenants(workspace);
             let mut statuses = Vec::new();
             for tenant in &tenants {

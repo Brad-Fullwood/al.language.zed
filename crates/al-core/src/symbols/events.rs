@@ -63,7 +63,6 @@ pub fn get_events(index: &SymbolIndex, query: &str) -> EventResults {
     let mut publishers = Vec::new();
     let mut subscribers = Vec::new();
 
-    // Scan all objects for event attributes
     for entry in index.all_entries() {
         for method in &entry.methods {
             for attr in &method.attributes {

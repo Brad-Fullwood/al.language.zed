@@ -12,9 +12,6 @@ use ratatui::{
 
 use crate::{App, ViewMode, advance_list_selection, ensure_daemon_client};
 
-// ---------------------------------------------------------------------------
-// Test runner view
-// ---------------------------------------------------------------------------
 
 /// Status of a single test method as reported by the daemon.
 #[derive(Debug, Clone, PartialEq)]

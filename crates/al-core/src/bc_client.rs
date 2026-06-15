@@ -82,10 +82,6 @@ pub(crate) fn sanitize_error_body(body: &str) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
-
 /// Errors that can occur when communicating with the BC Dev API.
 #[derive(Debug, Error)]
 pub enum BcClientError {
@@ -257,10 +253,6 @@ pub(crate) async fn read_error_body_capped(response: reqwest::Response) -> Strin
     }
 }
 
-// ---------------------------------------------------------------------------
-// BC Dev API response types
-// ---------------------------------------------------------------------------
-
 /// Response from `POST /dev/extensions` — extension publish result.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -285,10 +277,6 @@ pub struct ApplicationStateResponse {
     pub status: Option<String>,
     pub version: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// BC HTTP client
-// ---------------------------------------------------------------------------
 
 /// HTTP client for the BC Dev API.
 ///
@@ -400,10 +388,6 @@ impl BcClient {
         self.handle_response(response).await
     }
 
-    // -----------------------------------------------------------------------
-    // Auth helpers
-    // -----------------------------------------------------------------------
-
     fn apply_auth(
         &self,
         mut req: reqwest::RequestBuilder,
@@ -444,10 +428,6 @@ impl BcClient {
             _ => req,
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Response parsing
-    // -----------------------------------------------------------------------
 
     async fn handle_response<T: for<'de> Deserialize<'de>>(
         &self,
@@ -497,10 +477,6 @@ impl BcClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// URL construction
-// ---------------------------------------------------------------------------
-
 /// Build the base URL for the BC Dev API from a server config.
 ///
 /// On-prem:  `http://{server}:{port}/{serverInstance}`
@@ -536,10 +512,6 @@ fn build_base_url(config: &BcServerConfig) -> String {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

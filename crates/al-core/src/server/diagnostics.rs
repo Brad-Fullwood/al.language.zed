@@ -556,10 +556,6 @@ mod tests {
         assert_eq!(diag.range.start.line, 0); // saturating_sub(1) on 0 stays 0
     }
 
-    // -----------------------------------------------------------------------
-    // full_diagnostic_report
-    // -----------------------------------------------------------------------
-
     fn sample_diag(msg: &str) -> Diagnostic {
         Diagnostic {
             message: msg.to_string(),
@@ -602,10 +598,6 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // is_cache_path
-    // -----------------------------------------------------------------------
-
     #[test]
     fn is_cache_path_true_for_cache_file() {
         let cache_root = crate::symbols::virtual_file::cache_dir();
@@ -632,10 +624,6 @@ mod tests {
         let uri = Url::parse("untitled:Untitled-1").unwrap();
         assert!(!is_cache_path(&uri));
     }
-
-    // -----------------------------------------------------------------------
-    // syntax_diag_to_lsp
-    // -----------------------------------------------------------------------
 
     fn make_syntax_diag(
         sev: crate::queries::diagnostics::SyntaxDiagnosticSeverity,

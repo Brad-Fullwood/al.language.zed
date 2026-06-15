@@ -174,8 +174,6 @@ mod tests {
         ws.documents.open(uri.clone(), al_code.to_string());
     }
 
-    // --- prepare_rename ---
-
     #[test]
     fn prepare_rename_on_identifier() {
         let ws = Workspace::new();
@@ -225,8 +223,6 @@ mod tests {
         let result = prepare_rename(&ws, &uri, pos);
         assert!(result.is_none(), "keywords should not be renameable");
     }
-
-    // --- rename ---
 
     #[test]
     fn rename_variable_in_single_file() {
@@ -367,8 +363,6 @@ mod tests {
         // Just verify it doesn't panic
         let _ = result;
     }
-
-    // --- make_rename_text ---
 
     #[test]
     fn make_rename_text_unquoted() {

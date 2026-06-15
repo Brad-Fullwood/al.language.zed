@@ -23,10 +23,7 @@ pub fn extract_folding_ranges(tree: &Tree, text: &str) -> Vec<FoldingRange> {
     let source = text.as_bytes();
     let mut ranges = Vec::new();
 
-    // Extract structural folding ranges from AST
     extract_structural_ranges(root, source, &mut ranges);
-
-    // Extract comment block folding ranges (consecutive // lines)
     extract_comment_block_ranges(text, &mut ranges);
 
     ranges
@@ -42,7 +39,6 @@ fn extract_structural_ranges(root: Node, source: &[u8], ranges: &mut Vec<Folding
             // body field — doing so produced a duplicate range for the same
             // region (F-OPEN-016).
 
-            // Multi-line structural nodes: procedures, blocks, sections, control flow
             "procedure_declaration"
             | "trigger_declaration"
             | "event_procedure_declaration"
@@ -65,7 +61,6 @@ fn extract_structural_ranges(root: Node, source: &[u8], ranges: &mut Vec<Folding
                 add_range(node, FoldingRangeKind::Region, source, ranges);
             }
 
-            // Block comments
             "comment" => {
                 let start = node.start_position();
                 let end = node.end_position();
@@ -121,7 +116,6 @@ fn extract_comment_block_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
             block_end = line_num as u32;
         } else {
             if let Some(start) = block_start {
-                // Only fold if the block spans at least 2 lines
                 if block_end > start {
                     ranges.push(FoldingRange {
                         start_line: start,
@@ -136,7 +130,6 @@ fn extract_comment_block_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
         }
     }
 
-    // Handle trailing comment block
     if let Some(start) = block_start {
         if block_end > start {
             ranges.push(FoldingRange {

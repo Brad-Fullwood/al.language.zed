@@ -61,27 +61,21 @@ pub fn read_app_bytes(data: &[u8]) -> Result<SymbolPackage, AppReaderError> {
         return Err(AppReaderError::TooSmall(data.len()));
     }
 
-    // 1. Verify NAVX magic
     if &data[0..4] != NAVX_MAGIC {
         return Err(AppReaderError::NotNavx);
     }
 
-    // 2. Scan for ZIP PK signature after magic bytes
     let zip_offset = find_zip_offset(data).ok_or(AppReaderError::NoZipSignature)?;
 
     let zip_data = &data[zip_offset..];
 
-    // 3. Open ZIP
     let cursor = Cursor::new(zip_data);
     let mut archive = ZipArchive::new(cursor)?;
 
-    // 4. Parse NavxManifest.xml
     let manifest = read_manifest(&mut archive)?;
 
-    // 5. Parse SymbolReference.json
     let objects = read_symbol_reference(&mut archive, &manifest.name)?;
 
-    // 6. Build SymbolPackage
     Ok(SymbolPackage {
         app_id: manifest.app_id,
         name: manifest.name,

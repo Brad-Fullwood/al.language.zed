@@ -172,7 +172,6 @@ mod tests {
     fn default_config_produces_default_options() {
         let cfg = AlFormatConfig::default();
         let opts = cfg.to_format_options();
-        // Default options: 4 spaces, preserve casing, no max length
         assert_eq!(opts.tab_size, 4);
         assert!(opts.insert_spaces);
         assert_eq!(opts.max_line_length, 0);

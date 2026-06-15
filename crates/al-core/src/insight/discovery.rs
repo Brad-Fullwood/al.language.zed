@@ -14,9 +14,6 @@ use serde::Serialize;
 
 use super::graph::{InsightEdge, InsightGraph, InsightNode, NodeKey};
 
-// ---------------------------------------------------------------------------
-// Public result types
-// ---------------------------------------------------------------------------
 
 /// Location of a published event.
 #[derive(Debug, Clone, Serialize)]
@@ -41,7 +38,6 @@ pub struct SubscriberInfo {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredEvent {
-    /// The event name.
     pub event_name: String,
     /// Publisher information for the event. Always populated, since
     /// `DiscoveredEvent` is only created for real events that exist in the
@@ -83,9 +79,6 @@ pub struct EventDiscoveryResult {
     pub total_orphans: usize,
 }
 
-// ---------------------------------------------------------------------------
-// Discovery function
-// ---------------------------------------------------------------------------
 
 /// Discover all events and their subscribers from the insight graph.
 ///
@@ -273,9 +266,6 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

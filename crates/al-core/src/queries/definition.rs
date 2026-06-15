@@ -18,7 +18,6 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     let source = text.as_bytes();
     let clean_name = super::node_clean_name(node, source)?;
 
-    // Access path resolution
     if let Some(access) = resolution::access_path_at(&tree, &text, position) {
         if let Some(receiver) = resolution::resolve_expression_type(
             workspace,
@@ -309,7 +308,6 @@ mod tests {
             character: 8,
         };
         let result = definition(&ws, &uri, pos);
-        // Should resolve to the variable declaration on line 4
         assert!(result.is_some(), "should resolve local variable");
         let locs = result.unwrap();
         assert_eq!(locs.len(), 1);
@@ -341,7 +339,6 @@ mod tests {
         let ws = Workspace::new();
         let uri = test_uri();
 
-        // Add a "Customer" table to the symbol index
         ws.symbols
             .add_entries(&[make_entry(ObjectKind::Table, 18, "Customer")]);
 
@@ -363,7 +360,6 @@ mod tests {
             character: 24,
         };
         let result = definition(&ws, &uri, pos);
-        // Should find the symbol entry (returns a virtual file URI)
         assert!(result.is_some(), "known package object should return Some");
     }
 
@@ -374,7 +370,6 @@ mod tests {
         let ws = Workspace::new();
         let uri = test_uri();
 
-        // Add a workspace file with a table
         let table_path = std::path::PathBuf::from("/test/src/MyTable.al");
         ws.file_index.add_file(
             table_path.clone(),
@@ -421,7 +416,6 @@ mod tests {
         let ws = Workspace::new();
         let uri = test_uri();
 
-        // Add a workspace file with a procedure
         let cu_path = std::path::PathBuf::from("/test/src/Helper.al");
         ws.file_index.add_file(
             cu_path.clone(),

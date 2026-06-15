@@ -269,9 +269,6 @@ impl Value {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -461,7 +458,6 @@ mod tests {
     fn within_variant_scalar_ordering() {
         assert!(Value::Integer(-5) < Value::Integer(5));
         assert!(Value::Decimal(1.5) < Value::Decimal(2.5));
-        // false < true.
         assert!(Value::Boolean(false) < Value::Boolean(true));
         assert!(Value::Char('a') < Value::Char('z'));
         assert!(Value::Text("apple".into()) < Value::Text("banana".into()));

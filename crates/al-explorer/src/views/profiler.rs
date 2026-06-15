@@ -13,9 +13,6 @@ use crate::{
     App, MAX_INPUT_LEN, advance_list_selection, input_focused_style, truncate_with_ellipsis,
 };
 
-// ---------------------------------------------------------------------------
-// Profiler view
-// ---------------------------------------------------------------------------
 
 /// A single hotspot row parsed from a `.alcpuprofile` file.
 #[derive(Debug, Clone)]

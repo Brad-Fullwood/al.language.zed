@@ -536,10 +536,6 @@ mod tests {
         assert_eq!(pick_active_signature(&[s0, s1], 7), 1);
     }
 
-    // ---------------------------------------------------------------------
-    // build_signature_info_from_method — additional shape coverage
-    // ---------------------------------------------------------------------
-
     /// A method with no return type must NOT emit a trailing `: <type>`; the
     /// label is just `Name(params)`. Exercises the `unwrap_or_default()` branch
     /// of the return-type formatting that the existing happy-path test (which
@@ -598,10 +594,6 @@ mod tests {
         assert_eq!(s.active_parameter, Some(99));
     }
 
-    // ---------------------------------------------------------------------
-    // pick_active_signature — boundary inputs
-    // ---------------------------------------------------------------------
-
     /// An empty signature list must not panic and must fall back to index 0
     /// (the `map_or(0, ..)` default on the `max_by_key` over an empty
     /// iterator). This is the documented safe default.
@@ -619,10 +611,6 @@ mod tests {
         let s = build_signature_info_from_method(&m, 1);
         assert_eq!(pick_active_signature(&[s], 1), 0);
     }
-
-    // ---------------------------------------------------------------------
-    // parse_parameters_from_detail — malformed / boundary inputs
-    // ---------------------------------------------------------------------
 
     /// A detail string with no parentheses at all yields zero parameters
     /// rather than panicking — the documented behaviour of the underlying
@@ -645,12 +633,10 @@ mod tests {
         assert_eq!(params[1].label, "Opt: Option(A,B,C)");
     }
 
-    // ---------------------------------------------------------------------
     // signature_help — end-to-end through a real Workspace (document-symbol
     // path). These cover the largest previously-untested region: prefix
     // slicing, find_call_context, document-symbol extraction, and result
     // assembly.
-    // ---------------------------------------------------------------------
 
     use crate::workspace::Workspace;
 

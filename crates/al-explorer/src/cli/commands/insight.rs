@@ -509,7 +509,6 @@ pub fn cmd_suggest_event(
 
                         println!("{}. {} ({}) — {}", i + 1, evt, etype, obj);
 
-                        // Show var params
                         if let Some(params) = ip.get("params").and_then(|v| v.as_array()) {
                             let var_params: Vec<_> = params
                                 .iter()

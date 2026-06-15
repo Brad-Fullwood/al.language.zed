@@ -110,7 +110,6 @@ mod tests {
             character: 8,
         }; // on MyVar declaration
         let locs = references(&ws, &uri, pos, true);
-        // Should find declaration + 2 usages
         assert!(
             locs.len() >= 2,
             "Expected at least 2 references to MyVar, got {}",

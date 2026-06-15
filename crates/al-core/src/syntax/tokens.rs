@@ -155,14 +155,11 @@ pub fn extract_semantic_tokens(tree: &Tree, text: &str) -> Vec<SemanticToken> {
     let root = tree.root_node();
     let source = text.as_bytes();
 
-    // Collect all leaf tokens with their absolute positions
     let mut raw_tokens: Vec<(u32, u32, u32, u32)> = Vec::new(); // (line, col, len, type)
     collect_tokens(root, source, &mut raw_tokens);
 
-    // Sort by position (line, then column)
     raw_tokens.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
-    // Convert to delta encoding
     let mut tokens = Vec::with_capacity(raw_tokens.len());
     let mut prev_line: u32 = 0;
     let mut prev_start: u32 = 0;
@@ -306,14 +303,11 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         "metadata_keyword" => Some(token_types::KEYWORD),
         "type_keyword" => Some(token_types::BUILTIN_TYPE),
 
-        // Property keywords
         "property_keyword" => Some(token_types::PROPERTY),
 
-        // Operator words (and, or, not, div, mod, xor, is, as)
         "operator_word" | "op_and" | "op_or" | "op_not" | "op_div" | "op_mod" | "op_xor"
         | "op_is" | "op_as" => Some(token_types::OPERATOR),
 
-        // Operators
         "operator" => Some(token_types::OPERATOR),
 
         // Names and quoted object/type references need context-sensitive handling.
@@ -322,13 +316,11 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         }
         "verbatim_string" => Some(token_types::STRING),
 
-        // Numbers
         "integer" | "decimal" | "date_literal" | "time_literal" => Some(token_types::NUMBER),
 
         // Datetime literals — distinct type for AL datetime values (e.g. 20230101T120000)
         "datetime_literal" => Some(token_types::DATETIME),
 
-        // Comments
         "comment" => Some(token_types::COMMENT),
 
         // Directives (preprocessor): we DON'T classify the whole directive
@@ -441,7 +433,6 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 None
             }
         }
-        // Parameters
         "parameter" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::PARAMETER)
@@ -449,7 +440,6 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 None
             }
         }
-        // Property assignments
         "property_assignment" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::PROPERTY)
@@ -468,7 +458,6 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 None
             }
         }
-        // Table field names
         "field_declaration" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::TABLE_FIELD)
@@ -479,7 +468,6 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
         // key_declaration covers: table keys, query/report dataitems, query/report columns,
         // xmlport table elements. Discriminate by the keyword child.
         "key_declaration" => classify_key_declaration_name(node, parent, source),
-        // Enum value names
         "enum_value_declaration" => Some(token_types::ENUM_MEMBER),
         // Namespace declarations — distinct custom token from standard NAMESPACE (idx 11).
         // The name field can be a `name` or `qualified_name` node (for dotted namespaces).
@@ -652,7 +640,6 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
         return None;
     }
 
-    // Find the preceding named sibling of the parenthesized_block to get the keyword
     let prev_sibling = prev_named_sibling(paren_block)?;
     let kw = prev_sibling.utf8_text(source).ok()?;
 
@@ -901,7 +888,6 @@ mod tests {
 }"#;
         let result = parser.parse(source);
         let tokens = extract_semantic_tokens(&result.tree, source);
-        // Should produce builtin type tokens for a procedure with a var section
         let builtin_type_count = tokens
             .iter()
             .filter(|t| t.token_type == token_types::BUILTIN_TYPE)
@@ -954,9 +940,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // Tests for the 12 new semantic token types (T1301)
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_page_view_token() {
@@ -1183,12 +1167,10 @@ codeunit 50100 Test
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        // At minimum: must have some tokens (codeunit keyword and object name)
         assert!(
             !tokens.is_empty(),
             "Expected tokens from a namespace-prefixed codeunit file"
         );
-        // There must be at least one keyword-class token for the codeunit keyword
         let has_any_kw = tokens.iter().any(|t| {
             t.token_type == token_types::KEYWORD || t.token_type == token_types::OBJECT_KEYWORD
         });
@@ -1234,13 +1216,11 @@ codeunit 50100 Test
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        // There must be a DATETIME token
         assert_token_type_for_text(src, &tokens, "0DT", token_types::DATETIME);
     }
 
     #[test]
     fn test_legend_length_matches_constants() {
-        // The LEGEND array must have exactly as many entries as the highest index + 1
         assert_eq!(
             token_types::LEGEND.len(),
             (token_types::ATTRIBUTE_NAME + 1) as usize,

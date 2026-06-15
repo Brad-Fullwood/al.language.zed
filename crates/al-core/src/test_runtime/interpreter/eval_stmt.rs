@@ -37,10 +37,6 @@ use crate::test_runtime::interpreter::eval_expr::eval_expr;
 use crate::test_runtime::interpreter::scope::{Eval, ScopeStack};
 use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
 
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
-
 /// Evaluate a single tree-sitter statement node.
 ///
 /// Returns:
@@ -111,10 +107,6 @@ fn eval_stmt_inner(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Block / sequence
-// ---------------------------------------------------------------------------
-
 fn eval_block(
     node: Node<'_>,
     source: &[u8],
@@ -131,16 +123,11 @@ fn eval_block(
         last = eval_stmt(child, source, stack, ctx);
         match &last {
             Eval::Normal(_) => {}
-            // Short-circuit on error or exit.
             Eval::Error(_) | Eval::Exit(_) => return last,
         }
     }
     last
 }
-
-// ---------------------------------------------------------------------------
-// If statement
-// ---------------------------------------------------------------------------
 
 fn eval_if(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Eval {
     // Tree-sitter AL grammar fields: `condition`, `consequence`, `alternative`
@@ -167,7 +154,6 @@ fn eval_if(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Disp
     }
 
     if cond.is_truthy() {
-        // Execute the THEN branch.
         let then_node = node
             .child_by_field_name("consequence")
             .or_else(|| named_stmt_child(node, 1));
@@ -176,7 +162,6 @@ fn eval_if(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Disp
             None => Eval::Normal(Value::Empty),
         }
     } else {
-        // Execute the ELSE branch (if present).
         let else_node = node
             .child_by_field_name("alternative")
             .or_else(|| named_stmt_child(node, 2));
@@ -186,10 +171,6 @@ fn eval_if(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Disp
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// While loop
-// ---------------------------------------------------------------------------
 
 fn eval_while(
     node: Node<'_>,
@@ -231,10 +212,6 @@ fn eval_while(
     }
     Eval::Normal(Value::Empty)
 }
-
-// ---------------------------------------------------------------------------
-// FOR i := a TO b DO
-// ---------------------------------------------------------------------------
 
 fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Eval {
     // Grammar fields: iterator (variable), assign (:= op), from (start), direction
@@ -324,7 +301,6 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
             break;
         }
 
-        // Bind loop variable.
         if let Some(slot) = stack.lookup_mut(&var_name) {
             *slot = Value::Integer(i);
         } else if let Some(frame) = stack.top_mut() {
@@ -352,10 +328,6 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
     }
     Eval::Normal(Value::Empty)
 }
-
-// ---------------------------------------------------------------------------
-// FOREACH x IN list DO
-// ---------------------------------------------------------------------------
 
 fn eval_foreach(
     node: Node<'_>,
@@ -424,10 +396,6 @@ fn eval_foreach(
     Eval::Normal(Value::Empty)
 }
 
-// ---------------------------------------------------------------------------
-// REPEAT … UNTIL cond
-// ---------------------------------------------------------------------------
-
 fn eval_repeat(
     node: Node<'_>,
     source: &[u8],
@@ -470,12 +438,7 @@ fn eval_repeat(
     Eval::Normal(Value::Empty)
 }
 
-// ---------------------------------------------------------------------------
-// CASE expr OF … END
-// ---------------------------------------------------------------------------
-
 fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Eval {
-    // Evaluate the selector.
     let selector_node = match node
         .child_by_field_name("subject")
         .or_else(|| named_stmt_child(node, 0))
@@ -537,16 +500,11 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
         }
     }
 
-    // No arm matched — run else branch if present, otherwise Normal.
     match else_body {
         Some(body) => eval_stmt(body, source, stack, ctx),
         None => Eval::Normal(Value::Empty),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Assignment   x := expr
-// ---------------------------------------------------------------------------
 
 fn eval_assignment(
     node: Node<'_>,
@@ -576,7 +534,6 @@ fn eval_assignment(
         other => return other,
     };
 
-    // Resolve the LHS name.
     let lhs_name = match lhs_node.utf8_text(source) {
         Ok(t) => t.trim_matches('"').to_ascii_lowercase(),
         Err(_) => return Eval::Error(simple_error("assignment: invalid LHS identifier")),
@@ -597,10 +554,6 @@ fn eval_assignment(
 
     Eval::Normal(Value::Empty)
 }
-
-// ---------------------------------------------------------------------------
-// EXIT
-// ---------------------------------------------------------------------------
 
 fn eval_exit(
     node: Node<'_>,
@@ -635,10 +588,6 @@ fn unwrap_exit_expr(node: Node<'_>) -> Node<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ASSERTERROR stmt
-// ---------------------------------------------------------------------------
-
 fn eval_asserterror(
     node: Node<'_>,
     source: &[u8],
@@ -670,10 +619,6 @@ fn eval_asserterror(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Expression statement (procedure call or side-effect expression)
-// ---------------------------------------------------------------------------
-
 fn eval_expression_stmt(
     node: Node<'_>,
     source: &[u8],
@@ -700,7 +645,6 @@ fn eval_expression_stmt(
                 eval_expr(node, source, stack)
             }
         }
-        // Everything else: delegate to the expression evaluator.
         _ => eval_expr(node, source, stack),
     }
 }
@@ -714,7 +658,6 @@ fn eval_expression_stmt(
 fn resolve_to_call_node(node: Node<'_>) -> Node<'_> {
     match node.kind() {
         "expression" | "unary_expression" => {
-            // If exactly one named child, descend.
             if node.named_child_count() == 1 {
                 if let Some(inner) = node.named_child(0) {
                     return resolve_to_call_node(inner);
@@ -741,10 +684,6 @@ fn is_call_postfix(node: Node<'_>) -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Procedure call dispatch
-// ---------------------------------------------------------------------------
-
 fn eval_call(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Eval {
     // Determine receiver and procedure name from the call node.
     // tree-sitter AL grammar has several call shapes:
@@ -754,7 +693,6 @@ fn eval_call(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
     // We handle both by inspecting child kinds.
     let (receiver, proc_name, args_node) = extract_call_parts(node, source);
 
-    // Evaluate arguments.
     let args = match args_node {
         Some(an) => eval_args(an, source, stack),
         None => Ok(vec![]),
@@ -799,7 +737,6 @@ fn extract_call_parts<'a>(
             });
 
         if let Some(sfx) = suffix {
-            // Get the argument_list from inside the suffix.
             let args = find_argument_list(sfx);
 
             match sfx.kind() {
@@ -959,10 +896,6 @@ fn eval_args_into(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn simple_error(msg: &str) -> ErrorInfo {
     ErrorInfo {
         message: msg.to_string(),
@@ -1026,10 +959,6 @@ fn values_equal_for_case(a: &Value, b: &Value) -> bool {
         _ => false,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

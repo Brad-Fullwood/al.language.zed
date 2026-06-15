@@ -1437,7 +1437,6 @@ async fn test_o01_code_action_empty_begin_end() {
     // but other code actions (e.g. refactoring) may still be present.
     // Just verify the request does not crash and returns a valid response.
     let _ = &actions; // response must be a valid (possibly empty) array
-                      // Every action must have a title
     for action in &actions {
         assert!(
             action.get("title").and_then(|t| t.as_str()).is_some(),

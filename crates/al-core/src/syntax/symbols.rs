@@ -130,12 +130,10 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
 
     let range = ts_range_to_lsp(&node.range(), source);
 
-    // Selection range is the name node or kind node
     let selection_range = name_node_range
         .map(|r| ts_range_to_lsp(&r, source))
         .unwrap_or(ts_range_to_lsp(&kind_node.range(), source));
 
-    // Extract children from the object body
     let mut children = Vec::new();
     if let Some(body) = node.child_by_field_name("body") {
         extract_body_children(body, source, &mut children);
@@ -374,7 +372,6 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let range = ts_range_to_lsp(&node.range(), source);
     let selection_range = ts_range_to_lsp(&keyword_node.range(), source);
 
-    // Extract children from section body
     let mut children = Vec::new();
     if let Some(body) = node.child_by_field_name("body") {
         extract_section_body_children(body, source, &mut children);
@@ -407,7 +404,6 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
 fn extract_enum_value_from_section(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let range = ts_range_to_lsp(&node.range(), source);
 
-    // Walk the node's children to find the parenthesized_block
     let mut paren_node = None;
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -709,50 +705,13 @@ fn extract_triggers_from_braced_block(
 
     loop {
         let child = cursor.node();
-        // Look for control_keyword with text "trigger"
+        // `control_keyword("trigger")` + name is the raw-token shape here.
+        // Delegate to try_extract_inline_trigger so the "trigger Name()"
+        // recognition — including rejecting bare `keyword` nodes (e.g. `var`)
+        // as trigger names — lives in exactly one place.
         if child.kind() == "control_keyword" {
-            if let Ok(text) = child.utf8_text(source) {
-                if text.eq_ignore_ascii_case("trigger") {
-                    // Next non-punctuation sibling should be the trigger name
-                    let trigger_kw_range = child.range();
-                    if let Some(name_node) = child.next_sibling() {
-                        let name_kind = name_node.kind();
-                        // `keyword` is rejected: bare keyword nodes are produced
-                        // for AL reserved words used as identifier-like tokens
-                        // (e.g. `var`), but they are NOT trigger names — matching
-                        // them produced bogus DocumentSymbols. Restrict to true
-                        // identifier-like node kinds.
-                        if matches!(
-                            name_kind,
-                            "identifier" | "name" | "name_or_keyword" | "quoted_identifier"
-                        ) {
-                            if let Ok(name_text) = name_node.utf8_text(source) {
-                                let name = name_text.trim_matches('"').to_string();
-                                if !name.is_empty() {
-                                    let range = ts_range_to_lsp(
-                                        &tree_sitter::Range {
-                                            start_byte: trigger_kw_range.start_byte,
-                                            end_byte: name_node.range().end_byte,
-                                            start_point: trigger_kw_range.start_point,
-                                            end_point: name_node.range().end_point,
-                                        },
-                                        source,
-                                    );
-                                    let selection_range =
-                                        ts_range_to_lsp(&name_node.range(), source);
-                                    symbols.push(DocumentSymbol {
-                                        name,
-                                        detail: Some("trigger".to_string()),
-                                        kind: SymbolKind::Event,
-                                        range,
-                                        selection_range,
-                                        children: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(sym) = try_extract_inline_trigger(child, source) {
+                symbols.push(sym);
             }
         }
         if !cursor.goto_next_sibling() {
@@ -770,7 +729,6 @@ fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymb
         return None;
     }
 
-    // Walk next siblings to find parenthesized_block and braced_block
     let mut paren_node = None;
     let mut body_node = None;
     let mut sibling = kw_node.next_sibling();
@@ -787,7 +745,6 @@ fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymb
         sibling = sib.next_sibling();
     }
 
-    // Extract the control name from the parenthesized_block
     let name = if let Some(paren) = paren_node {
         extract_control_name(paren, source)
     } else {
@@ -1003,7 +960,6 @@ fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> 
     let range = ts_range_to_lsp(&node.range(), source);
     let selection_range = ts_range_to_lsp(&name_node_range, source);
 
-    // Scan the body braced_block for raw trigger tokens
     let mut children: Vec<DocumentSymbol> = Vec::new();
     {
         let mut c = node.walk();
@@ -1423,7 +1379,6 @@ mod tests {
         let result = parser.parse(src);
         let symbols = extract_document_symbols(&result.tree, src);
 
-        // Collect all names recursively
         fn collect_names(syms: &[DocumentSymbol]) -> Vec<String> {
             let mut names = Vec::new();
             for sym in syms {
@@ -1452,8 +1407,6 @@ mod tests {
             all_names
         );
     }
-
-    // ---- shared helpers for the tests below ----
 
     /// Recursively collect every symbol name in the tree (depth-first).
     fn collect_names_rec(syms: &[DocumentSymbol]) -> Vec<String> {
@@ -1514,7 +1467,6 @@ codeunit 50100 Test { }"#;
         let src = r#"codeunit 50100 "My Codeunit" { }"#;
         let symbols = parse_symbols(src);
         let obj = &symbols[0];
-        // detail is "<keyword> <id>"
         assert_eq!(obj.detail.as_deref(), Some("codeunit 50100"));
         // The selection range must point at the name, not the whole object.
         assert!(obj.selection_range.start.character >= obj.range.start.character);

@@ -142,7 +142,6 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
 
         let codeunit_name = obj_info.name.clone();
 
-        // For each test proc, find its body in the tree and collect called names
         let mut cursor = root.walk();
         collect_coverage_from_tree(
             root,
@@ -298,7 +297,6 @@ fn collect_coverage_from_tree(
     covered_names: &mut HashSet<String>,
     _cursor: &mut tree_sitter::TreeCursor,
 ) {
-    // Build a set of test proc names for fast lookup
     let test_names: HashSet<String> = test_procs.iter().map(|p| p.name.to_lowercase()).collect();
 
     // Walk the tree: when we find a procedure_declaration whose name is a test,
@@ -383,7 +381,6 @@ fn collect_identifiers_recursive(
                 || kind == "invocation_expression"
                 || kind == "call_expression"
             {
-                // Find the callee identifier
                 if let Some(callee) = find_callee_name(node, source) {
                     let key = callee.to_lowercase();
                     if !seen.contains(&key) {

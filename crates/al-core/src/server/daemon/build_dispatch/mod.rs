@@ -1,9 +1,6 @@
 //! Build/toolchain/analysis dispatchers — compile, package, lint, format, fix, permissions,
 //! authenticate, download symbols, snapshot, profiling, xliff, etc.
 
-// ---------------------------------------------------------------------------
-// Submodule declarations
-// ---------------------------------------------------------------------------
 mod build;
 mod codegen;
 mod fixes;
@@ -243,7 +240,6 @@ mod tests {
     use crate::workspace::Workspace;
     use al_protocol::jsonrpc::error_codes;
 
-    // --- clamp_min_tokens / clamp_min_similarity (F-OPEN-007) ----------------
     // --- clamp_min_tokens / clamp_min_similarity (F-OPEN-007) ----------------
 
     #[test]

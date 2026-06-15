@@ -13,10 +13,6 @@ use crate::queries::tests::{collect_test_procedures, TestCodeunit};
 use crate::test_engine::result::{TestCodeunitResult, TestStatus};
 use crate::workspace::Workspace;
 
-// ---------------------------------------------------------------------------
-// Transport-agnostic diagnostic types
-// ---------------------------------------------------------------------------
-
 /// Severity of a test diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiagnosticSeverity {
@@ -47,10 +43,6 @@ pub struct TestDiagnostic {
     /// Name of the test codeunit.
     pub codeunit: String,
 }
-
-// ---------------------------------------------------------------------------
-// Conversion
-// ---------------------------------------------------------------------------
 
 /// Convert test run results into diagnostics using a pre-discovered codeunit
 /// list. Callers that run this in a hot loop (e.g. iterating many codeunits)
@@ -196,10 +188,6 @@ pub fn group_by_file(
     map
 }
 
-// ---------------------------------------------------------------------------
-// Line-number lookup helpers
-// ---------------------------------------------------------------------------
-
 /// Given a source string, find the 1-based line number of a procedure
 /// declaration by name.  Used when the workspace file index is not available
 /// (e.g., in tests).
@@ -214,10 +202,6 @@ pub fn find_proc_line(source: &str, proc_name: &str) -> Option<u32> {
         .find(|p| p.name.eq_ignore_ascii_case(proc_name))
         .map(|p| p.line)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

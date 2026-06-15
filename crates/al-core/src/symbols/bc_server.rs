@@ -135,7 +135,6 @@ impl BcServerClient {
 
         let mut request = self.client.get(url);
 
-        // Add authentication
         request = self.add_auth(request).await?;
 
         let response = request.send().await?;
@@ -172,7 +171,6 @@ impl BcServerClient {
                     });
                 }
 
-                // Save to .alpackages/
                 std::fs::create_dir_all(dest)?;
                 let filename = package_filename(&dep.publisher, &dep.name);
                 let out_path = dest.join(&filename);
@@ -470,8 +468,6 @@ mod tests {
 
     #[tokio::test]
     async fn download_one_200_writes_app_file_to_dest() {
-        // Happy path: a 200 with a small body is written to
-        // `<dest>/<publisher>_<name>.app` and the returned path points at it.
         let body = b"AL-PACKAGE-BYTES";
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
@@ -524,7 +520,6 @@ mod tests {
 
     #[tokio::test]
     async fn download_one_503_maps_to_server_error_with_status() {
-        // Any other non-2xx status is a ServerError carrying the real HTTP code.
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(wiremock::ResponseTemplate::new(503).set_body_string("boom"))
@@ -614,8 +609,6 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn add_auth_userpassword_missing_creds_errors() {
-        // UserPassword auth with no BC_USERNAME/BC_PASSWORD must produce
-        // CredentialsRequired rather than sending an unauthenticated request.
         std::env::remove_var("BC_USERNAME");
         std::env::remove_var("BC_PASSWORD");
         let client = BcServerClient::new(AuthMethod::UserPassword, None, Arc::new(|_| {}), false)
@@ -632,7 +625,6 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn add_auth_userpassword_with_creds_succeeds() {
-        // With both env vars set, add_auth attaches basic auth and returns Ok.
         std::env::set_var("BC_USERNAME", "alice");
         std::env::set_var("BC_PASSWORD", "secret");
         let client = BcServerClient::new(AuthMethod::UserPassword, None, Arc::new(|_| {}), false)
@@ -660,11 +652,8 @@ mod tests {
         )
         .expect("client builds");
         let req = client.client.get("http://example.invalid/dev/packages");
-        // The env override is active, so add_auth returns Ok without any
-        // network sign-in.
         assert!(client.add_auth(req).await.is_ok());
 
-        // Once flagged stale, the env override is no longer honoured.
         client.mark_env_token_stale();
         assert!(!client.env_token_active());
         std::env::remove_var("BC_ACCESS_TOKEN");

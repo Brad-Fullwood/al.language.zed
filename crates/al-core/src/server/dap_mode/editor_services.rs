@@ -29,7 +29,6 @@ const PLATFORM_DIR: &str = "darwin";
 #[cfg(target_os = "windows")]
 const PLATFORM_DIR: &str = "win32";
 
-/// Find the EditorServices.Host binary.
 pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError> {
     // Strategy 1: explicit env var
     if let Ok(path) = std::env::var("AL_EDITOR_SERVICES_PATH") {

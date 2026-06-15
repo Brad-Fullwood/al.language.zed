@@ -119,7 +119,6 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
         return profiler_lenses;
     }
 
-    // Detect test codeunit info for this file (for test lenses).
     let test_lens_ctx = build_test_lens_context(workspace, uri, &text, &tree);
 
     // Build a workspace-wide reference count map in a single pass over all
@@ -143,7 +142,6 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
                         kind: CodeLensKind::Reference(count),
                         test_target: None,
                     });
-                    // Emit a test lens if this procedure has a [Test] attribute.
                     if let Some(ref ctx) = test_lens_ctx {
                         if let Some(status) = ctx.status_for(name_raw) {
                             let title = test_lens_title(&status);
@@ -171,7 +169,6 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
                 kind: CodeLensKind::Reference(count),
                 test_target: None,
             });
-            // Emit a test lens if this procedure has a [Test] attribute.
             if let Some(ref ctx) = test_lens_ctx {
                 if let Some(status) = ctx.status_for(name_raw) {
                     let title = test_lens_title(&status);
@@ -189,7 +186,6 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
         }
     }
 
-    // Append profiler lenses when a profile session is active.
     let profiler_lenses = {
         let guard = workspace
             .profiler_session
@@ -232,7 +228,6 @@ impl TestLensContext {
         let status = match &self.store_snapshot {
             None => TestLensStatus::NotRun,
             Some(records) => {
-                // Find the most recent record for (codeunit_id, method_name).
                 let matching = records.iter().filter(|r| {
                     r.codeunit_id == self.codeunit_id && r.method_name.to_lowercase() == lower
                 });
@@ -265,7 +260,6 @@ fn build_test_lens_context(
     let source = text.as_bytes();
     let root = tree.root_node();
 
-    // Only emit test lenses for test codeunits.
     if !crate::queries::tests::has_test_subtype(root, source) {
         // Also check: any [Test] attributes at all?
         if crate::queries::tests::collect_test_procedures(root, source).is_empty() {
@@ -506,7 +500,6 @@ mod tests {
         ws
     }
 
-    // Positive test: procedures in a codeunit produce CodeLens entries.
     #[test]
     fn test_code_lens_finds_procedures() {
         let uri = Url::parse("file:///test.al").unwrap();
@@ -525,7 +518,6 @@ codeunit 50100 MyCodeunit
         let ws = workspace_with_doc(&uri, src);
         let lenses = code_lens(&ws, &uri);
 
-        // Must find both procedures
         assert!(
             lenses.len() >= 2,
             "expected at least 2 lenses, got {}",
@@ -560,13 +552,11 @@ codeunit 50100 MyCodeunit
         let ws = workspace_with_doc(&uri, src);
         let lenses = code_lens(&ws, &uri);
 
-        // Should find at least one lens for Greet
         assert!(
             !lenses.is_empty(),
             "expected at least one lens for Greet procedure"
         );
 
-        // The lens for Greet should reflect that the name appears multiple times
         let greet_lens = lenses.iter().find(|l| l.title.contains("reference"));
         assert!(greet_lens.is_some(), "no reference lens found for Greet");
 
@@ -696,12 +686,10 @@ codeunit 50100 MyCodeunit
         assert_eq!(prof_lenses[0].title, "⏱ 7ms · 1 call");
     }
 
-    // Negative test: no profiler session → no profiler lenses.
     #[test]
     fn test_no_profiler_lenses_without_session() {
         let uri = Url::parse("file:///test.al").unwrap();
         let ws = workspace_with_doc(&uri, PROF_SRC);
-        // No profiler session attached.
         let lenses = code_lens(&ws, &uri);
         let prof_lenses: Vec<&CodeLensEntry> =
             lenses.iter().filter(|l| l.title.contains('⏱')).collect();
@@ -801,7 +789,6 @@ codeunit 50100 MyCodeunit
             .collect()
     }
 
-    // Positive test: procedures with no run history emit NotRun lenses.
     #[test]
     fn test_lens_not_run_when_no_history() {
         let uri = Url::parse("file:///my_tests.al").unwrap();
@@ -820,7 +807,6 @@ codeunit 50100 MyCodeunit
         }
     }
 
-    // Positive test: a procedure with a Pass record emits a Pass lens.
     #[test]
     fn test_lens_pass_when_history_shows_pass() {
         let uri = Url::parse("file:///my_tests.al").unwrap();
@@ -846,7 +832,6 @@ codeunit 50100 MyCodeunit
         );
     }
 
-    // Positive test: a procedure with a Fail record emits a Fail lens with error.
     #[test]
     fn test_lens_fail_with_error_message() {
         let uri = Url::parse("file:///my_tests.al").unwrap();
@@ -899,7 +884,6 @@ codeunit 50100 MyCodeunit
         assert!(title.ends_with('…'), "expected ellipsis suffix: {title}");
     }
 
-    // A short failure message is left intact (no ellipsis appended).
     #[test]
     fn test_lens_title_keeps_short_error() {
         let status = TestLensStatus::Fail {
@@ -908,7 +892,6 @@ codeunit 50100 MyCodeunit
         assert_eq!(test_lens_title(&status), "✗ Fail: boom");
     }
 
-    // Negative test: history for a different method name → that procedure shows NotRun.
     #[test]
     fn test_lens_history_mismatch_returns_not_run() {
         let uri = Url::parse("file:///my_tests.al").unwrap();
@@ -936,7 +919,6 @@ codeunit 50100 MyCodeunit
         }
     }
 
-    // Negative test: non-test procedures do not get test lenses.
     #[test]
     fn test_lens_non_test_proc_gets_no_test_lens() {
         let uri = Url::parse("file:///my_tests.al").unwrap();

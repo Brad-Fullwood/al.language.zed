@@ -31,7 +31,6 @@ pub mod nuget;
 #[cfg(feature = "nuget")]
 pub mod oauth;
 
-// Re-export primary types for convenience.
 pub use index::SymbolIndex;
 pub use model::{
     AttributeSymbol, ComposedObject, ControlSymbol, EnumValueSymbol, FieldSymbol, KeySymbol,
@@ -39,7 +38,6 @@ pub use model::{
     VariableSymbol,
 };
 
-// Re-export key functions and types from submodules.
 pub use app_reader::{read_app_bytes, read_app_file};
 pub use composition::get_composed;
 pub use events::{get_events, EventPublisher, EventResults, EventSubscriber, EventType};

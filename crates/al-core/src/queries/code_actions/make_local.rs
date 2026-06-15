@@ -72,7 +72,6 @@ pub(super) fn source_action_make_local(
     let point = tree_sitter::Point::new(range.start.line as usize, col_bytes);
     let mut node = root.descendant_for_point_range(point, point)?;
 
-    // Walk up to find procedure_declaration (skip trigger_declaration)
     loop {
         if node.kind() == "procedure_declaration" {
             break;
@@ -83,7 +82,6 @@ pub(super) fn source_action_make_local(
         node = node.parent()?;
     }
 
-    // Check if already has 'local' modifier
     let proc_line = node.start_position().row;
     let line_text = text.lines().nth(proc_line)?;
     let lower = line_text.to_lowercase();

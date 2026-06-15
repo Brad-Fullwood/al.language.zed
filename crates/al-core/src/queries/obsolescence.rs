@@ -49,7 +49,6 @@ pub struct ObsoleteEntry {
 pub fn obsolescence_timeline(workspace: &Workspace) -> Vec<ObsoleteEntry> {
     let mut results = Vec::new();
 
-    // Collect cached parse results for all workspace files.
     let parsed: Vec<(String, String, tree_sitter::Tree)> = workspace
         .file_index
         .files
@@ -209,7 +208,6 @@ fn extract_obsolete_from_preceding_attr(
     node: tree_sitter::Node,
     source: &[u8],
 ) -> Option<(ObsoleteState, Option<String>, Option<String>)> {
-    // Check preceding siblings for attribute nodes
     let mut sibling = node.prev_sibling();
     while let Some(s) = sibling {
         if s.kind() == "attribute" || s.kind() == "attribute_list" {
@@ -224,7 +222,6 @@ fn extract_obsolete_from_preceding_attr(
         sibling = s.prev_sibling();
     }
 
-    // Also check children
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "attribute" || child.kind() == "attribute_list" {
@@ -241,7 +238,6 @@ fn extract_obsolete_from_preceding_attr(
 fn parse_obsolete_attr(text: &str) -> Option<(ObsoleteState, Option<String>, Option<String>)> {
     let lower = text.to_lowercase();
 
-    // Check for ObsoleteState property in text
     if lower.contains("obsoletestate") {
         let state = if lower.contains("pending") {
             ObsoleteState::Pending
@@ -271,7 +267,6 @@ fn extract_property_value(text: &str, prop_name: &str) -> Option<String> {
     let prop_lower = prop_name.to_lowercase();
     if let Some(pos) = lower.find(&prop_lower) {
         let after = &text[pos + prop_lower.len()..];
-        // Skip "= " and extract quoted value
         let after = after.trim_start_matches([' ', '=', ':']);
         let after = after.trim_start_matches('\'').trim_start_matches('"');
         let end = after
@@ -286,7 +281,6 @@ fn extract_property_value(text: &str, prop_name: &str) -> Option<String> {
 }
 
 fn extract_attr_arg(text: &str, idx: usize) -> Option<String> {
-    // Find content between ( and )
     let start = text.find('(')?;
     let end = text.rfind(')')?;
     if start >= end {

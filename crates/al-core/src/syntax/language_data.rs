@@ -7,8 +7,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
-// ── Structs ──────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct KeywordEntry {
     pub keyword: String,
@@ -129,8 +127,6 @@ struct PageControlsFile {
     page_controls: Vec<PageControlEntry>,
 }
 
-// ── LazyLock statics ─────────────────────────────────────────────────────────
-
 static KEYWORDS: LazyLock<Keywords> = LazyLock::new(|| {
     serde_json::from_str(include_str!(
         "../../../../tree-sitter-al/data/keywords.json"
@@ -235,8 +231,6 @@ static PAGE_CONTROL_MAP: LazyLock<HashMap<String, usize>> = LazyLock::new(|| {
         .collect()
 });
 
-// ── Public accessor functions ─────────────────────────────────────────────────
-
 pub fn keywords() -> &'static Keywords {
     &KEYWORDS
 }
@@ -268,8 +262,6 @@ pub fn runtime_enums() -> &'static [RuntimeEnum] {
 pub fn token_classification() -> &'static TokenClassification {
     &TOKEN_CLASSIFICATION
 }
-
-// ── Lookup helpers ────────────────────────────────────────────────────────────
 
 pub fn builtin_function_by_name(name: &str) -> Option<&'static BuiltinFunction> {
     let idx = *BUILTIN_FUNCTION_MAP.get(&name.to_ascii_lowercase())?;
@@ -326,8 +318,6 @@ pub fn is_type_keyword_node(node_kind: &str) -> bool {
 pub fn is_page_control_keyword(kw: &str) -> bool {
     page_control_by_keyword(kw).is_some()
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -391,7 +381,6 @@ mod tests {
 
         let iface = object_type_by_keyword("interface").expect("test");
         assert!(iface.permission_type.is_none());
-        // Unknown keyword
         assert!(object_type_by_keyword("notanobject").is_none());
     }
 
@@ -432,7 +421,6 @@ mod tests {
         assert_eq!(area.lsp_symbol_kind, "Struct");
         let action = page_control_by_keyword("action").expect("test");
         assert_eq!(action.lsp_symbol_kind, "Event");
-        // Unknown keyword returns None
         assert!(page_control_by_keyword("notacontrol").is_none());
     }
 
@@ -461,7 +449,6 @@ mod tests {
 
     #[test]
     fn single_stmt_openers_invalid_returns_false() {
-        // Verify that random strings don't match any opener
         let openers = single_stmt_openers();
         let not_opener = "end;";
         let matches = openers

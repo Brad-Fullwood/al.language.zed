@@ -24,10 +24,6 @@ use super::bc_debug::{percent_encode_url, publish_app, BcDebugConfig, BcDebugSes
 use super::framing::{read_dap_body, write_dap_frame};
 use super::{DapError, Result};
 
-// ---------------------------------------------------------------------------
-// BC ObjectTypeWrapper constants
-// ---------------------------------------------------------------------------
-
 /// BC `ObjectTypeWrapper` enum values (integer encoding used by SignalR hub).
 ///
 /// Source: EditorServices.Protocol.dll reverse-engineering.
@@ -68,10 +64,6 @@ pub fn kind_to_object_type(kind: &str) -> i32 {
         _ => bc_object_type::UNKNOWN,
     }
 }
-
-// ---------------------------------------------------------------------------
-// ResolvedObject
-// ---------------------------------------------------------------------------
 
 /// Object info resolved from the workspace symbol index.
 /// Used to map file paths to BC object types and IDs for breakpoints.
@@ -1265,10 +1257,6 @@ where
     info!("Native DAP server shutting down");
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn make_response(
     seq: &AtomicU64,

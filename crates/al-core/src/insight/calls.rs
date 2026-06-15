@@ -24,10 +24,6 @@ use super::graph::{EventNodeType, InsightEdge, InsightGraph, InsightNode, NodeKe
 use super::index::{CallGraph, EdgeResolutionState};
 use crate::file_index::FileIndex;
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
 /// A record operation that can fire table triggers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordOp {
@@ -74,10 +70,6 @@ pub enum CallSite {
     },
 }
 
-// ---------------------------------------------------------------------------
-// A. Variable type extraction
-// ---------------------------------------------------------------------------
-
 /// Extract a mapping of `lowercase_variable_name -> table_name` for all
 /// `Record "X"` variables in a procedure's `var` section and parameters.
 ///
@@ -95,7 +87,6 @@ pub fn extract_procedure_var_types(
         return result;
     };
 
-    // Collect from var_section (local variables)
     collect_record_vars_from_procedure_node(proc_node, source_bytes, &mut result);
 
     result
@@ -123,7 +114,6 @@ fn find_procedure_in_node<'a>(
     while let Some(node) = stack.pop() {
         let kind = node.kind();
         if kind == "procedure_declaration" || kind == "trigger_declaration" {
-            // Check the name field
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name_text) = name_node.utf8_text(source) {
                     let clean = name_text.trim_matches('"').trim();
@@ -427,10 +417,6 @@ fn parse_type_reference_for_record(
     (type_keyword, subtype)
 }
 
-// ---------------------------------------------------------------------------
-// B. Call site extraction
-// ---------------------------------------------------------------------------
-
 /// Extract all call sites from a named procedure in the given tree.
 ///
 /// Walks the procedure's `begin_end_block` looking for `postfix_expression`
@@ -523,7 +509,6 @@ fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -> Option<Ca
                 .trim_matches('"')
                 .to_string();
 
-            // Check if this is a record operation
             if let Some(op) = RecordOp::from_method_name(&method_name) {
                 let run_trigger = parse_run_trigger_arg(*last, source, op);
                 Some(CallSite::RecordOp {
@@ -649,10 +634,6 @@ fn parse_run_trigger_arg(
 
     true // default: no args → RunTrigger=true
 }
-
-// ---------------------------------------------------------------------------
-// C. Edge population per procedure
-// ---------------------------------------------------------------------------
 
 /// Populate call graph edges for a single procedure.
 ///
@@ -801,10 +782,6 @@ fn record_op_event_names(op: RecordOp) -> (String, String) {
     )
 }
 
-// ---------------------------------------------------------------------------
-// D. Fanout scoring
-// ---------------------------------------------------------------------------
-
 /// Count the number of call-suffix nodes in a tree.
 ///
 /// Used to rank files by complexity: high-fanout files (many calls) are resolved
@@ -828,10 +805,6 @@ fn count_call_suffixes(root: tree_sitter::Node, count: &mut usize) {
         stack.extend(node.children(&mut cursor));
     }
 }
-
-// ---------------------------------------------------------------------------
-// E. Workspace node registration
-// ---------------------------------------------------------------------------
 
 /// Register workspace objects, procedures, events, and subscribers as
 /// InsightGraph nodes.
@@ -887,13 +860,11 @@ pub fn register_workspace_nodes(
             },
         );
 
-        // Get cached source + tree
         let (source, tree) = match file_index.get_cached_parse(path) {
             Some(pair) => pair,
             None => continue,
         };
 
-        // Walk procedures in the tree — registers InsightGraph nodes
         let source_bytes = source.as_bytes();
         register_procedures_from_tree(
             tree.root_node(),
@@ -1108,10 +1079,8 @@ fn extract_method_symbol(
         })
         .collect();
 
-    // Extract parameters from parameter_list
     let parameters = extract_parameters_from_proc(proc_node, source);
 
-    // Extract return type
     let return_type = extract_return_type(proc_node, source);
 
     Some(crate::symbols::MethodSymbol {
@@ -1286,7 +1255,6 @@ fn register_single_procedure(
         return;
     }
 
-    // Collect attribute names from the procedure
     let attributes = collect_procedure_attributes(proc_node, source);
 
     // AL attributes are case-insensitive at the language level — `[eventsubscriber(...)]`,
@@ -1422,7 +1390,6 @@ fn parse_subscriber_target_from_attrs(attrs: &[(String, String)]) -> (String, St
 
 /// Extract comma-separated arguments from an attribute text like `[Attr(a, b, c)]`.
 pub(crate) fn extract_attribute_args(attr_text: &str) -> Vec<String> {
-    // Find the '(' ... ')' inside the attribute text
     let start = match attr_text.find('(') {
         Some(i) => i + 1,
         None => return vec![],
@@ -1497,15 +1464,10 @@ pub(crate) fn clean_attr_arg(s: &str) -> String {
     } else {
         s
     };
-    // Remove surrounding `"` or `'`
     let s = s.trim_matches('"');
     let s = s.trim_matches('\'');
     s.trim().to_string()
 }
-
-// ---------------------------------------------------------------------------
-// F. Top-level fanout-based edge population
-// ---------------------------------------------------------------------------
 
 /// Populate call edges across all workspace files.
 ///
@@ -1548,7 +1510,6 @@ pub fn populate_workspace_call_edges(
         return 0;
     }
 
-    // Determine tier 1 threshold
     let threshold = tier1_threshold(&file_scores);
 
     let mut resolved = 0;
@@ -1653,10 +1614,6 @@ fn collect_procedure_names_from_node(
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -1767,10 +1724,6 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------------------
-    // Fixtures
-    // ------------------------------------------------------------------
-
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
             synthetic: false,
@@ -1833,10 +1786,6 @@ mod tests {
             attributes: vec![],
         }
     }
-
-    // ------------------------------------------------------------------
-    // A. extract_procedure_var_types
-    // ------------------------------------------------------------------
 
     #[test]
     fn extract_var_types_from_procedure() {
@@ -1947,10 +1896,6 @@ mod tests {
         assert!(types.is_empty());
     }
 
-    // ------------------------------------------------------------------
-    // B. extract_call_sites
-    // ------------------------------------------------------------------
-
     #[test]
     fn extract_call_sites_from_procedure() {
         let source = r#"codeunit 50100 "Test CU"
@@ -2046,10 +1991,6 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------------------
-    // C. populate_call_edges_for_file (integration)
-    // ------------------------------------------------------------------
-
     #[test]
     fn populate_call_edges_for_file() {
         let source = r#"codeunit 50100 "My CU"
@@ -2134,10 +2075,6 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------------------
-    // D. fanout_score
-    // ------------------------------------------------------------------
-
     #[test]
     fn fanout_score_counts_calls() {
         let source = r#"codeunit 50100 "Test CU"
@@ -2168,10 +2105,6 @@ mod tests {
         let score = fanout_score(&result.tree);
         assert_eq!(score, 0, "Empty codeunit should have fanout score 0");
     }
-
-    // ------------------------------------------------------------------
-    // E. Subscriber/event detection
-    // ------------------------------------------------------------------
 
     /// FB-8 regression: a workspace subscriber to a workspace event must be
     /// reachable from `trace_event` — i.e. `register_workspace_nodes` must
@@ -2350,10 +2283,6 @@ mod tests {
             "NormalProcedure should be registered as a Procedure node"
         );
     }
-
-    // ------------------------------------------------------------------
-    // Internal helpers
-    // ------------------------------------------------------------------
 
     #[test]
     fn extract_attribute_args_basic() {

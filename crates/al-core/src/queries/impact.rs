@@ -108,7 +108,6 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Vec<ImpactEntry> {
         }
     }
 
-    // Search workspace files
     if let Some(member) = &member_part {
         search_workspace_files(workspace, member, &mut results);
     } else {
@@ -267,7 +266,6 @@ fn check_object_consumers(
     use crate::insight::analysis::{extract_table_relation_table, is_record_of};
 
     for method in &entry.methods {
-        // Check parameter types referencing the target object.
         for param in &method.parameters {
             if is_record_of(&param.type_name, target_object) {
                 results.push(ImpactEntry {
@@ -305,7 +303,6 @@ fn check_object_consumers(
         }
     }
 
-    // Check fields for TableRelation to target.
     for field in &entry.fields {
         for prop in &field.properties {
             if prop.name.eq_ignore_ascii_case("TableRelation")

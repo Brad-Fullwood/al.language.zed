@@ -106,7 +106,6 @@ impl TranslationState {
 pub fn extract_translation_units(workspace: &Workspace) -> Vec<TranslationUnit> {
     let mut units = Vec::new();
 
-    // Iterate all indexed .al files
     let mut paths: Vec<_> = workspace
         .file_index
         .files
@@ -688,7 +687,6 @@ pub fn refresh_xliff(
     let generated_ids: std::collections::HashSet<&str> =
         generated.iter().map(|u| u.id.as_str()).collect();
 
-    // Process each unit from the generated file
     for gen_unit in generated {
         if let Some(lang_unit) = language.get(&gen_unit.id) {
             if lang_unit.source != gen_unit.source {

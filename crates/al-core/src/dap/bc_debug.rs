@@ -54,10 +54,6 @@ fn parse_bool_or_string(v: &serde_json::Value, default: bool) -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// BC Server Configuration
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct BcDebugConfig {
     pub server: Option<String>,
@@ -199,10 +195,6 @@ impl BcDebugConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// BC Event types (public)
-// ---------------------------------------------------------------------------
-
 /// A BC server-push event, produced by `flush_pending_events` and `try_drain_push_events`.
 ///
 /// These map to SignalR type-1 callback messages from the debug hub.
@@ -292,10 +284,6 @@ fn break_location_from_args(arguments: &Option<Vec<serde_json::Value>>) -> Optio
         object_number,
     })
 }
-
-// ---------------------------------------------------------------------------
-// BC REST API Client
-// ---------------------------------------------------------------------------
 
 /// Publish an .app package to BC.
 pub async fn publish_app(
@@ -392,10 +380,6 @@ pub async fn get_metadata(
         )))
     }
 }
-
-// ---------------------------------------------------------------------------
-// SignalR Debug Hub Client
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct SignalRMessage {
@@ -1477,10 +1461,6 @@ fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// URL helpers
-// ---------------------------------------------------------------------------
-
 /// Percent-encode a string for safe embedding as a URL query parameter value.
 ///
 /// Unreserved characters (RFC 3986) are passed through unchanged; all other
@@ -1678,10 +1658,6 @@ fn redact_connection_token(body: &str) -> String {
     }
     v.to_string()
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -12,9 +12,6 @@ use serde::Serialize;
 
 use crate::symbols::{ObjectKind, SymbolIndex};
 
-// ---------------------------------------------------------------------------
-// Public result types
-// ---------------------------------------------------------------------------
 
 /// How an object interacts with a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -75,9 +72,6 @@ pub struct TableImpactResult {
     pub total_impacts: usize,
 }
 
-// ---------------------------------------------------------------------------
-// Analysis function
-// ---------------------------------------------------------------------------
 
 /// Analyse all objects in the symbol index that interact with the named table.
 ///
@@ -197,9 +191,6 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// Extract the leading table-name component of a `TableRelation` property value.
 ///
@@ -273,9 +264,6 @@ pub(crate) fn is_record_of(type_name: &str, table_name: &str) -> bool {
     name.eq_ignore_ascii_case(table_name)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -533,7 +521,6 @@ mod tests {
         assert_eq!(result.total_impacts, 3);
     }
 
-    // --- table_impact: subscriber attribute not confused ---
 
     // --- extract_table_relation_table: shape coverage ---
 

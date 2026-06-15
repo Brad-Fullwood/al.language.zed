@@ -41,7 +41,6 @@ pub fn apply_al_settings_to_config(
             }
         }
 
-        // Strip "al." prefix if present
         let effective_key = key.strip_prefix("al.").unwrap_or(key);
 
         // Handle dotted sub-keys (e.g., "compilationOptions.parallelBuild")

@@ -125,7 +125,6 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
         });
     }
 
-    // Sort descending by self time
     hints.sort_by(|a, b| {
         b.self_time_ms
             .partial_cmp(&a.self_time_ms)
@@ -222,7 +221,6 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
         );
     }
 
-    // Resolve each hint — prefer the object-qualified key when available.
     for hint in hints.iter_mut() {
         let proc_lc = hint.procedure.to_lowercase();
         let obj_lc = hint.object.to_lowercase();
@@ -541,7 +539,6 @@ mod tests {
         let h = &hints[0];
         assert_eq!(h.procedure, "ProcessRecord");
         assert_eq!(h.self_time_ms, 10.0);
-        // Must be mapped to source
         assert!(h.file.is_some(), "Should resolve file path");
         assert!(h.line.is_some(), "Should resolve line number");
         assert_eq!(h.line.unwrap(), 3, "ProcessRecord is on line 3");
@@ -797,10 +794,6 @@ mod tests {
         assert!(session.hints.is_empty());
     }
 
-    // ---------------------------------------------------------------------------
-    // profiler_code_lenses tests
-    // ---------------------------------------------------------------------------
-
     fn make_hint_with_file(procedure: &str, file: &str, ms: f64, hits: u64) -> ProfilerHint {
         ProfilerHint {
             procedure: procedure.to_string(),
@@ -895,10 +888,6 @@ mod tests {
         assert_eq!(profiler_lens_title(&hint), "⏱ 4ms · 2 calls");
     }
 
-    // ---------------------------------------------------------------------------
-    // load_profile_file / clear_profile tests
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn load_profile_file_invalid_path_returns_error() {
         let ws = Workspace::new();
@@ -912,7 +901,6 @@ mod tests {
     #[test]
     fn clear_profile_removes_session() {
         let ws = Workspace::new();
-        // Install a session manually
         *ws.profiler_session
             .write()
             .unwrap_or_else(|e| e.into_inner()) = Some(ProfilerSession::new(
@@ -920,7 +908,6 @@ mod tests {
             vec![make_hint_with_file("P", "/f", 1.0, 1)],
         ));
 
-        // Must be active before clearing
         assert!(ws
             .profiler_session
             .read()
@@ -931,7 +918,6 @@ mod tests {
 
         clear_profile(&ws);
 
-        // Must be gone after clearing
         assert!(
             ws.profiler_session.read().unwrap().is_none(),
             "session should be None after clear_profile"

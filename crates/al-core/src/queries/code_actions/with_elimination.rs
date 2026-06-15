@@ -12,7 +12,6 @@ fn resolve_with_field_names(
     text: &str,
     record_var: &str,
 ) -> Vec<String> {
-    // Walk the entire file to find a var declaration for `record_var`.
     let source = text.as_bytes();
     let table_name = find_record_type_for_var(tree.root_node(), source, record_var);
     let table_name = match table_name {

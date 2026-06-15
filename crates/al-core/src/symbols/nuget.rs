@@ -373,7 +373,7 @@ async fn download(
         version = %version,
         "Downloading package"
     );
-    const MAX_NUPKG_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
+    const MAX_NUPKG_BYTES: u64 = 200 * 1024 * 1024;
     let response = client.get(&nupkg_url).send().await?;
     // Require a Content-Length header so the cap below is enforceable. Without
     // a length header an attacker-controlled server could lie about the
@@ -455,7 +455,7 @@ fn parse_version(version: &str) -> (u64, u64, u64, u64) {
 /// These should be a few hundred KB at most for normal feeds; the cap is a
 /// defence against a hostile or misconfigured server streaming gigabytes of
 /// JSON before parser-side truncation kicks in. F-OPEN-018.
-const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024; // 16 MB
+const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Fetch a JSON metadata response from `url`, refusing bodies larger than
 /// `MAX_METADATA_BYTES`. Requires a `Content-Length` header so the cap is
@@ -613,7 +613,6 @@ mod tests {
 
     #[test]
     fn resolve_core_system_application() {
-        // System Application uses special naming: with GUID, spaces removed
         let deps = vec![AppDependency {
             id: "63ca2fa4-4f03-4f2b-a480-172fef340d3f".to_string(),
             name: "System Application".to_string(),
@@ -673,7 +672,6 @@ mod tests {
 
     #[test]
     fn resolve_core_application() {
-        // Application (Base App) uses special naming: no GUID
         let deps = vec![AppDependency {
             id: "c1335042-3002-4257-bf8a-75c898ccb1b8".to_string(),
             name: "Application".to_string(),
@@ -688,7 +686,6 @@ mod tests {
 
     #[test]
     fn resolve_core_platform() {
-        // System/Platform uses special naming: no GUID, different name
         let deps = vec![AppDependency {
             id: "8874ed3a-0643-4247-9ced-7a7002f7135d".to_string(),
             name: "System".to_string(),
@@ -703,7 +700,6 @@ mod tests {
 
     #[test]
     fn resolve_core_base_application() {
-        // Base Application uses special naming: with GUID embedded in the name.
         let deps = vec![AppDependency {
             id: "437dbf0e-84ff-417a-965d-ed2bb9650972".to_string(),
             name: "Base Application".to_string(),
@@ -721,7 +717,6 @@ mod tests {
 
     #[test]
     fn resolve_core_business_foundation() {
-        // Business Foundation uses special naming: with GUID embedded in the name.
         let deps = vec![AppDependency {
             id: "f3552374-a1f2-4356-848e-196002525837".to_string(),
             name: "Business Foundation".to_string(),
@@ -802,7 +797,6 @@ mod tests {
 
     #[test]
     fn version_prefix_extracts_major_minor() {
-        // Multi-component versions yield the major.minor prefix with trailing dot.
         assert_eq!(version_prefix("26.5.0.0"), "26.5.");
         assert_eq!(version_prefix("26.0.40469"), "26.0.");
         // Exactly two components still works.
@@ -842,11 +836,9 @@ mod tests {
             let mut zip = zip::ZipWriter::new(cursor);
             let options = SimpleFileOptions::default();
 
-            // Add some nupkg metadata files
             zip.start_file("[Content_Types].xml", options).unwrap();
             zip.write_all(b"<xml/>").unwrap();
 
-            // Add the .app file
             zip.start_file("Microsoft.Application.symbols.app", options)
                 .unwrap();
             // Write NAVX header + minimal content (won't be a valid .app but tests extraction)
@@ -863,7 +855,6 @@ mod tests {
         let path = result.unwrap();
         assert!(path.to_str().unwrap().ends_with(".app"));
 
-        // Cleanup
         let _ = std::fs::remove_dir_all(&dest);
     }
 
@@ -888,7 +879,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dest);
         let result = extract_app_from_nupkg(&nupkg_buf, &dest, "Test");
         let path = result.expect("nested .app should extract");
-        // The file lands directly under dest, NOT under dest/lib/net/.
         assert_eq!(path, dest.join("Nested.app"));
         assert!(dest.join("Nested.app").exists());
         assert!(!dest.join("lib").exists(), "subfolder must not be created");
@@ -992,7 +982,6 @@ mod tests {
         let tmp = dest.join("Test.app.tmp");
         assert!(!tmp.exists(), ".tmp file should have been renamed away");
 
-        // The final .app file must exist.
         let app = dest.join("Test.app");
         assert!(app.exists(), ".app file should exist at final path");
 
@@ -1008,7 +997,6 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_metadata_json_accepts_small_response() {
-        // Positive: a small valid JSON response under the cap deserialises.
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(
@@ -1124,8 +1112,6 @@ mod tests {
              if they ran concurrently the mutex isn't serialising"
         );
     }
-
-    // --- get_package_base_address -------------------------------------------
 
     /// Mount a service index that advertises `base_id` as a PackageBaseAddress
     /// resource (alongside an unrelated resource to prove selection works).

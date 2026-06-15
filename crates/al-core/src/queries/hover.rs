@@ -385,7 +385,6 @@ pub async fn hover_full(
         return Some(result);
     }
 
-    // Bridge: try .NET CodeAnalysis type_at
     let guard = crate::semantic::get_or_init_bridge(workspace).await?;
     let bridge = guard.as_ref()?;
     let path = uri.to_file_path().ok()?;
@@ -665,9 +664,7 @@ mod tests {
         assert_eq!(result, "CopyStr(String: Text; Position: Integer): Text");
     }
 
-    // ---------------------------------------------------------------------
     // Helpers for the symbol-/index-backed hover paths.
-    // ---------------------------------------------------------------------
 
     fn table_entry() -> crate::symbols::SymbolEntry {
         crate::symbols::SymbolEntry {
@@ -704,9 +701,7 @@ mod tests {
         }
     }
 
-    // ---------------------------------------------------------------------
     // format_symbol_hover branches not covered by the original test.
-    // ---------------------------------------------------------------------
 
     #[test]
     fn format_symbol_hover_filters_out_local_methods() {
@@ -772,9 +767,7 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------
     // End-to-end hover via the SymbolIndex (path 3).
-    // ---------------------------------------------------------------------
 
     #[test]
     fn hover_resolves_package_symbol_from_index() {
@@ -804,9 +797,7 @@ mod tests {
         assert!(r.range.is_some());
     }
 
-    // ---------------------------------------------------------------------
     // Built-in global function hover (path 3b).
-    // ---------------------------------------------------------------------
 
     #[test]
     fn hover_resolves_builtin_global_function() {
@@ -843,9 +834,7 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------
     // Local variable declaration hover (path 2b — TypeResolver).
-    // ---------------------------------------------------------------------
 
     #[test]
     fn hover_resolves_local_variable_declaration() {
@@ -870,9 +859,7 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------
     // Workspace object index hover (path 5).
-    // ---------------------------------------------------------------------
 
     #[test]
     fn hover_resolves_workspace_object_from_file_index() {
@@ -908,9 +895,7 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------
     // Edge: hover on a position that resolves to no identifier.
-    // ---------------------------------------------------------------------
 
     #[test]
     fn hover_on_empty_document_returns_none() {
@@ -930,10 +915,8 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------
     // hover_full falls back to the synchronous native hover when it succeeds,
     // without needing the .NET bridge.
-    // ---------------------------------------------------------------------
 
     #[tokio::test]
     async fn hover_full_returns_native_result_without_bridge() {

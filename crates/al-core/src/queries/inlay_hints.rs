@@ -100,7 +100,6 @@ fn collect_inlay_hints(
         // skipped with `<=` rather than `<`.
         let node_end = node.end_position().row as u32;
         if node_end <= range.start.line || node_start > range.end.line {
-            // Entire subtree is outside the visible range — skip it.
             continue;
         }
 
@@ -466,7 +465,6 @@ fn lookup_via_receiver(
         return Some(best);
     }
 
-    // Package symbols by resolved subtype
     if let Some(subtype) = &decl.type_subtype {
         let candidates: Vec<OverloadCandidate> = workspace
             .symbols
@@ -484,7 +482,6 @@ fn lookup_via_receiver(
         }
     }
 
-    // Workspace objects by resolved subtype
     if let Some(subtype) = &decl.type_subtype {
         let obj_key = subtype.to_lowercase();
         if let Some(file_path) = workspace.file_index.objects.get(&obj_key) {
@@ -555,7 +552,6 @@ fn collect_return_type_hints(
         // the range is correctly skipped.
         let node_end = node.end_position().row as u32;
         if node_end <= range.start.line || node_start > range.end.line {
-            // Entire subtree is outside the visible range — skip it.
             continue;
         }
 
@@ -838,8 +834,6 @@ mod tests {
         );
     }
 
-    // ---- Parameter hint pipeline ----------------------------------------
-
     /// Walk `tree` and return the first node whose kind is `argument_list` or
     /// `call_arguments`, so tests can drive `extract_call_info` /
     /// `add_parameter_hints` against a real call site.
@@ -1090,8 +1084,6 @@ mod tests {
         );
     }
 
-    // ---- parse_type_string ----------------------------------------------
-
     #[test]
     fn parse_type_string_quoted_subtype() {
         // `Record "Sales Header"` → base "Record", subtype "Sales Header".
@@ -1120,8 +1112,6 @@ mod tests {
         assert_eq!(base, "Record");
         assert_eq!(sub, None);
     }
-
-    // ---- score_overload --------------------------------------------------
 
     #[test]
     fn score_overload_exact_arity_beats_excess_arity() {
@@ -1190,8 +1180,6 @@ mod tests {
         assert_eq!(score_overload(&candidate, &arg_types), 50);
     }
 
-    // ---- overload_candidates_from_symbols --------------------------------
-
     #[test]
     fn overload_candidates_from_symbols_extracts_procedure_params() {
         // A codeunit with a parameterized procedure must yield one candidate
@@ -1226,8 +1214,6 @@ mod tests {
             "no procedure named DoesNotExist exists, expected no candidates"
         );
     }
-
-    // ---- infer_argument_type edge cases ----------------------------------
 
     /// Build a single-argument call and return its first inferred argument type.
     fn infer_single(src: &str) -> Option<InferredType> {
@@ -1275,8 +1261,6 @@ mod tests {
         assert_eq!(inferred.base, "Decimal");
     }
 
-    // ---- extract_receiver_before via member_suffix chain -----------------
-
     #[test]
     fn extract_call_info_chained_member_receiver() {
         // `Rec.Field.SetRange(1)` — the receiver before SetRange's call suffix
@@ -1297,8 +1281,6 @@ mod tests {
         // Receiver resolves to the nearest member name in the chain.
         assert_eq!(info.1.as_deref(), Some("Name"));
     }
-
-    // ---- source_line -----------------------------------------------------
 
     #[test]
     fn source_line_returns_requested_row() {
@@ -1330,8 +1312,6 @@ mod tests {
         );
     }
 
-    // ---- lookup_embedded_builtin -----------------------------------------
-
     #[test]
     fn lookup_embedded_builtin_matches_language_data() {
         // Don't hardcode a builtin name — discover one from LanguageData at
@@ -1353,8 +1333,6 @@ mod tests {
             "an unknown function name must not resolve to an embedded builtin"
         );
     }
-
-    // ---- top-level inlay_hints entry point -------------------------------
 
     #[test]
     fn inlay_hints_none_for_unopened_document() {

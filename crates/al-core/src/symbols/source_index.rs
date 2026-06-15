@@ -143,14 +143,17 @@ impl AppSourceIndex {
 pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     let cache = SOURCE_INDEX_CACHE.get_or_init(DashMap::new);
 
+    // Return the cached index iff it is still current with the file on disk.
+    let fresh = || {
+        let existing = cache.get(app_path)?;
+        let meta = std::fs::metadata(app_path).ok()?;
+        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        (existing.modified == modified).then(|| existing.value().clone())
+    };
+
     // --- First check (no lock) ---
-    if let Some(existing) = cache.get(app_path) {
-        if let Ok(meta) = std::fs::metadata(app_path) {
-            let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            if existing.modified == modified {
-                return Ok(existing.value().clone());
-            }
-        }
+    if let Some(index) = fresh() {
+        return Ok(index);
     }
 
     // --- Serialise concurrent builds for this specific path ---
@@ -166,13 +169,8 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     let _guard = lock_arc.lock().unwrap_or_else(|e| e.into_inner());
 
     // --- Second check (under lock) ---
-    if let Some(existing) = cache.get(app_path) {
-        if let Ok(meta) = std::fs::metadata(app_path) {
-            let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            if existing.modified == modified {
-                return Ok(existing.value().clone());
-            }
-        }
+    if let Some(index) = fresh() {
+        return Ok(index);
     }
 
     let built = Arc::new(AppSourceIndex::from_app_path(app_path)?);
@@ -358,8 +356,6 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    // -- helpers --------------------------------------------------------------
-
     fn entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {
             kind,
@@ -400,8 +396,6 @@ mod tests {
         tmp.flush().unwrap();
         tmp.into_temp_path()
     }
-
-    // -- parse_object_header --------------------------------------------------
 
     #[test]
     fn parse_object_header_basic_unquoted() {
@@ -453,8 +447,6 @@ mod tests {
         assert_eq!(got, (ObjectKind::Enum, 7, "RealEnum".to_string()));
     }
 
-    // -- skip_ws_and_comments -------------------------------------------------
-
     #[test]
     fn skip_ws_and_comments_advances_past_mixed() {
         let b = b"  \t\n // line\n /* blk */ X";
@@ -481,8 +473,6 @@ mod tests {
         assert_eq!(i, b.len());
     }
 
-    // -- parse_int ------------------------------------------------------------
-
     #[test]
     fn parse_int_reads_digits_and_stops() {
         assert_eq!(parse_int(b"12345abc", 0), Some((12345, 5)));
@@ -497,8 +487,6 @@ mod tests {
     fn parse_int_offset_start() {
         assert_eq!(parse_int(b"xx99", 2), Some((99, 4)));
     }
-
-    // -- parse_quoted_ident ---------------------------------------------------
 
     #[test]
     fn parse_quoted_ident_simple() {
@@ -531,8 +519,6 @@ mod tests {
         assert_eq!(end, bytes.len());
     }
 
-    // -- parse_name -----------------------------------------------------------
-
     #[test]
     fn parse_name_unquoted_stops_at_brace() {
         let s = "MyObj{";
@@ -559,8 +545,6 @@ mod tests {
         assert_eq!(parse_name(s2, s2.as_bytes(), 0), None); // whitespace -> empty
     }
 
-    // -- is_ident_start / is_ident_char --------------------------------------
-
     #[test]
     fn ident_classifiers() {
         assert!(is_ident_start(b'a'));
@@ -574,8 +558,6 @@ mod tests {
         assert!(is_ident_char(b'_'));
         assert!(!is_ident_char(b'-'));
     }
-
-    // -- source_path_for_entry (lookup logic) ---------------------------------
 
     fn make_index_with(
         by_id: &[((ObjectKind, i32), &str)],
@@ -649,8 +631,6 @@ mod tests {
         assert_eq!(idx.source_path_for_entry(&e), None);
     }
 
-    // -- from_app_path + extract_* (full pipeline) ----------------------------
-
     #[test]
     fn from_app_path_indexes_and_extracts_source() {
         let tab_src = "table 18 Customer\n{\n    fields { field(1; No; Code[20]) { } }\n}";
@@ -663,7 +643,6 @@ mod tests {
 
         let idx = AppSourceIndex::from_app_path(&path).unwrap();
 
-        // Lookup by id.
         let cust = entry(ObjectKind::Table, 18, "Customer");
         assert_eq!(
             idx.source_path_for_entry(&cust),
@@ -721,8 +700,6 @@ mod tests {
         assert!(idx.extract_source_for_entry(&ghost).is_none());
     }
 
-    // -- get_or_build / cache -------------------------------------------------
-
     #[test]
     #[serial_test::serial]
     fn get_or_build_caches_same_arc_and_resolves_content() {
@@ -755,8 +732,6 @@ mod tests {
     fn get_or_build_errors_for_missing_file() {
         assert!(get_or_build(Path::new("/no/such/path/nope.app")).is_err());
     }
-
-    // -- MAX_HEADER_BYTES truncation ------------------------------------------
 
     /// Like `build_app` but takes owned `(String, Vec<u8>)` entries so callers
     /// can synthesise large / binary contents (header truncation, zip bombs).
@@ -847,8 +822,6 @@ mod tests {
         );
     }
 
-    // -- zip-bomb guard (MAX_TOTAL_DECOMPRESSED_BYTES) ------------------------
-
     #[test]
     fn zip_bomb_guard_rejects_excessive_total_decompressed_bytes() {
         // Each .al entry contributes at most MAX_HEADER_BYTES (256 KiB) to the
@@ -897,8 +870,6 @@ mod tests {
         );
     }
 
-    // -- duplicate (kind,id) first-wins ---------------------------------------
-
     #[test]
     fn duplicate_kind_id_keeps_first_seen_path() {
         // Two .al files declare the same (Codeunit, 50100). `or_insert_with`
@@ -912,8 +883,6 @@ mod tests {
         let e = entry(ObjectKind::Codeunit, 50100, "Dup");
         assert_eq!(idx.source_path_for_entry(&e), Some("src/First.al"));
     }
-
-    // -- case-insensitive .al extension matching ------------------------------
 
     #[test]
     fn uppercase_al_extension_is_indexed() {
@@ -942,8 +911,6 @@ mod tests {
             None
         );
     }
-
-    // -- staleness / rebuild on mtime change ----------------------------------
 
     /// Set a file's mtime using only std (`File::set_modified`, stable since
     /// Rust 1.75) so the staleness tests don't need an extra crate.

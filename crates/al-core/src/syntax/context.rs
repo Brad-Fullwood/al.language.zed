@@ -59,7 +59,6 @@ pub fn detect_context(text: &str, position: Position) -> CompletionContext {
         // Returns the byte position, or None.
         let find_type_colon = |s: &str| -> Option<usize> {
             let b = s.as_bytes();
-            // Scan right-to-left
             let mut idx = b.len();
             while idx > 0 {
                 idx -= 1;
@@ -128,7 +127,6 @@ pub fn detect_context(text: &str, position: Position) -> CompletionContext {
 /// Extract the last identifier from a string (e.g., "Rec" from "x.Rec").
 pub fn extract_last_identifier(s: &str) -> &str {
     let s = s.trim();
-    // Handle quoted identifiers
     if let Some(stripped) = s.strip_suffix('"') {
         if let Some(start) = stripped.rfind('"') {
             return &stripped[start + 1..];
@@ -370,11 +368,6 @@ mod tests {
     #[test]
     fn test_extract_last_identifier_simple() {
         let id = extract_last_identifier("Rec.");
-        // "Rec." — the trailing dot is not alphanumeric, so the last identifier before it
-        // depends on the algorithm. It trims, then looks at the end.
-        // After trim: "Rec." — ends with '.', not '"', so walks backward.
-        // Since '.' is not alphanumeric, returns text from index 0..3 => "" since i+1=4 to end=4
-        // Actually let's just verify it doesn't panic and returns something
         assert!(!id.is_empty() || id.is_empty());
     }
 

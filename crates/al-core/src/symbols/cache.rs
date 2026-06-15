@@ -83,7 +83,6 @@ impl SymbolCache {
 
         let cache_data = fs::read(&cache_path).ok()?;
 
-        // First read the header to validate freshness
         let (header, objects_data) = decode_cache(&cache_data)?;
 
         let mtime_duration = mtime.duration_since(SystemTime::UNIX_EPOCH).ok()?;
@@ -129,7 +128,6 @@ impl SymbolCache {
             }
         };
 
-        // Reconstruct the SymbolPackage from cached manifest fields + objects.
         let pkg = SymbolPackage {
             app_id: header.app_id.clone(),
             name: header.package_name.clone(),
@@ -162,7 +160,6 @@ impl SymbolCache {
         for entry in entries.flatten() {
             let path = entry.path();
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            // Match files like "foo.cache.tmp.12345"
             if !name.contains(".tmp.") {
                 continue;
             }
@@ -273,7 +270,6 @@ impl SymbolCache {
             .file_name()
             .and_then(|f| f.to_str())
             .unwrap_or("unknown");
-        // Use a simple hash of the full path to avoid collisions
         let hash = simple_hash(app_path);
         self.cache_dir.join(format!("{filename}.{hash:016x}.cache"))
     }
@@ -409,7 +405,6 @@ mod tests {
 
         cache.save(&app_path, &pkg).unwrap();
 
-        // Modify the .app file to invalidate the cache
         std::thread::sleep(std::time::Duration::from_millis(50));
         fs::write(&app_path, b"NAVX modified content").unwrap();
 
@@ -437,7 +432,6 @@ mod tests {
 
         cache.save(&app_path, &pkg).unwrap();
 
-        // Corrupt the cache file
         let cache_path = cache.cache_path_for(&app_path);
         fs::write(&cache_path, b"corrupted data").unwrap();
 

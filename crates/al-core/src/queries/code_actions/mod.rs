@@ -70,24 +70,20 @@ pub fn source_actions(workspace: &Workspace, uri: &Url, range: Range) -> Vec<Cod
     };
     let mut actions = Vec::new();
 
-    // Add procedure documentation template
     if let Some(action) = doc_region::source_action_add_doc_comment(workspace, uri, &text, range) {
         actions.push(action);
     }
 
-    // Add region wrapper
     if range.start != range.end {
         if let Some(action) = doc_region::source_action_add_region(uri, &text, range) {
             actions.push(action);
         }
     }
 
-    // Add using statement for unresolved types in known namespaces
     actions.extend(namespace::source_action_add_using(
         workspace, uri, &text, range,
     ));
 
-    // Convert if-else chain to case statement
     if let Some(action) = if_to_case::source_action_if_to_case(workspace, uri, &text, range) {
         actions.push(action);
     }

@@ -86,7 +86,6 @@ fn find_codeunit_implementing_interface(
     let source = text.as_bytes();
     let root = tree.root_node();
 
-    // Walk top-level children (each is an object declaration)
     for obj_idx in 0..root.child_count() {
         let obj_node = root.child(obj_idx)?;
 
@@ -101,7 +100,6 @@ fn find_codeunit_implementing_interface(
             continue;
         }
 
-        // Look for an `implements_clause` child
         let has_match = find_implements_clause_match(obj_node, source, interface_lower);
         if has_match {
             let ts_range = obj_node.range();
@@ -238,11 +236,9 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // End-to-end tests that drive the real `find_implementations` entry point
     // and the tree-walking helpers (`find_codeunit_implementing_interface`,
     // `find_implements_clause_match`).
-    // -----------------------------------------------------------------------
 
     /// A codeunit source that references an interface via an `implements` clause.
     /// The caret is placed on the interface name so `node_clean_name` yields it.

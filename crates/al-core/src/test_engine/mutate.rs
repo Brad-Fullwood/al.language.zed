@@ -19,10 +19,6 @@ use tokio::sync::mpsc;
 
 use crate::workspace::Workspace;
 
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
 /// Errors that can occur during mutation testing.
 #[derive(Debug, Error)]
 pub enum MutationError {
@@ -33,10 +29,6 @@ pub enum MutationError {
     #[error("Mutation apply failed: {0}")]
     ApplyFailed(String),
 }
-
-// ---------------------------------------------------------------------------
-// Core data types
-// ---------------------------------------------------------------------------
 
 /// A single mutation variant describing one source-level change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,10 +126,6 @@ impl MutationReport {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Options and events
-// ---------------------------------------------------------------------------
-
 /// Options controlling a mutation-testing run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -174,10 +162,6 @@ pub enum MutationEvent {
     VariantFinished { outcome: VariantOutcome },
     Done { report: MutationReport },
 }
-
-// ---------------------------------------------------------------------------
-// Variant generation
-// ---------------------------------------------------------------------------
 
 /// Walk the parse tree of `source` (already parsed into `tree`) and produce
 /// one `MutationVariant` per applicable token, covering the five built-in
@@ -230,153 +214,36 @@ pub(crate) fn generate_variants(
         // The `operator` regex matches runs of symbols including `<`, `<=`, `>`, `>=`,
         // `=`, `<>`, `:=`, `+`, `-`, `*`, `/`, etc.
         if kind == "operator" && node.parent().is_some_and(|p| p.kind() == "binary_operator") {
-            match token_text {
-                // Conditional boundary: < ↔ <=
-                "<" => {
-                    variants.push(make_variant(
-                        "cb",
-                        file,
-                        line,
-                        token_text,
-                        "<=",
-                        ByteRange {
-                            start: start_byte,
-                            end: end_byte,
-                        },
-                        "conditional boundary: < → <=",
-                    ));
-                }
-                "<=" => {
-                    variants.push(make_variant(
-                        "cb",
-                        file,
-                        line,
-                        token_text,
-                        "<",
-                        ByteRange {
-                            start: start_byte,
-                            end: end_byte,
-                        },
-                        "conditional boundary: <= → <",
-                    ));
-                }
-                // Conditional boundary: > ↔ >=
-                ">" => {
-                    variants.push(make_variant(
-                        "cb",
-                        file,
-                        line,
-                        token_text,
-                        ">=",
-                        ByteRange {
-                            start: start_byte,
-                            end: end_byte,
-                        },
-                        "conditional boundary: > → >=",
-                    ));
-                }
-                ">=" => {
-                    variants.push(make_variant(
-                        "cb",
-                        file,
-                        line,
-                        token_text,
-                        ">",
-                        ByteRange {
-                            start: start_byte,
-                            end: end_byte,
-                        },
-                        "conditional boundary: >= → >",
-                    ));
-                }
-                // Conditional negation: = ↔ <>
-                "=" => {
-                    variants.push(make_variant(
-                        "cn",
-                        file,
-                        line,
-                        token_text,
-                        "<>",
-                        ByteRange {
-                            start: start_byte,
-                            end: end_byte,
-                        },
-                        "conditional negation: = → <>",
-                    ));
-                }
-                "<>" => {
-                    variants.push(make_variant(
-                        "cn",
-                        file,
-                        line,
-                        token_text,
-                        "=",
-                        ByteRange {
-                            start: start_byte,
-                            end: end_byte,
-                        },
-                        "conditional negation: <> → =",
-                    ));
-                }
-                // Arithmetic operator swap: + ↔ -
-                "+" => {
-                    variants.push(make_variant(
-                        "ao",
-                        file,
-                        line,
-                        token_text,
-                        "-",
-                        ByteRange {
-                            start: start_byte,
-                            end: end_byte,
-                        },
-                        "arithmetic operator: + → -",
-                    ));
-                }
-                "-" => {
-                    variants.push(make_variant(
-                        "ao",
-                        file,
-                        line,
-                        token_text,
-                        "+",
-                        ByteRange {
-                            start: start_byte,
-                            end: end_byte,
-                        },
-                        "arithmetic operator: - → +",
-                    ));
-                }
-                // Arithmetic operator swap: * ↔ /
-                "*" => {
-                    variants.push(make_variant(
-                        "ao",
-                        file,
-                        line,
-                        token_text,
-                        "/",
-                        ByteRange {
-                            start: start_byte,
-                            end: end_byte,
-                        },
-                        "arithmetic operator: * → /",
-                    ));
-                }
-                "/" => {
-                    variants.push(make_variant(
-                        "ao",
-                        file,
-                        line,
-                        token_text,
-                        "*",
-                        ByteRange {
-                            start: start_byte,
-                            end: end_byte,
-                        },
-                        "arithmetic operator: / → *",
-                    ));
-                }
-                _ => {}
+            // (operator, mutation-kind code, replacement, description). Each row
+            // is a single binary-operator swap; the boundary (cb), negation (cn)
+            // and arithmetic (ao) families all share the same make_variant shape.
+            const OP_MUTATIONS: &[(&str, &str, &str, &str)] = &[
+                ("<", "cb", "<=", "conditional boundary: < → <="),
+                ("<=", "cb", "<", "conditional boundary: <= → <"),
+                (">", "cb", ">=", "conditional boundary: > → >="),
+                (">=", "cb", ">", "conditional boundary: >= → >"),
+                ("=", "cn", "<>", "conditional negation: = → <>"),
+                ("<>", "cn", "=", "conditional negation: <> → ="),
+                ("+", "ao", "-", "arithmetic operator: + → -"),
+                ("-", "ao", "+", "arithmetic operator: - → +"),
+                ("*", "ao", "/", "arithmetic operator: * → /"),
+                ("/", "ao", "*", "arithmetic operator: / → *"),
+            ];
+            if let Some(&(_, mutation_kind, replacement, description)) =
+                OP_MUTATIONS.iter().find(|(op, ..)| *op == token_text)
+            {
+                variants.push(make_variant(
+                    mutation_kind,
+                    file,
+                    line,
+                    token_text,
+                    replacement,
+                    ByteRange {
+                        start: start_byte,
+                        end: end_byte,
+                    },
+                    description,
+                ));
             }
         }
         // Boolean literal flip.
@@ -500,10 +367,6 @@ fn make_variant(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Variant application
-// ---------------------------------------------------------------------------
-
 /// Return a copy of `source` with the mutation described by `variant` applied.
 ///
 /// Replaces exactly `variant.byte_start..variant.byte_end` with `variant.mutated`.
@@ -541,10 +404,6 @@ fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
     idx
 }
 
-// ---------------------------------------------------------------------------
-// Workspace-level variant generation (used by daemon dispatch)
-// ---------------------------------------------------------------------------
-
 /// Generate mutation variants for a specific file in the workspace.
 ///
 /// Returns an empty `Vec` if the file is not found or cannot be parsed.
@@ -567,10 +426,6 @@ pub(crate) fn generate_variants_for_file(
     generate_variants(file_path, &text, &tree)
 }
 
-// ---------------------------------------------------------------------------
-// Async mutation-testing runner
-// ---------------------------------------------------------------------------
-
 /// Run mutation testing across workspace test files.
 ///
 /// For each test file, generates variants and for each variant runs the
@@ -584,7 +439,6 @@ pub async fn run_mutation_testing(
     opts: MutationOptions,
     tx: mpsc::Sender<MutationEvent>,
 ) -> Result<MutationReport, MutationError> {
-    // Collect files to mutate
     let files = collect_mutation_files(workspace, &opts);
     if files.is_empty() {
         return Err(MutationError::NoTestFiles);
@@ -860,16 +714,10 @@ async fn run_interp_tests_against_mutant(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::syntax::AlParser;
-
-    // --- Helper fixture -------------------------------------------------------
 
     /// A simple AL codeunit with diverse token types for mutation testing.
     const AL_FIXTURE: &str = r#"codeunit 50100 "Mutation Test Subject"
@@ -955,8 +803,6 @@ mod tests {
             "original source must be restored after the run"
         );
     }
-
-    // --- Positive: correct variants generated ---------------------------------
 
     #[test]
     fn conditional_boundary_lt_produces_variant() {
@@ -1054,8 +900,6 @@ mod tests {
         assert!(!minus_one.is_empty(), "Expected 18 → 17 variant");
     }
 
-    // --- Positive: apply_variant produces correct source ----------------------
-
     #[test]
     fn apply_variant_replaces_token_byte_precisely() {
         // Use a full codeunit so the tree-sitter grammar has proper context
@@ -1110,8 +954,6 @@ mod tests {
         // Empty source produces no variants
         assert!(variants.is_empty(), "Empty source should have no variants");
     }
-
-    // --- Positive: MutationReport helpers ------------------------------------
 
     #[test]
     fn mutation_report_score_none_when_no_variants_under_interpreter() {
@@ -1168,8 +1010,6 @@ mod tests {
         };
         assert_eq!(report.mutation_score(), None);
     }
-
-    // --- Negative: invalid / edge-case paths ----------------------------------
 
     #[test]
     fn generate_variants_no_panics_on_minimal_source() {
@@ -1235,8 +1075,6 @@ mod tests {
         // Result must not panic and must be a valid string of same total length ± delta
         assert!(!result.is_empty());
     }
-
-    // --- MutationError variants -----------------------------------------------
 
     #[test]
     fn mutation_error_display_no_test_files() {

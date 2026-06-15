@@ -19,9 +19,7 @@ pub fn sort_members(text: &str) -> Option<String> {
         return None;
     }
 
-    // Find the opening brace of the object body (line containing only `{`)
     let body_open = lines.iter().position(|l| l.trim() == "{")?;
-    // Find the closing brace (last line with only `}`)
     let body_close = lines.iter().rposition(|l| l.trim() == "}")?;
 
     if body_close <= body_open {
@@ -44,7 +42,6 @@ pub fn sort_members(text: &str) -> Option<String> {
         return Some(text.to_string());
     }
 
-    // Categorise members
     let mut var_block: Option<Vec<&str>> = None;
     let mut triggers: Vec<(String, Vec<&str>)> = Vec::new();
     let mut procedures: Vec<(String, Vec<&str>)> = Vec::new();
@@ -91,28 +88,23 @@ pub fn sort_members(text: &str) -> Option<String> {
         }
     }
 
-    // Sort triggers and procedures alphabetically (case-insensitive)
     triggers.sort_by_key(|a| a.0.to_lowercase());
     procedures.sort_by_key(|a| a.0.to_lowercase());
 
-    // Reconstruct
     let mut result_lines: Vec<&str> = header.to_vec();
 
-    // var block first
     if let Some(vb) = var_block {
         for l in vb {
             result_lines.push(l);
         }
     }
 
-    // triggers
     for (_, member) in triggers {
         for l in member {
             result_lines.push(l);
         }
     }
 
-    // procedures
     for (_, member) in procedures {
         for l in member {
             result_lines.push(l);
@@ -149,7 +141,6 @@ fn split_into_members<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
     for &line in lines {
         let trimmed = line.trim().to_lowercase();
 
-        // Check if this line starts a new top-level member
         let is_member_start = depth == 0 && is_member_keyword(&trimmed);
 
         if is_member_start && !current.is_empty() {
@@ -171,9 +162,9 @@ fn split_into_members<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
                                 Some('\'') => {
                                     // Doubled quote is an escape — peek to check
                                     if chars.peek() == Some(&'\'') {
-                                        chars.next(); // consume the second `'`
+                                        chars.next();
                                     } else {
-                                        break; // end of string
+                                        break;
                                     }
                                 }
                                 Some(_) => {}
@@ -230,7 +221,6 @@ fn extract_member_name(line: &str, keyword: &str) -> String {
         .strip_prefix(keyword)
         .map(str::trim)
         .unwrap_or(lower.trim());
-    // Take up to first `(` or whitespace
     after
         .split(|c: char| c == '(' || c.is_whitespace())
         .next()
@@ -260,10 +250,6 @@ fn extract_member_name_procedure(line: &str) -> String {
         .unwrap_or("")
         .to_string()
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

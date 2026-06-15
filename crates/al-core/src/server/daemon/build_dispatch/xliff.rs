@@ -4,9 +4,6 @@ use super::super::{require_project_root, rpc_error};
 use crate::workspace::Workspace;
 use al_protocol::jsonrpc::Response;
 
-// XLIFF / Translation dispatchers
-// ---------------------------------------------------------------------------
-
 pub(in crate::server::daemon) async fn dispatch_xlf_generate(
     workspace: &Workspace,
     id: u64,

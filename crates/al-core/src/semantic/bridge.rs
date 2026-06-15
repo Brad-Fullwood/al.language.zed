@@ -13,10 +13,6 @@ use serde::{Deserialize, Serialize};
 
 use super::host::DotNetHost;
 
-// ---------------------------------------------------------------------------
-// Data types
-// ---------------------------------------------------------------------------
-
 /// Request to analyze a file with CodeAnalysis analyzers.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,10 +120,6 @@ pub struct ErrorCodeInfo {
     pub severity: String,
 }
 
-// ---------------------------------------------------------------------------
-// SemanticError
-// ---------------------------------------------------------------------------
-
 /// Errors from the semantic bridge.
 #[derive(Debug, thiserror::Error)]
 pub enum SemanticError {
@@ -187,10 +179,6 @@ fn check_text_size(text: Option<&str>) -> Result<(), SemanticError> {
     }
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// SemanticBridge
-// ---------------------------------------------------------------------------
 
 /// Async bridge to the .NET CodeAnalysis API.
 ///
@@ -591,10 +579,6 @@ impl SemanticBridge {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

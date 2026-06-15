@@ -10,9 +10,6 @@
 use crate::test_runtime::interpreter::value::Value;
 use std::fmt;
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Error type
-// ──────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum FilterParseError {
@@ -28,9 +25,6 @@ pub enum FilterParseError {
     InvalidRange(String, String),
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// AST
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// A parsed BC filter expression.
 #[derive(Debug, Clone, PartialEq)]
@@ -89,9 +83,6 @@ impl fmt::Display for OrderableValue {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Parser
-// ──────────────────────────────────────────────────────────────────────────────
 
 struct Parser<'a> {
     input: &'a str,
@@ -174,7 +165,7 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self) -> Result<FilterExpr, FilterParseError> {
         self.skip_whitespace();
         if self.peek() == Some('(') {
-            self.advance(); // consume '('
+            self.advance();
             let inner = self.parse_expr()?;
             self.skip_whitespace();
             if self.advance() != Some(')') {
@@ -187,7 +178,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // ── Atom ─────────────────────────────────────────────────────────────────
 
     fn parse_atom(&mut self) -> Result<FilterAtom, FilterParseError> {
         self.skip_whitespace();
@@ -319,9 +309,6 @@ fn parse_orderable_str(s: &str) -> Option<OrderableValue> {
     Some(OrderableValue::Text(s.to_string()))
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Public API — parse
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// Parse a BC filter expression string into a [`FilterExpr`] AST.
 ///
@@ -343,9 +330,6 @@ pub fn parse(expr: &str) -> Result<FilterExpr, FilterParseError> {
     Ok(result)
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Public API — matches
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// Test whether `value` satisfies the filter expression `expr`.
 pub fn matches(expr: &FilterExpr, value: &Value) -> bool {
@@ -447,9 +431,6 @@ fn cmp_value(value: &Value, ov: &OrderableValue) -> Option<std::cmp::Ordering> {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Tests
-// ──────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -463,7 +444,6 @@ mod tests {
         Value::Text(s.to_string())
     }
 
-    // ── Positive: equality ────────────────────────────────────────────────────
 
     #[test]
     fn test_equality_integer() {
@@ -479,11 +459,9 @@ mod tests {
         assert!(matches(&expr, &text("Hello")));
         // Case-insensitive by default — lowercase also matches.
         assert!(matches(&expr, &text("hello")));
-        // But a completely different value does not match.
         assert!(!matches(&expr, &text("World")));
     }
 
-    // ── Positive: wildcard ────────────────────────────────────────────────────
 
     #[test]
     fn test_wildcard_star_prefix() {
@@ -518,7 +496,6 @@ mod tests {
         assert!(!matches(&expr, &text("ABBC")));
     }
 
-    // ── Positive: range ───────────────────────────────────────────────────────
 
     #[test]
     fn test_range_inclusive() {
@@ -538,7 +515,6 @@ mod tests {
         assert!(!matches(&expr, &int(49)));
     }
 
-    // ── Positive: relational ─────────────────────────────────────────────────
 
     #[test]
     fn test_greater_than() {
@@ -575,7 +551,6 @@ mod tests {
         assert!(!matches(&expr, &int(5)));
     }
 
-    // ── Positive: OR ─────────────────────────────────────────────────────────
 
     #[test]
     fn test_or_expression() {
@@ -595,7 +570,6 @@ mod tests {
         assert!(!matches(&expr, &int(250)));
     }
 
-    // ── Positive: AND ─────────────────────────────────────────────────────────
 
     #[test]
     fn test_and_expression() {
@@ -607,7 +581,6 @@ mod tests {
         assert!(!matches(&expr, &int(50)));
     }
 
-    // ── Positive: case-sensitive prefix ──────────────────────────────────────
 
     #[test]
     fn test_at_case_sensitive() {
@@ -625,7 +598,6 @@ mod tests {
         assert!(matches(&expr, &text("HELLO")));
     }
 
-    // ── Positive: parenthesised groups ───────────────────────────────────────
 
     #[test]
     fn test_parenthesised_group() {
@@ -635,7 +607,6 @@ mod tests {
         assert!(!matches(&expr, &int(3)));
     }
 
-    // ── Negative: parse errors ────────────────────────────────────────────────
 
     #[test]
     fn test_invalid_empty_expression() {
@@ -656,7 +627,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Property-style: SetRange semantics ───────────────────────────────────
 
     #[test]
     fn test_set_range_only_matches_within() {
@@ -894,7 +864,6 @@ mod proptest_tests {
     use super::*;
     use proptest::prelude::*;
 
-    // ── Strategies ───────────────────────────────────────────────────────────
 
     /// Generate a printable ASCII string safe for use as an unquoted pattern
     /// token (no whitespace, no `|`, `&`, `(`, `)`, and no leading `.` pairs).
@@ -928,25 +897,16 @@ mod proptest_tests {
     ///   - not-equal:               "<>7"
     fn atom_str() -> impl Strategy<Value = String> {
         prop_oneof![
-            // Integer equality
             int_token().prop_map(|n| n.to_string()),
-            // Integer range lo..hi
             range_str().prop_map(|(lo, hi)| format!("{lo}..{hi}")),
-            // Greater-than
             int_token().prop_map(|n| format!(">{n}")),
-            // Greater-or-equal
             int_token().prop_map(|n| format!(">={n}")),
             // Less-than (ensure n >= 1 so LessThan has a meaningful domain)
             (1i64..=1_000_000i64).prop_map(|n| format!("<{n}")),
-            // Less-or-equal
             int_token().prop_map(|n| format!("<={n}")),
-            // Not-equal
             int_token().prop_map(|n| format!("<>{n}")),
-            // Wildcard suffix: "Token*"
             safe_token().prop_map(|s| format!("{s}*")),
-            // Wildcard prefix: "*Token"
             safe_token().prop_map(|s| format!("*{s}")),
-            // Question-mark wildcard in middle: "A?C" (fixed shapes)
             safe_token().prop_map(|s| format!("?{s}")),
         ]
     }
@@ -955,20 +915,14 @@ mod proptest_tests {
     /// Depth is kept shallow (max 2 atoms) to avoid combinatorial explosion.
     fn filter_expr_str() -> impl Strategy<Value = String> {
         prop_oneof![
-            // Single atom
             atom_str(),
-            // OR of two atoms
             (atom_str(), atom_str()).prop_map(|(a, b)| format!("{a}|{b}")),
-            // AND of two atoms
             (atom_str(), atom_str()).prop_map(|(a, b)| format!("{a}&{b}")),
-            // Parenthesised single atom
             atom_str().prop_map(|a| format!("({a})")),
-            // OR inside parens & single atom outside
             (atom_str(), atom_str(), atom_str()).prop_map(|(a, b, c)| format!("({a}|{b})&{c}")),
         ]
     }
 
-    // ── Properties ───────────────────────────────────────────────────────────
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]

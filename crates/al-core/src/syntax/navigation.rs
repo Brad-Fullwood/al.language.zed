@@ -76,7 +76,6 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
     let root = tree.root_node();
     let source = text.as_bytes();
 
-    // Search for object_declaration node
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
         if child.kind() == "object_declaration" {
@@ -84,16 +83,13 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
             let mut id = None;
             let mut name = String::new();
 
-            // Extract kind from the 'kind' field
             if let Some(kind_node) = child.child_by_field_name("kind") {
                 kind_str = kind_node.kind().to_string();
-                // If object_keyword, get the text
                 if kind_str == "object_keyword" {
                     if let Ok(t) = kind_node.utf8_text(source) {
                         kind_str = t.to_lowercase();
                     }
                 } else {
-                    // Strip kw_ prefix
                     kind_str = kind_str
                         .strip_prefix("kw_")
                         .unwrap_or(&kind_str)
@@ -101,7 +97,6 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
                 }
             }
 
-            // Extract id from the 'id' field
             if let Some(id_node) = child.child_by_field_name("id") {
                 if let Ok(id_text) = id_node.utf8_text(source) {
                     id = id_text.parse::<i64>().ok();
@@ -160,7 +155,6 @@ pub fn find_procedure_at(tree: &Tree, text: &str, pos: Position) -> Option<Proce
     let node = find_node_at_position(tree, text, pos)?;
     let source = text.as_bytes();
 
-    // Walk up to find the procedure/trigger node
     let mut current = node;
     loop {
         if current.kind() == "procedure_declaration" || current.kind() == "trigger_declaration" {
@@ -203,7 +197,6 @@ fn find_refs_iterative(
     refs: &mut Vec<tree_sitter::Range>,
 ) {
     walk_tree(root, &mut |node| {
-        // Check if this node is an identifier matching the target name
         if matches!(node.kind(), "identifier" | "quoted_identifier" | "name") {
             if let Ok(text) = node.utf8_text(source) {
                 let text_clean = text.trim_matches('"');
@@ -274,7 +267,6 @@ pub fn collect_call_site_names(tree: &Tree, text: &str) -> std::collections::Has
 /// stack usage is constant w.r.t. document size.
 fn count_call_refs_iterative(root: Node, source: &[u8], target_name: &str, count: &mut usize) {
     walk_tree(root, &mut |node| {
-        // Check if this node is an identifier matching the target name
         if matches!(node.kind(), "identifier" | "quoted_identifier") {
             if let Ok(text) = node.utf8_text(source) {
                 let text_clean = text.trim_matches('"');
@@ -322,7 +314,6 @@ fn is_call_reference(node: Node, _source: &[u8]) -> bool {
     };
 
     match parent.kind() {
-        // Bare call: primary_expression
         "primary_expression" => {
             // The primary_expression must be a child of postfix_expression,
             // and that postfix_expression must also have a call_suffix child.
@@ -338,20 +329,17 @@ fn is_call_reference(node: Node, _source: &[u8]) -> bool {
                 .any(|c| c.kind() == "call_suffix");
             has_call_suffix
         }
-        // Member call: cu.ProcName()
         "member_call_suffix" => {
             // Verify this name is the "member" field (not some other child)
             let field = get_field_name_of_child(parent, name_node);
             field.as_deref() == Some("member")
         }
-        // Scope call: Codeunit::ProcName()
         "scope_call_suffix" => {
             let field = get_field_name_of_child(parent, name_node);
             field.as_deref() == Some("member")
         }
         // Declaration: procedure ProcName() — not a call
         "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => false,
-        // Everything else: not a recognized call context
         _ => false,
     }
 }
@@ -530,7 +518,6 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let refs = find_variable_references(&result.tree, src, "MyVar");
-        // Should find multiple references to MyVar
         assert!(
             refs.len() >= 2,
             "Expected at least 2 references, got {}",
@@ -640,7 +627,6 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let refs = find_variable_references(&result.tree, src, "MyVar");
-        // Case-insensitive match should find references
         assert!(
             !refs.is_empty(),
             "Expected at least 1 case-insensitive reference, got {}",
@@ -714,8 +700,6 @@ mod tests {
         };
         assert_eq!(format!("{}", var_param), "var Output: Integer");
     }
-
-    // ── find_call_references tests ──────────────────────────────────────────
 
     #[test]
     fn test_find_call_references_bare_call() {

@@ -18,9 +18,6 @@ use clap_complete::{Shell, generate};
 
 use commands::{build, debug, insight, lsp};
 
-// ---------------------------------------------------------------------------
-// CLI structure
-// ---------------------------------------------------------------------------
 
 #[derive(Parser)]
 #[command(
@@ -811,9 +808,7 @@ pub enum XlfCommands {
     },
 }
 
-// ---------------------------------------------------------------------------
 // Entry point — invoked from al-explorer's main when CLI args are present.
-// ---------------------------------------------------------------------------
 
 pub fn run(cli: Cli) -> ExitCode {
     match cli.command {

@@ -295,9 +295,6 @@ pub(super) fn dispatch_code_actions(
     ok_response(id, &actions, "textDocument/codeAction")
 }
 
-// ---------------------------------------------------------------------------
-// Symbol queries
-// ---------------------------------------------------------------------------
 
 pub(super) fn dispatch_search(
     workspace: &Workspace,
@@ -319,7 +316,6 @@ pub(super) fn dispatch_search(
         .get("summary")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    // Package symbols
     let results = workspace.symbols.search(query, limit);
     let mut value: Vec<serde_json::Value> = results
         .iter()
@@ -424,14 +420,12 @@ pub(super) fn dispatch_object(
             Err(resp) => return resp,
         },
     };
-    // Package symbols
     let candidates = workspace.symbols.get_by_name(name);
     let mut matches: Vec<serde_json::Value> = candidates
         .iter()
         .filter(|e| e.kind == kind)
         .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail
         .collect();
-    // Workspace file objects
     let name_lower = name.to_lowercase();
     let kind_lower = kind.to_string().to_lowercase();
     for entry in workspace.file_index.object_info.iter() {
@@ -501,7 +495,6 @@ pub(super) fn dispatch_by_id(
         Ok(k) => k,
         Err(e) => return e,
     };
-    // Package symbols
     let results = workspace.symbols.get_by_id(kind, obj_id);
     let mut value: Vec<serde_json::Value> = results
         .iter()

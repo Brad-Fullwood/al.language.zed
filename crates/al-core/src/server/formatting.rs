@@ -20,7 +20,6 @@ pub(crate) fn handle_formatting(
 
     let formatted = crate::syntax::format_al(&text, &format_options);
 
-    // If unchanged, return no edits
     if formatted == text {
         return Some(Vec::new());
     }

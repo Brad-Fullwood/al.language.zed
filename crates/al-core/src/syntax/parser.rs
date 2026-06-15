@@ -122,7 +122,6 @@ mod tests {
     fn test_parse_unicode_content() {
         let mut parser = AlParser::new();
         let result = parser.parse("codeunit 50100 \"Ünîcödé Tëst\" { }");
-        // Should parse without panicking
         assert!(result.tree.root_node().child_count() > 0);
     }
 
@@ -224,7 +223,6 @@ mod tests {
 
     #[test]
     fn test_parse_list_of_interface_variable() {
-        // `List of [Interface IFoo]` should parse without errors
         let mut parser = AlParser::new();
         let source = r#"codeunit 50100 "Test"
 {
@@ -242,7 +240,6 @@ mod tests {
             result.tree.root_node().child_count() > 0,
             "Should parse List of [Interface ...] successfully"
         );
-        // The parse should have no ERROR nodes for this valid syntax
         let root_text = result.tree.root_node().to_sexp();
         assert!(
             !root_text.contains("ERROR"),
@@ -252,7 +249,6 @@ mod tests {
 
     #[test]
     fn test_parse_list_of_interface_return_type() {
-        // `List of [Interface IFoo]` as a procedure return type
         let mut parser = AlParser::new();
         let source = r#"codeunit 50100 "Test"
 {

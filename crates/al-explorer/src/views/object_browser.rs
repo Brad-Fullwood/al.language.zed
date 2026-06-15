@@ -14,9 +14,6 @@ use crate::{
     truncate_with_ellipsis,
 };
 
-// ---------------------------------------------------------------------------
-// Layout helpers (exclusive to object browser)
-// ---------------------------------------------------------------------------
 
 struct UiLayout {
     main_columns: [Rect; 3],
@@ -62,9 +59,6 @@ fn inner_area(rect: Rect) -> Rect {
     Block::default().borders(Borders::ALL).inner(rect)
 }
 
-// ---------------------------------------------------------------------------
-// Object browser key/mouse handlers and renderer
-// ---------------------------------------------------------------------------
 
 pub(crate) fn handle_object_browser_key(app: &mut App, key: crossterm::event::KeyEvent) {
     use crossterm::event::KeyCode;
@@ -265,9 +259,6 @@ pub(crate) fn handle_object_browser_mouse(
 pub(crate) fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     let layout = compute_layout(area);
 
-    // ==========================================
-    // 1. Search Bar (Left Top)
-    // ==========================================
     let search_style = pane_style(app.active_pane == ActivePane::Search);
 
     let search_block = Block::default()
@@ -297,9 +288,6 @@ pub(crate) fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     let icon_p = Paragraph::new(filter_icon).alignment(ratatui::layout::Alignment::Right);
     f.render_widget(icon_p, search_chunks[1]);
 
-    // ==========================================
-    // 2. Packages List (Left Bottom)
-    // ==========================================
     let pkg_style = pane_style(app.active_pane == ActivePane::Packages);
 
     let packages: Vec<ratatui::widgets::ListItem> = app
@@ -327,9 +315,6 @@ pub(crate) fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
         &mut app.package_list_state,
     );
 
-    // ==========================================
-    // 3. Types Tabs (Middle Top)
-    // ==========================================
     let obj_style = pane_style(app.active_pane == ActivePane::Objects);
 
     let tabs_block = Block::default()
@@ -438,9 +423,6 @@ pub(crate) fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
         }
     }
 
-    // ==========================================
-    // 4. Objects List (Middle Bottom)
-    // ==========================================
     if let Some(status) = &app.init_status {
         // Workspace still loading (or failed): show the status where the
         // objects will appear instead of a silently empty pane (FB-1).
@@ -495,9 +477,6 @@ pub(crate) fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
         );
     }
 
-    // ==========================================
-    // 5. Details Pane (Right Full Column)
-    // ==========================================
     let detail_style = pane_style(app.active_pane == ActivePane::Details);
 
     let list_items: Vec<ListItem> = app

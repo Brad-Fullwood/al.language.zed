@@ -40,7 +40,6 @@ pub fn find_duplicates(
     min_tokens: usize,
     min_similarity: f32,
 ) -> Vec<DuplicateBlock> {
-    // Extract procedure bodies from all workspace files
     let mut procedures: Vec<ProcedureBody> = Vec::new();
 
     for entry in workspace.file_index.files.iter() {
@@ -58,7 +57,6 @@ pub fn find_duplicates(
         collect_procedure_bodies(&file_path, &text, &obj_info.name, &tree, &mut procedures);
     }
 
-    // Compare all pairs
     let mut duplicates = Vec::new();
     for i in 0..procedures.len() {
         for j in (i + 1)..procedures.len() {
@@ -93,7 +91,6 @@ pub fn find_duplicates(
         }
     }
 
-    // Sort by similarity descending
     duplicates.sort_by(|a, b| {
         b.similarity
             .partial_cmp(&a.similarity)
@@ -141,7 +138,6 @@ fn collect_procs_recursive(
 
                 let line = node.start_position().row as u32 + 1;
 
-                // Extract normalized tokens from the procedure body
                 let tokens = extract_normalized_tokens(node, source);
 
                 procedures.push(ProcedureBody {
@@ -229,7 +225,6 @@ fn compute_similarity(a: &[String], b: &[String]) -> f32 {
         return 0.0;
     }
 
-    // Build bigram bags
     let a_bigrams = bigrams(a);
     let b_bigrams = bigrams(b);
 

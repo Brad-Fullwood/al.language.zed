@@ -34,6 +34,20 @@ impl std::fmt::Display for ResolvedType {
     }
 }
 
+/// Look up the builtin type for `receiver`, trying the declared type name first
+/// and falling back to its subtype. The returned reference borrows from `cache`.
+fn builtin_for<'a>(
+    cache: &'a crate::semantic::SemanticCache,
+    receiver: &ResolvedType,
+) -> Option<&'a crate::semantic::BuiltinType> {
+    cache.get_type(&receiver.type_name).or_else(|| {
+        receiver
+            .type_subtype
+            .as_deref()
+            .and_then(|s| cache.get_type(s))
+    })
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum ResolvedMemberKind {
     Variable {
@@ -584,13 +598,7 @@ pub(crate) fn resolve_member(
         .semantic_cache
         .read()
         .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
-    let builtin = cache.get_type(&receiver.type_name).or_else(|| {
-        receiver
-            .type_subtype
-            .as_deref()
-            .and_then(|s| cache.get_type(s))
-    });
-    if let Some(builtin) = builtin {
+    if let Some(builtin) = builtin_for(&cache, receiver) {
         for method in &builtin.methods {
             if method.name.eq_ignore_ascii_case(target_name) {
                 tracing::debug!(
@@ -638,13 +646,7 @@ pub(crate) fn resolve_builtin_overloads(
         .semantic_cache
         .read()
         .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
-    let builtin = cache.get_type(&receiver.type_name).or_else(|| {
-        receiver
-            .type_subtype
-            .as_deref()
-            .and_then(|s| cache.get_type(s))
-    });
-    if let Some(builtin) = builtin {
+    if let Some(builtin) = builtin_for(&cache, receiver) {
         for method in &builtin.methods {
             if method.name.eq_ignore_ascii_case(target_name) {
                 results.push(ResolvedMember {
@@ -989,13 +991,7 @@ pub(crate) fn completion_items_for_receiver(
         .semantic_cache
         .read()
         .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
-    let builtin = cache.get_type(&receiver.type_name).or_else(|| {
-        receiver
-            .type_subtype
-            .as_deref()
-            .and_then(|s| cache.get_type(s))
-    });
-    if let Some(builtin) = builtin {
+    if let Some(builtin) = builtin_for(&cache, receiver) {
         for method in &builtin.methods {
             builtin_methods += 1;
             items.push(CompletionCandidate {

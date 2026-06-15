@@ -95,9 +95,6 @@ fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eva
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn simple_error(message: &str) -> ErrorInfo {
     ErrorInfo {
@@ -196,7 +193,6 @@ fn eval_unary(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
 fn eval_expression_node(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
     let named_count = node.named_child_count();
 
-    // Collect all named children.
     let children: Vec<Node<'_>> = (0..named_count)
         .filter_map(|i| node.named_child(i))
         .collect();
@@ -453,9 +449,6 @@ fn values_cmp(a: &Value, b: &Value, predicate: impl Fn(std::cmp::Ordering) -> bo
     Eval::Normal(Value::Boolean(predicate(ord)))
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

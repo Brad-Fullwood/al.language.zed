@@ -15,9 +15,6 @@ use crate::{
     App, MAX_INPUT_LEN, advance_list_selection, ensure_daemon_client, input_focused_style,
 };
 
-// ---------------------------------------------------------------------------
-// Event chain view
-// ---------------------------------------------------------------------------
 
 /// A single row shown in the event chain results list.
 #[derive(Debug, Clone)]
@@ -263,7 +260,6 @@ pub(crate) fn handle_event_chain_key(app: &mut App, key: crossterm::event::KeyEv
                 view.input_focused = true;
             }
             KeyCode::Enter => {
-                // Re-run trace with current query
                 view.input_focused = true;
             }
             _ => {}

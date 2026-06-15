@@ -6,9 +6,6 @@ use super::super::XlfCommands;
 
 use super::{connect, print_json, project_root, report_error, run_command};
 
-// ---------------------------------------------------------------------------
-// Shared build output
-// ---------------------------------------------------------------------------
 
 /// Print a build/package result in human-readable form and return the exit code.
 ///
@@ -66,9 +63,6 @@ fn print_build_result(result: &Value, json: bool) -> ExitCode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Commands
-// ---------------------------------------------------------------------------
 
 /// Real-project compiles routinely exceed the default 30s request
 /// deadline (alc on a large workspace, cold .NET start). 10 minutes.

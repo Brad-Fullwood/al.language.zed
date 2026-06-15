@@ -26,9 +26,6 @@ use serde::Serialize;
 
 use super::graph::{InsightEdge, InsightGraph, InsightNode, NodeKey};
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
 
 /// Stable identifier for a node inside a `CallGraph`.
 ///
@@ -129,9 +126,6 @@ impl CallGraph {
         Self::default()
     }
 
-    // ------------------------------------------------------------------
-    // Construction
-    // ------------------------------------------------------------------
 
     /// Populate the call graph from an already-built [`InsightGraph`].
     ///
@@ -222,9 +216,6 @@ impl CallGraph {
         graph.get_node(key).map(NodeId::from)
     }
 
-    // ------------------------------------------------------------------
-    // Queries
-    // ------------------------------------------------------------------
 
     /// Return all outgoing edges from `node`.
     pub fn callees_of(&self, node: NodeId) -> &[CallEdge] {
@@ -273,9 +264,6 @@ impl CallGraph {
             .unwrap_or_default()
     }
 
-    // ------------------------------------------------------------------
-    // Incremental update
-    // ------------------------------------------------------------------
 
     /// Register a node from the insight graph (call when adding new nodes
     /// incrementally, e.g. after parsing a newly opened file).
@@ -298,9 +286,6 @@ impl CallGraph {
         self.resolution.insert(node, state);
     }
 
-    // ------------------------------------------------------------------
-    // Internal helpers
-    // ------------------------------------------------------------------
 
     fn insert_edge(&mut self, edge: CallEdge) {
         // Deduplication: don't insert if an identical edge already exists.
@@ -322,9 +307,6 @@ impl CallGraph {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: build NodeInfo from an InsightNode
-// ---------------------------------------------------------------------------
 
 fn node_info(id: NodeId, node: &InsightNode) -> NodeInfo {
     use super::node_kind;
@@ -362,18 +344,12 @@ fn node_info(id: NodeId, node: &InsightNode) -> NodeInfo {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
 
-    // ------------------------------------------------------------------
-    // Fixtures
-    // ------------------------------------------------------------------
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
@@ -443,9 +419,6 @@ mod tests {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Tests
-    // ------------------------------------------------------------------
 
     #[test]
     fn empty_call_graph() {

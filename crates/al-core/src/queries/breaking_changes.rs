@@ -52,11 +52,9 @@ pub fn analyze_breaking_changes(
 ) -> Vec<BreakingChange> {
     let mut changes = Vec::new();
 
-    // Build lookup maps by (kind, name) for quick access
     let baseline_map = build_map(baseline);
     let current_map = build_map(current);
 
-    // Find removed objects
     for (key, old_entry) in &baseline_map {
         if !current_map.contains_key(key) {
             changes.push(BreakingChange {
@@ -72,7 +70,6 @@ pub fn analyze_breaking_changes(
             continue;
         }
 
-        // Object still exists — check internal changes
         let new_entry = &current_map[key];
         diff_object(old_entry, new_entry, &mut changes);
     }
@@ -102,7 +99,6 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         .map(|m| (m.name.to_lowercase(), m))
         .collect();
 
-    // Check for removed or changed public methods
     for (name_lower, old_method) in &old_methods {
         match new_methods.get(name_lower) {
             None => {
@@ -124,7 +120,6 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         }
     }
 
-    // Check removed fields
     let old_fields: BTreeMap<String, _> = old
         .fields
         .iter()
@@ -148,7 +143,6 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         }
     }
 
-    // Check removed enum values
     for old_val in &old.enum_values {
         let old_lower = old_val.name.to_lowercase();
         if !new
@@ -215,7 +209,6 @@ fn check_signature_change(
             is_breaking,
         });
     } else {
-        // Check for type / modifier changes in existing parameters
         for (i, (op, np)) in old.parameters.iter().zip(new.parameters.iter()).enumerate() {
             if op.type_name.to_lowercase() != np.type_name.to_lowercase() {
                 changes.push(BreakingChange {

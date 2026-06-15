@@ -276,7 +276,6 @@ async fn publish_compile_result(
     root: &std::path::Path,
     result: &crate::build::CompileResult,
 ) {
-    // Group compile diagnostics by file (pure — see group_compile_diagnostics).
     let by_file = group_compile_diagnostics(&result.diagnostics, root);
     let current_affected: std::collections::HashSet<String> = by_file.keys().cloned().collect();
     for (file, diags) in by_file {

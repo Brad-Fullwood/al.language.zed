@@ -213,7 +213,7 @@ impl AlServer {
     /// the most recent keystroke triggers a diagnostics run. The actual diagnostics
     /// publish runs after `DIAGNOSTICS_DEBOUNCE` of silence. This prevents bridge
     /// calls (up to bridge timeout = 5s) from blocking hover/completion.
-    async fn schedule_diagnostics(&self, uri: Url, _text: String) {
+    async fn schedule_diagnostics(&self, uri: Url) {
         // ISSUE-072: skip diagnostics for virtual symbol cache files — they are not
         // workspace files and Zed logs a warning for every publishDiagnostics on them.
         if crate::server::diagnostics::is_cache_path(&uri) {
@@ -225,9 +225,6 @@ impl AlServer {
         if let Some(old) = self.diag_task.lock().await.take() {
             old.abort();
         }
-
-        // Read config before spawning so per-rule lint filtering works inside the closure.
-        let config = self.workspace.config.read().await.clone();
 
         // Clone Arc<Workspace> so the spawned closure can call the workspace-aware
         // syntax_diagnostics query (cache hit after on_document_change).
@@ -251,6 +248,11 @@ impl AlServer {
                 tracing::debug!(uri = %uri, "debounced diagnostics: document no longer open, skipping publish");
                 return;
             }
+            // Read config here (not at schedule time) so only the task that
+            // survives the debounce pays the clone — keystrokes that abort the
+            // previous task before its sleep elapses never clone AlConfig. The
+            // clone is needed so per-rule lint filtering works in spawn_blocking.
+            let config = workspace.config.read().await.clone();
             let diag_uri = uri.clone();
             let lsp_diags: Vec<Diagnostic> = match tokio::task::spawn_blocking(move || {
                 crate::queries::diagnostics::syntax_diagnostics(&workspace, &diag_uri, &config)
@@ -526,8 +528,7 @@ impl LanguageServer for AlServer {
             .documents
             .apply_changes_and_get(&uri, &changes)
         {
-            let text = text_arc.as_ref().clone();
-            crate::workspace::on_document_change(&self.workspace, &uri, &text);
+            crate::workspace::on_document_change(&self.workspace, &uri, &text_arc);
             // ISSUE-025 fix: diagnostics are debounced and run async.
             // Each keystroke cancels the previous pending task to avoid bridge calls
             // (up to bridge timeout = 5s) blocking hover/completion.
@@ -536,7 +537,7 @@ impl LanguageServer for AlServer {
             // In OnSave mode, diagnostics are deferred to did_save to avoid per-keystroke work.
             let trigger = self.workspace.config.read().await.diagnostics_trigger;
             if trigger == crate::config::DiagnosticsTrigger::Continuous {
-                self.schedule_diagnostics(uri, text).await;
+                self.schedule_diagnostics(uri).await;
             } else {
                 // Cancel any lingering debounced task from a previous Continuous session.
                 if let Some(old) = self.diag_task.lock().await.take() {

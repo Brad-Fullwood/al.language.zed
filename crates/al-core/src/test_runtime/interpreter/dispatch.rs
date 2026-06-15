@@ -36,10 +36,6 @@ const MAX_RECURSION_DEPTH: usize = 100;
 /// 8 MiB stack).
 pub const MAX_AST_DEPTH: usize = 1024;
 
-// ---------------------------------------------------------------------------
-// DispatchMode and DispatchCtx
-// ---------------------------------------------------------------------------
-
 /// What record-level support the active run has access to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchMode {
@@ -133,17 +129,7 @@ impl DispatchCtx {
             None => false,
         }
     }
-
-    /// Combined check: deadline OR cancellation. Use this from loop bodies
-    /// that previously only checked `deadline_exceeded()`.
-    pub fn should_stop(&self) -> bool {
-        self.deadline_exceeded() || self.is_cancelled()
-    }
 }
-
-// ---------------------------------------------------------------------------
-// Public dispatch entry point
-// ---------------------------------------------------------------------------
 
 /// Resolve and execute a procedure call.
 ///
@@ -265,7 +251,6 @@ fn dispatch_workspace_procedure(
                     if let Ok(name_text) = name_node.utf8_text(source) {
                         let clean = name_text.trim_matches('"');
                         if clean.eq_ignore_ascii_case(procedure) {
-                            // Collect parameter declarations.
                             let params = collect_params(node, source);
                             found_proc = Some((node, params));
                             break 'outer;
@@ -275,7 +260,6 @@ fn dispatch_workspace_procedure(
                 // Don't descend into procedure bodies when just searching by name.
                 continue;
             }
-            // Push children (iterative walk).
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
                 stack_nodes.push(child);
@@ -331,7 +315,6 @@ fn dispatch_workspace_procedure(
             frame.bind(&param.name, val);
         }
 
-        // Execute.
         ctx.recursion_depth += 1;
         let mut scope = ScopeStack::new();
         scope.push(frame);
@@ -347,17 +330,12 @@ fn dispatch_workspace_procedure(
         };
     }
 
-    // Procedure not found in any candidate file.
     simple_error(format!(
         "procedure not found: {}{}",
         receiver.map(|r| format!("{r}.")).unwrap_or_default(),
         procedure
     ))
 }
-
-// ---------------------------------------------------------------------------
-// Parameter-declaration helpers
-// ---------------------------------------------------------------------------
 
 /// A parsed parameter declaration from a `procedure_declaration` node.
 #[derive(Debug, Clone)]
@@ -372,24 +350,26 @@ struct ParamDecl {
 ///   `parameter_list`  →  `(` `parameter`* `)`
 ///   `parameter`       →  [`kw_var`] `name_or_keyword` `:` `type_reference`
 fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) -> Vec<ParamDecl> {
+    /// Find a child node by grammar field name, falling back to the first named
+    /// child whose kind is in `kinds` (the grammar doesn't always attach the
+    /// field, so accept the kind as well).
+    fn child_by_field_or_kind<'a>(
+        node: tree_sitter::Node<'a>,
+        field: &str,
+        kinds: &[&str],
+    ) -> Option<tree_sitter::Node<'a>> {
+        node.child_by_field_name(field).or_else(|| {
+            let mut cursor = node.walk();
+            let mut children = node.named_children(&mut cursor);
+            children.find(|n| kinds.contains(&n.kind()))
+        })
+    }
+
     let mut params = Vec::new();
 
     // Find the parameter_list child (via field "parameters" or by kind).
-    let param_list = if let Some(n) = proc_node.child_by_field_name("parameters") {
-        Some(n)
-    } else {
-        let mut cursor = proc_node.walk();
-        let mut found = None;
-        for child in proc_node.named_children(&mut cursor) {
-            if child.kind() == "parameter_list" {
-                found = Some(child);
-                break;
-            }
-        }
-        found
-    };
-
-    let Some(param_list) = param_list else {
+    let Some(param_list) = child_by_field_or_kind(proc_node, "parameters", &["parameter_list"])
+    else {
         return params;
     };
 
@@ -400,19 +380,8 @@ fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) -> Vec<ParamD
             continue;
         }
         // Name: from field "name" or the first identifier-like named child.
-        let name_node = if let Some(n) = child.child_by_field_name("name") {
-            Some(n)
-        } else {
-            let mut tc = child.walk();
-            let mut found_name = None;
-            for nc in child.named_children(&mut tc) {
-                if matches!(nc.kind(), "identifier" | "name" | "name_or_keyword") {
-                    found_name = Some(nc);
-                    break;
-                }
-            }
-            found_name
-        };
+        let name_node =
+            child_by_field_or_kind(child, "name", &["identifier", "name", "name_or_keyword"]);
         let Some(name_node) = name_node else {
             continue;
         };
@@ -422,22 +391,11 @@ fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) -> Vec<ParamD
         let name = name_text.trim_matches('"').to_string();
 
         // Type: from field "type" or the type_reference child.
-        let type_node = if let Some(n) = child.child_by_field_name("type") {
-            Some(n)
-        } else {
-            let mut tc = child.walk();
-            let mut found_type = None;
-            for nc in child.named_children(&mut tc) {
-                if matches!(
-                    nc.kind(),
-                    "type_reference" | "type" | "builtin_type" | "primitive_type"
-                ) {
-                    found_type = Some(nc);
-                    break;
-                }
-            }
-            found_type
-        };
+        let type_node = child_by_field_or_kind(
+            child,
+            "type",
+            &["type_reference", "type", "builtin_type", "primitive_type"],
+        );
         let type_name = type_node
             .and_then(|n| n.utf8_text(source).ok())
             .map(|t| t.trim().to_string())
@@ -479,10 +437,6 @@ fn check_param_type(arg: &Value, type_name: &str) -> Option<String> {
     }
     None
 }
-
-// ---------------------------------------------------------------------------
-// Inline built-in implementations
-// ---------------------------------------------------------------------------
 
 fn simple_error(msg: impl Into<String>) -> Eval {
     Eval::Error(ErrorInfo {
@@ -662,10 +616,6 @@ fn builtin_indexof(args: &[Value]) -> Eval {
     Eval::Normal(Value::Integer(result))
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
 /// Render a `Value` as AL would show it in StrSubstNo / Format.
 fn render_value(v: &Value) -> String {
     match v {
@@ -700,10 +650,6 @@ fn substitute_placeholders(fmt: &str, args: &[Value]) -> String {
     }
     result
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
