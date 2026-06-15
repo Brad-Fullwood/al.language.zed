@@ -10,6 +10,10 @@ version = "0.2.2"
 edition = "2021"
 license = "MIT"
 publish = false
+# Detects the resolved zed_extension_api version and enables the
+# `zed_api_0_8` cfg on 0.8.0+, so the settings-schema methods in src/lib.rs
+# compile in/out with no source edit. See build.rs.
+build = "build.rs"
 
 [lib]
 crate-type = ["cdylib"]

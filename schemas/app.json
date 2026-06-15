@@ -7,139 +7,245 @@
     "properties": {
         "id": {
             "type": "string",
-            "description": "Unique identifier (GUID) for the app",
+            "description": "The unique ID (GUID) of the extension. Used at runtime to bind table names; changing it orphans existing data.",
             "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
         },
         "name": {
             "type": "string",
-            "description": "Display name of the app"
+            "description": "The unique extension name. May be used by other extensions to express a compile-time dependency."
         },
         "publisher": {
             "type": "string",
-            "description": "Name of the app publisher"
+            "description": "The name of the publisher. May be used by other extensions to express a compile-time dependency."
         },
         "version": {
             "type": "string",
-            "description": "Version in Major.Minor.Build.Revision format",
+            "description": "The version of the app package in Major.Minor.Build.Revision format.",
             "pattern": "^\\d+\\.\\d+\\.\\d+\\.\\d+$"
         },
         "brief": {
             "type": "string",
-            "description": "Brief description (shown in AppSource)"
+            "description": "Short description of the extension (required for Marketplace submission)."
         },
         "description": {
             "type": "string",
-            "description": "Full description of the app"
+            "description": "Longer description of the extension (required for Marketplace submission)."
         },
         "privacyStatement": {
             "type": "string",
-            "description": "URL to the privacy statement"
+            "description": "URL to the privacy statement for the extension (required for Marketplace submission)."
         },
         "EULA": {
             "type": "string",
-            "description": "URL to the end-user license agreement"
+            "description": "URL to the license terms (end-user license agreement) for the extension (required for Marketplace submission)."
         },
         "help": {
             "type": "string",
-            "description": "URL to the help documentation"
+            "description": "URL to online help and troubleshooting content. Used in Marketplace; can match contextSensitiveHelpUrl (required for Marketplace submission)."
+        },
+        "helpBaseUrl": {
+            "type": "string",
+            "description": "URL that overrides all Help for the specified locales. Intended for localization apps; requires supportedLocales to be set. Overrides the default /{0}/dynamics365/business-central."
+        },
+        "contextSensitiveHelpUrl": {
+            "type": "string",
+            "description": "Base URL for context-sensitive Help, e.g. https://mysite.com/documentation/. Include a /{0}/ locale placeholder if not all locales are supported, and set supportedLocales (required for Marketplace submission)."
         },
         "url": {
             "type": "string",
-            "description": "URL to the app website"
+            "description": "URL of the extension package, shown as Website on the Extension Management page (required for Marketplace submission)."
         },
         "logo": {
             "type": "string",
-            "description": "Path to the app logo file"
+            "description": "Relative path to the app package logo from the root of the package (required for Marketplace submission)."
         },
         "platform": {
             "type": "string",
-            "description": "Minimum platform version required",
+            "description": "Minimum supported version of the platform (Microsoft_System) package. Required if system objects are referenced.",
             "pattern": "^\\d+\\.\\d+\\.\\d+\\.\\d+$"
         },
         "application": {
             "type": "string",
-            "description": "Minimum application version required",
+            "description": "Supported version of the system + base application (Microsoft_Application) package. Required if the system/base application is referenced.",
+            "pattern": "^\\d+\\.\\d+\\.\\d+\\.\\d+$"
+        },
+        "test": {
+            "type": "string",
+            "description": "Version of the dependent test framework in X.Y.U.Z format. Only supported for Business Central version 14 and earlier (C/AL base app).",
             "pattern": "^\\d+\\.\\d+\\.\\d+\\.\\d+$"
         },
         "runtime": {
             "type": "string",
-            "description": "AL runtime version"
+            "description": "The AL runtime version the project targets (e.g. 13.0, 14.0, 15.0, 16.0). The project can be published to a server supporting the same or higher runtime. If omitted, the highest available major version is used.",
+            "pattern": "^\\d+(\\.\\d+)?$"
         },
         "target": {
             "type": "string",
-            "description": "Compilation target",
+            "description": "Compilation target. Defaults to Cloud. Use OnPrem on-premises to access restricted APIs and .NET Interop. Internal and Extension are legacy synonyms.",
             "enum": ["Internal", "Extension", "Cloud", "OnPrem"]
         },
         "features": {
             "type": "array",
-            "description": "Enabled features",
+            "description": "List of AL compiler features to enable.",
             "items": {
                 "type": "string",
-                "enum": ["TranslationFile", "GenerateCaptions", "NoImplicitWith", "ExcludeGeneratedTranslations"]
+                "enum": [
+                    "TranslationFile",
+                    "GenerateCaptions",
+                    "GenerateLockedTranslations",
+                    "ExcludeGeneratedTranslations",
+                    "NoImplicitWith",
+                    "NoPromotedActionProperties"
+                ]
             }
+        },
+        "idRange": {
+            "type": "object",
+            "description": "A single range of allowed application object IDs. Use either idRange or idRanges, not both.",
+            "required": ["from", "to"],
+            "properties": {
+                "from": { "type": "integer", "minimum": 1, "description": "First object ID in the range (inclusive)." },
+                "to": { "type": "integer", "minimum": 1, "description": "Last object ID in the range (inclusive)." }
+            },
+            "additionalProperties": false
         },
         "idRanges": {
             "type": "array",
-            "description": "Object ID ranges allocated to this app",
+            "description": "A list of allowed application object ID ranges. Use either idRange or idRanges, not both. Overlapping ranges are not allowed.",
             "items": {
                 "type": "object",
                 "required": ["from", "to"],
                 "properties": {
-                    "from": { "type": "integer", "minimum": 1 },
-                    "to": { "type": "integer", "minimum": 1 }
-                }
+                    "from": { "type": "integer", "minimum": 1, "description": "First object ID in the range (inclusive)." },
+                    "to": { "type": "integer", "minimum": 1, "description": "Last object ID in the range (inclusive)." }
+                },
+                "additionalProperties": false
             }
         },
         "dependencies": {
             "type": "array",
-            "description": "App dependencies",
+            "description": "List of dependencies for the extension package. The version specified is the minimum version. Use appId instead of id when runtime is 4.0 or earlier.",
             "items": {
                 "type": "object",
-                "required": ["id", "name", "publisher", "version"],
+                "required": ["name", "publisher", "version"],
                 "properties": {
-                    "id": { "type": "string" },
-                    "name": { "type": "string" },
-                    "publisher": { "type": "string" },
-                    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+\\.\\d+$" }
-                }
+                    "id": {
+                        "type": "string",
+                        "description": "The app ID (GUID) of the dependency.",
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                    },
+                    "appId": {
+                        "type": "string",
+                        "description": "Legacy alternative to id, used when runtime is 4.0 or earlier.",
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                    },
+                    "name": { "type": "string", "description": "Name of the dependency." },
+                    "publisher": { "type": "string", "description": "Publisher of the dependency." },
+                    "version": { "type": "string", "description": "Minimum version of the dependency.", "pattern": "^\\d+\\.\\d+\\.\\d+\\.\\d+$" }
+                },
+                "additionalProperties": false
+            }
+        },
+        "internalsVisibleTo": {
+            "type": "array",
+            "description": "List of modules granted access to objects marked Internal via the Access property in the current module.",
+            "items": {
+                "type": "object",
+                "required": ["id", "name", "publisher"],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The app ID (GUID) of the module granted access.",
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                    },
+                    "name": { "type": "string", "description": "Name of the module granted access." },
+                    "publisher": { "type": "string", "description": "Publisher of the module granted access." }
+                },
+                "additionalProperties": false
+            }
+        },
+        "propagateDependencies": {
+            "type": "boolean",
+            "description": "Whether the direct dependencies of this project are propagated as direct dependencies of projects that depend on it. Default is false."
+        },
+        "alternateIds": {
+            "type": "array",
+            "description": "IDs of applications that will be replaced by this application. Used by apps that replace the base application.",
+            "items": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
             }
         },
         "screenshots": {
             "type": "array",
-            "description": "Paths to screenshot files",
+            "description": "Relative paths to screenshot files to include in the extension package.",
             "items": { "type": "string" }
         },
-        "resourceExposurePolicy": {
-            "type": "object",
-            "description": "Controls how the app source is exposed",
-            "properties": {
-                "allowDebugging": { "type": "boolean" },
-                "allowDownloadingSource": { "type": "boolean" },
-                "includeSourceInSymbolFile": { "type": "boolean" }
-            }
-        },
-        "preprocessorSymbols": {
+        "resourceFolders": {
             "type": "array",
-            "description": "Preprocessor symbols for conditional compilation",
-            "items": { "type": "string" }
-        },
-        "keyVaultUrls": {
-            "type": "array",
-            "description": "Azure Key Vault URLs for secrets",
+            "description": "List of folders containing resources to be packaged with this extension.",
             "items": { "type": "string" }
         },
         "supportedLocales": {
             "type": "array",
-            "description": "Supported locale codes",
+            "description": "List of locales supported in Help if different from all locales. The first locale is the default, e.g. [\"da-DK\", \"en-US\"].",
             "items": { "type": "string" }
         },
-        "contextSensitiveHelpUrl": {
+        "resourceExposurePolicy": {
+            "type": "object",
+            "description": "Defines accessibility of resources and source code during different operations. All defaults are false.",
+            "properties": {
+                "applyToDevExtension": { "type": "boolean", "description": "Apply the policy to the development (RAD) extension." },
+                "allowDebugging": { "type": "boolean", "description": "Allow debugging into this extension's source." },
+                "allowDownloadingSource": { "type": "boolean", "description": "Allow downloading this extension's source." },
+                "includeSourceInSymbolFile": { "type": "boolean", "description": "Include source code in the symbol (.app) file." }
+            },
+            "additionalProperties": false
+        },
+        "preprocessorSymbols": {
+            "type": "array",
+            "description": "Symbols to use with preprocessor directives, e.g. [\"DEBUG\", \"PROD\"].",
+            "items": { "type": "string" }
+        },
+        "suppressWarnings": {
+            "type": "array",
+            "description": "Warning IDs whose diagnostics should not be shown in the Output window, e.g. [\"AL0458\"].",
+            "items": { "type": "string" }
+        },
+        "keyVaultUrls": {
+            "type": "array",
+            "description": "URLs of Azure Key Vaults from which the extension can retrieve secrets. All must belong to the same Microsoft Entra tenant.",
+            "items": { "type": "string" }
+        },
+        "applicationInsightsConnectionString": {
             "type": "string",
-            "description": "Base URL for context-sensitive help"
+            "description": "Connection string of the Azure Application Insights resource used for telemetry (recommended for Marketplace submission)."
+        },
+        "applicationInsightsKey": {
+            "type": "string",
+            "description": "Instrumentation key of the Azure Application Insights resource (legacy; prefer applicationInsightsConnectionString)."
+        },
+        "source": {
+            "type": "object",
+            "description": "Source control properties. Can be set via the alc.exe command line, overriding values here.",
+            "properties": {
+                "repositoryUrl": { "type": "string", "description": "URL of the repository where the project source code can be found." },
+                "commit": { "type": "string", "description": "Source code commit ID for the current version of the project." }
+            },
+            "additionalProperties": false
+        },
+        "build": {
+            "type": "object",
+            "description": "Build properties. Can be set via the alc.exe command line, overriding values here.",
+            "properties": {
+                "by": { "type": "string", "description": "The build agent/system that orchestrated the build, e.g. AL-Go for GitHub." },
+                "url": { "type": "string", "description": "URL to the build system invocation where the build can be found." }
+            },
+            "additionalProperties": false
         },
         "showMyCode": {
             "type": "boolean",
-            "description": "Expose source code (deprecated, use resourceExposurePolicy)"
+            "description": "Expose source code (legacy; use resourceExposurePolicy instead)."
         }
     },
     "additionalProperties": true

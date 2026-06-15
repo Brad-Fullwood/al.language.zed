@@ -1,36 +1,61 @@
 {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "AppSourceCop Configuration",
-    "description": "Schema for AppSourceCop.json — configuration for the AppSource analyzer",
+    "description": "Schema for AppSourceCop.json — configuration for the AppSourceCop analyzer",
     "type": "object",
     "properties": {
+        "name": {
+            "type": "string",
+            "description": "Name of a previous version of this package to compare against for breaking changes."
+        },
+        "publisher": {
+            "type": "string",
+            "description": "Publisher of a previous version of this package to compare against for breaking changes."
+        },
+        "version": {
+            "type": "string",
+            "description": "Version of a previous version of this package to compare against for breaking changes. The baseline package must be in the baseline package cache.",
+            "pattern": "^\\d+\\.\\d+(\\.\\d+){0,2}$"
+        },
+        "baselinePackageCachePath": {
+            "type": "string",
+            "description": "Path to the folder used as the baseline package cache. Defaults to the dependency package cache path if not specified."
+        },
         "mandatoryAffixes": {
             "type": "array",
-            "description": "Object name prefixes or suffixes required for AppSource submission",
+            "description": "Affixes that must be prepended or appended to the names of all new objects, extension objects, and fields, to prevent clashes between apps.",
             "items": { "type": "string" }
         },
         "mandatoryPrefix": {
             "type": "string",
-            "description": "Required prefix for all object names"
+            "description": "Required prefix for all new object, extension object, and field names."
         },
         "mandatorySuffix": {
             "type": "string",
-            "description": "Required suffix for all object names"
+            "description": "Required suffix for all new object, extension object, and field names."
         },
         "supportedCountries": {
             "type": "array",
-            "description": "Country codes this app is validated for",
+            "description": "Country/region codes (alpha-2 ISO 3166) for which AppSource submissions are allowed, e.g. [\"DE\", \"AT\"].",
             "items": { "type": "string" }
         },
         "targetVersion": {
             "type": "string",
-            "description": "Target Business Central version for validation",
+            "description": "Next Major.Minor version of the extension, used to validate ObsoleteTag values (AS0072) with the default obsoleteTagPattern. Deprecated in favor of obsoleteTagVersion.",
             "pattern": "^\\d+\\.\\d+$"
         },
-        "obsoleteTagMinAllowedMajorMinor": {
+        "obsoleteTagVersion": {
             "type": "string",
-            "description": "Minimum major.minor for ObsoleteTag values",
+            "description": "Next Major.Minor version of the extension, used to validate ObsoleteTag values (AS0072) with the default obsoleteTagPattern.",
             "pattern": "^\\d+\\.\\d+$"
+        },
+        "obsoleteTagPattern": {
+            "type": "string",
+            "description": "Regular expression used by AS0076 to validate ObsoleteTag values. Defaults to '(\\d+)\\.(\\d+)'."
+        },
+        "obsoleteTagPatternDescription": {
+            "type": "string",
+            "description": "Human-readable description of the expected obsoleteTagPattern, used when reporting AS0076 diagnostics."
         }
     },
     "additionalProperties": false

@@ -1,28 +1,21 @@
 {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "AL Migration Schema",
-    "description": "Schema for Migration.json — Business Central data upgrade migration manifest",
+    "title": "AL Migration Manifest",
+    "description": "Schema for migration.json — Business Central data-migration manifest that transfers ownership of tables/fields from a releasing extension to a receiving extension (on-premises only).",
     "type": "object",
+    "required": ["apprules"],
     "properties": {
         "apprules": {
             "type": "array",
-            "description": "List of migration rules for extension data upgrades",
+            "description": "List of rules pointing to the ID(s) of the receiving extension(s) that tables and fields are moved to.",
             "items": {
                 "type": "object",
                 "required": ["id"],
                 "properties": {
                     "id": {
                         "type": "string",
-                        "description": "Unique identifier (GUID) for the migration rule",
+                        "description": "App ID (GUID) of the receiving extension that the tables/fields are moved to.",
                         "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-                    },
-                    "publisher": {
-                        "type": "string",
-                        "description": "Publisher of the source extension being migrated from"
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the source extension being migrated from"
                     }
                 },
                 "additionalProperties": false

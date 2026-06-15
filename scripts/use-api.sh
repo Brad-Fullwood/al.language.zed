@@ -3,9 +3,11 @@
 #
 #   dev     unreleased API (git main, v0.8.0). Loads ONLY on Zed dev/nightly
 #           builds. LOCAL EXPERIMENTS ONLY -- never commit this state: the
-#           committed_api_target_is_released guard test fails on it, and the
-#           src/lib.rs schema methods removed under F-OPEN-256 would need to
-#           be restored for it to add anything over stable.
+#           committed_api_target_is_released guard test fails on it. In this
+#           mode build.rs detects 0.8 in Cargo.lock and enables the
+#           `zed_api_0_8` cfg, so src/lib.rs's settings-schema methods
+#           (settings.json autocomplete for the AL settings block) compile in
+#           automatically -- no source edit needed.
 #   stable  latest RELEASED API (v0.7.0, full DAP/locator support). Loads on
 #           ALL Zed channels and is required for the public extension
 #           registry. This is the committed/shipping state.

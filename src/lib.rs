@@ -90,6 +90,19 @@ fn release_lookup_failure_message(os: zed::Os, underlying: &str) -> String {
     )
 }
 
+/// The AL settings JSON Schema, embedded from `schemas/settings.json`.
+///
+/// This is the single source of truth Zed surfaces for settings.json
+/// autocomplete + validation of the `lsp.al-lsp.settings` block — but only on
+/// extension API ≥ 0.8 (see `build.rs` / the `zed_api_0_8` cfg and the
+/// `language_server_*_schema` methods below). It is parsed *unconditionally* so
+/// the embedded schema stays valid JSON even on the released 0.7 build, where
+/// `al_settings_schema_parses` exercises it.
+#[cfg_attr(not(zed_api_0_8), allow(dead_code))]
+fn al_settings_schema() -> Option<Value> {
+    serde_json::from_str(include_str!("../schemas/settings.json")).ok()
+}
+
 /// Deep-merge `overrides` into `base`, returning the merged result.
 /// - Objects are merged recursively (override keys replace base keys)
 /// - All other types: override replaces base entirely
@@ -189,6 +202,11 @@ impl AlExtension {
         // repo-consistency test guards against drift.
         let arch_name = match arch {
             zed::Architecture::Aarch64 => "aarch64",
+            // The 0.8+ API dropped the 32-bit `X86` variant; this arm only
+            // exists (and is only needed for exhaustiveness) on 0.7. Gated on
+            // the same `zed_api_0_8` cfg `build.rs` derives from Cargo.lock so
+            // the same source compiles on both API lines.
+            #[cfg(not(zed_api_0_8))]
             zed::Architecture::X86 => "x86",
             zed::Architecture::X8664 => "x86_64",
         };
@@ -353,13 +371,40 @@ impl zed::Extension for AlExtension {
         Ok(Some(init_options))
     }
 
-    // NOTE: `language_server_workspace_configuration_schema` and
-    // `language_server_initialization_options_schema` (settings-editor
-    // autocomplete) exist only on the UNRELEASED extension API (git main /
-    // 0.8.x). They were removed when the project moved to the released 0.7.0
-    // API (F-OPEN-256) so the extension loads on Stable Zed and can be
-    // published to the registry. Restore them — schema content lives in
-    // schemas/settings.json — once 0.8.x ships on crates.io.
+    // `language_server_workspace_configuration_schema` and
+    // `language_server_initialization_options_schema` drive settings.json
+    // autocomplete + validation for the AL settings block. They exist only on
+    // the 0.8.x+ extension API, so they are gated behind the `zed_api_0_8` cfg
+    // that `build.rs` sets when Cargo.lock resolves zed_extension_api to 0.8.0+
+    // (via `scripts/use-api.sh dev`). On the committed/published 0.7.0 build
+    // (F-OPEN-256: loads on Stable Zed, accepted by the registry) the cfg is off
+    // and these compile out — same artifact as before. Schema content lives in
+    // schemas/settings.json; see `al_settings_schema`.
+    #[cfg(zed_api_0_8)]
+    fn language_server_workspace_configuration_schema(
+        &mut self,
+        _language_server_id: &zed::LanguageServerId,
+        _worktree: &zed::Worktree,
+    ) -> Option<serde_json::Value> {
+        al_settings_schema()
+    }
+
+    #[cfg(zed_api_0_8)]
+    fn language_server_initialization_options_schema(
+        &mut self,
+        _language_server_id: &zed::LanguageServerId,
+        _worktree: &zed::Worktree,
+    ) -> Option<serde_json::Value> {
+        // initialization_options is `{ "workspacePath": …, "al": <settings> }`
+        // (see language_server_initialization_options), so the AL settings
+        // schema is nested under the "al" property.
+        al_settings_schema().map(|schema| {
+            json!({
+                "type": "object",
+                "properties": { "al": schema }
+            })
+        })
+    }
 
     fn language_server_workspace_configuration(
         &mut self,

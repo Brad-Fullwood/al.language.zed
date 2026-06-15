@@ -1,0 +1,106 @@
+// AL for Zed — example configuration.
+//
+// Copy the blocks you want into your Zed settings.json ("zed: open settings"
+// from the command palette) or a project-local .zed/settings.json. Comments
+// (JSONC) are for guidance only — Zed's settings.json accepts them, but strip
+// them if you paste into strict JSON.
+{
+  "lsp": {
+    // ─────────────────────────────────────────────────────────────────────
+    // AL Language Server (al-lsp).
+    //
+    // Every setting the server understands is listed below with its DEFAULT
+    // value — delete the ones you don't need to change. On Zed Dev/Nightly
+    // (0.8 extension API) these keys also autocomplete + validate as you type;
+    // on Stable Zed they are applied correctly but without in-editor
+    // autocomplete. See docs/settings.md for the full reference.
+    // ─────────────────────────────────────────────────────────────────────
+    "al-lsp": {
+      // Point Zed at a specific build; otherwise al-lsp is auto-downloaded or
+      // found on PATH.
+      // "binary": { "path": "/path/to/al-lsp" },
+
+      "settings": {
+        // ── Semantic analysis ──
+        "al.enableCodeAnalysis": true,
+        "al.backgroundCodeAnalysis": true,
+        "al.diagnosticsScope": "project", // "project" | "openFiles"
+        "al.diagnosticsTrigger": "continuous", // "continuous" | "onSave"
+        "al.codeAnalyzers": ["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"],
+        "al.enableExternalRulesets": false,
+        "al.ruleSetPath": null, // e.g. "./custom.ruleset.json"
+        "al.assemblyProbingPaths": [],
+        "al.outputAnalyzerStatistics": false,
+
+        // ── Editor features ──
+        "al.enableCodeActions": true,
+        "al.inlayHints.parameterNames": true,
+        "al.inlayHints.returnTypes": false,
+
+        // ── Native lint (reserved — parsed but currently inert) ──
+        "al.enableNativeLint": true,
+        "al.nativeLintRules": {},
+
+        // ── Symbols / packages ──
+        "al.packageCachePath": null, // default: <project>/.alpackages/
+        "al.appLocalFolderPaths": [],
+        "al.nugetFeeds": [], // [{ "name": "MyFeed", "url": "https://…/index.json" }]
+        "al.useOnlyCustomFeeds": false,
+        "al.symbolsCountryRegion": null, // e.g. "us", "gb", "au"
+
+        // ── Compiler ──
+        "al.compilationOptions": [],
+        "al.incrementalBuild": false,
+
+        // ── Debug adapter (EditorServices.Host) ──
+        "al.editorServicesPath": null, // auto-discovered when null
+        "al.editorServicesLogLevel": "warning", // off|error|warning|info|debug|trace
+
+        // ── Project scaffolding ──
+        "al.rootNamespace": null,
+        "al.publisher": null,
+        "al.namespaceTemplate": null, // e.g. "{publisher}.{name}"
+        "al.algoSuggestedFolder": null,
+
+        // ── Resource limits ──
+        "al.maxDocumentSizeBytes": null, // null = no cap
+
+        // ── Escape hatch ──
+        "al.useOfficialLsp": false // true delegates to Microsoft's official AL LSP (needs ALTool v17+)
+      }
+    },
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Autocomplete + validation for AL project files (app.json, rulesets, …).
+    //
+    // Zed's bundled JSON language server validates files against schemas you
+    // associate by fileMatch. This works on ALL Zed channels TODAY. The URLs
+    // are pinned to this extension's v0.2.2 release tag for reproducible
+    // validation; bump the tag when you upgrade the extension.
+    // ─────────────────────────────────────────────────────────────────────
+    "json-language-server": {
+      "settings": {
+        "json": {
+          "schemas": [
+            {
+              "fileMatch": ["app.json"],
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.2.2/schemas/app.json"
+            },
+            {
+              "fileMatch": ["*.ruleset.json"],
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.2.2/schemas/ruleset.json"
+            },
+            {
+              "fileMatch": ["AppSourceCop.json"],
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.2.2/schemas/appsourcecop.json"
+            },
+            {
+              "fileMatch": ["migration.json", "*.migration.json"],
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.2.2/schemas/migration.json"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

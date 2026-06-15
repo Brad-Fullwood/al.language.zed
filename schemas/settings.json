@@ -1,13 +1,13 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "AL Language Server Settings",
-  "description": "Configuration for the AL Language Server (al-lsp). These settings control analysis, diagnostics, completions, and other AL development features.",
+  "description": "Configuration for the AL Language Server (al-lsp). In Zed these keys live inside \"lsp\": { \"al-lsp\": { \"settings\": { … } } } in settings.json. They control analysis, diagnostics, completions, symbol resolution, scaffolding, and debugging.",
   "type": "object",
   "properties": {
     "al.enableCodeAnalysis": {
       "type": "boolean",
       "default": true,
-      "description": "Enable semantic code analysis via .NET CodeAnalysis bridge. Provides compiler-level diagnostics (permissions, event restrictions, type errors)."
+      "description": "Enable semantic code analysis via the .NET CodeAnalysis bridge. Provides compiler-level diagnostics (permissions, event restrictions, type errors)."
     },
     "al.backgroundCodeAnalysis": {
       "type": "boolean",
@@ -32,20 +32,11 @@
         "type": "string"
       },
       "default": ["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"],
-      "description": "Which code analyzers to run. Standard: CodeCop, AppSourceCop, UICop, PerTenantCop. Add custom DLL paths for third-party analyzers like BusinessCentral.LinterCop."
-    },
-    "al.enableNativeLint": {
-      "type": "boolean",
-      "default": true,
-      "description": "Reserved for future native AL lint rules. The setting is parsed for compatibility, but native lint diagnostics are currently inert; diagnostics come from syntax parsing and the semantic CodeAnalysis bridge."
-    },
-    "al.nativeLintRules": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "boolean"
-      },
-      "default": {},
-      "description": "Reserved per-rule enable/disable overrides for future native lint rules. Parsed for compatibility but currently inert."
+      "description": "Which code analyzers to run. Standard: CodeCop, AppSourceCop, UICop, PerTenantCop. Add custom DLL paths for third-party analyzers like BusinessCentral.LinterCop.",
+      "examples": [
+        ["CodeCop", "UICop"],
+        ["CodeCop", "AppSourceCop", "UICop", "PerTenantCop", "/usr/local/share/al/BusinessCentral.LinterCop.dll"]
+      ]
     },
     "al.enableExternalRulesets": {
       "type": "boolean",
@@ -53,9 +44,24 @@
       "description": "Enable external rulesets (.ruleset.json files) for custom diagnostic severity overrides."
     },
     "al.ruleSetPath": {
-      "type": "string",
+      "type": ["string", "null"],
       "default": null,
-      "description": "Path to a .ruleset.json file for custom diagnostic severity overrides."
+      "description": "Path to a .ruleset.json file for custom diagnostic severity overrides.",
+      "examples": ["./custom.ruleset.json"]
+    },
+    "al.assemblyProbingPaths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Additional assembly probing paths for CodeAnalysis DLLs and custom analyzers.",
+      "examples": [["./.netpackages", "/usr/local/share/al/analyzers"]]
+    },
+    "al.outputAnalyzerStatistics": {
+      "type": "boolean",
+      "default": false,
+      "description": "Output analyzer performance statistics in diagnostics."
     },
     "al.enableCodeActions": {
       "type": "boolean",
@@ -72,41 +78,33 @@
       "default": false,
       "description": "Show return type hints on procedure declarations."
     },
+    "al.enableNativeLint": {
+      "type": "boolean",
+      "default": true,
+      "description": "Reserved for future native AL lint rules. The setting is parsed for compatibility, but native lint diagnostics are currently inert; diagnostics come from syntax parsing and the semantic CodeAnalysis bridge."
+    },
+    "al.nativeLintRules": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "default": {},
+      "description": "Reserved per-rule enable/disable overrides for future native lint rules. Key is a rule code (e.g. 'AL-L001'). Parsed for compatibility but currently inert.",
+      "examples": [{ "AL-L001": false }]
+    },
     "al.packageCachePath": {
-      "type": "string",
+      "type": ["string", "null"],
       "default": null,
       "description": "Custom path for the symbol package cache. Default: <project>/.alpackages/"
     },
-    "al.assemblyProbingPaths": {
+    "al.appLocalFolderPaths": {
       "type": "array",
       "items": {
         "type": "string"
       },
       "default": [],
-      "description": "Additional assembly probing paths for CodeAnalysis DLLs and custom analyzers."
-    },
-    "al.compilationOptions": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "default": [],
-      "description": "Additional compilation options passed to alc."
-    },
-    "al.incrementalBuild": {
-      "type": "boolean",
-      "default": false,
-      "description": "Use incremental build when compiling."
-    },
-    "al.rootNamespace": {
-      "type": "string",
-      "default": null,
-      "description": "Default root namespace for scaffolding new objects."
-    },
-    "al.publisher": {
-      "type": "string",
-      "default": null,
-      "description": "Default publisher name for scaffolding."
+      "description": "Additional local folders containing .app files to index for symbols, beyond the package cache.",
+      "examples": [["./.alpackages", "/shared/bc-symbols"]]
     },
     "al.nugetFeeds": {
       "type": "array",
@@ -115,11 +113,21 @@
       "items": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
-          "url": { "type": "string" }
+          "name": {
+            "type": "string",
+            "description": "Display name for the feed."
+          },
+          "url": {
+            "type": "string",
+            "description": "NuGet v3 index URL (ends in /index.json)."
+          }
         },
-        "required": ["name", "url"]
-      }
+        "required": ["name", "url"],
+        "additionalProperties": false
+      },
+      "examples": [
+        [{ "name": "MyCorp", "url": "https://pkgs.dev.azure.com/mycorp/_packaging/al/nuget/v3/index.json" }]
+      ]
     },
     "al.useOnlyCustomFeeds": {
       "type": "boolean",
@@ -127,14 +135,71 @@
       "description": "When true, ONLY the feeds in al.nugetFeeds are used — the built-in public Microsoft feeds (MSSymbols, AppSourceSymbols, BCPublic) are skipped."
     },
     "al.symbolsCountryRegion": {
-      "type": "string",
+      "type": ["string", "null"],
       "default": null,
-      "description": "Country/region code for localized BC symbol packages (e.g. 'us', 'gb', 'au')."
+      "description": "Country/region code for localized BC symbol packages (e.g. 'us', 'gb', 'au').",
+      "examples": ["us", "gb", "au"]
     },
-    "al.outputAnalyzerStatistics": {
+    "al.compilationOptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Additional command-line options passed to the AL compiler (alc).",
+      "examples": [["/analyzers+", "/parallel+"]]
+    },
+    "al.incrementalBuild": {
       "type": "boolean",
       "default": false,
-      "description": "Output analyzer performance statistics in diagnostics."
+      "description": "Use incremental build when compiling."
+    },
+    "al.editorServicesPath": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Path to the EditorServices.Host binary used by the debug adapter. If unset, it is auto-discovered.",
+      "examples": ["/opt/al/EditorServices.Host"]
+    },
+    "al.editorServicesLogLevel": {
+      "type": "string",
+      "enum": ["off", "error", "warning", "info", "debug", "trace"],
+      "default": "warning",
+      "description": "Log verbosity for the EditorServices.Host debug-adapter process."
+    },
+    "al.rootNamespace": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Default root namespace for scaffolding new objects.",
+      "examples": ["MyCompany.MyApp"]
+    },
+    "al.publisher": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Default publisher name for scaffolding.",
+      "examples": ["My Company"]
+    },
+    "al.namespaceTemplate": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Template for namespaces of scaffolded objects. Supports placeholders such as {publisher} and {name}.",
+      "examples": ["{publisher}.{name}"]
+    },
+    "al.algoSuggestedFolder": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Suggested folder for AL-Go scaffolding output."
+    },
+    "al.maxDocumentSizeBytes": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "default": null,
+      "description": "Optional per-document size cap, in bytes. When set, the server refuses to ingest a single document larger than this (keeping huge files out of the in-memory store). null (default) means no cap.",
+      "examples": [10485760]
+    },
+    "al.useOfficialLsp": {
+      "type": "boolean",
+      "default": false,
+      "description": "Escape hatch: delegate the session to Microsoft's official AL Language Server (al-lsp --official-lsp), instead of this project's native server. Requires ALTool v17+ on the machine. An explicit binary.arguments override takes precedence over this setting."
     }
   }
 }

@@ -346,3 +346,156 @@ fn unreleased_api_channel_requirement_is_documented() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Settings-schema completeness guards.
+//
+// schemas/settings.json is the published source of truth for the AL settings
+// block — it backs settings.json autocomplete/validation (on API ≥ 0.8, via
+// `al_settings_schema`) and the docs table. It MUST list exactly the settings
+// the server actually reads: list a key the server ignores and autocomplete
+// suggests dead settings; omit a key the server reads and users get no help for
+// settings that matter. These tests pin schema ↔ code together so it cannot
+// silently drift (it already had — 7 keys were missing before this guard).
+// ---------------------------------------------------------------------------
+
+/// Convert a Rust `snake_case` field name to the `camelCase` key serde emits
+/// (`AlConfig` derives `#[serde(rename_all = "camelCase")]`).
+fn snake_to_camel(s: &str) -> String {
+    let mut out = String::new();
+    let mut upper_next = false;
+    for ch in s.chars() {
+        if ch == '_' {
+            upper_next = true;
+        } else if upper_next {
+            out.extend(ch.to_uppercase());
+            upper_next = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// The `camelCase` field names of `AlConfig`, parsed from al-core's `config.rs`
+/// source — the authoritative list of settings the server reads. Parsed from
+/// source (not imported) because this WASM extension crate does not depend on
+/// al-core.
+fn al_config_camel_fields() -> Vec<String> {
+    let src = include_str!("../crates/al-core/src/config.rs");
+    let start = src
+        .find("pub struct AlConfig {")
+        .expect("al-core config.rs must define `pub struct AlConfig`");
+    let body = &src[start..];
+    let end = body
+        .find("\n}")
+        .expect("AlConfig struct must have a closing brace");
+    body[..end]
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            // Field lines look like `pub field_name: Type,`. The struct header,
+            // comments, and attributes are skipped (no `pub …:` shape).
+            let rest = line.strip_prefix("pub ")?;
+            let name = rest.split(':').next()?.trim();
+            if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                Some(snake_to_camel(name))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// The `al.*` keys `schemas/settings.json` is expected to declare: one per
+/// `AlConfig` field, with `inlayHints` expanded into its nested leaf keys and
+/// the launch-only `useOfficialLsp` (resolved in `settings.rs`, not an
+/// `AlConfig` field) added.
+fn expected_schema_keys() -> std::collections::BTreeSet<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    for field in al_config_camel_fields() {
+        if field == "inlayHints" {
+            // Nested InlayHintConfig — the schema models the leaves as dotted keys.
+            keys.insert("al.inlayHints.parameterNames".to_string());
+            keys.insert("al.inlayHints.returnTypes".to_string());
+        } else {
+            keys.insert(format!("al.{field}"));
+        }
+    }
+    keys.insert("al.useOfficialLsp".to_string());
+    keys
+}
+
+fn settings_schema_property_keys() -> std::collections::BTreeSet<String> {
+    let schema: serde_json::Value = serde_json::from_str(include_str!("../schemas/settings.json"))
+        .expect("schemas/settings.json must be valid JSON");
+    schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .expect("settings schema must have a `properties` object")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+/// Every setting the server reads must be documented in the schema, and the
+/// schema must not declare settings the server ignores. Either drift degrades
+/// the settings autocomplete/validation experience.
+#[test]
+fn settings_schema_covers_every_config_field() {
+    let expected = expected_schema_keys();
+    let actual = settings_schema_property_keys();
+
+    let missing: Vec<_> = expected.difference(&actual).collect();
+    let extra: Vec<_> = actual.difference(&expected).collect();
+
+    assert!(
+        missing.is_empty(),
+        "schemas/settings.json is MISSING keys the server reads (add them so users get \
+         autocomplete/validation): {missing:?}"
+    );
+    assert!(
+        extra.is_empty(),
+        "schemas/settings.json declares keys the server does NOT read (remove them or wire \
+         them up — they mislead autocomplete): {extra:?}"
+    );
+}
+
+/// All shipped JSON Schemas must be valid JSON declaring draft-07. They ship to
+/// users (settings autocomplete + the `json.schemas` project-file associations),
+/// so a malformed schema is a user-visible break.
+#[test]
+fn all_shipped_schemas_are_valid_json() {
+    let schemas = [
+        ("settings.json", include_str!("../schemas/settings.json")),
+        ("app.json", include_str!("../schemas/app.json")),
+        ("ruleset.json", include_str!("../schemas/ruleset.json")),
+        ("appsourcecop.json", include_str!("../schemas/appsourcecop.json")),
+        ("migration.json", include_str!("../schemas/migration.json")),
+    ];
+    for (name, content) in schemas {
+        let value: serde_json::Value = serde_json::from_str(content)
+            .unwrap_or_else(|e| panic!("schemas/{name} is not valid JSON: {e}"));
+        let schema_url = value
+            .get("$schema")
+            .and_then(|s| s.as_str())
+            .unwrap_or_else(|| panic!("schemas/{name} must declare a $schema"));
+        assert!(
+            schema_url.contains("draft-07"),
+            "schemas/{name} must declare draft-07 (got {schema_url})"
+        );
+    }
+}
+
+/// The embedded settings schema (returned to Zed on API ≥ 0.8, and the source
+/// of truth for the parity test) must parse into an object with `properties`.
+/// Also exercises `crate::al_settings_schema` on the 0.7 build, where the schema
+/// methods themselves are compiled out.
+#[test]
+fn al_settings_schema_parses() {
+    let schema = crate::al_settings_schema().expect("embedded settings schema must parse");
+    assert!(
+        schema.get("properties").and_then(|p| p.as_object()).is_some(),
+        "embedded settings schema must have a `properties` object"
+    );
+}
