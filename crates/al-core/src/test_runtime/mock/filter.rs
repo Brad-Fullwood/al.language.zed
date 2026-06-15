@@ -10,7 +10,6 @@
 use crate::test_runtime::interpreter::value::Value;
 use std::fmt;
 
-
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum FilterParseError {
     #[error("unexpected end of filter expression")]
@@ -24,7 +23,6 @@ pub enum FilterParseError {
     #[error("invalid range: '{0}..{1}'")]
     InvalidRange(String, String),
 }
-
 
 /// A parsed BC filter expression.
 #[derive(Debug, Clone, PartialEq)]
@@ -82,7 +80,6 @@ impl fmt::Display for OrderableValue {
         }
     }
 }
-
 
 struct Parser<'a> {
     input: &'a str,
@@ -177,7 +174,6 @@ impl<'a> Parser<'a> {
             Ok(FilterExpr::Atom(atom))
         }
     }
-
 
     fn parse_atom(&mut self) -> Result<FilterAtom, FilterParseError> {
         self.skip_whitespace();
@@ -309,7 +305,6 @@ fn parse_orderable_str(s: &str) -> Option<OrderableValue> {
     Some(OrderableValue::Text(s.to_string()))
 }
 
-
 /// Parse a BC filter expression string into a [`FilterExpr`] AST.
 ///
 /// Returns [`FilterParseError`] if the expression is syntactically invalid.
@@ -329,7 +324,6 @@ pub fn parse(expr: &str) -> Result<FilterExpr, FilterParseError> {
     }
     Ok(result)
 }
-
 
 /// Test whether `value` satisfies the filter expression `expr`.
 pub fn matches(expr: &FilterExpr, value: &Value) -> bool {
@@ -431,7 +425,6 @@ fn cmp_value(value: &Value, ov: &OrderableValue) -> Option<std::cmp::Ordering> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,7 +436,6 @@ mod tests {
     fn text(s: &str) -> Value {
         Value::Text(s.to_string())
     }
-
 
     #[test]
     fn test_equality_integer() {
@@ -461,7 +453,6 @@ mod tests {
         assert!(matches(&expr, &text("hello")));
         assert!(!matches(&expr, &text("World")));
     }
-
 
     #[test]
     fn test_wildcard_star_prefix() {
@@ -496,7 +487,6 @@ mod tests {
         assert!(!matches(&expr, &text("ABBC")));
     }
 
-
     #[test]
     fn test_range_inclusive() {
         let expr = parse("100..200").unwrap();
@@ -514,7 +504,6 @@ mod tests {
         assert!(matches(&expr, &int(50)));
         assert!(!matches(&expr, &int(49)));
     }
-
 
     #[test]
     fn test_greater_than() {
@@ -551,7 +540,6 @@ mod tests {
         assert!(!matches(&expr, &int(5)));
     }
 
-
     #[test]
     fn test_or_expression() {
         let expr = parse("1|2|3").unwrap();
@@ -570,7 +558,6 @@ mod tests {
         assert!(!matches(&expr, &int(250)));
     }
 
-
     #[test]
     fn test_and_expression() {
         // `100..200 & <>150` — in range but not 150.
@@ -580,7 +567,6 @@ mod tests {
         assert!(!matches(&expr, &int(150)));
         assert!(!matches(&expr, &int(50)));
     }
-
 
     #[test]
     fn test_at_case_sensitive() {
@@ -598,7 +584,6 @@ mod tests {
         assert!(matches(&expr, &text("HELLO")));
     }
 
-
     #[test]
     fn test_parenthesised_group() {
         let expr = parse("(1|2)&(>0)").unwrap();
@@ -606,7 +591,6 @@ mod tests {
         assert!(matches(&expr, &int(2)));
         assert!(!matches(&expr, &int(3)));
     }
-
 
     #[test]
     fn test_invalid_empty_expression() {
@@ -626,7 +610,6 @@ mod tests {
         // Either parse error or the right side is empty → error.
         assert!(result.is_err());
     }
-
 
     #[test]
     fn test_set_range_only_matches_within() {
@@ -864,7 +847,6 @@ mod proptest_tests {
     use super::*;
     use proptest::prelude::*;
 
-
     /// Generate a printable ASCII string safe for use as an unquoted pattern
     /// token (no whitespace, no `|`, `&`, `(`, `)`, and no leading `.` pairs).
     fn safe_token() -> impl Strategy<Value = String> {
@@ -922,7 +904,6 @@ mod proptest_tests {
             (atom_str(), atom_str(), atom_str()).prop_map(|(a, b, c)| format!("({a}|{b})&{c}")),
         ]
     }
-
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]

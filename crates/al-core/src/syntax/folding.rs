@@ -38,7 +38,6 @@ fn extract_structural_ranges(root: Node, source: &[u8], ranges: &mut Vec<Folding
             // deliberately do NOT also add a fold here for the declaration's
             // body field — doing so produced a duplicate range for the same
             // region (F-OPEN-016).
-
             "procedure_declaration"
             | "trigger_declaration"
             | "event_procedure_declaration"

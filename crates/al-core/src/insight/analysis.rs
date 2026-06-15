@@ -12,7 +12,6 @@ use serde::Serialize;
 
 use crate::symbols::{ObjectKind, SymbolIndex};
 
-
 /// How an object interacts with a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,7 +70,6 @@ pub struct TableImpactResult {
     /// Total number of impact sites across all objects.
     pub total_impacts: usize,
 }
-
 
 /// Analyse all objects in the symbol index that interact with the named table.
 ///
@@ -191,7 +189,6 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
     }
 }
 
-
 /// Extract the leading table-name component of a `TableRelation` property value.
 ///
 /// AL `TableRelation` values can take several shapes:
@@ -263,7 +260,6 @@ pub(crate) fn is_record_of(type_name: &str, table_name: &str) -> bool {
     // Compare case-insensitively without allocating a lowercased copy.
     name.eq_ignore_ascii_case(table_name)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -520,7 +516,6 @@ mod tests {
         // 2 record vars from Multi + 1 extends from CE
         assert_eq!(result.total_impacts, 3);
     }
-
 
     // --- extract_table_relation_table: shape coverage ---
 

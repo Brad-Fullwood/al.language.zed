@@ -95,7 +95,6 @@ fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eva
     }
 }
 
-
 fn simple_error(message: &str) -> ErrorInfo {
     ErrorInfo {
         message: message.to_string(),
@@ -448,7 +447,6 @@ fn values_cmp(a: &Value, b: &Value, predicate: impl Fn(std::cmp::Ordering) -> bo
     };
     Eval::Normal(Value::Boolean(predicate(ord)))
 }
-
 
 #[cfg(test)]
 mod tests {

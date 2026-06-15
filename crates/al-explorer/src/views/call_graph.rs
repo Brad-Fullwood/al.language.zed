@@ -14,7 +14,6 @@ use crate::{
     App, MAX_INPUT_LEN, advance_list_selection, ensure_daemon_client, input_focused_style,
 };
 
-
 /// A single row shown in the call graph results list.
 #[derive(Debug, Clone)]
 struct CallRow {

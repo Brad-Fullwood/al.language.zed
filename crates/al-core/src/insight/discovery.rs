@@ -14,7 +14,6 @@ use serde::Serialize;
 
 use super::graph::{InsightEdge, InsightGraph, InsightNode, NodeKey};
 
-
 /// Location of a published event.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,7 +77,6 @@ pub struct EventDiscoveryResult {
     /// Total number of orphan subscribers.
     pub total_orphans: usize,
 }
-
 
 /// Discover all events and their subscribers from the insight graph.
 ///
@@ -265,7 +263,6 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
         total_orphans,
     }
 }
-
 
 #[cfg(test)]
 mod tests {

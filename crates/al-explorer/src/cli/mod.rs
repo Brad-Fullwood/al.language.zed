@@ -18,7 +18,6 @@ use clap_complete::{Shell, generate};
 
 use commands::{build, debug, insight, lsp};
 
-
 #[derive(Parser)]
 #[command(
     name = "al-explorer",

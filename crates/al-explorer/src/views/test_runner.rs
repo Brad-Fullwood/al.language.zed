@@ -12,7 +12,6 @@ use ratatui::{
 
 use crate::{App, ViewMode, advance_list_selection, ensure_daemon_client};
 
-
 /// Status of a single test method as reported by the daemon.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum MethodStatus {

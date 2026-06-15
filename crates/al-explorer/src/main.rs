@@ -59,7 +59,6 @@ use views::test_runner::{TestRunnerView, handle_test_runner_key, render_test_run
 #[cfg(unix)]
 pub(crate) const MAX_INPUT_LEN: usize = 4096;
 
-
 #[cfg(unix)]
 /// Advance a wrap-around list index forward by one.
 ///
@@ -143,7 +142,6 @@ pub(crate) fn pane_style(is_active: bool) -> Style {
     }
 }
 
-
 #[cfg(unix)]
 #[derive(PartialEq, Clone, Copy)]
 pub(crate) enum ViewMode {
@@ -153,7 +151,6 @@ pub(crate) enum ViewMode {
     Profiler,
     TestRunner,
 }
-
 
 #[cfg(unix)]
 #[derive(PartialEq, Clone, Copy)]
@@ -192,7 +189,6 @@ pub(crate) struct DetailTarget {
     #[allow(dead_code)]
     pub(crate) kind: DetailTargetKind,
 }
-
 
 /// Payload handed from the background workspace-init thread to the event
 /// loop: the connected daemon client plus the full symbol listing, or a
@@ -497,7 +493,10 @@ impl App {
 
     pub(crate) fn next_object(&mut self) {
         if !self.current_objects.is_empty() {
-            let i = wrap_next(self.object_list_state.selected(), self.current_objects.len());
+            let i = wrap_next(
+                self.object_list_state.selected(),
+                self.current_objects.len(),
+            );
             self.object_list_state.select(Some(i));
             self.details_list_state.select(Some(0));
             self.update_details_items();
@@ -506,7 +505,10 @@ impl App {
 
     pub(crate) fn previous_object(&mut self) {
         if !self.current_objects.is_empty() {
-            let i = wrap_prev(self.object_list_state.selected(), self.current_objects.len());
+            let i = wrap_prev(
+                self.object_list_state.selected(),
+                self.current_objects.len(),
+            );
             self.object_list_state.select(Some(i));
             self.details_list_state.select(Some(0));
             self.update_details_items();
@@ -923,7 +925,6 @@ impl App {
     }
 }
 
-
 // al-explorer talks to the al-lsp daemon over a Unix-domain socket
 // (`al_protocol::DaemonClient` is `#[cfg(unix)]`), so the whole binary is
 // Unix-only. The Zed extension does NOT need al-explorer — it spawns the
@@ -1097,7 +1098,6 @@ fn run_app<B: Backend<Error = io::Error>>(
     }
 }
 
-
 #[cfg(unix)]
 fn ui(f: &mut Frame, app: &mut App) {
     let size = f.area();
@@ -1165,7 +1165,6 @@ fn render_mode_bar(f: &mut Frame, area: Rect, mode: ViewMode) {
 
     f.render_widget(Paragraph::new(Line::from(all_spans)), area);
 }
-
 
 #[cfg(unix)]
 pub(crate) fn truncate_with_ellipsis(s: &str, width: usize) -> String {

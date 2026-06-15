@@ -14,7 +14,6 @@ use crate::{
     truncate_with_ellipsis,
 };
 
-
 struct UiLayout {
     main_columns: [Rect; 3],
     left_column: [Rect; 2],
@@ -58,7 +57,6 @@ fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
 fn inner_area(rect: Rect) -> Rect {
     Block::default().borders(Borders::ALL).inner(rect)
 }
-
 
 pub(crate) fn handle_object_browser_key(app: &mut App, key: crossterm::event::KeyEvent) {
     use crossterm::event::KeyCode;

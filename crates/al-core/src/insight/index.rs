@@ -26,7 +26,6 @@ use serde::Serialize;
 
 use super::graph::{InsightEdge, InsightGraph, InsightNode, NodeKey};
 
-
 /// Stable identifier for a node inside a `CallGraph`.
 ///
 /// This maps 1-to-1 with a `petgraph::NodeIndex` inside the backing
@@ -126,7 +125,6 @@ impl CallGraph {
         Self::default()
     }
 
-
     /// Populate the call graph from an already-built [`InsightGraph`].
     ///
     /// This extracts:
@@ -216,7 +214,6 @@ impl CallGraph {
         graph.get_node(key).map(NodeId::from)
     }
 
-
     /// Return all outgoing edges from `node`.
     pub fn callees_of(&self, node: NodeId) -> &[CallEdge] {
         self.outgoing.get(&node).map(Vec::as_slice).unwrap_or(&[])
@@ -264,7 +261,6 @@ impl CallGraph {
             .unwrap_or_default()
     }
 
-
     /// Register a node from the insight graph (call when adding new nodes
     /// incrementally, e.g. after parsing a newly opened file).
     pub fn register_node(&mut self, id: NodeId, info: NodeInfo) {
@@ -286,7 +282,6 @@ impl CallGraph {
         self.resolution.insert(node, state);
     }
 
-
     fn insert_edge(&mut self, edge: CallEdge) {
         // Deduplication: don't insert if an identical edge already exists.
         let already = self
@@ -306,7 +301,6 @@ impl CallGraph {
         self.incoming.entry(edge.to).or_default().push(edge);
     }
 }
-
 
 fn node_info(id: NodeId, node: &InsightNode) -> NodeInfo {
     use super::node_kind;
@@ -344,12 +338,10 @@ fn node_info(id: NodeId, node: &InsightNode) -> NodeInfo {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
-
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
@@ -418,7 +410,6 @@ mod tests {
             attributes: vec![],
         }
     }
-
 
     #[test]
     fn empty_call_graph() {

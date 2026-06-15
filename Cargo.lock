@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "al-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "al-protocol",
  "cc",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "al-explorer"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "al-protocol",
  "clap",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "al-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "al-test-harness"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde_json",
  "tokio",
@@ -5433,7 +5433,7 @@ dependencies = [
 
 [[package]]
 name = "zed-al"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde_json",
  "zed_extension_api",

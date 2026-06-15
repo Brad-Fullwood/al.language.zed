@@ -295,7 +295,6 @@ pub(super) fn dispatch_code_actions(
     ok_response(id, &actions, "textDocument/codeAction")
 }
 
-
 pub(super) fn dispatch_search(
     workspace: &Workspace,
     id: u64,

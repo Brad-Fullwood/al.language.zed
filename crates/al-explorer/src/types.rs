@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ObjectKind {
     Table,
@@ -93,7 +92,6 @@ impl fmt::Debug for ObjectKind {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParameterSymbol {
     pub name: String,
@@ -149,7 +147,6 @@ pub struct EnumValueSymbol {
     pub ordinal: i32,
     pub name: String,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolEntry {

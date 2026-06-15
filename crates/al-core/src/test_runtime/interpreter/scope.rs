@@ -183,7 +183,6 @@ impl Eval {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

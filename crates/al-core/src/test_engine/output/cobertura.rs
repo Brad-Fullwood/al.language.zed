@@ -176,7 +176,6 @@ pub fn write_cobertura<W: Write>(report: &CoverageReport, out: W) -> Result<(), 
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -608,5 +608,4 @@ mod query_types_tests {
             AlFoldingRangeKind::Region
         );
     }
-
 }
