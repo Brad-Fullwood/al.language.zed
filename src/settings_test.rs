@@ -167,3 +167,37 @@ fn resolve_server_args_explicit_arguments_override_everything() {
         vec!["--custom".to_string()]
     );
 }
+
+// --- resolve_dap_backend_flag (native-first DAP) ---------------------------
+
+#[test]
+fn resolve_dap_backend_flag_defaults_to_native() {
+    assert_eq!(crate::settings::resolve_dap_backend_flag(None), "--dap");
+    // An empty / unrelated settings object also stays native.
+    let other = serde_json::json!({"enableCodeAnalysis": true});
+    assert_eq!(
+        crate::settings::resolve_dap_backend_flag(Some(&other)),
+        "--dap"
+    );
+}
+
+#[test]
+fn resolve_dap_backend_flag_honors_use_official_dap_in_all_shapes() {
+    for shape in [
+        serde_json::json!({"useOfficialDap": true}),
+        serde_json::json!({"al.useOfficialDap": true}),
+        serde_json::json!({"al": {"useOfficialDap": true}}),
+    ] {
+        assert_eq!(
+            crate::settings::resolve_dap_backend_flag(Some(&shape)),
+            "--dap-legacy",
+            "shape: {shape}"
+        );
+    }
+    // false / absent stays native (no automatic fallback to Microsoft).
+    let off = serde_json::json!({"al": {"useOfficialDap": false}});
+    assert_eq!(
+        crate::settings::resolve_dap_backend_flag(Some(&off)),
+        "--dap"
+    );
+}

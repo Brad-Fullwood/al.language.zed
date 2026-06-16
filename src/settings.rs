@@ -119,3 +119,31 @@ pub fn resolve_server_args(
         vec!["--stdio".to_string()]
     }
 }
+
+/// Resolve which DAP backend flag `al-lsp` should launch with.
+///
+/// Mirrors [`resolve_server_args`] (the LSP `useOfficialLsp` toggle), keeping
+/// the "native-first, opt-in official" stance consistent across backends:
+///
+/// 1. Default: the native BC debug adapter (`--dap`) - our own implementation
+///    that speaks DAP and talks to BC over REST + SignalR directly.
+/// 2. `al.useOfficialDap: true` (flat, dotted, or nested under `"al"`)
+///    delegates to Microsoft's EditorServices.Host proxy (`--dap-legacy`).
+///
+/// There is no automatic fallback: if the native adapter fails it surfaces an
+/// error rather than silently switching to the Microsoft proxy.
+pub fn resolve_dap_backend_flag(user_settings: Option<&serde_json::Value>) -> &'static str {
+    let use_official = user_settings
+        .and_then(|s| {
+            s.get("useOfficialDap")
+                .or_else(|| s.get("al.useOfficialDap"))
+                .or_else(|| s.get("al").and_then(|al| al.get("useOfficialDap")))
+        })
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if use_official {
+        "--dap-legacy"
+    } else {
+        "--dap"
+    }
+}

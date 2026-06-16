@@ -14,6 +14,7 @@ pub mod build;
 pub mod config;
 pub mod dap;
 pub mod documents;
+pub mod emit;
 pub mod errors;
 pub mod file_index;
 pub mod generators;

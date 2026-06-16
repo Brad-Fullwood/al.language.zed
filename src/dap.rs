@@ -5,12 +5,17 @@ use zed_extension_api as zed;
 ///
 /// `al_lsp_path` is the resolved binary path from the full 4-step resolution
 /// chain (user config → cache → PATH → download) performed by the caller.
-/// al-lsp's `--dap` mode runs the DAP server over stdio. Zed communicates
-/// with it using the DAP protocol for breakpoints, stepping, etc.
+/// al-lsp's `--dap` mode runs the native DAP server over stdio. Zed
+/// communicates with it using the DAP protocol for breakpoints, stepping, etc.
+///
+/// `user_settings` is the `lsp."al-lsp".settings` object. The native adapter
+/// (`--dap`) is the default; `al.useOfficialDap: true` opts into Microsoft's
+/// EditorServices.Host proxy (`--dap-legacy`) - see `resolve_dap_backend_flag`.
 pub fn build_dap_binary(
     config: zed::DebugTaskDefinition,
     al_lsp_path: String,
     worktree: &zed::Worktree,
+    user_settings: Option<&Value>,
 ) -> zed::Result<zed::DebugAdapterBinary> {
     let workspace_path = worktree.root_path();
 
@@ -49,8 +54,9 @@ pub fn build_dap_binary(
         zed::StartDebuggingRequestArgumentsRequest::Launch
     };
 
+    let backend_flag = crate::settings::resolve_dap_backend_flag(user_settings);
     let mut args = vec![
-        "--dap".to_string(),
+        backend_flag.to_string(),
         format!("/projectRoot:{}", workspace_path),
     ];
 

@@ -293,6 +293,12 @@ async fn do_standard_publish(
 }
 
 /// Compile the project, using the workspace's toolchain.
+///
+/// Native-first: prefers the in-process CodeAnalysis bridge (the same pipeline
+/// the LSP daemon's `compile` uses). `al.useOfficialCompiler: true` opts into
+/// Microsoft's `dotnet alc` subprocess. There is NO silent fallback; when the
+/// bridge is unavailable and the official compiler is not enabled, this fails
+/// loudly so a publish can never quietly run on the non-native compiler.
 async fn run_compile(
     workspace: &Workspace,
     project_root: &Path,
@@ -305,9 +311,66 @@ async fn run_compile(
     let toolchain: AlToolchain = tc.clone().ok_or(PublishError::NoToolchain)?;
     drop(tc);
 
+    let use_official_compiler = workspace.config.read().await.use_official_compiler;
+
+    if !use_official_compiler {
+        if let Some(guard) = crate::semantic::get_or_init_bridge(workspace).await {
+            if let Some(bridge) = guard.as_ref() {
+                let result = bridge
+                    .compile(project_root, Some(&toolchain.alc), None)
+                    .await
+                    .map_err(|e| PublishError::Build(e.to_string()))?;
+                return Ok(bridge_result_to_build(result, project_root));
+            }
+        }
+        return Err(PublishError::Build(
+            crate::semantic::NATIVE_COMPILER_UNAVAILABLE.to_string(),
+        ));
+    }
+
+    warn!("al.useOfficialCompiler=true - publishing with the NON-NATIVE `dotnet alc` subprocess");
     crate::build::compile_project(&toolchain, project_root, None)
         .await
         .map_err(|e| PublishError::Build(e.to_string()))
+}
+
+/// Convert a semantic-bridge compile result into the `build::CompileResult`
+/// shape the publish flow consumes. The bridge may omit `appPath`; recover it
+/// from disk on success so the upload step still finds the artifact.
+fn bridge_result_to_build(
+    result: crate::semantic::CompileResult,
+    project_root: &Path,
+) -> CompileResult {
+    use crate::build::DiagnosticSeverity;
+    let diagnostics = result
+        .diagnostics
+        .into_iter()
+        .map(|d| CompileDiagnostic {
+            file: d.file.display().to_string(),
+            line: d.line,
+            column: d.column,
+            severity: match d.severity.to_ascii_lowercase().as_str() {
+                "error" => DiagnosticSeverity::Error,
+                "warning" => DiagnosticSeverity::Warning,
+                _ => DiagnosticSeverity::Info,
+            },
+            code: d.code,
+            message: d.message,
+        })
+        .collect();
+    let app_path = result.app_path.or_else(|| {
+        if result.success {
+            crate::build::find_app_file(project_root)
+        } else {
+            None
+        }
+    });
+    CompileResult {
+        success: result.success,
+        app_path,
+        diagnostics,
+        output: result.output.unwrap_or_default(),
+    }
 }
 
 /// Find the first matching BC server config from launch.json.

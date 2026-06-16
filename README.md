@@ -4,6 +4,8 @@ AL Language for Zed is a native Business Central AL toolchain for Zed. It is not
 
 The guiding idea is simple: make the AL developer experience native, inspectable, scriptable, fast, and available from Zed, the terminal, CI, and AI agents. Microsoft tooling still matters, especially for compiler-correct builds and Business Central runtime behavior, but this project owns as much of the day-to-day editor and analysis stack as possible.
 
+> Tester callout: this project is ready for serious testers across Zed editing, `al-lsp`, `al-explorer`, MCP, debugging, symbol downloads, and pure-logic test execution. Please test real Business Central projects, compare behavior against the official Microsoft tooling, and report exact commands, project shape, platform, expected result, actual result, and whether the issue is native-only or also reproduces through the Microsoft fallback. The roadmap in [ROADMAP.md](./ROADMAP.md) lists known gaps so testers can distinguish expected limitations from regressions.
+
 ## What Makes This Different
 
 The standard Microsoft AL tooling is powerful, but most of it is coupled to the VS Code extension, the official language server, Business Central service assumptions, and opaque editor commands. That makes it hard to build deep Zed integration, hard to run narrow analysis from CI, hard to expose AL-aware tools to agents, and hard to test behavior outside the Microsoft extension boundary.
@@ -12,8 +14,9 @@ This project rewrites a large part of that experience in native Rust:
 
 - AL parsing and Zed grammar integration are generated from AL language data and maintained in the bundled `tree-sitter-al` submodule.
 - Workspace state is owned by `al-lsp`: file indexes, parse trees, symbol maps, package maps, document caches, insight graphs, call graphs, test discovery, and daemon command routing.
-- `.app` symbol packages are read directly, with manifest parsing, `SymbolReference.json` extraction, source extraction, package source navigation, and bounded archive safety checks.
+- `.app` symbol packages are read directly, with manifest parsing, `SymbolReference.json` extraction, virtual package navigation, and bounded archive safety checks. When packages embed `.al` source it is exposed as virtual source; otherwise navigation falls back to generated outlines from public symbol metadata.
 - Symbol discovery is an in-memory indexed data model instead of repeated ad hoc package scans.
+- Compiler/package research has also started below the production build path: the repo includes a native `.app` inspector and the first pure-Rust emit primitives, including Microsoft-compatible generated method-id hashing for `SymbolReference.json`.
 - Business Central-specific workflows such as impact analysis, event tracing, subscriber lookup, dead-code detection, SQL anti-pattern detection, audit checks, and upgrade reports are exposed as commands, JSON-RPC, Zed tasks, and MCP tools.
 - Batch test execution includes a native interpreter path for fully pure-logic test codeunits, with conservative routing back to live Business Central for mixed, record-touching, unknown, or platform-dependent codeunits.
 - Zed can talk to the same engine through LSP, DAP, tasks, and the `al-tools` MCP context server.
@@ -30,7 +33,8 @@ The project is intentionally honest about what is native today and what still de
 | Parsing | Tree-sitter AL grammar and Rust syntax helpers | Microsoft TextMate grammar is used as generator input |
 | Language server | `al-lsp` LSP transport, workspace indexing, document store, completions, hover, definitions, references, rename, formatting, folding, symbols, semantic tokens, inlay hints, CodeLens, code actions, diagnostics plumbing | Optional official AL LSP via `al.useOfficialLsp` |
 | Semantic compiler checks | Native bridge host, daemon plumbing, caching, command surfaces | .NET AL CodeAnalysis bridge and Microsoft compiler semantics |
-| Build/package | Native orchestration, async/cancellable process handling, diagnostics mapping, analyzer selection, temp output, deterministic `.app` selection, atomic final `.app` handoff | `alc` remains the authoritative compiler when full AL compilation is required |
+| Build/package | Native orchestration, async/cancellable process handling, diagnostics mapping, analyzer selection, deterministic `.app` selection, and Rust-managed temp-output/final-handoff behavior on the main `dotnet alc` compile path | `alc` remains the authoritative compiler when full AL compilation is required; semantic-bridge, package, publish, and DAP compile entrypoints do not all share the same artifact-delivery path yet |
+| Experimental `.app` emit | Native package inspection plus early pure-Rust `SymbolReference.json` method-id hashing in `crates/al-core/src/emit` | Not wired into production compile yet; full `SymbolReference.json` emission and live publish validation remain future work |
 | Symbols | Native `.app` reader, symbol model, package cache, source map, composed objects, NuGet/server download orchestration | Symbol package contents and compiler output formats come from the Business Central ecosystem |
 | Analysis | Native impact, event, call graph, dead code, SQL scan, duplicates, architecture lint, breaking/upgrade/obsolete/audit reports | Package-only call-site bodies cannot be recovered when Microsoft `.app` symbols do not contain source bodies |
 | Tests | Native discovery, per-codeunit batch router, pure-logic interpreter, stubs, JUnit output, static Cobertura-shaped coverage output, early mutation testing for interpreter-routed tests | Single-codeunit `test-run` and all database, HTTP, UI, report, XmlPort, session, transaction, mixed, record-touching, and platform-dependent test execution use live BC today |
@@ -39,27 +43,30 @@ The project is intentionally honest about what is native today and what still de
 
 Native coverage is expanding. The current design keeps Microsoft fallback paths because compatibility is more important than pretending every AL edge case has already been replaced.
 
-## Why The Native Approach Is Better
+## Why The Native Approach Matters
 
-### Faster symbol discovery
+This section describes the architecture that avoids repeated work and makes the toolchain feel fast in real projects. It is not claiming published benchmark numbers against Microsoft's tools yet; benchmark-grade comparisons belong in the roadmap.
+
+### Cached symbol discovery
 
 Symbols are parsed once, cached, and indexed into concurrent in-memory maps. `SymbolIndex` stores shared `Arc` entries and maintains indexes by lowercase name, kind and id, kind, extension target, package path, source path, composed object, and all entries. That makes common queries direct map lookups rather than repeated package traversal.
 
-Package symbols are loaded in parallel, validated against a disk cache under the user cache directory, and reused when the `.app` path, size, timestamp, schema version, and toolchain version still match. Warm starts avoid re-reading and re-parsing large `SymbolReference.json` payloads.
+Package symbols are loaded in parallel, validated against a disk cache under the user cache directory, and reused when the `.app` path-derived cache key, size, timestamp, and symbol-cache schema version still match. Semantic builtins and error-code caches are keyed separately by AL toolchain version. Warm starts avoid re-reading and re-parsing large `SymbolReference.json` payloads.
 
-### Faster analysis queries
+### Cached analysis queries
 
 The daemon keeps a real workspace model, not just text open in the editor. `FileIndex` caches file text, object metadata, parse trees, document symbols, procedure definitions, event subscribers, and reverse indexes. `DocumentStore` keeps open-document text as shared strings and bounds parse-tree caching to avoid unbounded memory growth.
 
 Queries such as definitions, references, composed objects, impact analysis, event tracing, and call graph traversal reuse those maps. Insight graphs and call graphs are cached and invalidated based on the kind of edit: body-only edits do not need the same rebuild path as object topology changes.
 
-### Faster symbol downloads
+### Concurrent symbol acquisition
 
 Symbol acquisition is native and parallel where it is safe:
 
 - Existing packages are skipped instead of re-downloaded.
-- Downloads of the same package are serialized behind a per-package lock.
-- Downloads of different packages run concurrently behind a bounded semaphore.
+- NuGet downloads are deduplicated with per-package locks.
+- NuGet downloads of different packages run concurrently behind a bounded semaphore.
+- BC-server downloads are concurrent and payload-capped, but do not use the NuGet per-package lock/semaphore path.
 - NuGet service-index metadata is cached.
 - Package extraction is bounded by payload limits and archive-entry limits.
 - Freshly downloaded symbols are loaded into the workspace without requiring a daemon restart.
@@ -68,18 +75,20 @@ Symbol acquisition is native and parallel where it is safe:
 
 The indexing path is built around shared ownership and bounded caches. Large file limits, archive payload limits, parse-tree LRU limits, lazy TUI hydration, and `Arc<String>` document text all exist to stop editor workflows from exploding into repeated copies or unbounded state. Default completion results also have a small cache for the common "blank completion at top level" path.
 
-### Faster build loop
+### More deterministic build loop
 
 The final AL compiler is still Microsoft `alc` when a real `.app` compile is required, but the build loop around it has been redesigned:
 
-- The daemon attempts the semantic bridge compile path when available and falls back to `dotnet alc` when it is not.
+- The daemon `compile` dispatcher defaults to the semantic bridge and fails loudly if the bridge is unavailable; `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc`.
+- Package, LSP compile, and DAP launch compile surfaces currently use `dotnet alc` paths directly; publish follows the native-first compiler policy but has separate artifact conversion.
 - Compiler subprocesses are asynchronous, cancellable, timeout-aware, and killed on drop.
 - Analyzer selection and diagnostics mapping happen in native code.
-- Output is written to a per-invocation temporary directory, then moved into the project root atomically when possible.
+- The Rust-managed `dotnet alc` compile path writes output to a per-invocation temporary directory and moves it into the project root when possible; semantic-bridge and DAP compile paths do not share the full artifact-delivery pipeline yet.
 - `.app` selection prefers the manifest-derived `{publisher}_{name}_{version}.app` rather than arbitrary directory order.
 - DAP deploy now reuses the same package-selection logic, so launch/deploy does not accidentally publish an older `.app` left in the project root.
+- Native `.app` emission is being researched in-tree. `app_inspect` proves source packages are NAVX/ZIP containers, and `emit::method_id` reproduces Microsoft generated method ids for scalar signatures. This is not the production compile path yet, but it is the foundation for eventually removing more subprocess dependency.
 
-The practical benefit is a faster, safer development loop: the editor and CLI keep using already-built indexes for most questions, and the compile path becomes a deterministic build step instead of the only way to understand the project.
+The practical benefit is a safer and usually faster-feeling development loop: the editor and CLI keep using already-built indexes for most questions, and the compile path becomes a deterministic build step instead of the only way to understand the project.
 
 ## AI And Agent Workflows
 
@@ -224,7 +233,7 @@ Nested command groups include `debug start|breakpoint|state|eval|continue|step|h
 
 ### Daemon Protocol
 
-`al-lsp daemon` is the shared backend used by the CLI and MCP bridge. Keeping business logic in the daemon avoids one-off behavior between editor, terminal, and agent workflows.
+`al-lsp daemon` is the shared backend used by the CLI, MCP bridge, and Zed tasks. Native `al-lsp --stdio` LSP mode uses LSP handlers over the same workspace/query/build modules rather than the daemon dispatcher. `al-lsp --dap` is a separate stdio DAP mode with its own debug session plumbing.
 
 ## Symbol And Package Architecture
 
@@ -232,7 +241,8 @@ The symbol engine is one of the key reasons the project can support advanced AL 
 
 - `.app` files are read natively as NAVX/ZIP packages.
 - `NavxManifest.xml` and `SymbolReference.json` are parsed directly.
-- Source files embedded in `.app` packages can be exposed as virtual source for navigation.
+- `app_inspect` can list, classify, and safely extract package entries for IP and format auditing.
+- Source files embedded in `.app` packages can be exposed as virtual source for navigation; packages without embedded source fall back to generated public-API outlines.
 - Archive entries, manifest size, symbol size, and total package size are bounded.
 - Parsed package data is cached on disk and validated before reuse.
 - Package indexing is parallelized and loaded into shared in-memory indexes.
@@ -247,11 +257,12 @@ This is why symbol search, completions, object lookup, event discovery, and impa
 `al-lsp` and `al-explorer` do not pretend the Microsoft AL compiler is irrelevant. Instead, they put a better native control plane around it.
 
 - Toolchain discovery finds ALTool, `.NET`, compiler paths, bridge files, and project manifests.
-- Compile commands use the semantic bridge when available and fall back to `dotnet alc`.
+- The daemon `compile` dispatcher prefers the semantic bridge and fails loudly when the bridge is unavailable unless `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc`; package, LSP compile, and DAP launch compile surfaces currently use `dotnet alc` paths directly, while publish follows the native-first compiler policy through a separate path.
 - Compiler output is normalized into structured diagnostics.
 - The package cache path is selected explicitly.
 - Analyzer lists can be passed through command surfaces.
-- `.app` files are produced through a deterministic temp-output and final-handoff flow.
+- The main Rust-managed `dotnet alc` path uses deterministic temp output and final handoff when possible; semantic-bridge and DAP compile paths still need to be brought into that same artifact-delivery pipeline.
+- Experimental pure-Rust `.app` emission primitives exist, but production builds still use the current compiler paths until full symbol emission and publish validation are complete.
 - Launch/debug workflows compile on launch, locate the correct `.app`, publish/deploy where needed, and connect Zed to the BC debug backend through the native adapter.
 
 For Zed users, this means the extension can provide first-class launch/attach workflows without being a VS Code extension clone.
@@ -332,24 +343,24 @@ Common AL settings:
 
 `al.useOfficialLsp` is the explicit escape hatch for delegating to Microsoft's official AL LSP. The default path is this project's native `al-lsp`. Custom `dotnet` path configuration is not currently supported; the toolchain invokes `dotnet` by name.
 
-**Every setting — with types, defaults, and descriptions — is documented in [docs/settings.md](docs/settings.md), and a ready-to-copy, fully-commented template is at [examples/zed-settings.jsonc](examples/zed-settings.jsonc).** `al.enableNativeLint` and `al.nativeLintRules` are parsed for forward compatibility but currently inert; diagnostics come from syntax parsing and the semantic CodeAnalysis bridge.
+**Every setting - with types, defaults, and descriptions - is documented in [docs/settings.md](docs/settings.md), and a ready-to-copy, fully-commented template is at [examples/zed-settings.jsonc](examples/zed-settings.jsonc).** `al.enableNativeLint` and `al.nativeLintRules` are parsed for forward compatibility but currently inert; diagnostics come from syntax parsing and the semantic CodeAnalysis bridge.
 
-On Zed Dev/Nightly (extension API ≥ 0.8) the `lsp.al-lsp.settings` keys autocomplete and validate as you type; on Stable Zed the settings still apply, just without in-editor autocomplete (use the template above). This lights up on Stable automatically once the 0.8 extension API reaches the registry.
+On Zed Dev/Nightly (extension API >= 0.8) the `lsp.al-lsp.settings` keys autocomplete and validate as you type; on Stable Zed the settings still apply, just without in-editor autocomplete (use the template above). This lights up on Stable automatically once the 0.8 extension API reaches the registry.
 
 ### Project-file schemas (app.json, rulesets)
 
-This extension ships JSON Schemas for the AL project files you edit by hand — `app.json`, `*.ruleset.json`, `AppSourceCop.json`, and `migration.json`. Associate them with Zed's bundled JSON language server (the `json.schemas` block in [examples/zed-settings.jsonc](examples/zed-settings.jsonc)) to get autocomplete and validation for those files on **every Zed channel today**. See [docs/settings.md](docs/settings.md#project-file-schemas-appjson-rulesets-) for the mapping.
+This extension ships JSON Schemas for the AL project files you edit by hand: `app.json`, `*.ruleset.json`, `AppSourceCop.json`, and `migration.json`. Associate them with Zed's bundled JSON language server (the `json.schemas` block in [examples/zed-settings.jsonc](examples/zed-settings.jsonc)) to get autocomplete and validation for those files on **every Zed channel today**. See [docs/settings.md](docs/settings.md#project-file-schemas-appjson-rulesets-) for the mapping.
 
 ## Debugging
 
-The extension registers the `al` debug adapter and debug locator. Snippets cover common Business Central launch and attach configurations, including browser launch, tenant/environment settings, sandbox attach, agent-session debugging, and MCP-assisted BC debugging options. Debug-config schemas are tracked in the repository for reference; debug configurations are authored via the bundled snippets rather than a registered settings-editor schema. (For language-server settings and project-file schema autocomplete, see [Zed Settings](#zed-settings) above and [docs/settings.md](docs/settings.md).)
+The extension registers the `al` debug adapter and debug locator. Snippets cover common Business Central launch and attach configurations, including browser launch, tenant/environment settings, sandbox attach, agent-session fields, and MCP-related debug fields. Debug-config schemas are tracked in the repository for reference; debug configurations are authored via the bundled snippets rather than a registered settings-editor schema. (For language-server settings and project-file schema autocomplete, see [Zed Settings](#zed-settings) above and [docs/settings.md](docs/settings.md).)
 
 Debug support has two important layers:
 
 - Native Zed/DAP integration in `al-lsp --dap`.
 - Business Central runtime/debug service integration for actual AL execution.
 
-The native layer owns Zed protocol handling, config normalization, compile/deploy setup, breakpoints, stack/variable mapping, and editor-facing behavior. The BC runtime remains the source of truth for executing AL in a server environment.
+The native adapter currently implements the core launch/attach, publish, breakpoint, stepping, stack, scopes, variables, and evaluate flow against BC REST/SignalR. Not every schema/snippet field is consumed yet, especially agent/MCP-related debug fields. The BC runtime remains the source of truth for executing AL in a server environment.
 
 ## Development
 

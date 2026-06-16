@@ -2,6 +2,7 @@
 
 use super::super::{ensure_document, file_not_found, file_uri_from_params, invalid_params};
 use super::{ERR_INITIALIZING, ERR_NO_PROJECT};
+use crate::semantic::NATIVE_COMPILER_UNAVAILABLE;
 use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 
@@ -307,59 +308,76 @@ pub(in crate::server::daemon) async fn dispatch_compile(
     drop(tc);
     drop(project);
 
+    // Native-first compile policy. Default keeps compilation on the native
+    // in-process CodeAnalysis bridge; `al.useOfficialCompiler: true` opts into
+    // Microsoft's `dotnet alc` subprocess. There is no silent fallback.
+    let use_official_compiler = workspace.config.read().await.use_official_compiler;
+
     let result: Result<serde_json::Value, String> = async {
-        // Preferred path: the .NET CodeAnalysis bridge (rich diagnostics with
-        // end positions). When it is unavailable — built without the
-        // `semantic` feature, or CLR init failed — FALL BACK to the
-        // `dotnet alc` subprocess (F-OPEN-272; the documented behavior).
-        if let Some(guard) = crate::semantic::get_or_init_bridge(workspace).await {
-            if let Some(bridge) = guard.as_ref() {
-                // Pass the daemon's authoritative alc path and package cache —
-                // the C# side's own discovery guesses VS Code extension
-                // layouts and can pick a different (or no) compiler (FB-14).
-                let compile_result = bridge
-                    .compile(
-                        &project_root,
-                        Some(&toolchain.alc),
-                        package_cache.as_deref(),
-                    )
-                    .await
-                    .map_err(|e| format!("Compilation failed: {}", e))?;
-                // Semantic bridge may not return appPath — fall back to finding
-                // the .app file on disk when compilation succeeded.
-                let app_path = compile_result
-                    .app_path
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .or_else(|| {
-                        if compile_result.success {
-                            crate::build::find_app_file(&project_root)
-                                .map(|p| p.display().to_string())
-                        } else {
-                            None
-                        }
-                    });
-                return Ok(serde_json::json!({
-                    "success": compile_result.success,
-                    "diagnostics": compile_result.diagnostics.iter().map(|d| serde_json::json!({
-                        "file": d.file.display().to_string(),
-                        "line": d.line,
-                        "column": d.column,
-                        "endLine": d.end_line,
-                        "endColumn": d.end_column,
-                        "severity": d.severity,
-                        "code": d.code,
-                        "message": d.message,
-                    })).collect::<Vec<_>>(),
-                    "appPath": app_path,
-                    // Raw compiler output so the CLI can show WHY when a
-                    // failure produced no structured diagnostics (FB-14).
-                    "output": compile_result.output,
-                }));
+        // Native-first: the in-process CodeAnalysis bridge pipeline (rich
+        // diagnostics with end positions) is the default. When the user has NOT
+        // opted into the official compiler we use the bridge and, critically,
+        // do NOT silently fall back to the `dotnet alc` subprocess if the bridge
+        // is unavailable; we fail loudly instead, so a non-native compile can
+        // never masquerade as the native one (the user's explicit requirement).
+        if !use_official_compiler {
+            if let Some(guard) = crate::semantic::get_or_init_bridge(workspace).await {
+                if let Some(bridge) = guard.as_ref() {
+                    // Pass the daemon's authoritative alc path and package cache;
+                    // the C# side's own discovery guesses VS Code extension
+                    // layouts and can pick a different (or no) compiler (FB-14).
+                    let compile_result = bridge
+                        .compile(
+                            &project_root,
+                            Some(&toolchain.alc),
+                            package_cache.as_deref(),
+                        )
+                        .await
+                        .map_err(|e| format!("Compilation failed: {}", e))?;
+                    // Semantic bridge may not return appPath; fall back to finding
+                    // the .app file on disk when compilation succeeded.
+                    let app_path = compile_result
+                        .app_path
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .or_else(|| {
+                            if compile_result.success {
+                                crate::build::find_app_file(&project_root)
+                                    .map(|p| p.display().to_string())
+                            } else {
+                                None
+                            }
+                        });
+                    return Ok(serde_json::json!({
+                        "success": compile_result.success,
+                        "diagnostics": compile_result.diagnostics.iter().map(|d| serde_json::json!({
+                            "file": d.file.display().to_string(),
+                            "line": d.line,
+                            "column": d.column,
+                            "endLine": d.end_line,
+                            "endColumn": d.end_column,
+                            "severity": d.severity,
+                            "code": d.code,
+                            "message": d.message,
+                        })).collect::<Vec<_>>(),
+                        "appPath": app_path,
+                        // Raw compiler output so the CLI can show WHY when a
+                        // failure produced no structured diagnostics (FB-14).
+                        "output": compile_result.output,
+                    }));
+                }
             }
+            // Native bridge unavailable and the official compiler is not enabled.
+            tracing::error!("{NATIVE_COMPILER_UNAVAILABLE}");
+            return Err(NATIVE_COMPILER_UNAVAILABLE.to_string());
         }
 
-        tracing::info!("semantic bridge unavailable — compiling via dotnet alc subprocess");
+        // Opted into Microsoft's compiler subprocess (non-native). Warn so this
+        // is never mistaken for the native CodeAnalysis bridge pipeline.
+        tracing::warn!(
+            "al.useOfficialCompiler=true - compiling via the NON-NATIVE Microsoft \
+             `dotnet alc` subprocess instead of the native CodeAnalysis bridge"
+        );
         let compile_result =
             crate::build::compile_project(&toolchain, &project_root, package_cache.as_deref())
                 .await
@@ -1658,14 +1676,11 @@ mod tests {
         );
     }
 
-    /// F-OPEN-272: when the semantic bridge is unavailable (feature off or
-    /// init failed) but a toolchain exists, `compile` must FALL BACK to the
-    /// `dotnet alc` subprocess path (as the README documents) instead of
-    /// erroring "Failed to initialize semantic bridge". The fixture alc.dll is
-    /// an empty file so the subprocess attempt itself fails — the contract
-    /// under test is the ROUTING: the bridge-init error must not surface.
+    /// Native-first compile policy: when the semantic bridge is unavailable
+    /// and `al.useOfficialCompiler` is not enabled, `compile` must fail loudly
+    /// instead of silently falling back to the `dotnet alc` subprocess.
     #[tokio::test]
-    async fn compile_falls_back_to_alc_when_bridge_unavailable() {
+    async fn compile_fails_loudly_when_bridge_unavailable_without_official_compiler() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(
@@ -1699,14 +1714,15 @@ mod tests {
             *g = Some(tc);
         }
         let resp = dispatch_compile(&ws, 3).await;
-        if let Some(err) = &resp.error {
-            assert!(
-                !err.message.contains("semantic bridge"),
-                "compile must fall back to the alc subprocess when the bridge \
-                 is unavailable, not error on bridge init: {}",
-                err.message
-            );
-        }
+        let err = resp
+            .error
+            .expect("native-first compile must fail when the bridge is unavailable");
+        assert!(
+            err.message
+                .contains(crate::semantic::NATIVE_COMPILER_UNAVAILABLE),
+            "expected native compiler unavailable error, got: {}",
+            err.message
+        );
     }
 
     // --- dispatch_package (AL_TOOL_PATH seam + build error propagation) -------

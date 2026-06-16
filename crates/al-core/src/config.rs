@@ -108,6 +108,14 @@ pub struct AlConfig {
     /// Use incremental build when compiling.
     pub incremental_build: bool,
 
+    /// Escape hatch: compile via Microsoft's `dotnet alc` subprocess directly
+    /// instead of the native in-process CodeAnalysis bridge pipeline. Native
+    /// (bridge) is the default; when it is unavailable the daemon fails loudly
+    /// rather than silently switching; set this to `true` to opt into the
+    /// subprocess. (Note: the bridge itself still invokes `alc` internally; a
+    /// fully alc-free emit path is separate, future work.)
+    pub use_official_compiler: bool,
+
     // -----------------------------------------------------------------------
     // Debug / DAP
     // -----------------------------------------------------------------------
@@ -233,6 +241,7 @@ impl Default for AlConfig {
             // Compiler
             compilation_options: Vec::new(),
             incremental_build: false,
+            use_official_compiler: false,
             // DAP
             editor_services_path: None,
             editor_services_log_level: LogLevel::default(),
@@ -458,6 +467,7 @@ impl AlConfig {
                 // -- Compiler --
                 "compilationOptions" => merge_string_array(obj, key, &mut self.compilation_options),
                 "incrementalBuild" => merge_bool(obj, key, &mut self.incremental_build),
+                "useOfficialCompiler" => merge_bool(obj, key, &mut self.use_official_compiler),
                 // -- DAP --
                 "editorServicesPath" => {
                     merge_optional_path(obj, key, &mut self.editor_services_path)

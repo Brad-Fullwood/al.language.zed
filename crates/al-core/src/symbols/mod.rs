@@ -13,6 +13,7 @@
 //! - [`events`] — Discover event publishers and subscribers
 //! - [`nuget`] — NuGet v3 client for downloading symbol packages
 
+pub mod app_inspect;
 pub mod app_reader;
 pub mod cache;
 pub mod composition;

@@ -316,7 +316,14 @@ async fn main() {
             std::process::exit(1);
         }
     } else if args.iter().any(|a| a == "--dap-legacy") {
-        // Legacy DAP mode — proxy through EditorServices.Host
+        // Legacy DAP mode - proxy through EditorServices.Host.
+        // This is the NON-NATIVE Microsoft fallback, opted into via
+        // `al.useOfficialDap: true`. Warn loudly so it's never mistaken for the
+        // native BC debug adapter (`--dap`), which is the default.
+        tracing::warn!(
+            "Using LEGACY DAP (Microsoft EditorServices.Host proxy) - non-native fallback \
+             enabled via al.useOfficialDap. The native BC debug adapter is the default."
+        );
         let toolchain = match al_core::toolchain::find_toolchain() {
             Ok(tc) => tc,
             Err(e) => {

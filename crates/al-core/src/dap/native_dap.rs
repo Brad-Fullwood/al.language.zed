@@ -1333,12 +1333,17 @@ async fn write_dap<W: tokio::io::AsyncWrite + Unpin>(
     write_dap_frame(writer, &body).await
 }
 
-/// Compile via `dotnet alc` and return raw output.
+/// Compile the AL project for a debug launch, returning the compiler's console
+/// output.
 ///
-/// This is a DAP-local version of compilation. It returns raw output as a string
-/// rather than structured diagnostics because the DAP path streams output to the
-/// client as console events. al-core has a richer `compile_project` with diagnostics
-/// and analyzer support, but crate::dap cannot import al-core (boundary rule).
+/// Native-first: on Unix this delegates to the warm `al-lsp` daemon - the SAME
+/// in-process CodeAnalysis bridge pipeline the LSP and `al-explorer compile`
+/// use - instead of shelling out to `dotnet alc` from this transient debug
+/// process. The daemon owns the native-first policy (the `al.useOfficialCompiler`
+/// opt-in and the fail-loud, no-silent-fallback behaviour), so a debug deploy
+/// can never silently diverge onto a non-native compiler. The daemon
+/// auto-starts if one isn't already running for the project (the same mechanism
+/// `al-explorer compile`, the pre-launch build step, uses).
 async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<String, DapError> {
     let project_path = Path::new(project_root);
     if !project_path.join("app.json").is_file() {
@@ -1347,11 +1352,89 @@ async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<
         )));
     }
 
+    #[cfg(unix)]
+    {
+        // The compiler backend is chosen by the daemon, not here.
+        let _ = alc;
+        compile_via_daemon(project_root).await
+    }
+    #[cfg(not(unix))]
+    {
+        // No daemon transport off Unix - compile in-process via alc subprocess.
+        compile_via_alc_subprocess(alc, project_root).await
+    }
+}
+
+/// Native-first compile: delegate to the daemon's `compile` (CodeAnalysis bridge).
+#[cfg(unix)]
+async fn compile_via_daemon(project_root: &str) -> std::result::Result<String, DapError> {
+    let root = std::path::PathBuf::from(project_root);
+    // `DaemonClient` is blocking Unix-socket I/O - run it off the async runtime.
+    let value = tokio::task::spawn_blocking(move || {
+        let mut client = al_protocol::DaemonClient::connect(&root)?;
+        client.set_request_timeout(std::time::Duration::from_secs(600));
+        client.request("compile", None)
+    })
+    .await
+    .map_err(|e| DapError::CompilationFailed(format!("compile task panicked: {e}")))?
+    .map_err(|e| DapError::CompilationFailed(format!("native compile via daemon failed: {e}")))?;
+
+    // Daemon `compile` response shape: { success, diagnostics, appPath, output }.
+    let success = value
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let output = value
+        .get("output")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if success {
+        Ok(output)
+    } else if !output.is_empty() {
+        Err(DapError::CompilationFailed(output))
+    } else {
+        Err(DapError::CompilationFailed(summarize_diagnostics(&value)))
+    }
+}
+
+/// Render a daemon `compile` response's diagnostics into a console-friendly
+/// string, used when a failed compile produced no raw output.
+#[cfg(unix)]
+fn summarize_diagnostics(value: &serde_json::Value) -> String {
+    let diags = match value.get("diagnostics").and_then(|d| d.as_array()) {
+        Some(d) if !d.is_empty() => d,
+        _ => return "Compilation failed".to_string(),
+    };
+    diags
+        .iter()
+        .map(|d| {
+            let file = d.get("file").and_then(|v| v.as_str()).unwrap_or("");
+            let line = d.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+            let col = d.get("column").and_then(|v| v.as_u64()).unwrap_or(0);
+            let sev = d
+                .get("severity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("error");
+            let code = d.get("code").and_then(|v| v.as_str()).unwrap_or("");
+            let msg = d.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            format!("{file}({line},{col}): {sev} {code}: {msg}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Fallback compile path for non-Unix targets, which have no daemon transport.
+#[cfg(not(unix))]
+async fn compile_via_alc_subprocess(
+    alc: &Path,
+    project_root: &str,
+) -> std::result::Result<String, DapError> {
     // Roll net8.0 `alc.dll` forward onto a newer .NET major (DOTNET_ROLL_FORWARD).
     let mut cmd = crate::toolchain::dotnet_command_async(alc);
     cmd.arg(format!("/project:{project_root}"));
 
-    let packages_dir = project_path.join(".alpackages");
+    let packages_dir = Path::new(project_root).join(".alpackages");
     if packages_dir.is_dir() {
         cmd.arg(format!("/packagecachepath:{}", packages_dir.display()));
     }

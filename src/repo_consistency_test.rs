@@ -409,8 +409,8 @@ fn al_config_camel_fields() -> Vec<String> {
 
 /// The `al.*` keys `schemas/settings.json` is expected to declare: one per
 /// `AlConfig` field, with `inlayHints` expanded into its nested leaf keys and
-/// the launch-only `useOfficialLsp` (resolved in `settings.rs`, not an
-/// `AlConfig` field) added.
+/// the launch-only backend toggles (`useOfficialLsp`/`useOfficialDap`, resolved
+/// in `settings.rs`, not `AlConfig` fields) added.
 fn expected_schema_keys() -> std::collections::BTreeSet<String> {
     let mut keys = std::collections::BTreeSet::new();
     for field in al_config_camel_fields() {
@@ -423,6 +423,7 @@ fn expected_schema_keys() -> std::collections::BTreeSet<String> {
         }
     }
     keys.insert("al.useOfficialLsp".to_string());
+    keys.insert("al.useOfficialDap".to_string());
     keys
 }
 
@@ -470,7 +471,10 @@ fn all_shipped_schemas_are_valid_json() {
         ("settings.json", include_str!("../schemas/settings.json")),
         ("app.json", include_str!("../schemas/app.json")),
         ("ruleset.json", include_str!("../schemas/ruleset.json")),
-        ("appsourcecop.json", include_str!("../schemas/appsourcecop.json")),
+        (
+            "appsourcecop.json",
+            include_str!("../schemas/appsourcecop.json"),
+        ),
         ("migration.json", include_str!("../schemas/migration.json")),
     ];
     for (name, content) in schemas {
@@ -495,7 +499,10 @@ fn all_shipped_schemas_are_valid_json() {
 fn al_settings_schema_parses() {
     let schema = crate::al_settings_schema().expect("embedded settings schema must parse");
     assert!(
-        schema.get("properties").and_then(|p| p.as_object()).is_some(),
+        schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .is_some(),
         "embedded settings schema must have a `properties` object"
     );
 }

@@ -47,8 +47,10 @@ fn tools() -> &'static [ToolDef] {
         ToolDef {
             name: "al_build",
             method: "compile",
-            description: "Compile the AL project (semantic bridge when available, \
-                          dotnet alc otherwise). Returns success, diagnostics and the .app path.",
+            description: "Compile the AL project. By default this uses the native \
+                          CodeAnalysis bridge and fails loudly if it is unavailable; \
+                          set al.useOfficialCompiler=true to opt into dotnet alc. \
+                          Returns success, diagnostics and the .app path.",
             schema: || obj_schema(serde_json::json!({}), &[]),
         },
         ToolDef {
@@ -98,7 +100,7 @@ fn tools() -> &'static [ToolDef] {
             name: "al_sqlscan",
             method: "sqlPatterns",
             description: "Detect SQL anti-patterns (FindFirst in loops, unfiltered \
-                          FindSet, missing SetLoadFields, …) across the workspace.",
+                          FindSet, missing SetLoadFields, ...) across the workspace.",
             schema: || obj_schema(serde_json::json!({}), &[]),
         },
         ToolDef {
@@ -111,7 +113,7 @@ fn tools() -> &'static [ToolDef] {
         ToolDef {
             name: "al_trace_event",
             method: "trace",
-            description: "Trace an event's propagation chain (publishers → subscribers). \
+            description: "Trace an event's propagation chain (publishers to subscribers). \
                           Args: event (string), depth (number, default 10).",
             schema: || {
                 obj_schema(
@@ -126,7 +128,7 @@ fn tools() -> &'static [ToolDef] {
         ToolDef {
             name: "al_impact",
             method: "impact",
-            description: "Dependency impact analysis — who consumes this symbol? \
+            description: "Dependency impact analysis - who consumes this symbol? \
                           Args: symbol (e.g. 'Customer', 'Sales-Post.PostDocument').",
             schema: || {
                 obj_schema(

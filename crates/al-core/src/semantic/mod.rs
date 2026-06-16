@@ -19,3 +19,13 @@ pub use bridge::{
 pub use lifecycle::{
     get_or_init_bridge, restart_bridge, set_builtins, shutdown_bridge, SemanticCache,
 };
+
+/// User-facing error when native-first compilation cannot run because the
+/// in-process CodeAnalysis bridge is unavailable and the user has not opted
+/// into Microsoft's `dotnet alc` subprocess. Shared by every compile path so
+/// the "fail loud, no silent fallback" message is identical everywhere.
+pub const NATIVE_COMPILER_UNAVAILABLE: &str =
+    "Native compiler unavailable: the in-process CodeAnalysis bridge could not be initialized \
+     (binary built without the `semantic` feature, missing .NET runtime, or CLR init failed). \
+     Native-first compilation is enabled with no silent fallback. Fix the bridge, or set \
+     `al.useOfficialCompiler: true` to compile via Microsoft's `dotnet alc` subprocess.";

@@ -456,7 +456,13 @@ impl zed::Extension for AlExtension {
             worktree,
             user_provided_debug_adapter_path.as_deref(),
         )?;
-        dap::build_dap_binary(config, al_lsp_path, worktree)
+
+        // Read the same lsp."al-lsp".settings block the LSP uses so the
+        // al.useOfficialDap toggle lives alongside al.useOfficialLsp. The DAP
+        // path has no LanguageServerId, so key the lookup on the server id.
+        let lsp_settings = LspSettings::for_worktree("al-lsp", worktree).ok();
+        let user_settings = lsp_settings.as_ref().and_then(|s| s.settings.as_ref());
+        dap::build_dap_binary(config, al_lsp_path, worktree, user_settings)
     }
 
     fn dap_request_kind(

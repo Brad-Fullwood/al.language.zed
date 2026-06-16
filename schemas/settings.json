@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "AL Language Server Settings",
-  "description": "Configuration for the AL Language Server (al-lsp). In Zed these keys live inside \"lsp\": { \"al-lsp\": { \"settings\": { … } } } in settings.json. They control analysis, diagnostics, completions, symbol resolution, scaffolding, and debugging.",
+  "description": "Configuration for the AL Language Server (al-lsp). In Zed these keys live inside \"lsp\": { \"al-lsp\": { \"settings\": { ... } } } in settings.json. They control analysis, diagnostics, completions, symbol resolution, scaffolding, and debugging.",
   "type": "object",
   "properties": {
     "al.enableCodeAnalysis": {
@@ -132,7 +132,7 @@
     "al.useOnlyCustomFeeds": {
       "type": "boolean",
       "default": false,
-      "description": "When true, ONLY the feeds in al.nugetFeeds are used — the built-in public Microsoft feeds (MSSymbols, AppSourceSymbols, BCPublic) are skipped."
+      "description": "When true, ONLY the feeds in al.nugetFeeds are used; the built-in public Microsoft feeds (MSSymbols, AppSourceSymbols, BCPublic) are skipped."
     },
     "al.symbolsCountryRegion": {
       "type": ["string", "null"],
@@ -153,6 +153,11 @@
       "type": "boolean",
       "default": false,
       "description": "Use incremental build when compiling."
+    },
+    "al.useOfficialCompiler": {
+      "type": "boolean",
+      "default": false,
+      "description": "Escape hatch: compile via Microsoft's `dotnet alc` subprocess directly, instead of the native in-process CodeAnalysis bridge pipeline. Native (bridge) compilation is the default; when the bridge is unavailable the server fails loudly rather than silently falling back. Note: the bridge still invokes alc internally; this toggle only chooses which pipeline drives it."
     },
     "al.editorServicesPath": {
       "type": ["string", "null"],
@@ -200,6 +205,11 @@
       "type": "boolean",
       "default": false,
       "description": "Escape hatch: delegate the session to Microsoft's official AL Language Server (al-lsp --official-lsp), instead of this project's native server. Requires ALTool v17+ on the machine. An explicit binary.arguments override takes precedence over this setting."
+    },
+    "al.useOfficialDap": {
+      "type": "boolean",
+      "default": false,
+      "description": "Escape hatch: use Microsoft's EditorServices.Host debug-adapter proxy (al-lsp --dap-legacy) instead of this project's native BC debug adapter. Native debugging is the default; there is no automatic fallback. Requires the AL toolchain (ALTool) on the machine."
     }
   }
 }
