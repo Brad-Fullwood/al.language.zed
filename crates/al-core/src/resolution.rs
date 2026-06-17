@@ -879,6 +879,47 @@ pub(crate) enum CompletionCandidateKind {
 /// `workspace_field_items`). Moving it would force those internals to `pub(crate)`
 /// and split two tightly-coupled resolution calls across the layer boundary —
 /// increasing coupling, not reducing it. (Audit A1, considered and declined.)
+/// Map of `procedure name (lowercased) -> formatted XML doc` for a symbol-package
+/// object, extracted from the `///` comments in its virtual-file source (the same
+/// source go-to-definition opens). Empty when the package ships no source for the
+/// object — completion then shows no documentation, as before.
+fn symbol_package_proc_docs(
+    workspace: &Workspace,
+    object_name: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for entry in workspace.symbols.get_by_name(object_name) {
+        let Some((uri, _)) = crate::queries::get_or_create_virtual_file(workspace, &entry, None)
+        else {
+            continue;
+        };
+        let Ok(path) = uri.to_file_path() else {
+            continue;
+        };
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let result = crate::syntax::AlParser::parse_quick(&content);
+        for symbol in crate::syntax::extract_document_symbols(&result.tree, &content) {
+            let Some(children) = symbol.children else {
+                continue;
+            };
+            for child in children {
+                if !crate::queries::is_procedure_symbol(AlSymbolKind::from(child.kind)) {
+                    continue;
+                }
+                if let Some(doc) =
+                    extract_doc_comment(&content, child.selection_range.start.line as usize)
+                {
+                    map.entry(child.name.to_lowercase())
+                        .or_insert_with(|| format_xml_doc(&doc));
+                }
+            }
+        }
+    }
+    map
+}
+
 pub(crate) fn completion_items_for_receiver(
     workspace: &Workspace,
     receiver: &ResolvedType,
@@ -923,11 +964,16 @@ pub(crate) fn completion_items_for_receiver(
                         for child in children {
                             if crate::queries::is_procedure_symbol(AlSymbolKind::from(child.kind)) {
                                 workspace_symbols += 1;
+                                let documentation = extract_doc_comment(
+                                    &file_text,
+                                    child.selection_range.start.line as usize,
+                                )
+                                .map(|d| format_xml_doc(&d));
                                 items.push(CompletionCandidate {
                                     label: child.name,
                                     kind: CompletionCandidateKind::Method,
                                     detail: child.detail,
-                                    documentation: None,
+                                    documentation,
                                     insert_text: None,
                                     sort_text: None,
                                 });
@@ -944,6 +990,7 @@ pub(crate) fn completion_items_for_receiver(
             }
         }
 
+        let pkg_docs = symbol_package_proc_docs(workspace, subtype);
         for members in composed_members_for(workspace, subtype) {
             for method in &members.methods {
                 if method.is_local {
@@ -958,7 +1005,7 @@ pub(crate) fn completion_items_for_receiver(
                         &method.parameters,
                         method.return_type.as_deref(),
                     )),
-                    documentation: None,
+                    documentation: pkg_docs.get(&method.name.to_lowercase()).cloned(),
                     insert_text: None,
                     sort_text: None,
                 });
