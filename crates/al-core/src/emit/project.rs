@@ -158,9 +158,12 @@ pub fn build_app_from_project(
             .to_string()
     };
 
-    // Collect + sort .al files for deterministic ordering.
+    // Collect + sort .al files for deterministic ordering. Like `alc`, scan the
+    // ENTIRE project root — AL has no fixed source folder, so objects live under
+    // `objects/`, `src/`, `permissions/`, flat at the root, etc. Scanning only
+    // `src/` silently produced an empty `.app` for any other layout.
     let mut files = Vec::new();
-    collect_al_files(&project_dir.join("src"), &mut files);
+    collect_al_files(project_dir, &mut files);
     files.sort();
 
     let mut objects: Vec<EmitObject> = Vec::new();
@@ -212,6 +215,13 @@ fn collect_al_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
+            // Skip dot-dirs (.alpackages, .snapshots, .git, .vscode, …): alc does
+            // not compile sources under them, and scanning the whole project root
+            // would otherwise descend into the symbol-package cache.
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
             collect_al_files(&p, out);
         } else if p.extension().and_then(|x| x.to_str()) == Some("al") {
             out.push(p);
