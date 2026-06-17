@@ -9,10 +9,6 @@ fn test_project_dir() -> PathBuf {
     test_project_from_env().expect("AL_TEST_PROJECT_PATH must be set to run fixture tests")
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn symbol_names_recursive(symbols: &[serde_json::Value]) -> Vec<String> {
     let mut names = vec![];
     for sym in symbols {
@@ -26,7 +22,6 @@ fn symbol_names_recursive(symbols: &[serde_json::Value]) -> Vec<String> {
     names
 }
 
-/// Open ALL AL test project files into the client.
 async fn open_all_test_files(client: &mut LspClient) {
     let files = [
         "objects/API/ItemJournalStaging.Table.al",
@@ -60,10 +55,6 @@ async fn open_all_test_files(client: &mut LspClient) {
         }
     }
 }
-
-// ===================================================================
-// HOVER TESTS — exact markdown content checks
-// ===================================================================
 
 /// (file, line, col, substring_that_must_appear_in_hover)
 const HOVER_CASES: &[(&str, u32, u32, &str)] = &[
@@ -653,10 +644,6 @@ async fn test_hover_data_driven() {
     assert_eq!(failed, 0, "{failed} hover assertions failed out of {total}");
 }
 
-// ===================================================================
-// DEFINITION TESTS — go-to-definition target file + line checks
-// ===================================================================
-
 /// (file, line, col, expected_target_file_contains, expected_line_near)
 /// expected_line_near: Some(n) means the definition should be near line n (±5)
 /// None means we only check the file.
@@ -970,10 +957,6 @@ async fn test_definition_data_driven() {
     );
 }
 
-// ===================================================================
-// COMPLETION TESTS — check that specific items appear/don't appear
-// ===================================================================
-
 /// (file, line, col, items_that_must_be_present, items_that_must_not_be_present)
 type CompletionCase = (
     &'static str,
@@ -1160,10 +1143,6 @@ async fn test_completions_data_driven() {
     );
 }
 
-// ===================================================================
-// DOCUMENT SYMBOLS TESTS — check that symbol names are extracted
-// ===================================================================
-
 /// (file, symbols_that_must_be_present)
 const SYMBOL_CASES: &[(&str, &[&str])] = &[
     // Table
@@ -1337,15 +1316,9 @@ async fn test_document_symbols_data_driven() {
     );
 }
 
-// ===================================================================
-// SIGNATURE HELP TESTS — check function signature labels
-// ===================================================================
-
 /// (file, line, col, expected_substr_in_signature)
 const SIGNATURE_CASES: &[(&str, u32, u32, &str)] = &[
     // Local procedure call in IJLPostTask
-    // this.ProcessPostingQueue() — no params
-    // this.EnsureJournalBatchExists() — no params
     // this.InsertJournalLine(StagingRec, ItemJnlLine) — 2 params
     (
         "objects/Automation/IJLPostTask.Codeunit.al",
@@ -1518,10 +1491,6 @@ async fn test_signature_help_data_driven() {
     );
 }
 
-// ===================================================================
-// FOLDING RANGES — check that files produce reasonable folding
-// ===================================================================
-
 /// (file, min_ranges_expected)
 const FOLDING_CASES: &[(&str, usize)] = &[
     ("objects/API/ItemJournalStaging.Table.al", 10), // fields, keys, procedures
@@ -1574,10 +1543,6 @@ async fn test_folding_data_driven() {
         "{failed} folding assertions failed out of {total}"
     );
 }
-
-// ===================================================================
-// SEMANTIC TOKENS — check that every file produces tokens
-// ===================================================================
 
 /// (file, min_token_count)
 const TOKEN_CASES: &[(&str, usize)] = &[
@@ -1637,10 +1602,6 @@ async fn test_semantic_tokens_data_driven() {
         "{failed} semantic token assertions failed out of {total}"
     );
 }
-
-// ===================================================================
-// REFERENCES — check that find-references returns expected counts
-// ===================================================================
 
 /// (file, line, col, identifier_name, min_references_expected)
 const REFERENCE_CASES: &[(&str, u32, u32, &str, usize)] = &[
@@ -1726,11 +1687,6 @@ async fn test_references_data_driven() {
     );
 }
 
-// ===================================================================
-// DIAGNOSTICS — check that files don't produce unexpected errors
-// ===================================================================
-
-/// Files that should have zero diagnostics (well-formed AL)
 const ZERO_DIAG_FILES: &[&str] = &[
     "objects/API/ItemJournalStaging.Table.al",
     "objects/Automation/IJLStatus.Enum.al",
@@ -1744,7 +1700,6 @@ async fn test_diagnostics_data_driven() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     open_all_test_files(&mut client).await;
 
-    // Drain any diagnostics published during open
     let _ = client.drain_diagnostics();
 
     let mut passed = 0u32;

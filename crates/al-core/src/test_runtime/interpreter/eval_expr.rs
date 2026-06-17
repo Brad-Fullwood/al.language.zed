@@ -14,7 +14,6 @@ use tree_sitter::Node;
 use crate::test_runtime::interpreter::scope::{Eval, ScopeStack};
 use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
 
-/// Evaluate a tree-sitter expression node against the active stack.
 pub fn eval_expr(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
     // Stack-overflow guard (F-OPEN-265): expression evaluation recurses per
     // AST nesting level, and ~400 nested parens overflow a 2 MiB worker
@@ -532,7 +531,6 @@ mod tests {
             )),
             Value::Text("hello, world".into())
         );
-        // Mixed Text + Code keeps Text.
         assert_eq!(
             ok(apply_binary(
                 "+",
@@ -553,7 +551,6 @@ mod tests {
             ok(apply_binary("<>", Value::Integer(5), Value::Integer(6))),
             Value::Boolean(true)
         );
-        // Numeric mixing: 5 = 5.0 should be true.
         assert_eq!(
             ok(apply_binary("=", Value::Integer(5), Value::Decimal(5.0))),
             Value::Boolean(true)
@@ -675,7 +672,6 @@ mod tests {
 
     #[test]
     fn eval_unbound_identifier_is_error() {
-        // Negative: reading an unbound name is an Eval::Error.
         let result = parse_and_eval("nope");
         match result {
             Eval::Error(e) => {

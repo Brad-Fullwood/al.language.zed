@@ -17,10 +17,6 @@
 
 use al_test_harness::*;
 
-// ---------------------------------------------------------------------------
-// AL code snippets for editing scenarios
-// ---------------------------------------------------------------------------
-
 const INITIAL_CODEUNIT: &str = r#"codeunit 50100 "Edit Test"
 {
     procedure HelloWorld()
@@ -106,16 +102,11 @@ const TABLE_AL_ADD_FIELD: &str = r#"table 50100 "Edit Table"
     }
 }"#;
 
-// ===========================================================================
-// Section A — Basic didChange
-// ===========================================================================
-
 #[tokio::test]
 async fn test_edit_a01_change_file_updates_document_symbols() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
-    // Initially: one procedure (HelloWorld)
     let symbols = client.document_symbols("src/edit_test.al").await;
     let names: Vec<&str> = symbol_names(&symbols);
     assert!(names.contains(&"HelloWorld"), "initial symbols: {names:?}");
@@ -124,12 +115,10 @@ async fn test_edit_a01_change_file_updates_document_symbols() {
         "NewProcedure should not exist yet"
     );
 
-    // Edit: add a second procedure
     client
         .change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC)
         .await;
 
-    // After edit: both procedures visible
     let symbols = client.document_symbols("src/edit_test.al").await;
     let names: Vec<&str> = symbol_names(&symbols);
     assert!(
@@ -149,7 +138,6 @@ async fn test_edit_a02_change_file_updates_hover() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
-    // Edit: add NewProcedure
     client
         .change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC)
         .await;
@@ -175,12 +163,10 @@ async fn test_edit_a03_change_file_updates_completions() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
-    // Edit: add NewProcedure
     client
         .change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC)
         .await;
 
-    // Completions inside HelloWorld body should include NewProcedure
     let items = client.completion("src/edit_test.al", 7, 0).await;
     let labels: Vec<&str> = completion_labels(&items);
     assert!(
@@ -204,7 +190,6 @@ async fn test_edit_a04_change_file_updates_semantic_tokens() {
         .map(|a| a.len())
         .unwrap_or(0);
 
-    // Edit: add more code
     client
         .change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC)
         .await;
@@ -223,10 +208,6 @@ async fn test_edit_a04_change_file_updates_semantic_tokens() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section B — Diagnostics after edit
-// ===========================================================================
-
 #[tokio::test]
 async fn test_edit_b01_diagnostics_appear_after_introducing_error() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -235,7 +216,6 @@ async fn test_edit_b01_diagnostics_appear_after_introducing_error() {
     // Initial: drain the open notification so we start clean
     let _initial_diags = client.drain_diagnostics();
 
-    // Edit: introduce syntax error (missing semicolon)
     // change_file() waits for publishDiagnostics, so the notification is
     // buffered and available immediately after it returns.
     client
@@ -280,7 +260,6 @@ async fn test_edit_b02_diagnostics_clear_after_fixing_error() {
         "AL-L001 must not appear with native lint rules removed: got {initial_codes:?}"
     );
 
-    // Edit to non-empty code — server should continue processing without crash.
     client
         .change_file("src/edit_test.al", INITIAL_CODEUNIT)
         .await;
@@ -332,7 +311,6 @@ async fn test_edit_b03_lint_diagnostics_update_on_edit() {
         "AL-L007 must not appear with native lint rules removed: got {codes:?}"
     );
 
-    // Edit: remove the TODO — server should still not emit AL-L007.
     client
         .change_file("src/edit_test.al", INITIAL_CODEUNIT)
         .await;
@@ -353,17 +331,12 @@ async fn test_edit_b03_lint_diagnostics_update_on_edit() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section C — didClose lifecycle
-// ===========================================================================
-
 #[tokio::test]
 async fn test_edit_c01_close_file_does_not_crash() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
     client.close_file("src/edit_test.al").await;
 
-    // Server should still be responsive after closing a file
     let symbols = client.workspace_symbol("").await;
     assert!(
         !symbols.is_empty(),
@@ -377,14 +350,12 @@ async fn test_edit_c01_close_file_does_not_crash() {
 async fn test_edit_c02_close_then_reopen_file() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // Open, verify, close
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
     let symbols1 = client.document_symbols("src/edit_test.al").await;
     assert!(!symbols1.is_empty(), "should have symbols after open");
 
     client.close_file("src/edit_test.al").await;
 
-    // Reopen with different content
     client
         .open_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC)
         .await;
@@ -405,10 +376,8 @@ async fn test_edit_c03_close_one_file_other_still_works() {
     client.open_file("src/file_a.al", INITIAL_CODEUNIT).await;
     client.open_file("src/file_b.al", TABLE_AL).await;
 
-    // Close file_a
     client.close_file("src/file_a.al").await;
 
-    // file_b should still work
     let symbols = client.document_symbols("src/file_b.al").await;
     assert!(
         !symbols.is_empty(),
@@ -418,16 +387,11 @@ async fn test_edit_c03_close_one_file_other_still_works() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section D — Edit then query (realistic Zed workflow)
-// ===========================================================================
-
 #[tokio::test]
 async fn test_edit_d01_edit_variable_then_hover() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
-    // Edit: rename variable from Msg to Greeting
     client
         .change_file("src/edit_test.al", EDITED_CODEUNIT_RENAME_VAR)
         .await;
@@ -452,7 +416,6 @@ async fn test_edit_d02_add_field_then_document_symbols() {
 
     let symbols_before = client.document_symbols("src/edit_table.al").await;
 
-    // Edit: add a field
     client
         .change_file("src/edit_table.al", TABLE_AL_ADD_FIELD)
         .await;
@@ -464,7 +427,6 @@ async fn test_edit_d02_add_field_then_document_symbols() {
         "document symbols should include newly added field: {names_after:?}"
     );
 
-    // Should have more symbols after adding a field
     assert!(
         symbol_names(&symbols_after).len() > symbol_names(&symbols_before).len(),
         "should have more symbols after adding a field"
@@ -480,12 +442,10 @@ async fn test_edit_d03_edit_does_not_corrupt_other_file() {
     client.open_file("src/file_a.al", INITIAL_CODEUNIT).await;
     client.open_file("src/file_b.al", TABLE_AL).await;
 
-    // Edit only file_a
     client
         .change_file("src/file_a.al", EDITED_CODEUNIT_ADD_PROC)
         .await;
 
-    // file_b should be unchanged
     let symbols_b = client.document_symbols("src/file_b.al").await;
     let names_b: Vec<&str> = symbol_names(&symbols_b);
     assert!(
@@ -500,16 +460,11 @@ async fn test_edit_d03_edit_does_not_corrupt_other_file() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section E — Rapid edits (Zed sends changes on every keystroke)
-// ===========================================================================
-
 #[tokio::test]
 async fn test_edit_e01_rapid_edits_no_crash() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/rapid.al", INITIAL_CODEUNIT).await;
 
-    // Simulate rapid typing — 10 edits without waiting
     for i in 0..10 {
         let content = format!(
             r#"codeunit 50100 "Edit Test"
@@ -542,14 +497,12 @@ async fn test_edit_e01_rapid_edits_no_crash() {
     .to_string();
     client.change_file("src/rapid.al", &final_content).await;
 
-    // Server should still be responsive
     let symbols = client.document_symbols("src/rapid.al").await;
     assert!(
         !symbols.is_empty(),
         "server should still work after rapid edits"
     );
 
-    // Hover should work
     let hover = client.hover("src/rapid.al", 6, 10).await;
     assert!(hover.is_some(), "hover should work after rapid edits");
 
@@ -561,7 +514,6 @@ async fn test_edit_e02_rapid_edits_final_state_correct() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/rapid.al", INITIAL_CODEUNIT).await;
 
-    // Send several rapid edits, last one adds NewProcedure
     client
         .change_file_no_wait("src/rapid.al", INITIAL_CODEUNIT)
         .await;
@@ -570,9 +522,8 @@ async fn test_edit_e02_rapid_edits_final_state_correct() {
         .await;
     client
         .change_file("src/rapid.al", EDITED_CODEUNIT_ADD_PROC)
-        .await; // wait on last one
+        .await;
 
-    // Final state should reflect the last edit
     let symbols = client.document_symbols("src/rapid.al").await;
     let names: Vec<&str> = symbol_names(&symbols);
     assert!(
@@ -583,10 +534,6 @@ async fn test_edit_e02_rapid_edits_final_state_correct() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section F — Folding and formatting after edit
-// ===========================================================================
-
 #[tokio::test]
 async fn test_edit_f01_folding_ranges_update_after_edit() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -594,7 +541,6 @@ async fn test_edit_f01_folding_ranges_update_after_edit() {
 
     let folds_before = client.folding_ranges("src/edit_test.al").await;
 
-    // Add a second procedure (more foldable regions)
     client
         .change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC)
         .await;
@@ -629,13 +575,11 @@ end;
         "unformatted code should produce formatting edits"
     );
 
-    // Now edit to well-formatted code
     client
         .change_file("src/edit_test.al", INITIAL_CODEUNIT)
         .await;
 
     let edits2 = client.format("src/edit_test.al").await;
-    // Well-formatted code should produce fewer (or no) edits
     assert!(
         edits2.len() <= edits.len(),
         "well-formatted code should produce fewer edits: before={}, after={}",
@@ -646,16 +590,11 @@ end;
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section G — Configuration changes
-// ===========================================================================
-
 #[tokio::test]
 async fn test_edit_g01_configuration_change_no_crash() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
-    // Send a configuration change (Zed does this when settings update)
     client
         .change_configuration(serde_json::json!({
             "al": {
@@ -667,7 +606,6 @@ async fn test_edit_g01_configuration_change_no_crash() {
         }))
         .await;
 
-    // Server should still be responsive
     let hover = client.hover("src/edit_test.al", 2, 14).await;
     assert!(
         hover.is_some(),
@@ -677,24 +615,17 @@ async fn test_edit_g01_configuration_change_no_crash() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section H — Edge cases during editing
-// ===========================================================================
-
 #[tokio::test]
 async fn test_edit_h01_edit_to_empty_file() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
-    // Edit to completely empty
     client.change_file("src/edit_test.al", "").await;
 
-    // Queries on empty file should not crash
     let symbols = client.document_symbols("src/edit_test.al").await;
     assert!(symbols.is_empty(), "empty file should have no symbols");
 
     let _hover = client.hover("src/edit_test.al", 0, 0).await;
-    // May or may not return something — just shouldn't crash
 
     client.shutdown().await;
 }
@@ -704,7 +635,6 @@ async fn test_edit_h02_edit_to_invalid_al() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
-    // Edit to completely invalid AL
     client
         .change_file("src/edit_test.al", "this is not valid AL code at all!!!")
         .await;
@@ -714,7 +644,6 @@ async fn test_edit_h02_edit_to_invalid_al() {
     // May have some symbols from error recovery, but shouldn't panic
 
     let _hover = client.hover("src/edit_test.al", 0, 0).await;
-    // Just verify no crash
 
     client.shutdown().await;
 }
@@ -734,11 +663,9 @@ async fn test_edit_h03_edit_unicode_content() {
 }"#;
     client.open_file("src/edit_test.al", unicode_al).await;
 
-    // Hover on unicode identifier
     let hover = client.hover("src/edit_test.al", 4, 10).await;
     assert!(hover.is_some(), "hover should work on unicode identifiers");
 
-    // Edit with more unicode
     let edited = unicode_al.replace("Héllo", "Gödel");
     client.change_file("src/edit_test.al", &edited).await;
 
@@ -753,7 +680,6 @@ async fn test_edit_h04_many_sequential_edits() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
-    // 50 sequential edits
     for i in 0..50 {
         let content = format!(
             r#"codeunit 50100 "Edit Test"
@@ -766,7 +692,6 @@ async fn test_edit_h04_many_sequential_edits() {
         client.change_file("src/edit_test.al", &content).await;
     }
 
-    // After 50 edits, the latest procedure should be visible
     let symbols = client.document_symbols("src/edit_test.al").await;
     let names: Vec<&str> = symbol_names(&symbols);
     assert!(

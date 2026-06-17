@@ -261,16 +261,13 @@ fn document_store_open_change_close_lifecycle() {
     let store = al_core::documents::DocumentStore::new();
     let uri = Url::parse("file:///test/lifecycle.al").unwrap();
 
-    // Open
     store.open(uri.clone(), SIMPLE_CODEUNIT.to_string());
     assert!(store.contains(&uri));
     assert_eq!(store.get_version(&uri), Some(0));
 
-    // Get text back
     let text = store.get_text(&uri).unwrap();
     assert!(text.contains("HelloWorld"));
 
-    // Incremental change: replace "HelloWorld" with "Greet"
     let hello_offset = text.find("HelloWorld").unwrap();
     let line = text[..hello_offset].matches('\n').count() as u32;
     let col = hello_offset - text[..hello_offset].rfind('\n').map_or(0, |p| p + 1);
@@ -296,7 +293,6 @@ fn document_store_open_change_close_lifecycle() {
     assert!(!updated.contains("HelloWorld"));
     assert_eq!(store.get_version(&uri), Some(1));
 
-    // Close
     store.close(&uri);
     assert!(!store.contains(&uri));
     assert_eq!(store.get_text(&uri), None);
@@ -350,13 +346,11 @@ fn syntax_error_to_lsp_diagnostic_conversion() {
     let mut parser = make_parser();
     let result = parser.parse(bad_code);
 
-    // Should have at least one error (missing closing paren or similar)
     assert!(
         !result.errors.is_empty(),
         "Broken code should produce parse errors"
     );
 
-    // Convert to LSP diagnostics using the al-lsp conversion function
     let src_bytes = bad_code.as_bytes();
     let diagnostics: Vec<Diagnostic> = result
         .errors
@@ -408,25 +402,21 @@ fn lint_diagnostics_convert_to_lsp() {
 fn symbol_index_search_and_lookup() {
     let index = build_test_index();
 
-    // Search by name
     let results = index.search("Customer", 10);
     assert!(
         results.len() >= 2,
         "Should find Customer table and Customer Blocked enum"
     );
 
-    // Exact name lookup
     let by_name = index.get_by_name("Customer");
     assert_eq!(by_name.len(), 1);
     assert_eq!(by_name[0].kind, ObjectKind::Table);
     assert_eq!(by_name[0].id, 18);
 
-    // Lookup by kind and id
     let by_id = index.get_by_id(ObjectKind::Table, 18);
     assert_eq!(by_id.len(), 1);
     assert_eq!(by_id[0].name, "Customer");
 
-    // Fields and methods on the found symbol
     let customer = &by_name[0];
     assert_eq!(customer.fields.len(), 3);
     assert_eq!(customer.methods.len(), 2);
@@ -438,7 +428,6 @@ fn symbol_index_search_and_lookup() {
         .expect("Should have GetBalance method");
     assert_eq!(get_balance.return_type.as_deref(), Some("Decimal"));
 
-    // Enum values
     let blocked_enum = index.get_by_name("Customer Blocked");
     assert_eq!(blocked_enum.len(), 1);
     assert_eq!(blocked_enum[0].enum_values.len(), 4);
@@ -530,7 +519,6 @@ fn semantic_tokens_cover_all_token_types() {
 
     assert!(!tokens.is_empty(), "Should produce semantic tokens");
 
-    // Check that we get a variety of token types.
     // Keywords are now deferred to tree-sitter highlights.scm; no KEYWORD semantic tokens.
     let has_string = tokens
         .iter()
@@ -552,7 +540,6 @@ fn semantic_tokens_cover_all_token_types() {
         "Should have function tokens (HelloWorld procedure, Message builtin)"
     );
 
-    // Verify we get a reasonable number of distinct token types
     let mut seen_types = std::collections::HashSet::new();
     for t in &tokens {
         seen_types.insert(t.token_type);
@@ -570,7 +557,6 @@ fn semantic_tokens_delta_encoding_is_valid() {
     let result = parser.parse(CODEUNIT_AL);
     let tokens = al_core::syntax::extract_semantic_tokens(&result.tree, CODEUNIT_AL);
 
-    // Reconstruct absolute positions and verify ordering
     let mut abs_line: u32 = 0;
     let mut abs_col: u32 = 0;
 
@@ -603,7 +589,6 @@ fn folding_ranges_cover_structural_elements() {
         "Should produce folding ranges for a multi-line codeunit"
     );
 
-    // Should have at least ranges for: object body, procedures, begin..end blocks
     let region_ranges: Vec<&SyntaxFoldingRange> = ranges
         .iter()
         .filter(|r| r.kind == Some(SyntaxFoldingRangeKind::Region))
@@ -645,11 +630,9 @@ codeunit 50100 Test
 
 #[test]
 fn formatting_idempotent() {
-    // Format once
     let opts = FormatOptions::default();
     let first = al_core::syntax::format_al(SIMPLE_CODEUNIT, &opts);
 
-    // Format again
     let second = al_core::syntax::format_al(&first, &opts);
 
     assert_eq!(
@@ -802,12 +785,10 @@ fn find_variable_references_in_codeunit() {
 fn workspace_scans_al_files() {
     use std::fs;
 
-    // Create a temporary workspace with .al files
     let tmp = std::env::temp_dir().join("al-lsp-test-workspace");
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(tmp.join("src")).unwrap();
 
-    // Write test files
     fs::write(
         tmp.join("app.json"),
         r#"{"id":"test","name":"TestApp","publisher":"Test","version":"1.0.0.0"}"#,
@@ -836,7 +817,6 @@ fn workspace_scans_al_files() {
     )
     .unwrap();
 
-    // The file should be parseable
     let content = fs::read_to_string(tmp.join("src/Table50100.al")).unwrap();
     let mut parser = make_parser();
     let result = parser.parse(&content);
@@ -846,7 +826,6 @@ fn workspace_scans_al_files() {
     assert!(obj.is_some());
     assert_eq!(obj.unwrap().name, "My Table");
 
-    // Cleanup
     let _ = fs::remove_dir_all(&tmp);
 }
 
@@ -861,12 +840,10 @@ Message('positive');
 end;
 }"#;
 
-    // Step 1: Format
     let opts = FormatOptions::default();
     let formatted = al_core::syntax::format_al(unformatted, &opts);
     assert_ne!(formatted, unformatted, "Formatting should change the code");
 
-    // Step 2: Parse the formatted code
     let mut parser = make_parser();
     let result = parser.parse(&formatted);
     assert!(
@@ -874,9 +851,7 @@ end;
         "Formatted code should parse without errors"
     );
 
-    // Step 3: Lint the formatted code
     let lints = al_core::syntax::lint(&result.tree, &formatted);
-    // Should not have any critical lint issues
     let errors: Vec<&al_core::syntax::LintDiagnostic> = lints
         .iter()
         .filter(|l| l.severity == al_core::syntax::LintSeverity::Error)
@@ -887,15 +862,10 @@ end;
         errors
     );
 
-    // Step 4: Extract symbols
     let symbols = al_core::syntax::extract_document_symbols(&result.tree, &formatted);
     assert_eq!(symbols.len(), 1);
     assert_eq!(symbols[0].name, "Test");
 }
-
-// ---------------------------------------------------------------------------
-// Fixture file tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn fixture_app_json_is_valid_json() {
@@ -959,7 +929,6 @@ fn lint_diag_to_json_test(d: &al_core::syntax::LintDiagnostic) -> serde_json::Va
     })
 }
 
-/// Helper: simulate the hover JSON produced by `dispatch_hover`.
 fn hover_result_to_json(r: &al_core::queries::hover::HoverResult) -> serde_json::Value {
     serde_json::json!({
         "contents": r.contents,
@@ -970,7 +939,6 @@ fn hover_result_to_json(r: &al_core::queries::hover::HoverResult) -> serde_json:
     })
 }
 
-/// Helper: simulate the definition JSON produced by `dispatch_definition`.
 fn locations_to_json(locations: &[al_core::queries::Location]) -> serde_json::Value {
     serde_json::json!(locations
         .iter()
@@ -983,10 +951,6 @@ fn locations_to_json(locations: &[al_core::queries::Location]) -> serde_json::Va
         }))
         .collect::<Vec<_>>())
 }
-
-// ---------------------------------------------------------------------------
-// format JSON schema
-// ---------------------------------------------------------------------------
 
 #[test]
 fn json_schema_format_output_has_required_fields() {
@@ -1035,7 +999,6 @@ fn json_schema_format_check_output_shape() {
 
 #[test]
 fn json_schema_format_changed_is_false_for_already_formatted_input() {
-    // A well-formatted codeunit should have changed=false
     let formatted_content = "codeunit 50100 Test\n{\n    procedure Foo()\n    begin\n    end;\n}\n";
     let opts = FormatOptions::default();
     let formatted = al_core::syntax::format_al(formatted_content, &opts);
@@ -1047,10 +1010,6 @@ fn json_schema_format_changed_is_false_for_already_formatted_input() {
         "well-formatted input should not change"
     );
 }
-
-// ---------------------------------------------------------------------------
-// lint JSON schema
-// ---------------------------------------------------------------------------
 
 #[test]
 fn json_schema_lint_output_is_array() {
@@ -1120,10 +1079,6 @@ fn json_schema_lint_line_numbers_are_one_based() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// search JSON schema
-// ---------------------------------------------------------------------------
-
 #[test]
 fn json_schema_search_output_is_array() {
     // dispatch_search returns a JSON array of symbol entries
@@ -1144,7 +1099,6 @@ fn json_schema_search_output_is_array() {
 
 #[test]
 fn json_schema_search_symbol_entry_has_required_fields() {
-    // Each symbol entry must serialize without error
     let index = build_test_index();
     let results = index.search("Customer", 10);
     assert!(!results.is_empty(), "should find Customer in test index");
@@ -1152,35 +1106,27 @@ fn json_schema_search_symbol_entry_has_required_fields() {
     for entry in &results {
         let json =
             serde_json::to_value(entry.as_ref()).expect("SymbolEntry must serialize to JSON");
-        // Basic structural check: must be an object
         assert!(json.is_object(), "each search result must be a JSON object");
     }
 }
 
 #[test]
 fn json_schema_search_empty_query_returns_all() {
-    // Empty query should return all symbols (up to limit)
     let index = build_test_index();
     let results = index.search("", 100);
     let json_entries: Vec<serde_json::Value> = results
         .iter()
         .filter_map(|e| serde_json::to_value(e.as_ref()).ok())
         .collect();
-    // Should include all 3 entries from build_test_index
     assert!(
         json_entries.len() >= 3,
         "empty search should return all indexed symbols"
     );
 }
 
-// ---------------------------------------------------------------------------
-// hover JSON schema
-// ---------------------------------------------------------------------------
-
 #[test]
 fn json_schema_hover_result_has_contents_and_range() {
     // dispatch_hover serializes HoverResult to {"contents": string, "range": object|null}
-    // Test with a workspace that has the file open
     use al_core::workspace::Workspace;
     use url::Url;
 
@@ -1206,7 +1152,6 @@ fn json_schema_hover_result_has_contents_and_range() {
             json.get("range").is_some(),
             "hover result must have 'range' key (may be null)"
         );
-        // If range is not null, it must have start/end
         if !json["range"].is_null() {
             let rng = &json["range"];
             assert!(rng.get("start").is_some(), "range must have 'start'");
@@ -1218,7 +1163,6 @@ fn json_schema_hover_result_has_contents_and_range() {
 
 #[test]
 fn json_schema_hover_result_serializes_to_object() {
-    // Verify HoverResult's manual JSON serialization produces a stable object shape
     use al_core::queries::hover::HoverResult;
     use al_core::queries::{Position, Range};
 
@@ -1246,14 +1190,9 @@ fn json_schema_hover_result_serializes_to_object() {
     assert_eq!(json["range"]["end"]["character"], 14);
 }
 
-// ---------------------------------------------------------------------------
-// definition JSON schema
-// ---------------------------------------------------------------------------
-
 #[test]
 fn json_schema_definition_output_is_array() {
     // dispatch_definition returns an array of location objects (or null)
-    // Test that when locations exist, they serialize correctly
     use al_core::queries::{Location, Position, Range};
     use url::Url;
 
@@ -1313,7 +1252,6 @@ fn json_schema_definition_output_is_array() {
 
 #[test]
 fn json_schema_definition_location_line_numbers_match() {
-    // Verify that line/character are correctly serialized
     use al_core::queries::{Location, Position, Range};
     use url::Url;
 
@@ -1349,15 +1287,10 @@ fn json_schema_definition_empty_locations_serializes_to_empty_array() {
     assert_eq!(json.as_array().unwrap().len(), 0, "should be empty array");
 }
 
-// ---------------------------------------------------------------------------
-// suggest_event integration pipeline
-// ---------------------------------------------------------------------------
-
 #[test]
 fn suggest_event_integration_procedure_query() {
     let ws = al_core::workspace::Workspace::new();
 
-    // Add a codeunit with a regular method and an integration event
     ws.symbols.add_entries(&[al_core::symbols::SymbolEntry {
         kind: al_core::symbols::ObjectKind::Codeunit,
         id: 80,
@@ -1394,7 +1327,6 @@ fn suggest_event_integration_procedure_query() {
 
     use al_core::queries::suggest_event::*;
 
-    // Test 1: Procedure query finds published events
     let result = suggest_event(
         &ws,
         &EventQuery {
@@ -1415,7 +1347,6 @@ fn suggest_event_integration_procedure_query() {
         .iter()
         .any(|ip| ip.event == "OnAfterPostSalesDoc"));
 
-    // Test 2: Table query finds var params
     let result = suggest_event(
         &ws,
         &EventQuery {
@@ -1431,7 +1362,6 @@ fn suggest_event_integration_procedure_query() {
         .iter()
         .any(|p| p.is_var && p.type_name.contains("Sales Header"))));
 
-    // Test 3: Combined query (procedure + table filter)
     let result = suggest_event(
         &ws,
         &EventQuery {
@@ -1448,7 +1378,6 @@ fn suggest_event_integration_procedure_query() {
         .iter()
         .any(|p| p.is_var && p.type_name.to_lowercase().contains("sales header"))));
 
-    // Test 4: Unknown object returns empty
     let result = suggest_event(
         &ws,
         &EventQuery {
@@ -1486,22 +1415,17 @@ fn suggest_event_real_workspace_files() {
 
     let ws = al_core::workspace::Workspace::new();
 
-    // Scan workspace files (parses all .al files via tree-sitter)
     let file_count = ws.file_index.scan(&test_project);
     assert!(file_count > 0, "Should find .al files in test project");
 
-    // Build the full call graph (registers workspace nodes + extracts call edges)
     let (insight, cg_guard) = ws.get_or_build_call_graph();
     let cg = cg_guard.as_ref().expect("CallGraph should be built");
 
-    // Verify workspace nodes were registered in the InsightGraph
     assert!(
         insight.node_count() > 0,
         "InsightGraph should have nodes from workspace files"
     );
 
-    // --- Test 1: Procedure query on "Test Event Publisher" ---
-    // This codeunit has OnBeforeProcess and OnAfterProcess events
     let result = suggest_event(
         &ws,
         &EventQuery {
@@ -1552,7 +1476,6 @@ fn suggest_event_real_workspace_files() {
         "Should find OnAfterProcess, got: {event_names:?}"
     );
 
-    // Verify the example attribute is well-formed
     let before_event = result
         .integration_points
         .iter()
@@ -1573,7 +1496,6 @@ fn suggest_event_real_workspace_files() {
         "OnBeforeProcess should have parameters"
     );
 
-    // --- Test 2: Specific procedure query ---
     let result = suggest_event(
         &ws,
         &EventQuery {
@@ -1600,7 +1522,6 @@ fn suggest_event_real_workspace_files() {
     }
 
     // DoProcess calls OnBeforeProcess and OnAfterProcess directly
-    // The call graph should trace these
     let event_names: Vec<&str> = result
         .integration_points
         .iter()
@@ -1608,7 +1529,6 @@ fn suggest_event_real_workspace_files() {
         .collect();
     println!("  Events found via DoProcess trace: {event_names:?}");
 
-    // --- Test 3: Event query ---
     let result = suggest_event(
         &ws,
         &EventQuery {
@@ -1630,7 +1550,6 @@ fn suggest_event_real_workspace_files() {
         "Event query should find the event itself"
     );
 
-    // --- Test 4: Verify call graph has edges from workspace files ---
     println!(
         "\nCallGraph stats: {} nodes, {} edges",
         cg.node_count(),
@@ -1638,7 +1557,6 @@ fn suggest_event_real_workspace_files() {
     );
     assert!(cg.node_count() > 0, "CallGraph should have nodes");
 
-    // Check that CallsOthers from MultiProcedure has direct call edges
     use al_core::insight::graph::NodeKey;
     let calls_others_key = NodeKey::Procedure(
         ObjectKind::Codeunit,

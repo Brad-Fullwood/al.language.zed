@@ -57,13 +57,11 @@ pub struct Workspace {
     pub documents: DocumentStore,
     /// Symbol index for .alpackages and workspace objects.
     pub symbols: Arc<SymbolIndex>,
-    /// Discovered AL toolchain (ALTool paths).
     pub toolchain: RwLock<Option<AlToolchain>>,
     /// Discovered AL project (app.json manifest, packages).
     pub project: RwLock<Option<AlProject>>,
     /// .NET semantic bridge for CodeAnalysis features.
     pub semantic: RwLock<Option<crate::semantic::SemanticBridge>>,
-    /// Index of all .al files in the workspace directory.
     pub file_index: FileIndex,
     /// Merged workspace configuration (settings from client + project defaults).
     pub config: RwLock<AlConfig>,
@@ -73,11 +71,9 @@ pub struct Workspace {
     pub error_codes: DashMap<String, String>,
     /// Number of times the semantic bridge has been restarted (capped at MAX_RESTARTS).
     pub bridge_restart_count: std::sync::atomic::AtomicU32,
-    /// Summary metadata for loaded symbol packages.
     pub package_info: std::sync::RwLock<Vec<PackageInfo>>,
     /// In-memory cache of builtin types indexed by name for O(1) lookups.
     pub semantic_cache: std::sync::RwLock<SemanticCache>,
-    /// Active AL debug session (None if not debugging).
     pub debug_session: tokio::sync::Mutex<Option<crate::native_debug::NativeDebugSession>>,
     /// Optional callback for user-visible notifications (bridge failures, etc.).
     ///
@@ -166,7 +162,6 @@ impl Workspace {
     /// daemon utilities) `try_handle()` returns `Err` and we fall back to a
     /// direct call.
     pub fn get_or_build_insight_graph(&self) -> Arc<InsightGraph> {
-        // Fast path: read lock.
         if let Ok(guard) = self.insight_graph.read() {
             if let Some(arc) = guard.as_ref() {
                 return Arc::clone(arc);
@@ -257,7 +252,6 @@ impl Workspace {
         Arc<InsightGraph>,
         std::sync::RwLockReadGuard<'_, Option<CallGraph>>,
     ) {
-        // Fast path: call graph already exists — return it under a read lock.
         {
             let cg_guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
             if cg_guard.is_some() {
@@ -298,7 +292,6 @@ impl Workspace {
         let build = || {
             let mut graph = InsightGraph::new();
             graph.build_from_index(&self.symbols);
-            // Register workspace objects, procedures, events, and subscribers
             crate::insight::calls::register_workspace_nodes(
                 &self.file_index,
                 &self.symbols,
@@ -381,13 +374,9 @@ pub struct WorkspaceMemoryStats {
 /// Callers (LSP and daemon) consume this to perform their transport-specific
 /// post-init steps (sending notifications, opening files in DocumentStore, etc.).
 pub struct CoreInitResult {
-    /// Number of workspace .al files found by the file scanner.
     pub file_count: usize,
-    /// Number of symbol packages loaded.
     pub package_count: usize,
-    /// Total symbols across all loaded packages.
     pub total_symbols: usize,
-    /// Whether a toolchain was found.
     pub has_toolchain: bool,
 }
 
@@ -565,7 +554,6 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
             .file_index
             .add_file_with_tree(path.clone(), text.to_string(), result.tree);
 
-        // Invalidate only the composed view for the object in this file.
         // add_file_with_tree already updated object_info, so we can read the name immediately.
         if let Some(info) = workspace.file_index.object_info.get(&path) {
             workspace.symbols.invalidate_composed(&info.name);
@@ -588,7 +576,6 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
     };
 
     if topology_change {
-        // Procedure/event/subscriber set changed — both graphs need rebuild.
         workspace.invalidate_insight_graph();
     } else {
         // Body-only edit — call edges may have shifted, but the insight
@@ -686,13 +673,11 @@ mod workspace_lifecycle_tests {
 
         on_document_change(&workspace, &uri, text);
 
-        // File index must have the file.
         let path = uri.to_file_path().unwrap();
         assert!(
             workspace.file_index.files.contains_key(&path),
             "file_index.files must contain the file after on_document_change"
         );
-        // Object info must be populated.
         assert!(
             workspace.file_index.object_info.contains_key(&path),
             "file_index.object_info must be populated after on_document_change"
@@ -712,9 +697,7 @@ mod workspace_lifecycle_tests {
         let uri = Url::parse("http://example.com/Untitled-1.al").unwrap();
         let text = r#"codeunit 50200 "Test" { }"#;
 
-        // Must not panic; composed cache is invalidated as a fallback.
         on_document_change(&workspace, &uri, text);
-        // No file was added to the index (non-file URI).
         assert!(workspace.file_index.is_empty());
     }
 
@@ -872,7 +855,6 @@ mod workspace_lifecycle_tests {
             "precondition: object_info populated"
         );
 
-        // Build & cache a graph, then close: close must drop it.
         let before = workspace.get_or_build_insight_graph();
         on_document_close(&workspace, &uri);
         let after = workspace.get_or_build_insight_graph();
@@ -888,9 +870,7 @@ mod workspace_lifecycle_tests {
     fn on_document_close_non_file_uri_does_not_panic() {
         let workspace = make_workspace();
         let uri = Url::parse("http://example.com/Untitled-1.al").unwrap();
-        // Must not panic; full composed-cache invalidation is the fallback.
         on_document_close(&workspace, &uri);
-        // Closing a never-opened virtual buffer leaves the index empty.
         assert!(workspace.file_index.is_empty());
     }
 
@@ -912,15 +892,12 @@ mod workspace_lifecycle_tests {
 
         workspace.invalidate_call_graph_only();
 
-        // Insight graph Arc is unchanged (same pointer) — only the call
-        // graph was dropped. A fresh read returns the still-cached insight.
         let insight_after = workspace.get_or_build_insight_graph();
         assert!(
             std::sync::Arc::ptr_eq(&insight_before, &insight_after),
             "invalidate_call_graph_only must NOT drop the insight graph"
         );
 
-        // And the call graph really was dropped: rebuilding it succeeds.
         let (_ig2, cg2) = workspace.get_or_build_call_graph();
         assert!(cg2.is_some(), "call graph must rebuild after invalidation");
     }
@@ -946,7 +923,6 @@ mod workspace_lifecycle_tests {
             result.file_count, 1,
             "the loose .al file must still be scanned without a project"
         );
-        // Project discovery failed => workspace.project stays None.
         assert!(
             workspace.project.read().await.is_none(),
             "no project must be stored when discovery fails"

@@ -454,7 +454,6 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
     // matching those kinds never fired (those node kinds don't exist).
     let else_body = node.child_by_field_name("else_body");
 
-    // Walk named children looking for case_branch arms.
     let mut cursor = node.walk();
     let children: Vec<Node> = node.named_children(&mut cursor).collect();
 
@@ -594,14 +593,12 @@ fn eval_asserterror(
 
     match eval_stmt(body_node, source, stack, ctx) {
         Eval::Error(_) => {
-            // Error was raised — asserterror succeeded.
             Eval::Normal(Value::Empty)
         }
         // Exit unwinds the procedure; asserterror does NOT swallow it. AL
         // semantics treat Exit as control flow that bypasses the assertion.
         exit @ Eval::Exit(_) => exit,
         Eval::Normal(_) => {
-            // Body completed without raising an error — assertion fails.
             Eval::Error(ErrorInfo {
                 message: "asserterror: expected an error to be raised, but none was".to_string(),
                 error_type: Some("AssertError".to_string()),
@@ -617,10 +614,8 @@ fn eval_expression_stmt(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    // Resolve any transparent wrappers before checking for call patterns.
     let effective = resolve_to_call_node(node);
     match effective.kind() {
-        // Member call: receiver.Procedure(args)
         "member_access_expression" | "method_call_expression" | "call_expression" => {
             eval_call(effective, source, stack, ctx)
         }
@@ -633,7 +628,6 @@ fn eval_expression_stmt(
             if is_call_postfix(effective) {
                 eval_call(effective, source, stack, ctx)
             } else {
-                // Not a call — fall back to full expression evaluation.
                 eval_expr(node, source, stack)
             }
         }
@@ -782,7 +776,6 @@ fn extract_call_parts<'a>(
         .map(|c| (c.is_named(), c))
         .collect();
 
-    // Find the argument list (if any): typically "argument_list" or "call_arguments".
     let args_node = parts
         .iter()
         .find(|(named, c)| {
@@ -794,7 +787,6 @@ fn extract_call_parts<'a>(
         })
         .map(|(_, c)| *c);
 
-    // Collect non-arg named identifier parts.
     let name_parts: Vec<String> = parts
         .iter()
         .filter(|(named, c)| {
@@ -815,13 +807,11 @@ fn extract_call_parts<'a>(
     }
 }
 
-/// Find the `argument_list` node inside a call suffix.
 fn find_argument_list(node: Node<'_>) -> Option<Node<'_>> {
     // First try field "call" (as defined in the grammar for call_suffix).
     if let Some(n) = node.child_by_field_name("call") {
         return Some(n);
     }
-    // Fallback: scan named children for an argument_list node.
     let mut cursor = node.walk();
     let mut found = None;
     for child in node.named_children(&mut cursor) {
@@ -976,7 +966,6 @@ mod tests {
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
 
-        // Find the begin_end_block body of "Test".
         let body = find_proc_body(root, bytes).expect("could not find procedure body");
 
         let mut stack = ScopeStack::new();
@@ -1003,8 +992,6 @@ mod tests {
         None
     }
 
-    // ── Assignment ────────────────────────────────────────────────────────────
-
     #[test]
     fn assignment_binds_value() {
         let (eval, stack) = run_stmt("x := 42;");
@@ -1018,8 +1005,6 @@ mod tests {
 
     #[test]
     fn assignment_rhs_error_propagates() {
-        // Negative: assigning a bad expression propagates the error.
-        // We use division by zero as a guaranteed error.
         let (eval, _) = run_stmt("x := 1 div 0;");
         assert!(
             eval.is_error(),
@@ -1027,13 +1012,10 @@ mod tests {
         );
     }
 
-    // ── If statement ──────────────────────────────────────────────────────────
-
     #[test]
     fn if_true_branch_executes() {
         let (eval, stack) = run_stmt("if true then x := 99;");
         assert!(matches!(eval, Eval::Normal(_)));
-        // x should be 99 after the true branch.
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(99)));
     }
 
@@ -1041,11 +1023,8 @@ mod tests {
     fn if_false_branch_skipped() {
         let (eval, stack) = run_stmt("if false then x := 99;");
         assert!(matches!(eval, Eval::Normal(_)));
-        // x should still be 0 (not 99).
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(0)));
     }
-
-    // ── Exit statement ────────────────────────────────────────────────────────
 
     #[test]
     fn exit_without_value_returns_empty() {
@@ -1057,11 +1036,8 @@ mod tests {
         );
     }
 
-    // ── AssertError ───────────────────────────────────────────────────────────
-
     #[test]
     fn asserterror_catches_error() {
-        // Positive: asserterror wrapping a statement that raises Error succeeds.
         let (eval, _) = run_stmt("asserterror error('boom');");
         assert!(
             matches!(eval, Eval::Normal(_)),
@@ -1072,7 +1048,6 @@ mod tests {
 
     #[test]
     fn asserterror_no_error_is_itself_error() {
-        // Negative: asserterror wrapping a no-op should produce Eval::Error.
         let (eval, _) = run_stmt("asserterror x := 1;");
         assert!(
             eval.is_error(),
@@ -1088,11 +1063,8 @@ mod tests {
         }
     }
 
-    // ── While loop ────────────────────────────────────────────────────────────
-
     #[test]
     fn while_loop_accumulates() {
-        // WHILE x < 5 DO x := x + 1;  →  x should be 5.
         let (eval, stack) = run_stmt("while x < 5 do x := x + 1;");
         assert!(matches!(eval, Eval::Normal(_)), "got {:?}", eval);
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(5)));
@@ -1215,8 +1187,6 @@ mod tests {
         }
     }
 
-    // ── Sequence in begin_end_block ───────────────────────────────────────────
-
     #[test]
     fn block_executes_sequence() {
         let (eval, stack) = run_stmt("begin x := 1; x := x + 1; end;");
@@ -1226,18 +1196,14 @@ mod tests {
 
     #[test]
     fn block_short_circuits_on_error() {
-        // Negative: once an error occurs inside a block, subsequent stmts don't run.
         let (eval, stack) = run_stmt("begin error('stop'); x := 99; end;");
         assert!(eval.is_error());
-        // x must NOT be 99 — execution stopped at the error.
         assert_ne!(
             stack.lookup("x"),
             Some(&Value::Integer(99)),
             "x should NOT be 99 after short-circuit error"
         );
     }
-
-    // ── Adversarial tests (adversarial-h) ─────────────────────────────────────
 
     #[test]
     fn asserterror_must_propagate_exit_not_convert_to_fail_adversarial_h_7() {
@@ -1257,8 +1223,6 @@ mod tests {
             eval
         );
     }
-
-    // ── Regression: downto direction detection ───────────────────────────────
 
     #[test]
     fn for_downto_decrements_when_direction_field_is_downto() {
@@ -1294,8 +1258,6 @@ mod tests {
         );
     }
 
-    // ── Regression: case else_body via field, not dead arm ───────────────────
-
     #[test]
     fn case_else_branch_runs_when_no_arm_matches() {
         // The AL grammar carries `else_body` as a field on `case_statement`,
@@ -1311,11 +1273,8 @@ mod tests {
         );
     }
 
-    // ── Regression: case Integer↔Decimal compare ─────────────────────────────
-
     #[test]
     fn case_integer_decimal_compare_exact_for_whole_numbers() {
-        // 5 (Integer) should match 5.0 (Decimal) — whole-number Decimal.
         let (eval, stack) = run_stmt("case 5 of 5.0: x := 7; else x := 1; end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(7)));
@@ -1329,8 +1288,6 @@ mod tests {
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(1)));
     }
-
-    // ── Regression: Exit inside argument expression unwinds ──────────────────
 
     #[test]
     fn exit_inside_argument_propagates_out_of_call() {
@@ -1355,8 +1312,6 @@ mod tests {
             eval
         );
     }
-
-    // ── Regression: AST nesting depth cap ─────────────────────────────────────
 
     #[test]
     fn deep_nesting_errors_instead_of_stack_overflow() {
@@ -1389,8 +1344,6 @@ mod tests {
         );
     }
 
-    // ── FOR loop: happy path and error paths ──────────────────────────────────
-
     #[test]
     fn for_to_counts_up_and_leaves_last_value() {
         // FOR x := 1 TO 3 DO begin end — loop body runs for 1,2,3 then exits.
@@ -1402,9 +1355,6 @@ mod tests {
 
     #[test]
     fn for_to_accumulates_in_body() {
-        // The loop body mutates another variable each iteration.
-        // s starts empty; we sum via x into s? Simpler: use the loop var.
-        // FOR x := 1 TO 4 — afterwards x == 4 (last bound value).
         let (eval, stack) = run_stmt("for x := 1 to 4 do begin end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(4)));
@@ -1426,7 +1376,6 @@ mod tests {
 
     #[test]
     fn for_start_must_be_integer() {
-        // Non-integer start value is a runtime error.
         let (eval, _) = run_stmt("for x := 'a' to 3 do begin end;");
         assert!(eval.is_error(), "non-integer FOR start must error");
         if let Eval::Error(e) = eval {
@@ -1440,7 +1389,6 @@ mod tests {
 
     #[test]
     fn for_end_must_be_integer() {
-        // Non-integer end value is a runtime error.
         let (eval, _) = run_stmt("for x := 1 to 'z' do begin end;");
         assert!(eval.is_error(), "non-integer FOR end must error");
         if let Eval::Error(e) = eval {
@@ -1454,17 +1402,12 @@ mod tests {
 
     #[test]
     fn for_body_error_propagates() {
-        // An error inside the loop body short-circuits the whole FOR.
         let (eval, _) = run_stmt("for x := 1 to 3 do begin error('boom'); end;");
         assert!(eval.is_error(), "FOR body error must propagate");
     }
 
-    // ── FOREACH loop ──────────────────────────────────────────────────────────
-
     #[test]
     fn foreach_over_non_collection_errors() {
-        // FOREACH over a non-list/array value must error. An integer literal
-        // is not iterable.
         let (eval, _) = run_stmt("foreach x in 42 do begin end;");
         assert!(eval.is_error(), "foreach over a scalar must error");
         if let Eval::Error(e) = eval {
@@ -1475,8 +1418,6 @@ mod tests {
             );
         }
     }
-
-    // ── REPEAT … UNTIL ────────────────────────────────────────────────────────
 
     #[test]
     fn repeat_runs_body_at_least_once() {
@@ -1493,7 +1434,6 @@ mod tests {
 
     #[test]
     fn repeat_loops_until_condition_true() {
-        // REPEAT x := x + 1 UNTIL x >= 3 — runs 3 times, x ends at 3.
         let (eval, stack) = run_stmt("repeat x := x + 1; until x >= 3;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(3)));
@@ -1533,12 +1473,8 @@ mod tests {
         }
     }
 
-    // ── CASE matching ─────────────────────────────────────────────────────────
-
     #[test]
     fn case_matches_arm() {
-        // CASE 1 OF 1: x:=2; — the arm whose label equals the selector fires,
-        // so its body (x := 2) runs and the else branch is skipped.
         let (eval, stack) = run_stmt("case 1 of 1: x := 2; else x := 9; end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(
@@ -1550,7 +1486,6 @@ mod tests {
 
     #[test]
     fn case_no_match_no_else_is_noop() {
-        // No arm matches and there is no ELSE: nothing runs, x stays 0.
         let (eval, stack) = run_stmt("case 99 of 1: x := 1; 2: x := 2; end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(
@@ -1562,8 +1497,6 @@ mod tests {
 
     #[test]
     fn case_multi_label_arm_matches_any_label() {
-        // CASE 2 OF 1, 2, 3: x := 7; — comma-separated labels; selector 2
-        // matches the second label in the list.
         let (eval, stack) = run_stmt("case 2 of 1, 2, 3: x := 7; else x := 1; end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(
@@ -1586,11 +1519,8 @@ mod tests {
         );
     }
 
-    // ── IF: else branch + non-boolean guard ──────────────────────────────────
-
     #[test]
     fn if_else_branch_executes_when_false() {
-        // IF false THEN x:=1 ELSE x:=2 — the else branch runs.
         let (eval, stack) = run_stmt("if false then x := 1 else x := 2;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(2)));
@@ -1598,7 +1528,6 @@ mod tests {
 
     #[test]
     fn if_non_boolean_condition_errors() {
-        // A non-Boolean condition is a type error (AL requires Boolean guards).
         let (eval, _) = run_stmt("if 5 then x := 1;");
         assert!(eval.is_error(), "non-boolean IF condition must error");
         if let Eval::Error(e) = eval {
@@ -1606,20 +1535,14 @@ mod tests {
         }
     }
 
-    // ── WHILE: body error propagation ─────────────────────────────────────────
-
     #[test]
     fn while_body_error_propagates() {
-        // An error in the WHILE body short-circuits the loop and the statement.
         let (eval, _) = run_stmt("while x < 5 do begin error('boom'); end;");
         assert!(eval.is_error(), "WHILE body error must propagate");
     }
 
-    // ── EXIT with a value ─────────────────────────────────────────────────────
-
     #[test]
     fn exit_with_value_returns_it() {
-        // exit(7) unwinds with Integer(7).
         let (eval, _) = run_stmt("exit(7);");
         assert!(
             matches!(eval, Eval::Exit(Value::Integer(7))),

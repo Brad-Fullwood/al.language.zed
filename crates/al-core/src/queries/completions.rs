@@ -18,6 +18,7 @@ pub struct CompletionEntry {
     pub sort_text: Option<String>,
 }
 
+/// Completion item kinds (transport-agnostic).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionKind {
     Keyword,
@@ -62,6 +63,7 @@ impl serde::Serialize for CompletionKind {
 
 use crate::syntax::context::{detect_context, CompletionContext};
 
+/// Get completions at a position in a document.
 #[must_use]
 pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
     let Some(text) = workspace.documents.get_text_arc(uri) else {
@@ -129,6 +131,13 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                     sort_text: None,
                 });
             }
+            // Use get_by_kind for each wanted kind directly. Previously this
+            // was a single all_entries() pass with per-kind counters and an
+            // early-exit that required ALL four counters to hit 50 — so if
+            // (say) Interface had fewer than 50 entries, the loop kept
+            // scanning every other entry in the index after the other three
+            // were already full. The targeted lookups bound work to the
+            // requested kind sets and the per-kind cap.
             const TYPE_COMPLETION_CAP: usize = 50;
             for kind in [
                 crate::symbols::ObjectKind::Table,
@@ -154,6 +163,9 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
             }
         }
         CompletionContext::Default => {
+            // Include implicit trigger variables (Rec, xRec, CurrPage, etc.) in the
+            // default context. A dedicated TriggerBody detection pass would be needed
+            // to offer these only inside trigger bodies, but default context is safe.
             for var in crate::syntax::language_data::implicit_variables() {
                 items.push(CompletionEntry {
                     label: var.name.clone(),
@@ -174,6 +186,9 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
     items
 }
 
+/// Full completions: native resolution first, then .NET CodeAnalysis bridge for member access.
+///
+/// This is the single code path for all entry points (LSP and daemon).
 /// SemanticBridge already enforces a 30s internal timeout — no outer wrapper needed.
 pub async fn completions_full(
     workspace: &Workspace,
@@ -185,6 +200,9 @@ pub async fn completions_full(
         return items;
     }
 
+    // Bridge fallback: only for member access context.
+    // Use get_text_arc to share the cached Arc<String> instead of deep-cloning
+    // the entire file contents on every keystroke.
     let Some(text) = workspace.documents.get_text_arc(uri) else {
         return items;
     };
@@ -202,7 +220,12 @@ pub async fn completions_full(
     let Ok(path) = uri.to_file_path() else {
         return items;
     };
+    // F-036: bridge `completions` consumes 0-based (line, column) — see
+    // `bridge::SemanticBridge::completions_at` doc and the matching C#
+    // `LineColToOffset` invariant.
     let pos = (position.line, position.character);
+    // F-037: pass the open-document text so the bridge sees unsaved edits
+    // instead of stale on-disk content.
     let unsaved_text = workspace.documents.get_text(uri);
     let bridge_items = match bridge
         .completions_at(&path, pos, unsaved_text.as_deref())
@@ -268,6 +291,9 @@ fn add_default_completions(
     }
 
     if let Some((file_text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) {
+        // Prefer cached symbols populated by the file index; fall back to a
+        // fresh extraction only for documents not stored on disk. Avoids the
+        // full AST walk on every keystroke.
         let file_path = uri.to_file_path().ok();
         let doc_symbols: Vec<super::AlDocumentSymbol> = file_path
             .as_ref()
@@ -315,6 +341,7 @@ fn add_default_completions(
         }
     }
 
+    // O(1): uses pre-computed cache instead of a linear scan over all indexed symbols (ISSUE-162).
     let index_results = workspace.symbols.get_default_completions();
     for entry in &index_results {
         let kind = match entry.kind {
@@ -340,7 +367,7 @@ fn add_default_completions(
         });
     }
 
-    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner());
+    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
     for bt in builtins.iter() {
         items.push(CompletionEntry {
             label: bt.name.clone(),
@@ -351,10 +378,12 @@ fn add_default_completions(
             sort_text: None,
         });
     }
-    drop(builtins);
+    drop(builtins); // release read lock promptly
 }
 
 fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
+    // Sort so that non-keyword items precede keywords before dedup, ensuring
+    // a workspace procedure with the same name as a keyword is not shadowed.
     items.sort_by_key(|item| {
         if item.kind == CompletionKind::Keyword {
             1u8
@@ -383,6 +412,8 @@ fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
         }
     }
 
+    // sort_text is now populated for every item, so the fallback
+    // to a redundant label lowercase comparison is unnecessary.
     items.sort_by(|a, b| {
         a.sort_text
             .as_deref()
@@ -391,6 +422,7 @@ fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
     });
 }
 
+/// Convert a tower-lsp CompletionItem to our transport-agnostic type.
 fn from_lsp_completion(item: resolution::CompletionCandidate) -> CompletionEntry {
     let kind = match item.kind {
         resolution::CompletionCandidateKind::Variable => CompletionKind::Variable,
@@ -419,6 +451,10 @@ mod tests {
 
     #[test]
     fn add_default_completions_signature_is_transport_agnostic() {
+        // Compile-time guard against re-introducing the lsp_types boundary leak
+        // fixed by T015 / arch-001. If anyone widens the parameter back to
+        // tower_lsp::lsp_types::Position the function pointer coercion below
+        // will fail to type-check.
         let _: fn(&Workspace, &Url, Position, &mut Vec<CompletionEntry>) = add_default_completions;
     }
 
@@ -479,6 +515,7 @@ mod tests {
             character: 0,
         };
         let result = completions(&ws, &uri, pos);
+        // Empty file — may return keywords but should not panic
         let _ = result;
     }
 
@@ -493,6 +530,7 @@ mod tests {
             character: 5,
         };
         let result = completions(&ws, &uri, pos);
+        // Should not panic on malformed code
         let _ = result;
     }
 
@@ -502,12 +540,13 @@ mod tests {
         let uri = test_uri();
         ws.documents
             .open(uri.clone(), "codeunit 50100 \"X\" { }".to_string());
+        // Line 100 doesn't exist — should return empty, not panic
         let pos = Position {
             line: 100,
             character: 0,
         };
         let result = completions(&ws, &uri, pos);
-        let _ = result;
+        let _ = result; // just ensure no panic
     }
 
     #[test]
@@ -528,7 +567,7 @@ mod tests {
         let pos = Position {
             line: 4,
             character: 8,
-        };
+        }; // inside begin block
         let result = completions(&ws, &uri, pos);
         let labels: Vec<&str> = result.iter().map(|c| c.label.as_str()).collect();
         assert!(
@@ -555,6 +594,8 @@ mod tests {
 
     #[test]
     fn completion_kind_serializes_all_variants() {
+        // Covers every arm of the hand-written Serialize impl, including the
+        // less common kinds the original test omitted.
         let cases = [
             (CompletionKind::Text, 1u32),
             (CompletionKind::Method, 2),
@@ -603,6 +644,8 @@ mod tests {
 
     #[test]
     fn finalize_keeps_non_keyword_over_keyword_on_collision() {
+        // A workspace procedure that collides with a keyword name must survive
+        // dedup, because non-keywords are sorted ahead of keywords first.
         let mut items = vec![
             entry("if", CompletionKind::Keyword),
             entry("if", CompletionKind::Function),
@@ -618,6 +661,8 @@ mod tests {
 
     #[test]
     fn finalize_callable_sort_text_encodes_param_count() {
+        // Callables get a "1_<paramcount:02>_<label>" sort key derived from the
+        // detail's parameter list, so 0-param overloads sort before 2-param ones.
         let mut zero = entry("Run", CompletionKind::Method);
         zero.detail = Some("()".to_string());
         let mut two = entry("Calc", CompletionKind::Function);
@@ -640,6 +685,8 @@ mod tests {
 
     #[test]
     fn finalize_preserves_existing_sort_text() {
+        // Items that already carry a sort_text (e.g. locals tagged "0_") must
+        // not be overwritten by the callable/non-callable fallback.
         let mut item = entry("Local", CompletionKind::Variable);
         item.sort_text = Some("0_Local".to_string());
         let mut items = vec![item];
@@ -653,6 +700,8 @@ mod tests {
 
     #[test]
     fn finalize_orders_by_sort_text() {
+        // After finalize, items are sorted by sort_text. A local (0_) precedes a
+        // bridge result (2_) precedes a generic keyword/non-callable (1_).
         let mut local = entry("zzz", CompletionKind::Variable);
         local.sort_text = Some("0_zzz".to_string());
         let mut bridge = entry("aaa", CompletionKind::Variable);

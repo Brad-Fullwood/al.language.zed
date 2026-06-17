@@ -1152,7 +1152,6 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
     }
 }
 
-/// Find the first `parenthesized_block` child of a node (non-body, non-named-field).
 fn find_parenthesized_block(node: Node) -> Option<Node> {
     // `cursor` is bound separately because the lifetime of the borrowed cursor
     // doesn't extend through `find` when chained inline.
@@ -1666,14 +1665,12 @@ codeunit 50100 Test { }"#;
         let src = "codeunit 50100 { }";
         let symbols = parse_symbols(src);
         if let Some(obj) = symbols.first() {
-            // When the parser can't recover a name, the helper substitutes "(unnamed)".
             assert!(!obj.name.is_empty());
         }
     }
 
     #[test]
     fn test_object_kind_to_symbol_kind_unknown_falls_back_to_object() {
-        // A node kind that is not a known AL object type maps to Object.
         assert_eq!(
             object_kind_to_symbol_kind("kw_not_a_real_object"),
             SymbolKind::Object
@@ -1682,9 +1679,7 @@ codeunit 50100 Test { }"#;
 
     #[test]
     fn test_object_kind_display_strips_kw_prefix_for_unknown() {
-        // Unknown kinds fall back to stripping the "kw_" prefix.
         assert_eq!(object_kind_display("kw_widget"), "widget");
-        // A kind without the prefix is returned unchanged.
         assert_eq!(object_kind_display("widget"), "widget");
     }
 
@@ -1832,7 +1827,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
             control_keyword_to_symbol_kind("label"),
             SymbolKind::Constant
         );
-        // An unknown keyword falls back to Namespace.
         assert_eq!(
             control_keyword_to_symbol_kind("definitely_not_a_control"),
             SymbolKind::Namespace
@@ -1902,7 +1896,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
         assert_eq!(count, 1, "label must appear exactly once, not duplicated");
     }
 
-    // ---------------------------------------------------------------------
     // Direct-call tests for the defensive / alternate-grammar extraction
     // paths. The current tree-sitter grammar revision parses most AL forms
     // as nested `object_section` nodes, so several helpers (which handle
@@ -1913,7 +1906,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
     // tree-sitter `Node`, so we locate a node of the required kind inside a
     // real parse tree and invoke the helper directly — exercising the real
     // child-walking / field-extraction logic rather than mocking it.
-    // ---------------------------------------------------------------------
 
     /// Parse `src` and return the root node's tree (kept alive by the caller).
     fn parse_tree(src: &str) -> (tree_sitter::Tree, String) {

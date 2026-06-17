@@ -183,7 +183,6 @@ pub struct DaemonClient {
     /// Overall per-request response deadline (NOT the socket timeout —
     /// the socket polls at `READ_POLL_INTERVAL` granularity).
     request_timeout: Duration,
-    /// Total budget for retrying "Workspace is initializing" errors.
     init_wait_total: Duration,
     init_retry_delay: Duration,
 }
@@ -203,8 +202,6 @@ impl DaemonClient {
             return Self::from_stream(stream);
         }
 
-        // F-046: serialise spawn so concurrent callers don't both fork
-        // al-lsp daemons that race on the socket.
         match try_acquire_spawn_lock(&sock_path)
             .map_err(|e| format!("Cannot acquire daemon spawn lock: {}", e))?
         {
@@ -413,7 +410,6 @@ impl DaemonClient {
     }
 }
 
-/// Find the al-lsp binary (next to current exe, then PATH).
 #[cfg(unix)]
 pub fn find_al_lsp_binary() -> Result<PathBuf, String> {
     if let Ok(exe) = std::env::current_exe() {
@@ -500,7 +496,6 @@ mod tests {
         let (_listener, _handle) = mock_daemon(&sock, 100);
         let stream = UnixStream::connect(&sock).expect("test");
         let mut client = DaemonClient::from_stream(stream).expect("test");
-        // Shrink the init-wait budget so the test completes quickly.
         client.set_init_wait(Duration::from_millis(100), Duration::from_millis(10));
         let result = client.request("test/ping", None);
         assert!(result.is_err());
@@ -510,7 +505,6 @@ mod tests {
     /// Connecting to a path that does not exist must return an error, not panic.
     #[test]
     fn test_connect_invalid_path_returns_error() {
-        // Use a path that can never exist as a socket
         let bogus = std::path::Path::new("/nonexistent/path/that/cannot/be/a.sock");
         // DaemonClient::connect would try to spawn the daemon, which we don't want in a unit
         // test. Instead verify that from_stream propagates a meaningful error when the stream
@@ -539,7 +533,6 @@ mod tests {
     /// the correct id — confirming the error path is distinct from the success path.
     #[test]
     fn test_response_id_mismatch_is_still_parsed() {
-        // A mock daemon that always replies with id=999 regardless of request id
         fn mock_wrong_id_daemon(sock_path: &Path) -> (UnixListener, std::thread::JoinHandle<()>) {
             let listener = UnixListener::bind(sock_path).expect("test");
             let listener_clone = listener.try_clone().expect("test");
@@ -589,15 +582,11 @@ mod tests {
         // buffer on the client side fills up.
         let _handle = std::thread::spawn(move || {
             let (_stream, _) = listener.accept().expect("test");
-            // Hold the stream open without reading; sleep well past the
-            // client's write timeout.
             std::thread::sleep(Duration::from_secs(5));
         });
 
         let stream = UnixStream::connect(&sock).expect("test");
         let mut client = DaemonClient::from_stream(stream).expect("test");
-        // from_stream must install a default (non-None) write timeout so writes
-        // are bounded even without an explicit override.
         assert_eq!(
             client
                 .writer
@@ -606,7 +595,6 @@ mod tests {
             Some(Duration::from_secs(30)),
             "from_stream must set a default write timeout"
         );
-        // Use a short write timeout to keep the test fast.
         client.set_write_timeout(Duration::from_millis(200));
 
         // Send large payloads until a write fails. With a bounded write
@@ -853,7 +841,6 @@ mod tests {
             }
         }
 
-        // Point PATH at an empty directory so the search finds nothing.
         let empty = unique_dir("nopath");
         let saved = std::env::var_os("PATH");
         std::env::set_var("PATH", &empty);
@@ -885,7 +872,6 @@ mod tests {
         }
 
         let dir = unique_dir("dirnamed");
-        // Create a *directory* named al-lsp inside the PATH dir.
         std::fs::create_dir_all(dir.join("al-lsp")).expect("mkdir al-lsp");
 
         let saved = std::env::var_os("PATH");
@@ -914,7 +900,6 @@ mod tests {
         }
         std::fs::write(&lock_path, b"pid=99999\n").expect("seed lock");
 
-        // Back-date the lock's mtime well past STALE_LOCK_AGE.
         let old = std::time::SystemTime::now() - (STALE_LOCK_AGE + Duration::from_secs(60));
         let f = std::fs::OpenOptions::new()
             .write(true)
@@ -923,7 +908,6 @@ mod tests {
         f.set_modified(old).expect("backdate mtime");
         drop(f);
 
-        // A stale lock must be reclaimed: the result is Acquired, not Contended.
         let result = try_acquire_spawn_lock(&sock).expect("io ok");
         match result {
             SpawnLockResult::Acquired(p) => {
@@ -972,7 +956,6 @@ mod tests {
         let stream = UnixStream::connect(&sock).expect("connect");
         let mut client = DaemonClient::from_stream(stream).expect("from_stream");
 
-        // Socket timeout is the fixed poll interval.
         assert_eq!(
             client.reader.get_ref().read_timeout().expect("query"),
             Some(READ_POLL_INTERVAL),
@@ -1010,7 +993,6 @@ mod tests {
             for line in reader.lines() {
                 let line = line.expect("read");
                 let req: Request = serde_json::from_str(&line).expect("parse");
-                // Respond well after the socket poll interval used below.
                 std::thread::sleep(Duration::from_millis(600));
                 let response = Response::ok(req.id, serde_json::json!({"slow": true}));
                 let mut json = serde_json::to_string(&response).expect("ser");
@@ -1022,7 +1004,6 @@ mod tests {
 
         let stream = UnixStream::connect(&sock).expect("connect");
         let mut client = DaemonClient::from_stream(stream).expect("from_stream");
-        // Force several socket-level poll timeouts before the response lands.
         client
             .reader
             .get_ref()

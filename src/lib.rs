@@ -128,7 +128,6 @@ fn merge_json_inner(base: &Value, overrides: &Value, depth: u32) -> Value {
                     // reusing the existing key (no key clone).
                     *slot = merge_json_inner(slot, override_value, depth + 1);
                 } else {
-                    // New key: clone it once on insertion.
                     merged.insert(key.clone(), override_value.clone());
                 }
             }
@@ -154,12 +153,10 @@ impl AlExtension {
         worktree: &zed::Worktree,
         user_configured_path: Option<&str>,
     ) -> Result<String> {
-        // 1. User-configured explicit path.
         if let Some(path) = user_configured_path {
             return Ok(path.to_string());
         }
 
-        // 2. Previously downloaded binary still on disk.
         if let Some(path) = &self.cached_binary_path {
             if fs::metadata(path).is_ok_and(|m| m.is_file()) {
                 return Ok(path.clone());
@@ -167,12 +164,10 @@ impl AlExtension {
             self.cached_binary_path = None;
         }
 
-        // 3. PATH lookup — works for dev builds and `cargo install`.
         if let Some(path) = worktree.which("al-lsp") {
             return Ok(path);
         }
 
-        // 4. Download from GitHub releases.
         if let Some(id) = status_id {
             zed::set_language_server_installation_status(
                 id,
@@ -316,10 +311,6 @@ impl zed::Extension for AlExtension {
             settings.settings.as_ref(),
         );
 
-        // Resolution chain (4 steps): user-configured path → cached download
-        // → PATH lookup → GitHub release download. Step 1 is checked inside
-        // find_or_download_binary; user_configured_path takes unconditional
-        // priority over auto-discovery and downloads.
         let user_configured_path = settings
             .binary
             .as_ref()
@@ -363,7 +354,6 @@ impl zed::Extension for AlExtension {
             "al": user_config
         });
 
-        // Allow full initializationOptions override
         if let Some(user_init_opts) = user_init_options {
             init_options = merge_json(&init_options, user_init_opts);
         }

@@ -27,8 +27,6 @@ pub struct NavxManifest {
     pub version: String,
 }
 
-/// Parse a NavxManifest.xml from bytes.
-///
 /// The manifest XML typically looks like:
 /// ```xml
 /// <?xml version="1.0" encoding="utf-8"?>

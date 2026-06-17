@@ -1,7 +1,4 @@
 //! Upgrade impact analysis with migration hints.
-//!
-//! T1707: Generate an upgrade report from two .app versions using breaking change analysis.
-//! Depends on T1703 (breaking_changes module).
 
 use serde::Serialize;
 
@@ -11,11 +8,8 @@ use crate::symbols::SymbolEntry;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UpgradeIssueKind {
-    /// Breaking API change that requires code updates.
     BreakingChange,
-    /// Table structure change that may require data migration.
     DataMigration,
-    /// Obsoleted symbol that should be replaced.
     ObsoleteSymbol,
     NewPermission,
 }
@@ -25,7 +19,6 @@ pub enum UpgradeIssueKind {
 pub struct UpgradeIssue {
     pub kind: UpgradeIssueKind,
     pub object: String,
-    /// Affected member (if applicable).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
     pub description: String,

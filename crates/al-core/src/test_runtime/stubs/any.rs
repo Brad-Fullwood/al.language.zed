@@ -45,6 +45,7 @@ thread_local! {
     static LCG_STATE: Cell<u64> = const { Cell::new(1) };
 }
 
+/// Advance the LCG and return a value in [1, max].
 fn next_rand(max: i64) -> i64 {
     if max <= 1 {
         return 1;
@@ -107,12 +108,15 @@ pub fn integer_in_range(args: &[Value]) -> Eval {
 /// `Any.DecimalInRange(Min: Decimal; Max: Decimal; DecimalPlaces: Integer): Decimal`
 pub fn decimal_in_range(args: &[Value]) -> Eval {
     match args {
+        // Two-arg form: DecimalInRange(Max, Places)
         [Value::Integer(max), Value::Integer(places)] => {
             decimal_in_range_impl(0.0, *max as f64, *places)
         }
+        // Three-arg integer form: DecimalInRange(Min, Max, Places)
         [Value::Integer(min), Value::Integer(max), Value::Integer(places)] => {
             decimal_in_range_impl(*min as f64, *max as f64, *places)
         }
+        // Three-arg decimal form
         [Value::Decimal(min), Value::Decimal(max), Value::Integer(places)] => {
             decimal_in_range_impl(*min, *max, *places)
         }
@@ -308,6 +312,7 @@ pub fn set_default_seed(args: &[Value]) -> Eval {
     ok(Value::Empty)
 }
 
+/// Resolve a procedure name (case-insensitive) to its Rust implementation.
 pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
     match procedure.to_ascii_lowercase().as_str() {
         "boolean" => Some(boolean),
@@ -603,10 +608,10 @@ mod tests {
 
     #[test]
     fn set_seed_then_get_seed_round_trips() {
+        ok_val(set_seed(&[Value::Integer(999)]));
         // After SetSeed(999), GetSeed returns a non-zero value (the LCG state
         // is advanced once by SetSeed, so it won't equal 999 exactly, but it
         // is deterministic).
-        ok_val(set_seed(&[Value::Integer(999)]));
         match get_seed(&[]) {
             Eval::Normal(Value::Integer(_)) => {}
             other => panic!("expected Integer from GetSeed, got {other:?}"),
@@ -638,6 +643,7 @@ mod tests {
 
     #[test]
     fn set_default_seed_is_noop_and_returns_empty() {
+        // SetDefaultSeed() in the interpreter is a no-op (keeps existing seed).
         seed(42);
         ok_val(set_default_seed(&[]));
         // The seed is still set to 42 — next rand call is deterministic.

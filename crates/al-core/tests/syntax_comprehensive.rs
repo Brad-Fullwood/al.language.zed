@@ -12,10 +12,6 @@ use al_core::syntax::{
     AlParser, FormatOptions,
 };
 
-// ---------------------------------------------------------------------------
-// Realistic AL code fixtures
-// ---------------------------------------------------------------------------
-
 const PAGE_CODE: &str = r#"page 50100 "Customer Card Ext"
 {
     PageType = CardPart;
@@ -174,17 +170,9 @@ const ENUM_CODE: &str = r#"enum 50100 "My Status"
     }
 }"#;
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 fn make_parser() -> AlParser {
     AlParser::new()
 }
-
-// ---------------------------------------------------------------------------
-// Parsing tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_page_no_errors() {
@@ -285,10 +273,6 @@ fn incremental_parse_works() {
     let result2 = parser.parse_incremental(modified, &result1.tree);
     assert!(result2.errors.is_empty());
 }
-
-// ---------------------------------------------------------------------------
-// Document symbols tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn symbols_page_hierarchy() {
@@ -398,10 +382,6 @@ fn symbols_enum_values() {
     assert!(value_names.contains(&"Closed"));
 }
 
-// ---------------------------------------------------------------------------
-// Semantic tokens tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn tokens_page_cover_basic_types() {
     let mut parser = make_parser();
@@ -418,7 +398,6 @@ fn tokens_page_cover_basic_types() {
     assert!(has_string, "Page should have string tokens");
     assert!(has_number, "Page should have number tokens (50100)");
 
-    // Verify we get a variety of token types
     let mut seen_types = std::collections::HashSet::new();
     for t in &tokens {
         seen_types.insert(t.token_type);
@@ -493,10 +472,6 @@ fn tokens_delta_encoding_consistent_for_all_fixtures() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Folding ranges tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn folding_page_has_structural_ranges() {
     let mut parser = make_parser();
@@ -564,10 +539,6 @@ fn folding_enum_has_value_folds() {
 
     assert!(!ranges.is_empty(), "Enum should have folding ranges");
 }
-
-// ---------------------------------------------------------------------------
-// Formatting tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn format_page_is_idempotent() {
@@ -702,16 +673,11 @@ end;
         "Complex control flow formatting should be idempotent"
     );
 
-    // Verify proper indentation for key lines
     assert!(
         first.contains("        if a then begin") || first.contains("    if a then begin"),
         "if-then-begin should be indented"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Lint tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn lint_returns_empty_for_any_code() {
@@ -829,10 +795,6 @@ fn lint_config_default_constructs() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Navigation tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn find_object_in_all_fixtures() {
     let mut parser = make_parser();
@@ -901,10 +863,6 @@ fn find_variable_references() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Cross-feature integration: parse -> format -> parse -> lint -> symbols
-// ---------------------------------------------------------------------------
-
 #[test]
 fn full_pipeline_all_fixtures() {
     let mut parser = make_parser();
@@ -918,7 +876,6 @@ fn full_pipeline_all_fixtures() {
     ];
 
     for (name, code) in fixtures {
-        // 1. Parse original
         let result1 = parser.parse(code);
         assert!(
             result1.errors.is_empty(),
@@ -926,10 +883,8 @@ fn full_pipeline_all_fixtures() {
             name
         );
 
-        // 2. Format
         let formatted = format_al(code, &opts);
 
-        // 3. Parse formatted
         let result2 = parser.parse(&formatted);
         assert!(
             result2.errors.is_empty(),
@@ -937,11 +892,9 @@ fn full_pipeline_all_fixtures() {
             name
         );
 
-        // 4. Lint
         let _lints = lint(&result2.tree, &formatted);
         // Just verify lint doesn't panic
 
-        // 5. Extract symbols
         let symbols = extract_document_symbols(&result2.tree, &formatted);
         assert!(
             !symbols.is_empty(),
@@ -949,7 +902,6 @@ fn full_pipeline_all_fixtures() {
             name
         );
 
-        // 6. Extract tokens
         let tokens = extract_semantic_tokens(&result2.tree, &formatted);
         assert!(
             !tokens.is_empty(),
@@ -957,7 +909,6 @@ fn full_pipeline_all_fixtures() {
             name
         );
 
-        // 7. Extract folding ranges
         let ranges = extract_folding_ranges(&result2.tree, &formatted);
         assert!(
             !ranges.is_empty(),
@@ -1049,7 +1000,6 @@ fn t071_format_deeply_nested_does_not_collapse() {
         result.errors
     );
 
-    // Sanity: every nested group keyword still appears.
     for keyword in ["Outer", "Middle", "Inner", "Deep"] {
         assert!(
             formatted.contains(keyword),
@@ -1063,7 +1013,6 @@ fn t071_format_deeply_nested_does_not_collapse() {
 #[test]
 fn t071_parse_deeply_nested_truncated_reports_errors() {
     let mut parser = AlParser::new();
-    // Strip the final closing brace.
     let truncated = DEEPLY_NESTED_PAGEEXT.trim_end_matches('\n');
     let truncated = truncated.trim_end_matches('}');
     let result = parser.parse(truncated);

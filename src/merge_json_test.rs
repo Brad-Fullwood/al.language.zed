@@ -103,8 +103,6 @@ fn merge_json_extreme_nesting_does_not_stack_overflow() {
         nested = Value::Object(m);
     }
     let base = json!({ "k": null });
-    // Must not panic — the cap stops merge_json from recursing further
-    // than MERGE_JSON_MAX_DEPTH, even though the override is deeper.
     let _merged = merge_json(&base, &nested);
 }
 
@@ -118,8 +116,6 @@ fn is_safe_version_accepts_semver_like() {
 
 #[test]
 fn is_safe_version_rejects_path_traversal() {
-    // Negative: any version string with characters that escape the
-    // intended single-segment directory name must be rejected.
     assert!(!crate::is_safe_version(""));
     assert!(!crate::is_safe_version("../etc/passwd"));
     assert!(!crate::is_safe_version("evil/path"));

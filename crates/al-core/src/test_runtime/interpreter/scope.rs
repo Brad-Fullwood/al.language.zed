@@ -28,7 +28,6 @@ pub struct CallFrame {
 }
 
 impl CallFrame {
-    /// New frame for `procedure` in `object` with no locals bound.
     pub fn new(object: impl Into<String>, procedure: impl Into<String>) -> Self {
         Self {
             procedure: procedure.into(),
@@ -39,18 +38,15 @@ impl CallFrame {
         }
     }
 
-    /// Bind `name → value` in this frame, replacing any previous binding.
     /// AL identifiers are case-insensitive, so the key is lower-cased.
     pub fn bind(&mut self, name: &str, value: Value) {
         self.locals.insert(name.to_ascii_lowercase(), value);
     }
 
-    /// Get a binding, case-insensitive.
     pub fn get(&self, name: &str) -> Option<&Value> {
         self.locals.get(&name.to_ascii_lowercase())
     }
 
-    /// Get a mutable binding, case-insensitive.
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
         self.locals.get_mut(&name.to_ascii_lowercase())
     }
@@ -74,7 +70,6 @@ pub struct ScopeStack {
 pub const MAX_EXPR_DEPTH: usize = 256;
 
 impl ScopeStack {
-    /// Empty stack.
     pub fn new() -> Self {
         Self {
             frames: Vec::new(),
@@ -93,7 +88,6 @@ impl ScopeStack {
         true
     }
 
-    /// Leave one `eval_expr` nesting level.
     pub fn exit_expr(&mut self) {
         self.expr_depth = self.expr_depth.saturating_sub(1);
     }
@@ -105,33 +99,27 @@ impl ScopeStack {
         idx
     }
 
-    /// Pop the topmost frame, if any.
     pub fn pop(&mut self) -> Option<CallFrame> {
         self.frames.pop()
     }
 
-    /// Number of active frames.
     pub fn depth(&self) -> usize {
         self.frames.len()
     }
 
-    /// Peek at the topmost frame.
     pub fn top(&self) -> Option<&CallFrame> {
         self.frames.last()
     }
 
-    /// Mutable peek at the topmost frame.
     pub fn top_mut(&mut self) -> Option<&mut CallFrame> {
         self.frames.last_mut()
     }
 
-    /// Look up a variable, walking inner-to-outer.
     pub fn lookup(&self, name: &str) -> Option<&Value> {
         let key = name.to_ascii_lowercase();
         self.frames.iter().rev().find_map(|f| f.locals.get(&key))
     }
 
-    /// Mutable lookup, inner-to-outer. Returns None if not found.
     pub fn lookup_mut(&mut self, name: &str) -> Option<&mut Value> {
         let key = name.to_ascii_lowercase();
         for frame in self.frames.iter_mut().rev() {
@@ -142,7 +130,6 @@ impl ScopeStack {
         None
     }
 
-    /// Render the current call stack for diagnostic output.
     pub fn stack_trace(&self) -> Vec<String> {
         self.frames
             .iter()
@@ -177,7 +164,6 @@ impl Eval {
         }
     }
 
-    /// Is this an error result?
     pub fn is_error(&self) -> bool {
         matches!(self, Eval::Error(_))
     }
@@ -212,7 +198,6 @@ mod tests {
         let inner = CallFrame::new("Cu", "Inner");
         stack.push(inner);
 
-        // Inner frame has no `g`; lookup falls through to outer.
         assert_eq!(stack.lookup("g"), Some(&Value::Integer(1)));
     }
 
@@ -262,8 +247,6 @@ mod tests {
         assert!(err.is_error());
         assert!(err.into_value().is_none());
     }
-
-    // ── Adversarial tests (adversarial-h) ─────────────────────────────────────
 
     #[test]
     fn scope_stack_1000_deep_lookup_no_stack_overflow_adversarial_h_3() {

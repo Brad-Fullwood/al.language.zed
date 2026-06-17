@@ -7,8 +7,6 @@ use serde_json::json;
 /// `MERGE_JSON_MAX_DEPTH` in `lib.rs`).
 const MAX_SETTINGS_KEY_DEPTH: usize = 64;
 
-/// Apply user settings (from Zed's lsp settings) to an AL config object.
-///
 /// User settings use dotted keys like "al.enableCodeAnalysis" or flat keys
 /// like "enableCodeAnalysis". This function strips the "al." prefix if present
 /// and merges the values into the config object.
@@ -43,7 +41,6 @@ pub fn apply_al_settings_to_config(
 
         let effective_key = key.strip_prefix("al.").unwrap_or(key);
 
-        // Handle dotted sub-keys (e.g., "compilationOptions.parallelBuild")
         let parts: Vec<&str> = effective_key.split('.').collect();
         set_nested_value(&mut result, &parts, value);
     }
@@ -51,9 +48,6 @@ pub fn apply_al_settings_to_config(
     result
 }
 
-/// Set a value at a nested path within a JSON object.
-/// For path ["compilationOptions", "parallelBuild"], sets
-/// result.compilationOptions.parallelBuild = value.
 fn set_nested_value(target: &mut serde_json::Value, path: &[&str], value: &serde_json::Value) {
     set_nested_value_inner(target, path, value, 0);
 }
@@ -85,7 +79,6 @@ fn set_nested_value_inner(
         return;
     }
 
-    // Ensure the intermediate object exists, then recurse one level deeper.
     let child = obj.entry(path[0].to_string()).or_insert_with(|| json!({}));
     set_nested_value_inner(child, &path[1..], value, depth + 1);
 }

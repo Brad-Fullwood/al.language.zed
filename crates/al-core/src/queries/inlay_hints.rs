@@ -11,6 +11,7 @@ use url::Url;
 use crate::queries::{AlInlayHint, AlInlayHintKind, AlInlayHintLabel, Position, Range};
 use crate::workspace::Workspace;
 
+/// Returns transport-agnostic `AlInlayHint` values; al-lsp converts at the boundary.
 #[must_use]
 pub fn inlay_hints(workspace: &Workspace, uri: &Url, range: Range) -> Option<Vec<AlInlayHint>> {
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
@@ -146,6 +147,7 @@ fn infer_argument_type(
     resolver: &crate::syntax::TypeResolver<'_>,
     position: Position,
 ) -> Option<InferredType> {
+    // Non-UTF8 node text means invalid expression — skip
     let expr = node.utf8_text(source).unwrap_or("");
     let expr = expr.trim();
 
@@ -281,7 +283,10 @@ fn extract_call_info(
     match node.kind() {
         "member_call_suffix" | "scope_call_suffix" => {
             let member = node.child_by_field_name("member")?;
-                let method_name = member.utf8_text(source).ok()?.trim_matches('"');
+            // Invalid UTF-8 (or an empty name after trimming quotes) is not a
+            // usable function name — bail out instead of running the whole
+            // lookup pipeline with "".
+            let method_name = member.utf8_text(source).ok()?.trim_matches('"');
             if method_name.is_empty() {
                 return None;
             }
@@ -336,7 +341,10 @@ fn extract_receiver_before(suffix_node: tree_sitter::Node<'_>, source: &[u8]) ->
     }
 }
 
-// `lsp_types::*` deprecation for inlay-hint label parts in older tower-lsp — unavoidable.
+// Two allows: (1) `lsp_types::*` deprecation around inlay-hint label parts
+// in older tower-lsp versions — we can't avoid the API; (2) eight unrelated
+// inputs (workspace, source/tree/cursor context, resolver state) that don't
+// gain clarity from being bundled.
 #[allow(deprecated)]
 #[allow(clippy::too_many_arguments)]
 fn lookup_parameter_names(
@@ -379,7 +387,7 @@ fn lookup_parameter_names(
         return best;
     }
 
-    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner());
+    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
     let candidates: Vec<OverloadCandidate> = builtins
         .iter()
         .flat_map(|bt| bt.methods.iter())
@@ -401,6 +409,9 @@ fn lookup_parameter_names(
     Vec::new()
 }
 
+// Member-call resolution needs workspace + func + receiver + the tree-walk
+// state. Bundling into a struct adds an indirection layer without removing
+// any of the inputs.
 #[allow(clippy::too_many_arguments)]
 fn lookup_via_receiver(
     workspace: &Workspace,
@@ -417,7 +428,7 @@ fn lookup_via_receiver(
     let cache = workspace
         .semantic_cache
         .read()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
     let type_names: Vec<&str> = {
         let mut names = vec![decl.type_name.as_str()];
         if let Some(sub) = decl.type_subtype.as_deref() {
@@ -480,6 +491,9 @@ fn lookup_embedded_builtin(func_name: &str) -> Option<Vec<String>> {
 
 use super::parse_detail_params;
 
+/// Collect `OverloadCandidate` entries from a slice of `AlDocumentSymbol` for the given
+/// function name. Shared by `lookup_parameter_names` (local file) and
+/// `lookup_via_receiver` (resolved-type file) to avoid duplicating the nested loop.
 fn overload_candidates_from_symbols(
     symbols: &[super::AlDocumentSymbol],
     func_name: &str,
@@ -507,6 +521,9 @@ fn overload_candidates_from_symbols(
     candidates
 }
 
+/// Walk the tree and emit return type hints for procedures/triggers that declare
+/// a return type. The hint appears immediately after the closing `)` of the
+/// parameter list and shows `: <ReturnType>`.
 fn collect_return_type_hints(
     root: tree_sitter::Node<'_>,
     source: &[u8],
@@ -516,6 +533,9 @@ fn collect_return_type_hints(
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         let node_start = node.start_position().row as u32;
+        // end_position().row is exclusive (see note in the argument-hints
+        // walker above): use `<=` so a node ending exactly on the row before
+        // the range is correctly skipped.
         let node_end = node.end_position().row as u32;
         if node_end <= range.start.line || node_start > range.end.line {
             continue;
@@ -530,6 +550,8 @@ fn collect_return_type_hints(
                 if let Ok(rt_text) = rt_node.utf8_text(source) {
                     let rt_text = rt_text.trim();
                     if !rt_text.is_empty() {
+                        // Place the hint at the end of the parameter list (closing paren).
+                        // Fall back to the name-node end position if no parameter node exists.
                         let hint_pos = node
                             .child_by_field_name("parameters")
                             .map(|p| Position {
@@ -610,6 +632,7 @@ fn add_parameter_hints(
     }
 }
 
+/// Decode `row` (0-indexed) of `source` as UTF-8, or `""` on bad UTF-8 / OOB.
 fn source_line(source: &[u8], row: usize) -> &str {
     source
         .split(|&b| b == b'\n')
@@ -774,6 +797,7 @@ mod tests {
         let (text, tree) = parse(src);
         let source = text.as_bytes();
         let mut hints = Vec::new();
+        // Only the first few lines — First() is at line 2, Second() is at line 7
         let narrow_range = Range {
             start: Position {
                 line: 0,
@@ -793,6 +817,9 @@ mod tests {
         );
     }
 
+    /// Walk `tree` and return the first node whose kind is `argument_list` or
+    /// `call_arguments`, so tests can drive `extract_call_info` /
+    /// `add_parameter_hints` against a real call site.
     fn first_arg_list<'t>(root: tree_sitter::Node<'t>) -> Option<tree_sitter::Node<'t>> {
         let mut stack = vec![root];
         while let Some(node) = stack.pop() {
@@ -858,6 +885,8 @@ mod tests {
 
     #[test]
     fn parameter_hint_overload_selection_prefers_matching_arity() {
+        // Two overloads: one with a single param, one with two. A two-arg call
+        // must select the two-param overload via arity scoring.
         let one = OverloadCandidate {
             names: vec!["Only".into()],
             types: vec!["Integer".into()],
@@ -883,6 +912,8 @@ mod tests {
 
     #[test]
     fn parameter_hint_overload_selection_prefers_type_match() {
+        // Same arity, differing types — the candidate whose parameter type
+        // matches the inferred argument type wins on score.
         let text_sig = OverloadCandidate {
             names: vec!["Msg".into()],
             types: vec!["Text".into()],
@@ -1002,6 +1033,9 @@ mod tests {
         add_parameter_hints(arg_list, source, &["Value".to_string()], &mut hints);
         assert_eq!(hints.len(), 1, "Expected one parameter hint: {hints:?}");
         let h = &hints[0];
+        // The argument "Ünïcödé" starts at byte column 12 ("        Foo(" = 8
+        // spaces + "Foo("). All ASCII before it, so UTF-16 == byte here, but
+        // the conversion must not crash on the multibyte arg itself.
         assert_eq!(h.position.line, 6);
         assert_eq!(h.position.character, 12);
         let AlInlayHintLabel::String(s) = &h.label;
@@ -1010,6 +1044,8 @@ mod tests {
 
     #[test]
     fn add_parameter_hints_stops_at_param_count() {
+        // More arguments than known parameter names: only emit hints for the
+        // params we know, never index out of bounds.
         let src = r#"codeunit 50100 Test
 {
     procedure Caller()
@@ -1031,6 +1067,7 @@ mod tests {
 
     #[test]
     fn parse_type_string_quoted_subtype() {
+        // `Record "Sales Header"` → base "Record", subtype "Sales Header".
         let (base, sub) = parse_type_string(r#"Record "Sales Header""#);
         assert_eq!(base, "Record");
         assert_eq!(sub, Some("Sales Header"));
@@ -1038,6 +1075,7 @@ mod tests {
 
     #[test]
     fn parse_type_string_unquoted_takes_first_word() {
+        // No quote → first whitespace-delimited token, no subtype.
         let (base, sub) = parse_type_string("Integer");
         assert_eq!(base, "Integer");
         assert_eq!(sub, None);
@@ -1058,6 +1096,7 @@ mod tests {
 
     #[test]
     fn score_overload_exact_arity_beats_excess_arity() {
+        // Exact arity match (+1000) must outscore an over-arity candidate (+100).
         let exact = OverloadCandidate {
             names: vec!["A".into()],
             types: vec!["Integer".into()],
@@ -1078,6 +1117,8 @@ mod tests {
 
     #[test]
     fn score_overload_subtype_match_adds_bonus() {
+        // Same base type, but only one candidate also matches the subtype; it
+        // must score 25 higher (the subtype bonus).
         let with_sub = OverloadCandidate {
             names: vec!["Rec".into()],
             types: vec![r#"Record "Customer""#.into()],
@@ -1099,6 +1140,9 @@ mod tests {
 
     #[test]
     fn score_overload_fewer_params_than_args_no_arity_bonus() {
+        // Candidate with fewer params than args gets neither the exact (+1000)
+        // nor the over-arity (+100) bonus, and no per-arg type bonus past its
+        // param count.
         let candidate = OverloadCandidate {
             names: vec!["Only".into()],
             types: vec!["Integer".into()],
@@ -1113,11 +1157,14 @@ mod tests {
                 subtype: None,
             }),
         ];
+        // Only the first arg's base matches (+50); no arity bonus.
         assert_eq!(score_overload(&candidate, &arg_types), 50);
     }
 
     #[test]
     fn overload_candidates_from_symbols_extracts_procedure_params() {
+        // A codeunit with a parameterized procedure must yield one candidate
+        // whose names/types come from the procedure's detail string.
         let src = r#"codeunit 50100 Test
 {
     procedure Add(First: Integer; Second: Integer): Integer
@@ -1149,6 +1196,7 @@ mod tests {
         );
     }
 
+    /// Build a single-argument call and return its first inferred argument type.
     fn infer_single(src: &str) -> Option<InferredType> {
         let (text, tree) = parse(src);
         let source = text.as_bytes();
@@ -1166,6 +1214,7 @@ mod tests {
 
     #[test]
     fn infer_argument_type_enum_scope_uses_left_of_double_colon() {
+        // `MyEnum::Value` infers base "MyEnum" from the text left of `::`.
         let inferred = infer_single(
             "codeunit 50100 Test\n{\n    procedure Caller()\n    begin\n        Foo(MyEnum::Value);\n    end;\n}",
         )
@@ -1176,6 +1225,7 @@ mod tests {
 
     #[test]
     fn infer_argument_type_negative_integer() {
+        // A leading '-' must still be treated as a numeric literal (Integer).
         let inferred = infer_single(
             "codeunit 50100 Test\n{\n    procedure Caller()\n    begin\n        Foo(-7);\n    end;\n}",
         )
@@ -1244,6 +1294,9 @@ mod tests {
 
     #[test]
     fn lookup_embedded_builtin_matches_language_data() {
+        // Don't hardcode a builtin name — discover one from LanguageData at
+        // runtime, then assert lookup_embedded_builtin returns exactly that
+        // function's parameter names. Unknown names must return None.
         let first_builtin = crate::syntax::language_data::builtin_functions()
             .iter()
             .find(|f| !f.parameters.is_empty());
@@ -1263,6 +1316,7 @@ mod tests {
 
     #[test]
     fn inlay_hints_none_for_unopened_document() {
+        // No document in the store → get_or_parse returns None → no hints.
         let ws = Workspace::new();
         let uri = Url::parse("file:///nonexistent.al").unwrap();
         assert!(
@@ -1273,6 +1327,8 @@ mod tests {
 
     #[test]
     fn inlay_hints_emits_parameter_hints_for_open_document() {
+        // Default config has parameter_names = true. Opening a file with a
+        // local call should yield parameter hints end-to-end.
         let src = r#"codeunit 50100 Test
 {
     procedure Caller()
@@ -1306,6 +1362,8 @@ mod tests {
 
     #[test]
     fn inlay_hints_respects_disabled_parameter_names() {
+        // With parameter_names disabled and return_types disabled (default),
+        // a file that only has call sites yields no hints at all.
         let src = r#"codeunit 50100 Test
 {
     procedure Caller()
@@ -1334,6 +1392,8 @@ mod tests {
 
     #[test]
     fn inlay_hints_emits_return_type_hints_when_enabled() {
+        // Enable return_types; a procedure with a return type must yield a
+        // Type-kind hint via the top-level entry point.
         let src = r#"codeunit 50100 Test
 {
     procedure GetCount(): Integer

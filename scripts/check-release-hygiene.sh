@@ -232,6 +232,7 @@ check_submodule_and_grammar_rev() {
 check_generated_files_exist() {
     local files=(
         tree-sitter-al/grammar.js
+        tree-sitter-al/src/grammar.json
         tree-sitter-al/src/keywords.c
         tree-sitter-al/src/scanner.c
         tree-sitter-al/src/parser.c
@@ -320,6 +321,7 @@ check_generated_cochange() {
     )
     local generated_patterns=(
         'tree-sitter-al/grammar.js'
+        'tree-sitter-al/src/grammar.json'
         'tree-sitter-al/src/keywords.c'
         'tree-sitter-al/src/scanner.c'
         'tree-sitter-al/src/parser.c'

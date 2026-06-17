@@ -44,7 +44,6 @@ async fn open_test_files(client: &mut LspClient) {
     }
 }
 
-/// Run 5 iterations and return the median duration in microseconds.
 fn median(durations: &mut [u64]) -> u64 {
     durations.sort();
     durations[durations.len() / 2]
@@ -58,7 +57,6 @@ async fn test_hover_latency() {
     let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
 
-    // Warm up
     let _ = client
         .hover("objects/API/ItemJournalStaging.Table.al", 10, 10)
         .await;
@@ -88,7 +86,6 @@ async fn test_completion_latency() {
     let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
 
-    // Warm up
     let _ = client
         .completion("objects/Codeunit/IJLEventSubscribers.Codeunit.al", 10, 10)
         .await;
@@ -152,7 +149,6 @@ async fn test_document_symbols_latency() {
     let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
 
-    // Warm up
     let _ = client
         .document_symbols("objects/API/ItemJournalStaging.Table.al")
         .await;
@@ -182,7 +178,6 @@ async fn test_semantic_tokens_latency() {
     let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
 
-    // Warm up
     let _ = client
         .semantic_tokens("objects/API/ItemJournalStaging.Table.al")
         .await;

@@ -59,9 +59,7 @@ pub struct TranslationUnit {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TranslationState {
-    /// Not yet translated
     New,
-    /// Translated and ready
     Translated,
     /// Source changed — needs review
     NeedsReviewTranslation,
@@ -103,7 +101,7 @@ pub fn extract_translation_units(workspace: &Workspace) -> Vec<TranslationUnit> 
         .iter()
         .map(|e| e.key().clone())
         .collect();
-    paths.sort(); // deterministic order
+    paths.sort();
 
     for path in &paths {
         let text = match workspace.file_index.files.get(path) {
@@ -123,7 +121,6 @@ fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) 
         None => return,
     };
 
-    // Scan for Caption, ToolTip, Label assignments
     let mut field_id: u32 = 0;
     let mut current_field: Option<String> = None;
     // Per-file label counter so Label IDs depend only on position within this
@@ -312,7 +309,6 @@ fn parse_property_value(line: &str, property: &str) -> Option<String> {
     if !line_lower.starts_with(&prefix_lower) {
         return None;
     }
-    // Extract the single-quoted string value
     let after_eq = &line[prefix.len()..].trim_start_matches([' ', '\t']);
     extract_single_quoted(after_eq)
 }
@@ -650,14 +646,12 @@ pub fn refresh_xliff(
     let mut result_units = Vec::new();
     let mut refresh = RefreshResult::default();
 
-    // Build a set of generated IDs for detecting obsolete units
     let generated_ids: std::collections::HashSet<&str> =
         generated.iter().map(|u| u.id.as_str()).collect();
 
     for gen_unit in generated {
         if let Some(lang_unit) = language.get(&gen_unit.id) {
             if lang_unit.source != gen_unit.source {
-                // Source changed — mark for review
                 result_units.push(TranslationUnit {
                     source: gen_unit.source.clone(),
                     target: lang_unit.target.clone(),
@@ -678,7 +672,6 @@ pub fn refresh_xliff(
         }
     }
 
-    // Collect obsolete units (in language but not in generated)
     for (id, lang_unit) in language {
         if !generated_ids.contains(id.as_str()) {
             result_units.push(TranslationUnit {

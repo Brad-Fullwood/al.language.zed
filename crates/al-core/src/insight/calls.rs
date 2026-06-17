@@ -65,6 +65,10 @@ pub enum CallSite {
     },
 }
 
+/// Extract a mapping of `lowercase_variable_name -> table_name` for all
+/// `Record "X"` variables in a procedure's `var` section and parameters.
+///
+/// Returns only `Record`-typed variables since those are what trigger table events.
 pub fn extract_procedure_var_types(
     tree: &tree_sitter::Tree,
     source: &str,
@@ -176,7 +180,6 @@ fn collect_record_from_variable_declaration(
             collect_record_from_regular_var_decl(child, source, result);
         }
     }
-    // Also handle direct regular_variable_declaration
     if container.kind() == "regular_variable_declaration" {
         collect_record_from_regular_var_decl(container, source, result);
     }
@@ -532,7 +535,6 @@ fn extract_primary_expression_name(node: tree_sitter::Node, source: &[u8]) -> Op
             .ok()
             .map(|t| t.trim_matches('"').to_string()),
         _ => {
-            // Fallback: just return the raw text of whatever the primary node is
             inner
                 .utf8_text(source)
                 .ok()
@@ -853,6 +855,8 @@ pub fn register_workspace_nodes(
         });
     }
 
+    // Clear any previously registered workspace entries before re-adding to prevent
+    // duplicates when the call graph is rebuilt.
     symbols.remove_package_entries("workspace");
     if !workspace_entries.is_empty() {
         symbols.add_entries_owned(workspace_entries);
@@ -1750,7 +1754,6 @@ mod tests {
             Some("Sales Header")
         );
 
-        // Integer is not Record — should not be in the map
         assert!(
             !types.contains_key("counter"),
             "Integer vars should not appear"

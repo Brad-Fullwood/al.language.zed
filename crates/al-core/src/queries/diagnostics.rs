@@ -1,4 +1,11 @@
 //! Transport-agnostic syntax diagnostics query.
+//!
+//! Consolidates the parse+lint+config-filter pattern that was previously
+//! duplicated across `al-lsp/src/server.rs` (schedule_diagnostics) and
+//! `al-lsp/src/diagnostics.rs` (compute_diagnostics + publish_diagnostics).
+//!
+//! Uses the DocumentStore parse cache (`parsing::get_or_parse`) and falls back
+//! to a direct parse only when the document is not in the store.
 
 use url::Url;
 
@@ -16,19 +23,39 @@ pub enum SyntaxDiagnosticSeverity {
 #[derive(Debug, Clone)]
 pub struct SyntaxDiagnostic {
     pub message: String,
-    /// 0-indexed lines, UTF-16 code unit columns — LSP-ready.
+    /// Source range (0-indexed lines, UTF-16 code unit columns — LSP-ready).
     pub range: crate::queries::Range,
     pub severity: SyntaxDiagnosticSeverity,
+    /// Diagnostic code, e.g. `"syntax"` or `"AL-L001"`.
     pub code: String,
+    /// Source label, e.g. `"al"` or `"al-lint"`.
     pub source: String,
 }
 
+/// Compute syntax and lint diagnostics for a single document.
+///
+/// Uses the DocumentStore parse cache when the document is present; falls back
+/// to a direct parse on a cache miss so callers that pre-populate the store
+/// (e.g. `did_open` / `did_change`) get a zero-cost cache hit.
+///
+/// Lint results are filtered by `config.is_lint_rule_enabled`. Note:
+/// `crate::syntax::lint()` is currently a stub that always returns an empty
+/// `Vec` — all AL diagnostics surfaced today come from the syntax-error
+/// pass on the parse tree, not from native lint rules. The lint-filter
+/// branch remains for forward-compatibility with the planned rule engine.
+///
+/// Returns a transport-agnostic `Vec<SyntaxDiagnostic>`. The caller is
+/// responsible for converting to LSP `Diagnostic` values.
 pub fn syntax_diagnostics(
     workspace: &Workspace,
     uri: &Url,
     config: &AlConfig,
 ) -> Vec<SyntaxDiagnostic> {
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
+        // Document not in DocumentStore. Callers (did_open / did_change) are
+        // expected to pre-populate the store, so a cache miss is unexpected.
+        // Surface it via tracing rather than silently parsing an empty string,
+        // which would always return zero diagnostics and mask real issues.
         tracing::warn!(
             target: "al_core::diagnostics",
             uri = %uri,

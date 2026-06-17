@@ -40,7 +40,6 @@ impl Default for Request {
 }
 
 impl Request {
-    /// Build a Request with the canonical `jsonrpc: "2.0"` field set.
     pub fn new(id: u64, method: impl Into<String>, params: Option<serde_json::Value>) -> Self {
         Self {
             jsonrpc: default_jsonrpc(),

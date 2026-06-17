@@ -21,7 +21,6 @@ fn languages_dir() -> PathBuf {
         .join("al")
 }
 
-/// Validate a single .scm query file against the AL grammar.
 fn validate_query_file(filename: &str) {
     let path = languages_dir().join(filename);
     if !path.exists() {
@@ -35,7 +34,7 @@ fn validate_query_file(filename: &str) {
     }
 
     match Query::new(&al_language(), &source) {
-        Ok(_) => {} // Query is valid
+        Ok(_) => {}
         Err(e) => {
             panic!(
                 "Query validation FAILED for {filename}:\n  {e}\n\n\

@@ -94,16 +94,12 @@ pub struct RecordValue {
     pub handle: Option<u64>,
 }
 
-// ---------------------------------------------------------------------------
-// Total ordering for BTreeMap keys.
-//
 // Variants are ordered by their declaration index, then within each variant
 // by an obvious natural order. Decimal uses `f64::total_cmp` so NaN sorts
 // consistently. `Variant`/`Array`/`List`/`Dict`/`Blob`/`ErrorInfo` are
 // never used as primary-key components in BC, so their orderings are
 // implementation-defined (length-then-content) — adequate for BTreeMap
 // stability without committing to an external contract.
-// ---------------------------------------------------------------------------
 
 /// Manual `PartialEq` mirroring the `Ord` impl so the three trait impls
 /// stay consistent. `Decimal(NaN) == Decimal(NaN)` is `true` here (via
@@ -199,7 +195,6 @@ impl PartialOrd for Value {
 /// Captured `Error()` / `asserterror` payload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ErrorInfo {
-    /// The error message (formatted).
     pub message: String,
     /// Optional `ErrorType` enum member name (e.g. `Internal`).
     pub error_type: Option<String>,
@@ -498,7 +493,6 @@ mod tests {
 
     #[test]
     fn structured_collection_ordering() {
-        // Variant delegates to the inner value.
         assert!(
             Value::Variant(Box::new(Value::Integer(1)))
                 < Value::Variant(Box::new(Value::Integer(2)))
@@ -520,7 +514,6 @@ mod tests {
         a.insert("k1".to_string(), Value::Integer(1));
         let mut b = BTreeMap::new();
         b.insert("k1".to_string(), Value::Integer(2));
-        // Same key, larger value => b > a.
         assert!(Value::Dict(a.clone()) < Value::Dict(b));
         // Adding a second entry makes the longer sequence sort after.
         let mut c = a.clone();
@@ -549,9 +542,7 @@ mod tests {
         #[allow(clippy::eq_op)]
         let nan_self_eq = nan == nan;
         assert!(nan_self_eq, "Decimal(NaN) must equal itself to satisfy Eq");
-        // Cross-variant values are never equal.
         assert_ne!(Value::Integer(0), Value::Decimal(0.0));
-        // PartialOrd is consistent with Ord.
         assert_eq!(
             Value::Integer(1).partial_cmp(&Value::Integer(2)),
             Some(std::cmp::Ordering::Less)

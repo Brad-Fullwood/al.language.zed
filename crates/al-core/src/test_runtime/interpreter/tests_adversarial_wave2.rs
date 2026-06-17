@@ -47,14 +47,10 @@ mod tests {
     use crate::test_runtime::interpreter::value::Value;
     use crate::workspace::Workspace;
 
-    // ── helpers ────────────────────────────────────────────────────────────────
-
     fn ctx() -> DispatchCtx {
         DispatchCtx::new_pure(Arc::new(Workspace::new()))
     }
 
-    /// Parse a snippet, run `eval_stmt` on the body of `Test`, return the
-    /// result and final stack.
     fn run_stmt(source_snippet: &str) -> (Eval, ScopeStack) {
         let wrapper = format!(
             "codeunit 50100 \"W2\"\n{{\n    procedure Test()\n    var\n        x: Integer;\n        s: Text;\n        b: Boolean;\n    begin\n        {source_snippet}\n    end;\n}}"
@@ -111,9 +107,6 @@ mod tests {
     #[test]
     #[ignore = "W2-01 UNIMPLEMENTED: date_literal not handled in eval_expr (Phase 2 gap)"]
     fn w2_01_date_literal_unimplemented() {
-        // Minimal repro: assign a date literal to a variable.
-        // AL: x := 20240701D;   (where x is re-typed to accept Date)
-        // We exercise it via parse-and-eval of the expression node directly.
         let wrapper = r#"codeunit 50100 "W2"
 {
     procedure Test()
@@ -201,7 +194,6 @@ mod tests {
     #[test]
     #[ignore = "W2-03 TYPE_ERROR: compound '+=' not implemented in eval_expression_node"]
     fn w2_03_compound_plus_equals_not_implemented() {
-        // x starts at 0; after `x += 1` it should be 1.
         let (eval, stack) = run_stmt("x += 1;");
         assert!(
             matches!(eval, Eval::Normal(_)),
@@ -377,8 +369,6 @@ mod tests {
     #[test]
     #[ignore = "W2-07 UNIMPLEMENTED: Enum:: scope-qualified enum members not evaluated"]
     fn w2_07_enum_scope_qualifier_not_implemented() {
-        // Minimal repro using a simple enum-style expression.
-        // We use a CASE statement that assigns an enum value.
         let wrapper = r#"codeunit 50100 "W2"
 {
     procedure Test()
@@ -478,7 +468,6 @@ mod tests {
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
     fn w2_09_biginteger_l_suffix_pass() {
-        // Positive: `x := 1719815430L` should bind x to Integer(1719815430).
         let (eval, stack) = run_stmt("x := 1719815430;"); // grammar may or may not produce L-suffix
         assert!(
             matches!(eval, Eval::Normal(_)),
@@ -513,7 +502,6 @@ mod tests {
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
     fn w2_10_for_upward_loop_accumulates_pass() {
-        // x := 0; for i := 1 to 10 do x := x + i;  → x should be 55
         let wrapper = r#"codeunit 50100 "W2"
 {
     procedure Test()
@@ -623,7 +611,6 @@ mod tests {
             "Expected Normal after CreateDateTime, got: {:?}",
             eval
         );
-        // suppress the lint for the unused `eval` computed above
         let _ = eval;
     }
 
@@ -642,8 +629,6 @@ mod tests {
         use crate::test_runtime::interpreter::dispatch::dispatch_call;
 
         let mut ctx = ctx();
-        // StrSubstNo('Value is %1', 42) → "Value is 42"
-        // then compare with the literal string.
         let strsubstno_result = dispatch_call(
             None,
             "StrSubstNo",
@@ -655,7 +640,6 @@ mod tests {
             other => panic!("StrSubstNo failed: {:?}", other),
         };
 
-        // Assert.AreEqual("Value is 42", "Value is 42", '')  should pass
         let assert_result = dispatch_call(
             Some("Library Assert"),
             "AreEqual",
@@ -694,7 +678,6 @@ mod tests {
         };
         assert_eq!(as_text, "7", "Format(7) should produce Text(\"7\")");
 
-        // Now use as argument to AreEqual.
         let eq_result = dispatch_call(
             Some("Library Assert"),
             "AreEqual",
@@ -761,7 +744,6 @@ mod tests {
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
     fn w2_16_asserterror_catches_unimplemented_call_pass() {
-        // Inline call to an unimplemented procedure inside asserterror.
         // The procedure is not in the workspace, so dispatch returns Error.
         // asserterror should absorb it and return Normal.
         let (eval, _) = run_stmt("asserterror SomeUnimplementedCU.DoSomething();");

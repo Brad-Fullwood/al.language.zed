@@ -41,7 +41,6 @@ pub struct UntestedProcedure {
     pub line: u32,
 }
 
-/// Coverage information for a single test procedure.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestCoverageEntry {
@@ -51,7 +50,6 @@ pub struct TestCoverageEntry {
     pub covers: Vec<CoveredProcedure>,
 }
 
-/// Full coverage report for a workspace.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageReport {
@@ -60,7 +58,6 @@ pub struct CoverageReport {
     pub untested: Vec<UntestedProcedure>,
 }
 
-/// A procedure definition collected from workspace files.
 #[derive(Debug, Clone)]
 struct ProcDef {
     name: String,
@@ -247,6 +244,9 @@ fn has_test_attr_child(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     false
 }
 
+// Eight tree-walk inputs (tree-sitter node, source, workspace, file path,
+// per-file maps for callers / coverage / unresolved, accumulator). Grouping
+// into a struct would not reduce the per-call setup.
 #[allow(clippy::too_many_arguments)]
 fn collect_coverage_from_tree(
     root: tree_sitter::Node,
@@ -308,7 +308,6 @@ fn collect_coverage_from_tree(
     }
 }
 
-/// Collect all identifiers in the node's subtree that match known production procedure names.
 fn collect_called_identifiers(
     node: tree_sitter::Node,
     source: &[u8],
@@ -485,13 +484,11 @@ mod tests {
         let ws = workspace_with(&[("/src/Test.al", TEST_CU)]);
         let report = test_coverage(&ws);
 
-        // Exactly one coverage entry, for the [Test] procedure.
         assert_eq!(report.coverage.len(), 1, "one [Test] proc => one entry");
         let entry = &report.coverage[0];
         assert_eq!(entry.codeunit, "Test CU");
         assert_eq!(entry.test_procedure, "TestPublicProc");
 
-        // The [Test] procedure must never appear in `untested`.
         assert!(
             !report
                 .untested
@@ -514,7 +511,6 @@ mod tests {
         let ws = workspace_with(&[("/src/Prod.al", PROD_CU)]);
         let report = test_coverage(&ws);
 
-        // No test codeunit => no coverage entries at all.
         assert!(
             report.coverage.is_empty(),
             "a workspace with no Subtype=Test codeunit yields no coverage"

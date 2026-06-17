@@ -29,9 +29,6 @@ fn github_slug_from_url(url: &str) -> Option<String> {
     }
 }
 
-/// `GITHUB_REPO` must equal the `owner/repo` slug declared in `extension.toml`'s
-/// `repository` field, which is the canonical source of truth for where the
-/// extension lives (and therefore where its release assets are published).
 #[test]
 fn github_repo_matches_extension_toml() {
     let manifest = include_str!("../extension.toml");
@@ -88,8 +85,6 @@ fn release_asset_names_match_workflow() {
     let lib = include_str!("lib.rs");
     let workflow = include_str!("../.github/workflows/release.yml");
 
-    // Asset names the code expects, by platform. These are the exact format!
-    // outputs from src/lib.rs for the supported (os, arch) pairs.
     let expected = [
         ("al-linux-x86_64.tar.gz", "linux-x86_64"),
         ("al-linux-aarch64.tar.gz", "linux-aarch64"),
@@ -99,8 +94,6 @@ fn release_asset_names_match_workflow() {
     ];
 
     for (asset, artifact) in expected {
-        // Code side: the os/arch tokens that compose this asset name must be
-        // present in lib.rs (they live in the match arms + the suffix string).
         let (os_tok, rest) = artifact.split_once('-').unwrap();
         let arch_tok = rest;
         assert!(
@@ -121,8 +114,6 @@ fn release_asset_names_match_workflow() {
             "src/lib.rs does not build asset name `{asset}`"
         );
 
-        // Pipeline side: release.yml must declare a matrix entry with this
-        // artifact_name (which is how it names the uploaded archive).
         assert!(
             workflow.contains(&format!("artifact_name: {artifact}")),
             "release.yml has no matrix `artifact_name: {artifact}` to produce {asset}"
@@ -142,8 +133,6 @@ fn release_asset_names_match_workflow() {
     );
 }
 
-/// Guard the shape of the constant itself: a non-empty `owner/repo` with exactly
-/// one slash and no scheme/host. Catches accidental full-URL or empty values.
 #[test]
 fn github_repo_is_owner_slash_repo() {
     assert!(
@@ -173,30 +162,24 @@ fn release_lookup_failure_is_actionable() {
     for os in [zed::Os::Linux, zed::Os::Mac, zed::Os::Windows] {
         let msg = release_lookup_failure_message(os, "no releases found");
 
-        // Surfaces the underlying cause so users/maintainers can diagnose.
         assert!(
             msg.contains("no releases found"),
             "release-lookup error must include the underlying cause: {msg}"
         );
-        // Points at the exact releases page for a manual download.
         assert!(
             msg.contains(&format!("https://github.com/{GITHUB_REPO}/releases")),
             "release-lookup error must link the releases page: {msg}"
         );
-        // Gives the copy-paste recovery setting.
         assert!(
             msg.contains("\"al-lsp\"") && msg.contains("\"path\""),
             "release-lookup error must include a binary.path settings snippet: {msg}"
         );
-        // Mentions the PATH / cargo-install fallback.
         assert!(
             msg.contains("PATH"),
             "release-lookup error must mention the PATH fallback: {msg}"
         );
     }
 
-    // The Windows hint must use a Windows-style example path (not a POSIX one),
-    // and the Unix hint must not leak a Windows path.
     let win = release_lookup_failure_message(zed::Os::Windows, "x");
     assert!(
         win.contains("al-lsp.exe"),
@@ -252,7 +235,6 @@ fn committed_api_target_is_released() {
          Run scripts/use-api.sh stable before committing. Offending line: {api_line}"
     );
 
-    // Extract the quoted version from e.g. `zed_extension_api = "0.7.0"`.
     let dep_version = api_line
         .split('"')
         .nth(1)
@@ -263,8 +245,6 @@ fn committed_api_target_is_released() {
          If 0.8.x has been released to crates.io, update this test alongside the bump."
     );
 
-    // extension.toml's [lib] version tells Zed which API the WASM was built
-    // against; it must advertise the same released line as the dep.
     let lib_version = manifest
         .lines()
         .skip_while(|l| l.trim() != "[lib]")
@@ -310,7 +290,6 @@ fn unreleased_api_channel_requirement_is_documented() {
         .find(|l| l.trim_start().starts_with("zed_extension_api"))
         .expect("Cargo.toml must declare zed_extension_api");
 
-    // Treat a git/branch dependency, or a 0.8+ version, as "unreleased API".
     let targets_unreleased =
         api_line.contains("git") || api_line.contains("branch") || api_line.contains("0.8");
 
@@ -439,9 +418,6 @@ fn settings_schema_property_keys() -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-/// Every setting the server reads must be documented in the schema, and the
-/// schema must not declare settings the server ignores. Either drift degrades
-/// the settings autocomplete/validation experience.
 #[test]
 fn settings_schema_covers_every_config_field() {
     let expected = expected_schema_keys();

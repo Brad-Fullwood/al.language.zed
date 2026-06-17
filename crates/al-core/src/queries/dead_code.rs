@@ -56,6 +56,7 @@ pub struct UnusedSymbol {
     pub name: String,
     #[serde(rename = "obj")]
     pub object: String,
+    /// File path where the symbol is defined (if in workspace).
     #[serde(rename = "f", skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
     /// 1-based.
@@ -72,7 +73,15 @@ pub struct UnusedSymbol {
 pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
     let mut results = Vec::new();
 
-    // F-OPEN-114: sort by path for deterministic output order; DashMap iteration order varies.
+    // Collect all cached (path, text, tree) triples in one pass — no re-parsing needed.
+    // The owned Vec is required so that `all_files` borrows below have a stable backing store
+    // for the lifetime of the cross-file reference scans.
+    //
+    // F-OPEN-114: sort by path BEFORE the main loop so output is stable
+    // across runs. `file_trees` is a DashMap whose iteration order varies
+    // across process restarts, and the results Vec inherits that order.
+    // CI snapshots and human diff review of deadcode output need
+    // deterministic ordering.
     let mut parsed_files: Vec<(String, String, tree_sitter::Tree)> = workspace
         .file_index
         .file_trees
@@ -91,10 +100,20 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
         .map(|(p, t, tree)| (p.as_str(), t.as_str(), tree))
         .collect();
 
+    // Build a workspace-global lowercase set of all call-site identifier
+    // names ONCE, instead of re-scanning every file for every procedure
+    // (T020: pre-T020 inner loop was O(F²·P) in the cross-file walk; this
+    // makes per-procedure membership checks O(1)). The text-fallback set
+    // captures call sites inside action triggers that braced_block doesn't
+    // parse — same coverage as text_contains_call_outside_declaration but
+    // collected in a single pass per file.
     let mut all_call_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 32);
     let mut all_text_call_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 16);
+    // F-OPEN-117: build the workspace-global member-access name set in the
+    // same pre-pass. Previously `find_unused_fields` walked every other
+    // file's full text per-field → O(F²·L). Now field-lookup is O(1).
     let mut all_member_access_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 16);
     for (_, text, tree) in &all_files {
@@ -113,6 +132,13 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
         }
     }
 
+    // F-OPEN-118: parallelise per-file scans with rayon. Each file's
+    // procedure / field / subscriber checks are independent given the
+    // pre-built workspace-global sets — no shared mutable state needed.
+    // Per-file results accumulate into thread-local Vecs and flat_map back
+    // out preserving the path-sorted input order. CPU-bound dead-code on
+    // 1000+ file workspaces drops from "sequential single-thread" to
+    // "scales with cores".
     use rayon::prelude::*;
     let per_file_results: Vec<Vec<UnusedSymbol>> = all_files
         .par_iter()
@@ -187,14 +213,23 @@ fn find_unused_procedures(
     collect_procedures(root, source, &mut procs);
 
     for (proc_name, is_event, line, is_local) in &procs {
+        // Skip event publishers — they're entry points
         if *is_event {
             continue;
         }
 
+        // Workspace-global O(1) membership check (T020 perf fix).
+        // The two sets together cover the same surface as the previous
+        // per-procedure scan: tree-sitter call references + text-fallback
+        // for calls inside action triggers (ISSUE-076: braced_block doesn't
+        // parse trigger bodies).
         let lname = proc_name.to_ascii_lowercase();
         let referenced = all_call_names.contains(&lname) || all_text_call_names.contains(&lname);
 
         if !referenced {
+            // FB-12: locality decides confidence. A `local` procedure with
+            // zero call sites is provably dead; a public one may be called
+            // by dependent extensions we can't see.
             let (confidence, note) = if *is_local {
                 (Confidence::High, None)
             } else {
@@ -349,11 +384,16 @@ fn collect_procedures(
                     let line = node.start_position().row as u32 + 1;
 
                     let is_event = has_event_attribute(node, source);
+
+                    // `local`/`internal` procedures are unreachable from
+                    // other extensions — locality drives the confidence of
+                    // a zero-reference finding (FB-12).
                     let is_local = node_has_local_modifier(node, source);
 
                     procs.push((name, is_event, line, is_local));
                 }
             }
+            // Do not recurse into procedure body
             continue;
         }
 
@@ -399,6 +439,7 @@ fn has_event_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
         sibling = s.prev_sibling();
     }
 
+    // Also check children (some grammars nest attributes inside the procedure node)
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "attribute" || child.kind() == "attribute_list" {
@@ -427,6 +468,13 @@ fn find_unused_fields(
     collect_fields_from_text(file_text, &mut fields);
 
     for (field_name, line) in &fields {
+        // O(1) lookup against the pre-built set. The set captures lowercase
+        // names referenced as `.<name>` or `."<name>"` anywhere in the
+        // workspace; a true positive means SOME file (possibly the defining
+        // file itself) member-accesses that name. That intentional over-
+        // approximation matches the prior all-files scan's coverage: a
+        // field referenced only by its own table's procedures is still
+        // "used" by virtue of that table's internal usage.
         let referenced = all_member_access_names.contains(&field_name.to_lowercase());
 
         if !referenced {
@@ -457,6 +505,7 @@ fn find_unused_fields(
 
 // The grammar doesn't expose a `field_declaration` node type so we scan source as text.
 // T045: skips field( inside `/* ... */` block comments to avoid false-positive phantom fields.
+// Single-line comments are already filtered naturally because the strip_prefix fails on `//`.
 fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
     let mut in_block_comment = false;
     for (line_idx, line) in text.lines().enumerate() {
@@ -469,6 +518,12 @@ fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
                 continue;
             }
         }
+        // Inline-comment scan: walk left-to-right toggling the flag for any
+        // /* and */ openers/closers on this line. We deliberately don't
+        // try to handle */ inside string literals — a malicious-looking
+        // file with `Message('*/')` would just cause a (rare) false miss
+        // of one field, which is strictly safer than the false-positive
+        // we were producing pre-T045.
         let after_initial = &line[search_from..];
         if let Some(open) = after_initial.find("/*") {
             in_block_comment = true;
@@ -495,6 +550,7 @@ fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
             continue;
         }
         let trimmed = after_initial.trim();
+        // Match: field(id; "Name"; ...) or field(id; Name; ...)
         if let Some(rest) = trimmed
             .strip_prefix("field(")
             .or_else(|| trimmed.strip_prefix("field ("))
@@ -504,6 +560,9 @@ fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
     }
 }
 
+/// Helper: parse `<id>; "Name"; ...)` and push the field name + 1-based line.
+/// Refactored out of `collect_fields_from_text` (T045) so the block-comment
+/// state machine and the inline-on-same-line cases share the same parser.
 fn extract_field_name_from_args(rest: &str, line_idx: usize, fields: &mut Vec<(String, u32)>) {
     if let Some(after_semi) = rest.find(';').map(|i| &rest[i + 1..]) {
         let name_part = after_semi.trim();
@@ -536,10 +595,16 @@ fn find_orphaned_subscribers(
     collect_event_subscribers(root, source, &mut subscribers);
 
     for (proc_name, target_object, _target_event, line) in &subscribers {
+        // Skip entries where attribute parsing failed to extract a target object name.
+        // An empty target would cause false positives (nothing in the index matches "").
         if target_object.is_empty() {
             continue;
         }
 
+        // Check if the target object exists in the symbol index OR in workspace files.
+        // Use get_by_name (exact, case-insensitive) rather than search (fuzzy substring)
+        // to avoid false negatives where an unrelated symbol name contains the target
+        // as a substring.
         let target_lower = target_object.to_lowercase();
         let exists_in_symbols = workspace.symbols.find_by_name(&target_lower).is_some();
         let exists_in_workspace = workspace
@@ -562,6 +627,7 @@ fn find_orphaned_subscribers(
     }
 }
 
+/// Collect event subscriber procedures iteratively: (proc_name, target_object, target_event, line_1based).
 fn collect_event_subscribers(
     root: tree_sitter::Node,
     source: &[u8],
@@ -586,6 +652,7 @@ fn collect_event_subscribers(
                     }
                 }
             }
+            // Do not recurse into procedure body
             continue;
         }
 
@@ -618,6 +685,8 @@ fn get_preceding_attribute(node: tree_sitter::Node, source: &[u8]) -> Option<Str
 /// Parse the target object and event from an EventSubscriber attribute text.
 /// Format: `[EventSubscriber(ObjectType::Codeunit, Codeunit::"Name", 'Event', ...)]`
 fn parse_subscriber_args(attr_text: &str) -> (String, String) {
+    // Find content between the first '(' and the last ')'.
+    // Guard against malformed text where '(' appears after ')'.
     let inner = match (attr_text.find('('), attr_text.rfind(')')) {
         (Some(start), Some(end)) if start < end => &attr_text[start + 1..end],
         _ => "",
@@ -625,6 +694,7 @@ fn parse_subscriber_args(attr_text: &str) -> (String, String) {
 
     let args = split_args(inner);
 
+    // arg[1] is the target object (e.g., Codeunit::"Sales-Post" or "Sales-Post")
     let target_object = args
         .get(1)
         .map(|s| {
@@ -638,6 +708,7 @@ fn parse_subscriber_args(attr_text: &str) -> (String, String) {
         })
         .unwrap_or_default();
 
+    // arg[2] is the target event
     let target_event = args
         .get(2)
         .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
@@ -646,6 +717,7 @@ fn parse_subscriber_args(attr_text: &str) -> (String, String) {
     (target_object, target_event)
 }
 
+/// Split attribute arguments by comma, respecting quoted strings.
 fn split_args(s: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut current = String::new();
@@ -1102,6 +1174,11 @@ mod tests {
         );
     }
 
+    // Unit tests for the quote-aware parsing helpers. These functions are on
+    // the dead-code hot path and track string-literal state; without direct
+    // coverage a refactor to quote handling could silently reintroduce false
+    // positives/negatives. (test-gap closed iteration 86)
+
     #[test]
     fn extract_text_call_names_basic() {
         let names = extract_text_call_names("    DoStuff(Rec);");
@@ -1185,6 +1262,7 @@ mod tests {
 
     #[test]
     fn parse_subscriber_args_missing_closing_paren() {
+        // No matching ')': inner is empty, so both fields default to "".
         let (obj, event) = parse_subscriber_args("[EventSubscriber(ObjectType::Codeunit");
         assert_eq!(obj, "");
         assert_eq!(event, "");

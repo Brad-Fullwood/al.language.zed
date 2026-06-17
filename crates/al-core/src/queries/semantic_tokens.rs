@@ -76,13 +76,17 @@ mod tests {
 
     #[test]
     fn semantic_tokens_full_first_token_is_absolute_position() {
-        // LSP delta-encoding: the first token's delta is measured from origin (0,0).
+        // The LSP delta-encoding contract: the very first token's delta is
+        // measured from origin (0,0), so its delta_line/delta_start are the
+        // token's absolute line/column. The wrapper must preserve this.
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/first.al").expect("test");
         ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
 
         let tokens = semantic_tokens_full(&ws, &uri);
         let first = tokens.first().expect("expected at least one token");
+        // First meaningful token in the sample is the `codeunit` keyword on
+        // line 0, column 0.
         assert_eq!(first.delta_line, 0, "first token starts on line 0");
         assert_eq!(first.delta_start, 0, "first token starts at column 0");
         assert!(first.length > 0, "a token must have non-zero length");
@@ -98,6 +102,8 @@ mod tests {
             crate::parsing::get_or_parse(&ws.documents, &uri).expect("document should parse");
         let syntax_tokens = crate::syntax::extract_semantic_tokens(&tree, &text);
 
+        // The wrapper must map each syntax token field-for-field with no
+        // reordering or mutation. Compare against the syntax layer directly.
         let tokens = semantic_tokens_full(&ws, &uri);
         assert_eq!(
             tokens.len(),
@@ -119,6 +125,13 @@ mod tests {
         let uri = Url::parse("file:///test/delta.al").expect("test");
         ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
 
+        // The LSP semantic-tokens contract: every token after the first is
+        // delta-encoded relative to its predecessor. On the *same* line,
+        // delta_line is 0 and delta_start is the column gap (> 0, since two
+        // distinct tokens cannot start at the same column). When delta_line is
+        // non-zero, delta_start is reset to an absolute column. This test
+        // guards that the wrapper hands back a well-formed delta stream rather
+        // than, say, absolute positions or a shuffled order.
         let tokens = semantic_tokens_full(&ws, &uri);
         assert!(tokens.len() >= 2, "sample must yield multiple tokens");
 
@@ -141,6 +154,8 @@ mod tests {
         ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
 
         let first = semantic_tokens_full(&ws, &uri);
+        // The second call hits the cached parse tree inside get_or_parse rather
+        // than re-parsing. The cache path must yield byte-identical tokens.
         let second = semantic_tokens_full(&ws, &uri);
 
         assert_eq!(
@@ -159,7 +174,10 @@ mod tests {
 
     #[test]
     fn semantic_tokens_full_scales_with_document_content() {
-        // Distinct URIs needed: re-opening the same URI serves the cached tree.
+        // The query is content-driven and stateless across URIs: a document
+        // containing the sample plus a second object must yield strictly more
+        // tokens than the sample alone. Distinct URIs are used because re-opening
+        // the same URI keeps version 0 and would serve the cached tree.
         let ws = Workspace::new();
         let small_uri = Url::parse("file:///test/small.al").expect("test");
         let big_uri = Url::parse("file:///test/big.al").expect("test");
@@ -216,6 +234,11 @@ mod tests {
         let syntax_tokens = crate::syntax::extract_semantic_tokens(&tree, &text);
         let syntax_first = syntax_tokens.first().expect("syntax layer yields a token");
 
+        // The wrapper must faithfully carry the token_type assigned by the
+        // syntax layer. The `codeunit` object keyword is classified by the
+        // syntax layer; whatever index it picks, the wrapper's first token must
+        // equal the syntax layer's first token type (no remapping in the
+        // boundary conversion).
         let tokens = semantic_tokens_full(&ws, &uri);
         let first = tokens.first().expect("wrapper yields a token");
         assert_eq!(
@@ -247,6 +270,13 @@ mod tests {
         let uri = Url::parse("file:///test/types.al").expect("test");
         ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
 
+        // The wrapper must carry the *distinct* token-type classifications the
+        // syntax layer assigns, not collapse everything to a single type (e.g.
+        // accidentally returning a constant or always 0). The sample mixes an
+        // object keyword, an identifier/object name, a procedure name and a
+        // string literal, so a correct pipeline yields at least two distinct
+        // `token_type` values. This guards against a regression that drops the
+        // per-token type during the boundary conversion.
         let tokens = semantic_tokens_full(&ws, &uri);
         assert!(!tokens.is_empty(), "sample must produce tokens");
 
@@ -266,6 +296,12 @@ mod tests {
         let uri = Url::parse("file:///test/reconstruct.al").expect("test");
         ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
 
+        // The wrapper's delta_line/delta_start values are only meaningful if a
+        // consumer can rebuild absolute positions from them. Walk the delta
+        // stream back into absolute (line, col) coordinates and confirm the
+        // sequence is non-decreasing by line and, within a line, strictly
+        // increasing by column. A wrapper that shuffled order, emitted absolute
+        // positions in the delta fields, or zeroed deltas would break this.
         let tokens = semantic_tokens_full(&ws, &uri);
         assert!(tokens.len() >= 2, "need multiple tokens to test ordering");
 
@@ -306,6 +342,13 @@ mod tests {
         let uri = Url::parse("file:///test/multiline.al").expect("test");
         ws.documents.open(uri.clone(), multi_line.to_string());
 
+        // A multi-line construct forces at least one token whose absolute line
+        // differs from its predecessor's, exercising the non-zero `delta_line`
+        // branch of the delta encoding end-to-end through the wrapper. We use a
+        // block comment, which the syntax layer classifies as a single token
+        // spanning two source lines around it; the token *after* it must carry a
+        // non-zero delta_line. This pins the cross-line path that single-line
+        // samples never reach.
         let tokens = semantic_tokens_full(&ws, &uri);
         assert!(!tokens.is_empty(), "multi-line doc must produce tokens");
         assert!(
@@ -316,8 +359,11 @@ mod tests {
 
     #[test]
     fn semantic_tokens_full_carries_nonzero_token_modifiers_through_wrapper() {
-        // Real AL parsed here happens to emit token_modifiers == 0; only the From
-        // conversion + serialization path can prove a non-zero modifier survives to the wire.
+        // Real AL parsed here happens to emit token_modifiers == 0, so the only
+        // place a non-zero modifier can be proven to survive the boundary is the
+        // `From` conversion plus serialization. This complements the field-map
+        // test by proving the *serialized* JSON (the daemon wire format) carries
+        // a non-zero modifier bitset rather than dropping it to 0.
         let src = crate::syntax::SemanticToken {
             delta_line: 0,
             delta_start: 0,
@@ -344,6 +390,7 @@ mod tests {
             token_modifiers: 0,
         };
         let json = serde_json::to_string(&tok).expect("serialize");
+        // The daemon JSON-RPC path depends on these exact camelCase keys.
         assert!(json.contains("\"deltaLine\":1"), "got: {json}");
         assert!(json.contains("\"deltaStart\":2"), "got: {json}");
         assert!(json.contains("\"length\":3"), "got: {json}");

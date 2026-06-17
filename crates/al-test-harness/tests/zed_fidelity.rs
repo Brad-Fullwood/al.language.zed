@@ -17,10 +17,6 @@
 
 use al_test_harness::*;
 
-// ---------------------------------------------------------------------------
-// Shared AL fixtures
-// ---------------------------------------------------------------------------
-
 const CODEUNIT_AL: &str = r#"codeunit 50100 "Zed Fidelity Test"
 {
     procedure HelloWorld()
@@ -93,11 +89,6 @@ const PAGE_AL: &str = r#"page 50100 "Zed Test Page"
     }
 }"#;
 
-// ---------------------------------------------------------------------------
-// 1. Initialize — server must advertise capabilities Zed relies on
-// ---------------------------------------------------------------------------
-
-/// Zed calls initialize and expects a capabilities object with specific fields.
 #[tokio::test]
 async fn zed_fidelity_initialize_returns_capabilities() {
     let dir = test_project_dir();
@@ -107,12 +98,6 @@ async fn zed_fidelity_initialize_returns_capabilities() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// 2. TextDocumentSyncKind — Zed uses Full sync
-// ---------------------------------------------------------------------------
-
-/// Zed sends the full document text on every didOpen and didChange.
-/// The server must accept this without error and produce diagnostics.
 #[tokio::test]
 async fn zed_fidelity_full_sync_open_triggers_diagnostics() {
     let dir = test_project_dir();
@@ -137,26 +122,18 @@ async fn zed_fidelity_full_sync_open_triggers_diagnostics() {
     client.shutdown().await;
 }
 
-/// Zed resends the full document text on every keystroke (didChange).
-/// The server must handle repeated full-text updates without panicking.
 #[tokio::test]
 async fn zed_fidelity_full_sync_repeated_changes() {
     let dir = test_project_dir();
     let mut client = LspClient::spawn(&dir).await.unwrap();
 
-    // Open once, then update twice — Zed always sends the complete new text.
     // After the first open, subsequent updates use didChange (not didOpen).
     client.open_file("src/zed_change.al", CODEUNIT_AL).await;
     client.change_file("src/zed_change.al", TABLE_AL).await;
     client.change_file("src/zed_change.al", PAGE_AL).await;
 
-    // Server must survive repeated sync without error
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// 3. Completion items — format Zed renders
-// ---------------------------------------------------------------------------
 
 /// Zed renders completion items with `label` and optionally `detail`.
 /// Both fields must be strings; `kind` must be a number in [1, 25].
@@ -188,7 +165,6 @@ async fn zed_fidelity_completion_items_have_label_and_kind() {
             "Every completion item must have a string 'label'. Got: {item}"
         );
 
-        // kind, if present, must be a number 1..=25
         if let Some(kind) = item.get("kind") {
             let k = kind.as_u64().unwrap_or(0);
             assert!(
@@ -219,7 +195,6 @@ async fn zed_fidelity_completion_no_snippet_required() {
     client.open_file("src/zed_no_snippet.al", code).await;
     let items = client.completion("src/zed_no_snippet.al", 4, 10).await;
 
-    // Items may contain plain text inserts — they must be usable without snippet support
     for item in &items {
         let format = item
             .get("insertTextFormat")
@@ -238,10 +213,6 @@ async fn zed_fidelity_completion_no_snippet_required() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// 4. Semantic tokens — Zed's expected legend
-// ---------------------------------------------------------------------------
 
 /// Zed requests `textDocument/semanticTokens/full` and decodes tokens using
 /// the server's legend. The server must return a `data` array of u32s in
@@ -284,8 +255,6 @@ async fn zed_fidelity_semantic_tokens_data_format() {
     client.shutdown().await;
 }
 
-/// Semantic tokens for a table must include token types for keywords like
-/// `table`, `fields`, `field`, `key`, and `procedure`.
 #[tokio::test]
 async fn zed_fidelity_semantic_tokens_cover_table_keywords() {
     let dir = test_project_dir();
@@ -303,10 +272,6 @@ async fn zed_fidelity_semantic_tokens_cover_table_keywords() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// 5. Document symbols — Zed outline panel
-// ---------------------------------------------------------------------------
 
 /// Zed's outline panel uses `DocumentSymbol` (hierarchical), not flat
 /// `SymbolInformation`. The response must be an array of objects with `name`,
@@ -368,8 +333,6 @@ async fn zed_fidelity_document_symbols_codeunit_children() {
     client.shutdown().await;
 }
 
-/// The outline for a table must include field symbols so Zed can show them
-/// in the outline panel.
 #[tokio::test]
 async fn zed_fidelity_document_symbols_table_fields() {
     let dir = test_project_dir();
@@ -386,10 +349,6 @@ async fn zed_fidelity_document_symbols_table_fields() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// 6. Diagnostics — format Zed expects
-// ---------------------------------------------------------------------------
 
 /// Diagnostics must use `publishDiagnostics` (push) with the correct shape:
 /// `uri`, `diagnostics` array, each item having `range`, `severity`, `message`.
@@ -448,7 +407,6 @@ async fn zed_fidelity_diagnostic_items_have_required_fields() {
         all_diags.extend(diags);
     }
 
-    // Validate structure of each diagnostic received (loop is a no-op if empty).
     for diag in &all_diags {
         assert!(
             diag.get("range").is_some(),
@@ -468,10 +426,6 @@ async fn zed_fidelity_diagnostic_items_have_required_fields() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// 7. Code actions — Zed-compatible edits
-// ---------------------------------------------------------------------------
 
 /// Zed's code action UI expects responses that are `Command` objects or
 /// `CodeAction` objects with an optional `edit` (WorkspaceEdit).
@@ -498,10 +452,6 @@ async fn zed_fidelity_code_actions_are_objects() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// 8. Hover — MarkupContent format Zed renders
-// ---------------------------------------------------------------------------
 
 /// Zed renders hover contents as Markdown. The server should return
 /// `MarkupContent` with `kind: "markdown"` (or `kind: "plaintext"` as
@@ -545,8 +495,6 @@ async fn zed_fidelity_hover_uses_markup_content() {
     client.shutdown().await;
 }
 
-/// Hover for a local variable must include its type so Zed's hover popup
-/// is informative.
 #[tokio::test]
 async fn zed_fidelity_hover_variable_includes_type() {
     let dir = test_project_dir();
@@ -599,10 +547,6 @@ async fn zed_fidelity_hover_includes_range() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// 9. Folding ranges — correct kinds
-// ---------------------------------------------------------------------------
-
 /// Zed renders folding gutters using `startLine`/`endLine`. The server must
 /// return these numeric fields. `kind` is optional but helps Zed distinguish
 /// comment folds from code folds.
@@ -634,7 +578,6 @@ async fn zed_fidelity_folding_ranges_have_line_fields() {
             start <= end,
             "startLine must be <= endLine. Got: {start} > {end}"
         );
-        // kind, if present, must be one of the LSP-specified strings
         if let Some(kind) = r.get("kind").and_then(|v| v.as_str()) {
             assert!(
                 matches!(kind, "comment" | "imports" | "region"),
@@ -665,10 +608,6 @@ async fn zed_fidelity_folding_covers_object_body() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// 10. Signature help — active parameter highlighting
-// ---------------------------------------------------------------------------
-
 /// Zed displays signature help while typing function arguments. The server must
 /// return `signatures` with at least one `SignatureInformation` containing
 /// `label` and optionally `parameters`. The `activeParameter` field tells Zed
@@ -691,7 +630,6 @@ async fn zed_fidelity_signature_help_shape() {
     let sig_help = client.signature_help("src/zed_sighelp.al", 4, 16).await;
 
     if let Some(result) = sig_help {
-        // If the server returns a result, it must have the correct shape
         let sigs = result.get("signatures").and_then(|v| v.as_array());
         assert!(
             sigs.is_some(),
@@ -703,7 +641,6 @@ async fn zed_fidelity_signature_help_shape() {
                 sig.get("label").and_then(|v| v.as_str()).is_some(),
                 "Each SignatureInformation must have string 'label'. Got: {sig}"
             );
-            // parameters, if present, must be an array
             if let Some(params) = sig.get("parameters") {
                 assert!(
                     params.is_array(),
@@ -712,7 +649,6 @@ async fn zed_fidelity_signature_help_shape() {
             }
         }
 
-        // activeSignature and activeParameter must be non-negative integers if present
         if let Some(active_sig) = result.get("activeSignature") {
             assert!(
                 active_sig.as_u64().is_some(),
@@ -731,10 +667,6 @@ async fn zed_fidelity_signature_help_shape() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// 11. Go-to-definition — Zed navigation
-// ---------------------------------------------------------------------------
-
 /// Zed sends `textDocument/definition` when the user Cmd-clicks a symbol.
 /// The response must be a `Location` or `Location[]` with `uri` and `range`.
 #[tokio::test]
@@ -748,7 +680,6 @@ async fn zed_fidelity_definition_response_shape() {
     let def = client.definition("src/zed_def.al", 6, 8).await;
 
     if let Some(result) = def {
-        // Can be a single Location object or an array
         let validate_location = |loc: &serde_json::Value| {
             assert!(
                 loc.get("uri").and_then(|v| v.as_str()).is_some(),
@@ -773,10 +704,6 @@ async fn zed_fidelity_definition_response_shape() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// 12. References — Zed find-all-references
-// ---------------------------------------------------------------------------
 
 /// Zed sends `textDocument/references` and expects a flat `Location[]`.
 /// Each location must have `uri` and `range`.
@@ -803,10 +730,6 @@ async fn zed_fidelity_references_shape() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// 13. Workspace symbols — Zed quick-open
-// ---------------------------------------------------------------------------
 
 /// Zed's workspace symbol search (Cmd+T) expects results with `name`, `kind`,
 /// and `location` fields.
@@ -838,10 +761,6 @@ async fn zed_fidelity_workspace_symbols_shape() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// 14. Multiple files — Zed opens many documents
-// ---------------------------------------------------------------------------
-
 /// Zed typically has multiple files open at once. The server must handle
 /// concurrent open documents without mixing up diagnostics.
 #[tokio::test]
@@ -853,7 +772,6 @@ async fn zed_fidelity_multiple_open_documents() {
     client.open_file("src/tbl.al", TABLE_AL).await;
     client.open_file("src/pg.al", PAGE_AL).await;
 
-    // Hover must work on each independently
     let h1 = client.hover("src/cu.al", 2, 18).await;
     let h2 = client.hover("src/tbl.al", 6, 15).await;
 
@@ -864,10 +782,6 @@ async fn zed_fidelity_multiple_open_documents() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// 15. Diagnostic range format — UTF-16 code units
-// ---------------------------------------------------------------------------
 
 /// Zed works with UTF-16 positions (same as LSP spec). Diagnostic ranges
 /// must use integer line/character values, not byte offsets.
@@ -911,10 +825,6 @@ async fn zed_fidelity_diagnostic_range_is_utf16() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// 16. Shutdown — clean exit
-// ---------------------------------------------------------------------------
-
 /// Zed sends `shutdown` then `exit`. The server must respond to `shutdown`
 /// with null and exit cleanly within a reasonable timeout.
 #[tokio::test]
@@ -926,5 +836,4 @@ async fn zed_fidelity_shutdown_is_clean() {
 
     // shutdown() sends the shutdown request + exit notification and waits up to 3s
     client.shutdown().await;
-    // If we reach here without hang or panic, the test passes
 }

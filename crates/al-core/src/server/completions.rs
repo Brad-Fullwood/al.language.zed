@@ -1,5 +1,3 @@
-//! Completion handler — thin wrapper over al-core::queries::completions.
-
 use tower_lsp::lsp_types::*;
 
 use super::AlServer;

@@ -286,6 +286,12 @@ fn cooldown_gate<T>(
 }
 
 impl SemanticBridge {
+    /// Initialize the .NET bridge with explicit paths.
+    ///
+    /// - `code_analysis`: path to `Microsoft.Dynamics.Nav.CodeAnalysis.dll`
+    /// - `version`: toolchain version string (used for cache keying)
+    ///
+    /// This loads the CLR in-process and initializes the bridge DLL.
     pub fn new(code_analysis: &Path, version: &str) -> Result<Self, SemanticError> {
         let (bridge_dll, runtime_config) = super::host::find_bridge_dll()?;
         let host = DotNetHost::new(&bridge_dll, &runtime_config, code_analysis)?;
@@ -468,6 +474,9 @@ impl SemanticBridge {
         Self::parse_response(result)
     }
 
+    /// Extract all built-in types and methods from CodeAnalysis.
+    ///
+    /// Checks disk cache first. On cache miss, calls the bridge and caches the result.
     pub async fn builtin_types(&self) -> Result<Vec<BuiltinType>, SemanticError> {
         if let Some(cached) = super::cache::read_builtins(&self.version) {
             return Ok(cached);
@@ -499,6 +508,10 @@ impl SemanticBridge {
         Ok(codes)
     }
 
+    /// Compile an AL project using alc (the Microsoft AL compiler).
+    ///
+    /// This invokes alc as a subprocess via the .NET bridge, parses the SARIF
+    /// error log for structured diagnostics, and returns the path to the .app file.
     pub async fn compile(
         &self,
         project: &Path,
@@ -787,6 +800,12 @@ mod tests {
 
     #[test]
     fn test_analyze_source_over_limit_rejected() {
+        // analyze() guards req.source with check_text_size before serialising
+        // the buffer into the CLR call — exactly as type_at/completions_at guard
+        // their `text`. Constructing a live SemanticBridge needs the CLR, so we
+        // assert the same guard the method applies to its `source` field. An
+        // oversized editor buffer (diagnostics.rs feeds unsanitised text here)
+        // must be rejected with InputTooLarge, not forwarded to the bridge.
         let req = AnalyzeRequest {
             file: std::path::PathBuf::from("/tmp/Over.al"),
             source: "a".repeat(MAX_TEXT_BYTES + 1),
@@ -831,6 +850,10 @@ mod tests {
 
     #[test]
     fn test_cooldown_gate_inside_window_short_circuits_without_probe() {
+        // A timeout fired 10s ago; cooldown is 60s. Still inside the window:
+        // short-circuit WITHOUT probing the lock. We prove the lock is never
+        // probed by holding it for the duration of the call — a probe would
+        // observe WouldBlock and produce the "hung call" message instead.
         let stamp = AtomicU64::new(1_000);
         let host = Mutex::new(());
         let _held = host.lock().unwrap();
@@ -889,6 +912,10 @@ mod tests {
 
     #[test]
     fn test_cooldown_gate_held_lock_recovers_after_release() {
+        // Full race-recovery sequence on one stamp+mutex pair:
+        //  1. cooldown elapsed but lock held -> extend (re-stamp to now)
+        //  2. still within the extended window -> short-circuit
+        //  3. lock released + window elapsed -> proceed and clear
         let stamp = AtomicU64::new(1_000);
         let host = Mutex::new(());
 
@@ -908,6 +935,9 @@ mod tests {
 
     #[test]
     fn test_seed_timeout_stamp_carries_nonzero_forward() {
+        // Restart path: a brand-new bridge starts at 0, but a hung call from
+        // the prior generation left a cooldown stamp. Seeding must carry that
+        // stamp forward so the new bridge's first call still hits the gate.
         let fresh = AtomicU64::new(0);
         seed_timeout_stamp(&fresh, 1_000);
         assert_eq!(fresh.load(Ordering::Relaxed), 1_000);
@@ -915,6 +945,9 @@ mod tests {
 
     #[test]
     fn test_seed_timeout_stamp_zero_is_noop() {
+        // A healthy old bridge (no recent timeout) must not clobber the new
+        // bridge's stamp — seeding 0 is a no-op so we never shorten/erase an
+        // active cooldown that may have been set in the meantime.
         let existing = AtomicU64::new(1_000);
         seed_timeout_stamp(&existing, 0);
         assert_eq!(existing.load(Ordering::Relaxed), 1_000);
@@ -922,6 +955,10 @@ mod tests {
 
     #[test]
     fn test_seed_timeout_stamp_only_advances_via_caller_guard() {
+        // The free function itself unconditionally stores a non-zero value;
+        // restart_bridge only calls it with the prior stamp, so the net effect
+        // is "carry forward the prior cooldown". Document that a non-zero seed
+        // overwrites whatever was there (the new bridge starts at 0 anyway).
         let new_bridge = AtomicU64::new(0);
         seed_timeout_stamp(&new_bridge, 1_234);
         assert_eq!(new_bridge.load(Ordering::Relaxed), 1_234);
@@ -957,6 +994,9 @@ mod tests {
 
     #[test]
     fn test_parse_response_missing_required_field_is_serialization_error() {
+        // `diagnostics` is a required (non-defaulted) field of CompileResult.
+        // Its absence is a decode failure that must surface as
+        // SerializationError, mirroring a malformed bridge response.
         let value = serde_json::json!({ "success": true, "appPath": null });
         assert!(matches!(
             SemanticBridge::parse_response::<CompileResult>(value),

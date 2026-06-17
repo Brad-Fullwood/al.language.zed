@@ -22,7 +22,6 @@ fn find_position(content: &str, needle: &str) -> Option<(u32, u32)> {
     None
 }
 
-/// Open common AL test project files into a client.
 async fn open_test_files(client: &mut LspClient) {
     let files = [
         "objects/API/ItemJournalStaging.Table.al",
@@ -43,15 +42,10 @@ async fn open_test_files(client: &mut LspClient) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Workspace initialization with real project
-// ---------------------------------------------------------------------------
-
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
 async fn test_fixture_project_initializes() {
     let client = LspClient::spawn(test_project_dir()).await.unwrap();
-    // Server should initialize without error, find app.json, scan .al files
     client.shutdown().await;
 }
 
@@ -66,7 +60,6 @@ async fn test_fixture_workspace_symbols_after_init() {
     // downloads can take 30s+) — relying on the symbol-poll barrier is
     // both faster and more correct.
 
-    // Search for objects that should be in the workspace
     let symbols = client.workspace_symbol("IJL").await;
     assert!(
         !symbols.is_empty(),
@@ -83,16 +76,11 @@ async fn test_fixture_workspace_symbols_after_init() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Open real files from the AL test project
-// ---------------------------------------------------------------------------
-
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
 async fn test_fixture_open_real_files() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // Read and open real files
     let files = [
         "objects/API/ItemJournalStaging.Table.al",
         "objects/API/ItemJournalAPI.Page.al",
@@ -110,7 +98,6 @@ async fn test_fixture_open_real_files() {
         }
     }
 
-    // Verify each file gets document symbols
     for file in &files {
         let path = test_project_dir().join(file);
         if path.exists() {
@@ -179,10 +166,8 @@ async fn test_fixture_hover_on_procedures() {
         .open_file("objects/Automation/IJLAPIHelper.Codeunit.al", &content)
         .await;
 
-    // Find the line with "procedure Precheck" and hover on it
     for (i, line) in content.lines().enumerate() {
         if line.contains("procedure Precheck(") {
-            // Hover on the procedure name
             let col = line.find("Precheck").unwrap() as u32;
             let hover = client
                 .hover(
@@ -248,7 +233,6 @@ async fn test_fixture_diagnostics_on_real_files() {
         .open_file("objects/Automation/IJLAPIHelper.Codeunit.al", &content)
         .await;
 
-    // Wait for diagnostics
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     let _diags = client.drain_diagnostics();
@@ -263,7 +247,6 @@ async fn test_fixture_diagnostics_on_real_files() {
 async fn test_fixture_cross_file_goto_definition() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // Open both codeunit and table
     let codeunit_path = test_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al");
     let table_path = test_project_dir().join("objects/API/ItemJournalStaging.Table.al");
 
@@ -284,10 +267,8 @@ async fn test_fixture_cross_file_goto_definition() {
         .open_file("objects/API/ItemJournalStaging.Table.al", &table_content)
         .await;
 
-    // The codeunit references "Item Journal Staging" - find where and try go-to-def
     for (i, line) in codeunit_content.lines().enumerate() {
         if line.contains("\"Item Journal Staging\"") {
-            // This is a reference to the table - try go-to-definition
             if let Some(pos) = line.find("\"Item Journal Staging\"") {
                 let _def = client
                     .definition(
@@ -486,7 +467,6 @@ async fn test_fixture_exact_completion_regressions() {
 async fn test_fixture_formatting_all_files() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // Format each file and verify no crashes
     let files = [
         "objects/API/ItemJournalStaging.Table.al",
         "objects/Automation/IJLAPIHelper.Codeunit.al",
@@ -709,11 +689,6 @@ async fn test_fixture_member_navigation_hover_and_completion_regressions() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Edge case tests — dataitem variables, cross-file definition, built-in types
-// ---------------------------------------------------------------------------
-
-/// Test that dataitem variables (report dataset) are resolved for hover/completion.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
 async fn test_fixture_dataitem_variable_resolution() {
@@ -724,10 +699,8 @@ async fn test_fixture_dataitem_variable_resolution() {
     let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
     // StagingRec is a dataitem variable, not a regular var
-    // Line 22: this.APIHelper.Precheck(StagingRec);
     let (staging_line, _staging_col) = find_position(&report, "APIHelper.Precheck(StagingRec")
         .expect("StagingRec usage in Precheck call");
-    // Position on StagingRec argument
     let staging_col = report
         .lines()
         .nth(staging_line as usize)
@@ -749,7 +722,6 @@ async fn test_fixture_dataitem_variable_resolution() {
         staging_hover_text
     );
 
-    // StagingRec. should provide completions (table fields)
     let staging_dot_line = report
         .lines()
         .enumerate()
@@ -787,7 +759,6 @@ async fn test_fixture_cross_file_procedure_definition() {
     let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
     let codeunit = std::fs::read_to_string(test_project_dir().join(codeunit_rel)).unwrap();
 
-    // Line: JournalData := Staging.GetJournalData();
     let (get_line, _) =
         find_position(&codeunit, "Staging.GetJournalData()").expect("GetJournalData usage");
     let get_col = codeunit
@@ -822,12 +793,10 @@ async fn test_fixture_multilevel_member_chain() {
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
     let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
-    // Line 69: this.IJLPostTask.Run();
     let (run_line, _) =
         find_position(&report, "this.IJLPostTask.Run()").expect("IJLPostTask.Run() usage");
     let run_line_text = report.lines().nth(run_line as usize).unwrap();
 
-    // Hover on IJLPostTask — should resolve to the codeunit variable
     let ijl_col = run_line_text
         .find("IJLPostTask")
         .expect("IJLPostTask in line") as u32;
@@ -843,14 +812,12 @@ async fn test_fixture_multilevel_member_chain() {
         ijl_text
     );
 
-    // Definition on IJLPostTask — should resolve to the var declaration (line 74)
     let ijl_def = client.definition(report_rel, run_line, ijl_col + 2).await;
     assert!(
         ijl_def.is_some(),
         "IJLPostTask should have a definition (var declaration)"
     );
     if let Some(ref def) = ijl_def {
-        // Should point to the var section in the report
         assert!(
             definition_uri(def)
                 .map(|uri| uri.ends_with("IJLProcessStaging.Report.al"))
@@ -860,7 +827,6 @@ async fn test_fixture_multilevel_member_chain() {
         );
     }
 
-    // Hover on Run — should resolve to a procedure or trigger
     let run_col = run_line_text.find("Run()").expect("Run() in line") as u32;
     let run_hover = client.hover(report_rel, run_line, run_col + 1).await;
     // Run() resolves through IJLPostTask (Codeunit "IJL Post Task") — may or may not have hover
@@ -884,19 +850,16 @@ async fn test_fixture_codeunit_scope_access() {
     let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
     let codeunit = std::fs::read_to_string(test_project_dir().join(codeunit_rel)).unwrap();
 
-    // Line 58: TaskScheduler.CreateTask(Codeunit::"IJL Post Task", ...)
     let (scope_line, _) =
         find_position(&codeunit, "Codeunit::\"IJL Post Task\"").expect("Codeunit:: scope access");
     let scope_line_text = codeunit.lines().nth(scope_line as usize).unwrap();
 
-    // Hover on the quoted "IJL Post Task" — should resolve to the codeunit
     let post_task_col = scope_line_text
         .find("\"IJL Post Task\"")
         .expect("quoted name") as u32;
     let post_task_hover = client
         .hover(codeunit_rel, scope_line, post_task_col + 2)
         .await;
-    // This should resolve the codeunit object
     if let Some(ref hover) = post_task_hover {
         let text = hover_content(hover).unwrap_or("");
         eprintln!("Codeunit::\"IJL Post Task\" hover: {}", text);
@@ -907,12 +870,10 @@ async fn test_fixture_codeunit_scope_access() {
         );
     }
 
-    // Definition on "IJL Post Task" — should go to the codeunit file
     let post_task_def = client
         .definition(codeunit_rel, scope_line, post_task_col + 2)
         .await;
     if let Some(ref def) = post_task_def {
-        // Should resolve to IJLPostTask.Codeunit.al
         assert!(
             definition_uri(def)
                 .map(|uri| uri.contains("IJLPostTask.Codeunit.al") || uri.contains("IJL"))
@@ -935,7 +896,6 @@ async fn test_fixture_builtin_system_field_hover() {
     let page_rel = "objects/API/ItemJournalAPI.Page.al";
     let page = std::fs::read_to_string(test_project_dir().join(page_rel)).unwrap();
 
-    // field(id; Rec.SystemId)
     let (sysid_line, _) = find_position(&page, "Rec.SystemId").expect("Rec.SystemId usage");
     let sysid_line_text = page.lines().nth(sysid_line as usize).unwrap();
     let sysid_col = sysid_line_text.find("SystemId").expect("SystemId in line") as u32;
@@ -966,7 +926,6 @@ async fn test_fixture_builtin_global_function_hover() {
     let post_task = std::fs::read_to_string(&post_task_path).unwrap();
     client.open_file(post_task_rel, &post_task).await;
 
-    // GetLastErrorText() — built-in global function
     let (gle_line, _) =
         find_position(&post_task, "GetLastErrorText()").expect("GetLastErrorText usage");
     let gle_line_text = post_task.lines().nth(gle_line as usize).unwrap();
@@ -1004,12 +963,10 @@ async fn test_fixture_builtin_type_method_hover() {
     let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
     let codeunit = std::fs::read_to_string(test_project_dir().join(codeunit_rel)).unwrap();
 
-    // TaskScheduler.CreateTask(...) — TaskScheduler is a built-in type
     let (ts_line, _) =
         find_position(&codeunit, "TaskScheduler.CreateTask").expect("TaskScheduler usage");
     let ts_line_text = codeunit.lines().nth(ts_line as usize).unwrap();
 
-    // Hover on TaskScheduler itself
     let ts_col = ts_line_text
         .find("TaskScheduler")
         .expect("TaskScheduler in line") as u32;
@@ -1026,7 +983,6 @@ async fn test_fixture_builtin_type_method_hover() {
         eprintln!("NOTE: TaskScheduler hover returned None — built-in type may not be loaded");
     }
 
-    // Hover on CreateTask
     let ct_col = ts_line_text.find("CreateTask").expect("CreateTask in line") as u32;
     let ct_hover = client.hover(codeunit_rel, ts_line, ct_col + 2).await;
     if let Some(ref hover) = ct_hover {
@@ -1064,7 +1020,6 @@ async fn test_fixture_report_semantic_tokens() {
     let data = semantic_token_data(&tokens.unwrap());
     let line_count = report.lines().count();
 
-    // A report with 87 lines of real AL code should produce at least 30 tokens
     assert!(
         data.len() >= 30,
         "Report file ({} lines) should have at least 30 semantic tokens. Got: {}",
@@ -1072,7 +1027,6 @@ async fn test_fixture_report_semantic_tokens() {
         data.len()
     );
 
-    // Verify token types include keywords, strings, and types at minimum
     let token_types: std::collections::HashSet<u32> = data.iter().map(|t| t[3]).collect();
     assert!(
         token_types.len() >= 3,
@@ -1093,7 +1047,6 @@ async fn test_fixture_builtin_method_hover() {
     let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
     let codeunit = std::fs::read_to_string(test_project_dir().join(codeunit_rel)).unwrap();
 
-    // Staging.FindSet(false)  — Record.FindSet is a built-in method
     let (findset_line, _) =
         find_position(&codeunit, "Staging.FindSet(false)").expect("FindSet usage");
     let findset_col = codeunit
@@ -1116,7 +1069,6 @@ async fn test_fixture_builtin_method_hover() {
         findset_text
     );
 
-    // JsonObj.ReadFrom(JournalData) — JsonObject.ReadFrom is a built-in method
     let (readfrom_line, _) =
         find_position(&codeunit, "JsonObj.ReadFrom(JournalData)").expect("ReadFrom usage");
     let readfrom_col = codeunit
@@ -1147,7 +1099,6 @@ async fn test_fixture_field_definition_navigates() {
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
     let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
-    // StagingRec.Status — Status is a field on the table
     let (status_line, _) =
         find_position(&report, "StagingRec.Status::Posting").expect("StagingRec.Status usage");
     let status_col = report
@@ -1161,7 +1112,6 @@ async fn test_fixture_field_definition_navigates() {
         .definition(report_rel, status_line, status_col + 2)
         .await;
     if let Some(ref def) = status_def {
-        // Should resolve to the table file where the Status field is declared
         assert!(
             definition_uri(def)
                 .map(|uri| uri.contains("ItemJournalStaging.Table.al"))
@@ -1185,7 +1135,6 @@ async fn test_fixture_enum_value_definition_navigates() {
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
     let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
-    // Status::Posting — Posting is an enum value
     let (posting_line, _) =
         find_position(&report, "Status::Posting").expect("Status::Posting usage");
     let posting_col = report
@@ -1198,7 +1147,6 @@ async fn test_fixture_enum_value_definition_navigates() {
         .definition(report_rel, posting_line, posting_col + 2)
         .await;
     if let Some(ref def) = posting_def {
-        // Should resolve to the enum file where Posting is declared
         let def_uri = definition_uri(def).unwrap_or("");
         assert!(
             def_uri.contains("IJLStatus.Enum.al") || def_uri.contains("Status"),
@@ -1210,11 +1158,6 @@ async fn test_fixture_enum_value_definition_navigates() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Signature help tests
-// ---------------------------------------------------------------------------
-
-/// Signature help for a local procedure call via `this.InsertJournalLine(...)`.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
 async fn test_fixture_signature_help_local_procedure() {
@@ -1224,7 +1167,6 @@ async fn test_fixture_signature_help_local_procedure() {
     let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
     let post_task = std::fs::read_to_string(test_project_dir().join(post_task_rel)).unwrap();
 
-    // Line 37: this.InsertJournalLine(StagingRec, ItemJnlLine) — local procedure with 2 params
     let (line, _) = find_position(
         &post_task,
         "this.InsertJournalLine(StagingRec, ItemJnlLine)",
@@ -1269,7 +1211,6 @@ async fn test_fixture_signature_help_builtin_method() {
     let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
     let post_task = std::fs::read_to_string(test_project_dir().join(post_task_rel)).unwrap();
 
-    // Line 29: StagingRec.SetRange(Status, StagingRec.Status::Posting)
     let (line, _) =
         find_position(&post_task, "StagingRec.SetRange(Status,").expect("SetRange call");
     let col = post_task
@@ -1300,7 +1241,6 @@ async fn test_fixture_signature_help_cross_file_workspace_procedure() {
     client.open_file(staging_list_rel, &staging_list).await;
     open_test_files(&mut client).await;
 
-    // Line 73: ProcessReport.SetAction(this.ActionType::Precheck)
     let (line, _) = find_position(
         &staging_list,
         "ProcessReport.SetAction(this.ActionType::Precheck)",
@@ -1323,11 +1263,6 @@ async fn test_fixture_signature_help_cross_file_workspace_procedure() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Inlay hints tests
-// ---------------------------------------------------------------------------
-
-/// Inlay hints should show parameter names at call sites for local procedures.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
 async fn test_fixture_inlay_hints_local_procedure_calls() {
@@ -1336,14 +1271,12 @@ async fn test_fixture_inlay_hints_local_procedure_calls() {
 
     let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
 
-    // Request inlay hints for the ProcessPostingQueue procedure body (lines 23-49)
     let hints = client.inlay_hints(post_task_rel, 23, 49).await;
     assert!(
         !hints.is_empty(),
         "Post task lines 23-49 should have inlay hints for procedure calls like InsertJournalLine, MarkStagingFailed"
     );
 
-    // Check that at least one hint is a parameter name
     let hint_labels: Vec<&str> = hints
         .iter()
         .filter_map(|h| h.get("label").and_then(|l| l.as_str()))
@@ -1358,11 +1291,6 @@ async fn test_fixture_inlay_hints_local_procedure_calls() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// References (find all references) tests
-// ---------------------------------------------------------------------------
-
-/// Find all references to GetJournalData across workspace files.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
 async fn test_fixture_references_cross_file() {
@@ -1376,7 +1304,6 @@ async fn test_fixture_references_cross_file() {
     let api_helper_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
     let api_helper = std::fs::read_to_string(test_project_dir().join(api_helper_rel)).unwrap();
 
-    // GetJournalData at api helper line 73
     let (line, _) = find_position(&api_helper, "Staging.GetJournalData()")
         .expect("GetJournalData usage in api helper");
     let col = api_helper
@@ -1401,10 +1328,6 @@ async fn test_fixture_references_cross_file() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Type reference definition tests
-// ---------------------------------------------------------------------------
-
 /// Go-to-definition on `"IJL Status"` in a table field type.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
@@ -1415,7 +1338,6 @@ async fn test_fixture_type_reference_definition() {
     let table_rel = "objects/API/ItemJournalStaging.Table.al";
     let table = std::fs::read_to_string(test_project_dir().join(table_rel)).unwrap();
 
-    // Line 29: field(4; Status; Enum "IJL Status")
     let (line, _) =
         find_position(&table, "Enum \"IJL Status\"").expect("IJL Status type reference");
     let col = table
@@ -1442,7 +1364,6 @@ async fn test_fixture_type_reference_definition() {
     client.shutdown().await;
 }
 
-/// Go-to-definition on `"IJL API Helper"` codeunit type reference.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
 async fn test_fixture_codeunit_type_reference_definition() {
@@ -1452,7 +1373,6 @@ async fn test_fixture_codeunit_type_reference_definition() {
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
     let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
-    // Line 73: APIHelper: Codeunit "IJL API Helper";
     let (line, _) = find_position(&report, "Codeunit \"IJL API Helper\"")
         .expect("IJL API Helper type reference");
     let col = report
@@ -1479,11 +1399,6 @@ async fn test_fixture_codeunit_type_reference_definition() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Completions: this. in page trigger and Rec.Status:: enum chain
-// ---------------------------------------------------------------------------
-
-/// Completions for `this.` in page trigger should show page variables.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
 async fn test_fixture_this_completions_in_page() {
@@ -1494,7 +1409,6 @@ async fn test_fixture_this_completions_in_page() {
     let staging_list = std::fs::read_to_string(test_project_dir().join(staging_list_rel)).unwrap();
     client.open_file(staging_list_rel, &staging_list).await;
 
-    // Line 154: this.ErrorMessageText := CopyStr(FullErrorMessage, 1, 250);
     let (line, _) = find_position(&staging_list, "this.ErrorMessageText := CopyStr")
         .expect("this.ErrorMessageText usage");
     let col = staging_list
@@ -1520,7 +1434,6 @@ async fn test_fixture_this_completions_in_page() {
     client.shutdown().await;
 }
 
-/// Completions for `Rec.Status::` in page trigger should show enum values.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
 async fn test_fixture_enum_completions_through_field_chain() {
@@ -1531,7 +1444,6 @@ async fn test_fixture_enum_completions_through_field_chain() {
     let staging_list = std::fs::read_to_string(test_project_dir().join(staging_list_rel)).unwrap();
     client.open_file(staging_list_rel, &staging_list).await;
 
-    // Line 159: Rec.Status::Pending:
     let (line, _) =
         find_position(&staging_list, "Rec.Status::Pending").expect("Rec.Status::Pending usage");
     let col = staging_list
@@ -1557,10 +1469,6 @@ async fn test_fixture_enum_completions_through_field_chain() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Hover on workspace procedures from call sites in other files
-// ---------------------------------------------------------------------------
-
 /// Hover on `SetAction` at the call site in the staging list page.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
@@ -1572,7 +1480,6 @@ async fn test_fixture_hover_cross_file_workspace_procedure() {
     let staging_list = std::fs::read_to_string(test_project_dir().join(staging_list_rel)).unwrap();
     client.open_file(staging_list_rel, &staging_list).await;
 
-    // Line 73: ProcessReport.SetAction(this.ActionType::Precheck)
     let (line, _) = find_position(
         &staging_list,
         "ProcessReport.SetAction(this.ActionType::Precheck)",
@@ -1599,7 +1506,6 @@ async fn test_fixture_hover_cross_file_workspace_procedure() {
     client.shutdown().await;
 }
 
-/// Hover on `GetJournalData` at call site — should show workspace procedure signature.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
 async fn test_fixture_hover_workspace_procedure_with_return_type() {
@@ -1609,7 +1515,6 @@ async fn test_fixture_hover_workspace_procedure_with_return_type() {
     let api_helper_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
     let api_helper = std::fs::read_to_string(test_project_dir().join(api_helper_rel)).unwrap();
 
-    // Line 73: JournalData := Staging.GetJournalData();
     let (line, _) =
         find_position(&api_helper, "Staging.GetJournalData()").expect("GetJournalData call");
     let col = api_helper
@@ -1633,11 +1538,6 @@ async fn test_fixture_hover_workspace_procedure_with_return_type() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Rename
-// ---------------------------------------------------------------------------
-
-/// Rename a local variable in the post task codeunit.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
 async fn test_fixture_rename_local_variable() {
@@ -1647,7 +1547,6 @@ async fn test_fixture_rename_local_variable() {
     let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
     let post_task = std::fs::read_to_string(test_project_dir().join(post_task_rel)).unwrap();
 
-    // Line 26: ItemJnlLine: Record "Item Journal Line" (local var in ProcessPostingQueue)
     let (line, _) = find_position(&post_task, "ItemJnlLine: Record \"Item Journal Line\"")
         .expect("ItemJnlLine declaration");
     let col = post_task
@@ -1684,10 +1583,6 @@ async fn test_fixture_rename_local_variable() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Diagnostics and code actions on real files
-// ---------------------------------------------------------------------------
-
 /// Verify code actions don't crash on real files with all lint rules active.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
@@ -1707,10 +1602,6 @@ async fn test_fixture_code_actions_no_crash() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Audit regression tests — targeted scenarios from systematic CLI audit
-// ---------------------------------------------------------------------------
-
 /// 2-level chain hover: this.APIHelper.Precheck → should show procedure sig.
 #[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
@@ -1721,12 +1612,10 @@ async fn test_fixture_audit_two_level_member_chain_hover() {
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
     let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
-    // Line 22: this.APIHelper.Precheck(StagingRec)
     let (line, _) =
         find_position(&report, "this.APIHelper.Precheck(StagingRec)").expect("Precheck usage");
     let line_text = report.lines().nth(line as usize).unwrap();
 
-    // Hover on Precheck (2-level: this.APIHelper -> Codeunit "IJL API Helper" -> Precheck)
     let precheck_col = line_text.find("Precheck").expect("Precheck in line") as u32;
     let hover = client.hover(report_rel, line, precheck_col + 2).await;
     assert!(
@@ -1753,12 +1642,10 @@ async fn test_fixture_audit_quoted_field_hover() {
     let table_rel = "objects/API/ItemJournalStaging.Table.al";
     let table = std::fs::read_to_string(test_project_dir().join(table_rel)).unwrap();
 
-    // Line 137: if not Rec."Journal Data".HasValue() then
     let (line, _) =
         find_position(&table, "Rec.\"Journal Data\".HasValue").expect("Journal Data usage");
     let line_text = table.lines().nth(line as usize).unwrap();
 
-    // Hover on "Journal Data" (quoted field on Rec)
     let field_col = line_text
         .find("\"Journal Data\"")
         .expect("quoted field in line") as u32;
@@ -1787,12 +1674,10 @@ async fn test_fixture_audit_dataitem_field_hover() {
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
     let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
-    // Line 27: ModifyAll(Status, StagingRec.Status::Posting, true)
     let (line, _) =
         find_position(&report, "StagingRec.Status::Posting").expect("StagingRec.Status usage");
     let line_text = report.lines().nth(line as usize).unwrap();
 
-    // Hover on Status (the field, between . and ::)
     let status_col = line_text
         .find("StagingRec.Status::")
         .expect("StagingRec.Status:: in line") as u32

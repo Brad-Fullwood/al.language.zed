@@ -286,6 +286,7 @@ pub(crate) async fn initialize_workspace(
                     tokio::task::yield_now().await;
                 }
                 if let Ok(uri) = url::Url::from_file_path(&path) {
+                    // Use cached parse tree from file_index instead of re-parsing.
                     if let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) {
                         let source = text.as_bytes();
                         let errors = crate::syntax::AlParser::errors_from_tree(&tree);
@@ -373,6 +374,8 @@ fn log_source_availability(packages: &[PathBuf]) {
     }
 }
 
+/// Prompt the user to choose a download source via `window/showMessageRequest`.
+///
 /// Returns `Some(source)` if the user picks an option, `None` if dismissed.
 async fn prompt_download_symbols(
     client: &tower_lsp::Client,
@@ -432,6 +435,8 @@ async fn prompt_download_symbols(
     }
 }
 
+/// Download symbols from a running BC instance defined in launch.json.
+///
 /// Uses the first available server config. Returns downloaded .app file paths.
 async fn download_symbols_from_server(
     project: &crate::project::AlProject,
@@ -517,6 +522,8 @@ async fn download_symbols_from_server(
     downloaded
 }
 
+/// Convert the global NuGet feed list to the symbol-loader type.
+///
 /// Called from both the LSP workspace initializer and the daemon download dispatcher
 /// so the mapping is defined exactly once.
 pub(crate) fn map_nuget_feeds(
@@ -551,6 +558,9 @@ pub(crate) fn effective_nuget_feeds(
     feeds
 }
 
+/// Download symbol packages from NuGet into the project's .alpackages directory.
+///
+/// Returns paths to successfully downloaded .app files.
 async fn download_packages_nuget(
     workspace: &crate::workspace::Workspace,
     deps: &[crate::project::AppDependency],
@@ -599,6 +609,9 @@ async fn download_packages_nuget(
     downloaded
 }
 
+/// Handle the `al.downloadSymbols*` commands.
+///
+/// Downloads symbols from the specified source and reloads the symbol index.
 pub(crate) async fn download_symbols_command(server: &AlServer, source: DownloadSource) {
     let project = server.workspace.project.read().await.clone();
     let Some(project) = project else {
@@ -654,6 +667,7 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         return;
     }
 
+    // Reload symbol index (with cache for fast subsequent starts)
     let cache = crate::symbols::cache::SymbolCache::default_location();
     let loaded = server
         .workspace
@@ -683,6 +697,8 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         .await;
 }
 
+/// Handle workspace/symbol request.
+///
 /// Package symbols (from .app NuGet packages) are intentionally excluded — like
 /// VS Code, this feature returns only the user's project files. Package symbols
 /// are accessible via completion, hover, and go-to-definition.
@@ -698,6 +714,7 @@ pub(crate) fn handle_workspace_symbol(
 
     let mut results = Vec::new();
 
+    // Top-level objects (table, page, codeunit, etc.)
     for r in ws_results {
         if let Some(file_text_entry) = server.workspace.file_index.files.get(&r.file_path) {
             if let Ok(file_uri) = Url::from_file_path(&r.file_path) {
@@ -720,6 +737,7 @@ pub(crate) fn handle_workspace_symbol(
         }
     }
 
+    // Child symbols: procedures, triggers, events.
     let remaining = MAX_LSP_SYMBOLS.saturating_sub(results.len());
     if remaining > 0 {
         let child_results =
@@ -753,6 +771,7 @@ pub(crate) fn handle_workspace_symbol(
     }
 }
 
+/// Check whether the settings prompt has already been shown (persistent sentinel).
 fn settings_prompt_shown() -> bool {
     sentinel_path().map(|p| p.exists()).unwrap_or(false)
 }
@@ -788,6 +807,7 @@ fn mark_settings_prompt_shown() {
     }
 }
 
+/// Path to the sentinel file that records the popup was shown.
 fn sentinel_path() -> Option<PathBuf> {
     let data_dir = std::env::var("XDG_DATA_HOME")
         .ok()
@@ -800,6 +820,8 @@ fn sentinel_path() -> Option<PathBuf> {
     Some(data_dir.join("al-lsp").join(".settings-prompt-shown"))
 }
 
+/// Check whether Zed's settings.json already has correct AL settings.
+///
 /// Returns true only if both `lsp.al-lsp` exists AND
 /// `languages.AL.language_servers` contains "al-lsp". This prevents the
 /// prompt from being skipped when settings are present but broken (e.g.
@@ -828,6 +850,10 @@ fn zed_has_al_settings() -> bool {
     has_lsp_section && has_lang_server
 }
 
+/// Apply recommended AL settings to Zed's settings.json.
+///
+/// Reads the current settings, merges recommended AL-specific settings,
+/// and writes back. Creates the file (and parent directories) if needed.
 pub(crate) fn apply_recommended_settings() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let settings_path = zed_settings_path().ok_or("Cannot determine Zed settings path")?;
 
@@ -872,6 +898,7 @@ fn zed_settings_path() -> Option<PathBuf> {
     }
 }
 
+/// Strip JSONC comments (`//` and `/* */`) and parse as JSON.
 fn strip_jsonc_comments_and_parse(
     input: &str,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
@@ -904,21 +931,23 @@ fn strip_jsonc_comments_and_parse(
             }
             '/' => {
                 if chars.peek() == Some(&'/') {
+                    // Line comment — skip to end of line (handle both LF and CRLF).
                     for c2 in chars.by_ref() {
                         if c2 == '\n' || c2 == '\r' {
                             result.push('\n');
                             if c2 == '\r' && chars.peek() == Some(&'\n') {
+                                // Consume trailing \n after \r (CRLF)
                                 chars.next();
                             }
                             break;
                         }
                     }
                 } else if chars.peek() == Some(&'*') {
-                    chars.next();
+                    chars.next(); // consume `*`
                     loop {
                         match chars.next() {
                             Some('*') if chars.peek() == Some(&'/') => {
-                                chars.next();
+                                chars.next(); // consume `/`
                                 break;
                             }
                             Some('\n') => result.push('\n'), // preserve line numbers

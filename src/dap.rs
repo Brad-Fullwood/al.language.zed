@@ -80,7 +80,6 @@ pub fn build_dap_binary(
     })
 }
 
-/// Determine the DAP request kind (launch or attach) from config.
 pub fn dap_request_kind(config: Value) -> zed::Result<zed::StartDebuggingRequestArgumentsRequest> {
     let request = config
         .get("request")

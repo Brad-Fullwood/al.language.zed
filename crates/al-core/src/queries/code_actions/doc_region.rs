@@ -1,5 +1,3 @@
-//! Doc-comment and region source actions.
-
 use url::Url;
 
 use super::{detect_indent, single_edit_ws};
@@ -163,7 +161,6 @@ mod tests {
                 character: 0,
             },
         };
-        // Must not panic.
         let action = source_action_add_region(&uri, al_code, range);
         assert!(action.is_some(), "Region action should still be produced");
     }

@@ -5,10 +5,6 @@
 
 use al_test_harness::*;
 
-// ---------------------------------------------------------------------------
-// Real-world AL code from the AL test project
-// ---------------------------------------------------------------------------
-
 const TABLE_AL: &str = r#"table 50200 "Item Journal Staging"
 {
     Extensible = false;
@@ -314,10 +310,6 @@ const PERMISSIONSET_AL: &str = r#"permissionset 50200 "IJL API"
                   page "Item Journal API" = X;
 }"#;
 
-// ---------------------------------------------------------------------------
-// Parse and semantic tokens: does it parse complex AL correctly?
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_real_table_parses_and_has_tokens() {
     let project_dir = test_project_dir();
@@ -390,10 +382,6 @@ async fn test_real_permissionset_parses() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Document symbols: do we extract everything from complex objects?
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_table_document_symbols() {
     let project_dir = test_project_dir();
@@ -404,14 +392,12 @@ async fn test_table_document_symbols() {
     let symbols = client.document_symbols("objects/table.al").await;
     let names = symbol_names(&symbols);
 
-    // Should find the table itself
     assert!(
         names.iter().any(|n| n.contains("Item Journal Staging")),
         "Should find table name. Got: {:?}",
         names
     );
 
-    // Should find procedures
     assert!(
         names
             .iter()
@@ -447,7 +433,6 @@ async fn test_codeunit_document_symbols() {
     let symbols = client.document_symbols("objects/codeunit.al").await;
     let names = symbol_names(&symbols);
 
-    // Should find all procedures
     for expected in &[
         "Precheck",
         "PrecheckRecord",
@@ -487,10 +472,6 @@ async fn test_enum_document_symbols() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Hover: does it work on various elements?
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_hover_on_procedure_in_codeunit() {
@@ -567,24 +548,17 @@ async fn test_hover_on_parameter() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Go-to-definition: cross-procedure in same file
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_goto_definition_cross_procedure_same_file() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
-    // Open two files so workspace has multiple objects
     client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
     client.open_file("objects/table.al", TABLE_AL).await;
 
     // In Precheck, "this.PrecheckRecord" calls a local procedure
     // "PrecheckRecord" on line 11 (in repeat block)
-    // The identifier "PrecheckRecord" should go to its declaration
     let def = client.definition("objects/codeunit.al", 11, 23).await;
-    // PrecheckRecord is a local procedure in the same file, should find it
     // (this depends on find_variable_references finding cross-procedure refs)
     assert!(
         def.is_some(),
@@ -593,10 +567,6 @@ async fn test_goto_definition_cross_procedure_same_file() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Go-to-definition: cross-file workspace
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_goto_definition_cross_file() {
@@ -610,8 +580,6 @@ async fn test_goto_definition_cross_file() {
     // "Item Journal Staging" is referenced in the codeunit
     // On line 5: procedure Precheck(var Staging: Record "Item Journal Staging")
     // The quoted identifier "Item Journal Staging" should ideally resolve to the table
-
-    // For now, verify workspace has all objects indexed
     let symbols = client.workspace_symbol("Item Journal Staging").await;
     assert!(
         !symbols.is_empty(),
@@ -620,10 +588,6 @@ async fn test_goto_definition_cross_file() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// References: find all references to a variable
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_references_staging_variable() {
@@ -645,16 +609,11 @@ async fn test_references_staging_variable() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Completions: do they work at various positions?
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_completion_after_dot() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
-    // Code with a member access
     let code = r#"codeunit 50100 "Test"
 {
     procedure DoWork()
@@ -694,7 +653,6 @@ async fn test_completion_at_type_position() {
     // After "x: " on line 4, col 11
     let completions = client.completion("objects/test.al", 4, 11).await;
     let labels = completion_labels(&completions);
-    // Should have type keywords like Integer, Text, Record, etc.
     assert!(
         labels.iter().any(|l| l.eq_ignore_ascii_case("Integer")
             || l.eq_ignore_ascii_case("Text")
@@ -706,16 +664,11 @@ async fn test_completion_at_type_position() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Diagnostics: syntax errors and lint rules
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_diagnostics_syntax_error() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
-    // Code with intentional syntax error (missing semicolon)
     let code = r#"codeunit 50100 "Test"
 {
     procedure DoWork()
@@ -771,16 +724,11 @@ async fn test_diagnostics_lint_empty_begin_end() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Formatting: does it produce valid edits?
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_formatting_real_codeunit() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
-    // Poorly indented version of real code
     let code = r#"codeunit 50200 "IJL API Helper"
 {
 procedure Precheck(var Staging: Record "Item Journal Staging")
@@ -813,15 +761,10 @@ async fn test_formatting_idempotent() {
     client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
 
     let _edits = client.format("objects/codeunit.al").await;
-    // Either no edits (already formatted) or edits that produce the same result
     // This test mainly verifies it doesn't crash on complex real code
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Folding: does it work on complex structures?
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_folding_real_table() {
@@ -857,10 +800,6 @@ async fn test_folding_real_codeunit() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Rename: cross-references within the file
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_rename_parameter_in_codeunit() {
     let project_dir = test_project_dir();
@@ -868,7 +807,6 @@ async fn test_rename_parameter_in_codeunit() {
 
     client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
 
-    // Rename "Staging" parameter in Precheck procedure
     // Line 5: procedure Precheck(var Staging: Record "Item Journal Staging")
     let edit = client
         .rename("objects/codeunit.al", 5, 27, "StagingRec")
@@ -878,7 +816,6 @@ async fn test_rename_parameter_in_codeunit() {
         "Should produce rename edit for Staging parameter"
     );
 
-    // Check that the edit has changes
     let edit_val = edit.unwrap();
     let changes = edit_val.get("changes");
     assert!(
@@ -889,10 +826,6 @@ async fn test_rename_parameter_in_codeunit() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Signature help: does it work on procedure calls?
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_signature_help_on_procedure_call() {
@@ -920,10 +853,6 @@ async fn test_signature_help_on_procedure_call() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Inlay hints: parameter names at call sites
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_inlay_hints_on_procedure_call() {
@@ -957,10 +886,6 @@ async fn test_inlay_hints_on_procedure_call() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Code actions: quick fixes
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_code_action_empty_begin_end() {
     let project_dir = test_project_dir();
@@ -987,10 +912,6 @@ async fn test_code_action_empty_begin_end() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Multi-file workspace: cross-file interactions
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_multi_file_workspace_symbols() {
     let project_dir = test_project_dir();
@@ -1001,7 +922,6 @@ async fn test_multi_file_workspace_symbols() {
     client.open_file("objects/table.al", TABLE_AL).await;
     client.open_file("objects/enum.al", ENUM_AL).await;
 
-    // Workspace symbol search should find all objects
     let symbols = client.workspace_symbol("IJL").await;
     assert!(
         symbols.len() >= 2,
@@ -1032,10 +952,6 @@ async fn test_multi_file_references() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Edge cases
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_hover_on_keyword() {
@@ -1073,7 +989,6 @@ async fn test_empty_file() {
     client.open_file("objects/empty.al", "").await;
 
     let _symbols = client.document_symbols("objects/empty.al").await;
-    // Should handle empty file without crashing
     let _tokens = client.semantic_tokens("objects/empty.al").await;
     let _ranges = client.folding_ranges("objects/empty.al").await;
 
@@ -1093,7 +1008,6 @@ async fn test_incomplete_code() {
 
     client.open_file("objects/incomplete.al", code).await;
 
-    // Should handle gracefully - no crash
     let _symbols = client.document_symbols("objects/incomplete.al").await;
     let _tokens = client.semantic_tokens("objects/incomplete.al").await;
     let _hover = client.hover("objects/incomplete.al", 2, 10).await;
@@ -1106,7 +1020,6 @@ async fn test_large_file_performance() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
-    // Generate a large codeunit with many procedures
     let mut code = String::from("codeunit 50100 \"Large Test\"\n{\n");
     for i in 0..50 {
         code.push_str(&format!(
@@ -1118,7 +1031,6 @@ async fn test_large_file_performance() {
 
     client.open_file("objects/large.al", &code).await;
 
-    // All operations should complete within timeout
     let symbols = client.document_symbols("objects/large.al").await;
     let names = symbol_names(&symbols);
     assert!(

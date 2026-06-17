@@ -116,6 +116,8 @@ impl SnapshotRecorder {
             let bp_id = if seq_index < bp_sequence.len() {
                 let id = bp_sequence[seq_index];
                 let iter = *iterations.get(&id).unwrap_or(&0);
+                if iter == 0 {
+                }
                 id
             } else {
                 // More Break events than expected breakpoints — reuse the last.

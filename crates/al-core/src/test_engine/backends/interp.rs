@@ -96,7 +96,6 @@ impl TestSession for InterpMode {
 
         let mut all_summaries: Vec<TestCodeunitResult> = Vec::new();
 
-        // Build the per-codeunit work list.
         let work: Vec<(i32, String, Vec<Option<String>>)> = grouped
             .into_iter()
             .map(|(codeunit_id, methods)| {
@@ -130,7 +129,7 @@ impl TestSession for InterpMode {
             while let Some(join_result) = join_set.join_next().await {
                 let events = match join_result {
                     Ok(inner) => inner,
-                    Err(_) => continue, // JoinSet join error
+                    Err(_) => continue,
                 };
                 for event in events {
                     if let TestEvent::SuiteComplete { ref summary, .. } = event {
@@ -166,7 +165,6 @@ impl TestSession for InterpMode {
             }
         }
 
-        // Final tally.
         let total: usize = all_summaries.iter().map(|s| s.total).sum();
         let passed: usize = all_summaries.iter().map(|s| s.passed).sum();
         let failed: usize = all_summaries.iter().map(|s| s.failed).sum();
@@ -197,21 +195,17 @@ fn run_codeunit_interp(
     let mut events = Vec::new();
     let mut method_results: Vec<TestMethodResult> = Vec::new();
 
-    // Find the codeunit in the discovered list.
     let cu = codeunits.iter().find(|c| c.id == codeunit_id);
 
     let proc_list: Vec<String> = if methods.iter().any(|m| m.is_some()) {
-        // Specific methods requested.
         methods.iter().filter_map(|m| m.clone()).collect()
     } else if let Some(cu) = cu {
-        // All methods in the codeunit.
         cu.tests.iter().map(|t| t.name.clone()).collect()
     } else {
         vec![]
     };
 
     if proc_list.is_empty() {
-        // No procedures found — emit an empty SuiteComplete.
         events.push(TestEvent::SuiteComplete {
             codeunit_id,
             summary: TestCodeunitResult::from_methods(
@@ -269,9 +263,6 @@ fn run_codeunit_interp(
     events
 }
 
-/// Run a single procedure body through the interpreter and return the Eval.
-///
-/// Returns `Eval::Error` if the procedure cannot be found or parsed.
 fn run_procedure_interp(
     workspace: &Workspace,
     cu: Option<&TestCodeunit>,
@@ -302,7 +293,6 @@ fn run_procedure_interp(
     let source = text.as_bytes();
     let root = tree.root_node();
 
-    // Find the procedure body.
     let body = match find_procedure_body(root, source, proc_name) {
         Some(b) => b,
         None => {
@@ -314,7 +304,6 @@ fn run_procedure_interp(
         }
     };
 
-    // Set up scope and run.
     let mut stack = ScopeStack::new();
     let frame = CallFrame::new(codeunit_name, proc_name);
     stack.push(frame);
@@ -345,11 +334,9 @@ fn find_procedure_body<'a>(root: Node<'a>, source: &[u8], proc_name: &str) -> Op
     let mut stack_nodes = vec![root];
     while let Some(current) = stack_nodes.pop() {
         if current.kind() == "procedure_declaration" {
-            // Look for a name child.
             if let Some(name_node) = current.child_by_field_name("name") {
                 let name = name_node.utf8_text(source).unwrap_or("").trim_matches('"');
                 if name.eq_ignore_ascii_case(proc_name) {
-                    // Found — return the begin_end_block body.
                     let mut cursor = current.walk();
                     for child in current.named_children(&mut cursor) {
                         if child.kind() == "begin_end_block" {
@@ -358,13 +345,11 @@ fn find_procedure_body<'a>(root: Node<'a>, source: &[u8], proc_name: &str) -> Op
                     }
                 }
             }
-            // Also try scanning children for a name identifier.
             let mut cursor = current.walk();
             for child in current.named_children(&mut cursor) {
                 if matches!(child.kind(), "identifier" | "quoted_identifier") {
                     let name = child.utf8_text(source).unwrap_or("").trim_matches('"');
                     if name.eq_ignore_ascii_case(proc_name) {
-                        // Found — return the begin_end_block body.
                         let mut c2 = current.walk();
                         for child2 in current.named_children(&mut c2) {
                             if child2.kind() == "begin_end_block" {
@@ -432,8 +417,6 @@ mod tests {
         events
     }
 
-    // ── Empty test list → only SessionComplete ────────────────────────────────
-
     #[tokio::test]
     async fn empty_tests_emits_only_session_complete() {
         let session = make_session();
@@ -460,12 +443,8 @@ mod tests {
         }
     }
 
-    // ── Unknown codeunit → Fail result, session still completes ──────────────
-
     #[tokio::test]
     async fn unknown_codeunit_emits_fail_and_session_complete() {
-        // Negative: TestId for a codeunit that doesn't exist → CaseResult(Fail),
-        // SuiteComplete, SessionComplete — no panic.
         let session = make_session();
         let tests = vec![TestId {
             codeunit_id: 99999,
@@ -488,12 +467,8 @@ mod tests {
         );
     }
 
-    // ── Library-Assert fixture: synthetic AL source, Assert.AreEqual passes ──
-
     #[tokio::test]
     async fn library_assert_fixture_passes_in_interpreter() {
-        // We wire up a fresh workspace, inject a synthetic AL file into the
-        // file_index, and verify the interpreter runs it correctly.
         let source = r#"codeunit 50101 "My Assert Tests"
 {
     Subtype = Test;
@@ -506,7 +481,6 @@ mod tests {
 }
 "#;
         let workspace = Workspace::new();
-        // Register the source in the file_index so discover_tests can find it.
         let path = std::path::PathBuf::from("/tmp/TestAssertFixture.al");
         workspace
             .file_index
@@ -530,7 +504,6 @@ mod tests {
             events.push(evt);
         }
 
-        // Find the CaseResult.
         let case_result = events
             .iter()
             .find(|e| matches!(e, TestEvent::CaseResult { .. }));
@@ -556,8 +529,6 @@ mod tests {
             Some(other) => panic!("unexpected event: {:?}", other),
         }
     }
-
-    // ── Duplicate TestIds are deduplicated (no inflated counts) ──────────────
 
     #[tokio::test]
     async fn duplicate_test_ids_deduplicated() {
@@ -590,7 +561,6 @@ mod tests {
 
         let events = collect_events(&session, tests, RunOptions::default()).await;
 
-        // Exactly one CaseResult for the procedure (not two).
         let case_results = events
             .iter()
             .filter(|e| matches!(e, TestEvent::CaseResult { .. }))
@@ -600,7 +570,6 @@ mod tests {
             "duplicate TestId must yield one CaseResult, got {events:?}"
         );
 
-        // SessionComplete must report total=1 (not doubled).
         match events.last() {
             Some(TestEvent::SessionComplete { total, .. }) => {
                 assert_eq!(*total, 1, "total must not be inflated by the duplicate");
@@ -608,8 +577,6 @@ mod tests {
             other => panic!("expected SessionComplete last, got {other:?}"),
         }
     }
-
-    // ── Failing Assert.AreEqual emits CaseResult(Fail) with "expected" ───────
 
     #[tokio::test]
     async fn failing_assert_are_equal_emits_fail_with_expected_in_error() {

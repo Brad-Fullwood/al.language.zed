@@ -1528,7 +1528,7 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
             "tenant": "default",
             "usePublicURLFromServer": true,
             "useMcpServerForDebugging": true,
-            "build": {"command": "al", "args": ["compile"]}
+            "build": {"command": "al-explorer", "args": ["compile"]}
         },
         {
             "adapter": "al",
@@ -1545,7 +1545,7 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
             "longRunningSqlStatementsThreshold": 500,
             "numberOfSqlStatements": 10,
             "useMcpServerForDebugging": true,
-            "build": {"command": "al", "args": ["compile"]}
+            "build": {"command": "al-explorer", "args": ["compile"]}
         },
         {
             "adapter": "al",

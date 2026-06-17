@@ -7,23 +7,13 @@ use al_core::test_engine::result::{
 };
 use al_core::workspace::Workspace;
 
-// --------------------------------------------------------------------------
-// 1. Canonical home: types live in test_engine::result
-//    (no back-compat re-export — test_runner does NOT re-export them)
-// --------------------------------------------------------------------------
-
 #[test]
 fn test_types_only_at_canonical_path() {
-    // Compile-time check: importing the four types from test_engine::result works.
     let _ = std::mem::size_of::<TestStatus>();
     let _ = std::mem::size_of::<TestMethodResult>();
     let _ = std::mem::size_of::<TestCodeunitResult>();
     let _ = std::any::TypeId::of::<TestRunnerError>();
 }
-
-// --------------------------------------------------------------------------
-// 2. TestStatus variants
-// --------------------------------------------------------------------------
 
 #[test]
 fn test_status_variants_exist() {
@@ -31,10 +21,6 @@ fn test_status_variants_exist() {
     let _fail = TestStatus::Fail;
     let _skip = TestStatus::Skip;
 }
-
-// --------------------------------------------------------------------------
-// 3. TestMethodResult serde round-trip (camelCase wire format)
-// --------------------------------------------------------------------------
 
 #[test]
 fn test_method_result_serde_round_trip() {
@@ -46,7 +32,6 @@ fn test_method_result_serde_round_trip() {
     };
     let json = serde_json::to_string(&original).expect("serialize");
 
-    // Wire names must be camelCase
     assert!(
         json.contains("\"durationMs\""),
         "expected camelCase durationMs, got: {json}"
@@ -59,10 +44,6 @@ fn test_method_result_serde_round_trip() {
     assert_eq!(roundtripped.error.as_deref(), Some("Assert failed"));
     assert_eq!(roundtripped.duration_ms, Some(42));
 }
-
-// --------------------------------------------------------------------------
-// 4. TestCodeunitResult::from_methods summary computation
-// --------------------------------------------------------------------------
 
 #[test]
 fn test_codeunit_result_from_methods_computes_summary() {
@@ -95,13 +76,8 @@ fn test_codeunit_result_from_methods_computes_summary() {
     assert_eq!(result.id, 50100);
 }
 
-// --------------------------------------------------------------------------
-// 5. Negative: TestStatus serde rejects unknown variant
-// --------------------------------------------------------------------------
-
 #[test]
 fn test_status_unknown_variant_is_err() {
-    // "unknown" is not a defined TestStatus variant — deserialization must fail.
     let result = serde_json::from_str::<TestStatus>("\"unknown\"");
     assert!(
         result.is_err(),
@@ -109,10 +85,6 @@ fn test_status_unknown_variant_is_err() {
         result.ok()
     );
 }
-
-// --------------------------------------------------------------------------
-// 6. Workspace::test_results field exists and starts as None
-// --------------------------------------------------------------------------
 
 #[test]
 fn test_workspace_test_results_field_is_none_on_new() {

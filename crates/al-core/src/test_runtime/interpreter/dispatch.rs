@@ -316,7 +316,6 @@ fn dispatch_workspace_procedure(
     ))
 }
 
-/// A parsed parameter declaration from a `procedure_declaration` node.
 #[derive(Debug, Clone)]
 struct ParamDecl {
     name: String,

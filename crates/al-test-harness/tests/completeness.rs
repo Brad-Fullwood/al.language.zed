@@ -14,10 +14,6 @@
 
 use al_test_harness::*;
 
-// ---------------------------------------------------------------------------
-// AL code for cross-file and trigger tests
-// ---------------------------------------------------------------------------
-
 const CALLER_CU: &str = r#"codeunit 50100 "Caller CU"
 {
     procedure DoWork()
@@ -89,10 +85,6 @@ const MULTI_PARAM_CU: &str = r#"codeunit 50103 "Multi Param"
     end;
 }"#;
 
-// ===========================================================================
-// Section A — Diagnostic range validation
-// ===========================================================================
-
 #[tokio::test]
 async fn test_completeness_a01_diagnostic_ranges_are_valid() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -114,7 +106,6 @@ async fn test_completeness_a01_diagnostic_ranges_are_valid() {
     let uri = client.file_uri("src/diag_range.al");
     if let Some(file_diags) = diags.get(&uri) {
         for diag in file_diags {
-            // Every diagnostic must have a valid range
             let range = diag.get("range").expect("diagnostic must have range");
             let start = range.get("start").expect("range must have start");
             let end = range.get("end").expect("range must have end");
@@ -136,7 +127,6 @@ async fn test_completeness_a01_diagnostic_ranges_are_valid() {
                 .and_then(|v| v.as_u64())
                 .expect("end must have character");
 
-            // Range must be non-negative and end >= start
             assert!(
                 end_line >= start_line,
                 "diagnostic end line must be >= start line: {diag}"
@@ -209,10 +199,6 @@ async fn test_completeness_a02_diagnostic_codes_are_strings() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section B — Completion item validation
-// ===========================================================================
-
 #[tokio::test]
 async fn test_completeness_b01_completion_items_have_kind() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -270,12 +256,10 @@ async fn test_completeness_b02_completion_items_have_detail() {
 
     let items = client.completion("src/comp_detail.al", 9, 8).await;
 
-    // Find the MyHelper completion
     let helper = items
         .iter()
         .find(|i| i.get("label").and_then(|l| l.as_str()) == Some("MyHelper"));
     if let Some(h) = helper {
-        // Should have detail showing the signature
         let detail = h.get("detail").and_then(|d| d.as_str());
         assert!(
             detail.is_some(),
@@ -292,15 +276,10 @@ async fn test_completeness_b02_completion_items_have_detail() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section C — Semantic token validation
-// ===========================================================================
-
 #[tokio::test]
 async fn test_completeness_c01_semantic_tokens_cover_all_token_types() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // Rich code that should produce many token types
     let code = r#"codeunit 50100 "Token Types"
 {
     var
@@ -338,10 +317,6 @@ async fn test_completeness_c01_semantic_tokens_cover_all_token_types() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section D — Cross-file interactions
-// ===========================================================================
-
 #[tokio::test]
 async fn test_completeness_d01_cross_file_hover_after_edit() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -349,14 +324,12 @@ async fn test_completeness_d01_cross_file_hover_after_edit() {
     client.open_file("src/helper.al", HELPER_CU).await;
     client.open_file("src/caller.al", CALLER_CU).await;
 
-    // Edit the helper — add a new procedure
     let edited_helper = HELPER_CU.replace(
         "    procedure Validate",
         "    procedure NewMethod(X: Text): Integer\n    begin\n        exit(StrLen(X));\n    end;\n\n    procedure Validate"
     );
     client.change_file("src/helper.al", &edited_helper).await;
 
-    // Hover on "Helper" in the caller should still work
     let _hover = client.hover("src/caller.al", 4, 20).await;
     // May or may not resolve — key thing is no crash and server is responsive
     let symbols = client.workspace_symbol("Helper CU").await;
@@ -400,7 +373,6 @@ async fn test_completeness_d02_workspace_symbols_reflect_edits() {
         )
         .await;
 
-    // After edit, workspace symbols should reflect the new name
     let syms_new = client.workspace_symbol("Changed Name").await;
     // The workspace symbol search scans open documents
     // At minimum, the old name should no longer match the edited document
@@ -446,15 +418,12 @@ async fn test_completeness_d03_close_file_clears_diagnostics() {
     // Give server a moment to process and publish cleared diagnostics
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-    // Server should still be responsive
     let symbols = client.workspace_symbol("").await;
     assert!(!symbols.is_empty(), "server should work after close");
 
-    // Drain any new diagnostics published after close
     let diags2 = client.drain_diagnostics();
     // After closing the file, the server should either publish an empty
     // diagnostics array for the closed URI, or stop publishing for it.
-    // If the URI is present in the new batch, it must have empty diagnostics.
     if let Some(closed_diags) = diags2.get(&uri) {
         assert!(
             closed_diags.is_empty(),
@@ -467,10 +436,6 @@ async fn test_completeness_d03_close_file_clears_diagnostics() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section E — Signature help trigger positions
-// ===========================================================================
-
 #[tokio::test]
 async fn test_completeness_e01_signature_help_at_open_paren() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -482,7 +447,6 @@ async fn test_completeness_e01_signature_help_at_open_paren() {
     // The '(' is at approximately col 19
     let sig = client.signature_help("src/sig_trigger.al", 8, 20).await;
     if let Some(result) = &sig {
-        // Should have at least one signature
         let sigs = result.get("signatures").and_then(|s| s.as_array());
         assert!(
             sigs.is_some() && !sigs.unwrap().is_empty(),
@@ -512,7 +476,6 @@ async fn test_completeness_e02_signature_help_at_comma() {
     let sig = client.signature_help("src/sig_comma.al", 8, 22).await;
     if let Some(result) = &sig {
         let active = result.get("activeParameter").and_then(|a| a.as_u64());
-        // activeParameter should indicate we're on the 2nd+ parameter
         if let Some(idx) = active {
             assert!(
                 idx >= 1,
@@ -524,15 +487,10 @@ async fn test_completeness_e02_signature_help_at_comma() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section F — Folding range completeness
-// ===========================================================================
-
 #[tokio::test]
 async fn test_completeness_f01_folding_covers_all_object_types() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // Table
     client
         .open_file("src/fold_table.al", TABLE_WITH_FIELDS)
         .await;
@@ -544,12 +502,10 @@ async fn test_completeness_f01_folding_covers_all_object_types() {
         "table should have folds for fields and keys: {fold_lines:?}"
     );
 
-    // Enum
     client.open_file("src/fold_enum.al", ENUM_AL).await;
     let folds = client.folding_ranges("src/fold_enum.al").await;
     assert!(!folds.is_empty(), "enum should have folding ranges");
 
-    // Codeunit
     client.open_file("src/fold_cu.al", HELPER_CU).await;
     let folds = client.folding_ranges("src/fold_cu.al").await;
     assert!(!folds.is_empty(), "codeunit should have folding ranges");
@@ -588,10 +544,6 @@ async fn test_completeness_f02_folding_ranges_are_line_based() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section G — Document symbol hierarchy validation
-// ===========================================================================
-
 #[tokio::test]
 async fn test_completeness_g01_table_symbols_have_fields_as_children() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -603,7 +555,6 @@ async fn test_completeness_g01_table_symbols_have_fields_as_children() {
 
     assert!(!symbols.is_empty(), "table should have document symbols");
 
-    // Find the table object symbol
     let table_sym = symbols.iter().find(|s| {
         s.get("name")
             .and_then(|n| n.as_str())
@@ -625,7 +576,6 @@ async fn test_completeness_g01_table_symbols_have_fields_as_children() {
             // Table children may be groups (fields, keys) or individual fields depending on outline depth
             assert!(!kids.is_empty(), "table should have children: got 0");
 
-            // Recursively count all descendants — table with 5 fields + 2 keys should have many
             fn count_descendants(syms: &[serde_json::Value]) -> usize {
                 let mut count = syms.len();
                 for s in syms {
@@ -641,7 +591,6 @@ async fn test_completeness_g01_table_symbols_have_fields_as_children() {
                 "table outline should have at least 5 total descendant symbols: got {total}"
             );
 
-            // Every symbol at every level should have name, kind, range
             fn validate_symbols(syms: &[serde_json::Value]) {
                 for child in syms {
                     assert!(
@@ -745,10 +694,6 @@ async fn test_completeness_g03_enum_symbols_have_values() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section H — Rename validation
-// ===========================================================================
-
 #[tokio::test]
 async fn test_completeness_h01_rename_produces_valid_workspace_edit() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -766,18 +711,15 @@ async fn test_completeness_h01_rename_produces_valid_workspace_edit() {
 }"#;
     client.open_file("src/rename_valid.al", code).await;
 
-    // Rename "Counter" to "ItemCount"
     let result = client
         .rename("src/rename_valid.al", 4, 10, "ItemCount")
         .await;
     assert!(result.is_some(), "rename should produce a workspace edit");
 
     let edit = result.unwrap();
-    // WorkspaceEdit should have changes or documentChanges
     let has_changes = edit.get("changes").is_some() || edit.get("documentChanges").is_some();
     assert!(has_changes, "workspace edit should have changes: {edit}");
 
-    // Each change should have valid range and newText
     if let Some(changes) = edit.get("changes").and_then(|c| c.as_object()) {
         for (uri, edits) in changes {
             let edits = edits.as_array().expect("changes should be array");
@@ -825,10 +767,6 @@ async fn test_completeness_h02_rename_on_keyword_returns_none() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section I — References completeness
-// ===========================================================================
-
 #[tokio::test]
 async fn test_completeness_i01_references_include_declaration() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -846,7 +784,6 @@ async fn test_completeness_i01_references_include_declaration() {
 }"#;
     client.open_file("src/refs_test.al", code).await;
 
-    // Find references of MyVar (includeDeclaration = true)
     let refs = client.references("src/refs_test.al", 4, 10).await;
     // MyVar appears: declaration (line 4), assignment (line 6), assignment+use (line 7), use (line 8)
     assert!(
@@ -855,7 +792,6 @@ async fn test_completeness_i01_references_include_declaration() {
         refs.len()
     );
 
-    // Each reference should have uri and range
     for r in &refs {
         assert!(r.get("uri").is_some(), "reference must have uri: {r}");
         assert!(r.get("range").is_some(), "reference must have range: {r}");
@@ -863,10 +799,6 @@ async fn test_completeness_i01_references_include_declaration() {
 
     client.shutdown().await;
 }
-
-// ===========================================================================
-// Section J — Server capabilities validation
-// ===========================================================================
 
 #[tokio::test]
 async fn test_completeness_j01_all_declared_capabilities_are_functional() {
@@ -889,39 +821,30 @@ async fn test_completeness_j01_all_declared_capabilities_are_functional() {
 }"#;
     client.open_file("src/cap_test.al", code).await;
 
-    // hover
     let hover = client.hover("src/cap_test.al", 4, 10).await;
     assert!(hover.is_some(), "hover capability must work");
 
-    // completion
     let comp = client.completion("src/cap_test.al", 7, 8).await;
     assert!(!comp.is_empty(), "completion capability must work");
 
-    // definition
     let _def = client.definition("src/cap_test.al", 6, 14).await;
     // May or may not resolve — just must not error
 
-    // references
     let refs = client.references("src/cap_test.al", 4, 10).await;
     assert!(!refs.is_empty(), "references capability must work");
 
-    // documentSymbol
     let syms = client.document_symbols("src/cap_test.al").await;
     assert!(!syms.is_empty(), "documentSymbol capability must work");
 
-    // semanticTokens
     let toks = client.semantic_tokens("src/cap_test.al").await;
     assert!(toks.is_some(), "semanticTokens capability must work");
 
-    // foldingRange
     let folds = client.folding_ranges("src/cap_test.al").await;
     assert!(!folds.is_empty(), "foldingRange capability must work");
 
-    // formatting
     let _fmt = client.format("src/cap_test.al").await;
     // May or may not produce edits
 
-    // signatureHelp
     let _sig = client.signature_help("src/cap_test.al", 6, 20).await;
     // May or may not resolve
 
@@ -930,30 +853,22 @@ async fn test_completeness_j01_all_declared_capabilities_are_functional() {
     let _acts = client.code_actions("src/cap_test.al", 12, 14).await;
     // May or may not return actions depending on context — just verify no crash.
 
-    // inlayHint
     let _hints = client.inlay_hints("src/cap_test.al", 0, 15).await;
     // May or may not produce hints
 
-    // rename
     let ren = client.rename("src/cap_test.al", 4, 10, "Length").await;
     assert!(ren.is_some(), "rename capability must work");
 
-    // workspace/symbol
     let ws = client.workspace_symbol("Cap Test").await;
     assert!(!ws.is_empty(), "workspace/symbol capability must work");
 
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section K — Large file correctness (not just "no crash")
-// ===========================================================================
-
 #[tokio::test]
 async fn test_completeness_k01_large_file_hover_is_correct() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // Generate a large file with many procedures
     let mut code = String::from("codeunit 50100 \"Large File\"\n{\n");
     for i in 0..100 {
         code.push_str(&format!(
@@ -983,7 +898,6 @@ async fn test_completeness_k01_large_file_hover_is_correct() {
         content
     );
 
-    // Document symbols should find all 100 procedures
     let symbols = client.document_symbols("src/large_file.al").await;
     let all_names: Vec<&str> = symbol_names(&symbols);
     assert!(
@@ -997,15 +911,10 @@ async fn test_completeness_k01_large_file_hover_is_correct() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Section L — Multi-file open/close stress
-// ===========================================================================
-
 #[tokio::test]
 async fn test_completeness_l01_open_close_many_files() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // Open 10 files
     for i in 0..10 {
         let code = format!(
             r#"codeunit {id} "Multi {i}"
@@ -1019,7 +928,6 @@ async fn test_completeness_l01_open_close_many_files() {
         client.open_file(&format!("src/multi_{i}.al"), &code).await;
     }
 
-    // All should have workspace symbols
     let syms = client.workspace_symbol("Multi").await;
     assert!(
         syms.len() >= 10,
@@ -1027,14 +935,11 @@ async fn test_completeness_l01_open_close_many_files() {
         syms.len()
     );
 
-    // Close half
     for i in 0..5 {
         client.close_file(&format!("src/multi_{i}.al")).await;
     }
 
-    // Server should still be responsive
     let syms = client.workspace_symbol("Multi").await;
-    // Remaining 5 should still be findable
     assert!(
         !syms.is_empty(),
         "should still find some codeunits after closing half"

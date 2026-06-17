@@ -41,7 +41,6 @@ async fn cancel_non_existent_id_is_silently_ignored() {
         .await
         .expect("cancel notify should send");
 
-    // Server should still respond to a follow-up request.
     let symbols = client.document_symbols("src/cancel_test.al").await;
     assert!(
         !symbols.is_empty(),
@@ -69,7 +68,6 @@ async fn cancel_before_request_does_not_panic_server() {
     // error; either way the server must not panic.
     let _ = client.document_symbols("src/cancel_test.al").await;
 
-    // Server is still responsive.
     let symbols = client.document_symbols("src/cancel_test.al").await;
     assert!(
         !symbols.is_empty(),

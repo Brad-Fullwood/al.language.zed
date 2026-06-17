@@ -85,6 +85,10 @@ fn pick_active_signature(signatures: &[SignatureInfo], active_param: u32) -> u32
         .map_or(0, |(idx, _)| idx as u32)
 }
 
+/// Convert a detail string into `ParameterInfo` entries.
+///
+/// Uses `parse_detail_params` for paren-depth-aware splitting; `raw_label` from the triple
+/// is used as the LSP label so that the `var` modifier is preserved for clients.
 fn parse_parameters_from_detail(detail: &str) -> Vec<SignatureParameterInfo> {
     super::parse_detail_params(detail)
         .into_iter()
@@ -146,6 +150,10 @@ pub fn signature_help(
         let (_, t) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
         t
     };
+    // Search document symbols in current file. Prefer the cached symbols
+    // populated by the file index to avoid a full AST walk on every
+    // signature-help request; fall back to fresh extraction for documents
+    // that aren't stored on disk.
     let file_path = uri.to_file_path().ok();
     let doc_symbols: Vec<super::AlDocumentSymbol> = file_path
         .as_ref()
@@ -214,7 +222,11 @@ pub fn signature_help(
         }
     }
 
-    // Clone the Arc to drop the read guard before the nested loops.
+    // Built-in types — collect all overloads.
+    // Take a clone of the Arc<Vec<BuiltinType>> and immediately drop the
+    // read guard. The builtins value is itself an Arc, so the clone is a
+    // single refcount bump — far cheaper than holding the lock across the
+    // nested overload-collection loops.
     let builtins = {
         let guard = workspace.builtins.read().unwrap_or_else(|e| e.into_inner());
         Arc::clone(&*guard)
@@ -273,6 +285,10 @@ pub fn signature_help(
     None
 }
 
+// All eight parameters (workspace, uri, source bytes, tree, type resolver,
+// builtins, receiver expression node, method name) are inputs the resolver
+// needs per call site. A bundling struct doesn't reduce caller-side
+// complexity; it just adds a layer of indirection.
 #[allow(clippy::too_many_arguments)]
 fn resolve_receiver_signature(
     workspace: &Workspace,
@@ -349,8 +365,13 @@ fn resolve_receiver_signature(
 mod tests {
     use super::*;
 
+    /// Verify that `parse_parameters_from_detail` correctly turns the detail string produced
+    /// by `extract_document_symbols` into individual `ParameterInfo` entries.  This is the
+    /// exact shape a workspace procedure has: the label comes back as the trimmed parameter
+    /// text (including any `var` prefix) so that LSP clients can highlight the active param.
     #[test]
     fn test_parse_parameters_from_detail_workspace_proc() {
+        // Typical workspace procedure detail string: "(var SalesHeader: Record; Preview: Boolean): Boolean"
         let detail = "(var SalesHeader: Record; Preview: Boolean): Boolean";
         let params = parse_parameters_from_detail(detail);
 
@@ -383,6 +404,7 @@ mod tests {
 
     #[test]
     fn test_parse_parameters_from_detail_quoted_name() {
+        // AL allows quoted identifiers in parameters
         let params = parse_parameters_from_detail("(\"Sales Line\": Record; Qty: Decimal)");
         assert_eq!(params.len(), 2);
         assert_eq!(params[0].label, "\"Sales Line\": Record");
@@ -408,6 +430,9 @@ mod tests {
         }
     }
 
+    /// T063: collecting per-overload SignatureInfo from MethodSymbol must
+    /// produce one entry per overload — the building block for the
+    /// overload-collection upgrade applied to the package-symbol path.
     #[test]
     fn t063_build_signature_info_emits_one_per_overload() {
         let m_zero = make_method("Send", vec![], Some("Boolean"));
@@ -422,11 +447,16 @@ mod tests {
         assert_eq!(s1.label, "Send(Address: Text): Boolean");
         assert_eq!(s2.label, "Send(Address: Text; Subject: Text): Boolean");
 
+        // Active parameter mirrors the request — clients use this to
+        // highlight which slot the cursor is in.
         assert_eq!(s0.active_parameter, Some(0));
         assert_eq!(s1.active_parameter, Some(0));
         assert_eq!(s2.active_parameter, Some(0));
     }
 
+    /// T063: pick_active_signature returns the index of the first signature
+    /// whose parameter count exceeds active_param — the most-likely-overload
+    /// rule used by both signature_help and resolve_receiver_signature.
     #[test]
     fn t063_pick_active_signature_picks_first_compatible_overload() {
         let m0 = make_method("Send", vec![], Some("Boolean"));
@@ -439,10 +469,19 @@ mod tests {
 
         let sigs = vec![s0, s1, s2];
 
+        // active_param = 1 — the cursor is at the second slot. The
+        // 2-arg overload is the first whose parameter count > 1.
         assert_eq!(pick_active_signature(&sigs, 1), 2);
+        // active_param = 0 — even the no-arg overload satisfies > 0
+        // for the 1-arg one (params.len() == 1 > 0). Index 1 is first match.
         assert_eq!(pick_active_signature(&sigs, 0), 1);
     }
 
+    /// F-OPEN-040: when no signature has enough parameters for the
+    /// requested `active_param`, fall back to the **widest** overload
+    /// rather than the first (index 0). This way the editor's
+    /// parameter-highlight at least lands inside a real argument list
+    /// instead of the first overload's nonexistent slot 0.
     #[test]
     fn pick_active_signature_falls_back_to_widest_when_no_match() {
         let m0 = make_method("Send", vec![], Some("Boolean"));
@@ -453,13 +492,23 @@ mod tests {
 
         let sigs = vec![s0, s1];
 
+        // active_param = 5 — neither overload has 6 parameters. m1 has
+        // the widest (1 param), so its index (1) should be picked. The
+        // previous behaviour returned 0 which is the no-arg overload —
+        // a worse UI choice because slot 5 doesn't exist there either.
         assert_eq!(pick_active_signature(&sigs, 5), 1);
     }
 
     #[test]
     fn pick_active_signature_widest_with_ties_picks_last() {
-        // F-OPEN-040: `Iterator::max_by_key` returns the LAST maximum; pins this so a
-        // future fold-based first-wins refactor doesn't silently flip the tie-break.
+        // F-OPEN-040: when two overloads tie on parameter count and
+        // neither accommodates `active_param`, the fallback picks one
+        // of them — the exact one isn't load-bearing for the user. The
+        // implementation uses `Iterator::max_by_key`, which by Rust's
+        // documented behaviour returns the LAST maximum, so the second
+        // tied overload wins. This test pins that behaviour so a future
+        // refactor that switches to e.g. a fold-based first-wins
+        // doesn't silently flip the choice.
         let m0 = make_method("Send", vec!["A", "B"], Some("Boolean"));
         let m1 = make_method("Send", vec!["C", "D"], Some("Boolean"));
 

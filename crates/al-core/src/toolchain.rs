@@ -69,7 +69,6 @@ pub fn dotnet_command_async(alc: &Path) -> tokio::process::Command {
 }
 
 
-/// Paths to the AL toolchain components.
 #[derive(Debug, Clone)]
 pub struct AlToolchain {
     pub alc: PathBuf,
@@ -80,7 +79,6 @@ pub struct AlToolchain {
     pub version: String,
 }
 
-/// Paths to the official Microsoft analyzers.
 #[derive(Debug, Clone)]
 pub struct AnalyzerPaths {
     pub code_cop: PathBuf,
@@ -369,7 +367,6 @@ fn search_path_for(cmd_name: &str) -> Option<AlToolchain> {
 }
 
 
-/// Result of validating an AlToolchain's components.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolchainValidation {
@@ -388,7 +385,6 @@ impl ToolchainValidation {
     }
 }
 
-/// Validate that an AlToolchain's referenced files actually exist.
 pub fn validate_toolchain(tc: &AlToolchain) -> ToolchainValidation {
     let mut issues = Vec::new();
     let alc_exists = tc.alc.is_file();
@@ -428,7 +424,6 @@ pub fn validate_toolchain(tc: &AlToolchain) -> ToolchainValidation {
 }
 
 
-/// Full workspace health report.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoctorReport {
@@ -776,7 +771,6 @@ mod tests {
         // A symlink planted inside the search root pointing outside it must NOT
         // let discovery pick up an alc.dll that lives outside the root.
         let outside = tempfile::tempdir().unwrap();
-        // Place a (would-be malicious) alc.dll outside the search root.
         write_minimal_toolchain(&outside.path().join("evil"));
 
         let root = tempfile::tempdir().unwrap();
@@ -799,7 +793,6 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path().join("evil"), root.path().join("link")).unwrap();
-        // A genuine, in-root toolchain that SHOULD be found.
         let real = root.path().join("real/tools/net8.0/any");
         write_minimal_toolchain(&real);
 
@@ -833,7 +826,6 @@ mod tests {
         std::fs::set_permissions(&alc_exe, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let orig_path = std::env::var_os("PATH");
-        // Prepend our dir so `which alc` resolves to our fake binary.
         let new_path = match &orig_path {
             Some(p) => {
                 let mut joined = std::ffi::OsString::from(bin);

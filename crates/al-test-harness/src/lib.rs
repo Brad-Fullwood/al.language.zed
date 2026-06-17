@@ -66,7 +66,6 @@ use tokio::sync::{mpsc, Mutex};
 
 pub use protocol::*;
 
-/// Find the al-lsp binary, checking debug build first.
 fn find_binary() -> PathBuf {
     // Explicit override wins. Coverage runs set this to the INSTRUMENTED binary
     // so the al-lsp subprocess contributes to coverage (see scripts/coverage.sh);
@@ -99,8 +98,6 @@ fn find_binary() -> PathBuf {
     PathBuf::from("al-lsp")
 }
 
-/// Lifecycle management for the server connection.
-///
 /// Stdio mode owns a child process. (Previously also tracked a Daemon
 /// variant for Unix-socket transport — removed alongside `connect()` because
 /// al-lsp's daemon mode speaks a different protocol; see crate docs.)
@@ -202,7 +199,6 @@ impl LspClient {
         }
     }
 
-    /// Send initialize request and initialized notification.
     async fn initialize(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
         let root_uri = format!("file://{}", self.root_path.display());
         let params = serde_json::json!({
@@ -432,7 +428,6 @@ impl LspClient {
         }
     }
 
-    /// Close a file (simulates Zed closing a tab).
     pub async fn close_file(&mut self, relative_path: &str) {
         let uri = self.file_uri(relative_path);
         self.open_docs.remove(&uri);
@@ -446,7 +441,6 @@ impl LspClient {
         }
     }
 
-    /// Send configuration change (simulates Zed settings update).
     pub async fn change_configuration(&mut self, settings: Value) {
         let params = serde_json::json!({
             "settings": settings
@@ -460,7 +454,6 @@ impl LspClient {
         }
     }
 
-    /// Prepare rename — check if a position is renamable and get the range.
     pub async fn prepare_rename(
         &mut self,
         relative_path: &str,
@@ -535,7 +528,6 @@ impl LspClient {
         }
     }
 
-    /// Go to definition.
     pub async fn definition(
         &mut self,
         relative_path: &str,
@@ -556,7 +548,6 @@ impl LspClient {
         }
     }
 
-    /// Find references.
     pub async fn references(
         &mut self,
         relative_path: &str,
@@ -579,7 +570,6 @@ impl LspClient {
         }
     }
 
-    /// Get document symbols.
     pub async fn document_symbols(&mut self, relative_path: &str) -> Vec<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({ "textDocument": { "uri": uri } });
@@ -593,7 +583,6 @@ impl LspClient {
         }
     }
 
-    /// Get semantic tokens.
     pub async fn semantic_tokens(&mut self, relative_path: &str) -> Option<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({ "textDocument": { "uri": uri } });
@@ -609,7 +598,6 @@ impl LspClient {
         }
     }
 
-    /// Get folding ranges.
     pub async fn folding_ranges(&mut self, relative_path: &str) -> Vec<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({ "textDocument": { "uri": uri } });
@@ -623,7 +611,6 @@ impl LspClient {
         }
     }
 
-    /// Format document.
     pub async fn format(&mut self, relative_path: &str) -> Vec<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({
@@ -640,7 +627,6 @@ impl LspClient {
         }
     }
 
-    /// Get signature help.
     pub async fn signature_help(
         &mut self,
         relative_path: &str,
@@ -664,8 +650,6 @@ impl LspClient {
         }
     }
 
-    /// Get code lenses for a document.
-    ///
     /// T026: this exercises the textDocument/codeLens path through the real
     /// `al-lsp` binary with a live `DocumentStore` + (optional) test-result
     /// store, so the wire format and end-to-end shape of the response are
@@ -686,7 +670,6 @@ impl LspClient {
         }
     }
 
-    /// Get code actions.
     pub async fn code_actions(
         &mut self,
         relative_path: &str,
@@ -712,7 +695,6 @@ impl LspClient {
         }
     }
 
-    /// Get inlay hints.
     pub async fn inlay_hints(
         &mut self,
         relative_path: &str,
@@ -737,7 +719,6 @@ impl LspClient {
         }
     }
 
-    /// Rename symbol.
     pub async fn rename(
         &mut self,
         relative_path: &str,
@@ -760,7 +741,6 @@ impl LspClient {
         }
     }
 
-    /// Workspace symbol search.
     pub async fn workspace_symbol(&mut self, query: &str) -> Vec<Value> {
         let params = serde_json::json!({ "query": query });
 
@@ -773,7 +753,6 @@ impl LspClient {
         }
     }
 
-    /// Drain all pending notifications. Returns (method, params) pairs.
     /// Includes notifications buffered by internal waits (e.g. `open_file`).
     pub fn drain_notifications(&mut self) -> Vec<(String, Value)> {
         let mut result = std::mem::take(&mut self.buffered_notifications);
@@ -783,7 +762,6 @@ impl LspClient {
         result
     }
 
-    /// Get all published diagnostics (drains notification queue).
     pub fn drain_diagnostics(&mut self) -> HashMap<String, Vec<Value>> {
         let mut result: HashMap<String, Vec<Value>> = HashMap::new();
         for (method, params) in self.drain_notifications() {
@@ -799,7 +777,6 @@ impl LspClient {
         result
     }
 
-    /// Shutdown the server gracefully.
     pub async fn shutdown(mut self) {
         let _ = self.request("shutdown", serde_json::json!(null)).await;
         let _ = self.notify("exit", serde_json::json!(null)).await;
@@ -809,7 +786,6 @@ impl LspClient {
         let Lifecycle::Stdio(child) = &mut self.lifecycle;
         // Wait with timeout to avoid hanging if the server doesn't exit.
         let _ = tokio::time::timeout(tokio::time::Duration::from_secs(3), child.wait()).await;
-        // Kill if still running.
         let _ = child.kill().await;
     }
 }
@@ -837,8 +813,6 @@ impl Drop for LspClient {
 }
 
 impl LspClient {
-    // -- Internal --
-
     /// Build a file:// URI from a relative path. Public for test assertions.
     pub fn file_uri(&self, relative_path: &str) -> String {
         let full_path = self.root_path.join(relative_path);
@@ -984,7 +958,6 @@ pub async fn read_loop(
     let mut header_buf = String::new();
 
     loop {
-        // Read headers
         let mut content_length: Option<usize> = None;
         loop {
             header_buf.clear();
@@ -1022,7 +995,6 @@ pub async fn read_loop(
             return;
         }
 
-        // Read body
         let mut body = vec![0u8; content_length];
         match tokio::io::AsyncReadExt::read_exact(&mut reader, &mut body).await {
             Ok(_) => {}

@@ -2,16 +2,6 @@
 //!
 //! Parses `.app` packages (NAVX header + ZIP containing SymbolReference.json),
 //! builds a concurrent symbol index, and provides NuGet symbol download.
-//!
-//! # Modules
-//!
-//! - [`model`] — Core types: `SymbolEntry`, `ObjectKind`, `SymbolPackage`, etc.
-//! - [`app_reader`] — Parse `.app` files (NAVX header + ZIP)
-//! - [`manifest`] — Parse `NavxManifest.xml` for package metadata
-//! - [`index`] — DashMap-backed concurrent symbol index
-//! - [`composition`] — Merge base objects with extensions
-//! - [`events`] — Discover event publishers and subscribers
-//! - [`nuget`] — NuGet v3 client for downloading symbol packages
 
 pub mod app_inspect;
 pub mod app_reader;

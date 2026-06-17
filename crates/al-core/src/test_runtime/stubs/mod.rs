@@ -13,9 +13,7 @@ pub mod library_variable_storage;
 use crate::test_runtime::interpreter::scope::Eval;
 use crate::test_runtime::interpreter::value::Value;
 
-/// Built-in stub procedure: takes positional Value args, returns an Eval.
 pub type StubFn = fn(&[Value]) -> Eval;
-/// Procedure-name resolver for a library catalog.
 pub type ResolveFn = fn(&str) -> Option<StubFn>;
 
 /// One library codeunit's stub catalog. Codeunit IDs map across BC
@@ -28,7 +26,6 @@ pub struct StubCatalog {
     pub resolve: ResolveFn,
 }
 
-/// All built-in stub catalogs.
 pub const CATALOGS: &[StubCatalog] = &[
     StubCatalog {
         codeunit_name: "Library Assert",
@@ -104,13 +101,10 @@ mod tests {
 
     #[test]
     fn resolve_unknown_returns_none() {
-        // Negative paths.
         assert!(resolve("Library Assert", "DoesNotExist").is_none());
         assert!(resolve("Some Other Codeunit", "AreEqual").is_none());
         assert!(resolve("99999", "AreEqual").is_none());
     }
-
-    // ── Library Variable Storage routing ─────────────────────────────────────
 
     #[test]
     fn resolve_library_variable_storage_by_name() {
@@ -128,12 +122,9 @@ mod tests {
 
     #[test]
     fn resolve_library_variable_storage_unknown_proc_returns_none() {
-        // Negative: known codeunit, unknown procedure.
         assert!(resolve("Library - Variable Storage", "DoesNotExist").is_none());
         assert!(resolve("131004", "AreEqual").is_none());
     }
-
-    // ── Library Random routing ────────────────────────────────────────────────
 
     #[test]
     fn resolve_library_random_by_name() {
@@ -151,12 +142,9 @@ mod tests {
 
     #[test]
     fn resolve_library_random_unknown_proc_returns_none() {
-        // Negative: known codeunit, unknown procedure.
         assert!(resolve("Library Random", "DoesNotExist").is_none());
         assert!(resolve("130440", "AreEqual").is_none());
     }
-
-    // ── Any routing ───────────────────────────────────────────────────────────
 
     #[test]
     fn resolve_any_by_name() {
@@ -174,7 +162,6 @@ mod tests {
 
     #[test]
     fn resolve_any_unknown_proc_returns_none() {
-        // Negative: known codeunit, unknown procedure.
         assert!(resolve("Any", "DoesNotExist").is_none());
         assert!(resolve("130500", "RandInt").is_none());
     }

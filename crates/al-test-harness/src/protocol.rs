@@ -2,7 +2,6 @@
 
 use serde_json::Value;
 
-/// Extract the markdown content from a hover result.
 pub fn hover_content(hover: &Value) -> Option<&str> {
     hover
         .get("contents")
@@ -10,7 +9,6 @@ pub fn hover_content(hover: &Value) -> Option<&str> {
         .and_then(|v| v.as_str())
 }
 
-/// Extract completion item labels.
 pub fn completion_labels(items: &[Value]) -> Vec<&str> {
     items
         .iter()
@@ -18,7 +16,6 @@ pub fn completion_labels(items: &[Value]) -> Vec<&str> {
         .collect()
 }
 
-/// Extract document symbol names (iterative).
 pub fn symbol_names<'a>(symbols: &'a [Value]) -> Vec<&'a str> {
     let mut names = vec![];
     let mut stack: Vec<&'a Value> = symbols.iter().collect();
@@ -33,8 +30,6 @@ pub fn symbol_names<'a>(symbols: &'a [Value]) -> Vec<&'a str> {
     names
 }
 
-/// Extract semantic token data as groups of 5 integers.
-///
 /// The LSP semantic-tokens spec requires `data` length to be a multiple of 5.
 /// `chunks_exact(5)` silently discards any malformed trailing partial chunk
 /// rather than panicking on indexing past its end.
@@ -58,7 +53,6 @@ pub fn semantic_token_data(result: &Value) -> Vec<[u32; 5]> {
         .unwrap_or_default()
 }
 
-/// Extract definition location URI.
 pub fn definition_uri(result: &Value) -> Option<&str> {
     // Can be a single Location or an array
     if let Some(uri) = result.get("uri").and_then(|u| u.as_str()) {
@@ -72,8 +66,6 @@ pub fn definition_uri(result: &Value) -> Option<&str> {
     None
 }
 
-/// Extract the start line from a definition result.
-///
 /// Handles both a single `Location` object and a `Location[]` array.
 pub fn definition_start_line(result: &Value) -> Option<u32> {
     if let Some(line) = result
@@ -105,7 +97,6 @@ pub fn sig_label(result: &Value) -> Option<&str> {
         .and_then(|l| l.as_str())
 }
 
-/// Check if a folding range covers the expected lines.
 pub fn folding_range_lines(ranges: &[Value]) -> Vec<(u32, u32)> {
     ranges
         .iter()
@@ -145,8 +136,6 @@ mod tests {
         assert_eq!(tokens, vec![[0, 0, 3, 1, 0], [0, 5, 4, 1, 0]]);
     }
 
-    // ----- hover_content -----
-
     #[test]
     fn hover_content_extracts_markdown_value() {
         let hover = json!({ "contents": { "kind": "markdown", "value": "# Record\nA table." } });
@@ -165,8 +154,6 @@ mod tests {
         // reads the object form, so this must be None, not the string itself.
         assert_eq!(hover_content(&json!({ "contents": "plain" })), None);
     }
-
-    // ----- completion_labels -----
 
     #[test]
     fn completion_labels_extracts_in_order() {
@@ -196,8 +183,6 @@ mod tests {
     fn completion_labels_empty_input() {
         assert!(completion_labels(&[]).is_empty());
     }
-
-    // ----- symbol_names (iterative, with children) -----
 
     #[test]
     fn symbol_names_collects_nested_children() {
@@ -231,8 +216,6 @@ mod tests {
         assert!(symbol_names(&[]).is_empty());
     }
 
-    // ----- definition_uri -----
-
     #[test]
     fn definition_uri_single_location() {
         let result = json!({ "uri": "file:///a.al", "range": {} });
@@ -258,8 +241,6 @@ mod tests {
         assert_eq!(definition_uri(&json!({ "uri": 5 })), None);
     }
 
-    // ----- definition_start_line -----
-
     #[test]
     fn definition_start_line_single_location() {
         let result = json!({ "range": { "start": { "line": 12, "character": 4 } } });
@@ -282,8 +263,6 @@ mod tests {
         assert_eq!(definition_start_line(&json!({ "range": {} })), None);
     }
 
-    // ----- sig_label -----
-
     #[test]
     fn sig_label_first_signature() {
         let result = json!({
@@ -301,8 +280,6 @@ mod tests {
         assert_eq!(sig_label(&json!({ "signatures": [] })), None);
         assert_eq!(sig_label(&json!({ "signatures": [ {} ] })), None);
     }
-
-    // ----- folding_range_lines -----
 
     #[test]
     fn folding_range_lines_extracts_pairs() {

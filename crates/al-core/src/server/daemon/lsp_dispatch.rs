@@ -186,6 +186,8 @@ pub(super) fn dispatch_document_symbols(
     let Some(uri) = extract_uri(params) else {
         return invalid_params(id);
     };
+    // Serialize the transport-agnostic AlDocumentSymbol vec directly. The daemon
+    // returns JSON, so there is no need to round-trip through tower_lsp types.
     let result = crate::queries::symbols::document_symbols(workspace, &uri);
     ok_response_opt(id, result, "textDocument/documentSymbol")
 }
@@ -330,6 +332,7 @@ pub(super) fn dispatch_search(
             }
         })
         .collect();
+    // Workspace file objects — use al-core search to avoid duplicating the filter logic.
     let remaining = limit.saturating_sub(value.len());
     let ws_results = crate::queries::search::workspace_search(workspace, query, remaining);
     for r in ws_results {
@@ -746,6 +749,8 @@ mod tests {
         );
     }
 
+    /// Custom `Serialize` impl that always returns an error — used to drive the
+    /// serialisation-failure path in `ok_response`.
     struct AlwaysFails;
 
     impl serde::Serialize for AlwaysFails {
@@ -757,6 +762,8 @@ mod tests {
         }
     }
 
+    /// `ok_response` returns an `INTERNAL_ERROR` instead of silently emitting `null`
+    /// when serialisation fails.
     #[test]
     fn ok_response_returns_rpc_error_on_serialization_failure() {
         let resp = ok_response(11, &AlwaysFails, "test/method");
@@ -928,6 +935,7 @@ mod tests {
             package: "Base".to_string(),
             ..Default::default()
         }]);
+        // No "kind" param — unique name resolves.
         let resp = dispatch_composed(&ws, 7, &serde_json::json!({ "name": "Customer" }));
         assert!(
             resp.error.is_none(),
@@ -935,10 +943,12 @@ mod tests {
             resp.error
         );
 
+        // Unknown name → actionable not-found error.
         let resp = dispatch_composed(&ws, 8, &serde_json::json!({ "name": "Nope" }));
         let err = resp.error.expect("unknown name must error");
         assert!(err.message.contains("not found"), "got: {}", err.message);
 
+        // Two kinds sharing the name → ambiguity error listing kinds.
         ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
             kind: crate::symbols::ObjectKind::Page,
             id: 21,
@@ -1003,6 +1013,7 @@ mod tests {
         );
     }
 
+    /// F-OPEN-268 guard: an id that matches nothing still errors.
     #[test]
     fn dispatch_by_id_unknown_id_still_errors() {
         let ws = crate::workspace::Workspace::new();
@@ -1010,6 +1021,9 @@ mod tests {
         assert!(resp.error.is_some(), "unknown id must keep erroring");
     }
 
+    /// An out-of-range `startLine` (> u32::MAX) must be rejected with
+    /// INVALID_PARAMS rather than silently truncated via `as u32`. Mirrors the
+    /// hardening verified by `extract_position_rejects_overflow` in mod.rs.
     #[test]
     fn dispatch_inlay_hints_rejects_overflow_start_line() {
         let ws = crate::workspace::Workspace::new();
@@ -1029,6 +1043,7 @@ mod tests {
         assert!(resp.result.is_none());
     }
 
+    /// An out-of-range `endLine` must likewise be rejected, not wrapped.
     #[test]
     fn dispatch_inlay_hints_rejects_overflow_end_line() {
         let ws = crate::workspace::Workspace::new();
@@ -1048,6 +1063,8 @@ mod tests {
         assert!(resp.result.is_none());
     }
 
+    /// Absent line params default to the full-document range (0..u32::MAX) and
+    /// succeed — no document is open so the hints list is simply empty.
     #[test]
     fn dispatch_inlay_hints_defaults_lines_when_absent() {
         let ws = crate::workspace::Workspace::new();
@@ -1137,6 +1154,7 @@ mod tests {
         assert_invalid_params(&resp, 9);
     }
 
+    /// rename has an extra required `newName` parameter beyond uri/position.
     #[test]
     fn dispatch_rename_rejects_missing_new_name() {
         let ws = crate::workspace::Workspace::new();
@@ -1171,6 +1189,12 @@ mod tests {
         );
     }
 
+    /// An absurdly large `limit` must be clamped to MAX_SEARCH_RESULTS, not
+    /// passed through verbatim (a u64 → usize that could exhaust memory).
+    /// We can observe the clamp indirectly: the call succeeds and does not
+    /// hang/allocate unboundedly. The value handed to the index is the
+    /// min(limit, 500_000); we assert the request completes with an empty
+    /// array on an empty workspace.
     #[test]
     fn dispatch_search_clamps_oversized_limit() {
         let ws = crate::workspace::Workspace::new();
@@ -1207,6 +1231,8 @@ mod tests {
         assert_invalid_params(&resp, 15);
     }
 
+    /// A valid kind+name with no matching object yields an INVALID_PARAMS error
+    /// whose message names the object, not a silent empty success.
     #[test]
     fn dispatch_object_not_found_returns_error() {
         let ws = crate::workspace::Workspace::new();
@@ -1228,6 +1254,7 @@ mod tests {
     #[test]
     fn dispatch_by_id_rejects_overflowing_id() {
         let ws = crate::workspace::Workspace::new();
+        // (i32::MAX as i64) + 1 must be rejected by extract_i32, not wrapped.
         let resp = dispatch_by_id(
             &ws,
             17,
@@ -1306,6 +1333,9 @@ mod tests {
         assert_eq!(resp.result, Some(serde_json::json!([])));
     }
 
+    /// With no project loaded, deps reports an INTERNAL_ERROR rather than a
+    /// bogus empty success — clients must distinguish "no project" from
+    /// "project with zero dependencies".
     #[test]
     fn dispatch_deps_no_project_returns_internal_error() {
         let ws = crate::workspace::Workspace::new();

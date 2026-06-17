@@ -456,6 +456,10 @@ fn default_invoke_timeout(target: &str) -> tokio::time::Duration {
 impl BcDebugSession {
     pub async fn connect(config: &BcDebugConfig, access_token: &str) -> Result<Self> {
         if config.accept_invalid_certs {
+            // Match the warn-on-construction parity from BcClient::new at
+            // bc_client.rs:99 (T035). Without this the DAP path silently
+            // disables TLS certificate validation when launch.json sets
+            // accept_invalid_certs=true.
             crate::http_auth::warn_insecure_tls("DAP SignalR debug");
         }
         let hub_url = config.debug_hub_url();
@@ -516,6 +520,8 @@ impl BcDebugSession {
             .replace("https://", "wss://")
             .replace("http://", "ws://");
         let ws_url = format!("{ws_url}?id={}", percent_encode_url(&resolved.ws_id));
+        // Redact the connection_token from the log line — it grants access to
+        // the active debug session and must not appear in plaintext logs.
         let log_url = ws_url.split('?').next().unwrap_or(&ws_url);
         info!("SignalR WebSocket: {log_url}?id=<redacted>");
 
@@ -552,10 +558,16 @@ impl BcDebugSession {
             .await
             .map_err(|e| DapError::ConnectionFailed(format!("SignalR handshake failed: {e}")))?;
 
+        // Read handshake response. A SignalR server signals a
+        // protocol/version mismatch here via `{"error":...}`; validate it so a
+        // rejected handshake fails loudly instead of limping on against an
+        // adapter that will misbehave on every later invoke (F-OPEN-016).
         if let Some(msg) = ws_source.next().await {
             let msg = msg.map_err(|e| DapError::ConnectionFailed(format!("WS read error: {e}")))?;
             debug!("SignalR handshake response: {:?}", msg);
             if let tokio_tungstenite::tungstenite::Message::Text(text) = &msg {
+                // SignalR frames are record-separator (\x1e) delimited; the
+                // handshake response is the first frame.
                 let first = text.split('\x1e').next().unwrap_or(text.as_str());
                 validate_signalr_handshake_response(first)?;
             }
@@ -578,7 +590,7 @@ impl BcDebugSession {
 
         tokio::spawn(async move {
             while let Some(msg) = ws_rx.recv().await {
-                let framed = format!("{msg}\x1e");
+                let framed = format!("{msg}\x1e"); // SignalR record separator
                 if let Err(e) = ws_sink
                     .send(tokio_tungstenite::tungstenite::Message::Text(framed.into()))
                     .await
@@ -800,6 +812,9 @@ impl BcDebugSession {
                         "target": "AcknowledgeIsAlive",
                         "arguments": [],
                     });
+                    // Ping — respond with try_send to avoid blocking while event_rx is held.
+                    // If the send channel is full, the ping is silently dropped; BC will
+                    // retry. Using .await here would deadlock when invoke() holds event_rx.
                     let _ = self.ws_tx.try_send(ack.to_string());
                 }
                 "OnAttachedToConnection" => {
@@ -867,6 +882,7 @@ impl BcDebugSession {
                     out.push(bc_event);
                 }
             }
+            // type 3 completions without a pending invoke are unexpected — ignore
         }
         out
     }
@@ -1360,10 +1376,6 @@ fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
     let target = msg.target.as_deref()?;
     match target {
         "Break" => {
-            // BC Break event indicates execution stopped.
-            // The message from BC doesn't always specify a reason; we infer from context.
-            // For simplicity, we report "breakpoint" as the reason. A more complete
-            // implementation could inspect the break flags to distinguish step/exception.
             Some(BcEvent::Break {
                 reason: "breakpoint".to_string(),
                 thread_id: 1,
@@ -1592,8 +1604,6 @@ fn redact_connection_token(body: &str) -> String {
 mod tests {
     use super::*;
 
-    // --- default_invoke_timeout (F-OPEN-015) ---------------------------------
-
     #[test]
     fn invoke_timeout_step_ops_are_short() {
         // Positive: step / continue / break should respond within seconds;
@@ -1706,8 +1716,6 @@ mod tests {
         assert_eq!(redact_connection_token(body), "not-json garbage");
     }
 
-    // --- validate_signalr_handshake_response (F-OPEN-016) --------------------
-
     #[test]
     fn handshake_empty_frame_is_accepted() {
         // The canonical SignalR success response is `{}`; some servers also
@@ -1761,8 +1769,6 @@ mod tests {
         assert_eq!(parsed["foo"], "bar");
         assert!(parsed.get("connectionToken").is_none());
     }
-
-    // --- resolve_negotiate_connection (F-OPEN-137) --------------------------
 
     #[test]
     fn negotiate_v1_uses_token_as_ws_id_and_id_as_session() {
@@ -1973,8 +1979,6 @@ mod tests {
         assert_eq!(percent_encode_url(""), "");
     }
 
-    // --- fatal_exception_message (F-OPEN-138) --------------------------------
-
     #[test]
     fn fatal_message_returns_actual_string() {
         let args = Some(vec![serde_json::json!("disk full")]);
@@ -2029,8 +2033,6 @@ mod tests {
             other => panic!("expected FatalError, got {other:?}"),
         }
     }
-
-    // --- signalr_to_bc_event conversion shapes (F-OPEN-136) ------------------
 
     /// Build a type-1 (invocation) SignalR message with the given target and
     /// arguments, leaving the completion-only fields empty. Mirrors the shape

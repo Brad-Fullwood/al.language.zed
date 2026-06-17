@@ -82,7 +82,6 @@ fn extension_app_manifest() -> &'static str {
 </Package>"#
 }
 
-/// Realistic "Base Application" subset.
 fn base_app_symbols() -> &'static str {
     r#"{
     "Tables": [{
@@ -764,7 +763,6 @@ fn test_event_discovery_with_real_data() {
         ))
         .unwrap();
 
-    // Search for all events
     let all_events = get_events(&index, "");
     // Publishers: OnBeforePostSalesDoc (integration) + OnAfterPostSalesDoc (integration)
     //             + OnBeforePostPurchDoc (business) = 3
@@ -1041,10 +1039,6 @@ fn test_codeunit_method_parameters() {
     assert!(!after_post.parameters[1].is_var); // GenJnlPostLine is not var
 }
 
-// ---------------------------------------------------------------------------
-// Test: search behavior across packages
-// ---------------------------------------------------------------------------
-
 #[test]
 fn test_search_across_packages() {
     let index = SymbolIndex::new();
@@ -1078,19 +1072,13 @@ fn test_search_across_packages() {
         names
     );
 
-    // Empty query returns everything (up to limit)
     let all = index.search("", 100);
     assert_eq!(all.len(), 18);
 
-    // Case-insensitive search
     let upper = index.search("SALES", 10);
     let lower = index.search("sales", 10);
     assert_eq!(upper.len(), lower.len());
 }
-
-// ---------------------------------------------------------------------------
-// Test: get_by_kind for extension types
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_get_by_kind_extensions() {
@@ -1112,10 +1100,6 @@ fn test_get_by_kind_extensions() {
     let enum_exts = index.get_by_kind(ObjectKind::EnumExtension);
     assert_eq!(enum_exts.len(), 1);
 }
-
-// ---------------------------------------------------------------------------
-// Test: Option-typed parameters create synthetic enum entries
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_option_params_create_synthetic_enums() {
@@ -1148,7 +1132,6 @@ fn test_option_params_create_synthetic_enums() {
     let pkg = index.load_package_bytes(&data).unwrap();
     assert!(!pkg.objects.is_empty());
 
-    // The Option-typed parameter "TextEncoding" should create a synthetic enum
     let results = index.get_by_name("TextEncoding");
     assert!(
         !results.is_empty(),
@@ -1162,10 +1145,6 @@ fn test_option_params_create_synthetic_enums() {
     assert_eq!(entry.enum_values[2].name, "UTF16");
     assert_eq!(entry.enum_values[3].name, "Windows");
 }
-
-// ---------------------------------------------------------------------------
-// Test: Option-typed fields with the same name in different objects do not collide
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_option_params_no_cross_object_collision() {
@@ -1213,7 +1192,6 @@ fn test_option_params_no_cross_object_collision() {
     let index = SymbolIndex::new();
     let _pkg = index.load_package_bytes(&data).unwrap();
 
-    // Both sets of members must be present — two separate synthetic enum entries for "Status"
     let results = index.get_by_name("Status");
     assert!(
         results.len() >= 2,
@@ -1221,7 +1199,6 @@ fn test_option_params_no_cross_object_collision() {
         results.len()
     );
 
-    // Collect all member names across all Status entries
     let all_members: Vec<&str> = results
         .iter()
         .flat_map(|e| e.enum_values.iter().map(|v| v.name.as_str()))
@@ -1248,10 +1225,6 @@ fn test_option_params_no_cross_object_collision() {
         "Rejected must be present from Codeunit B"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Test: runtime enums are loaded into the index
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_runtime_enums_loaded() {

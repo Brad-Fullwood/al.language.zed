@@ -40,16 +40,13 @@ pub enum CalcParseError {
     EmptyConstArgument(String),
 }
 
-/// Parsed FlowField formula.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CalcFormula {
-    /// The formula type (Sum, Count, Lookup, etc.).
     pub formula_type: FormulaType,
     /// The source table name (may contain spaces when quoted).
     pub table_name: String,
     /// Optional field name (required for Sum, Average, Min, Max, Lookup).
     pub field_name: Option<String>,
-    /// Optional `WHERE(...)` clause.
     pub where_clause: Vec<WhereCondition>,
 }
 
@@ -83,7 +80,6 @@ impl fmt::Display for FormulaType {
 /// One condition inside a `WHERE(...)` clause.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WhereCondition {
-    /// The field name on the source table.
     pub field: String,
     /// The operator (always `=` in BC FlowField syntax, but captured).
     pub operator: WhereOperator,
@@ -96,7 +92,6 @@ pub enum WhereOperator {
     Equal,
 }
 
-/// The value specification in a WHERE condition.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WhereValue {
     /// `CONST(value)` — a constant literal.
@@ -184,7 +179,6 @@ impl<'a> Parser<'a> {
         Ok(s)
     }
 
-    /// Consume a specific char; error if not found.
     fn expect_char(&mut self, expected: char) -> Result<(), CalcParseError> {
         self.skip_whitespace();
         match self.advance() {
@@ -282,7 +276,6 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_one_condition(&mut self) -> Result<WhereCondition, CalcParseError> {
-        // field_name=VALUE_SPEC(...)
         let field = self.read_name()?;
         self.skip_whitespace();
         self.expect_char('=')?;
@@ -553,7 +546,6 @@ mod tests {
 
     #[test]
     fn test_invalid_missing_paren() {
-        // Missing opening paren after type keyword.
         assert!(parse("Sum\"Item\".Amount").is_err());
     }
 
@@ -686,7 +678,6 @@ mod proptest_tests {
         "[A-Za-z][A-Za-z0-9_]{0,11}".prop_map(|s| s)
     }
 
-    /// Generate a quoted name (wrapped in double-quotes at the formula level).
     fn quoted_name_str(inner: String) -> String {
         format!("\"{inner}\"")
     }
@@ -740,10 +731,8 @@ mod proptest_tests {
                 let table_str = quoted_name_str(table.clone());
                 let field_str = quoted_name_str(field.clone());
 
-                // Whether this formula type needs a field name.
                 let has_field = needs_field(ftype);
 
-                // Strategy for the WHERE clause: None, one condition, two conditions.
                 let cond_str_strategy = where_condition_str(cond_field.clone());
                 let cond_str_strategy2 = where_condition_str(format!("{cond_field}2"));
 

@@ -56,21 +56,12 @@ const TABLE_AL: &str = r#"table 50100 "Test Table"
     }
 }"#;
 
-// ---------------------------------------------------------------------------
-// Initialize / capabilities
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_server_starts_and_initializes() {
     let project_dir = test_project_dir();
     let client = LspClient::spawn(&project_dir).await.unwrap();
-    // If we get here, initialize succeeded
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Document symbols
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_document_symbols_codeunit() {
@@ -132,10 +123,6 @@ async fn test_document_symbols_table() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Semantic tokens
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_semantic_tokens_produced() {
     let project_dir = test_project_dir();
@@ -151,10 +138,6 @@ async fn test_semantic_tokens_produced() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Hover
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_hover_on_procedure_name() {
@@ -204,16 +187,11 @@ async fn test_hover_on_parameter() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Completions
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_completions_in_procedure_body() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
-    // Put cursor after "M" to get completions
     let code = r#"codeunit 50100 "Test"
 {
     procedure DoWork()
@@ -236,10 +214,6 @@ async fn test_completions_in_procedure_body() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Go to definition
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_goto_definition_local_variable() {
     let project_dir = test_project_dir();
@@ -256,10 +230,6 @@ async fn test_goto_definition_local_variable() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// References
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_find_references_variable() {
@@ -278,10 +248,6 @@ async fn test_find_references_variable() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Folding ranges
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_folding_ranges() {
@@ -307,16 +273,11 @@ async fn test_folding_ranges() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Formatting
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_formatting() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
-    // Poorly indented code
     let code = r#"codeunit 50100 "Test"
 {
 procedure DoWork()
@@ -328,8 +289,6 @@ end;
     client.open_file("src/test.al", code).await;
 
     let edits = client.format("src/test.al").await;
-    // Should produce formatting edits (or empty if already formatted)
-    // The code above is NOT properly indented, so we expect edits
     assert!(
         !edits.is_empty(),
         "Should produce formatting edits for poorly indented code"
@@ -337,10 +296,6 @@ end;
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Diagnostics
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_diagnostics_published_on_open() {
@@ -367,10 +322,6 @@ async fn test_diagnostics_published_on_open() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Rename
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_rename_variable() {
     let project_dir = test_project_dir();
@@ -378,7 +329,6 @@ async fn test_rename_variable() {
 
     client.open_file("src/test.al", CODEUNIT_AL).await;
 
-    // Rename "Msg" on line 4 to "MyMessage"
     let edit = client.rename("src/test.al", 4, 8, "MyMessage").await;
     assert!(
         edit.is_some(),
@@ -388,16 +338,11 @@ async fn test_rename_variable() {
     client.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Workspace symbols
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_workspace_symbol_search() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
-    // Open a file so it gets indexed
     client.open_file("src/test.al", CODEUNIT_AL).await;
 
     // initialize() polls workspace/symbol until symbols are present, so after
@@ -408,7 +353,6 @@ async fn test_workspace_symbol_search() {
         "workspace/symbol should return results after opening a file with 'Test' in its name. Got 0 results."
     );
 
-    // Verify basic structure: each symbol must have name and location
     for sym in &symbols {
         assert!(
             sym.get("name").and_then(|n| n.as_str()).is_some(),
@@ -422,10 +366,6 @@ async fn test_workspace_symbol_search() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Hover on local variables (TypeResolver integration)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_hover_on_local_variable() {
@@ -470,7 +410,6 @@ async fn test_hover_on_local_variable_with_record_type() {
 
     client.open_file("src/test.al", code).await;
 
-    // Hover on CustomerRec at line 6, col 8
     let hover = client.hover("src/test.al", 6, 8).await;
     assert!(
         hover.is_some(),
@@ -487,10 +426,6 @@ async fn test_hover_on_local_variable_with_record_type() {
 
     client.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Completions include local variables
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_completions_include_local_variables() {
@@ -510,7 +445,6 @@ async fn test_completions_include_local_variables() {
 
     client.open_file("src/test.al", code).await;
 
-    // Get completions inside the procedure body (line 7, inside begin..end)
     let completions = client.completion("src/test.al", 7, 8).await;
     let labels = completion_labels(&completions);
 

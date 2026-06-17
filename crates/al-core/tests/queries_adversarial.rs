@@ -28,10 +28,6 @@ use al_core::symbols::model::{ObjectKind, SymbolEntry};
 use al_core::workspace::Workspace;
 use std::path::PathBuf;
 
-// ---------------------------------------------------------------------------
-// dead_code
-// ---------------------------------------------------------------------------
-
 #[test]
 fn dead_code_empty_workspace_returns_empty() {
     // Negative: a workspace with no files must not panic and must
@@ -57,10 +53,6 @@ fn dead_code_workspace_with_parse_error_does_not_panic() {
     let _ = dead_code(&ws);
 }
 
-// ---------------------------------------------------------------------------
-// impact
-// ---------------------------------------------------------------------------
-
 #[test]
 fn impact_unknown_symbol_returns_empty() {
     // Negative: asking for impact of a symbol that doesn't exist in the
@@ -82,20 +74,12 @@ fn impact_empty_query_returns_empty() {
     assert!(result.is_empty(), "impact(\"\") must be empty");
 }
 
-// ---------------------------------------------------------------------------
-// obsolescence
-// ---------------------------------------------------------------------------
-
 #[test]
 fn obsolescence_empty_workspace_returns_empty() {
     let ws = Workspace::new();
     let result = obsolescence_timeline(&ws);
     assert!(result.is_empty());
 }
-
-// ---------------------------------------------------------------------------
-// sql_patterns
-// ---------------------------------------------------------------------------
 
 #[test]
 fn sql_patterns_empty_workspace_returns_empty() {
@@ -128,10 +112,6 @@ fn sql_patterns_file_without_procedures_returns_empty() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// suggest_event
-// ---------------------------------------------------------------------------
-
 #[test]
 fn suggest_event_for_nonexistent_procedure_does_not_panic() {
     // Negative: querying for an event source that doesn't exist must
@@ -147,10 +127,6 @@ fn suggest_event_for_nonexistent_procedure_does_not_panic() {
     };
     let _ = suggest_event(&ws, &q);
 }
-
-// ---------------------------------------------------------------------------
-// breaking_changes / upgrade
-// ---------------------------------------------------------------------------
 
 #[test]
 fn analyze_breaking_changes_both_empty_returns_empty() {
@@ -203,10 +179,6 @@ fn upgrade_report_empty_inputs_returns_empty() {
     assert!(result.is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// deps (build_dependency_graph)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn build_dependency_graph_malformed_app_json_does_not_panic() {
     // Negative: an app.json with invalid JSON must not panic — the
@@ -241,10 +213,6 @@ fn build_dependency_graph_missing_dependency_is_reported() {
         graph.missing
     );
 }
-
-// ---------------------------------------------------------------------------
-// profiler_hints (parse_profile)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_profile_malformed_json_returns_err() {
@@ -285,10 +253,6 @@ fn parse_profile_missing_nodes_array_returns_err() {
         "profile JSON without 'nodes' must return Err"
     );
 }
-
-// ---------------------------------------------------------------------------
-// bulk_fix (add_application_area)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn bulk_fix_add_application_area_nonexistent_dir_returns_err_or_empty() {

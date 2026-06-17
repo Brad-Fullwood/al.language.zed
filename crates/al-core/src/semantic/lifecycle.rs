@@ -135,6 +135,7 @@ impl SemanticCache {
         self.types.is_empty()
     }
 
+    /// Cache hit/miss statistics: (hits, misses).
     pub fn stats(&self) -> (u64, u64) {
         (
             self.hits.load(Ordering::Relaxed),
@@ -149,6 +150,12 @@ impl Default for SemanticCache {
     }
 }
 
+/// Store builtins in the workspace and build the semantic cache.
+///
+/// This should be called whenever builtins are loaded (from disk cache or bridge).
+/// Both write locks are held simultaneously to make the update atomic — no reader
+/// can observe one written without the other. A double-check on `builtins_guard`
+/// prevents a second concurrent caller from overwriting a just-written value.
 pub fn set_builtins(workspace: &Workspace, builtins: Vec<BuiltinType>, version: &str) {
     let mut builtins_guard = workspace
         .builtins
@@ -175,6 +182,12 @@ pub fn set_builtins(workspace: &Workspace, builtins: Vec<BuiltinType>, version: 
 
 pub const MAX_RESTARTS: u32 = 3;
 
+/// Shared CLR init logic: spawn_blocking SemanticBridge::new, re-acquire the write
+/// lock, triple-check, and insert. Returns the bridge on success.
+///
+/// Callers must drop any write lock they hold before calling this, and must
+/// have already performed a double-check (lock → is_some → drop) to avoid
+/// redundant inits.
 async fn init_bridge_inner(
     workspace: &Workspace,
     toolchain: crate::toolchain::AlToolchain,
@@ -207,6 +220,12 @@ async fn init_bridge_inner(
     }
 }
 
+/// Get the semantic bridge, initializing it lazily if needed.
+///
+/// Returns None if:
+/// - No toolchain is available
+/// - Bridge init fails
+/// - Max restarts exceeded
 pub async fn get_or_init_bridge(
     workspace: &Workspace,
 ) -> Option<RwLockReadGuard<'_, Option<SemanticBridge>>> {
@@ -233,6 +252,7 @@ pub async fn get_or_init_bridge(
         return Some(write_guard.downgrade());
     }
 
+    // Release write lock before the shared init helper takes over
     drop(write_guard);
 
     match init_bridge_inner(workspace, toolchain).await {
@@ -250,8 +270,13 @@ pub async fn get_or_init_bridge(
     }
 }
 
-/// The restart counter is incremented only after all early-return checks pass,
-/// so `NoToolchain` errors and concurrent-restore early returns do not consume restart slots.
+/// Restart the bridge after a crash or error.
+///
+/// Increments the restart counter and re-initializes. Returns Err if
+/// the restart limit has been reached or no toolchain is available.
+/// The counter is only incremented after all early-return checks pass,
+/// so `NoToolchain` errors and concurrent-restore early returns do not
+/// consume restart slots.
 pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::AlError> {
     use crate::errors::AlError;
 
@@ -272,6 +297,12 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
         drop(old);
     }
 
+    // NOTE: Between take() above and re-acquiring the write lock below, another
+    // task could start its own init via get_or_init_bridge. This race is safe:
+    // the triple-check inside init_bridge_inner prevents overwriting a bridge that
+    // was just restored. Worst case is a redundant CLR init (resource waste, not
+    // a correctness bug).
+
     let toolchain = workspace
         .toolchain
         .read()
@@ -287,6 +318,7 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
         return Ok(());
     }
 
+    // All early-return checks passed — now consume a restart slot.
     let count = workspace
         .bridge_restart_count
         .fetch_add(1, Ordering::Relaxed)
@@ -300,6 +332,7 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
 
     tracing::info!(attempt = count, "Restarting semantic bridge");
 
+    // Release write lock before the shared init helper takes over
     drop(write_guard);
 
     match init_bridge_inner(workspace, toolchain).await {
@@ -325,6 +358,12 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
     }
 }
 
+/// Shut down the bridge, releasing the .NET CLR.
+///
+/// The taken `Option<SemanticBridge>` is dropped explicitly so the CLR
+/// teardown (via `DotNetHost::_context: HostfxrContext`) actually runs;
+/// `let _ = …take()` would have the same runtime effect but trips
+/// `clippy::let_underscore_drop` and obscures the intent.
 pub async fn shutdown_bridge(workspace: &Workspace) {
     drop(workspace.semantic.write().await.take());
 }
@@ -490,6 +529,12 @@ mod tests {
         assert!(ws.semantic.read().await.is_none());
     }
 
+    /// Locks in the invariant that `shutdown_bridge` actually replaces the
+    /// stored `Some(_)` with `None` (regardless of whether the inner value's
+    /// Drop chain has observable side effects in this build configuration).
+    /// Regression cover for T066: prior `let _ = …take()` was indistinguishable
+    /// from `…take(); drop(_)` only as long as the take's value is genuinely
+    /// dropped here.
     #[tokio::test]
     async fn shutdown_replaces_some_with_none() {
         let ws = Workspace::new();
@@ -507,6 +552,8 @@ mod tests {
 
         let ws = Workspace::new();
 
+        // A toolchain must be present so the function reaches the counter check —
+        // NoToolchain is returned before the counter is ever incremented.
         let dummy_toolchain = AlToolchain {
             alc: "/dev/null".into(),
             aldoc: None,
@@ -529,10 +576,13 @@ mod tests {
 
         let result = restart_bridge(&ws).await;
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            AlError::BridgeRestartLimitExceeded { .. }
-        ));
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                AlError::BridgeRestartLimitExceeded { .. }
+            ),
+            "Should be BridgeRestartLimitExceeded"
+        );
     }
 
     #[tokio::test]
@@ -541,7 +591,11 @@ mod tests {
 
         assert_eq!(ws.bridge_restart_count.load(Ordering::Relaxed), 0);
         let _ = restart_bridge(&ws).await;
-        assert_eq!(ws.bridge_restart_count.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            ws.bridge_restart_count.load(Ordering::Relaxed),
+            0,
+            "NoToolchain early return must not consume a restart slot"
+        );
     }
 
     #[tokio::test]
@@ -583,6 +637,7 @@ mod tests {
 
         let mut found = cache.find_methods_by_name("compute");
         assert_eq!(found.len(), 2, "both types' Compute must be returned");
+        // Sort for a deterministic assertion (HashMap iteration order is unspecified).
         found.sort_by(|a, b| a.0.cmp(b.0));
         assert_eq!(found[0].0, "Alpha");
         assert_eq!(found[0].1.return_type.as_deref(), Some("Integer"));
@@ -651,6 +706,8 @@ mod tests {
         let ws = Workspace::new();
         set_builtins(&ws, sample_builtins(), "1.0.0");
 
+        // A second call with the SAME version and a DIFFERENT (smaller) payload
+        // must be skipped — the concurrent double-check keeps the first write.
         let single = vec![BuiltinType {
             name: "OnlyOne".to_string(),
             methods: vec![],
@@ -696,6 +753,8 @@ mod tests {
 
     #[test]
     fn set_builtins_into_empty_workspace_accepts_empty_payload() {
+        // An empty payload on a fresh workspace: builtins stay empty, but the
+        // cache version is updated to reflect the toolchain that was probed.
         let ws = Workspace::new();
         set_builtins(&ws, vec![], "1.0.0");
         let builtins = ws.builtins.read().unwrap();

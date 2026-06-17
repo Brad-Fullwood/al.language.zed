@@ -16,6 +16,8 @@ use crate::insight::index::{CallGraph, EdgeResolutionState, NodeId};
 use crate::symbols::ParameterSymbol;
 use crate::workspace::Workspace;
 
+/// Resolve an object's `ObjectKind` from the symbol index, defaulting to
+/// `Codeunit` when the object is not found.
 fn resolve_object_kind(workspace: &Workspace, object_name: &str) -> ObjectKind {
     workspace
         .symbols
@@ -248,6 +250,7 @@ fn query_table(
     );
 
     let table_lower = table_name.to_lowercase();
+    // Scan ALL event publishers for those with a `var Record "TableName"` parameter.
     let all_events = crate::symbols::get_events(&workspace.symbols, "");
     for pub_event in &all_events.publishers {
         let has_table_var = pub_event
@@ -369,7 +372,10 @@ fn query_event(
     }
 }
 
-// Bundling all args into a Context struct moves cognitive load rather than reducing it.
+/// Recursively trace from a node, collecting events along the way.
+// All arguments are recursion state (graph / call-graph / current node / visited
+// set / filter / accumulator / depth) that flows through every call. Bundling
+// them into a Context struct moves the cognitive load rather than reducing it.
 #[allow(clippy::too_many_arguments)]
 fn trace_from_node(
     node_id: NodeId,
@@ -487,10 +493,13 @@ fn trace_from_node(
             }
         }
 
-        InsightNode::Object { .. } => {}
+        InsightNode::Object { .. } => {
+            // Objects are not traced directly.
+        }
     }
 }
 
+/// Collect events directly published by `object_name` of `object_kind`.
 fn collect_published_events(
     insight: &InsightGraph,
     symbols: &Arc<SymbolIndex>,
@@ -572,6 +581,7 @@ fn lookup_event_params(
     Vec::new()
 }
 
+/// Generate a ready-to-paste [EventSubscriber] attribute.
 fn format_example(object_kind: ObjectKind, object_name: &str, event_name: &str) -> String {
     let kind_str = format!("{object_kind}");
     format!(
@@ -579,6 +589,7 @@ fn format_example(object_kind: ObjectKind, object_name: &str, event_name: &str) 
     )
 }
 
+/// Remove duplicate integration points by (object, event) key.
 fn dedup_points(points: Vec<IntegrationPoint>) -> Vec<IntegrationPoint> {
     let mut seen: HashSet<(String, String)> = HashSet::new();
     points
@@ -621,6 +632,7 @@ fn apply_filters(
         .collect()
 }
 
+/// Check whether `type_name` is a `Record "TableName"` or `Record TableName` reference.
 fn is_record_of_table(type_name: &str, table_lower: &str) -> bool {
     let tn = type_name.to_lowercase();
     let rest = if let Some(r) = tn.strip_prefix("record") {
@@ -903,6 +915,15 @@ mod tests {
         assert_eq!(deduped.len(), 1);
     }
 
+    // -----------------------------------------------------------------------
+    // Traversal-safety tests (white-box, exercise trace_from_node directly).
+    //
+    // The depth limit and `visited` set are the two safeguards that keep
+    // call-graph traversal bounded on deep, cyclic, or fan-out graphs. The
+    // higher-level query tests above only build shallow, acyclic graphs, so
+    // these drive the recursion bounds explicitly via a hand-built graph.
+    // -----------------------------------------------------------------------
+
     use crate::insight::graph::InsightEdge;
 
     fn add_proc(g: &mut InsightGraph, object: &str, name: &str) -> NodeId {
@@ -973,6 +994,9 @@ mod tests {
 
     #[test]
     fn trace_deep_call_chain_respects_max_depth() {
+        // Build a 15-deep linear chain P0 -> P1 -> ... -> P14, where every
+        // procedure also publishes an event Ek. With max_depth = 10 the trace
+        // must stop before reaching the deeper events.
         let mut g = InsightGraph::new();
         let chain: Vec<NodeId> = (0..15)
             .map(|i| add_proc(&mut g, "CU", &format!("P{i}")))
@@ -986,6 +1010,7 @@ mod tests {
         for i in 0..14 {
             cg.add_direct_call(chain[i], chain[i + 1]);
         }
+        // Each Pi calls its event Ei (a DirectCall edge into the Event node).
         for i in 0..15 {
             cg.add_direct_call(chain[i], events[i]);
         }
@@ -1008,6 +1033,8 @@ mod tests {
             10,
         );
 
+        // Every reported event must lie within the depth bound. Each path's
+        // length (number of hops) cannot exceed max_depth.
         assert!(!points.is_empty(), "should discover some events");
         for p in &points {
             assert!(
@@ -1027,10 +1054,15 @@ mod tests {
 
     #[test]
     fn trace_circular_subscriptions_terminate() {
+        // Cycle: ProcA -> EventA -(subscription)-> SubB -> EventB
+        //        -(subscription)-> SubA -> EventA (back to start).
+        // The visited set must break the cycle and the trace must terminate.
         let mut g = InsightGraph::new();
         let proc_a = add_proc(&mut g, "CU", "ProcA");
         let event_a = add_event(&mut g, "CU", "EventA");
         let event_b = add_event(&mut g, "CU", "EventB");
+        // Subscriber nodes; SubscribesTo edges are what build_from_insight
+        // turns into EventSubscription edges (followed when tracing an Event).
         let sub_b = add_subscriber(&mut g, "CU", "SubB", "CU", "EventA");
         let sub_a = add_subscriber(&mut g, "CU", "SubA", "CU", "EventB");
 
@@ -1043,6 +1075,7 @@ mod tests {
         let g = Arc::new(g);
 
         let mut cg = CallGraph::build_from_insight(&g);
+        // ProcA publishes EventA; SubB calls EventB; SubA calls EventA (cycle).
         cg.add_direct_call(proc_a, event_a);
         cg.add_direct_call(sub_b, event_b);
         cg.add_direct_call(sub_a, event_a);
@@ -1051,6 +1084,7 @@ mod tests {
         let mut points = Vec::new();
         let mut visited = HashSet::new();
         let mut partial = false;
+        // Must return (not hang / overflow) despite the cycle.
         trace_from_node(
             proc_a,
             &g,
@@ -1064,9 +1098,11 @@ mod tests {
             10,
         );
 
+        // Both events are reachable exactly once; the cycle does not blow up.
         let events: HashSet<&str> = points.iter().map(|p| p.event.as_str()).collect();
         assert!(events.contains("EventA"));
         assert!(events.contains("EventB"));
+        // Each node is visited at most once, so each event appears once.
         assert_eq!(
             points.iter().filter(|p| p.event == "EventA").count(),
             1,
@@ -1076,6 +1112,11 @@ mod tests {
 
     #[test]
     fn trace_fanout_graph_bounded() {
+        // A 3-wide fan-out at each of 3 levels: root calls 3 children, each
+        // child calls 3 grandchildren, each grandchild publishes an event.
+        // The visited set keeps shared nodes from being re-explored, so the
+        // number of discovered events is bounded by the node count, not the
+        // number of distinct root->leaf paths.
         let mut g = InsightGraph::new();
         let root = add_proc(&mut g, "CU", "Root");
         let children: Vec<NodeId> = (0..3)
@@ -1120,6 +1161,7 @@ mod tests {
             10,
         );
 
+        // All 9 leaf events discovered, each exactly once (no exponential blowup).
         assert_eq!(
             points.len(),
             9,

@@ -83,7 +83,6 @@ async fn test_document_symbols_missing_file_returns_empty() {
     );
 }
 
-// Recursively collect symbol names from an LSP DocumentSymbol tree.
 fn collect_symbol_names(symbols: &[serde_json::Value]) -> Vec<String> {
     let mut out = Vec::new();
     for s in symbols {
@@ -122,7 +121,6 @@ fn code_lens_test_kind_wire_format_is_recognised() {
         "kind": "test",
         "status": { "kind": "notRun" }
     });
-    // Wire format check: must round-trip via serde_json
     let s = serde_json::to_string(&sample).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
     assert_eq!(parsed["kind"], "test");
@@ -152,7 +150,6 @@ async fn code_lens_e2e_returns_test_lenses_for_test_procedures() {
 
     let lenses = client.code_lens(PURE_LOGIC_REL).await;
 
-    // Must produce *some* lenses for a file with `[Test]` procedures.
     assert!(
         !lenses.is_empty(),
         "expected non-empty code-lens response for fixture with [Test] procs; got: {lenses:?}"
@@ -171,7 +168,6 @@ async fn code_lens_e2e_returns_test_lenses_for_test_procedures() {
         })
         .collect();
 
-    // Expect at least 2: one per `[Test]` proc (TestAddition + TestStringConcat).
     assert!(
         test_lenses.len() >= 2,
         "expected ≥2 test lenses (one per [Test] proc); got {} : {test_lenses:?}",

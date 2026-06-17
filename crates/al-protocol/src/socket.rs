@@ -60,7 +60,6 @@ fn runtime_dir() -> Option<String> {
         return Some(dir);
     }
 
-    // Linux fallback: read real UID from /proc/self/status without libc.
     #[cfg(target_os = "linux")]
     {
         let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -68,7 +67,6 @@ fn runtime_dir() -> Option<String> {
             // "Uid:\t<ruid>\t<euid>\t<suid>\t<fsuid>"
             if let Some(rest) = line.strip_prefix("Uid:") {
                 let uid = rest.split_whitespace().next()?;
-                // Validate that it parses as a number before using it in a path.
                 let _: u64 = uid.parse().ok()?;
                 return Some(format!("/run/user/{uid}"));
             }

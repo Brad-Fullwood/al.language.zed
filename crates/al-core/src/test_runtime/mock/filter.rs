@@ -24,7 +24,6 @@ pub enum FilterParseError {
     InvalidRange(String, String),
 }
 
-/// A parsed BC filter expression.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterExpr {
     /// Logical OR of two sub-expressions (`|`).
@@ -34,7 +33,6 @@ pub enum FilterExpr {
     Atom(FilterAtom),
 }
 
-/// A single filter predicate.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterAtom {
     /// Equality check (possibly with wildcards).
@@ -61,7 +59,6 @@ pub struct Pattern {
     pub case_sensitive: bool,
 }
 
-/// A concrete value extracted from the filter expression for ordering.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrderableValue {
     Integer(i64),
@@ -252,7 +249,6 @@ impl<'a> Parser<'a> {
         let first = self.peek().unwrap();
 
         if first == '\'' || first == '"' {
-            // Quoted string — read until matching close quote.
             let quote = first;
             self.advance();
             loop {
@@ -263,8 +259,6 @@ impl<'a> Parser<'a> {
                 }
             }
         } else {
-            // Unquoted token — read until delimiter.
-            // Delimiters: whitespace, `|`, `&`, `)`, `(`, but NOT inside the token.
             loop {
                 match self.peek() {
                     None | Some(' ') | Some('\t') | Some('|') | Some('&') | Some(')') => break,
@@ -296,9 +290,6 @@ fn parse_orderable_str(s: &str) -> Option<OrderableValue> {
     Some(OrderableValue::Text(s.to_string()))
 }
 
-/// Parse a BC filter expression string into a [`FilterExpr`] AST.
-///
-/// Returns [`FilterParseError`] if the expression is syntactically invalid.
 pub fn parse(expr: &str) -> Result<FilterExpr, FilterParseError> {
     let trimmed = expr.trim();
     if trimmed.is_empty() {
@@ -316,7 +307,6 @@ pub fn parse(expr: &str) -> Result<FilterExpr, FilterParseError> {
     Ok(result)
 }
 
-/// Test whether `value` satisfies the filter expression `expr`.
 pub fn matches(expr: &FilterExpr, value: &Value) -> bool {
     match expr {
         FilterExpr::Or(terms) => terms.iter().any(|t| matches(t, value)),
@@ -345,7 +335,6 @@ fn pattern_matches(pat: &Pattern, value: &Value) -> bool {
     wildcard_match(&pat.text, &text_repr, !pat.case_sensitive)
 }
 
-/// Convert a Value to its string form for filter comparisons.
 fn value_to_filter_string(value: &Value) -> String {
     match value {
         Value::Text(s) | Value::Code(s) => s.clone(),
@@ -440,7 +429,6 @@ mod tests {
         // Quoted text without @ is case-insensitive (BC default).
         let expr = parse("'Hello'").unwrap();
         assert!(matches(&expr, &text("Hello")));
-        // Case-insensitive by default — lowercase also matches.
         assert!(matches(&expr, &text("hello")));
         assert!(!matches(&expr, &text("World")));
     }
@@ -598,13 +586,11 @@ mod tests {
     fn test_invalid_missing_range_end() {
         // A lone `..` with nothing after is an error.
         let result = parse("100..");
-        // Either parse error or the right side is empty → error.
         assert!(result.is_err());
     }
 
     #[test]
     fn test_set_range_only_matches_within() {
-        // Simulate SetRange(field, 10..=20): value must be in [10,20].
         let expr = parse("10..20").unwrap();
         for n in 10i64..=20 {
             assert!(matches(&expr, &int(n)), "Expected {n} to match 10..20");
@@ -625,13 +611,10 @@ mod tests {
         }
     }
 
-    // Vector 9: Wildcard edge cases.
-
     // Double-star `**` should behave same as `*` (match anything).
     #[test]
     fn test_wildcard_double_star_adversarial_i_9a() {
         let expr = parse("A**B").unwrap();
-        // `**` = two consecutive stars = same as `*` — matches "A<anything>B".
         assert!(matches(&expr, &text("AxxxxB")), "A**B must match AxxxxB");
         assert!(
             matches(&expr, &text("AB")),
@@ -643,7 +626,6 @@ mod tests {
         );
     }
 
-    // `?` alone matches any single character.
     #[test]
     fn test_wildcard_single_question_adversarial_i_9b() {
         let expr = parse("?").unwrap();
@@ -679,8 +661,6 @@ mod tests {
         );
     }
 
-    // Vector 10: Range edge cases.
-
     // `..100` (open lower bound) — BC treats this as "everything up to 100".
     // The current parser rejects it with an error because read_token returns
     // UnexpectedEnd for empty first token before `..`.
@@ -693,7 +673,6 @@ mod tests {
         // behaviour so a future fix can be tracked.
         let result = parse("..100");
         // If fixed to match BC: result.is_ok() && matches(&result.unwrap(), &int(50)).
-        // For now we assert it errors (current behaviour).
         assert!(
             result.is_err(),
             "..100 currently rejected — BC supports it as open lower bound"
@@ -706,7 +685,6 @@ mod tests {
     #[test]
     fn test_range_reversed_is_empty_adversarial_i_10b() {
         let expr = parse("100..50").unwrap();
-        // No integer can be both >=100 and <=50.
         assert!(
             !matches(&expr, &int(75)),
             "Reversed range 100..50 must match nothing"
@@ -739,7 +717,6 @@ mod tests {
         assert!(!matches(&expr, &int(3)), "3 alone must not match 1|(2&3)");
     }
 
-    // Vector 13: Case sensitivity with @.
     // `@a` (lowercase) is case-sensitive — must NOT match "A" or "ABCDE".
     // `@A*` (uppercase + wildcard) IS case-sensitive — matches "Apple" but not "apple".
     #[test]
@@ -756,7 +733,6 @@ mod tests {
 
     #[test]
     fn test_at_wildcard_case_sensitive_adversarial_i_13b() {
-        // `@A*` — case-sensitive wildcard, only uppercase-A prefix.
         let expr = parse("@A*").unwrap();
         assert!(matches(&expr, &text("Apple")), "@A* must match 'Apple'");
         assert!(matches(&expr, &text("ABCDE")), "@A* must match 'ABCDE'");
@@ -770,8 +746,6 @@ mod tests {
         );
     }
 
-    // Vector 14: Relational operators on Text — lexicographic ordering.
-    // `>=B` matches "B", "C", "D" but not "A".
     #[test]
     fn test_relational_on_text_adversarial_i_14() {
         let expr = parse(">=B").unwrap();
@@ -787,9 +761,6 @@ mod tests {
         );
     }
 
-    // Vector 20: Decimal precision in range.
-    // `1.5..1.6` — does Value::Decimal(1.55) match?
-    // Does Value::Decimal(1.6000000000000001) match (boundary fp artifact)?
     #[test]
     fn test_decimal_range_precision_adversarial_i_20() {
         let expr = parse("1.5..1.6").unwrap();
@@ -837,7 +808,6 @@ mod proptest_tests {
         "[A-Za-z0-9_]{1,12}".prop_map(|s| s)
     }
 
-    /// Generate a small non-negative integer as a string (safe range token).
     fn int_token() -> impl Strategy<Value = i64> {
         0i64..=1_000_000i64
     }
@@ -942,7 +912,6 @@ mod proptest_tests {
             let s = format!("{lo}..{hi}");
             let expr = parse(&s).expect("range must parse");
 
-            // lo and hi are inclusive endpoints.
             prop_assert!(
                 matches(&expr, &Value::Integer(lo)),
                 "lo={lo} must match range {s}"
@@ -952,7 +921,6 @@ mod proptest_tests {
                 "hi={hi} must match range {s}"
             );
 
-            // lo-1 is outside the range (if not underflow).
             if lo > i64::MIN {
                 prop_assert!(
                     !matches(&expr, &Value::Integer(lo - 1)),
@@ -960,7 +928,6 @@ mod proptest_tests {
                     lo - 1
                 );
             }
-            // hi+1 is outside the range (if not overflow).
             if hi < i64::MAX {
                 prop_assert!(
                     !matches(&expr, &Value::Integer(hi + 1)),
@@ -974,7 +941,6 @@ mod proptest_tests {
         /// parses successfully or returns an `Err` — it NEVER panics.
         #[test]
         fn prop_arbitrary_input_never_panics(s in "\\PC*") {
-            // We don't care about the result; we just assert no panic.
             let _ = parse(&s);
         }
 

@@ -133,7 +133,6 @@ pub fn assert_empty(_args: &[Value]) -> Eval {
     })
 }
 
-/// `AssertFull()` — error if the queue is not full.
 pub fn assert_full(_args: &[Value]) -> Eval {
     QUEUE.with(|q| {
         if q.borrow().is_full() {
@@ -148,7 +147,6 @@ pub fn assert_full(_args: &[Value]) -> Eval {
     })
 }
 
-/// `AssertNotOverflow()` — error if the next Enqueue would overflow.
 pub fn assert_not_overflow(_args: &[Value]) -> Eval {
     QUEUE.with(|q| {
         let len = q.borrow().len();
@@ -160,7 +158,6 @@ pub fn assert_not_overflow(_args: &[Value]) -> Eval {
     })
 }
 
-/// `AssertNotUnderflow()` — error if the queue is empty (dequeue would underflow).
 pub fn assert_not_underflow(_args: &[Value]) -> Eval {
     QUEUE.with(|q| {
         if q.borrow().is_empty() {
@@ -171,7 +168,6 @@ pub fn assert_not_underflow(_args: &[Value]) -> Eval {
     })
 }
 
-/// `AssertPeekAvailable(Index: Integer)` — error if `Index` is out of bounds.
 pub fn assert_peek_available(args: &[Value]) -> Eval {
     let index = match args {
         [Value::Integer(i)] => *i,
@@ -423,6 +419,9 @@ fn format_value(v: &Value) -> String {
     }
 }
 
+/// Resolve a procedure name (case-insensitive) to its Rust implementation.
+///
+/// Returns `None` if the name is unknown to this catalog.
 pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
     match procedure.to_ascii_lowercase().as_str() {
         "assertempty" => Some(assert_empty),
@@ -698,8 +697,6 @@ mod tests {
         assert_fail_contains(dequeue_boolean(&[]), "type mismatch");
     }
 
-    // ── Typed Peek helpers ───────────────────────────────────────────────────
-
     #[test]
     fn peek_text_reads_without_removing() {
         setup();
@@ -708,7 +705,6 @@ mod tests {
             assert_value(peek_text(&[Value::Integer(1)])),
             Value::Text("5".to_string())
         );
-        // Still in queue.
         assert_eq!(assert_value(length(&[])), Value::Integer(1));
     }
 
@@ -724,7 +720,6 @@ mod tests {
 
     #[test]
     fn peek_integer_type_mismatch_is_error() {
-        // Negative: wrong type at that position.
         setup();
         enqueue(&[Value::Text("abc".into())]);
         assert_fail_contains(peek_integer(&[Value::Integer(1)]), "type mismatch");
@@ -732,12 +727,9 @@ mod tests {
 
     #[test]
     fn peek_out_of_bounds_is_error() {
-        // Negative: index beyond queue length.
         setup();
         assert_fail_contains(peek(&[Value::Integer(1)]), "bounds");
     }
-
-    // ── Resolver ─────────────────────────────────────────────────────────────
 
     #[test]
     fn resolve_is_case_insensitive() {
@@ -753,17 +745,13 @@ mod tests {
 
     #[test]
     fn resolve_unknown_returns_none() {
-        // Negative: unknown procedure names yield None.
         assert!(resolve("DoesNotExist").is_none());
         assert!(resolve("").is_none());
         assert!(resolve("EnqueueAll").is_none());
     }
 
-    // ── Mixed-type queue ─────────────────────────────────────────────────────
-
     #[test]
     fn mixed_type_round_trip() {
-        // Enqueue different types and dequeue them in order.
         setup();
         enqueue(&[Value::Integer(1)]);
         enqueue(&[Value::Text("hello".into())]);

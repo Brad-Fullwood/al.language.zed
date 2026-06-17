@@ -66,7 +66,6 @@ async fn test_adversarial_read_loop_missing_content_length_is_skipped() {
     let notif = r#"{"jsonrpc":"2.0","method":"test/ping","params":{"ok":true}}"#;
     write_lsp_message(&mut server_write, notif).await;
 
-    // We should receive the notification within 2 seconds
     let received = timeout(Duration::from_secs(2), notif_rx.recv())
         .await
         .expect("read_loop timed out after skipping malformed header — loop may have exited");
@@ -78,7 +77,6 @@ async fn test_adversarial_read_loop_missing_content_length_is_skipped() {
     let (method, _) = received.unwrap();
     assert_eq!(method, "test/ping");
 
-    // Verify pending_map is still accessible (loop didn't corrupt state)
     assert!(pending_map.try_lock().is_ok());
 }
 
@@ -91,14 +89,12 @@ async fn test_adversarial_read_loop_invalid_json_body_is_skipped() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (_pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
-    // Write a framed message with garbage JSON
     let garbage = b"not { valid ] json at all !!!";
     let header = format!("Content-Length: {}\r\n\r\n", garbage.len());
     server_write.write_all(header.as_bytes()).await.unwrap();
     server_write.write_all(garbage).await.unwrap();
     server_write.flush().await.unwrap();
 
-    // Follow up with a valid notification
     let notif = r#"{"jsonrpc":"2.0","method":"test/alive","params":{}}"#;
     write_lsp_message(&mut server_write, notif).await;
 
@@ -133,7 +129,6 @@ async fn test_adversarial_read_loop_unknown_response_id_is_dropped() {
     let stale = r#"{"jsonrpc":"2.0","id":99999,"result":{"stale":true}}"#;
     write_lsp_message(&mut server_write, stale).await;
 
-    // Follow up with a notification to prove the loop is still alive
     let notif = r#"{"jsonrpc":"2.0","method":"test/still-alive","params":{}}"#;
     write_lsp_message(&mut server_write, notif).await;
 
@@ -168,7 +163,6 @@ async fn test_adversarial_read_loop_zero_content_length_is_skipped() {
         .unwrap();
     server_write.flush().await.unwrap();
 
-    // Follow up with a real notification
     let notif = r#"{"jsonrpc":"2.0","method":"test/post-zero","params":{}}"#;
     write_lsp_message(&mut server_write, notif).await;
 
@@ -209,8 +203,6 @@ async fn test_adversarial_read_loop_truncated_large_body_exits_cleanly() {
     // Close the write half — causes EOF on the client
     drop(server_write);
 
-    // The read_loop should exit (EOF/read error after failed read_exact)
-    // The notification channel should close
     let result = timeout(Duration::from_secs(3), notif_rx.recv()).await;
 
     assert!(
@@ -235,7 +227,6 @@ async fn test_adversarial_read_loop_notification_no_params_defaults_to_null() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (_pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
-    // No "params" key
     let notif = r#"{"jsonrpc":"2.0","method":"test/no-params"}"#;
     write_lsp_message(&mut server_write, notif).await;
 
@@ -266,7 +257,6 @@ async fn test_adversarial_read_loop_float_id_response_is_silently_dropped() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
-    // Register a pending request with id 1
     let (tx, mut rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
     pending_map.lock().await.insert(1, tx);
 
@@ -278,7 +268,6 @@ async fn test_adversarial_read_loop_float_id_response_is_silently_dropped() {
     let notif = r#"{"jsonrpc":"2.0","method":"test/after-float-id","params":{}}"#;
     write_lsp_message(&mut server_write, notif).await;
 
-    // Wait for the notification (proves the loop processed both messages)
     let received = timeout(Duration::from_secs(2), notif_rx.recv())
         .await
         .ok()
@@ -288,7 +277,6 @@ async fn test_adversarial_read_loop_float_id_response_is_silently_dropped() {
         "loop must continue after float-id response"
     );
 
-    // The oneshot should NOT have been resolved — proving the float id was dropped
     let resolved = rx.try_recv();
     assert!(
         resolved.is_err(),
@@ -389,7 +377,6 @@ async fn test_adversarial_read_loop_string_id_response_is_silently_dropped() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (pending_map, _notif_rx) = make_dispatch_pair(client_read);
 
-    // Register a pending request with integer id 42
     let (tx, mut rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
     pending_map.lock().await.insert(42, tx);
 
@@ -397,7 +384,6 @@ async fn test_adversarial_read_loop_string_id_response_is_silently_dropped() {
     let response = r#"{"jsonrpc":"2.0","id":"42","result":{"ok":true}}"#;
     write_lsp_message(&mut server_write, response).await;
 
-    // Give the loop time to process
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let resolved = rx.try_recv();
@@ -552,7 +538,6 @@ fn test_adversarial_drain_notifications_ordering_is_not_externally_verifiable() 
     // no way to verify it without a running server.
     //
     // This is a testability gap — documented here so it isn't lost.
-    // drain_notifications ordering is a private contract — cannot be externally verified.
 }
 
 // ---------------------------------------------------------------------------
@@ -586,7 +571,6 @@ async fn test_adversarial_read_loop_content_length_trailing_whitespace_is_tolera
         .expect("read_loop hung — expected whitespace-cl to be delivered");
 
     let (method, _) = received.unwrap();
-    // The message with trailing whitespace in Content-Length IS delivered
     assert_eq!(
         method, "test/whitespace-cl",
         "trailing whitespace in Content-Length value must be tolerated (line trim() covers it)"

@@ -23,25 +23,34 @@ pub enum SourceLevel {
 pub struct SourceResult {
     pub k: ObjectKind,
     pub id: i32,
+    /// Object name.
     pub n: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proc_name: Option<String>,
     pub src: SourceLevel,
+    /// Package name (for package/outline sources).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pkg: Option<String>,
+    /// Procedure signature (if filtered to a specific procedure).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sig: Option<String>,
+    /// Source code range in workspace file (if workspace + procedure filter).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub range: Option<SourceRange>,
     pub code: String,
+    /// Note about the source (e.g., for outline mode).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
+/// File range for workspace source.
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceRange {
+    /// Relative file path.
     pub f: String,
+    /// Start line (1-based).
     pub l: u32,
+    /// End line (1-based).
     pub end: u32,
 }
 
@@ -188,6 +197,7 @@ fn try_package_source(
         }
     }
 
+    // Render outline from SymbolReference.json (standard output for packages without source)
     let member_filter = proc_filter.or(trigger_filter);
     if let Some(member_name) = member_filter {
         let method = entry
@@ -230,7 +240,10 @@ fn try_package_source(
     })
 }
 
-/// Iterative traversal — explicit stack avoids stack overflow on deeply nested AL.
+/// Find a procedure/trigger node in a tree-sitter tree and return (node, signature).
+///
+/// Iterative tree-sitter traversal — explicit stack avoids stack overflow on
+/// deeply nested AL (per project convention; see CLAUDE.md "Tree-sitter Traversal").
 fn find_procedure_node<'a>(
     root: &'a tree_sitter::Node<'a>,
     source: &str,
@@ -250,6 +263,8 @@ fn find_procedure_node<'a>(
                 }
             }
         }
+        // Push children in reverse so leftmost child is processed first (preserves
+        // original pre-order traversal semantics).
         let mut cursor = node.walk();
         let children: Vec<_> = node.children(&mut cursor).collect();
         for child in children.into_iter().rev() {
@@ -260,6 +275,7 @@ fn find_procedure_node<'a>(
 }
 
 fn extract_signature_from_text(text: &str) -> String {
+    // Take text up to and including the first closing paren that completes the signature
     let mut depth = 0i32;
     let mut end = 0;
     for (i, ch) in text.char_indices() {
@@ -272,6 +288,7 @@ fn extract_signature_from_text(text: &str) -> String {
                     let rest = &text[end..];
                     let same_line = rest.split('\n').next().unwrap_or("");
                     if let Some(colon_pos) = same_line.find(':') {
+                        // Include the return type (everything after ':' on same line)
                         let return_part = same_line[colon_pos..].trim_end_matches(';').trim_end();
                         end = end + colon_pos + return_part.len();
                     }
@@ -300,6 +317,11 @@ fn extract_procedure_from_text(source: &str, name: &str) -> Option<(String, Stri
     Some((code, sig))
 }
 
+/// Render a complete outline from a SymbolEntry.
+///
+/// Delegates to [`crate::symbols::virtual_file::render_outline`] which produces
+/// valid AL syntax with full procedure signatures, fields, keys, enum values,
+/// event declarations with attributes, and global variables.
 pub fn render_outline(entry: &SymbolEntry) -> String {
     crate::symbols::virtual_file::render_outline(entry)
 }
@@ -314,19 +336,28 @@ pub fn render_method_signature(m: &MethodSymbol) -> String {
     sig
 }
 
+// ---------------------------------------------------------------------------
+// Event-source resolution — `al-explorer event-source` (FB-9/FB-10)
+// ---------------------------------------------------------------------------
+
 /// Result of resolving the publisher behind an `[EventSubscriber(...)]`
 /// attribute at a cursor position.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventSourceResult {
+    /// Publisher object kind from the attribute's `ObjectType::` argument.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_kind: Option<ObjectKind>,
     pub target_object: String,
     pub target_event: String,
+    /// Resolved publisher declaration file — a workspace `.al` file or a
+    /// virtual file materialised from a symbol package.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// 1-based line of the event declaration within `path`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+    /// The declaration line text (trimmed), as a human-readable signature.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     /// True when `path` is a virtual file extracted from a `.app` package.
@@ -359,7 +390,9 @@ pub fn event_source(
         })
         .ok_or_else(|| format!("Cannot read or parse '{}'", file.display()))?;
 
-    let target_row = line_1based.saturating_sub(1) as usize; // tree-sitter rows are 0-based
+    // Find the procedure/trigger declaration containing (or starting at)
+    // the requested line. tree-sitter rows are 0-based.
+    let target_row = line_1based.saturating_sub(1) as usize;
     let mut proc_node: Option<tree_sitter::Node> = None;
     let mut stack = vec![tree.root_node()];
     while let Some(current) = stack.pop() {
@@ -445,6 +478,7 @@ pub fn event_source(
     if let Some(kind) = target_kind {
         candidates.retain(|e| e.kind == kind);
     }
+    // Prefer the entry that actually declares the event.
     candidates.sort_by_key(|e| {
         let has_event = e
             .methods
@@ -517,6 +551,8 @@ pub fn event_source(
     })
 }
 
+/// Find a procedure/trigger declaration by name in a parsed tree; returns
+/// (1-based line, trimmed declaration-line text).
 fn find_procedure_decl_line(
     root: tree_sitter::Node,
     source: &str,
@@ -862,6 +898,9 @@ mod tests {
         assert_eq!(outline, "codeunit 50100 \"Empty CU\"\n{\n}\n");
     }
 
+    /// Regression for the recursive→iterative conversion of find_procedure_node:
+    /// a deeply nested if-then-begin chain used to risk stack overflow under recursion.
+    /// The iterative version must locate a procedure regardless of nesting depth.
     #[test]
     fn find_procedure_node_handles_deep_nesting() {
         const DEPTH: usize = 200;
@@ -887,8 +926,12 @@ mod tests {
         );
     }
 
+    // -- extract_signature_from_text edge / boundary paths -----------------
+
     #[test]
     fn extract_signature_no_parens_falls_back_to_first_line() {
+        // No '(' or ')' at all: `end` stays 0 and the function returns the
+        // first line (fallback branch).
         let text = "trigger OnInsert\nbegin\nend;";
         let sig = extract_signature_from_text(text);
         assert_eq!(sig, "trigger OnInsert");
@@ -896,6 +939,7 @@ mod tests {
 
     #[test]
     fn extract_signature_strips_trailing_semicolon_on_return_type() {
+        // Return type on the same line, terminated by ';' — the ';' must be stripped.
         let text = "procedure GetValue(): Decimal;\nbegin\nend;";
         let sig = extract_signature_from_text(text);
         assert_eq!(sig, "procedure GetValue(): Decimal");
@@ -903,16 +947,20 @@ mod tests {
 
     #[test]
     fn extract_signature_empty_input_returns_empty() {
+        // No parens, no newline: lines().next() yields "" -> fallback returns "".
         let sig = extract_signature_from_text("");
         assert_eq!(sig, "");
     }
 
     #[test]
     fn extract_signature_no_return_type_after_close_paren() {
+        // ')' closes the signature and the rest of the line has no ':'.
         let text = "procedure Foo(a: Integer) // comment\nbegin\nend;";
         let sig = extract_signature_from_text(text);
         assert_eq!(sig, "procedure Foo(a: Integer)");
     }
+
+    // -- extract_procedure_from_text ---------------------------------------
 
     #[test]
     fn extract_procedure_from_text_finds_target() {
@@ -929,6 +977,8 @@ mod tests {
         assert!(extract_procedure_from_text(src, "DoesNotExist").is_none());
     }
 
+    // -- find_procedure_node branches --------------------------------------
+
     #[test]
     fn find_procedure_node_matches_trigger_and_quoted_name_case_insensitive() {
         let src = "table 50100 \"My Tab\"\n{\n    trigger OnInsert()\n    begin\n    end;\n\n    procedure \"Do Work\"()\n    begin\n    end;\n}\n";
@@ -936,10 +986,17 @@ mod tests {
         let root = parsed.tree.root_node();
 
         assert!(find_procedure_node(&root, src, "oninsert").is_some());
+
+        // Quoted procedure name: the surrounding quotes are trimmed before compare.
         assert!(find_procedure_node(&root, src, "Do Work").is_some());
 
         assert!(find_procedure_node(&root, src, "Nope").is_none());
     }
+
+    // -- try_package_source via the public source() entrypoint -------------
+    //
+    // No app path is registered for the package, so source() falls through to
+    // the SymbolReference.json outline-rendering branches.
 
     fn ws_with(entry: SymbolEntry) -> crate::workspace::Workspace {
         let ws = crate::workspace::Workspace::new();
@@ -970,6 +1027,7 @@ mod tests {
 
         assert_eq!(result.src, SourceLevel::Outline);
         assert_eq!(result.proc_name.as_deref(), Some("GetBalance"));
+        // code == sig for outline procedure mode, and it is a bare signature.
         assert_eq!(result.code, "procedure GetBalance(): Decimal");
         assert_eq!(
             result.sig.as_deref(),
@@ -991,6 +1049,7 @@ mod tests {
     #[test]
     fn source_outline_trigger_filter_used_when_no_proc_filter() {
         let ws = ws_with(make_table_entry());
+        // trigger_filter is the fallback member filter; GetBalance is a method here.
         let result = source(&ws, "Customer", None, None, Some("GetBalance")).expect("found");
         assert_eq!(result.proc_name.as_deref(), Some("GetBalance"));
         assert_eq!(result.code, "procedure GetBalance(): Decimal");
@@ -1011,6 +1070,7 @@ mod tests {
     #[test]
     fn source_kind_filter_selects_matching_entry() {
         let ws = crate::workspace::Workspace::new();
+        // Two objects sharing the name "Item": a Table and a Codeunit.
         let mut table = make_table_entry();
         table.name = "Item".to_string();
         table.kind = ObjectKind::Table;

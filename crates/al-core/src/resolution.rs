@@ -683,8 +683,6 @@ pub(crate) fn format_xml_doc(s: &str) -> String {
         summary = text;
     }
 
-    // Extract all <param name="X">...</param>.
-    //
     // Cap the number of params we extract. A real AL signature has a handful of
     // parameters; an adversarial or malformed documentation string with
     // thousands of `<param>` tags (or unclosed ones forcing repeated rescans)

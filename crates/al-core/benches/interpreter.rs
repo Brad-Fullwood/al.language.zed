@@ -13,6 +13,10 @@ use al_core::test_runtime::interpreter::value::Value;
 use al_core::test_runtime::mock::record::MockRecord;
 use al_core::test_runtime::stubs;
 
+// Tight loop of integer and decimal arithmetic via the dispatch layer's
+// inline builtins: repeated addition, subtraction, and modulo via
+// Value arithmetic.  The 1000-iteration accumulation is done inside
+// a single `b.iter` call so Criterion measures the amortised per-loop cost.
 fn bench_arithmetic(c: &mut Criterion) {
     // Pre-allocate values that will be reused on every iteration.
     let base_int = Value::Integer(0);
@@ -30,6 +34,7 @@ fn bench_arithmetic(c: &mut Criterion) {
                     None,
                     "format",
                     vec![black_box(acc.clone())],
+                    // Pure-logic ctx without a workspace — Format never needs one.
                     &mut DispatchCtx::new_pure(std::sync::Arc::new(
                         al_core::workspace::Workspace::new(),
                     )),
@@ -64,6 +69,7 @@ fn bench_arithmetic(c: &mut Criterion) {
     });
 }
 
+// Exercises StrSubstNo, CopyStr, IndexOf, and Format on three payload sizes.
 fn bench_string_ops(c: &mut Criterion) {
     let small = "Hello, World!".to_string();
     let medium = "The quick brown fox jumps over the lazy dog. ".repeat(10);
@@ -166,10 +172,14 @@ fn bench_string_ops(c: &mut Criterion) {
     group.finish();
 }
 
+// Insert/Get/Modify/Delete cycle on a MockRecord, 100 records per iteration.
+// The record is pre-created outside the measurement loop; only the CRUD
+// cycle itself is timed.
 fn bench_record_crud(c: &mut Criterion) {
     c.bench_function("record_crud/insert_find_modify_delete_100", |b| {
         b.iter_batched(
             || {
+                // Setup: empty table with PK on field 1.
                 MockRecord::new(27, "Item", vec![1])
             },
             |mut rec| {
@@ -197,7 +207,11 @@ fn bench_record_crud(c: &mut Criterion) {
     });
 }
 
+// Apply a compound filter (range + OR pattern + wildcard) over 1000 records.
+// The table is pre-populated outside the loop; the filter + FindSet + Next
+// walk is the hot path.
 fn bench_filter_apply(c: &mut Criterion) {
+    // Build the 1000-row table once and reuse it in every iteration.
     let table = {
         let mut rec = MockRecord::new(18, "Customer", vec![1]);
         for i in 1i64..=1000 {
@@ -250,6 +264,8 @@ fn bench_filter_apply(c: &mut Criterion) {
     });
 }
 
+// Hot-path cost of resolving and executing Library Assert stubs:
+// AreEqual and IsTrue on already-evaluated Value arguments.
 fn bench_library_assert_call(c: &mut Criterion) {
     let mut group = c.benchmark_group("library_assert");
 
@@ -292,12 +308,17 @@ fn bench_library_assert_call(c: &mut Criterion) {
     group.finish();
 }
 
+// Router classification of a moderately-complex codeunit (~20 procedures,
+// various signal patterns).  The workspace is built once; `classify_all`
+// is the hot path.
 fn bench_callgraph_walk(c: &mut Criterion) {
     use al_core::test_engine::router::classify_all;
     use al_core::workspace::Workspace;
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    // Medium codeunit: mix of pure-logic tests, record-touching tests, and
+    // HTTP-escape tests so the router exercises all three PATTERNS buckets.
     let codeunit_src = r#"
 codeunit 50100 "BenchmarkTests"
 {

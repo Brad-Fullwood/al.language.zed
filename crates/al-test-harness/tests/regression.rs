@@ -34,7 +34,6 @@ async fn test_regression_inlay_hints_no_panic() {
     let _hints = client.inlay_hints("src/hints_test.al", 0, 10).await;
 
     // The test passing without a timeout/EOF proves the daemon didn't panic.
-    // Verify server is still responsive after hints request
     let symbols = client.document_symbols("src/hints_test.al").await;
     assert!(
         !symbols.is_empty(),
@@ -81,10 +80,8 @@ async fn test_regression_hover_on_unopened_file_returns_error() {
 
     // Don't open the file — just try to hover on it
     let hover = client.hover("src/nonexistent_file.al", 0, 0).await;
-    // Should return None (graceful), not crash
     assert!(hover.is_none(), "hover on unopened file should return None");
 
-    // Server should still be responsive
     let symbols = client.workspace_symbol("").await;
     assert!(
         !symbols.is_empty(),
@@ -194,11 +191,9 @@ async fn test_regression_inlay_hints_show_parameter_names() {
         "inlay hints should be non-empty for a call with named parameters: {hints:?}"
     );
 
-    // Verify at least one hint has a label
     let has_label = hints.iter().any(|h| h.get("label").is_some());
     assert!(has_label, "inlay hints should have labels: {hints:?}");
 
-    // Check that hint labels reference parameter names
     let labels: Vec<String> = hints
         .iter()
         .filter_map(|h| {

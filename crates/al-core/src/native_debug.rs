@@ -20,6 +20,7 @@ const HISTORY_CAP: usize = 10_000;
 pub struct NativeDebugSession {
     pub session: BcDebugSession,
     pub config: BcDebugConfig,
+    /// file path → list of BC breakpoint IDs
     breakpoints: HashMap<String, Vec<i64>>,
     history: VecDeque<BreakpointHit>,
 }
@@ -34,6 +35,10 @@ fn push_with_cap(history: &mut VecDeque<BreakpointHit>, hit: BreakpointHit, cap:
 }
 
 impl NativeDebugSession {
+    /// Connect to BC and attach the debug session.
+    ///
+    /// `config` — BC server connection config (built from launch.json / debug.json).
+    /// `access_token` — OAuth Bearer token for the BC tenant.
     pub async fn start(config: BcDebugConfig, access_token: &str) -> Result<Self> {
         let session = BcDebugSession::connect(&config, access_token).await?;
 
@@ -50,10 +55,15 @@ impl NativeDebugSession {
         })
     }
 
+    /// Session identifier (SignalR connection ID).
     pub fn session_id(&self) -> &str {
         &self.session.connection_id
     }
 
+    /// Set breakpoints for a file. Removes old breakpoints for the same file first.
+    ///
+    /// `object_type` and `object_id` come from the workspace file index — the caller
+    /// resolves the AL file path to its BC object type + ID.
     pub async fn set_breakpoints(
         &mut self,
         file: &str,
@@ -113,7 +123,9 @@ impl NativeDebugSession {
     /// `is_stopped == false` and an empty `history` even though a Break
     /// event landed in the SignalR pending queue between commands.
     async fn drain_events(&mut self) {
+        // First, anything `invoke()` buffered while we were busy.
         let pending = self.session.flush_pending_events().await;
+        // Then anything that arrived on the SignalR channel since.
         let pushed = self.session.try_drain_push_events().await;
         let mut next_seq = self.history.back().map(|h| h.seq + 1).unwrap_or(1);
         for event in pending.into_iter().chain(pushed) {
@@ -121,7 +133,11 @@ impl NativeDebugSession {
                 reason, location, ..
             } = event
             {
-                // `file` stays empty; the daemon doesn't resolve BC object ids to workspace file paths.
+                // Use the actual break site carried by the BC Break event's top
+                // StackFrame so history records the real stop position instead
+                // of a stale copy of the previous entry. The daemon doesn't
+                // resolve BC object ids to workspace file paths, so `file` stays
+                // empty; line/column/procedure now reflect the genuine location.
                 let location = match location {
                     Some(loc) => Location {
                         file: String::new(),
@@ -204,10 +220,14 @@ impl NativeDebugSession {
 
     /// Continue execution after a breakpoint (BreakpointExitReason=0).
     pub async fn continue_exec(&mut self) -> Result<DebugState> {
+        // F-014: drain pending events so any Break that fired between the
+        // user's last command and `continue` is recorded in history before
+        // we tell BC to resume.
         self.drain_events().await;
         self.session
             .continue_execution(serde_json::json!(0))
             .await?;
+        // Return running state immediately — next state() call will show updated position
         Ok(DebugState {
             status: SessionStatus::Running,
             session_id: self.session.connection_id.clone(),

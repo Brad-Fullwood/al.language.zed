@@ -36,6 +36,7 @@ struct FakeSession {
     /// `wait_for_break` returns `true` and `get_variables` returns the front
     /// value, until the deque is exhausted.
     events: Arc<Mutex<VecDeque<serde_json::Value>>>,
+    /// Auto-incrementing breakpoint ID counter.
     next_bp_id: Arc<Mutex<u32>>,
 }
 
@@ -257,6 +258,7 @@ fn e2e_direct_replay_against_identical_samples() {
     let recovered = deserialize_snapshot(&bytes).expect("deserialize");
 
     let replayer = SnapshotReplayer::new();
+    // Replay directly against the same samples (synchronous path).
     let verdict = replayer.replay_against(&recovered, &recovered.samples);
 
     assert_eq!(

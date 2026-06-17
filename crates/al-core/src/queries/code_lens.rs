@@ -53,6 +53,14 @@ pub struct TestTarget {
     pub method_name: String,
 }
 
+/// Return CodeLens entries for all referenceable symbols in the document.
+///
+/// Produces two kinds of lenses:
+/// - **Reference lenses** — show how many times each procedure/trigger/event
+///   is referenced across the workspace (e.g. `"3 references"`).
+/// - **Profiler lenses** — shown only when a `.alcpuprofile` is loaded into the
+///   workspace; display self-time and hit count for the procedure
+///   (e.g. `"⏱ 42ms · 3 calls"`).
 #[must_use]
 pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
@@ -93,6 +101,11 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
 
     let test_lens_ctx = build_test_lens_context(workspace, uri, &text, &tree);
 
+    // Build a workspace-wide reference count map in a single pass over all
+    // files: O(F + P) instead of O(P * F).
+    //
+    // Key: lowercased procedure name (AL identifiers are case-insensitive).
+    // Value: number of distinct (uri, line, col) positions referencing that name.
     let ref_counts = build_reference_counts(workspace, uri);
 
     let mut lenses = Vec::new();
@@ -243,7 +256,7 @@ fn build_test_lens_context(
         guard.as_ref().map(|store| store.all_records())
     };
 
-    let _ = uri;
+    let _ = uri; // URI currently unused — codeunit_id identifies the codeunit.
     Some(TestLensContext {
         codeunit_id,
         test_proc_names_lower,
@@ -295,10 +308,33 @@ fn reference_label(count: usize) -> String {
     }
 }
 
+/// Build a map of lowercased procedure name → distinct reference count by
+/// scanning every file in the workspace exactly once.
+///
+/// Complexity: O(F) where F is the number of workspace files (times the work
+/// of walking each file's parse tree).  The caller then does O(P) lookups —
+/// total O(F + P) versus the previous O(P * F).
 fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<String, usize> {
     // name_lower → set of (uri_string, line, col) to deduplicate locations
     let mut seen: HashMap<String, std::collections::HashSet<(String, u32, u32)>> = HashMap::new();
 
+    /// Walk a single file's parse tree once, recording the *name* of every
+    /// call site (`Foo()`, `obj.Foo()`, `T::Foo()`) into `seen`.
+    ///
+    /// Previously this counted every `identifier` / `quoted_identifier` /
+    /// `name` node, which conflated declaration sites, type references and
+    /// bare field references with actual call sites — a procedure declared
+    /// once and never called appeared as "1 reference" because of the
+    /// declaration itself, and any field with the same name doubled the
+    /// count.
+    ///
+    /// AL grammar shapes (mirrors `crate::syntax::is_call_reference`):
+    /// - bare call `Foo()`: `identifier → name → primary_expression`,
+    ///   whose `postfix_expression` parent has a `call_suffix` child;
+    /// - method call `obj.Foo()`: `identifier → name → member_call_suffix`
+    ///   as the `member` field;
+    /// - scope call `T::Foo()`: `identifier → name → scope_call_suffix`
+    ///   as the `member` field.
     fn record_file(
         uri_str: &str,
         text: &str,
@@ -331,6 +367,9 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
         });
     }
 
+    /// Walk parents of an `identifier` / `quoted_identifier` node to decide
+    /// whether it sits in a call position. Mirrors the private
+    /// `crate::syntax::is_call_reference` so we don't expose it just for this.
     fn is_call_site(node: tree_sitter::Node<'_>) -> bool {
         let Some(name_parent) = node.parent() else {
             return false;
@@ -671,6 +710,8 @@ codeunit 50100 MyCodeunit
             .expect("open");
         *ws.test_results.write().unwrap_or_else(|e| e.into_inner()) =
             Some(std::sync::Arc::new(store));
+        // Keep the tempdir alive for the lifetime of the test by leaking
+        // it; the OS reclaims on process exit.
         std::mem::forget(dir);
         ws
     }

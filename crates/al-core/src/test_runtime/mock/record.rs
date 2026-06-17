@@ -16,10 +16,8 @@ use crate::test_runtime::mock::filter::{self, FilterExpr};
 /// A field number, matching BC's integer field-number convention.
 pub type FieldNo = i32;
 
-/// A composite primary key is an ordered list of field values.
 pub type PrimaryKey = Vec<Value>;
 
-/// A single row: field number → value.
 pub type Row = BTreeMap<FieldNo, Value>;
 
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -38,7 +36,6 @@ pub enum RecordError {
     FilterParse(FieldNo, String),
 }
 
-/// A filter applied to a specific field.
 #[derive(Debug, Clone)]
 enum FieldFilter {
     /// Exact single value (SetRange with lo == hi).
@@ -86,20 +83,16 @@ impl SortKey {
 pub struct MockRecord {
     pub table_id: i32,
     pub table_name: String,
-    /// The field numbers that form the primary key (in order).
     primary_key_fields: Vec<FieldNo>,
-    /// The stored rows, keyed by primary key.
     rows: BTreeMap<PrimaryKey, Row>,
     /// The current row's field values (the "buffer").
     current: Row,
     /// Snapshot of `current` before the last Modify/Rename (xRec).
     x_rec: Row,
     filters: BTreeMap<FieldNo, FieldFilter>,
-    /// Current sort/key order for iteration.
     sort_key: SortKey,
     /// Filtered, sorted keys ready for iteration (built by FindFirst/FindSet).
     iter_set: Vec<PrimaryKey>,
-    /// Index of the current position in `iter_set`.
     iter_pos: Option<usize>,
 }
 
@@ -125,7 +118,6 @@ impl MockRecord {
         }
     }
 
-    /// Set a field value in the current buffer.
     pub fn field_set(&mut self, field: FieldNo, value: Value) {
         self.current.insert(field, value);
     }
@@ -210,7 +202,6 @@ impl MockRecord {
         let old_key = self.current_primary_key()?;
         let old_row = self.rows.remove(&old_key).ok_or(RecordError::NotFound)?;
         self.x_rec = old_row.clone();
-        // Apply new key fields to the current buffer.
         let mut new_row = old_row;
         for (field, value) in new_key_values {
             new_row.insert(field, value.clone());
@@ -218,7 +209,6 @@ impl MockRecord {
         }
         let new_key = self.current_primary_key()?;
         if self.rows.contains_key(&new_key) {
-            // Restore old row on conflict.
             self.rows.insert(old_key, self.x_rec.clone());
             return Err(RecordError::DuplicateKey);
         }
@@ -359,12 +349,10 @@ impl MockRecord {
             .count()
     }
 
-    /// Return the `xRec` snapshot (the row before the last Modify/Rename).
     pub fn x_rec(&self) -> &Row {
         &self.x_rec
     }
 
-    /// Get a field from the xRec snapshot.
     pub fn x_rec_field(&self, field: FieldNo) -> Option<&Value> {
         self.x_rec.get(&field)
     }
@@ -418,15 +406,12 @@ mod tests {
         let mut rec = make_table();
         insert_row(&mut rec, 100, "OriginalName");
 
-        // Load and modify.
         rec.get(vec![Value::Integer(100)]).unwrap();
         let old_desc = rec.field_get(2).cloned().unwrap();
         rec.field_set(2, Value::Text("NewName".to_string()));
         rec.modify(false).unwrap();
 
-        // xRec should still hold the old value.
         assert_eq!(rec.x_rec_field(2), Some(&old_desc));
-        // Current should hold the new value.
         assert_eq!(rec.field_get(2), Some(&Value::Text("NewName".to_string())));
     }
 
@@ -633,10 +618,8 @@ mod tests {
         for i in 1i64..=5 {
             insert_row(&mut rec, i, "x");
         }
-        // Filter that matches nothing.
         rec.set_range(1, Value::Integer(100), Value::Integer(200));
         assert!(rec.is_empty());
-        // Filter that matches everything.
         rec.reset();
         assert!(!rec.is_empty());
     }
@@ -814,7 +797,6 @@ mod tests {
             5,
             "All 5 rows must be visited during iteration with mid-loop Modify"
         );
-        // Verify modifications persisted.
         for i in 1i64..=5 {
             rec.get(vec![Value::Integer(i)]).unwrap();
             assert_eq!(
@@ -825,7 +807,6 @@ mod tests {
         }
     }
 
-    // Vector 7: Count and IsEmpty after deleting all rows using FindSet+Delete.
     #[test]
     fn test_count_isempty_after_delete_all_adversarial_i_7() {
         let mut rec = make_table();
@@ -844,7 +825,6 @@ mod tests {
             rec.is_empty(),
             "IsEmpty must be true after deleting all rows"
         );
-        // FindSet on empty table must return false.
         assert!(
             !rec.find_set().unwrap(),
             "FindSet on empty table must return false"
@@ -861,8 +841,6 @@ mod tests {
         rec.field_set(1, Value::Integer(99));
         rec.field_set(2, Value::Text("NewRow".to_string()));
         rec.insert(false).unwrap();
-        // BC behaviour: xRec should match the inserted record.
-        // Mock behaviour: xRec was not updated by insert() — it is empty.
         assert_eq!(
             rec.x_rec_field(2),
             Some(&Value::Text("NewRow".to_string())),
@@ -883,7 +861,6 @@ mod tests {
             rec.insert(false).unwrap();
         }
 
-        // First FindSet in PK order: 10, 20, 30.
         assert!(rec.find_set().unwrap());
         let mut first_pass = vec![rec.field_get(1).unwrap().clone()];
         while rec.next(1).unwrap() != 0 {

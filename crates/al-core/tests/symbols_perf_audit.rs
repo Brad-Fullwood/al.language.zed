@@ -8,7 +8,6 @@ use std::time::Instant;
 
 use al_core::symbols::{ObjectKind, SymbolIndex};
 
-/// Collect all .app files from known locations.
 fn collect_app_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
@@ -83,10 +82,8 @@ fn perf_audit_index_build() {
     }
     eprintln!("  Total: {}", format_bytes(total_bytes));
 
-    // --- Phase 1: Index Build Time ---
     eprintln!("\n--- Phase 1: Index Build Time ---");
 
-    // Individual package load times
     let mut per_pkg_times = Vec::new();
     for p in &paths {
         let index = SymbolIndex::new();
@@ -106,7 +103,6 @@ fn perf_audit_index_build() {
         eprintln!("  {:>8.2?}  {:>5} objects  {}", dur, objs, name);
     }
 
-    // Full index build
     let index = SymbolIndex::new();
     let t0 = Instant::now();
     let all_pkgs = index.load_packages(&paths);
@@ -119,10 +115,8 @@ fn perf_audit_index_build() {
     );
     eprintln!("  Index entries: {}", index.len());
 
-    // --- Phase 2: Memory Estimation ---
     eprintln!("\n--- Phase 2: Memory Estimation ---");
 
-    // Count sub-elements
     let mut total_methods = 0usize;
     let mut total_fields = 0usize;
     let mut total_controls = 0usize;
@@ -207,10 +201,8 @@ fn perf_audit_index_build() {
         format_bytes(est_total as u64)
     );
 
-    // --- Phase 3: Query Latency ---
     eprintln!("\n--- Phase 3: Query Latency ---");
 
-    // search() — substring search
     let queries = [
         "Customer",
         "Sales",
@@ -227,7 +219,6 @@ fn perf_audit_index_build() {
         eprintln!("    {:>8.2?}  {:>4} results  \"{}\"", dur, results.len(), q);
     }
 
-    // search("", limit) — empty query (returns first N)
     eprintln!("\n  search(\"\", limit):");
     for limit in [10, 100, 1000, 5000] {
         let t0 = Instant::now();
@@ -241,7 +232,6 @@ fn perf_audit_index_build() {
         );
     }
 
-    // get_by_name() — exact name lookup
     eprintln!("\n  get_by_name():");
     let name_queries = [
         "Customer",
@@ -257,7 +247,6 @@ fn perf_audit_index_build() {
         eprintln!("    {:>8.2?}  {:>3} results  \"{}\"", dur, results.len(), q);
     }
 
-    // get_by_id() — kind+id lookup
     eprintln!("\n  get_by_id():");
     let id_queries = [
         (ObjectKind::Table, 18),    // Customer
@@ -279,7 +268,6 @@ fn perf_audit_index_build() {
         );
     }
 
-    // get_events() — event scan
     eprintln!("\n  get_events():");
     let event_queries = ["Post", "Release", "Validate", "Insert", ""];
     for q in &event_queries {
@@ -295,7 +283,6 @@ fn perf_audit_index_build() {
         );
     }
 
-    // get_composed() — composition
     eprintln!("\n  get_composed():");
     let compose_queries = [
         (ObjectKind::Table, "Customer"),
@@ -320,7 +307,6 @@ fn perf_audit_index_build() {
         eprintln!("    {:>8.2?}  {}  {:?} \"{}\"", dur, info, kind, name);
     }
 
-    // get_extensions_of() — extension lookup
     eprintln!("\n  get_extensions_of():");
     let ext_queries = ["Customer", "Sales Header", "Item", "G/L Entry"];
     for q in &ext_queries {
@@ -335,7 +321,6 @@ fn perf_audit_index_build() {
         );
     }
 
-    // get_by_kind() — kind scan
     eprintln!("\n  get_by_kind():");
     let kinds = [
         ObjectKind::Table,
@@ -356,7 +341,6 @@ fn perf_audit_index_build() {
         );
     }
 
-    // --- Phase 4: Bottleneck Analysis ---
     eprintln!("\n--- Phase 4: Bottleneck Analysis ---");
 
     // Measure the hot path: search("", usize::MAX) used by get_events()
@@ -369,12 +353,10 @@ fn perf_audit_index_build() {
         all_entries.len()
     );
 
-    // Measure DashMap iteration overhead
     eprintln!("\n  DashMap shard analysis:");
     eprintln!("    by_name entries:    {}", index.len());
     // The 'all' map is the hot path for search/events
 
-    // Measure repeated builds to check consistency
     eprintln!("\n  Rebuild consistency (3 runs):");
     for i in 0..3 {
         let idx = SymbolIndex::new();
