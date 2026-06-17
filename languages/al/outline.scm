@@ -1,5 +1,5 @@
 ; Outline/symbol rules for AL
-; Provides breadcrumb navigation and symbol outline in Zed
+; AUTO-GENERATED - do not edit manually
 
 ; Top-level object declarations
 (object_declaration

@@ -1,4 +1,4 @@
-; AUTO-GENERATED — do not edit manually
+; AUTO-GENERATED - do not edit manually
 ; Inject comment language for TODO/FIXME highlighting and doc-comment rendering.
 
 ((comment) @injection.content

@@ -23,5 +23,10 @@
 (object_declaration
   body: (object_body) @class.inside)
 
+(object_section) @class.around
+
+(object_section
+  body: (object_body) @class.inside)
+
 ; Comments
 (comment) @comment.around

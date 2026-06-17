@@ -41,6 +41,15 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: ShellCheck scripts
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          if ! command -v shellcheck >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          shellcheck scripts/*.sh
+
       - name: Cache cargo registry and build artifacts
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
@@ -131,6 +140,9 @@ jobs:
       # binary resolution for every new user (latest_github_release -> not found).
       - name: Check repository slug consistency
         run: ./scripts/check-repo-consistency.sh
+
+      - name: Check release hygiene invariants
+        run: ./scripts/check-release-hygiene.sh
 
   windows-al-lsp:
     # al-lsp ships on Windows (release.yml), but the main `ci` matrix is Unix-only

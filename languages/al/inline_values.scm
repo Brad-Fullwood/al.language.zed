@@ -1,5 +1,5 @@
 ; Inline values for AL debugging
-; Shows variable values inline during debug sessions
+; AUTO-GENERATED - do not edit manually
 
 ; Local variables in procedures
 (regular_variable_declaration

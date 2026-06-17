@@ -1,5 +1,5 @@
 ; Syntax-aware setting overrides for AL
-; Disables auto-surround and auto-close inside comments and strings
+; AUTO-GENERATED - do not edit manually
 
 [
   (comment)

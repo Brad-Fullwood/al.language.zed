@@ -3,8 +3,6 @@
 
 ; SCOPES
 
-(asserterror_statement) @local.scope
-
 (begin_end_block) @local.scope
 
 (case_statement) @local.scope

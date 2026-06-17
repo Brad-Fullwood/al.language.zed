@@ -8,6 +8,7 @@
 #   make bridges   — rebuild just .NET bridges
 #   make grammar   — regenerate the tree-sitter-al parser sources (required before
 #                    `tree-sitter build` from a fresh clone — see F-006)
+#   make language  — regenerate only the Zed-facing languages/al package files
 #   make clean     — clean all build artifacts
 
 SHELL := /bin/bash
@@ -21,7 +22,7 @@ ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-core/bridge/AlBridge.csproj"
 WASM_BIN := $(ROOT)/target/wasm32-wasip1/release/zed_al.wasm
 
-.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar clean
+.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language clean
 
 # ── Default: rebuild everything ──────────────────────────────────
 build: rust wasm bridges
@@ -164,6 +165,16 @@ grammar:
 	@echo ""
 	@echo "Parser sources regenerated. You can now run:"
 	@echo "  cd tree-sitter-al && tree-sitter build --output target/tree-sitter-al.so"
+
+# ── Regenerate only the Zed language package ─────────────────────
+# This is intentionally lighter than `make grammar`: it does not need the
+# Microsoft AL extension or tree-sitter CLI. Canonical tree-sitter queries are
+# copied from tree-sitter-al/queries, and Zed-specific language metadata is
+# copied from generator-owned templates under tree-sitter-al/generator.
+language:
+	@echo "=== Regenerating languages/al from al-gen ==="
+	cd tree-sitter-al/generator && cargo run --release --bin al-gen -- --zed-language-only
+	@echo "Zed language package regenerated."
 
 # ── Clean ────────────────────────────────────────────────────────
 clean:

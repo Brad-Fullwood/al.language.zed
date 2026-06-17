@@ -14,7 +14,7 @@
 #   --release   build native binaries in release mode (slower build, faster binaries)
 #   --bridges   also rebuild the .NET semantic bridge on change (slower)
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 
 PROFILE_FLAG=""
 WATCH_BRIDGES=0
@@ -25,7 +25,10 @@ for arg in "$@"; do
   esac
 done
 
-PROFILE_DIR="debug"; [ "$PROFILE_FLAG" = "--release" ] && PROFILE_DIR="release"
+PROFILE_DIR="debug"
+if [ "$PROFILE_FLAG" = "--release" ]; then
+  PROFILE_DIR="release"
+fi
 INSTALL_DIR="$HOME/.local/bin"
 
 if ! command -v cargo-watch >/dev/null 2>&1; then
@@ -44,9 +47,9 @@ fi
 NATIVE_BUILD="build --workspace --exclude zed-al $PROFILE_FLAG"
 SEMANTIC_BUILD="cargo build -p al-core --bin al-lsp --features semantic $PROFILE_FLAG && rm -f $INSTALL_DIR/al-lsp && cp -f target/$PROFILE_DIR/al-lsp $INSTALL_DIR/al-lsp"
 WASM_BUILD="cargo build -p zed-al --target wasm32-wasip1 --release"
-BRIDGE_BUILD=""
+BRIDGE_BUILD_ARGS=()
 if [ "$WATCH_BRIDGES" = "1" ]; then
-  BRIDGE_BUILD="-s 'make bridges'"
+  BRIDGE_BUILD_ARGS=(-s "make bridges")
 fi
 
 echo "--------------------------------------------------------------"
@@ -60,11 +63,10 @@ echo "   to load a freshly-built al-lsp."
 echo "   Press Ctrl-C to stop."
 echo "--------------------------------------------------------------"
 
-# shellcheck disable=SC2086
 exec cargo watch --why \
   -w crates -w src \
   -i 'target/**' -i '**/*.md' -i '.claude/**' -i 'FINDINGS.md' \
   -x "$NATIVE_BUILD" \
   -s "$SEMANTIC_BUILD" \
   -s "$WASM_BUILD" \
-  $BRIDGE_BUILD
+  "${BRIDGE_BUILD_ARGS[@]}"

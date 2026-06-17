@@ -1,5 +1,5 @@
 ; Runnable detection for AL
-; Detects test procedures, event subscribers, and handlers for gutter icons
+; AUTO-GENERATED - do not edit manually
 
 ; [Test] procedures
 (procedure_declaration

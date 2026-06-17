@@ -13,10 +13,39 @@ env:
 # (create-release) opt in explicitly.
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  release-preflight:
+    name: Release hygiene
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Check repository slug consistency
+        run: ./scripts/check-repo-consistency.sh
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check release hygiene
+        run: ./scripts/check-release-hygiene.sh --tag "${GITHUB_REF_NAME}" --changed-since auto --require-ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_TIMEOUT_SECONDS: "3600"
+          CI_POLL_SECONDS: "30"
+
   build-binaries:
     name: Build ${{ matrix.target }}
+    needs: release-preflight
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -193,6 +222,7 @@ jobs:
 
   build-wasm:
     name: Build WASM extension
+    needs: release-preflight
     runs-on: ubuntu-latest
 
     steps:

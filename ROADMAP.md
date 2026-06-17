@@ -14,14 +14,20 @@ The project should become the best AL development stack outside Microsoft's VS C
 
 ## Release Hygiene
 
-These are release blockers until automated:
+Automated in `scripts/check-release-hygiene.sh` and `.github/workflows/release.yml`:
 
-- Add a release guard that checks `extension.toml` `[grammars.al].rev` equals the superproject gitlink for `tree-sitter-al`.
-- Add a release guard that fails on a leading `+` from `git submodule status`.
-- Add a version-alignment guard for `extension.toml`, root `Cargo.toml`, workspace crate `Cargo.toml` files, `Cargo.lock`, and the release tag.
-- Add a generated-artifact guard for grammar/query/data/theme outputs so a release cannot ship stale generated files.
-- Require green CI on the exact commit being tagged; the release workflow packages artifacts but does not replace full CI.
-- Keep `scripts/check-repo-consistency.sh` scoped as a repository-slug check or rename/expand it so the name matches what it validates.
+- `extension.toml` `[grammars.al].rev` must equal the superproject gitlink for `tree-sitter-al`.
+- `git submodule status --recursive` must be clean; leading `+`, missing submodules, and conflicts are release blockers.
+- `extension.toml`, root `Cargo.toml`, workspace crate versions, `Cargo.lock`, and the release tag must align.
+- Required generated grammar/query/data/theme artifacts must exist, and generator-input changes across a release diff require generated-output changes.
+- `languages/al` is regenerated from `al-gen --zed-language-only` and compared in CI/release hygiene.
+- The tag workflow waits for green `CI` on the exact commit being released before building artifacts.
+- `scripts/check-repo-consistency.sh` remains narrowly scoped to repository-slug drift; release-wide checks live in `scripts/check-release-hygiene.sh`.
+
+Remaining release hygiene improvements:
+
+- Add a fully reproducible generated-artifact regeneration job once the Microsoft AL extension and `tree-sitter` inputs are installable in CI without brittle marketplace assumptions.
+- Add a dedicated release dry-run command that runs local tests, `scripts/check-release-hygiene.sh --regenerate`, and package smoke checks in one place.
 
 ## Architecture Unification
 
@@ -117,11 +123,11 @@ The DAP path is promising but still narrower than the schemas/snippets imply.
 
 ## Generated Assets And Language Data
 
-The generator story is strong, but drift needs more guardrails.
+The Zed language package now has a single generator-owned source of truth.
 
-- Document which `languages/al` files are generated, synchronized, or hand-maintained.
-- Add a sync command for the `languages/al/*.scm` files that mirror `tree-sitter-al/queries`.
-- Add a guard that compares synchronized query files after `make grammar`.
+- Keep all `languages/al` files generated. Canonical query files are copied from `tree-sitter-al/queries`; Zed-specific language metadata is generated from `tree-sitter-al/generator/tools/al-gen/templates/zed-language`.
+- Use `make language` after changing Zed language templates or canonical query outputs. Release hygiene runs the same lightweight generation path and fails on drift.
+- Do not add hand-maintained files under `languages/al`. The generator rejects unknown files in that directory.
 - Document `al-gen` versus `al-extract` ownership for `tree-sitter-al/data/*.json`.
 - Make theme generation reproducible and validated.
 - Keep `extension.toml` grammar rev, submodule gitlink, and generated query compatibility tied together by CI.
