@@ -107,6 +107,41 @@ pub fn find_member_range(path: &Path, member_name: &str, kind: MemberKind) -> Op
     find_member_range_in_text(&content, member_name, kind)
 }
 
+/// Range of the object's own declaration name in the virtual file. Works for
+/// both forms `get_or_create` produces: the synthetic outline (declaration on
+/// line 0) and real embedded source (declaration after `namespace`/`using`
+/// lines). Without this, navigating to an object passed `member_name=None` and
+/// landed at `(0,0)` — the file start / outline — instead of the object.
+pub fn find_object_range(path: &Path, entry: &SymbolEntry) -> Option<MemberRange> {
+    let content = fs::read_to_string(path).ok()?;
+    // Declaration line shape (both outline and alc source): `{kw} {id} {name}`.
+    let prefix = format!("{} {} ", entry.kind.al_keyword().to_ascii_lowercase(), entry.id);
+    for (line_idx, line) in content.lines().enumerate() {
+        let lead = line.len() - line.trim_start().len();
+        if !line[lead..].to_ascii_lowercase().starts_with(&prefix) {
+            continue;
+        }
+        let name_start = lead + prefix.len();
+        let rest = &line[name_start..];
+        // Name runs to an ` extends ` clause, the opening ` {`, or end of line;
+        // quotes (for multi-word names) are kept so the whole name highlights.
+        let name_len = rest
+            .find(" extends ")
+            .or_else(|| rest.find(" {"))
+            .unwrap_or(rest.len());
+        let name = rest[..name_len].trim_end();
+        if name.is_empty() {
+            continue;
+        }
+        return Some(MemberRange {
+            line: line_idx as u32,
+            col_start: crate::syntax::byte_col_to_utf16_col(line, name_start),
+            col_end: crate::syntax::byte_col_to_utf16_col(line, name_start + name.len()),
+        });
+    }
+    None
+}
+
 /// Uses memory-mapped I/O to avoid reading the entire file into memory.
 /// Only examines zip entry names — no file content is read.
 pub fn app_has_source(app_path: &Path) -> bool {

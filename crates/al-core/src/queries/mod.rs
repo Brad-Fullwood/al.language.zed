@@ -133,23 +133,27 @@ pub fn get_or_create_virtual_file(
     match crate::symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
         Ok(path) => {
             let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
-            let range = member_name
-                .and_then(|name| {
-                    let r = crate::symbols::virtual_file::find_member_range(
-                        &path,
-                        name,
-                        crate::symbols::virtual_file::MemberKind::Unknown,
-                    )?;
-                    Some(Range {
-                        start: Position {
-                            line: r.line,
-                            character: r.col_start,
-                        },
-                        end: Position {
-                            line: r.line,
-                            character: r.col_end,
-                        },
-                    })
+            // Prefer the member range; fall back to the object's own declaration
+            // (so object navigation lands on the object, not file-start `(0,0)`),
+            // then to a default range if neither can be located.
+            let member_range = member_name.and_then(|name| {
+                crate::symbols::virtual_file::find_member_range(
+                    &path,
+                    name,
+                    crate::symbols::virtual_file::MemberKind::Unknown,
+                )
+            });
+            let range = member_range
+                .or_else(|| crate::symbols::virtual_file::find_object_range(&path, entry))
+                .map(|r| Range {
+                    start: Position {
+                        line: r.line,
+                        character: r.col_start,
+                    },
+                    end: Position {
+                        line: r.line,
+                        character: r.col_end,
+                    },
                 })
                 .unwrap_or_default();
             Some((uri, range))
