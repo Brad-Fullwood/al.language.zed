@@ -1,5 +1,3 @@
-//! Folding range extraction from tree-sitter trees.
-
 use super::types::{
     SyntaxFoldingRange as FoldingRange, SyntaxFoldingRangeKind as FoldingRangeKind,
 };
@@ -29,7 +27,6 @@ pub fn extract_folding_ranges(tree: &Tree, text: &str) -> Vec<FoldingRange> {
     ranges
 }
 
-/// Extract structural folding ranges by walking the AST.
 fn extract_structural_ranges(root: Node, source: &[u8], ranges: &mut Vec<FoldingRange>) {
     walk_tree(root, &mut |node| {
         match node.kind() {
@@ -82,7 +79,6 @@ fn extract_structural_ranges(root: Node, source: &[u8], ranges: &mut Vec<Folding
     });
 }
 
-/// Add a folding range from a node.
 fn add_range(node: Node, kind: FoldingRangeKind, source: &[u8], ranges: &mut Vec<FoldingRange>) {
     let start = node.start_position();
     let end = node.end_position();
@@ -101,7 +97,6 @@ fn add_range(node: Node, kind: FoldingRangeKind, source: &[u8], ranges: &mut Vec
     });
 }
 
-/// Extract folding ranges for blocks of consecutive `//` comment lines.
 fn extract_comment_block_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
     let mut block_start: Option<u32> = None;
     let mut block_end: u32 = 0;
@@ -247,7 +242,6 @@ codeunit 50100 Test
         let source = "// Line 1\n// Line 2\n// Line 3\ncodeunit 50100 Test { }";
         let result = parser.parse(source);
         let ranges = extract_folding_ranges(&result.tree, source);
-        // Should have a comment block fold for the 3 consecutive comment lines
         let comment_folds: Vec<_> = ranges
             .iter()
             .filter(|r| {

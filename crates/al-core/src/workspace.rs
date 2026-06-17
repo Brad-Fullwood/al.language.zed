@@ -122,7 +122,6 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// Create a new empty workspace.
     pub fn new() -> Self {
         Self {
             documents: DocumentStore::new(),
@@ -343,7 +342,6 @@ impl Workspace {
         (insight, guard)
     }
 
-    /// Approximate memory statistics for the workspace.
     pub fn memory_stats(&self) -> WorkspaceMemoryStats {
         let symbol_count = self.symbols.len();
         let open_docs = self.documents.len();
@@ -436,7 +434,6 @@ pub async fn initialize_core_workspace(
                 "workspace: project discovered"
             );
 
-            // Load symbol packages (with disk cache for fast warm starts).
             let cache = crate::symbols::cache::SymbolCache::default_location();
             let loaded = workspace
                 .symbols
@@ -471,10 +468,8 @@ pub async fn initialize_core_workspace(
             // Load runtime enum definitions (compiler built-ins not in any package).
             workspace.symbols.load_runtime_enums();
 
-            // Invalidate insight graph — packages changed.
             workspace.invalidate_insight_graph();
 
-            // Store package metadata for the `packages` query.
             let pkg_info: Vec<PackageInfo> = loaded
                 .iter()
                 .map(|p| PackageInfo {
@@ -494,7 +489,6 @@ pub async fn initialize_core_workspace(
             // it in block_in_place — we still hold the &Workspace borrow.
             file_count = tokio::task::block_in_place(|| workspace.file_index.scan(&project.root));
 
-            // Store project info.
             *workspace.project.write().await = Some(project);
 
             tracing::info!(
@@ -513,7 +507,6 @@ pub async fn initialize_core_workspace(
         }
     }
 
-    // Discover toolchain.
     let has_toolchain = match crate::toolchain::find_toolchain() {
         Ok(tc) => {
             tracing::info!(version = %tc.version, "workspace: toolchain found");
@@ -552,7 +545,6 @@ impl Default for Workspace {
 pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
     let result = crate::syntax::AlParser::parse_quick(text);
 
-    // Warm the document cache so diagnostics / hover can reuse this parse tree.
     let version = workspace.documents.get_version(uri).unwrap_or(0);
     workspace
         .documents
@@ -679,7 +671,6 @@ mod workspace_lifecycle_tests {
         );
     }
 
-    /// Positive test: on_document_change populates the document cache and file index.
     #[test]
     fn on_document_change_populates_cache_and_index() {
         let workspace = make_workspace();

@@ -1,10 +1,7 @@
-//! Hover handler — thin wrapper over al-core::queries::hover.
-
 use tower_lsp::lsp_types::*;
 
 use super::AlServer;
 
-/// Handle textDocument/hover.
 pub(crate) async fn handle_hover(
     server: &AlServer,
     uri: &Url,

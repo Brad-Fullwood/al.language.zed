@@ -20,25 +20,17 @@ use crate::launch::{find_launch_config, BcServerConfig};
 use crate::toolchain::AlToolchain;
 use crate::workspace::Workspace;
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-/// Options for a publish operation.
 #[derive(Debug, Clone)]
 pub struct PublishConfig {
-    /// Project root directory.
     pub project_root: PathBuf,
     /// Launch configuration name to use (uses first AL config if None).
     pub config_name: Option<String>,
-    /// Skip attaching the debugger after publish.
     pub no_debug: bool,
     /// Use the RAD API for incremental (delta) deploy instead of full upload.
     pub incremental: bool,
 }
 
 impl PublishConfig {
-    /// Build a config for the given project root with default options.
     pub fn new(project_root: impl Into<PathBuf>) -> Self {
         Self {
             project_root: project_root.into(),
@@ -49,11 +41,6 @@ impl PublishConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Result
-// ---------------------------------------------------------------------------
-
-/// Phase of the publish pipeline where an operation occurred.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum PublishPhase {
@@ -63,7 +50,6 @@ pub enum PublishPhase {
     Rad,
 }
 
-/// A single step result in the publish pipeline.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublishStep {
@@ -73,17 +59,13 @@ pub struct PublishStep {
     pub message: Option<String>,
 }
 
-/// Result of a publish operation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublishResult {
-    /// Whether the entire publish pipeline succeeded.
     pub success: bool,
-    /// Server configuration used.
     pub server: String,
     /// Method used: "standard" or "rad".
     pub method: String,
-    /// Path of the .app file that was published.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_path: Option<String>,
     /// App ID assigned by BC server (if returned).
@@ -94,15 +76,9 @@ pub struct PublishResult {
     pub app_version: Option<String>,
     /// Compilation diagnostics (only present if compilation was run).
     pub diagnostics: Vec<CompileDiagnostic>,
-    /// Step-by-step results.
     pub steps: Vec<PublishStep>,
 }
 
-// ---------------------------------------------------------------------------
-// Error
-// ---------------------------------------------------------------------------
-
-/// Errors that can occur during publish.
 #[derive(Debug, Error)]
 pub enum PublishError {
     #[error("No launch.json configuration found in project root")]
@@ -125,10 +101,6 @@ pub enum PublishError {
     Build(String),
 }
 
-// ---------------------------------------------------------------------------
-// Core publish function
-// ---------------------------------------------------------------------------
-
 /// Run the publish pipeline for the project.
 ///
 /// Steps:
@@ -145,7 +117,6 @@ pub async fn publish(
     workspace: &Workspace,
     config: &PublishConfig,
 ) -> Result<PublishResult, PublishError> {
-    // 1. Resolve server config
     let server_config = resolve_server_config(&config.project_root, config.config_name.as_deref())?;
     let server_display = server_config.display_name();
     info!(server = %server_display, incremental = config.incremental, "Starting publish");
@@ -157,7 +128,6 @@ pub async fn publish(
     };
     let mut steps: Vec<PublishStep> = Vec::new();
 
-    // 2. Compile
     let compile_result = run_compile(workspace, &config.project_root).await?;
     let compile_success = compile_result.success;
     let app_path = compile_result.app_path.clone();
@@ -194,11 +164,9 @@ pub async fn publish(
 
     let app_path = app_path.ok_or(PublishError::NoAppFile)?;
 
-    // 3. Upload to BC
     let bc_client = BcClient::new(&server_config);
 
     let (app_id, app_version, upload_success) = if config.incremental {
-        // RAD: incremental deploy
         let app_id = extract_app_id_from_manifest(&config.project_root);
         match app_id {
             Some(id) => {
@@ -254,10 +222,6 @@ pub async fn publish(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Standard full-upload publish pipeline.
 ///
 /// Returns `(app_id, app_version, success)`.
@@ -294,15 +258,25 @@ async fn do_standard_publish(
 
 /// Compile the project, using the workspace's toolchain.
 ///
-/// Native-first: prefers the in-process CodeAnalysis bridge (the same pipeline
-/// the LSP daemon's `compile` uses). `al.useOfficialCompiler: true` opts into
-/// Microsoft's `dotnet alc` subprocess. There is NO silent fallback; when the
-/// bridge is unavailable and the official compiler is not enabled, this fails
-/// loudly so a publish can never quietly run on the non-native compiler.
+/// Native-first: the default path is the pure-Rust native `.app` emitter — no
+/// Microsoft `alc`, no C# bridge. `al.useOfficialCompiler: true` opts into
+/// Microsoft's `dotnet alc` subprocess instead (logged at WARN as the non-native
+/// path). The native emitter does no semantic validation; the LSP supplies
+/// diagnostics, and the BC server validates on publish.
 async fn run_compile(
     workspace: &Workspace,
     project_root: &Path,
 ) -> Result<CompileResult, PublishError> {
+    let use_official_compiler = workspace.config.read().await.use_official_compiler;
+
+    if !use_official_compiler {
+        let result = crate::build::native_compile(project_root);
+        if !result.success {
+            return Err(PublishError::Build(result.output));
+        }
+        return Ok(result);
+    }
+
     // Use blocking .read().await rather than try_read() — try_read() maps both
     // lock contention (WouldBlock) and a nonexistent toolchain to the same
     // NoToolchain error, making it impossible to diagnose a "server is busy"
@@ -311,69 +285,12 @@ async fn run_compile(
     let toolchain: AlToolchain = tc.clone().ok_or(PublishError::NoToolchain)?;
     drop(tc);
 
-    let use_official_compiler = workspace.config.read().await.use_official_compiler;
-
-    if !use_official_compiler {
-        if let Some(guard) = crate::semantic::get_or_init_bridge(workspace).await {
-            if let Some(bridge) = guard.as_ref() {
-                let result = bridge
-                    .compile(project_root, Some(&toolchain.alc), None)
-                    .await
-                    .map_err(|e| PublishError::Build(e.to_string()))?;
-                return Ok(bridge_result_to_build(result, project_root));
-            }
-        }
-        return Err(PublishError::Build(
-            crate::semantic::NATIVE_COMPILER_UNAVAILABLE.to_string(),
-        ));
-    }
-
     warn!("al.useOfficialCompiler=true - publishing with the NON-NATIVE `dotnet alc` subprocess");
     crate::build::compile_project(&toolchain, project_root, None)
         .await
         .map_err(|e| PublishError::Build(e.to_string()))
 }
 
-/// Convert a semantic-bridge compile result into the `build::CompileResult`
-/// shape the publish flow consumes. The bridge may omit `appPath`; recover it
-/// from disk on success so the upload step still finds the artifact.
-fn bridge_result_to_build(
-    result: crate::semantic::CompileResult,
-    project_root: &Path,
-) -> CompileResult {
-    use crate::build::DiagnosticSeverity;
-    let diagnostics = result
-        .diagnostics
-        .into_iter()
-        .map(|d| CompileDiagnostic {
-            file: d.file.display().to_string(),
-            line: d.line,
-            column: d.column,
-            severity: match d.severity.to_ascii_lowercase().as_str() {
-                "error" => DiagnosticSeverity::Error,
-                "warning" => DiagnosticSeverity::Warning,
-                _ => DiagnosticSeverity::Info,
-            },
-            code: d.code,
-            message: d.message,
-        })
-        .collect();
-    let app_path = result.app_path.or_else(|| {
-        if result.success {
-            crate::build::find_app_file(project_root)
-        } else {
-            None
-        }
-    });
-    CompileResult {
-        success: result.success,
-        app_path,
-        diagnostics,
-        output: result.output.unwrap_or_default(),
-    }
-}
-
-/// Find the first matching BC server config from launch.json.
 fn resolve_server_config(
     project_root: &Path,
     config_name: Option<&str>,
@@ -402,10 +319,6 @@ fn extract_app_id_from_manifest(project_root: &Path) -> Option<String> {
     let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     json.get("id")?.as_str().map(|s| s.to_string())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -444,7 +357,6 @@ mod tests {
 
     #[test]
     fn resolve_config_no_launch_json_returns_error() {
-        // Use a temp dir with no launch.json
         let dir = tempfile::tempdir().unwrap();
         let result = resolve_server_config(dir.path(), None);
         assert!(matches!(result, Err(PublishError::NoLaunchConfig)));
@@ -635,7 +547,6 @@ mod tests {
         assert!(!json.contains("appPath"));
         assert!(!json.contains("appId"));
         assert!(!json.contains("appVersion"));
-        // Non-optional fields are always present.
         assert!(json.contains("\"diagnostics\":[]"));
         assert!(json.contains("\"steps\":[]"));
     }

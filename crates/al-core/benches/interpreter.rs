@@ -8,20 +8,10 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 
-// ── helpers from al-core ────────────────────────────────────────────────────
 use al_core::test_runtime::interpreter::dispatch::{dispatch_call, DispatchCtx};
 use al_core::test_runtime::interpreter::value::Value;
 use al_core::test_runtime::mock::record::MockRecord;
 use al_core::test_runtime::stubs;
-
-// ---------------------------------------------------------------------------
-// bench_arithmetic
-//
-// Tight loop of integer and decimal arithmetic via the dispatch layer's
-// inline builtins: repeated addition, subtraction, and modulo via
-// Value arithmetic.  The 1000-iteration accumulation is done inside
-// a single `b.iter` call so Criterion measures the amortised per-loop cost.
-// ---------------------------------------------------------------------------
 
 fn bench_arithmetic(c: &mut Criterion) {
     // Pre-allocate values that will be reused on every iteration.
@@ -40,12 +30,10 @@ fn bench_arithmetic(c: &mut Criterion) {
                     None,
                     "format",
                     vec![black_box(acc.clone())],
-                    // Pure-logic ctx without a workspace — Format never needs one.
                     &mut DispatchCtx::new_pure(std::sync::Arc::new(
                         al_core::workspace::Workspace::new(),
                     )),
                 );
-                // Accumulate: step_int simulates a counter increment.
                 if let Value::Integer(n) = &acc {
                     acc = Value::Integer(
                         n + if let Value::Integer(s) = &step_int {
@@ -76,12 +64,6 @@ fn bench_arithmetic(c: &mut Criterion) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// bench_string_ops
-//
-// Exercises StrSubstNo, CopyStr, IndexOf, and Format on three payload sizes.
-// ---------------------------------------------------------------------------
-
 fn bench_string_ops(c: &mut Criterion) {
     let small = "Hello, World!".to_string();
     let medium = "The quick brown fox jumps over the lazy dog. ".repeat(10);
@@ -89,7 +71,6 @@ fn bench_string_ops(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("string_ops");
 
-    // ── StrSubstNo ───────────────────────────────────────────────────────────
     for (label, s) in [("small", &small), ("medium", &medium), ("large", &large)] {
         let fmt_str = "Result: %1, Again: %2, Third: %3".to_string();
         let arg1 = Value::Text(s.clone());
@@ -122,7 +103,6 @@ fn bench_string_ops(c: &mut Criterion) {
         });
     }
 
-    // ── CopyStr ──────────────────────────────────────────────────────────────
     for (label, s) in [("small", &small), ("medium", &medium), ("large", &large)] {
         let len = s.chars().count();
         let mid = (len / 2).max(1);
@@ -151,7 +131,6 @@ fn bench_string_ops(c: &mut Criterion) {
         });
     }
 
-    // ── IndexOf ──────────────────────────────────────────────────────────────
     for (label, s) in [("small", &small), ("medium", &medium), ("large", &large)] {
         let needle = "o".to_string();
 
@@ -169,7 +148,6 @@ fn bench_string_ops(c: &mut Criterion) {
         });
     }
 
-    // ── Format ───────────────────────────────────────────────────────────────
     for (label, s) in [("small", &small), ("medium", &medium), ("large", &large)] {
         group.bench_function(format!("Format/{label}"), |b| {
             b.iter_batched(
@@ -188,37 +166,25 @@ fn bench_string_ops(c: &mut Criterion) {
     group.finish();
 }
 
-// ---------------------------------------------------------------------------
-// bench_record_crud
-//
-// Insert/Get/Modify/Delete cycle on a MockRecord, 100 records per iteration.
-// The record is pre-created outside the measurement loop; only the CRUD
-// cycle itself is timed.
-// ---------------------------------------------------------------------------
-
 fn bench_record_crud(c: &mut Criterion) {
     c.bench_function("record_crud/insert_find_modify_delete_100", |b| {
         b.iter_batched(
             || {
-                // Setup: empty table with PK on field 1.
                 MockRecord::new(27, "Item", vec![1])
             },
             |mut rec| {
-                // Insert 100 rows.
                 for i in 1i64..=100 {
                     rec.field_set(1, Value::Integer(i));
                     rec.field_set(2, Value::Text(format!("Item {i}")));
                     rec.insert(false).expect("insert");
                 }
 
-                // Find each row by PK and modify its description.
                 for i in 1i64..=100 {
                     rec.get(vec![Value::Integer(i)]).expect("get");
                     rec.field_set(2, Value::Text(format!("Modified {i}")));
                     rec.modify(false).expect("modify");
                 }
 
-                // Delete every other row.
                 for i in (1i64..=100).step_by(2) {
                     rec.field_set(1, Value::Integer(i));
                     rec.delete(false).expect("delete");
@@ -231,16 +197,7 @@ fn bench_record_crud(c: &mut Criterion) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// bench_filter_apply
-//
-// Apply a compound filter (range + OR pattern + wildcard) over 1000 records.
-// The table is pre-populated outside the loop; the filter + FindSet + Next
-// walk is the hot path.
-// ---------------------------------------------------------------------------
-
 fn bench_filter_apply(c: &mut Criterion) {
-    // Build the 1000-row table once and reuse it in every iteration.
     let table = {
         let mut rec = MockRecord::new(18, "Customer", vec![1]);
         for i in 1i64..=1000 {
@@ -256,10 +213,8 @@ fn bench_filter_apply(c: &mut Criterion) {
         b.iter_batched(
             || table.clone(),
             |mut rec| {
-                // Range filter: rows 100..=500.
                 rec.set_range(1, Value::Integer(100), Value::Integer(500));
 
-                // Walk the filtered set.
                 let found = rec.find_set().expect("find_set");
                 let mut count = 0usize;
                 if found {
@@ -278,7 +233,6 @@ fn bench_filter_apply(c: &mut Criterion) {
         b.iter_batched(
             || table.clone(),
             |mut rec| {
-                // Wildcard filter on integer field: >100&<600 (range with AND).
                 rec.set_filter(3, ">0&<5").expect("set_filter");
 
                 let found = rec.find_set().expect("find_set");
@@ -296,17 +250,9 @@ fn bench_filter_apply(c: &mut Criterion) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// bench_library_assert_call
-//
-// Hot-path cost of resolving and executing Library Assert stubs:
-// AreEqual and IsTrue on already-evaluated Value arguments.
-// ---------------------------------------------------------------------------
-
 fn bench_library_assert_call(c: &mut Criterion) {
     let mut group = c.benchmark_group("library_assert");
 
-    // AreEqual — matching integers.
     group.bench_function("AreEqual/integer_match", |b| {
         b.iter(|| {
             black_box(stubs::resolve("Library Assert", "AreEqual").unwrap()(&[
@@ -316,7 +262,6 @@ fn bench_library_assert_call(c: &mut Criterion) {
         });
     });
 
-    // AreEqual — mismatched (produces an Eval::Error path).
     group.bench_function("AreEqual/integer_mismatch_error_path", |b| {
         b.iter(|| {
             black_box(stubs::resolve("Library Assert", "AreEqual").unwrap()(&[
@@ -326,7 +271,6 @@ fn bench_library_assert_call(c: &mut Criterion) {
         });
     });
 
-    // IsTrue — pass.
     group.bench_function("IsTrue/pass", |b| {
         b.iter(|| {
             black_box(stubs::resolve("Library Assert", "IsTrue").unwrap()(&[
@@ -336,7 +280,6 @@ fn bench_library_assert_call(c: &mut Criterion) {
         });
     });
 
-    // IsTrue — fail (exercises error-path allocations).
     group.bench_function("IsTrue/fail_error_path", |b| {
         b.iter(|| {
             black_box(stubs::resolve("Library Assert", "IsTrue").unwrap()(&[
@@ -349,22 +292,12 @@ fn bench_library_assert_call(c: &mut Criterion) {
     group.finish();
 }
 
-// ---------------------------------------------------------------------------
-// bench_callgraph_walk
-//
-// Router classification of a moderately-complex codeunit (~20 procedures,
-// various signal patterns).  The workspace is built once; `classify_all`
-// is the hot path.
-// ---------------------------------------------------------------------------
-
 fn bench_callgraph_walk(c: &mut Criterion) {
     use al_core::test_engine::router::classify_all;
     use al_core::workspace::Workspace;
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    // Medium codeunit: mix of pure-logic tests, record-touching tests, and
-    // HTTP-escape tests so the router exercises all three PATTERNS buckets.
     let codeunit_src = r#"
 codeunit 50100 "BenchmarkTests"
 {
@@ -503,7 +436,6 @@ codeunit 50100 "BenchmarkTests"
 }
 "#;
 
-    // Build workspace with one indexed .al file.
     let ws = Arc::new(Workspace::new());
     let path = PathBuf::from("/bench/BenchmarkTests.al");
     ws.file_index.add_file(path, codeunit_src.to_string());
@@ -512,10 +444,6 @@ codeunit 50100 "BenchmarkTests"
         b.iter(|| black_box(classify_all(&ws)));
     });
 }
-
-// ---------------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------------
 
 criterion_group!(
     benches,

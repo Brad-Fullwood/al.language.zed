@@ -53,7 +53,6 @@ pub struct CalcFormula {
     pub where_clause: Vec<WhereCondition>,
 }
 
-/// The kind of calculation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormulaType {
     Sum,
@@ -88,7 +87,6 @@ pub struct WhereCondition {
     pub field: String,
     /// The operator (always `=` in BC FlowField syntax, but captured).
     pub operator: WhereOperator,
-    /// The right-hand side of the condition.
     pub value: WhereValue,
 }
 
@@ -249,7 +247,6 @@ impl<'a> Parser<'a> {
 
     /// Parse `WHERE(field=CONST(...),field=FIELD(...),...)`.
     fn parse_where_clause(&mut self) -> Result<Vec<WhereCondition>, CalcParseError> {
-        // Consume 'WHERE'
         let kw = self.read_keyword()?;
         if !kw.eq_ignore_ascii_case("where") {
             return Err(CalcParseError::InvalidWhereClause(format!(
@@ -347,7 +344,6 @@ pub fn parse(formula: &str) -> Result<CalcFormula, CalcParseError> {
 
     let mut p = Parser::new(trimmed);
 
-    // Read formula type keyword.
     let type_kw = p.read_keyword()?;
     let formula_type = match type_kw.to_uppercase().as_str() {
         "SUM" => FormulaType::Sum,
@@ -363,7 +359,6 @@ pub fn parse(formula: &str) -> Result<CalcFormula, CalcParseError> {
 
     p.expect_char('(')?;
 
-    // Read table name.
     p.skip_whitespace();
     let table_name = p.read_name()?;
     if table_name.is_empty() {
@@ -390,14 +385,12 @@ pub fn parse(formula: &str) -> Result<CalcFormula, CalcParseError> {
 
     p.skip_whitespace();
 
-    // Optional WHERE clause.
     let where_clause = if p
         .remaining()
         .trim_start()
         .to_uppercase()
         .starts_with("WHERE")
     {
-        // Skip any whitespace before WHERE.
         p.skip_whitespace();
         p.parse_where_clause()?
     } else {
@@ -405,7 +398,6 @@ pub fn parse(formula: &str) -> Result<CalcFormula, CalcParseError> {
     };
 
     p.skip_whitespace();
-    // Consume closing paren of the formula type.
     if p.peek() == Some(')') {
         p.advance();
     } else if !p.at_end() {
@@ -423,8 +415,6 @@ pub fn parse(formula: &str) -> Result<CalcFormula, CalcParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Positive: each formula type ───────────────────────────────────────────
 
     #[test]
     fn test_sum_simple() {
@@ -485,8 +475,6 @@ mod tests {
         assert!(f.field_name.is_none());
     }
 
-    // ── Positive: WHERE clauses ───────────────────────────────────────────────
-
     #[test]
     fn test_sum_with_const_where() {
         let f = parse(
@@ -536,16 +524,12 @@ mod tests {
         assert_eq!(f.where_clause.len(), 3);
     }
 
-    // ── Positive: quoted table/field names with spaces ────────────────────────
-
     #[test]
     fn test_quoted_names_with_spaces() {
         let f = parse("Lookup(\"Purchase Header\".\"Pay-to Name\")").unwrap();
         assert_eq!(f.table_name, "Purchase Header");
         assert_eq!(f.field_name.as_deref(), Some("Pay-to Name"));
     }
-
-    // ── Positive: case-insensitive formula type keyword ───────────────────────
 
     #[test]
     fn test_case_insensitive_type() {
@@ -554,8 +538,6 @@ mod tests {
         let f2 = parse("COUNT(\"Item\")").unwrap();
         assert_eq!(f2.formula_type, FormulaType::Count);
     }
-
-    // ── Negative: parse errors ────────────────────────────────────────────────
 
     #[test]
     fn test_invalid_empty() {
@@ -584,8 +566,6 @@ mod tests {
     fn test_invalid_missing_table() {
         assert!(parse("Sum()").is_err());
     }
-
-    // Vector 15: Quoted names with special characters.
 
     // Field name containing `&` inside double quotes must parse correctly.
     // read_quoted() reads until the closing quote, so `&` inside quotes is
@@ -620,7 +600,6 @@ mod tests {
         );
     }
 
-    // Vector 16: Multiple WHERE conditions with mixed CONST, FIELD, FILTER.
     #[test]
     fn test_multiple_where_mixed_adversarial_i_16() {
         let f = parse(concat!(
@@ -658,7 +637,6 @@ mod tests {
         );
     }
 
-    // Vector 18: FILTER with empty expression inside WHERE clause.
     // `Count("Item" WHERE ("Date"=FILTER()))` — read_until_close reads
     // until `)` at depth 0, producing empty string. This is silently
     // accepted as WhereValue::Filter(""). Should this be an error?
@@ -677,7 +655,6 @@ mod tests {
         );
     }
 
-    // Extra: Escaped double-quote inside double-quoted name.
     // The parser has no escape mechanism — a `"` always terminates the quoted
     // string. So `"Foo""Bar"` would parse table_name="Foo", then `"Bar"` is
     // leftover trailing content after the formula closes.
@@ -702,8 +679,6 @@ mod tests {
 mod proptest_tests {
     use super::*;
     use proptest::prelude::*;
-
-    // ── Strategies ───────────────────────────────────────────────────────────
 
     /// Generate an unquoted identifier safe for use as a table/field name
     /// (alphanumeric + underscore, 1-12 chars, no leading digits).
@@ -731,7 +706,6 @@ mod proptest_tests {
         ]
     }
 
-    /// Classify the formula type for test logic.
     fn needs_field(ftype: &str) -> bool {
         matches!(
             ftype.to_uppercase().as_str(),
@@ -739,7 +713,6 @@ mod proptest_tests {
         )
     }
 
-    /// Generate a WHERE condition string variant.
     fn where_condition_str(field: String) -> impl Strategy<Value = String> {
         let f1 = field.clone();
         let f2 = field.clone();
@@ -774,7 +747,6 @@ mod proptest_tests {
                 let cond_str_strategy = where_condition_str(cond_field.clone());
                 let cond_str_strategy2 = where_condition_str(format!("{cond_field}2"));
 
-                // Pre-clone everything we need across multiple closures.
                 let ts0 = table_str.clone();
                 let fs0 = field_str.clone();
                 let ts1 = table_str.clone();
@@ -784,7 +756,6 @@ mod proptest_tests {
                 let cf2 = cond_field.clone();
 
                 prop_oneof![
-                    // No WHERE clause
                     Just(()).prop_map(move |_| {
                         if has_field {
                             format!("{ftype}({ts0}.{fs0})")
@@ -792,7 +763,6 @@ mod proptest_tests {
                             format!("{ftype}({ts0})")
                         }
                     }),
-                    // One WHERE condition
                     cond_str_strategy.prop_map(move |c| {
                         if has_field {
                             format!("{ftype}({ts1}.{fs1} WHERE ({c}))")
@@ -800,7 +770,6 @@ mod proptest_tests {
                             format!("{ftype}({ts1} WHERE ({c}))")
                         }
                     }),
-                    // Two WHERE conditions
                     cond_str_strategy2.prop_map(move |c2| {
                         // Hard-code a simple CONST condition as the first
                         // to keep the strategy simple (no nested flat_map).
@@ -815,8 +784,6 @@ mod proptest_tests {
             },
         )
     }
-
-    // ── Properties ───────────────────────────────────────────────────────────
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
@@ -844,7 +811,6 @@ mod proptest_tests {
         /// Property: formula_type field matches the keyword used in the string.
         #[test]
         fn prop_formula_type_matches_keyword(s in calc_formula_str()) {
-            // Extract the prefix before the first `(`.
             let prefix = s.split('(').next().unwrap_or("").to_uppercase();
             let result = parse(&s).expect("must parse");
             let expected_type = match prefix.as_str() {

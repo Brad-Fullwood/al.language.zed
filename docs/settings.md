@@ -76,6 +76,7 @@ CodeAnalysis bridge.
 |---|---|---|---|
 | `al.compilationOptions` | string[] | `[]` | Extra command-line options passed to the AL compiler (`alc`). |
 | `al.incrementalBuild` | boolean | `false` | Use incremental build when compiling. |
+| `al.useOfficialCompiler` | boolean | `false` | Compile via Microsoft's `dotnet alc` subprocess instead of the pure-Rust native `.app` emitter. Native is the default for daemon compile, `al.compile`, and publish; use this escape hatch when you need Microsoft's full compile-time validation. |
 
 ### Debug adapter
 

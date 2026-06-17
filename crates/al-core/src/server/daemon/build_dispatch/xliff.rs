@@ -83,11 +83,9 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
         );
     }
 
-    // Find the generated .g.xlf
     let generated_path = if let Some(g) = params.get("generated").and_then(|v| v.as_str()) {
         std::path::PathBuf::from(g)
     } else {
-        // Auto-detect: look in the same Translations/ directory for *.g.xlf
         xlf_path
             .parent()
             .and_then(|dir| {
@@ -150,8 +148,6 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
 
     let (updated_units, refresh_result) = crate::xliff::refresh_xliff(&gen_units, &lang_units);
 
-    // Write updated units back to the language xlf
-    // We need the app name for the XLIFF header
     let app_name = xlf_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -171,7 +167,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
         );
     }
 
-    let _ = workspace; // workspace used for future workspace-aware refresh
+    let _ = workspace;
     Response {
         id,
         result: Some(serde_json::to_value(&refresh_result).unwrap_or_default()),
@@ -323,8 +319,6 @@ mod tests {
         Workspace::new()
     }
 
-    // --- xlf_target_language -------------------------------------------------
-
     #[test]
     fn xlf_target_language_extracts_locale_from_filename() {
         // A language-specific file carries its locale in the filename; the
@@ -352,8 +346,6 @@ mod tests {
             "en-US"
         );
     }
-
-    // --- dispatch_xlf_* path guards ------------------------------------------
 
     #[test]
     fn xlf_untranslated_missing_param_is_invalid_params() {

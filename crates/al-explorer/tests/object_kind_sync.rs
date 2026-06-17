@@ -61,7 +61,6 @@ fn parse_object_kind_variants_from_source() -> Vec<String> {
             }
             continue;
         }
-        // Track brace depth
         for ch in trimmed.chars() {
             match ch {
                 '{' => brace_depth += 1,
@@ -72,7 +71,6 @@ fn parse_object_kind_variants_from_source() -> Vec<String> {
         if brace_depth <= 0 {
             break;
         }
-        // Skip attribute lines, comments, blank lines
         if trimmed.starts_with('#') || trimmed.starts_with("//") || trimmed.is_empty() {
             continue;
         }
@@ -95,9 +93,6 @@ fn parse_object_kind_variants_from_source() -> Vec<String> {
 
 #[test]
 fn test_object_kind_variant_count() {
-    // al-explorer's ObjectKind intentionally mirrors al-symbols (ISSUE-017).
-    // If al-symbols::ObjectKind gains/loses a variant, update types.rs and
-    // EXPECTED_VARIANT_NAMES in this file.
     let variants = parse_object_kind_variants_from_source();
     assert_eq!(
         variants.len(),
@@ -111,7 +106,6 @@ fn test_object_kind_variant_count() {
 
 #[test]
 fn test_object_kind_variant_names() {
-    // Each expected variant must be present and in the same order.
     let variants = parse_object_kind_variants_from_source();
     for expected in EXPECTED_VARIANT_NAMES {
         assert!(
@@ -124,8 +118,6 @@ fn test_object_kind_variant_names() {
 
 #[test]
 fn test_object_kind_no_unknown_variants() {
-    // No variant in types.rs that is not in our expected list — catches additions
-    // to al-explorer that weren't added to al-symbols.
     let variants = parse_object_kind_variants_from_source();
     for v in &variants {
         assert!(

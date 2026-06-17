@@ -205,7 +205,6 @@ pub fn cmd_doctor(json: bool) -> ExitCode {
         transient_loading = true;
     }
     if any_failed {
-        // Real configuration error (ALTool/.NET/project missing).
         ExitCode::FAILURE
     } else if transient_loading {
         // Documented EX_TEMPFAIL (75) approximates "try again later" in
@@ -736,7 +735,6 @@ pub fn cmd_format(file: Option<&str>, check: bool, stdin: bool, all: bool, json:
             } else {
                 eprintln!("{file}: already formatted");
             }
-            // Exit 1 when --check detects changes, regardless of --json.
             if check && changed {
                 ExitCode::FAILURE
             } else {
@@ -924,12 +922,10 @@ pub fn cmd_position_query(method: &str, file: &str, line: u32, col: u32, json: b
     }
 }
 
-/// Format a position query result in a human-readable way.
 fn print_position_query_human(method: &str, result: &serde_json::Value) {
     /// Extract `file:line:col` from an LSP Location object.
     fn location_str(loc: &serde_json::Value) -> Option<String> {
         let uri = loc.get("uri").and_then(|v| v.as_str())?;
-        // Convert file:// URI to a plain path when possible.
         let path = url::Url::parse(uri)
             .ok()
             .and_then(|u| u.to_file_path().ok())
@@ -954,7 +950,6 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
 
     match method {
         "definition" | "typeDefinition" | "declaration" | "implementation" => {
-            // Result is either a single Location or an array of Locations.
             if let Some(locations) = result.as_array() {
                 for loc in locations {
                     if let Some(s) = location_str(loc) {
@@ -986,7 +981,6 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
             }
         }
         _ => {
-            // Generic fallback: pretty-print with a label.
             println!("Result:");
             println!(
                 "{}",
@@ -1113,7 +1107,6 @@ fn apply_workspace_edit(
             _ => continue,
         };
 
-        // Resolve the URI to a filesystem path.
         let path = url::Url::parse(uri)
             .ok()
             .and_then(|u| u.to_file_path().ok())
@@ -1139,12 +1132,10 @@ fn apply_workspace_edit(
                     .sum::<usize>()
                     .saturating_sub(1));
             }
-            // Byte offset of the start of the target line.
             let line_start: usize = lines[..line as usize]
                 .iter()
                 .map(|l| l.len() + 1) // +1 for the '\n' we split on
                 .sum();
-            // Walk UTF-16 code units along the line to find the byte offset.
             let line_str = lines[line as usize];
             let mut utf16_count = 0u64;
             for (byte_pos, ch) in line_str.char_indices() {
@@ -1190,7 +1181,6 @@ fn apply_workspace_edit(
             .collect::<Result<_, &str>>()
             .map_err(|e| format!("Invalid edit in {uri}: {e}"))?;
 
-        // Sort descending by start position (line then character).
         parsed_edits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
 
         // Pre-compute all byte ranges from the *original* lines before any
@@ -1697,7 +1687,6 @@ pub fn cmd_metrics(
             if json {
                 print_json(&result);
             } else if all {
-                // Print per-file hotspot summary
                 if let Some(files) = result.as_array() {
                     let mut total_hotspots = 0usize;
                     for file_result in files {
@@ -1723,7 +1712,6 @@ pub fn cmd_metrics(
                     }
                 }
             } else {
-                // Single file: print all procedures with hotspots flagged
                 if let Some(procs) = result.get("procedures").and_then(|v| v.as_array()) {
                     if procs.is_empty() {
                         eprintln!("No procedures found");
@@ -1785,10 +1773,6 @@ pub fn cmd_sql_scan(json: bool) -> ExitCode {
         },
     )
 }
-
-// ---------------------------------------------------------------------------
-// WP16: Bulk fix commands (T1603-T1605)
-// ---------------------------------------------------------------------------
 
 pub fn cmd_add_application_area(value: &str, dry_run: bool, json: bool) -> ExitCode {
     let mut client = match connect(None) {
@@ -1894,10 +1878,6 @@ pub fn cmd_add_data_classification(value: &str, dry_run: bool, json: bool) -> Ex
     }
 }
 
-// ---------------------------------------------------------------------------
-// WP15: Test runner commands
-// ---------------------------------------------------------------------------
-
 pub fn cmd_tests_discover(json: bool) -> ExitCode {
     run_command(
         "tests.discover",
@@ -1978,7 +1958,6 @@ pub fn cmd_test_run(
             if json {
                 print_json(&result);
             } else {
-                // Human-readable summary
                 if let Some(run) = result.get("result") {
                     let cu_name = run.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                     let total = run.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -2063,7 +2042,6 @@ pub fn cmd_test_results(codeunit: Option<i64>, method: Option<&str>, json: bool)
         params["methodName"] = serde_json::Value::String(m.to_string());
     }
     run_command("tests.last_results", Some(params), json, None, |result| {
-        // Single (codeunit, method) lookup short-circuits to lastResult.
         if let Some(last) = result.get("lastResult") {
             if last.is_null() {
                 eprintln!("No prior runs recorded for that (codeunit, method) pair.");
@@ -2210,7 +2188,6 @@ pub fn cmd_test_run_all(
                 return ExitCode::SUCCESS;
             }
 
-            // Pretty per-codeunit summary
             let summaries = result
                 .get("summaries")
                 .and_then(|v| v.as_array())
@@ -2256,10 +2233,6 @@ pub fn cmd_test_run_all(
     }
 }
 
-// ---------------------------------------------------------------------------
-// WP16: Code generation command
-// ---------------------------------------------------------------------------
-
 pub fn cmd_generate(
     kind: &str,
     id: i64,
@@ -2296,10 +2269,6 @@ pub fn cmd_generate(
         Err(e) => report_error(&e, json),
     }
 }
-
-// ---------------------------------------------------------------------------
-// WP17: Analysis differentiator commands
-// ---------------------------------------------------------------------------
 
 pub fn cmd_obsolete(json: bool) -> ExitCode {
     run_command(
@@ -2851,7 +2820,6 @@ pub fn cmd_test_mutate(
                 "Killed: {killed} · Survived: {survived} · Errored: {errored} (mutation score: {score:.1}%)"
             );
 
-            // Print table of survived variants
             if let Some(variants) = result.get("variants").and_then(|v| v.as_array()) {
                 let survivors: Vec<_> = variants
                     .iter()

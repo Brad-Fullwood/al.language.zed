@@ -78,7 +78,6 @@ fn find_binary() -> PathBuf {
         }
     }
 
-    // Check cargo target directory
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace_root = PathBuf::from(manifest_dir)
         .parent()
@@ -97,7 +96,6 @@ fn find_binary() -> PathBuf {
         return release_bin;
     }
 
-    // Fall back to PATH
     PathBuf::from("al-lsp")
 }
 
@@ -107,14 +105,11 @@ fn find_binary() -> PathBuf {
 /// variant for Unix-socket transport — removed alongside `connect()` because
 /// al-lsp's daemon mode speaks a different protocol; see crate docs.)
 enum Lifecycle {
-    /// al-lsp spawned as a child process, communicating over stdio.
     Stdio(Child),
 }
 
-/// Writer half of the transport — abstracted so stdio and socket share the same code path.
 type Writer = Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
 
-/// An LSP client that communicates with al-lsp over stdio or Unix socket.
 pub struct LspClient {
     writer: Option<Writer>,
     lifecycle: Lifecycle,
@@ -190,7 +185,6 @@ impl LspClient {
         // request/response routing).
         let (notif_tx, notif_rx) = mpsc::channel(10_000);
 
-        // Spawn reader task — generic over the concrete reader type
         let pending_clone = pending.clone();
         tokio::spawn(async move {
             read_loop(reader, pending_clone, notif_tx).await;
@@ -490,7 +484,6 @@ impl LspClient {
         }
     }
 
-    /// Get hover info at a position.
     pub async fn hover(&mut self, relative_path: &str, line: u32, character: u32) -> Option<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({
@@ -513,7 +506,6 @@ impl LspClient {
         }
     }
 
-    /// Get completions at a position.
     pub async fn completion(
         &mut self,
         relative_path: &str,

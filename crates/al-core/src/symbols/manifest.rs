@@ -19,7 +19,6 @@ pub enum ManifestError {
     InvalidAttribute(String),
 }
 
-/// Parsed NavxManifest.xml data.
 #[derive(Debug, Clone)]
 pub struct NavxManifest {
     pub app_id: String,

@@ -5,7 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Overall status of a debug session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionStatus {
@@ -26,7 +25,6 @@ impl std::fmt::Display for SessionStatus {
     }
 }
 
-/// Complete debug state snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DebugState {
@@ -38,7 +36,6 @@ pub struct DebugState {
     pub thread_id: Option<i64>,
 }
 
-/// A location in source code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Location {
@@ -48,7 +45,6 @@ pub struct Location {
     pub procedure: Option<String>,
 }
 
-/// A stack frame from the debugger.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StackFrame {
@@ -71,7 +67,6 @@ pub struct Variable {
     pub fields: Vec<Variable>,
 }
 
-/// Information about a verified breakpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BreakpointInfo {
@@ -82,7 +77,6 @@ pub struct BreakpointInfo {
     pub verified: bool,
 }
 
-/// Result of evaluating an expression.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvalResult {
@@ -150,7 +144,6 @@ mod tests {
         assert!(json.contains("\"threadId\""));
         assert!(json.contains("\"typeName\""));
 
-        // Round-trip
         let parsed: DebugState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.status, SessionStatus::Paused);
         assert_eq!(parsed.session_id, "s1");

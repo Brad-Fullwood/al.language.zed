@@ -74,11 +74,9 @@ fn now_activity_ms() -> u64 {
     Instant::now().duration_since(*epoch).as_millis() as u64
 }
 
-/// Global socket path for cleanup on exit.
 #[cfg(unix)]
 static SOCKET_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// Clean up the socket file (called from signal handlers or shutdown).
 #[cfg(unix)]
 pub(crate) fn cleanup_socket() {
     if let Some(path) = SOCKET_PATH.get() {
@@ -87,7 +85,6 @@ pub(crate) fn cleanup_socket() {
     }
 }
 
-/// RAII guard that cleans up the socket on drop.
 #[cfg(unix)]
 struct SocketCleanup;
 
@@ -142,7 +139,6 @@ fn ensure_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 
-/// Run the daemon server for a project.
 #[cfg(unix)]
 pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let sock_path = socket_path(&project_root).ok_or(
@@ -172,7 +168,6 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
 
     let workspace = Arc::new(Workspace::new());
 
-    // Register a logging notify sink — daemon has no LSP client, so warnings go to logs.
     let _ = workspace.notify_sink.set(std::sync::Arc::new(|msg: &str| {
         tracing::warn!("daemon: {msg}");
     }));
@@ -226,12 +221,8 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
         }
     });
 
-    // Connection semaphore — limits concurrent active connections to avoid FD/memory exhaustion.
     let connection_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
-    // Set up OS signal streams so the daemon's select loop can handle them inline.
-    // This avoids calling process::exit() from a spawned task, which would skip the
-    // SocketCleanup drop guard. Instead, we break out of the accept loop so Drop runs.
     #[cfg(unix)]
     let mut sigterm = {
         use tokio::signal::unix::{signal, SignalKind};
@@ -243,10 +234,8 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
         signal(SignalKind::interrupt()).ok()
     };
 
-    // Accept connections — break when shutdown is signalled so Drop guards run.
     let mut accept_backoff = ACCEPT_BACKOFF_START;
     loop {
-        // Helper futures that resolve when a signal fires (or never, if registration failed).
         #[cfg(unix)]
         let sigterm_fut = async {
             match sigterm.as_mut() {
@@ -286,8 +275,6 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                         // first-request gap.
                         last_activity.store(now_activity_ms(), Ordering::Relaxed);
 
-                        // Acquire a connection slot. If at the limit, drop this connection
-                        // rather than blocking the accept loop.
                         let permit = match connection_limit.clone().try_acquire_owned() {
                             Ok(p) => p,
                             Err(_) => {
@@ -309,7 +296,6 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "daemon: accept error");
-                        // Exponential backoff to avoid spinning on persistent errors (e.g. EMFILE).
                         tokio::time::sleep(accept_backoff).await;
                         accept_backoff = (accept_backoff * 2).min(ACCEPT_BACKOFF_CAP);
                     }
@@ -319,7 +305,6 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                 tracing::info!("daemon: idle timeout — shutting down");
                 break;
             }
-            // Graceful shutdown from OS signals: break so SocketCleanup drops before exit.
             _ = sigterm_fut => {
                 tracing::info!("daemon: received SIGTERM — shutting down gracefully");
                 break;
@@ -331,7 +316,6 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
         }
     }
 
-    // Stop the idle-timeout watcher so it doesn't fire after the accept loop exits.
     idle_timeout_handle.abort();
 
     // F-OPEN-070: graceful drain. The accept loop has broken; new connections
@@ -525,7 +509,6 @@ pub(crate) async fn dispatch_request(
         "semanticTokens" => lsp_dispatch::dispatch_semantic_tokens(workspace, id, &params),
         "inlayHints" => lsp_dispatch::dispatch_inlay_hints(workspace, id, &params),
         "codeActions" => lsp_dispatch::dispatch_code_actions(workspace, id, &params),
-        // Symbol queries
         "search" => lsp_dispatch::dispatch_search(workspace, id, &params),
         "object" => lsp_dispatch::dispatch_object(workspace, id, &params),
         "byId" => lsp_dispatch::dispatch_by_id(workspace, id, &params),
@@ -754,7 +737,6 @@ pub(crate) fn rpc_error(id: u64, code: i32, message: &str) -> Response {
     }
 }
 
-/// Get the project root from workspace, or return an error Response.
 pub(crate) fn require_project_root(workspace: &Workspace, id: u64) -> Result<PathBuf, Response> {
     workspace
         .project
@@ -764,7 +746,6 @@ pub(crate) fn require_project_root(workspace: &Workspace, id: u64) -> Result<Pat
         .ok_or_else(|| rpc_error(id, error_codes::INTERNAL_ERROR, "No project loaded"))
 }
 
-/// Parse an ObjectKind from a string, or return an invalid-params Response.
 pub(crate) fn parse_object_kind(
     id: u64,
     kind_str: &str,
@@ -834,7 +815,6 @@ pub(crate) fn lint_diag_to_json(d: &crate::syntax::LintDiagnostic) -> serde_json
 }
 
 pub(crate) async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path) {
-    // Delegate common steps (find project, load packages, scan, toolchain) to al-core.
     let result = crate::workspace::initialize_core_workspace(workspace, project_root).await;
 
     tracing::info!(
@@ -906,12 +886,10 @@ mod tests {
 
     #[test]
     fn extract_i32_rejects_overflow() {
-        // i32::MAX + 1 — would silently wrap to i32::MIN under `as i32`.
         let params = serde_json::json!({ "id": (i32::MAX as i64) + 1 });
         assert_eq!(extract_i32(&params, "id"), None);
         let params = serde_json::json!({ "id": (i32::MIN as i64) - 1 });
         assert_eq!(extract_i32(&params, "id"), None);
-        // Very large u64 that exceeds i64::MAX is rejected at the as_i64 step.
         let params = serde_json::json!({ "id": u64::MAX });
         assert_eq!(extract_i32(&params, "id"), None);
     }
@@ -928,15 +906,12 @@ mod tests {
 
     #[test]
     fn extract_position_rejects_overflow() {
-        // Matches the existing hardening — make sure we don't regress it.
         let params = serde_json::json!({ "line": (u32::MAX as u64) + 1, "character": 0 });
         assert!(extract_position(&params).is_none());
     }
 
-    /// Verify socket_path produces the same result for the same canonical path.
     #[test]
     fn socket_path_is_deterministic() {
-        // Ensure XDG_RUNTIME_DIR is set so socket_path returns Some.
         std::env::set_var("XDG_RUNTIME_DIR", "/tmp");
         let p = std::path::Path::new("/tmp");
         let path1 = al_protocol::socket_path(p)
@@ -951,7 +926,6 @@ mod tests {
         assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
-    /// A line within the limit is returned successfully.
     #[tokio::test]
     async fn bounded_read_accepts_line_within_limit() {
         let input = b"hello world\n";
@@ -960,10 +934,8 @@ mod tests {
         assert_eq!(result, Some("hello world".to_string()));
     }
 
-    /// A line without a newline that exceeds the limit returns an error.
     #[tokio::test]
     async fn bounded_read_rejects_line_exceeding_limit() {
-        // 10 bytes of data, no newline, limit of 5 bytes
         let input = b"0123456789";
         let mut reader = tokio::io::BufReader::new(input.as_ref());
         let err = read_bounded_line(&mut reader, 5).await.unwrap_err();
@@ -971,7 +943,6 @@ mod tests {
         assert!(err.to_string().contains("byte limit"));
     }
 
-    /// EOF with no data returns None.
     #[tokio::test]
     async fn bounded_read_returns_none_on_empty_eof() {
         let input: &[u8] = b"";
@@ -980,7 +951,6 @@ mod tests {
         assert_eq!(result, None);
     }
 
-    /// A line where a newline IS found but the content exceeds the limit returns an error.
     #[tokio::test]
     async fn bounded_read_rejects_line_with_newline_exceeding_limit() {
         let input = b"0123456789\nmore data";
@@ -990,7 +960,6 @@ mod tests {
         assert!(err.to_string().contains("byte limit"));
     }
 
-    /// EOF without a newline (partial line) returns the data as Some.
     #[tokio::test]
     async fn bounded_read_returns_partial_line_on_eof() {
         let input = b"no newline here";
@@ -1001,7 +970,6 @@ mod tests {
 
     #[test]
     fn file_uri_prefers_explicit_uri_field() {
-        // When a "uri" is present it is used verbatim, ignoring any "file".
         let params = serde_json::json!({
             "uri": "file:///some/where.al",
             "file": "/other/path.al",
@@ -1012,8 +980,6 @@ mod tests {
 
     #[test]
     fn file_uri_canonicalizes_absolute_existing_path() {
-        // An absolute path to an existing file is canonicalized and converted
-        // to a file:// URL.
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("doc.al");
         std::fs::write(&file, b"x").unwrap();
@@ -1025,7 +991,6 @@ mod tests {
 
     #[test]
     fn file_uri_resolves_relative_path_against_cwd() {
-        // A relative path is joined onto the current working directory.
         let params = serde_json::json!({ "file": "relative/file.al" });
         let uri = file_uri_from_params(&params).expect("relative path must produce a uri");
         let path = uri.to_file_path().unwrap();
@@ -1038,8 +1003,6 @@ mod tests {
 
     #[test]
     fn file_uri_falls_back_when_canonicalize_fails() {
-        // A nonexistent absolute path can't be canonicalized; the function
-        // falls back to the (already absolute) path rather than failing.
         let params = serde_json::json!({
             "file": "/definitely/not/existing/al-test-xyz.al"
         });
@@ -1056,8 +1019,6 @@ mod tests {
         assert!(file_uri_from_params(&params).is_none());
     }
 
-    /// `ping` is a static health-check that needs no project; it must echo
-    /// `"pong"` with the request id and no error.
     #[tokio::test]
     async fn dispatch_ping_returns_pong() {
         let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
@@ -1069,8 +1030,6 @@ mod tests {
         assert_eq!(resp.result, Some(serde_json::json!("pong")));
     }
 
-    /// An unrecognised method must produce a METHOD_NOT_FOUND error that names
-    /// the offending method, and must NOT return a result.
     #[tokio::test]
     async fn dispatch_unknown_method_is_method_not_found() {
         let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
@@ -1088,8 +1047,6 @@ mod tests {
         );
     }
 
-    /// `status` reports daemon state as a JSON object including the live pid;
-    /// it needs no project and must succeed.
     #[tokio::test]
     async fn dispatch_status_reports_pid() {
         let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
@@ -1103,23 +1060,18 @@ mod tests {
             result.get("pid").and_then(|v| v.as_u64()),
             Some(u64::from(std::process::id()))
         );
-        // Fresh workspace has no indexed symbols.
         assert_eq!(
             result.get("indexedSymbols").and_then(|v| v.as_u64()),
             Some(0)
         );
     }
 
-    /// `shutdown` must signal the shared Notify so the accept loop can break,
-    /// AND reply with an "ok" result. We prove the notification by awaiting it.
     #[tokio::test]
     async fn dispatch_shutdown_signals_notify_and_acks() {
         let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
         let shutdown = Notify::new();
-        // Register interest BEFORE dispatch so notify_one is not lost.
         let notified = shutdown.notified();
         tokio::pin!(notified);
-        // Poll once to arm the waiter — it must not be pre-signalled.
         assert!(
             notified.as_mut().now_or_never().is_none(),
             "notify should not be pre-signalled"
@@ -1131,16 +1083,12 @@ mod tests {
         assert!(resp.error.is_none());
         assert_eq!(resp.result, Some(serde_json::json!("ok")));
 
-        // The armed waiter must now resolve — proving notify_one fired.
         assert!(
             notified.as_mut().now_or_never().is_some(),
             "shutdown must have signalled the Notify"
         );
     }
 
-    /// `params` is optional on the wire; a method that tolerates null params
-    /// (`diag` defaults to the `summary` subcommand) must still succeed when
-    /// no params are supplied.
     #[tokio::test]
     async fn dispatch_diag_defaults_to_summary_when_params_absent() {
         let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
@@ -1210,7 +1158,6 @@ mod tests {
         let uri = url::Url::from_file_path(&file).unwrap();
 
         let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
-        // Not yet in the document store.
         assert!(ws.documents.get_text(&uri).is_none());
 
         // ensure_document uses block_in_place, which requires a multi-thread
@@ -1218,7 +1165,6 @@ mod tests {
         let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
         let text = rt.block_on(async { require_document_text(&ws, &uri, 1) });
         assert_eq!(text.unwrap(), "codeunit 50000 Foo {}");
-        // The document is now cached in the store.
         assert_eq!(
             ws.documents.get_text(&uri).as_deref(),
             Some("codeunit 50000 Foo {}")
@@ -1257,9 +1203,7 @@ mod tests {
 
     #[test]
     fn extract_uri_returns_none_when_uri_missing_or_unparseable() {
-        // Missing key.
         assert!(extract_uri(&serde_json::json!({})).is_none());
-        // Present but not a string.
         assert!(extract_uri(&serde_json::json!({ "uri": 42 })).is_none());
         // Present string but not a parseable URL (no scheme → relative-ref error).
         assert!(extract_uri(&serde_json::json!({ "uri": "not a url" })).is_none());
@@ -1275,11 +1219,8 @@ mod tests {
 
     #[test]
     fn extract_position_returns_none_when_a_field_is_missing() {
-        // Only line present.
         assert!(extract_position(&serde_json::json!({ "line": 1 })).is_none());
-        // Only character present.
         assert!(extract_position(&serde_json::json!({ "character": 1 })).is_none());
-        // Neither present.
         assert!(extract_position(&serde_json::json!({})).is_none());
     }
 
@@ -1338,8 +1279,6 @@ mod tests {
         );
     }
 
-    /// `packages` reads package_info (empty on a fresh workspace) and must
-    /// return an empty JSON array, not an error.
     #[tokio::test]
     async fn dispatch_packages_returns_empty_array_on_fresh_workspace() {
         let ws = std::sync::Arc::new(crate::workspace::Workspace::new());

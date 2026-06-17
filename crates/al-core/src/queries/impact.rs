@@ -32,12 +32,9 @@ pub enum ImpactType {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImpactEntry {
-    /// Kind of the consuming object.
     #[serde(rename = "k")]
     pub kind: ObjectKind,
-    /// Object ID.
     pub id: i32,
-    /// Object name.
     #[serde(rename = "n")]
     pub name: String,
     /// Which procedure references the symbol (if applicable).
@@ -124,7 +121,6 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Vec<ImpactEntry> {
 /// - `"Customer.\"Credit Limit\""` → `("Customer", Some("Credit Limit"))`
 /// - `"Sales-Post.PostDocument"` → `("Sales-Post", Some("PostDocument"))`
 fn parse_symbol(symbol: &str) -> (String, Option<String>) {
-    // Try splitting on '.' but respect quoted identifiers
     if let Some(dot_pos) = find_unquoted_dot(symbol) {
         let object = symbol[..dot_pos].trim().trim_matches('"').to_string();
         let member = symbol[dot_pos + 1..].trim().trim_matches('"').to_string();
@@ -211,7 +207,6 @@ fn check_member_consumers(
     let target_lower = target_object.to_lowercase();
     let member_lower = member.to_lowercase();
     for method in &entry.methods {
-        // Check EventSubscriber attributes targeting the object+member.
         // The attribute carries (event-element-name, target-object, target-event)
         // so it must have at least 3 arguments; otherwise it cannot identify a
         // concrete event and is skipped.
@@ -323,7 +318,6 @@ fn check_object_consumers(
     }
 }
 
-/// Search workspace .al files for references to the symbol name.
 fn search_workspace_files(
     workspace: &Workspace,
     search_name: &str,
@@ -338,7 +332,6 @@ fn search_workspace_files(
         let refs = crate::syntax::find_variable_references(&tree, &file_text, search_name);
 
         if !refs.is_empty() {
-            // Determine the object info from this file
             if let Some(obj_info) = crate::syntax::find_object_declaration(&tree, &file_text) {
                 let kind = obj_info
                     .kind

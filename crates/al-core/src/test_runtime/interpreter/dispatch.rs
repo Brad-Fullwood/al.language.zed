@@ -21,7 +21,6 @@ use crate::test_runtime::mock::record::MockRecord;
 use crate::test_runtime::stubs;
 use crate::workspace::Workspace;
 
-/// Maximum allowed recursion depth before the interpreter returns an error.
 const MAX_RECURSION_DEPTH: usize = 100;
 
 /// Maximum syntactic nesting depth `eval_stmt` will descend into before
@@ -36,10 +35,8 @@ const MAX_RECURSION_DEPTH: usize = 100;
 /// 8 MiB stack).
 pub const MAX_AST_DEPTH: usize = 1024;
 
-/// What record-level support the active run has access to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchMode {
-    /// Pure-logic run — no record store.
     PureLogic,
     /// Record store wired in (Phase 3 territory, partial support).
     WithRecords,
@@ -51,12 +48,10 @@ pub enum DispatchMode {
 /// catalog for `InterpRecord` runs). Cheap to reborrow; pass `&mut DispatchCtx`
 /// everywhere.
 pub struct DispatchCtx {
-    /// The owning workspace — used for workspace-procedure lookup.
     pub workspace: Arc<Workspace>,
     /// In-memory record store keyed by table ID. Only populated when
     /// `mode == WithRecords`. Phase 2 does not populate this.
     pub records: HashMap<i32, MockRecord>,
-    /// Which dispatch mode is active.
     pub mode: DispatchMode,
     /// Current call depth — incremented on each workspace-procedure call and
     /// decremented on return. Capped at `MAX_RECURSION_DEPTH`.
@@ -85,7 +80,6 @@ pub struct DispatchCtx {
 }
 
 impl DispatchCtx {
-    /// Create a pure-logic dispatch context (no records).
     pub fn new_pure(workspace: Arc<Workspace>) -> Self {
         Self {
             workspace,
@@ -98,7 +92,6 @@ impl DispatchCtx {
         }
     }
 
-    /// Create a dispatch context that includes a pre-populated record store.
     pub fn new_with_records(workspace: Arc<Workspace>, records: HashMap<i32, MockRecord>) -> Self {
         Self {
             workspace,
@@ -144,13 +137,11 @@ pub fn dispatch_call(
     args: Vec<Value>,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    // ── 1. Stub catalogs (Library Assert etc.) ────────────────────────────────
     if let Some(recv) = receiver {
         if let Some(stub_fn) = stubs::resolve(recv, procedure) {
             return stub_fn(&args);
         }
     }
-    // Also try bare procedure name against every catalog (no receiver).
     if receiver.is_none() {
         for cat in stubs::CATALOGS {
             if let Some(f) = (cat.resolve)(procedure) {
@@ -159,7 +150,6 @@ pub fn dispatch_call(
         }
     }
 
-    // ── 2. Inline builtins ────────────────────────────────────────────────────
     match procedure.to_ascii_lowercase().as_str() {
         "error" => return builtin_error(&args),
         "message" => return builtin_message(&args),
@@ -173,7 +163,6 @@ pub fn dispatch_call(
         _ => {}
     }
 
-    // ── 3. Workspace procedure lookup ────────────────────────────────────────
     dispatch_workspace_procedure(receiver, procedure, args, ctx)
 }
 
@@ -202,10 +191,7 @@ fn dispatch_workspace_procedure(
         return simple_error("recursion depth exceeded");
     }
 
-    // Collect candidate file paths: if a receiver is given, restrict to
-    // files whose object name matches.  Otherwise consider every file.
     let candidate_paths: Vec<std::path::PathBuf> = if let Some(recv) = receiver {
-        // Find by exact object name (case-insensitive).
         match ctx.workspace.file_index.find_by_object_name(recv) {
             Some(path) => vec![path],
             None => {
@@ -213,7 +199,6 @@ fn dispatch_workspace_procedure(
             }
         }
     } else {
-        // No receiver — search all workspace files.
         ctx.workspace
             .file_index
             .files
@@ -222,7 +207,6 @@ fn dispatch_workspace_procedure(
             .collect()
     };
 
-    // Search each candidate file for a matching procedure_declaration.
     for path in &candidate_paths {
         let Some((text, tree)) = ctx.workspace.file_index.get_cached_parse(path) else {
             continue;
@@ -231,7 +215,6 @@ fn dispatch_workspace_procedure(
         let source = text.as_bytes();
         let root = tree.root_node();
 
-        // Find the object name for the CallFrame.
         let object_name = ctx
             .workspace
             .file_index
@@ -270,7 +253,6 @@ fn dispatch_workspace_procedure(
             continue;
         };
 
-        // Type-check arguments against declared parameter types.
         for (i, param) in params.iter().enumerate() {
             let arg = match args.get(i) {
                 Some(v) => v,
@@ -290,7 +272,6 @@ fn dispatch_workspace_procedure(
             }
         }
 
-        // Find the procedure body (begin_end_block or statement_list child).
         // NB: cursor must outlive the iterator, so we use an explicit loop.
         let body_node = {
             let mut cursor = proc_node.walk();
@@ -308,7 +289,6 @@ fn dispatch_workspace_procedure(
             return simple_error(format!("procedure '{}' has no body", procedure));
         };
 
-        // Build the call frame.
         let mut frame = CallFrame::new(object_name.as_str(), procedure);
         for (i, param) in params.iter().enumerate() {
             let val = args.get(i).cloned().unwrap_or(Value::Empty);
@@ -318,7 +298,6 @@ fn dispatch_workspace_procedure(
         ctx.recursion_depth += 1;
         let mut scope = ScopeStack::new();
         scope.push(frame);
-        // We need the text/tree to stay alive during eval. They were cloned above.
         let result =
             crate::test_runtime::interpreter::eval_stmt::eval_stmt(body, source, &mut scope, ctx);
         ctx.recursion_depth -= 1;
@@ -367,7 +346,6 @@ fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) -> Vec<ParamD
 
     let mut params = Vec::new();
 
-    // Find the parameter_list child (via field "parameters" or by kind).
     let Some(param_list) = child_by_field_or_kind(proc_node, "parameters", &["parameter_list"])
     else {
         return params;
@@ -379,7 +357,6 @@ fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) -> Vec<ParamD
         if child.kind() != "parameter" && child.kind() != "parameter_declaration" {
             continue;
         }
-        // Name: from field "name" or the first identifier-like named child.
         let name_node =
             child_by_field_or_kind(child, "name", &["identifier", "name", "name_or_keyword"]);
         let Some(name_node) = name_node else {
@@ -390,7 +367,6 @@ fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) -> Vec<ParamD
         };
         let name = name_text.trim_matches('"').to_string();
 
-        // Type: from field "type" or the type_reference child.
         let type_node = child_by_field_or_kind(
             child,
             "type",
@@ -481,7 +457,6 @@ fn builtin_message(args: &[Value]) -> Eval {
     } else {
         msg
     };
-    // In the interpreter, Message is a no-op (no UI). We still validate args.
     Eval::Normal(Value::Empty)
 }
 
@@ -506,7 +481,6 @@ fn builtin_format(args: &[Value]) -> Eval {
     }
 }
 
-/// `StrLen(s)` — length of a string in characters.
 fn builtin_strlen(args: &[Value]) -> Eval {
     match args {
         [Value::Text(s)] | [Value::Code(s)] => {
@@ -531,8 +505,6 @@ fn builtin_copystr(args: &[Value]) -> Eval {
         | [Value::Code(s), Value::Integer(pos), _] => (s.clone(), *pos),
         _ => return simple_error("CopyStr expects (Text, Integer[, Integer])"),
     };
-    // Keep `len` signed so a negative value is rejected explicitly rather than
-    // wrapping to a huge usize via an `as usize` cast.
     let len = match args.get(2) {
         Some(Value::Integer(n)) => {
             if *n < 0 {
@@ -566,7 +538,6 @@ fn builtin_copystr(args: &[Value]) -> Eval {
     Eval::Normal(Value::Text(chars[start..end].iter().collect()))
 }
 
-/// `LowerCase(s)` — convert to lower case.
 fn builtin_lowercase(args: &[Value]) -> Eval {
     match args {
         [Value::Text(s)] => Eval::Normal(Value::Text(s.to_lowercase())),
@@ -579,7 +550,6 @@ fn builtin_lowercase(args: &[Value]) -> Eval {
     }
 }
 
-/// `UpperCase(s)` — convert to upper case.
 fn builtin_uppercase(args: &[Value]) -> Eval {
     match args {
         [Value::Text(s)] => Eval::Normal(Value::Text(s.to_uppercase())),
@@ -602,14 +572,12 @@ fn builtin_indexof(args: &[Value]) -> Eval {
         | [Value::Code(s), Value::Code(n)] => (s.as_str(), n.as_str()),
         _ => return simple_error("IndexOf expects (Text, Text)"),
     };
-    // AL convention: empty needle → 0 (not found).
     if needle.is_empty() {
         return Eval::Normal(Value::Integer(0));
     }
     let result = s
         .find(needle)
         .map(|i| {
-            // Convert byte offset to 1-based char index.
             s[..i].chars().count() as i64 + 1
         })
         .unwrap_or(0);
@@ -642,8 +610,6 @@ fn render_value(v: &Value) -> String {
 /// before `%1`, preventing `%1` from consuming the `%1` prefix of `%10`.
 fn substitute_placeholders(fmt: &str, args: &[Value]) -> String {
     let mut result = fmt.to_string();
-    // Iterate in reverse order (highest index first) so that e.g. %10 is
-    // replaced before %1 — otherwise `%1` would corrupt `%10`.
     for i in (0..args.len()).rev() {
         let placeholder = format!("%{}", i + 1);
         result = result.replace(&placeholder, &render_value(&args[i]));
@@ -677,11 +643,8 @@ mod tests {
         }
     }
 
-    // ── Stub routing ──────────────────────────────────────────────────────────
-
     #[test]
     fn stub_routed_library_assert_are_equal() {
-        // Positive: Assert.AreEqual(1, 1) routes to the Library Assert stub.
         let mut ctx = ctx();
         let result = dispatch_call(
             Some("Library Assert"),
@@ -698,7 +661,6 @@ mod tests {
 
     #[test]
     fn stub_routed_library_assert_are_equal_fail() {
-        // Negative: AreEqual(1, 2) produces Eval::Error with "expected".
         let mut ctx = ctx();
         let result = dispatch_call(
             Some("Library Assert"),
@@ -714,11 +676,8 @@ mod tests {
         );
     }
 
-    // ── Error builtin ─────────────────────────────────────────────────────────
-
     #[test]
     fn error_builtin_produces_eval_error() {
-        // Positive: Error("boom") → Eval::Error with "boom".
         let mut ctx = ctx();
         let result = dispatch_call(None, "Error", vec![Value::Text("boom".into())], &mut ctx);
         let e = err(result);
@@ -727,17 +686,13 @@ mod tests {
 
     #[test]
     fn error_builtin_with_no_args_is_error() {
-        // Negative: Error() with no arguments still produces Eval::Error.
         let mut ctx = ctx();
         let result = dispatch_call(None, "Error", vec![], &mut ctx);
         assert!(result.is_error());
     }
 
-    // ── StrSubstNo ───────────────────────────────────────────────────────────
-
     #[test]
     fn strsubstno_formats_correctly() {
-        // Positive: StrSubstNo("Hello %1, you are %2 years old", "Alice", 30).
         let mut ctx = ctx();
         let result = dispatch_call(
             None,
@@ -757,13 +712,10 @@ mod tests {
 
     #[test]
     fn strsubstno_no_args_is_error() {
-        // Negative: StrSubstNo with no args is an error.
         let mut ctx = ctx();
         let result = dispatch_call(None, "StrSubstNo", vec![], &mut ctx);
         assert!(result.is_error());
     }
-
-    // ── Format ───────────────────────────────────────────────────────────────
 
     #[test]
     fn format_integer_to_text() {
@@ -775,11 +727,8 @@ mod tests {
         }
     }
 
-    // ── Unknown procedure ─────────────────────────────────────────────────────
-
     #[test]
     fn unknown_procedure_returns_descriptive_error() {
-        // Negative: an unknown procedure returns Eval::Error with a descriptive message.
         let mut ctx = ctx();
         let result = dispatch_call(None, "CompletelyUnknownProc", vec![], &mut ctx);
         let e = err(result);
@@ -795,8 +744,6 @@ mod tests {
         );
     }
 
-    // ── StrLen / CopyStr / IndexOf ────────────────────────────────────────────
-
     #[test]
     fn strlen_returns_char_count() {
         let mut ctx = ctx();
@@ -806,7 +753,6 @@ mod tests {
 
     #[test]
     fn strlen_non_text_is_error() {
-        // Negative: StrLen on an Integer is an error.
         let mut ctx = ctx();
         let result = dispatch_call(None, "StrLen", vec![Value::Integer(123)], &mut ctx);
         assert!(result.is_error());
@@ -845,7 +791,6 @@ mod tests {
 
     #[test]
     fn indexof_missing_returns_zero() {
-        // Negative: needle not present → 0.
         let mut ctx = ctx();
         let result = dispatch_call(
             None,
@@ -855,8 +800,6 @@ mod tests {
         );
         assert_eq!(ok(result), Value::Integer(0));
     }
-
-    // ── LowerCase / UpperCase ─────────────────────────────────────────────────
 
     #[test]
     fn lowercase_works() {
@@ -881,8 +824,6 @@ mod tests {
         );
         assert_eq!(ok(result), Value::Text("HELLO".into()));
     }
-
-    // ── Adversarial tests (adversarial-h) ─────────────────────────────────────
 
     #[test]
     fn strsubstno_percent10_placeholder_corrupted_adversarial_h_8() {
@@ -1012,8 +953,6 @@ mod tests {
         );
     }
 
-    // ── Workspace procedure dispatch (Phase 2b) ───────────────────────────────
-
     fn workspace_with_helper() -> Arc<Workspace> {
         let ws = Arc::new(Workspace::new());
         let source = r#"codeunit 50999 "Helper"
@@ -1038,7 +977,6 @@ mod tests {
 
     #[test]
     fn workspace_dispatch_add_helper_positive() {
-        // Positive: dispatch Add(2, 3) into Helper codeunit → Integer(5).
         let ws = workspace_with_helper();
         let mut ctx = DispatchCtx::new_pure(ws);
         let result = dispatch_call(
@@ -1056,7 +994,6 @@ mod tests {
 
     #[test]
     fn workspace_dispatch_unknown_procedure_not_found_negative() {
-        // Negative: dispatching an unknown procedure name → Eval::Error containing "not found".
         let ws = workspace_with_helper();
         let mut ctx = DispatchCtx::new_pure(ws);
         let result = dispatch_call(Some("Helper"), "NoSuchProc", vec![], &mut ctx);
@@ -1070,7 +1007,6 @@ mod tests {
 
     #[test]
     fn workspace_dispatch_type_mismatch_negative() {
-        // Negative: passing Text where Integer is declared → Eval::Error containing "type".
         let ws = workspace_with_helper();
         let mut ctx = DispatchCtx::new_pure(ws);
         let result = dispatch_call(
@@ -1089,7 +1025,6 @@ mod tests {
 
     #[test]
     fn workspace_dispatch_deep_recursion_negative() {
-        // Negative: Forever() calls itself until recursion_depth > 100 → Eval::Error("recursion depth exceeded").
         let ws = workspace_with_helper();
         let mut ctx = DispatchCtx::new_pure(ws);
         let result = dispatch_call(Some("Helper"), "Forever", vec![], &mut ctx);
@@ -1103,7 +1038,6 @@ mod tests {
 
     #[test]
     fn deadline_exceeded_returns_false_when_unset() {
-        // Positive: no deadline → never expired. Used by unit-test paths.
         let ws = workspace_with_helper();
         let ctx = DispatchCtx::new_pure(ws);
         assert!(!ctx.deadline_exceeded());
@@ -1111,7 +1045,6 @@ mod tests {
 
     #[test]
     fn deadline_exceeded_returns_true_when_past() {
-        // Positive: a deadline in the past trips immediately.
         let ws = workspace_with_helper();
         let mut ctx = DispatchCtx::new_pure(ws);
         ctx.deadline = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
@@ -1120,7 +1053,6 @@ mod tests {
 
     #[test]
     fn deadline_exceeded_returns_false_when_future() {
-        // Positive: a deadline in the (far) future hasn't tripped yet.
         let ws = workspace_with_helper();
         let mut ctx = DispatchCtx::new_pure(ws);
         ctx.deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));

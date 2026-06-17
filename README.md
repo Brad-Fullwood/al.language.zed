@@ -16,7 +16,7 @@ This project rewrites a large part of that experience in native Rust:
 - Workspace state is owned by `al-lsp`: file indexes, parse trees, symbol maps, package maps, document caches, insight graphs, call graphs, test discovery, and daemon command routing.
 - `.app` symbol packages are read directly, with manifest parsing, `SymbolReference.json` extraction, virtual package navigation, and bounded archive safety checks. When packages embed `.al` source it is exposed as virtual source; otherwise navigation falls back to generated outlines from public symbol metadata.
 - Symbol discovery is an in-memory indexed data model instead of repeated ad hoc package scans.
-- Compiler/package research has also started below the production build path: the repo includes a native `.app` inspector and the first pure-Rust emit primitives, including Microsoft-compatible generated method-id hashing for `SymbolReference.json`.
+- Native `.app` compilation is implemented in Rust: project source is packaged into NAVX/ZIP `.app` artifacts with generated manifest data, source entries, XLIFF/navigation/control-add-in assets, and Microsoft-compatible `SymbolReference.json` method-id hashing.
 - Business Central-specific workflows such as impact analysis, event tracing, subscriber lookup, dead-code detection, SQL anti-pattern detection, audit checks, and upgrade reports are exposed as commands, JSON-RPC, Zed tasks, and MCP tools.
 - Batch test execution includes a native interpreter path for fully pure-logic test codeunits, with conservative routing back to live Business Central for mixed, record-touching, unknown, or platform-dependent codeunits.
 - Zed can talk to the same engine through LSP, DAP, tasks, and the `al-tools` MCP context server.
@@ -33,8 +33,8 @@ The project is intentionally honest about what is native today and what still de
 | Parsing | Tree-sitter AL grammar and Rust syntax helpers | Microsoft TextMate grammar is used as generator input |
 | Language server | `al-lsp` LSP transport, workspace indexing, document store, completions, hover, definitions, references, rename, formatting, folding, symbols, semantic tokens, inlay hints, CodeLens, code actions, diagnostics plumbing | Optional official AL LSP via `al.useOfficialLsp` |
 | Semantic compiler checks | Native bridge host, daemon plumbing, caching, command surfaces | .NET AL CodeAnalysis bridge and Microsoft compiler semantics |
-| Build/package | Native orchestration, async/cancellable process handling, diagnostics mapping, analyzer selection, deterministic `.app` selection, and Rust-managed temp-output/final-handoff behavior on the main `dotnet alc` compile path | `alc` remains the authoritative compiler when full AL compilation is required; semantic-bridge, package, publish, and DAP compile entrypoints do not all share the same artifact-delivery path yet |
-| Experimental `.app` emit | Native package inspection plus early pure-Rust `SymbolReference.json` method-id hashing in `crates/al-core/src/emit` | Not wired into production compile yet; full `SymbolReference.json` emission and live publish validation remain future work |
+| Build/package | Pure-Rust `.app` emitter in `crates/al-core/src/emit`, native project packaging, deterministic artifact naming, native compile defaults for daemon `compile`, LSP `al.compile`, publish, and DAP launch, plus Rust-managed `dotnet alc` fallback plumbing | `al.useOfficialCompiler=true` opts into Microsoft `alc` for full compile-time semantic validation; daemon `package` remains the analyzer-backed Microsoft compiler surface |
+| `.app` inspection and emit fidelity | Native NAVX/ZIP inspection, manifest parsing, generated `SymbolReference.json`, profile symbol references, XLIFF, navigation metadata, control-add-in bundles, entitlements, permissions, and ALC golden tests | Business Central publish/runtime behavior is still the final compatibility validator |
 | Symbols | Native `.app` reader, symbol model, package cache, source map, composed objects, NuGet/server download orchestration | Symbol package contents and compiler output formats come from the Business Central ecosystem |
 | Analysis | Native impact, event, call graph, dead code, SQL scan, duplicates, architecture lint, breaking/upgrade/obsolete/audit reports | Package-only call-site bodies cannot be recovered when Microsoft `.app` symbols do not contain source bodies |
 | Tests | Native discovery, per-codeunit batch router, pure-logic interpreter, stubs, JUnit output, static Cobertura-shaped coverage output, early mutation testing for interpreter-routed tests | Single-codeunit `test-run` and all database, HTTP, UI, report, XmlPort, session, transaction, mixed, record-touching, and platform-dependent test execution use live BC today |
@@ -75,18 +75,19 @@ Symbol acquisition is native and parallel where it is safe:
 
 The indexing path is built around shared ownership and bounded caches. Large file limits, archive payload limits, parse-tree LRU limits, lazy TUI hydration, and `Arc<String>` document text all exist to stop editor workflows from exploding into repeated copies or unbounded state. Default completion results also have a small cache for the common "blank completion at top level" path.
 
-### More deterministic build loop
+### Native Compile And Deterministic Build Loop
 
-The final AL compiler is still Microsoft `alc` when a real `.app` compile is required, but the build loop around it has been redesigned:
+The default `.app` build path is now native Rust. Microsoft `alc` remains available as an explicit fallback for full compile-time semantic validation and analyzer behavior.
 
-- The daemon `compile` dispatcher defaults to the semantic bridge and fails loudly if the bridge is unavailable; `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc`.
-- Package, LSP compile, and DAP launch compile surfaces currently use `dotnet alc` paths directly; publish follows the native-first compiler policy but has separate artifact conversion.
-- Compiler subprocesses are asynchronous, cancellable, timeout-aware, and killed on drop.
-- Analyzer selection and diagnostics mapping happen in native code.
-- The Rust-managed `dotnet alc` compile path writes output to a per-invocation temporary directory and moves it into the project root when possible; semantic-bridge and DAP compile paths do not share the full artifact-delivery pipeline yet.
+- The daemon `compile` dispatcher, LSP `al.compile`, publish path, and native DAP launch compile now default to the pure-Rust `.app` emitter: no `alc`, no C# bridge.
+- `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc` where Microsoft compile-time validation is required.
+- The native emitter builds the package directly from `app.json`, source files, package symbols, generated manifest data, and generated `SymbolReference.json`.
+- The old Microsoft compiler subprocess path remains asynchronous, cancellable, timeout-aware, and killed on drop when used.
+- Analyzer-backed package diagnostics and analyzer selection still belong to the Microsoft compiler path today.
+- The Rust-managed `dotnet alc` fallback writes output to a per-invocation temporary directory and moves it into the project root when possible.
 - `.app` selection prefers the manifest-derived `{publisher}_{name}_{version}.app` rather than arbitrary directory order.
 - DAP deploy now reuses the same package-selection logic, so launch/deploy does not accidentally publish an older `.app` left in the project root.
-- Native `.app` emission is being researched in-tree. `app_inspect` proves source packages are NAVX/ZIP containers, and `emit::method_id` reproduces Microsoft generated method ids for scalar signatures. This is not the production compile path yet, but it is the foundation for eventually removing more subprocess dependency.
+- The emit test suite compares native output against ALC-shaped fixtures, including byte-identical `SymbolReference.json` golden coverage for the supported project fixture.
 
 The practical benefit is a safer and usually faster-feeling development loop: the editor and CLI keep using already-built indexes for most questions, and the compile path becomes a deterministic build step instead of the only way to understand the project.
 
@@ -219,7 +220,7 @@ Those CodeLens IDs are separate from the native execute-command dispatcher above
 The CLI command surface includes:
 
 - Project/setup: `setup`, `doctor`, `new`, `packages`, `deps`, `deps-graph`, `clear-cache`, `init-debug`.
-- Build/toolchain: `compile`, `package`, `download-symbols`, `authenticate`.
+- Build/toolchain: `compile`, `pack-native`, `package`, `download-symbols`, `authenticate`.
 - LSP-style queries: `hover`, `definition`, `references`, `signature`, `completions`, `symbols`, `folding`, `tokens`, `parse`, `rename`, `hints`.
 - Symbols and objects: `search`, `object`, `by-id`, `composed`, `builtins`, `rules`, `error-codes`, `generate-completions`, `version`.
 - Events and insight: `events`, `subscribers`, `event-source`, `trace`, `intercept`, `entrypoints`, `graph`, `impact`, `suggest-event`, `insight-stats`.
@@ -257,12 +258,13 @@ This is why symbol search, completions, object lookup, event discovery, and impa
 `al-lsp` and `al-explorer` do not pretend the Microsoft AL compiler is irrelevant. Instead, they put a better native control plane around it.
 
 - Toolchain discovery finds ALTool, `.NET`, compiler paths, bridge files, and project manifests.
-- The daemon `compile` dispatcher prefers the semantic bridge and fails loudly when the bridge is unavailable unless `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc`; package, LSP compile, and DAP launch compile surfaces currently use `dotnet alc` paths directly, while publish follows the native-first compiler policy through a separate path.
-- Compiler output is normalized into structured diagnostics.
+- The daemon `compile` dispatcher, LSP `al.compile`, publish path, and native DAP launch compile default to the pure-Rust `.app` emitter.
+- `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc`; daemon `package` remains the analyzer-backed Microsoft compiler surface.
+- Compiler output from the Microsoft path is normalized into structured diagnostics.
 - The package cache path is selected explicitly.
 - Analyzer lists can be passed through command surfaces.
-- The main Rust-managed `dotnet alc` path uses deterministic temp output and final handoff when possible; semantic-bridge and DAP compile paths still need to be brought into that same artifact-delivery pipeline.
-- Experimental pure-Rust `.app` emission primitives exist, but production builds still use the current compiler paths until full symbol emission and publish validation are complete.
+- The Rust-managed `dotnet alc` fallback uses deterministic temp output and final handoff when possible.
+- Native `.app` emission is the default build path, with live Business Central publish/runtime validation still treated as the compatibility backstop.
 - Launch/debug workflows compile on launch, locate the correct `.app`, publish/deploy where needed, and connect Zed to the BC debug backend through the native adapter.
 
 For Zed users, this means the extension can provide first-class launch/attach workflows without being a VS Code extension clone.

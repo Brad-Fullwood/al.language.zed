@@ -25,7 +25,6 @@ use tracing::{debug, error, info, warn};
 
 use super::{DapError, Result};
 
-/// Maximum number of pending debug events buffered before being consumed.
 const PENDING_EVENT_CAPACITY: usize = 64;
 
 /// Capacity of the SignalR event channel that the reader task forwards
@@ -98,7 +97,6 @@ impl Default for BcDebugConfig {
 }
 
 impl BcDebugConfig {
-    /// Build from DAP launch/attach arguments.
     pub fn from_dap_args(args: &serde_json::Value) -> Self {
         let mut cfg = Self::default();
         if let Some(s) = args.get("server").and_then(|v| v.as_str()) {
@@ -122,7 +120,6 @@ impl BcDebugConfig {
         if let Some(s) = args.get("authentication").and_then(|v| v.as_str()) {
             cfg.authentication = s.to_string();
         }
-        // breakOnError / breakOnRecordWrite can be bool or string ("none"/"false" → false)
         if let Some(v) = args.get("breakOnError") {
             cfg.break_on_error = parse_bool_or_string(v, true);
         }
@@ -165,7 +162,6 @@ impl BcDebugConfig {
         format!("{host}/{instance}")
     }
 
-    /// Get the base URL for the BC dev API.
     pub fn base_url(&self) -> String {
         if self.environment_type.eq_ignore_ascii_case("OnPrem") {
             // Fix #3: include port in on-prem URL
@@ -180,7 +176,6 @@ impl BcDebugConfig {
         }
     }
 
-    /// Get the SignalR hub URL for debugging.
     pub fn debug_hub_url(&self) -> String {
         if self.environment_type.eq_ignore_ascii_case("OnPrem") {
             // Fix #3: include port in on-prem URL
@@ -213,9 +208,7 @@ pub enum BcEvent {
         thread_id: i64,
         location: Option<BreakLocation>,
     },
-    /// Debug session was detached.
     Detached { terminate: bool },
-    /// Fatal debugger exception from the server.
     FatalError { message: String },
     /// Other unrecognised server callback — target name preserved for logging.
     Other { target: String },
@@ -285,7 +278,6 @@ fn break_location_from_args(arguments: &Option<Vec<serde_json::Value>>) -> Optio
     })
 }
 
-/// Publish an .app package to BC.
 pub async fn publish_app(
     http: &reqwest::Client,
     config: &BcDebugConfig,
@@ -344,7 +336,6 @@ pub async fn publish_app(
     }
 }
 
-/// Get server metadata.
 pub async fn get_metadata(
     http: &reqwest::Client,
     config: &BcDebugConfig,
@@ -398,15 +389,12 @@ struct SignalRMessage {
 
 /// Native BC debug session over SignalR.
 pub struct BcDebugSession {
-    /// Send SignalR messages to the hub
     ws_tx: mpsc::Sender<String>,
     /// Receive events/completions from the hub (unbounded — never drops events)
     event_rx: Mutex<mpsc::Receiver<SignalRMessage>>,
-    /// Invocation ID counter
     next_id: AtomicI64,
     /// SignalR connection ID — used in browser URL for debug context
     pub connection_id: String,
-    /// Whether we're currently stopped at a breakpoint
     is_stopped: Mutex<bool>,
     /// Server-push type-1 events that arrived while an `invoke()` was waiting
     /// for its own completion. Callers drain this buffer after each invoke.
@@ -466,18 +454,12 @@ fn default_invoke_timeout(target: &str) -> tokio::time::Duration {
 }
 
 impl BcDebugSession {
-    /// Connect to the BC debug hub via SignalR WebSocket.
     pub async fn connect(config: &BcDebugConfig, access_token: &str) -> Result<Self> {
         if config.accept_invalid_certs {
-            // Match the warn-on-construction parity from BcClient::new at
-            // bc_client.rs:99 (T035). Without this the DAP path silently
-            // disables TLS certificate validation when launch.json sets
-            // accept_invalid_certs=true.
             crate::http_auth::warn_insecure_tls("DAP SignalR debug");
         }
         let hub_url = config.debug_hub_url();
 
-        // SignalR negotiate to get connection token
         let negotiate_url = format!("{hub_url}/negotiate?negotiateVersion=1");
         let http = reqwest::Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)
@@ -530,13 +512,10 @@ impl BcDebugSession {
         let resolved = resolve_negotiate_connection(&negotiate)?;
         let connection_id = resolved.connection_id;
 
-        // Connect WebSocket
         let ws_url = hub_url
             .replace("https://", "wss://")
             .replace("http://", "ws://");
         let ws_url = format!("{ws_url}?id={}", percent_encode_url(&resolved.ws_id));
-        // Redact the connection_token from the log line — it grants access to
-        // the active debug session and must not appear in plaintext logs.
         let log_url = ws_url.split('?').next().unwrap_or(&ws_url);
         info!("SignalR WebSocket: {log_url}?id=<redacted>");
 
@@ -565,7 +544,6 @@ impl BcDebugSession {
 
         let (mut ws_sink, mut ws_source) = ws_stream.split();
 
-        // Send SignalR handshake (JSON protocol)
         let handshake = "{\"protocol\":\"json\",\"version\":1}\x1e";
         ws_sink
             .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -574,16 +552,10 @@ impl BcDebugSession {
             .await
             .map_err(|e| DapError::ConnectionFailed(format!("SignalR handshake failed: {e}")))?;
 
-        // Read handshake response. A SignalR server signals a
-        // protocol/version mismatch here via `{"error":...}`; validate it so a
-        // rejected handshake fails loudly instead of limping on against an
-        // adapter that will misbehave on every later invoke (F-OPEN-016).
         if let Some(msg) = ws_source.next().await {
             let msg = msg.map_err(|e| DapError::ConnectionFailed(format!("WS read error: {e}")))?;
             debug!("SignalR handshake response: {:?}", msg);
             if let tokio_tungstenite::tungstenite::Message::Text(text) = &msg {
-                // SignalR frames are record-separator (\x1e) delimited; the
-                // handshake response is the first frame.
                 let first = text.split('\x1e').next().unwrap_or(text.as_str());
                 validate_signalr_handshake_response(first)?;
             }
@@ -591,7 +563,6 @@ impl BcDebugSession {
 
         info!("SignalR connection established");
 
-        // Set up message channels
         let (ws_tx, mut ws_rx) = mpsc::channel::<String>(32);
         // Deep-but-bounded event channel. Break events take a dedicated
         // unbounded path below to preserve the "Break must never be lost"
@@ -605,10 +576,9 @@ impl BcDebugSession {
         // the number of break events the BC server emits in one session.
         let (break_event_tx, break_event_rx) = mpsc::unbounded_channel::<bool>();
 
-        // Writer task: send messages from channel to WebSocket
         tokio::spawn(async move {
             while let Some(msg) = ws_rx.recv().await {
-                let framed = format!("{msg}\x1e"); // SignalR record separator
+                let framed = format!("{msg}\x1e");
                 if let Err(e) = ws_sink
                     .send(tokio_tungstenite::tungstenite::Message::Text(framed.into()))
                     .await
@@ -619,7 +589,6 @@ impl BcDebugSession {
             }
         });
 
-        // Reader task: receive messages from WebSocket and dispatch
         tokio::spawn(async move {
             while let Some(msg) = ws_source.next().await {
                 let msg = match msg {
@@ -637,7 +606,6 @@ impl BcDebugSession {
                     _ => continue,
                 };
 
-                // SignalR messages are separated by \x1e
                 for part in text.split('\x1e') {
                     let part = part.trim();
                     if part.is_empty() {
@@ -646,7 +614,6 @@ impl BcDebugSession {
                     match serde_json::from_str::<SignalRMessage>(part) {
                         Ok(msg) => {
                             if msg.type_ == 6 {
-                                // Ping — ignore
                                 continue;
                             }
                             debug!(
@@ -776,13 +743,11 @@ impl BcDebugSession {
             .await
             .map_err(|_| DapError::ConnectionFailed("WebSocket channel closed".to_string()))?;
 
-        // Wait for completion with matching invocation ID
         let mut rx = self.event_rx.lock().await;
 
         loop {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Some(msg)) => {
-                    // Check if it's a completion for our invocation
                     if msg.type_ == 3 && msg.invocation_id.as_deref() == Some(&id) {
                         if let Some(ref err) = msg.error {
                             error!("SignalR error for {target}: {err}");
@@ -791,10 +756,6 @@ impl BcDebugSession {
                         debug!("SignalR result for {target}: {:?}", msg.result);
                         return Ok(msg.result);
                     }
-                    // Server-push event received while waiting for our completion.
-                    // Buffer it so it isn't dropped; the caller drains via
-                    // `flush_pending_events()` after the invoke returns.
-                    // No capacity limit — losing a Break event would leave the debugger silent.
                     if msg.type_ == 1 {
                         let mut buf = self.pending_events.lock().await;
                         buf.push_back(msg);
@@ -810,7 +771,6 @@ impl BcDebugSession {
         }
     }
 
-    /// Handle callbacks from the server.
     /// BC sends these hub client callbacks:
     /// - `Break(ApplicationObjectIdWrapper, StackFrame[], string)` — execution stopped
     /// - `IsAlive` — ping, must respond with AcknowledgeIsAlive
@@ -821,7 +781,6 @@ impl BcDebugSession {
         if let Some(target) = &msg.target {
             match target.as_str() {
                 "Break" => {
-                    // Execution stopped (breakpoint hit, step complete, exception)
                     info!("Debug Break event received");
                     *self.is_stopped.lock().await = true;
                     // args: [ApplicationObjectIdWrapper, StackFrame[], message]
@@ -835,9 +794,6 @@ impl BcDebugSession {
                     }
                 }
                 "IsAlive" => {
-                    // Ping — respond with try_send to avoid blocking while event_rx is held.
-                    // If the send channel is full, the ping is silently dropped; BC will
-                    // retry. Using .await here would deadlock when invoke() holds event_rx.
                     debug!("IsAlive ping from server");
                     let ack = serde_json::json!({
                         "type": 1,
@@ -868,8 +824,6 @@ impl BcDebugSession {
             }
         }
     }
-
-    // ----- Pending event buffer -----
 
     /// Process server-push events that arrived during the last `invoke()` call.
     ///
@@ -906,7 +860,6 @@ impl BcDebugSession {
             Ok(r) => r,
             Err(_) => return out, // invoke() is running — events will be buffered in pending_events
         };
-        // Drain all currently available messages (non-blocking)
         while let Ok(msg) = rx.try_recv() {
             if msg.type_ == 1 {
                 self.handle_server_callback(&msg).await;
@@ -914,12 +867,9 @@ impl BcDebugSession {
                     out.push(bc_event);
                 }
             }
-            // type 3 completions without a pending invoke are unexpected — ignore
         }
         out
     }
-
-    // ----- Break-event wait -----
 
     /// Block until a `Break`, `Detached`, or `FatalError` event arrives from BC.
     ///
@@ -935,9 +885,6 @@ impl BcDebugSession {
         rx.recv().await.unwrap_or(false)
     }
 
-    // ----- Public debug operations -----
-
-    /// Attach to the BC debug session.
     pub async fn attach(&self, config: &BcDebugConfig) -> Result<()> {
         let args = serde_json::json!({
             "breakOnError": config.break_on_error,
@@ -948,7 +895,6 @@ impl BcDebugSession {
         Ok(())
     }
 
-    /// Signal configuration done.
     /// BC hub method: `DebugAdapterConfigurationDone(debugOptions)`
     /// Newer BC versions (>1.0) require debug options argument.
     pub async fn configuration_done(&self, config: &BcDebugConfig) -> Result<()> {
@@ -989,7 +935,6 @@ impl BcDebugSession {
         }
     }
 
-    /// Add a breakpoint.
     /// BC hub method: `AddBreakpoint(ApplicationObjectIdWrapper, SourcePosition, string condition)`
     /// - ApplicationObjectIdWrapper: `{objectType: int, objectNumber: int}`
     /// - SourcePosition: `{line: int, column: int}`
@@ -1024,7 +969,6 @@ impl BcDebugSession {
         Ok(result.unwrap_or(serde_json::Value::Null))
     }
 
-    /// Remove a breakpoint.
     /// BC hub method: `RemoveBreakpoint(long breakpointId)`
     pub async fn remove_breakpoint(&self, breakpoint_id: i64) -> Result<()> {
         self.invoke("RemoveBreakpoint", vec![serde_json::json!(breakpoint_id)])
@@ -1032,7 +976,6 @@ impl BcDebugSession {
         Ok(())
     }
 
-    /// Update a breakpoint condition.
     /// BC hub method: `UpdateBreakpoint(long id, string condition)`
     pub async fn update_breakpoint(&self, breakpoint_id: i64, condition: &str) -> Result<()> {
         self.invoke(
@@ -1046,7 +989,6 @@ impl BcDebugSession {
         Ok(())
     }
 
-    /// Continue execution after a breakpoint.
     /// BC hub method: `SetBreakpointResponse(breakpointResponse)`
     /// Note: BC uses "SetBreakpointResponse" for continue, not a "continue" method.
     pub async fn continue_execution(&self, breakpoint_response: serde_json::Value) -> Result<()> {
@@ -1071,8 +1013,6 @@ impl BcDebugSession {
         self.continue_execution(serde_json::json!(3)).await
     }
 
-    /// Stop debugging.
-    /// BC hub method: `StopDebugging`
     pub async fn stop_debugging(&self) -> Result<()> {
         if let Err(e) = self.invoke("StopDebugging", vec![]).await {
             tracing::warn!("StopDebugging failed (non-fatal): {e}");
@@ -1080,8 +1020,6 @@ impl BcDebugSession {
         Ok(())
     }
 
-    /// Get the current call stack.
-    ///
     /// BC hub method: `GetStackTrace()` → `StackFrame[]`
     ///
     /// Each StackFrame has (at minimum):
@@ -1096,7 +1034,6 @@ impl BcDebugSession {
         Ok(result.unwrap_or(serde_json::json!([])))
     }
 
-    /// Get variables for a frame.
     /// BC hub method: `GetVariables(int frameId)` → `LocalNode[]`
     pub async fn get_variables(&self, frame_id: i64) -> Result<serde_json::Value> {
         let result = self
@@ -1105,7 +1042,6 @@ impl BcDebugSession {
         Ok(result.unwrap_or(serde_json::json!([])))
     }
 
-    /// Get globals for a frame.
     /// BC hub method: `ExpandGlobals(int frameId)` → `LocalNode[]`
     pub async fn get_globals(&self, frame_id: i64) -> Result<serde_json::Value> {
         let result = self
@@ -1114,7 +1050,6 @@ impl BcDebugSession {
         Ok(result.unwrap_or(serde_json::json!([])))
     }
 
-    /// Expand a variable node.
     /// BC hub method: `ExpandNode(int frameId, string path)` → `LocalNode[]`
     pub async fn expand_node(&self, frame_id: i64, path: &str) -> Result<serde_json::Value> {
         let result = self
@@ -1126,7 +1061,6 @@ impl BcDebugSession {
         Ok(result.unwrap_or(serde_json::json!([])))
     }
 
-    /// Evaluate an expression (watch).
     /// BC hub method: `GetWatchNode(int frameId, string expression)` → `LocalNode`
     pub async fn evaluate(&self, frame_id: i64, expression: &str) -> Result<serde_json::Value> {
         let result = self
@@ -1138,7 +1072,6 @@ impl BcDebugSession {
         Ok(result.unwrap_or(serde_json::Value::Null))
     }
 
-    /// Get source for an object.
     /// BC hub method: `GetSource(ApplicationObjectIdWrapper)` → `string`
     pub async fn get_source(&self, object_type: i32, object_number: i32) -> Result<String> {
         let object_id = serde_json::json!({
@@ -1151,7 +1084,6 @@ impl BcDebugSession {
             .unwrap_or_default())
     }
 
-    /// Terminate the debug session.
     pub async fn terminate(&self) -> Result<()> {
         if let Err(e) = self.invoke("TerminateSession", vec![]).await {
             tracing::debug!(error = %e, "TerminateSession RPC errored — session may already be closed");
@@ -1159,8 +1091,6 @@ impl BcDebugSession {
         Ok(())
     }
 
-    /// Check if the debug hub is alive.
-    ///
     /// Calls `invoke()`, which acquires `event_rx`. Only safe to call when no
     /// other `invoke()` is in progress (i.e. outside of an active debug loop).
     /// Server-side `IsAlive` pings during a session are handled automatically
@@ -1169,7 +1099,6 @@ impl BcDebugSession {
         self.invoke("IsAlive", vec![]).await.is_ok()
     }
 
-    /// Check if currently stopped at a breakpoint.
     pub async fn is_stopped(&self) -> bool {
         *self.is_stopped.lock().await
     }
@@ -2270,11 +2199,8 @@ mod tests {
         assert!(signalr_to_bc_event(&msg).is_none());
     }
 
-    // --- parse_bool_or_string ------------------------------------------------
-
     #[test]
     fn parse_bool_or_string_handles_bool_variant() {
-        // A real JSON bool passes through verbatim regardless of the default.
         assert!(parse_bool_or_string(&serde_json::json!(true), false));
         assert!(!parse_bool_or_string(&serde_json::json!(false), true));
     }
@@ -2304,8 +2230,6 @@ mod tests {
 
     #[test]
     fn parse_bool_or_string_non_bool_non_string_returns_default() {
-        // Numbers, null, arrays and objects are neither bool nor string, so the
-        // caller-supplied default is returned (both polarities exercised).
         for v in [
             serde_json::json!(1),
             serde_json::json!(null),
@@ -2317,11 +2241,8 @@ mod tests {
         }
     }
 
-    // --- BcDebugConfig::from_dap_args ----------------------------------------
-
     #[test]
     fn from_dap_args_empty_yields_defaults() {
-        // No keys present → every field keeps its Default value.
         let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({}));
         let def = BcDebugConfig::default();
         assert_eq!(cfg.port, def.port);
@@ -2336,7 +2257,6 @@ mod tests {
 
     #[test]
     fn from_dap_args_maps_all_scalar_fields() {
-        // Each recognised DAP arg key lands in the matching config field.
         let args = serde_json::json!({
             "server": "http://bc.local",
             "serverInstance": "BC240",
@@ -2368,8 +2288,6 @@ mod tests {
 
     #[test]
     fn from_dap_args_break_flags_accept_bool_and_string() {
-        // breakOnError / breakOnRecordWrite accept either a JSON bool or the
-        // "none"/"false" disabling strings.
         let bool_args = serde_json::json!({
             "breakOnError": false,
             "breakOnRecordWrite": true,
@@ -2402,7 +2320,6 @@ mod tests {
             "validateServerCertificate=false must enable accept_invalid_certs"
         );
 
-        // validateServerCertificate=true → certs validated → accept_invalid_certs=false.
         let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({
             "validateServerCertificate": true,
         }));
@@ -2414,8 +2331,6 @@ mod tests {
 
     #[test]
     fn from_dap_args_ignores_wrong_typed_values() {
-        // A key present with the wrong JSON type (e.g. port as a string) is
-        // ignored via the as_u64/as_str guards, leaving the default in place.
         let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({
             "port": "not-a-number",
             "startupObjectId": "nope",
@@ -2427,12 +2342,8 @@ mod tests {
         assert_eq!(cfg.server, def.server);
     }
 
-    // --- onprem_base defaults ------------------------------------------------
-
     #[test]
     fn onprem_base_uses_localhost_and_bc_defaults() {
-        // When server / serverInstance are unset, on-prem URLs fall back to
-        // http://localhost and the "BC" instance.
         let cfg = BcDebugConfig {
             environment_type: "OnPrem".to_string(),
             port: 7049,
@@ -2447,15 +2358,12 @@ mod tests {
 
     #[test]
     fn onprem_base_trims_trailing_slash_on_server() {
-        // A server value with a trailing slash must not produce a double slash
-        // before the port.
         let cfg = onprem_config("http://bc.local/", "BC", 7049);
         assert_eq!(cfg.base_url(), "http://bc.local:7049/BC/dev");
     }
 
     #[test]
     fn cloud_base_url_defaults_environment_name_to_sandbox() {
-        // A cloud config with no environmentName uses "sandbox" in the URL.
         let cfg = BcDebugConfig {
             environment_type: "Sandbox".to_string(),
             tenant: "t".to_string(),
@@ -2478,11 +2386,8 @@ mod tests {
         assert!(url.contains("My%20Env"), "env encoded: {url}");
     }
 
-    // --- default_invoke_timeout: remaining buckets ---------------------------
-
     #[test]
     fn invoke_timeout_isalive_is_5s() {
-        // The connection ping has the tightest budget.
         assert_eq!(
             default_invoke_timeout("IsAlive"),
             tokio::time::Duration::from_secs(5)
@@ -2491,7 +2396,6 @@ mod tests {
 
     #[test]
     fn invoke_timeout_teardown_is_10s() {
-        // Teardown should be quick; if it isn't we abandon and tear down anyway.
         for target in ["StopDebugging", "TerminateSession"] {
             assert_eq!(
                 default_invoke_timeout(target),
@@ -2520,14 +2424,11 @@ mod tests {
 
     #[test]
     fn invoke_timeout_get_source_is_variable_bucket() {
-        // GetSource shares the 30s variable-walk budget.
         assert_eq!(
             default_invoke_timeout("GetSource"),
             tokio::time::Duration::from_secs(30)
         );
     }
-
-    // --- redact_connection_token: all redacted keys --------------------------
 
     #[test]
     fn redact_connection_token_redacts_pascal_case_and_access_token() {
@@ -2546,11 +2447,8 @@ mod tests {
         assert!(out.contains("/hub"), "non-secret fields preserved: {out}");
     }
 
-    // --- break_location_from_args edge paths ---------------------------------
-
     #[test]
     fn break_location_none_when_arguments_absent() {
-        // No arguments → no location.
         assert_eq!(break_location_from_args(&None), None);
     }
 
@@ -2591,7 +2489,6 @@ mod tests {
 
     #[test]
     fn break_location_empty_display_name_becomes_none_procedure() {
-        // An empty DisplayName is filtered out (treated as no procedure name).
         let args = Some(vec![
             serde_json::Value::Null,
             serde_json::json!([{
@@ -2608,7 +2505,6 @@ mod tests {
 
     #[test]
     fn break_location_reads_camelcase_object_id() {
-        // camelCase applicationObjectId / objectType / objectNumber are accepted.
         let args = Some(vec![
             serde_json::Value::Null,
             serde_json::json!([{
@@ -2685,8 +2581,6 @@ mod tests {
 
     #[tokio::test]
     async fn publish_app_surfaces_http_error_status_and_body() {
-        // A non-2xx publish response must become a PublishFailed carrying the
-        // HTTP status and the (sanitized) server body.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/BC/dev/apps"))
@@ -2740,8 +2634,6 @@ mod tests {
 
     #[tokio::test]
     async fn get_metadata_parses_json_with_auth_and_tenant_query() {
-        // get_metadata GETs {base}/metadata?tenant=... with a Bearer header and
-        // returns the parsed JSON body verbatim on 2xx.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/BC/dev/metadata"))
@@ -2765,8 +2657,6 @@ mod tests {
 
     #[tokio::test]
     async fn get_metadata_non_2xx_becomes_connection_failed() {
-        // A non-success status must surface as ConnectionFailed with the status
-        // and body, not be silently parsed as JSON.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/BC/dev/metadata"))
@@ -2789,8 +2679,6 @@ mod tests {
 
     #[tokio::test]
     async fn get_metadata_invalid_json_body_becomes_connection_failed() {
-        // A 2xx response whose body is not valid JSON must fail at the parse
-        // step with ConnectionFailed("Bad metadata response: ...").
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/BC/dev/metadata"))
@@ -2835,7 +2723,6 @@ mod tests {
         }
     }
 
-    /// Parse the next JSON frame the session sent on its `ws_tx`.
     fn next_frame(rx: &mut mpsc::Receiver<String>) -> serde_json::Value {
         let raw = rx.try_recv().expect("session should have sent a frame");
         serde_json::from_str(&raw).expect("sent frame is valid JSON")
@@ -3192,12 +3079,10 @@ mod tests {
     #[tokio::test]
     async fn invoke_ignores_completion_with_mismatched_invocation_id() {
         let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
-        // A stale completion for a different invocation must be skipped...
         event_tx
             .send(completion("999", Some(serde_json::json!("stale")), None))
             .await
             .unwrap();
-        // ...and the one matching our id ("1") returned.
         event_tx
             .send(completion("1", Some(serde_json::json!("fresh")), None))
             .await
@@ -3344,7 +3229,6 @@ mod tests {
                 "a contended drain must return empty without consuming"
             );
         }
-        // Once the lock is released the buffered Break is drainable.
         let events = session.try_drain_push_events().await;
         assert_eq!(
             events.len(),

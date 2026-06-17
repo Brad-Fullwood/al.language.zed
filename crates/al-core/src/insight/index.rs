@@ -28,10 +28,6 @@ use super::graph::{InsightEdge, InsightGraph, InsightNode, NodeKey};
 
 /// Stable identifier for a node inside a `CallGraph`.
 ///
-/// This maps 1-to-1 with a `petgraph::NodeIndex` inside the backing
-/// [`InsightGraph`].  We expose it as a newtype so callers don't need to
-/// import petgraph.
-///
 /// **Lifetime warning:** `NodeId` is stable only within a single
 /// [`crate::workspace::Workspace`] graph build. After
 /// [`crate::workspace::Workspace::invalidate_insight_graph`] runs (e.g.
@@ -49,15 +45,12 @@ impl From<NodeIndex> for NodeId {
     }
 }
 
-/// The kind of relationship an edge in the call graph represents.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeKind {
     /// A direct procedure-to-procedure call (source-derived).
     DirectCall,
-    /// A subscriber procedure subscribes to an event publisher.
     EventSubscription,
-    /// A trigger invokes a procedure.
     TriggerInvocation,
     /// A record operation (Insert/Modify/Delete/Validate) triggers table events.
     RecordTrigger,
@@ -74,7 +67,6 @@ impl std::fmt::Display for EdgeKind {
     }
 }
 
-/// Tracks whether a procedure's call edges have been extracted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeResolutionState {
     Unresolved,
@@ -82,18 +74,13 @@ pub enum EdgeResolutionState {
     Resolved,
 }
 
-/// A single directed edge in the call graph.
 #[derive(Debug, Clone, Serialize)]
 pub struct CallEdge {
-    /// The caller / source node.
     pub from: NodeId,
-    /// The callee / target node.
     pub to: NodeId,
-    /// Relationship kind.
     pub kind: EdgeKind,
 }
 
-/// A lightweight description of a node returned by call-graph queries.
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeInfo {
     pub id: NodeId,
@@ -109,18 +96,14 @@ pub struct NodeInfo {
 /// sync so that "callers of X" queries are O(deg(X)) rather than O(|E|).
 #[derive(Debug, Default)]
 pub struct CallGraph {
-    /// Forward adjacency list.
     outgoing: HashMap<NodeId, Vec<CallEdge>>,
     /// Reverse adjacency list (same edges, indexed by target).
     incoming: HashMap<NodeId, Vec<CallEdge>>,
-    /// Node metadata for display / serialization.
     nodes: HashMap<NodeId, NodeInfo>,
-    /// Tracks whether each node's call edges have been extracted.
     resolution: HashMap<NodeId, EdgeResolutionState>,
 }
 
 impl CallGraph {
-    /// Create an empty call graph.
     pub fn new() -> Self {
         Self::default()
     }
@@ -138,14 +121,12 @@ impl CallGraph {
     pub fn build_from_insight(graph: &InsightGraph) -> Self {
         let mut cg = CallGraph::new();
 
-        // Register all nodes.
         for idx in graph.graph.node_indices() {
             let id = NodeId::from(idx);
             let info = node_info(id, &graph.graph[idx]);
             cg.nodes.insert(id, info);
         }
 
-        // Extract event-subscription edges.
         for edge_ref in graph.graph.edge_references() {
             use petgraph::visit::EdgeRef;
             if *edge_ref.weight() == InsightEdge::SubscribesTo {
@@ -162,9 +143,6 @@ impl CallGraph {
         cg
     }
 
-    /// Add a direct-call edge (A calls B).
-    ///
-    /// `from` and `to` are `NodeId`s obtained from [`node_id_for`].
     /// Duplicate edges are silently ignored.
     pub fn add_direct_call(&mut self, from: NodeId, to: NodeId) {
         let edge = CallEdge {
@@ -175,7 +153,6 @@ impl CallGraph {
         self.insert_edge(edge);
     }
 
-    /// Add a trigger-invocation edge (trigger calls procedure).
     pub fn add_trigger_invocation(&mut self, from: NodeId, to: NodeId) {
         let edge = CallEdge {
             from,
@@ -185,7 +162,6 @@ impl CallGraph {
         self.insert_edge(edge);
     }
 
-    /// Add a record-trigger edge (procedure triggers table event via Insert/Modify/Delete/Validate).
     pub fn add_trigger(&mut self, from: NodeId, to: NodeId) {
         let edge = CallEdge {
             from,
@@ -195,8 +171,7 @@ impl CallGraph {
         self.insert_edge(edge);
     }
 
-    /// Remove all outgoing edges from `node`. Also removes corresponding
-    /// entries from `incoming` reverse index. Used for invalidation.
+    /// Remove all outgoing edges from `node`. Used for invalidation.
     pub fn remove_edges_from(&mut self, node: NodeId) {
         if let Some(edges) = self.outgoing.remove(&node) {
             for edge in &edges {
@@ -207,14 +182,10 @@ impl CallGraph {
         }
     }
 
-    /// Look up the `NodeId` for a node by its [`NodeKey`].
-    ///
-    /// Returns `None` when the node does not exist in the insight graph.
     pub fn node_id_for(graph: &InsightGraph, key: &NodeKey) -> Option<NodeId> {
         graph.get_node(key).map(NodeId::from)
     }
 
-    /// Return all outgoing edges from `node`.
     pub fn callees_of(&self, node: NodeId) -> &[CallEdge] {
         self.outgoing.get(&node).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -224,30 +195,22 @@ impl CallGraph {
         self.incoming.get(&node).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// Return node metadata for display.
     pub fn node_info(&self, id: NodeId) -> Option<&NodeInfo> {
         self.nodes.get(&id)
     }
 
-    /// All node IDs in the graph.
     pub fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.nodes.keys().copied()
     }
 
-    /// Total number of nodes.
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
-    /// Total number of unique edges.
     pub fn edge_count(&self) -> usize {
         self.outgoing.values().map(Vec::len).sum()
     }
 
-    /// Return all subscribers (EventSubscription edges) of a given event node.
-    ///
-    /// This is equivalent to `callers_of(event_id)` filtered to
-    /// `EdgeKind::EventSubscription`.
     pub fn subscribers_of(&self, event_id: NodeId) -> Vec<NodeId> {
         self.incoming
             .get(&event_id)
@@ -261,15 +224,10 @@ impl CallGraph {
             .unwrap_or_default()
     }
 
-    /// Register a node from the insight graph (call when adding new nodes
-    /// incrementally, e.g. after parsing a newly opened file).
     pub fn register_node(&mut self, id: NodeId, info: NodeInfo) {
         self.nodes.insert(id, info);
     }
 
-    /// Return the edge resolution state for a node.
-    ///
-    /// Defaults to `Unresolved` if no state has been recorded.
     pub fn resolution_state(&self, node: NodeId) -> EdgeResolutionState {
         self.resolution
             .get(&node)
@@ -277,13 +235,11 @@ impl CallGraph {
             .unwrap_or(EdgeResolutionState::Unresolved)
     }
 
-    /// Set the edge resolution state for a node.
     pub fn set_resolution_state(&mut self, node: NodeId, state: EdgeResolutionState) {
         self.resolution.insert(node, state);
     }
 
     fn insert_edge(&mut self, edge: CallEdge) {
-        // Deduplication: don't insert if an identical edge already exists.
         let already = self
             .outgoing
             .get(&edge.from)
@@ -465,7 +421,6 @@ mod tests {
         graph.build_from_index(&index);
         let cg = CallGraph::build_from_insight(&graph);
 
-        // The subscriber node should have one EventSubscription outgoing edge.
         let sub_key = NodeKey::Subscriber(
             ObjectKind::Codeunit,
             "subscriber".to_string(),

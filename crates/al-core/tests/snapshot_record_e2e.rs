@@ -29,10 +29,6 @@ use al_core::test_snapshots::{
     SnapshotReplayer,
 };
 
-// ---------------------------------------------------------------------------
-// FakeSession — scripted Break events for record phase
-// ---------------------------------------------------------------------------
-
 /// A fake debug session that emits a predetermined sequence of variable payloads
 /// when Break events are requested, then terminates.
 struct FakeSession {
@@ -40,7 +36,6 @@ struct FakeSession {
     /// `wait_for_break` returns `true` and `get_variables` returns the front
     /// value, until the deque is exhausted.
     events: Arc<Mutex<VecDeque<serde_json::Value>>>,
-    /// Auto-incrementing breakpoint ID counter.
     next_bp_id: Arc<Mutex<u32>>,
 }
 
@@ -80,23 +75,14 @@ impl DebuggerSession for FakeSession {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn make_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().expect("failed to create Tokio runtime")
 }
-
-// ---------------------------------------------------------------------------
-// Positive: clean replay — full cycle with matching variable state
-// ---------------------------------------------------------------------------
 
 #[test]
 fn e2e_clean_replay() {
     let rt = make_runtime();
 
-    // --- Record phase ---
     let recorder = SnapshotRecorder::new("e2e-run-001", "22.0.0.0", "src-hash-aaa");
 
     let record_session = FakeSession::new(vec![
@@ -113,7 +99,6 @@ fn e2e_clean_replay() {
         ))
         .expect("record should succeed");
 
-    // Validate snapshot fields.
     assert_eq!(snapshot.run_id, "e2e-run-001");
     assert_eq!(snapshot.codeunit_id, 50200);
     assert_eq!(snapshot.method_name, "MyTestProcedure");
@@ -135,7 +120,6 @@ fn e2e_clean_replay() {
         serde_json::json!({"counter": 1, "label": "second"})
     );
 
-    // --- Serialize + Deserialize phase ---
     let bytes = serialize_snapshot(&snapshot).expect("serialize should succeed");
     assert!(!bytes.is_empty(), "serialized bytes should not be empty");
 
@@ -145,10 +129,8 @@ fn e2e_clean_replay() {
         "deserialized snapshot must equal original"
     );
 
-    // --- Replay phase (identical vars) ---
     let replayer = SnapshotReplayer::new();
 
-    // Supply the same variable payloads as the original recording.
     let replay_session = FakeSession::new(vec![
         serde_json::json!({"counter": 0, "label": "first"}),
         serde_json::json!({"counter": 1, "label": "second"}),
@@ -164,10 +146,6 @@ fn e2e_clean_replay() {
         "clean replay with identical vars must yield Match"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Positive: multiple distinct breakpoints round-trip cleanly
-// ---------------------------------------------------------------------------
 
 #[test]
 fn e2e_multi_bp_clean_replay() {
@@ -218,17 +196,12 @@ fn e2e_multi_bp_clean_replay() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Positive: empty session → empty snapshot → clean replay
-// ---------------------------------------------------------------------------
-
 #[test]
 fn e2e_empty_session_clean_replay() {
     let rt = make_runtime();
 
     let recorder = SnapshotRecorder::new("e2e-run-003", "21.0.0.0", "hash-ccc");
 
-    // No Break events.
     let record_session = FakeSession::new(vec![]);
 
     let snapshot = rt
@@ -249,7 +222,6 @@ fn e2e_empty_session_clean_replay() {
     let recovered = deserialize_snapshot(&bytes).expect("deserialize");
     assert_eq!(recovered, snapshot);
 
-    // Replay with no Break events either.
     let replayer = SnapshotReplayer::new();
     let replay_session = FakeSession::new(vec![]);
 
@@ -263,10 +235,6 @@ fn e2e_empty_session_clean_replay() {
         "empty replay of empty snapshot must Match"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Positive: replay_against with direct sample comparison (no live session)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn e2e_direct_replay_against_identical_samples() {
@@ -288,7 +256,6 @@ fn e2e_direct_replay_against_identical_samples() {
     let bytes = serialize_snapshot(&snapshot).expect("serialize");
     let recovered = deserialize_snapshot(&bytes).expect("deserialize");
 
-    // Replay directly against the same samples (synchronous path).
     let replayer = SnapshotReplayer::new();
     let verdict = replayer.replay_against(&recovered, &recovered.samples);
 
@@ -299,15 +266,10 @@ fn e2e_direct_replay_against_identical_samples() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Negative: injected divergence is detected
-// ---------------------------------------------------------------------------
-
 #[test]
 fn e2e_injected_divergence_detected() {
     let rt = make_runtime();
 
-    // Record with specific variable values.
     let recorder = SnapshotRecorder::new("e2e-run-div", "22.0.0.0", "hash-div");
 
     let record_session =
@@ -325,7 +287,6 @@ fn e2e_injected_divergence_detected() {
     let bytes = serialize_snapshot(&snapshot).expect("serialize");
     let recovered = deserialize_snapshot(&bytes).expect("deserialize");
 
-    // Replay with a mutated field: amount changed from 100 to 999.
     let replayer = SnapshotReplayer::new();
 
     let replay_session =
@@ -357,10 +318,6 @@ fn e2e_injected_divergence_detected() {
         ReplayVerdict::Match => panic!("expected Diverged when amount was mutated, got Match"),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Negative: diff_snapshots directly detects a field change (synchronous)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn e2e_diff_direct_field_change_detected() {
@@ -397,15 +354,10 @@ fn e2e_diff_direct_field_change_detected() {
     assert_eq!(status_diff.unwrap().new_value, serde_json::json!("closed"));
 }
 
-// ---------------------------------------------------------------------------
-// Negative: missing sample on replay is detected
-// ---------------------------------------------------------------------------
-
 #[test]
 fn e2e_missing_sample_on_replay_detected() {
     let rt = make_runtime();
 
-    // Record two Break events.
     let recorder = SnapshotRecorder::new("e2e-run-miss", "22.0.0.0", "hash-miss");
 
     let record_session = FakeSession::new(vec![
@@ -425,7 +377,6 @@ fn e2e_missing_sample_on_replay_detected() {
     let bytes = serialize_snapshot(&snapshot).expect("serialize");
     let recovered = deserialize_snapshot(&bytes).expect("deserialize");
 
-    // Replay with only ONE Break event (fewer than recorded).
     let replayer = SnapshotReplayer::new();
     let replay_session = FakeSession::new(vec![
         serde_json::json!({"i": 1}),
@@ -441,10 +392,6 @@ fn e2e_missing_sample_on_replay_detected() {
         "missing sample must yield Diverged, got: {verdict:?}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Negative: session error during replay propagates as Err
-// ---------------------------------------------------------------------------
 
 #[test]
 fn e2e_session_error_on_replay_propagates() {
@@ -496,19 +443,11 @@ fn e2e_session_error_on_replay_propagates() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Negative: serialize→deserialize of empty bytes returns error
-// ---------------------------------------------------------------------------
-
 #[test]
 fn e2e_deserialize_empty_bytes_returns_error() {
     let result = deserialize_snapshot(b"");
     assert!(result.is_err(), "deserialize of empty bytes must fail");
 }
-
-// ---------------------------------------------------------------------------
-// Negative: diff detects metadata divergence (bc_version change)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn e2e_diff_bc_version_change_detected() {

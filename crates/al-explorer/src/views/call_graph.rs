@@ -14,7 +14,6 @@ use crate::{
     App, MAX_INPUT_LEN, advance_list_selection, ensure_daemon_client, input_focused_style,
 };
 
-/// A single row shown in the call graph results list.
 #[derive(Debug, Clone)]
 struct CallRow {
     label: String,
@@ -28,9 +27,7 @@ enum CallRowKind {
 }
 
 pub(crate) struct CallGraphView {
-    /// Current text in the search input.
     pub(crate) query: String,
-    /// Whether the search input is focused.
     pub(crate) input_focused: bool,
     rows: Vec<CallRow>,
     list_state: ListState,
@@ -224,7 +221,6 @@ pub(crate) fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphV
         ])
         .split(area);
 
-    // Search input
     let input_style = input_focused_style(view.input_focused);
     let cursor = if view.input_focused { "█" } else { "" };
     let input_block = Block::default()
@@ -239,7 +235,6 @@ pub(crate) fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphV
         input_inner,
     );
 
-    // Results list
     let list_style = if !view.input_focused {
         Style::default()
             .fg(Color::Yellow)
@@ -284,7 +279,6 @@ pub(crate) fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphV
         .highlight_symbol(">> ");
     f.render_stateful_widget(list, chunks[1], &mut view.list_state);
 
-    // Status bar
     f.render_widget(
         Paragraph::new(view.status.clone()).style(Style::default().fg(Color::DarkGray)),
         chunks[2],

@@ -7,7 +7,6 @@ use serde::Serialize;
 
 use crate::workspace::Workspace;
 
-/// A discovered AL test procedure.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestProcedure {
@@ -15,7 +14,6 @@ pub struct TestProcedure {
     pub line: u32,
 }
 
-/// A discovered AL test codeunit.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestCodeunit {
@@ -67,13 +65,9 @@ pub fn discover_tests(workspace: &Workspace) -> Vec<TestCodeunit> {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AffectedTest {
-    /// The test codeunit's object ID.
     pub codeunit_id: i32,
-    /// The test codeunit's display name.
     pub codeunit_name: String,
-    /// The test method name.
     pub method_name: String,
-    /// File of the test procedure.
     pub file: String,
     /// 1-based line number of the procedure declaration.
     pub line: u32,
@@ -176,7 +170,6 @@ pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
     false
 }
 
-/// Collect all procedures with a [Test] attribute.
 pub fn collect_test_procedures(root: tree_sitter::Node, source: &[u8]) -> Vec<TestProcedure> {
     let mut procs = Vec::new();
     collect_test_procs_iterative(root, source, &mut procs);
@@ -231,7 +224,6 @@ fn collect_test_procs_iterative(
     }
 }
 
-/// Check if a procedure has a [Test] attribute (child or sibling).
 fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     // In AL tree-sitter grammar, attributes are children of procedure_declaration
     let mut cursor = proc_node.walk();
@@ -244,7 +236,6 @@ fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
             }
         }
     }
-    // Fallback: prev siblings
     let mut sibling = proc_node.prev_sibling();
     while let Some(s) = sibling {
         match s.kind() {
@@ -380,7 +371,6 @@ mod adversarial_j_tests {
     /// If the grammar ever groups them into one node, this documents the expected behaviour.
     #[test]
     fn test_has_test_subtype_does_not_match_subtype_normal_adversarial_j_3() {
-        // A codeunit with Subtype = Normal — must NOT be treated as a test codeunit.
         let source = r#"codeunit 50200 "Normal Codeunit"
 {
     Subtype = Normal;

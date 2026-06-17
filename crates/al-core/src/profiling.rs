@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-/// Configuration for a CPU profiling session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfilingConfig {
     /// BC server base URL, e.g. `http://localhost:7049/BC`.
@@ -23,7 +22,6 @@ pub struct ProfilingConfig {
     pub company: String,
     /// Output directory for downloaded `.alcpuprofile` files. Must be an absolute path.
     pub output_dir: PathBuf,
-    /// Optional username for Basic auth.
     pub username: Option<String>,
     /// Optional password for Basic auth. Never serialized to prevent credential leaks.
     #[serde(default, skip_serializing)]
@@ -33,33 +31,27 @@ pub struct ProfilingConfig {
     pub accept_invalid_certs: bool,
 }
 
-/// A profiling hotspot — an AL procedure with high CPU time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hotspot {
     /// Procedure name (e.g., `"Customer.OnAfterGetRecord"`).
     pub procedure: String,
-    /// Object or codeunit that owns this procedure.
     pub object: Option<String>,
     /// Self time in milliseconds (time spent in this node, excluding callees).
     pub self_time_ms: f64,
     /// Total time in milliseconds (self + callees).
     pub total_time_ms: f64,
-    /// Call count.
     pub hit_count: u64,
 }
 
-/// Parsed result of a CPU profiling session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfilingResult {
-    /// Profiling session ID assigned by the server (if available).
     pub session_id: Option<String>,
     /// Total recording duration in milliseconds.
     pub duration_ms: f64,
     /// Top hotspots, sorted by self_time_ms descending.
     pub hotspots: Vec<Hotspot>,
-    /// Path to the raw `.alcpuprofile` file on disk, if downloaded.
     pub profile_path: Option<PathBuf>,
 }
 
@@ -79,7 +71,6 @@ pub enum ProfilingError {
     RelativeOutputDir { path: String },
 }
 
-/// Build a [`reqwest::Client`] configured from the profiling config.
 fn make_client(config: &ProfilingConfig) -> Result<reqwest::Client, ProfilingError> {
     Ok(crate::http_auth::build_http_client(
         config.accept_invalid_certs,
@@ -87,9 +78,6 @@ fn make_client(config: &ProfilingConfig) -> Result<reqwest::Client, ProfilingErr
     )?)
 }
 
-/// Start CPU profiling on the BC server.
-///
-/// Returns the profiling session ID assigned by the server.
 pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, ProfilingError> {
     let client = make_client(config)?;
 
@@ -137,9 +125,6 @@ pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, Profili
     Ok(session_id)
 }
 
-/// Stop CPU profiling and download the `.alcpuprofile` data.
-///
-/// Returns the raw profile bytes and the path where the file was saved.
 pub async fn stop_profiling(
     config: &ProfilingConfig,
     session_id: &str,
@@ -183,8 +168,6 @@ pub async fn stop_profiling(
         });
     }
 
-    // Ensure output directory exists (output_dir already validated absolute at
-    // the top of this function).
     tokio::fs::create_dir_all(&config.output_dir).await?;
 
     let timestamp = std::time::SystemTime::now()
@@ -244,7 +227,6 @@ pub fn analyze_profile(
         .cloned()
         .unwrap_or_default();
 
-    // Build a map of node id -> hit count
     let mut hotspots: Vec<Hotspot> = nodes
         .iter()
         .filter_map(|node| {
@@ -288,7 +270,6 @@ pub fn analyze_profile(
         })
         .collect();
 
-    // Sort by self_time_ms descending
     hotspots.sort_by(|a, b| {
         b.self_time_ms
             .partial_cmp(&a.self_time_ms)
@@ -304,7 +285,6 @@ pub fn analyze_profile(
     })
 }
 
-/// Parse a profile from a file on disk.
 pub async fn analyze_profile_file(
     path: &std::path::Path,
     top_n: usize,
@@ -377,18 +357,14 @@ mod tests {
         let bytes = serde_json::to_vec(&profile).unwrap();
         let result = analyze_profile(&bytes, 10).unwrap();
 
-        // Duration should be ~5000ms (5_000_000 / 1000)
         assert!((result.duration_ms - 5000.0).abs() < 1.0);
 
-        // Should have 2 hotspots (root and idle are filtered)
         assert_eq!(result.hotspots.len(), 2);
 
-        // Top hotspot should be OnAfterGetRecord (120 hits)
         assert_eq!(result.hotspots[0].procedure, "Customer.OnAfterGetRecord");
         assert_eq!(result.hotspots[0].hit_count, 120);
         assert_eq!(result.hotspots[0].object.as_deref(), Some("Customer.al"));
 
-        // Second hotspot
         assert_eq!(result.hotspots[1].procedure, "Sales-Post.PostDocument");
         assert_eq!(result.hotspots[1].hit_count, 45);
     }
@@ -414,9 +390,7 @@ mod tests {
         let bytes = serde_json::to_vec(&profile).unwrap();
         let result = analyze_profile(&bytes, 5).unwrap();
 
-        // Should be limited to top 5
         assert_eq!(result.hotspots.len(), 5);
-        // Should be sorted by self_time_ms descending — highest hit_count first
         assert!(result.hotspots[0].hit_count >= result.hotspots[1].hit_count);
         assert!(result.hotspots[1].hit_count >= result.hotspots[2].hit_count);
     }
@@ -480,7 +454,6 @@ mod tests {
 
     #[test]
     fn analyze_profile_empty_function_name_filtered() {
-        // An explicitly-empty functionName is filtered out, same as (root)/(idle).
         let profile = serde_json::json!({
             "startTime": 0,
             "endTime": 1000000,
@@ -527,7 +500,6 @@ mod tests {
 
     #[test]
     fn analyze_profile_no_object_when_url_and_field_absent() {
-        // No url and no object field -> object is None.
         let profile = serde_json::json!({
             "startTime": 0,
             "endTime": 1000000,
@@ -569,8 +541,6 @@ mod tests {
 
     #[test]
     fn analyze_profile_missing_nodes_key_yields_no_hotspots() {
-        // No "nodes" key at all -> unwrap_or_default gives an empty Vec, so no
-        // hotspots and no panic.
         let profile = serde_json::json!({
             "startTime": 1000,
             "endTime": 3000,
@@ -598,7 +568,6 @@ mod tests {
 
     #[test]
     fn analyze_profile_top_n_zero_returns_empty() {
-        // truncate(0) drops every hotspot even when nodes are present.
         let profile = serde_json::json!({
             "startTime": 0,
             "endTime": 1000000,
@@ -617,8 +586,6 @@ mod tests {
 
     #[tokio::test]
     async fn analyze_profile_file_reads_and_sets_path() {
-        // analyze_profile_file reads from disk and stamps profile_path with the
-        // source path.
         let dir = std::env::temp_dir().join(format!(
             "al-profiling-file-{}-{:?}",
             std::process::id(),
@@ -683,8 +650,6 @@ mod tests {
 
     #[test]
     fn config_password_never_serialized() {
-        // The password is annotated #[serde(skip_serializing)] to prevent
-        // credential leaks into persisted config. Confirm it stays out of JSON.
         let config = test_config();
         let json = serde_json::to_string(&config).unwrap();
         assert!(
@@ -692,14 +657,6 @@ mod tests {
             "serialized config leaked password: {json}"
         );
     }
-
-    // ---- HTTP-orchestration tests (mocked BC server via wiremock) ----
-    //
-    // These exercise the real request construction, status handling, response
-    // parsing, and file-writing logic in `start_profiling` and `stop_profiling`
-    // against a local mock server, without needing a live BC instance.
-    // wiremock's `set_body_*` helpers set Content-Length automatically, which
-    // the capped-read helpers require.
 
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};

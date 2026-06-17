@@ -10,12 +10,10 @@ use serde::Serialize;
 
 use crate::workspace::Workspace;
 
-/// A single permission entry for one object.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PermissionEntry {
     /// The permission object type (e.g. "tabledata", "page", "codeunit").
     pub object_type: String,
-    /// The AL object name.
     pub object_name: String,
     /// The AL object ID (None for unnumbered objects).
     pub object_id: Option<i64>,
@@ -23,11 +21,7 @@ pub struct PermissionEntry {
     pub permissions: String,
 }
 
-/// Collect permission entries from all workspace .al files.
-///
-/// Iterates through the FileIndex, parses each file for its object declaration,
-/// and maps the object type to its appropriate permission level. Extension objects
-/// (tableextension, pageextension, etc.) are skipped — they extend existing objects.
+/// Extension objects (tableextension, pageextension, etc.) are skipped — they extend existing objects.
 pub fn collect_permissions(workspace: &Workspace) -> Vec<PermissionEntry> {
     let mut entries = Vec::new();
 
@@ -56,7 +50,6 @@ pub fn collect_permissions(workspace: &Workspace) -> Vec<PermissionEntry> {
     entries
 }
 
-/// Render permission entries as an AL `permissionset` object.
 pub fn render_al(entries: &[PermissionEntry], name: &str, id: i64) -> String {
     let mut out = String::new();
     writeln!(out, "permissionset {id} \"{}\"", al_escape_name(name)).unwrap();
@@ -92,7 +85,6 @@ pub(crate) fn al_escape_name(name: &str) -> String {
     name.replace('"', "\"\"")
 }
 
-/// Render permission entries as an XML permission set file.
 pub fn render_xml(entries: &[PermissionEntry], role_id: &str, role_name: &str) -> String {
     let mut out = String::new();
     writeln!(out, r#"<?xml version="1.0" encoding="utf-8"?>"#).unwrap();
@@ -133,11 +125,6 @@ pub fn render_xml(entries: &[PermissionEntry], role_id: &str, role_name: &str) -
     out
 }
 
-/// Map an AL object kind string to a (permission_type, permission_value) pair.
-///
-/// Looks up the object type in the `tree-sitter-al/data/object_types.json` data file
-/// via [`crate::syntax::language_data::object_type_by_keyword`].
-/// Returns None for object types that don't get permission entries (extensions, enums, interfaces, etc.).
 fn permission_for_kind(kind: &str) -> Option<(&'static str, &'static str)> {
     let ot = crate::syntax::language_data::object_type_by_keyword(kind)?;
     let perm_type = ot.permission_type.as_deref()?;
@@ -181,7 +168,6 @@ fn xml_object_type(perm_type: &str) -> &str {
     }
 }
 
-/// Convert permission string (e.g. "RIMD", "X") to XML permission flags (R, I, M, D, X).
 fn xml_permission_flags(perms: &str) -> (u8, u8, u8, u8, u8) {
     let r = if perms.contains('R') { 1 } else { 0 };
     let i = if perms.contains('I') { 1 } else { 0 };
@@ -278,7 +264,6 @@ mod tests {
     fn collect_permissions_from_workspace() {
         let workspace = Workspace::new();
 
-        // Add various object types to the file index
         workspace.file_index.add_file(
             PathBuf::from("/project/MyTable.al"),
             r#"table 50100 "My Table" { fields { field(1; Code; Code[20]) { } } }"#.to_string(),
@@ -319,7 +304,6 @@ mod tests {
             "Should have 4 entries (table, page, codeunit, report)"
         );
 
-        // Check codeunit entry
         let cu = entries
             .iter()
             .find(|e| e.object_type == "codeunit")
@@ -328,17 +312,14 @@ mod tests {
         assert_eq!(cu.object_id, Some(50100));
         assert_eq!(cu.permissions, "X");
 
-        // Check page entry
         let pg = entries.iter().find(|e| e.object_type == "page").unwrap();
         assert_eq!(pg.object_name, "My Page");
         assert_eq!(pg.permissions, "X");
 
-        // Check report entry
         let rp = entries.iter().find(|e| e.object_type == "report").unwrap();
         assert_eq!(rp.object_name, "My Report");
         assert_eq!(rp.permissions, "X");
 
-        // Check tabledata entry (tables get "tabledata" permission type)
         let td = entries
             .iter()
             .find(|e| e.object_type == "tabledata")
@@ -491,7 +472,6 @@ mod tests {
             std::path::PathBuf::from("/project/IMyInterface.al"),
             r#"interface "IMyInterface" { procedure Run(); }"#.to_string(),
         );
-        // Interfaces return None from permission_for_kind, so should be skipped
         let entries = collect_permissions(&workspace);
         assert!(entries.is_empty());
     }

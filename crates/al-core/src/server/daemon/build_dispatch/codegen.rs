@@ -196,8 +196,6 @@ pub(in crate::server::daemon) fn dispatch_setup(workspace: &Workspace, id: u64) 
         ..Default::default()
     }
 }
-// WP16: Object wizards / code generation
-
 pub(in crate::server::daemon) fn dispatch_generate(
     workspace: &Workspace,
     id: u64,
@@ -246,7 +244,6 @@ pub(in crate::server::daemon) fn dispatch_generate(
         }
     }
 
-    // Resolve the source table symbol from the workspace symbol index.
     // F-OPEN-268: workspace tables (with their fields) only enter the
     // SymbolIndex via the call-graph enrichment pass — trigger the cached
     // build first so scaffolding works against the user's own tables.
@@ -368,13 +365,8 @@ mod tests {
         Workspace::new()
     }
 
-    // --- dispatch_generate (F-OPEN-033) --------------------------------------
-
     #[test]
     fn dispatch_generate_rejects_object_id_collision() {
-        // Negative regression: an existing Page with id 50100 must cause
-        // a generate request for kind=page, id=50100 to fail with a
-        // structured INVALID_PARAMS error mentioning the colliding name.
         let ws = empty_ws();
         ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
             kind: crate::symbols::ObjectKind::Page,
@@ -405,12 +397,10 @@ mod tests {
 
     #[test]
     fn dispatch_generate_allows_same_id_across_kinds() {
-        // Positive: BC's object-id space is per-kind. A Page 50100 must
-        // NOT block a Table 50100 (or here, a Codeunit 50100 — `test`
-        // generates a Codeunit, which is what `target_kind` resolves to).
-        // We can't fully exercise the success path without a workspace
-        // root, but we can verify the collision check doesn't fire when
-        // the ID is occupied by a *different* kind.
+        // BC's object-id space is per-kind; a Table 50100 must NOT block a
+        // Codeunit 50100 (which is what `test` generates). Can't exercise the
+        // full success path without a workspace root, but we verify the
+        // collision check doesn't fire cross-kind.
         let ws = empty_ws();
         ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
             kind: crate::symbols::ObjectKind::Table,
@@ -442,11 +432,9 @@ mod tests {
 
     #[test]
     fn dispatch_generate_rejects_out_of_range_object_id() {
-        // Negative regression: an `id` beyond the i32 range must be rejected
-        // with INVALID_PARAMS rather than silently wrapping via `as i32`.
-        // i32::MAX + 1 would wrap to i32::MIN under the old cast, which would
-        // then perform the conflict check against the wrong ID. Seed a Page at
-        // the wrapped value to prove the truncated lookup is never reached.
+        // i32::MAX + 1 would wrap to i32::MIN under `as i32`, performing the
+        // conflict check against the wrong ID. Seed a Page at i32::MIN to
+        // prove the truncated lookup is never reached.
         let ws = empty_ws();
         ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
             kind: crate::symbols::ObjectKind::Page,
@@ -470,8 +458,7 @@ mod tests {
             .error
             .expect("expected error response for out-of-range id");
         assert_eq!(err.code, al_protocol::jsonrpc::error_codes::INVALID_PARAMS);
-        // Must be the generic invalid-params message, NOT the collision message
-        // for the wrapped i32::MIN value — proving no silent truncation.
+        // Must NOT be the collision message for the wrapped i32::MIN value — proving no silent truncation.
         assert!(
             !err.message.contains("Wrapped Page"),
             "out-of-range id must be rejected before the conflict check, got: {}",
@@ -481,8 +468,6 @@ mod tests {
 
     #[test]
     fn dispatch_generate_defaults_object_id_when_absent() {
-        // Positive: omitting `id` falls back to the 50100 default and runs the
-        // conflict check against that value.
         let ws = empty_ws();
         ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
             kind: crate::symbols::ObjectKind::Page,
@@ -509,13 +494,8 @@ mod tests {
         );
     }
 
-    // --- dispatch_permissions ------------------------------------------------
-
     #[test]
     fn dispatch_permissions_rejects_out_of_range_id() {
-        // Negative regression: an `id` beyond the i32 range must be rejected
-        // with INVALID_PARAMS rather than silently wrapping into the generated
-        // AL permissionset declaration.
         let ws = empty_ws();
         let resp = dispatch_permissions(
             &ws,
@@ -533,7 +513,6 @@ mod tests {
 
     #[test]
     fn dispatch_permissions_accepts_in_range_id() {
-        // Positive: a valid id renders AL containing that id.
         let ws = empty_ws();
         let resp = dispatch_permissions(
             &ws,
@@ -553,8 +532,6 @@ mod tests {
         assert!(content.contains("50123"), "rendered AL: {content}");
     }
 
-    // --- dispatch_new_project ------------------------------------------------
-
     #[test]
     fn new_project_missing_dir_is_invalid_params() {
         let resp = dispatch_new_project(1, &serde_json::json!({}));
@@ -563,8 +540,6 @@ mod tests {
 
     #[test]
     fn new_project_rejects_relative_dir() {
-        // Path-traversal guard: relative dirs must be rejected before any
-        // scaffold write happens.
         let resp = dispatch_new_project(2, &serde_json::json!({ "dir": "../evil" }));
         let err = resp.error.expect("relative dir must error");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
@@ -573,7 +548,6 @@ mod tests {
 
     #[test]
     fn new_project_scaffolds_into_absolute_dir() {
-        // Positive: an absolute target dir scaffolds a project (creates app.json).
         let tmp = tempfile::TempDir::new().unwrap();
         let dir = tmp.path().join("MyApp");
         let resp = dispatch_new_project(
@@ -588,8 +562,6 @@ mod tests {
         assert!(dir.join("app.json").exists(), "app.json must be created");
     }
 
-    // --- dispatch_generate (kind / table branches) ---------------------------
-
     #[test]
     fn generate_unknown_kind_is_invalid_params() {
         let ws = empty_ws();
@@ -601,8 +573,6 @@ mod tests {
 
     #[test]
     fn generate_page_missing_table_reports_table_not_found() {
-        // A page requires a source table; an unknown table name must surface
-        // a "not found in symbol index" error (the `table_entry` None branch).
         let ws = empty_ws();
         let resp = dispatch_generate(
             &ws,
@@ -664,12 +634,8 @@ mod tests {
         );
     }
 
-    // dispatch_permissions: xml format branch + objectCount shaping.
-
     #[test]
     fn permissions_xml_format_returns_xml_content_and_count() {
-        // The `xml` format branch must report format=xml, surface an
-        // objectCount, and emit XML (not the AL permissionset syntax).
         let ws = empty_ws();
         let resp = dispatch_permissions(
             &ws,
@@ -684,7 +650,6 @@ mod tests {
             "xml branch must expose objectCount"
         );
         let content = r.get("content").and_then(|v| v.as_str()).expect("content");
-        // XML output, not the AL `permissionset` declaration.
         assert!(
             content.contains('<'),
             "xml branch must render XML, got: {content}"
@@ -693,8 +658,6 @@ mod tests {
 
     #[test]
     fn permissions_default_format_is_al() {
-        // An unrecognised format falls through to the AL renderer (the `_`
-        // arm), not the xml branch.
         let ws = empty_ws();
         let resp = dispatch_permissions(&ws, 2, &serde_json::json!({ "format": "totally-bogus" }));
         let r = resp.result.expect("result");

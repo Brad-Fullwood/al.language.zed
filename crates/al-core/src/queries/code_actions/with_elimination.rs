@@ -19,7 +19,6 @@ fn resolve_with_field_names(
         None => return Vec::new(),
     };
 
-    // Look up the table in the symbol index and collect field names.
     let entries = workspace.symbols.get_by_name(&table_name);
     for entry in &entries {
         if (entry.kind == crate::symbols::ObjectKind::Table
@@ -33,9 +32,6 @@ fn resolve_with_field_names(
     Vec::new()
 }
 
-/// Walk an AST to find the Record type name for a given variable name.
-///
-/// Searches `var_section` and `parameter_list` nodes across the whole file.
 fn find_record_type_for_var(
     root: tree_sitter::Node,
     source: &[u8],
@@ -55,12 +51,10 @@ fn find_record_type_recursive(
         let kind = node.kind();
 
         if kind == "regular_variable_declaration" {
-            // Check if this is the variable we're looking for.
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name_text) = name_node.utf8_text(source) {
                     let name_clean = name_text.trim_matches('"').trim();
                     if name_clean.to_lowercase() == *var_lower {
-                        // Extract Record type
                         if let Some(type_node) = node.child_by_field_name("type") {
                             return extract_record_subtype(type_node, source);
                         }
@@ -87,7 +81,6 @@ fn find_record_type_recursive(
     None
 }
 
-/// Extract the table name from a `type_reference` node for `Record "TableName"`.
 fn extract_record_subtype(type_node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut found_record_kw = false;
     let mut cursor = type_node.walk();
@@ -102,7 +95,6 @@ fn extract_record_subtype(type_node: tree_sitter::Node, source: &[u8]) -> Option
                 }
             }
         } else {
-            // Next token is the table name (possibly quoted)
             if let Ok(text) = child.utf8_text(source) {
                 let trimmed = text.trim().trim_matches('"').trim();
                 if !trimmed.is_empty() {
@@ -127,7 +119,6 @@ pub(super) fn source_action_eliminate_with(
     let root = tree.root_node();
     let source = text.as_bytes();
 
-    // Find with_statement at cursor.
     // LSP positions use UTF-16 code units; tree-sitter uses byte offsets.
     let cursor_line = text.lines().nth(range.start.line as usize)?;
     let col_bytes =
@@ -135,26 +126,20 @@ pub(super) fn source_action_eliminate_with(
     let point = tree_sitter::Point::new(range.start.line as usize, col_bytes);
     let with_node = find_with_at_point(root, point)?;
 
-    // Extract the record variable name from the `value` field
     let value_node = with_node.child_by_field_name("value")?;
     let record_var = value_node.utf8_text(source).ok()?.trim().to_string();
     if record_var.is_empty() {
         return None;
     }
 
-    // Extract the body
     let body_node = with_node.child_by_field_name("body")?;
 
-    // Unwrap begin..end if present
     let (body_text, _is_begin_end) = extract_with_body(body_node, source);
 
     let indent = detect_indent(text, with_node.start_position().row as u32);
 
-    // Try to resolve field names for the record variable so the field-name pass can
-    // qualify occurrences inside `if`, `filter(...)`, etc. (issue #33).
     let field_names = resolve_with_field_names(workspace, &tree, text, &record_var);
 
-    // Qualify unqualified identifiers in the body with `record_var.`
     let qualified_body = qualify_with_references(&body_text, &record_var, &indent, &field_names);
 
     let edit = TextEdit {
@@ -179,7 +164,6 @@ pub(super) fn source_action_eliminate_with(
     })
 }
 
-/// Find a with_statement node at the given point.
 fn find_with_at_point(
     root: tree_sitter::Node,
     point: tree_sitter::Point,
@@ -194,7 +178,6 @@ fn find_with_at_point(
 /// Extract the body text from a with statement body node.
 /// Returns (body text, whether it was a begin..end block).
 fn extract_with_body(body_node: tree_sitter::Node, source: &[u8]) -> (String, bool) {
-    // Check if body is a begin..end block
     let inner = if body_node.kind() == "statement" && body_node.child_count() == 1 {
         body_node.child(0).unwrap_or(body_node)
     } else {
@@ -202,12 +185,10 @@ fn extract_with_body(body_node: tree_sitter::Node, source: &[u8]) -> (String, bo
     };
 
     if inner.kind() == "begin_end_block" {
-        // Extract just the statements inside begin..end (skip begin/end keywords)
         if let Some(stmt_list) = inner.child_by_field_name("body") {
             let text = stmt_list.utf8_text(source).unwrap_or("").to_string();
             return (text, true);
         }
-        // Fallback: try to get statement_list child
         let mut cursor = inner.walk();
         for child in inner.children(&mut cursor) {
             if child.kind() == "statement_list" {
@@ -243,7 +224,6 @@ fn qualify_with_references(
             continue;
         }
 
-        // Pass 1+2: structural qualification then field-name substitution
         let qualified_line = qualify_line(trimmed, record_var, field_names);
         result.push_str(&format!("{}{}\n", indent, qualified_line));
     }
@@ -264,15 +244,12 @@ fn qualify_with_references(
 fn qualify_line(line: &str, record_var: &str, field_names: &[String]) -> String {
     let trimmed = line.trim();
 
-    // --- Pass 1: structural qualification ---
-
     // Skip lines that start with AL keywords (whole-word match).
     // Does NOT skip field names that begin with a keyword prefix (e.g. EndDate, IfFlag).
     // Keywords are looked up via LanguageData (loaded from tree-sitter-al/data/keywords.json).
     // "//" (line comment) and "end;" are not grammar keywords but must also be skipped here.
     let lower = trimmed.to_lowercase();
     let starts_with_keyword = {
-        // Check LanguageData keywords first (covers if/then/else/begin/end/for/while/etc.)
         let keyword_match = lower
             .split_once(|c: char| !c.is_alphanumeric() && c != '_')
             .map(|(word, _)| crate::syntax::language_data::is_keyword(word))
@@ -286,7 +263,6 @@ fn qualify_line(line: &str, record_var: &str, field_names: &[String]) -> String 
         // Cannot structurally qualify a keyword-led line — fall through to field-name pass.
         trimmed.to_string()
     } else if let Some(after_open) = trimmed.strip_prefix('"') {
-        // Quoted identifier at line start
         if let Some(end_quote) = after_open.find('"') {
             let after = after_open[end_quote + 1..].trim_start();
             if after.starts_with(":=") || after.starts_with('(') {
@@ -298,7 +274,6 @@ fn qualify_line(line: &str, record_var: &str, field_names: &[String]) -> String 
             trimmed.to_string()
         }
     } else {
-        // Plain identifier at line start
         let first_word_end = trimmed
             .find(|c: char| !c.is_alphanumeric() && c != '_')
             .unwrap_or(trimmed.len());
@@ -308,7 +283,6 @@ fn qualify_line(line: &str, record_var: &str, field_names: &[String]) -> String 
         } else {
             let after_word = trimmed[first_word_end..].trim_start();
             if after_word.starts_with('.') || after_word.starts_with("::") {
-                // Already qualified — leave as-is
                 trimmed.to_string()
             } else if after_word.starts_with(":=") || after_word.starts_with('(') {
                 format!("{}.{}", record_var, trimmed)
@@ -318,9 +292,6 @@ fn qualify_line(line: &str, record_var: &str, field_names: &[String]) -> String 
         }
     };
 
-    // --- Pass 2: field-name substitution ---
-    // For each known field name, replace unqualified occurrences in the line with
-    // `record_var.field`.  Skip occurrences already preceded by `.` or `:`.
     if field_names.is_empty() {
         return structurally_qualified;
     }
@@ -348,13 +319,11 @@ fn substitute_field_names(line: &str, record_var: &str, field_names: &[String]) 
         let field_lower = field.to_lowercase();
         let qualified = format!("{}.{}", record_var, field);
 
-        // Walk through the string finding word-boundary matches.
         let mut output = String::with_capacity(result.len() + qualified.len());
         let bytes = result.as_bytes();
         let mut i = 0;
 
         while i < bytes.len() {
-            // Try to match field_lower at position i (case-insensitive).
             let remaining = &result[i..];
             let remaining_lower = remaining.to_lowercase();
             if remaining_lower.starts_with(field_lower.as_str()) {
@@ -363,7 +332,6 @@ fn substitute_field_names(line: &str, record_var: &str, field_names: &[String]) 
                 let prev_ok = if i == 0 {
                     true
                 } else {
-                    // Get previous char
                     let prev_char = result[..i].chars().next_back().unwrap_or(' ');
                     prev_char != '.'
                         && prev_char != ':'
@@ -384,7 +352,6 @@ fn substitute_field_names(line: &str, record_var: &str, field_names: &[String]) 
                     continue;
                 }
             }
-            // Push one character and advance.
             let Some(ch) = result[i..].chars().next() else {
                 break;
             };
@@ -397,9 +364,6 @@ fn substitute_field_names(line: &str, record_var: &str, field_names: &[String]) 
 
     result
 }
-
-/// Parse the file's namespace and using directives.
-/// Returns (list of imported namespaces, line number to insert new using directives).
 
 #[cfg(test)]
 mod tests {
@@ -432,7 +396,6 @@ mod tests {
         let uri = Url::parse("file:///test/With.al").unwrap();
         open_doc(&ws, &uri, al_code);
 
-        // Cursor on the `with` line (line 6)
         let range = Range {
             start: super::super::Position {
                 line: 6,
@@ -458,7 +421,6 @@ mod tests {
         let edit = with_actions[0].edit.as_ref().expect("should have edit");
         let (_, edits) = &edit.changes[0];
         let new_text = &edits[0].new_text;
-        // Should qualify field references with Cust.
         assert!(
             new_text.contains("Cust.Name"),
             "Should qualify Name with Cust"
@@ -467,7 +429,6 @@ mod tests {
             new_text.contains("Cust.\"No.\""),
             "Should qualify \"No.\" with Cust"
         );
-        // Should NOT have with...do wrapper
         assert!(
             !new_text.contains("with Cust do"),
             "Should remove with wrapper"
@@ -511,7 +472,6 @@ mod tests {
 
     #[test]
     fn qualify_line_skips_al_keywords_exactly() {
-        // Exact keyword lines must not be qualified.
         assert_eq!(qualify_line("end;", "Rec", &[]), "end;");
         assert_eq!(qualify_line("begin", "Rec", &[]), "begin");
         assert_eq!(qualify_line("end", "Rec", &[]), "end");
@@ -569,7 +529,4 @@ mod tests {
         assert!(with_actions.is_empty(), "Should NOT offer on non-with code");
     }
 
-    // -----------------------------------------------------------------------
-    // Tests for make-method-local (T1208)
-    // -----------------------------------------------------------------------
 }

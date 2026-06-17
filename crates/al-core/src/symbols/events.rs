@@ -10,33 +10,22 @@ use std::sync::Arc;
 use super::index::SymbolIndex;
 use super::model::{MethodSymbol, SymbolEntry};
 
-/// An event publisher found in the symbol index.
 #[derive(Debug, Clone)]
 pub struct EventPublisher {
-    /// The object containing this event.
     pub object: Arc<SymbolEntry>,
-    /// The method that publishes the event.
     pub method: MethodSymbol,
-    /// The event type (IntegrationEvent or BusinessEvent).
     pub event_type: EventType,
 }
 
-/// An event subscriber found in the symbol index.
 #[derive(Debug, Clone)]
 pub struct EventSubscriber {
-    /// The object containing this subscriber.
     pub object: Arc<SymbolEntry>,
-    /// The subscriber method.
     pub method: MethodSymbol,
-    /// The object type being subscribed to (from attribute argument).
     pub target_object_type: String,
-    /// The object name being subscribed to (from attribute argument).
     pub target_object_name: String,
-    /// The event name being subscribed to (from attribute argument).
     pub target_event_name: String,
 }
 
-/// Type of event publisher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
     Integration,
@@ -116,14 +105,12 @@ pub fn get_events(index: &SymbolIndex, query: &str) -> EventResults {
     }
 }
 
-/// Results from an event search.
 #[derive(Debug, Clone)]
 pub struct EventResults {
     pub publishers: Vec<EventPublisher>,
     pub subscribers: Vec<EventSubscriber>,
 }
 
-/// Check if a publisher matches the query.
 fn matches_event_query(object_name: &str, method_name: &str, query_lower: &str) -> bool {
     if query_lower.is_empty() {
         return true;
@@ -132,7 +119,6 @@ fn matches_event_query(object_name: &str, method_name: &str, query_lower: &str) 
         || method_name.to_lowercase().contains(query_lower)
 }
 
-/// Check if a subscriber matches the query.
 fn matches_subscriber_query(
     object_name: &str,
     method_name: &str,
@@ -167,7 +153,6 @@ fn parse_subscriber_args(arguments: &[String]) -> (String, String, String) {
         .get(1)
         .map(|s| {
             let cleaned = s.trim().to_string();
-            // Remove "Codeunit::" or "Table::" prefix and quotes
             if let Some(pos) = cleaned.find("::") {
                 clean_quotes(&cleaned[pos + 2..])
             } else {
@@ -183,7 +168,6 @@ fn parse_subscriber_args(arguments: &[String]) -> (String, String, String) {
     (target_type, target_name, target_event)
 }
 
-/// Remove surrounding single/double quotes.
 fn clean_quotes(s: &str) -> String {
     let s = s.trim();
     let s = s.strip_prefix('"').unwrap_or(s);
@@ -325,7 +309,7 @@ mod tests {
         index.add_entries(&make_codeunit_with_events());
 
         let results = get_events(&index, "");
-        assert_eq!(results.publishers.len(), 2); // 1 integration + 1 business
+        assert_eq!(results.publishers.len(), 2);
         assert_eq!(results.subscribers.len(), 1);
     }
 
@@ -335,7 +319,6 @@ mod tests {
         index.add_entries(&make_codeunit_with_events());
 
         let results = get_events(&index, "Sales Event Publisher");
-        // Both publisher methods + subscriber (target matches)
         assert_eq!(results.publishers.len(), 2);
         assert_eq!(results.subscribers.len(), 1);
     }

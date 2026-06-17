@@ -17,7 +17,6 @@ fn default_jsonrpc() -> String {
     "2.0".to_string()
 }
 
-/// A JSON-RPC request.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Request {
     #[serde(default = "default_jsonrpc")]
@@ -52,7 +51,6 @@ impl Request {
     }
 }
 
-/// A JSON-RPC response.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Response {
     #[serde(default = "default_jsonrpc")]
@@ -78,7 +76,6 @@ impl Default for Response {
 }
 
 impl Response {
-    /// Successful response with a JSON result value.
     pub fn ok(id: u64, result: serde_json::Value) -> Self {
         Self {
             jsonrpc: default_jsonrpc(),
@@ -88,7 +85,6 @@ impl Response {
         }
     }
 
-    /// Error response.
     pub fn error(id: u64, code: i32, message: impl Into<String>) -> Self {
         Self {
             jsonrpc: default_jsonrpc(),
@@ -115,7 +111,6 @@ impl Response {
     }
 }
 
-/// A JSON-RPC error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcError {
     pub code: i32,

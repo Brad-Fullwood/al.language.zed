@@ -13,9 +13,6 @@ const MAX_DAP_BODY_SIZE: usize = 20 * 1024 * 1024;
 /// Maximum DAP header line length (8 KiB).
 const MAX_DAP_HEADER_LINE: usize = 8192;
 
-/// Read one DAP message body from the wire.
-///
-/// Reads `Content-Length` headers, then reads exactly that many bytes.
 /// Returns `InvalidData` if `Content-Length` exceeds [`MAX_DAP_BODY_SIZE`].
 pub async fn read_dap_body<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
@@ -32,8 +29,6 @@ pub async fn read_dap_body<R: tokio::io::AsyncRead + Unpin>(
     Ok(body)
 }
 
-/// Read DAP headers and extract Content-Length.
-///
 /// Bounded against header-line DoS (T059 / 3d630127d17fed8a): tokio's
 /// `read_line` is unbounded — it grows the destination String until it
 /// hits a newline or EOF. Pre-T059 the post-read length check happened
@@ -48,10 +43,6 @@ async fn read_headers<R: tokio::io::AsyncRead + Unpin>(
     let mut buf = Vec::with_capacity(128);
     loop {
         buf.clear();
-        // Bounded line read: consume up to MAX_DAP_HEADER_LINE bytes,
-        // breaking on '\n'. Anything past the cap is a hard reject —
-        // matching the existing error contract but BEFORE the allocation
-        // grows past the cap.
         let mut byte = [0u8; 1];
         loop {
             let n = reader.read(&mut byte).await?;
@@ -117,7 +108,6 @@ async fn read_headers<R: tokio::io::AsyncRead + Unpin>(
     })
 }
 
-/// Write one DAP frame (`Content-Length: N\r\n\r\n<body>`).
 pub async fn write_dap_frame<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     body: &[u8],
@@ -129,14 +119,10 @@ pub async fn write_dap_frame<W: tokio::io::AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// Patch a DAP message body to include a `seq` field if missing.
-///
 /// EditorServices.Host sometimes omits the required `seq` field from
-/// its responses and events. This function injects one.
-///
-/// Uses `serde_json` to parse the message and check the actual top-level JSON
-/// object, which avoids false-positives from nested `"seq"` fields or `"seq"`
-/// appearing inside string values.
+/// its responses and events. This function injects one using `serde_json`
+/// to check the actual top-level JSON object, avoiding false-positives from
+/// nested `"seq"` fields or `"seq"` appearing inside string values.
 pub fn ensure_seq(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
     let mut value: serde_json::Value = match serde_json::from_slice(body) {
         Ok(v) => v,
@@ -161,11 +147,9 @@ mod tests {
     async fn read_write_roundtrip() {
         let body = b"{\"seq\":1,\"type\":\"request\",\"command\":\"initialize\"}";
 
-        // Write frame to buffer
         let mut buf = Vec::new();
         write_dap_frame(&mut buf, body).await.unwrap();
 
-        // Read it back
         let mut reader = BufReader::new(buf.as_slice());
         let read_body = read_dap_body(&mut reader).await.unwrap();
 
@@ -226,9 +210,7 @@ mod tests {
         let counter = AtomicI64::new(1);
         let result = ensure_seq(body, &counter);
 
-        // Should be unchanged
         assert_eq!(result, body);
-        // Counter should NOT have been incremented
         assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
 
@@ -250,7 +232,6 @@ mod tests {
         let body = b"{}";
         let counter = AtomicI64::new(1);
         let patched = ensure_seq(body, &counter);
-        // Must parse as valid JSON (no trailing comma).
         let value: serde_json::Value =
             serde_json::from_slice(&patched).expect("patched empty object must be valid JSON");
         assert_eq!(value["seq"], 1);
@@ -361,7 +342,6 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_malformed_content_length() {
-        // A non-numeric Content-Length value must surface as InvalidData.
         let data = b"Content-Length: abc\r\n\r\n";
         let mut reader = BufReader::new(&data[..]);
         let result = read_dap_body(&mut reader).await;

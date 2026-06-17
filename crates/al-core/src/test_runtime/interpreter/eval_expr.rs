@@ -61,7 +61,6 @@ fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eva
         // When there are 3+ named children, it's a binary (or assignment) expression.
         // When there is 1 named child, it's a transparent wrapper.
         "expression" => eval_expression_node(node, source, stack),
-        // Grammar wrappers — pass through to the single inner child.
         "parenthesized_expression"
         | "postfix_expression"
         | "primary_expression"
@@ -69,7 +68,6 @@ fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eva
             Some(inner) => eval_expr(inner, source, stack),
             None => Eval::Error(simple_error("empty expression wrapper")),
         },
-        // Identifier — load from scope, or resolve boolean keywords.
         "identifier" | "variable_reference" | "name" => match utf8_text(node, source) {
             Some(name) => {
                 // Boolean keywords may appear as identifiers in some grammar versions.
@@ -85,7 +83,6 @@ fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eva
             }
             None => Eval::Error(simple_error("invalid identifier text")),
         },
-        // Unary `-` / `not`.
         "unary_expression" => eval_unary(node, source, stack),
         // Anything else: signal a clear error rather than silently
         // returning a default — failing loud is better than failing wrong.
@@ -145,13 +142,11 @@ fn eval_unary(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
     //   - 1 named child:    [postfix_expression] — transparent wrapper
     let named_count = node.named_child_count();
     if named_count <= 1 {
-        // Transparent wrapper around postfix_expression.
         return match named_child(node, 0) {
             Some(inner) => eval_expr(inner, source, stack),
             None => Eval::Error(simple_error("unary expression: empty node")),
         };
     }
-    // 2-child form: operator + operand.
     let op_node = match named_child(node, 0) {
         Some(n) => n,
         None => return Eval::Error(simple_error("unary expression missing operator")),
@@ -204,7 +199,6 @@ fn eval_expression_node(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -
         return eval_expr(children[0], source, stack);
     }
 
-    // Find `:=` (assignment) operator in the children.
     // Operators are at odd indices: [operand, op, operand, op, operand, ...]
     let assign_idx = children
         .iter()
@@ -218,17 +212,14 @@ fn eval_expression_node(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -
         .map(|(idx, _)| idx);
 
     if let Some(op_idx) = assign_idx {
-        // Assignment: LHS is children[op_idx - 1], RHS is children[op_idx + 1..] as a chain.
         let lhs_node = children[op_idx - 1];
         let rhs_children = &children[(op_idx + 1)..];
 
-        // Evaluate the RHS sub-expression (may be a chain like `1 div 0`).
         let rhs_val = match eval_expr_chain(rhs_children, source, stack) {
             Eval::Normal(v) => v,
             other => return other,
         };
 
-        // Resolve the LHS name.
         let lhs_name = extract_identifier_name(lhs_node, source)
             .or_else(|| {
                 lhs_node
@@ -251,14 +242,11 @@ fn eval_expression_node(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -
         return Eval::Normal(Value::Empty);
     }
 
-    // No assignment — evaluate as a binary expression chain left-to-right.
     eval_expr_chain(&children, source, stack)
 }
 
 /// Evaluate a flat alternating chain [operand, op, operand, op, operand, ...]
 /// left-to-right, returning the final computed value.
-///
-/// This is a helper for `eval_expression_node`. Returns `Eval` directly.
 fn eval_expr_chain(children: &[Node<'_>], source: &[u8], stack: &mut ScopeStack) -> Eval {
     if children.is_empty() {
         return Eval::Error(simple_error("expression chain: empty"));
@@ -267,13 +255,11 @@ fn eval_expr_chain(children: &[Node<'_>], source: &[u8], stack: &mut ScopeStack)
         return eval_expr(children[0], source, stack);
     }
 
-    // Evaluate first operand.
     let mut acc = match eval_expr(children[0], source, stack) {
         Eval::Normal(v) => v,
         other => return other,
     };
 
-    // Process operator-operand pairs.
     let mut i = 1;
     while i + 1 < children.len() {
         let op_node = children[i];
@@ -294,9 +280,7 @@ fn eval_expr_chain(children: &[Node<'_>], source: &[u8], stack: &mut ScopeStack)
     Eval::Normal(acc)
 }
 
-/// Extract the lowercase identifier name from a wrapper node.
 fn extract_identifier_name(node: Node<'_>, source: &[u8]) -> Option<String> {
-    // Walk named children looking for an identifier/name node.
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
@@ -332,7 +316,6 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
         }
     }
     match (&op[..], left, right) {
-        // Integer arithmetic — checked to avoid panics on overflow.
         ("+", Value::Integer(a), Value::Integer(b)) => match a.checked_add(b) {
             Some(n) => Eval::Normal(Value::Integer(n)),
             None => Eval::Error(simple_error("integer overflow")),
@@ -369,7 +352,6 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
                 }
             }
         }
-        // Decimal arithmetic (Decimal × Decimal and mixed) — guard NaN/Inf.
         ("+", Value::Decimal(a), Value::Decimal(b)) => checked_decimal(a + b),
         ("-", Value::Decimal(a), Value::Decimal(b)) => checked_decimal(a - b),
         ("*", Value::Decimal(a), Value::Decimal(b)) => checked_decimal(a * b),
@@ -384,14 +366,12 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
         ("*", Value::Integer(a), Value::Decimal(b))
         | ("*", Value::Decimal(b), Value::Integer(a)) => checked_decimal(a as f64 * b),
 
-        // String concatenation (AL `+` on Text/Code).
         ("+", Value::Text(a), Value::Text(b)) => Eval::Normal(Value::Text(format!("{a}{b}"))),
         ("+", Value::Text(a), Value::Code(b)) | ("+", Value::Code(b), Value::Text(a)) => {
             Eval::Normal(Value::Text(format!("{a}{b}")))
         }
         ("+", Value::Code(a), Value::Code(b)) => Eval::Normal(Value::Code(format!("{a}{b}"))),
 
-        // Comparisons (broad — any matching primitive type).
         ("=", a, b) => Eval::Normal(Value::Boolean(values_equal(&a, &b))),
         ("<>", a, b) => Eval::Normal(Value::Boolean(!values_equal(&a, &b))),
         ("<", a, b) => values_cmp(&a, &b, |o| o.is_lt()),
@@ -399,7 +379,6 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
         (">", a, b) => values_cmp(&a, &b, |o| o.is_gt()),
         (">=", a, b) => values_cmp(&a, &b, |o| o.is_ge()),
 
-        // Boolean logic.
         ("and", Value::Boolean(a), Value::Boolean(b)) => Eval::Normal(Value::Boolean(a && b)),
         ("or", Value::Boolean(a), Value::Boolean(b)) => Eval::Normal(Value::Boolean(a || b)),
         ("xor", Value::Boolean(a), Value::Boolean(b)) => Eval::Normal(Value::Boolean(a ^ b)),
@@ -502,8 +481,6 @@ mod tests {
         }
     }
 
-    // -- apply_binary unit tests (don't need a parse tree) ---------------
-
     #[test]
     fn integer_arithmetic_associativity() {
         // (1 + 2) + 3 == 1 + (2 + 3)
@@ -539,7 +516,6 @@ mod tests {
 
     #[test]
     fn divide_by_zero_is_error() {
-        // Negative: dividing by zero must produce an Eval::Error.
         let e = err(apply_binary("/", Value::Integer(1), Value::Integer(0)));
         assert!(e.message.contains("division by zero"));
         let e = err(apply_binary("mod", Value::Integer(1), Value::Integer(0)));
@@ -626,7 +602,6 @@ mod tests {
 
     #[test]
     fn unsupported_operator_yields_error() {
-        // Negative: an unknown operator returns Error rather than panic.
         let e = err(apply_binary("**", Value::Integer(2), Value::Integer(3)));
         assert!(
             e.message.contains("not supported"),
@@ -637,7 +612,6 @@ mod tests {
 
     #[test]
     fn comparing_incompatible_types_errors() {
-        // Negative: comparing Text to Integer is not supported.
         let e = err(apply_binary(
             "<",
             Value::Text("a".into()),
@@ -650,10 +624,7 @@ mod tests {
         );
     }
 
-    // -- eval_expr against a real parse tree ----------------------------
-
     fn parse_and_eval(source_str: &str) -> Eval {
-        // Wrap the expression in a procedure body so the parser is happy.
         let wrapper = format!(
             "codeunit 50100 \"X\"\n{{\n    procedure Test(): Variant\n    begin\n        exit({source_str});\n    end;\n}}"
         );
@@ -718,8 +689,6 @@ mod tests {
             }
         }
     }
-
-    // ── Adversarial tests (adversarial-h) ─────────────────────────────────────
 
     #[test]
     fn integer_add_overflow_should_not_panic_adversarial_h_4() {

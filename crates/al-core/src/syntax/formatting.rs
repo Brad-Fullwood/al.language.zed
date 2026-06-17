@@ -29,22 +29,16 @@
 //! literal-match path is documented here rather than scattered as a
 //! debt-tracked comment per call site.
 
-/// AL keyword casing style.
 #[derive(Debug, Clone, Default)]
 pub enum KeywordCasing {
-    /// Preserve existing casing.
     #[default]
     Preserve,
-    /// Lowercase all keywords.
     Lower,
-    /// Uppercase all keywords.
     Upper,
 }
 
-/// How blank lines between procedures should be handled.
 #[derive(Debug, Clone, Default)]
 pub enum BlankLinesBetweenProcedures {
-    /// Preserve existing blank lines.
     #[default]
     Preserve,
     /// Ensure exactly one blank line between procedures.
@@ -53,7 +47,6 @@ pub enum BlankLinesBetweenProcedures {
     Two,
 }
 
-/// Brace placement style for `begin`/`end` blocks.
 #[derive(Debug, Clone, Default)]
 pub enum BraceStyle {
     /// `begin` on the same line as the statement.
@@ -105,9 +98,6 @@ impl Default for FormatOptions {
     }
 }
 
-/// Format AL source code.
-///
-/// Applies consistent indentation using a line-by-line state machine.
 /// See module-level docs for the complete set of rules.
 pub fn format_al(text: &str, options: &FormatOptions) -> String {
     let indent_str = if options.insert_spaces {
@@ -157,7 +147,6 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     for line in text.lines() {
         let trimmed = line.trim();
 
-        // Skip double blank lines
         if trimmed.is_empty() {
             if prev_was_empty {
                 continue;
@@ -175,8 +164,6 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         prev_was_empty = false;
 
         let trimmed_lower = trimmed.to_lowercase();
-
-        // --- Pre-indent adjustments (dedent before writing this line) ---
 
         // `begin` closes a var section — dedent back to the procedure level
         if in_var_section && (trimmed_lower == "begin" || trimmed_lower.ends_with(" begin")) {
@@ -236,7 +223,6 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             in_case_label_body = false;
         }
 
-        // Closing constructs: `}`, `end;`, `end`
         let is_close = trimmed_lower == "}"
             || trimmed_lower == "end;"
             || trimmed_lower == "end"
@@ -244,7 +230,6 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             || trimmed_lower.starts_with("end ");
 
         if is_close {
-            // Drain single-stmt stack first
             if single_stmt_depth > 0 {
                 indent_level = (indent_level - single_stmt_depth).max(0);
                 single_stmt_depth = 0;
@@ -261,7 +246,6 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
                 case_begin_depth -= 1;
             } else if in_case_label_body {
                 // No nested begin — this end; closes the case block itself
-                // First close the label body indent
                 indent_level = (indent_level - 1).max(0);
                 in_case_label_body = false;
                 if case_depth > 0 {
@@ -285,12 +269,10 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             single_stmt_depth = 0;
         }
 
-        // `until` closes a `repeat` block
         if trimmed_lower.starts_with("until ") || trimmed_lower == "until" {
             indent_level = (indent_level - 1).max(0);
         }
 
-        // --- Write the indented line ---
         for _ in 0..indent_level {
             result.push_str(&indent_str);
         }
@@ -307,9 +289,6 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         }
         result.push('\n');
 
-        // --- Post-indent adjustments (indent after writing this line) ---
-
-        // Track parenthesis depth for multi-line call continuation
         let net_parens = count_net_parens(trimmed);
         if net_parens > 0 && paren_depth == 0 {
             // Opening parens on this line — indent continuation lines
@@ -429,7 +408,6 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         }
     }
 
-    // Ensure file ends with newline
     if !result.ends_with('\n') {
         result.push('\n');
     }
@@ -569,7 +547,6 @@ fn extract_formatted_region<'a>(
     result
 }
 
-/// Count net parentheses on a line: `(` adds +1, `)` adds -1.
 /// Delegates to the crate-level `count_net_delimiters` which skips string literals.
 fn count_net_parens(line: &str) -> i32 {
     super::count_net_delimiters(line, '(', ')')
@@ -622,7 +599,6 @@ fn apply_keyword_casing(line: &str, casing: &KeywordCasing) -> String {
             }
             continue;
         }
-        // Line comment — emit the rest of the line as-is.
         if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
             // SAFETY: bytes is the original UTF-8 line; `&line[i..]` is a
             // valid str slice because i lies on a char boundary (we only
@@ -656,8 +632,6 @@ fn apply_keyword_casing(line: &str, casing: &KeywordCasing) -> String {
     out
 }
 
-/// Returns true if trimmed_lower represents a single-statement control flow opener.
-///
 /// Single-statement openers are loaded from `tree-sitter-al/data/single_stmt_openers.json`
 /// via [`super::language_data::single_stmt_openers`].
 fn is_single_statement_opener(trimmed_lower: &str) -> bool {
@@ -914,7 +888,6 @@ end;
     fn test_double_blank_lines_collapsed() {
         let input = "codeunit 50100 Test\n{\n\n\nprocedure A()\nbegin\nend;\n}";
         let result = fmt(input);
-        // Should not have two consecutive blank lines
         assert!(!result.contains("\n\n\n"));
     }
 

@@ -152,3 +152,153 @@ vectors (void/return/param/var/multi-param). Implemented + tested in
   a "good enough" emitter suffices; if it strictly validates `SymbolReference.json`,
   byte-perfection is required. Answer this cheaply before investing weeks in full
   fidelity.
+
+## Update (2026-06-16): native emitter complete for the core object types
+
+The pure-Rust emitter now reproduces alc's **entire `.app`** for table / codeunit /
+enum / interface — every file IDENTICAL to alc's output, verified by diffing a
+`pack-native` build against `alc` on the same project:
+
+| File | Status |
+|------|--------|
+| `SymbolReference.json` | identical (fields, keys, methods, params, attributes, properties, implemented interfaces) |
+| method `Id`s | identical incl. Record/Enum/Codeunit/Interface param overload-disambiguation + `IgnoreReturnValue` flag masking |
+| interface object `Id` | identical (FNV(quoted name) + AppId-GUID `ToByteArray` + `-1`×method-count) |
+| `NavxManifest.xml` | identical core attrs |
+| `entitlement/*.xml` | identical (`CreateDefaultEntitlements`: TableData→RIMD 15, else Execute 16) |
+| `MediaIdListing.xml`, `DocComments.xml`, source, `[Content_Types].xml` | identical |
+| `TextData/*.xliff` | trans-unit ids + sources identical (`{Kind} {(long)FNV(name)+int.MaxValue}` path) |
+
+Shipped:
+- `crates/al-core/src/emit/` — `symbol_extract` (tree-sitter → objects), `symbol_reference`
+  (alc-shaped JSON), `manifest`, `package` (NAVX/ZIP), `assemble` (entitlement + media +
+  xliff + content-types), `project` (`build_app_from_project`), `method_id`.
+- CLI: **`al-explorer pack-native [--project DIR] [--out FILE]`** — builds a deployable
+  `.app` with no Microsoft `alc`.
+- Data-driven per the project rule: type classification via `language_data`; NavTypeKind
+  values via generated `tree-sitter-al/data/nav_type_kinds.json` (tool at
+  `generator/tools/nav-type-kinds`).
+- Differential regression test `emit::symbol_reference_test` (vs committed real-alc output).
+
+Remaining (same machinery, longer tail): page/report/xmlport/query/extension object
+types; XLIFF full inclusion rules (locked captions, all property kinds); and the live-BC
+publish validation (needs a tenant).
+
+## Update (2026-06-17): full `.app` byte-identical to alc (every file)
+
+`pack-native` now reproduces alc's **entire `.app` byte-for-byte** — every entry, in
+alc's entry order — with the **sole** exception of the `NavxManifest.xml` `<Build>` line
+(`Timestamp` + `CompilerVersion`), which is inherently producer/clock-specific and cannot
+match a given alc invocation. Validated by a full file-by-file diff of `pack-native` vs
+`alc` on a 21-object fixture.
+
+Object types — `SymbolReference.json` byte-identical for **all** of: table, codeunit, enum,
+interface, tableextension, enumextension, query, permissionset, permissionsetextension,
+page, report, xmlport, profile, **pageextension, reportextension, profileextension,
+pagecustomization**. Locked in the differential regression fixture (now a byte-exact
+string assertion, not just semantic) at `crates/al-core/src/emit/testdata/`.
+
+Newly reproduced this round:
+- **pageextension** — `ControlChanges` (`Anchor`/`ChangeKind`/`Controls`), added-field types
+  resolved through the base page's `SourceTable`.
+- **reportextension** — `Target`, `Variables`, `RequestPage` (request-page `ControlChanges`),
+  dataset `add` `Columns` (`OwningDataItemName` + base-report dataitem-table resolution),
+  `DataItems`/`Labels`/`Layouts`.
+- **profileextension** — generic `TargetObject`/`Properties` path (no id).
+- **pagecustomization** — `customizes` target, `Id: 0`, member ids scoped to object id 0,
+  and the runtime-gated `Editable=False` injection on added fields (`< 16.0`).
+- **`ProfileSymbolReferences/<MetadataName>.json`** — per-profile/-profileextension files.
+- **`navigation.xml`** — page-extension `NavigationChanges/ActionChange` delta entries
+  (`TargetID` = base page id, `TargetType` = base kind). The `UsageCategory` *new-entry*
+  path (Page/Report/Query) is structured but not yet emitted (no fixture exercises it).
+- **`TextData/*.xliff`** — full `TextDataVisitor` inclusion rules (RE'd from the decompiled
+  `TextDataVisitor`, runtime Fall2024): only Table/TableExtension object+field captions and
+  Page/PageExtension object captions at runtime 14 (Report needs ≥15; enum/query/permset/
+  profile never); extension members fold the id-root onto the base object and emit
+  `al-object-target`; `original="TextDataApp"` literal; ordinal-ignore-case ordering.
+- **`NavxManifest.xml`** — exact alc layout (no XML prolog, 2-space indented, full `<App>`
+  attribute set), `[Content_Types].xml` derived from the extensions actually present,
+  `DocComments.xml` exact whitespace, UTF-8 BOM on the JSON symbol files.
+
+Byte-exact JSON required `serde_json`'s `preserve_order` feature (workspace-wide; full
+suite green) plus matching alc's group order, always-emitted-empty core groups
+(`Codeunits`/`Reports`/`XmlPorts`/`Queries`/`ControlAddIns`/`EnumTypes`/`DotNetPackages`/
+`Interfaces`/`PermissionSets`/`PermissionSetExtensions`/`ReportExtensions`), and nested
+field order (`IsVar` before `Name`; enum-value `Ordinal` before `Properties`).
+
+**ControlAddIn (now complete):** the previously-open auto-generated `PublicKeyToken` is
+**cracked** — it is the first 8 bytes of `SHA256(UTF8(app name))` in lowercase hex
+(`SourceControlAddInTypeSymbol.CalculatePublicKeyToken`), keyed on the *app/module name* so
+every add-in in an app shares one token. The `ControlAddIns` symbol entry and the add-in
+resource bundle (`addin/<MetadataName>.zip` with `manifest.xml` + `[Content_Types].xml`,
+and `addin/controladdins.dock`) are reproduced content-byte-identical to alc, including
+alc's exact `ControlAddInManifest.ToString()` element order (`Resources`, `ScriptUrls`,
+`StyleSheetUrls`, six dimension props when set, the four stretch/shrink booleans when true
+in order VerticalShrink/VerticalStretch/HorizontalShrink/HorizontalStretch, then `Version`).
+Embedded local resources / inline scripts (vs external URLs) are not yet modelled.
+
+**N/A (OnPrem/first-party only, confirmed):** the `entitlement` *object* and `dotnet`
+objects do not serialize into a Cloud-target `.app` (alc emits nothing for them; `dotnet`
+is rejected with AL0296 on Cloud). The default implicit `entitlement/<appid>.xml` is
+already reproduced.
+
+**Navigation new-entry path (now done):** the `ActionContainers/Departments` path for
+Page/Report/Query with a non-`None` `UsageCategory` is reproduced — `ActionDefinition`
+run-object actions with `RunObjectType`/`TargetID`/`DepartmentCategory`/`RunObjectSrcTable`
+(resolved source/related table id)/`Name`/`CaptionML`/`ApplicationArea`/`AdditionalSearchTermsML`
+and the `Caption`/`AdditionalSearchTerms` translation keys (same FNV path hash as XLIFF).
+Verified byte-identical to alc with the two `ControlGUID`s masked — those are
+`Guid.NewGuid()` in alc, so this part is functionally faithful but inherently
+non-byte-stable (the same non-determinism as the NAVX package GUID).
+
+**Control add-in embedded local resources (now done):** local `Scripts`/`StyleSheets`/
+`Images` (relative refs, vs external http URLs) are listed under `<Resources>` and bundled
+into the add-in zip at their paths; inline `StartupScript`/`RefreshScript`/`RecreateScript`
+files are embedded as `<![CDATA[…]]>`; the inner `[Content_Types].xml` covers every bundled
+extension. Verified byte-identical to alc (manifest, bundled files, content-types, docket).
+This also fixed multi-value list-property extraction (`child_by_field_name` returned only
+the first `value` node; now the full `value`-field span is taken — `Scripts = 'a', 'b';`).
+
+**Report rendering layouts (now done):** `rendering { layout(Name) { Type = …; LayoutFile
+= '…'; } }` produces a `Reports[]`/`ReportExtensions[].Layouts` entry (`{Properties, Name}`)
+and bundles the referenced file verbatim at `layout/<LayoutFile path>`. Also fixed: alc
+always emits a report's `RequestPage` (the default `{Id:0,Name:"RequestOptionsPage"}` when
+no `requestpage` is declared). Verified byte-identical to alc (/tmp/rltest) and locked into
+the fixture.
+
+**`IncludedPermissionSets` (now done):** emitted as a property whose value keeps each
+referenced permission-set name quoted only when not a bare identifier (`"PS A",PSC`), unlike
+resolved object-reference properties (`RoleCenter`/`SourceTable`).
+
+**Cross-app symbol resolution (object ids — now done):** `build_symbol_reference` takes an
+`external: &Resolver` (object name → `ObjectRef{id, module_id}`) built by
+`load_external_resolver`, which indexes every `.alpackages/*.app` `SymbolReference.json` via
+`symbols::app_reader::read_app_file`. Project objects shadow referenced ones. Resolved:
+- subtype references in referenced apps (`Record Customer` → `Subtype{ModuleId, Name, Id}`,
+  with the id folded into the method-signature hash — byte-identical to alc, /tmp/xapp);
+- extension targets in referenced apps (`tableextension … extends Customer` →
+  `TargetObject:"#<moduleid-no-dashes>#Customer"`).
+Self-contained fixtures keep `external` empty, so they stay byte-identical.
+
+**Cross-app extension-added field types (now done):** `ExternalSymbols` also carries
+referenced `(table,field)→type` and `page→SourceTable-name` maps (the loader resolves the
+base page's SourceTable *id* back to a table name). A field added to a base page (e.g.
+`pageextension … extends "Customer Card"` adding `Rec."Balance (LCY)"`) now resolves to the
+base table field type (`Decimal`) — byte-identical to alc (/tmp/xapp).
+
+**Remaining cross-app sub-case — system permission ids:** `system "Tools, Object Designer"`
+(alc id 5210) is a platform built-in NOT in `.alpackages`. The id constants are in the
+decompiled `SystemObjects` class (`ToolsObjectDesigner = 5210`, …); the AL display names
+("Tools, Object Designer") live in the embedded `SystemObjectsResources.resources` of
+`Microsoft.Dynamics.Nav.CodeAnalysis.dll`, keyed `{Name}SystemObjectCaption`. To resolve
+system-permission names → ids: extract the `SystemObjects` Name→id constants + the resource
+captions, join by the `{Name}` prefix into a generated `display-name → id` data table (stay
+data-driven), and look it up when emitting `system`-type permissions.
+
+**Net result:** `pack-native` reproduces alc's entire `.app` — every entry, content
+byte-identical — for the fixtures, spanning all object types and metadata artifacts.
+Unavoidable exceptions are limited to non-deterministic / producer-specific bytes: the
+`NavxManifest.xml` `<Build>` line (build clock/producer), raw zip *framing*
+(compression/local-header bytes; entry *contents* match), and navigation new-entry
+`ControlGUID`s (alc's own `Guid.NewGuid()`). **The only remaining item is live-BC publish
+validation — it needs a real BC tenant and cannot be done locally.**

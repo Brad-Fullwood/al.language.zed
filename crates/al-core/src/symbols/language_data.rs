@@ -62,9 +62,7 @@ mod tests {
     #[test]
     fn object_types_load_and_are_well_formed() {
         let types = object_types();
-        // The bundled data file must yield a non-empty, parseable table.
         assert!(!types.is_empty(), "object_types.json must contain entries");
-        // Every entry must have the fields the rest of the code relies on.
         for t in types {
             assert!(!t.keyword.is_empty(), "keyword must be populated");
             assert!(!t.display_name.is_empty(), "display_name must be populated");
@@ -80,7 +78,6 @@ mod tests {
     fn runtime_enums_load_and_are_well_formed() {
         let enums = runtime_enums();
         assert!(!enums.is_empty(), "runtime_enums.json must contain entries");
-        // Each enum carries a name and at least one value.
         for e in enums {
             assert!(!e.name.is_empty(), "enum name must be populated");
             assert!(
@@ -102,8 +99,6 @@ mod tests {
 
     #[test]
     fn object_type_by_keyword_is_case_insensitive() {
-        // The lookup uses eq_ignore_ascii_case, so mixed/upper case must resolve
-        // to the same lowercase-keyed entry.
         let lower = object_type_by_keyword("codeunit");
         let upper = object_type_by_keyword("CODEUNIT");
         let mixed = object_type_by_keyword("CodeUnit");
@@ -123,7 +118,6 @@ mod tests {
 
     #[test]
     fn object_type_by_keyword_unknown_returns_none() {
-        // A keyword that is not an AL object type must not resolve.
         assert!(object_type_by_keyword("definitely_not_an_object_type").is_none());
         // Empty input must also yield None rather than a spurious match.
         assert!(object_type_by_keyword("").is_none());
@@ -131,8 +125,6 @@ mod tests {
 
     #[test]
     fn object_type_by_keyword_agrees_with_table_contents() {
-        // Cross-check: every keyword present in the table must be resolvable,
-        // and resolve back to an entry carrying that exact keyword.
         for t in object_types() {
             let resolved = object_type_by_keyword(&t.keyword)
                 .unwrap_or_else(|| panic!("keyword {} must resolve", t.keyword));

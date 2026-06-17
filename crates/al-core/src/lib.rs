@@ -43,17 +43,10 @@ pub mod toolchain;
 pub mod workspace;
 pub mod xliff;
 
-// ---------------------------------------------------------------------------
 // Re-exports for al-lsp (thin transport layer should not depend on analysis libs)
-// ---------------------------------------------------------------------------
 
-/// LSP-bridge helpers that connect `al_core::syntax` types to `tower_lsp::lsp_types`.
-///
-/// These live at this module path (rather than inside `al_core::syntax`) so the
-/// syntax module stays free of `tower_lsp` references — preserving the option to
-/// lift it back out if ever needed, and matching the transport-boundary coding rule.
+/// LSP-bridge helpers: kept outside `al_core::syntax` so the syntax module stays free of `tower_lsp` references.
 pub mod syntax_lsp {
-    /// Convert a tree-sitter Range to an LSP Range.
     pub fn ts_range_to_lsp(
         range: &tree_sitter::Range,
         source: &[u8],
@@ -66,7 +59,6 @@ pub mod syntax_lsp {
     }
 }
 
-/// Re-exports from tree-sitter for al-lsp test code.
 #[cfg(test)]
 pub mod ts {
     pub use tree_sitter::{Point, Range, Tree};

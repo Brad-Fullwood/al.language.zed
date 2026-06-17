@@ -91,20 +91,12 @@ pub(super) fn source_action_move_tooltip(
     })
 }
 
-/// Simple object kind detector — checks the first `object` line in the file.
-///
-/// F-045: distinguish every recognised AL object type. The previous
-/// `Other` catch-all caused page-specific code actions to fire inside
-/// queries, xmlports, enums, and unrelated extensions because the
-/// gating used `Page | Other`.
 pub(super) fn source_action_convert_event_subscriber(
     _workspace: &Workspace,
     uri: &Url,
     text: &str,
     range: Range,
 ) -> Option<CodeActionEntry> {
-    // Find the attribute line at or near the cursor. The EventSubscriber attribute
-    // is typically on the same line as the cursor or we look within a small window.
     let cursor_line = range.start.line as usize;
 
     // Clamp both bounds against the document length so a stale/extreme cursor
@@ -138,7 +130,6 @@ pub(super) fn source_action_convert_event_subscriber(
     let es_start = lower.find("eventsubscriber(")?;
     let args_start = es_start + "eventsubscriber(".len();
 
-    // Parse out arguments by scanning with paren/quote awareness
     let rest = &line[args_start..];
     let mut args: Vec<(usize, usize)> = Vec::new(); // byte offsets within `rest`
     let mut depth = 0usize;
@@ -153,7 +144,6 @@ pub(super) fn source_action_convert_event_subscriber(
             '(' if !in_single_quote && !in_double_quote => depth += 1,
             ')' if !in_single_quote && !in_double_quote => {
                 if depth == 0 {
-                    // End of EventSubscriber args
                     args.push((arg_start, i));
                     break;
                 }
@@ -241,7 +231,6 @@ mod tests {
         let uri = Url::parse("file:///test/EventSub.al").unwrap();
         open_doc(&ws, &uri, al_code);
 
-        // Cursor on line 2 where the EventSubscriber attribute is
         let range = Range {
             start: super::super::Position {
                 line: 2,
@@ -268,7 +257,6 @@ mod tests {
         );
         let edit = ev_actions[0].edit.as_ref().expect("has edit");
         let (_, edits) = &edit.changes[0];
-        // The edit should remove the quotes around 'OnBeforeInsertEvent'
         assert!(
             edits
                 .iter()
@@ -324,7 +312,6 @@ mod tests {
     #[test]
     fn tooltip_on_page_field_offered_for_removal() {
         let ws = Workspace::new();
-        // A page object with a field that has a ToolTip property
         let al_code = r#"page 50100 "My Page"
 {
     layout
@@ -343,7 +330,6 @@ mod tests {
         let uri = Url::parse("file:///test/MyPage.al").unwrap();
         open_doc(&ws, &uri, al_code);
 
-        // Cursor on the ToolTip line (line 9)
         let range = Range {
             start: super::super::Position {
                 line: 9,
@@ -370,7 +356,6 @@ mod tests {
     #[test]
     fn tooltip_not_offered_outside_page_field() {
         let ws = Workspace::new();
-        // A table field with ToolTip — no action should be offered here
         let al_code = r#"table 50100 "My Table"
 {
     fields
@@ -385,7 +370,6 @@ mod tests {
         let uri = Url::parse("file:///test/MyTable.al").unwrap();
         open_doc(&ws, &uri, al_code);
 
-        // Cursor on the ToolTip line (line 6)
         let range = Range {
             start: super::super::Position {
                 line: 6,

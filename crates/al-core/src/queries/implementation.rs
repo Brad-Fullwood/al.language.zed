@@ -30,7 +30,6 @@ pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position
     let interface_lower = interface_name.to_lowercase();
     let mut locations: Vec<Location> = Vec::new();
 
-    // 1. Search symbol index (from .app packages)
     let codeunits = workspace
         .symbols
         .get_by_kind(crate::symbols::model::ObjectKind::Codeunit);
@@ -51,7 +50,6 @@ pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position
         }
     }
 
-    // 2. Search workspace source files via cached parse trees
     let current_path = uri.to_file_path().ok(); // SILENT: non-file URIs legitimately have no path
     for file_entry in workspace.file_index.files.iter() {
         let file_path = file_entry.key().clone();
@@ -89,7 +87,6 @@ fn find_codeunit_implementing_interface(
     for obj_idx in 0..root.child_count() {
         let obj_node = root.child(obj_idx)?;
 
-        // Only consider codeunit declarations
         let is_codeunit = obj_node.kind() == "object_declaration"
             && obj_node
                 .child(0)
@@ -127,7 +124,6 @@ fn find_implements_clause_match(
         if child.kind() != "implements_clause" {
             continue;
         }
-        // Walk the children of the clause looking for a matching interface name token.
         for j in 0..child.child_count() {
             let Some(token) = child.child(j) else {
                 continue;
@@ -236,17 +232,12 @@ mod tests {
         );
     }
 
-    // End-to-end tests that drive the real `find_implementations` entry point
-    // and the tree-walking helpers (`find_codeunit_implementing_interface`,
-    // `find_implements_clause_match`).
-
     /// A codeunit source that references an interface via an `implements` clause.
     /// The caret is placed on the interface name so `node_clean_name` yields it.
     fn impl_source(codeunit_name: &str, iface: &str) -> String {
         format!("codeunit 50100 {codeunit_name} implements {iface}\n{{\n}}\n")
     }
 
-    /// Byte/char column of the interface name within `impl_source` line 0.
     fn iface_position(codeunit_name: &str) -> Position {
         // "codeunit 50100 <name> implements <iface>"
         let prefix = format!("codeunit 50100 {codeunit_name} implements ");
@@ -260,7 +251,6 @@ mod tests {
     fn find_implementations_returns_empty_for_unopened_document() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///nonexistent/Closed.al").unwrap();
-        // Document was never opened, so get_or_parse returns None.
         let result = find_implementations(
             &ws,
             &uri,
@@ -279,12 +269,10 @@ mod tests {
     fn find_implementations_finds_workspace_source_codeunit() {
         let ws = Workspace::new();
 
-        // Open the "current" document where the caret sits on the interface name.
         let cur_uri = Url::parse("file:///proj/Caller.al").unwrap();
         let caller_src = impl_source("Caller", "IFoo");
         ws.documents.open(cur_uri.clone(), caller_src);
 
-        // A *different* workspace source file implements IFoo.
         let impl_path = PathBuf::from("/proj/FooImpl.al");
         ws.file_index
             .add_file(impl_path.clone(), impl_source("FooImpl", "IFoo"));
@@ -303,7 +291,6 @@ mod tests {
             Url::from_file_path(&impl_path).unwrap(),
             "located implementation should be the FooImpl source file"
         );
-        // The returned range spans the codeunit object declaration starting at line 0.
         assert_eq!(found.range.start.line, 0);
     }
 
@@ -312,7 +299,6 @@ mod tests {
         let ws = Workspace::new();
 
         let cur_uri = Url::parse("file:///proj/Caller.al").unwrap();
-        // Caret references "IFoo"; implementation declares "ifoo" (different case).
         ws.documents
             .open(cur_uri.clone(), impl_source("Caller", "IFoo"));
 
@@ -336,8 +322,6 @@ mod tests {
         let cur_uri = Url::from_file_path(&cur_path).unwrap();
         let caller_src = impl_source("Caller", "IFoo");
         ws.documents.open(cur_uri.clone(), caller_src.clone());
-        // The current file is ALSO in the file index and implements IFoo, but the
-        // `current_path` skip branch must exclude it so we don't return self.
         ws.file_index.add_file(cur_path, caller_src);
 
         let result = find_implementations(&ws, &cur_uri, iface_position("Caller"));
@@ -368,8 +352,6 @@ mod tests {
         );
     }
 
-    // --- Direct unit tests of the tree-walking helpers ---------------------
-
     fn parse(src: &str) -> tree_sitter::Tree {
         crate::syntax::AlParser::parse_quick(src).tree
     }
@@ -383,7 +365,6 @@ mod tests {
             range.is_some(),
             "codeunit declaring `implements IFoo` should match interface `ifoo`"
         );
-        // Object declaration begins on the first line.
         assert_eq!(range.unwrap().start.line, 0);
     }
 

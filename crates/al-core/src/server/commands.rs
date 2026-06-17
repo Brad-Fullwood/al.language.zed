@@ -170,28 +170,36 @@ pub(super) async fn reindex(server: &AlServer) {
     }
 }
 
-/// `al.compile` — run alc and publish per-file diagnostics as
-/// publishDiagnostics (ISSUE-075: compile errors show as editor squiggles,
-/// not only terminal output).
+/// `al.compile` — build the project and publish per-file diagnostics as
+/// publishDiagnostics when the selected compiler path produces them.
+///
+/// The default path is the pure-Rust native `.app` emitter. Setting
+/// `al.useOfficialCompiler=true` opts into Microsoft's `dotnet alc`
+/// subprocess for compiler diagnostics and authoritative validation.
 pub(super) async fn compile(server: &AlServer) {
     let toolchain_guard = server.workspace.toolchain.read().await;
     let project_guard = server.workspace.project.read().await;
+    let config_guard = server.workspace.config.read().await;
     let toolchain = toolchain_guard.clone();
     let project_root = project_guard.as_ref().map(|p| p.root.clone());
+    let use_official_compiler = config_guard.use_official_compiler;
     drop(toolchain_guard);
     drop(project_guard);
+    drop(config_guard);
 
-    match (toolchain, project_root) {
-        (Some(tc), Some(root)) => match crate::build::compile_project(&tc, &root, None).await {
-            Ok(result) => publish_compile_result(server, &root, &result).await,
-            Err(e) => {
-                server
-                    .client
-                    .show_message(MessageType::ERROR, format!("Compilation error: {e}"))
-                    .await;
-            }
-        },
-        (None, _) => {
+    let Some(root) = project_root else {
+        server
+            .client
+            .show_message(
+                MessageType::WARNING,
+                "No AL project loaded — open an AL workspace first",
+            )
+            .await;
+        return;
+    };
+
+    if use_official_compiler {
+        let Some(tc) = toolchain else {
             server
                 .client
                 .show_message(
@@ -199,20 +207,25 @@ pub(super) async fn compile(server: &AlServer) {
                     "No AL toolchain configured — run 'al setup' first",
                 )
                 .await;
+            return;
+        };
+        match crate::build::compile_project(&tc, &root, None).await {
+            Ok(result) => publish_compile_result(server, &root, &result).await,
+            Err(e) => {
+                server
+                    .client
+                    .show_message(MessageType::ERROR, format!("Compilation error: {e}"))
+                    .await;
+            }
         }
-        (_, None) => {
-            server
-                .client
-                .show_message(
-                    MessageType::WARNING,
-                    "No AL project loaded — open an AL workspace first",
-                )
-                .await;
-        }
+        return;
     }
+
+    let result = crate::build::native_compile(&root);
+    publish_compile_result(server, &root, &result).await;
 }
 
-/// Convert alc compile diagnostics into per-file LSP diagnostics, resolving
+/// Convert compiler diagnostics into per-file LSP diagnostics, resolving
 /// relative paths against `root`. Pure (no server / I/O) so the severity
 /// mapping, the 1-based→0-based position conversion, the end-of-range (start of
 /// next line per LSP, not the old u32::MAX sentinel — T067), and the relative→
@@ -237,10 +250,11 @@ fn group_compile_diagnostics(
                     line: start_line,
                     character: start_char,
                 },
-                // alc only reports start position; the LSP-spec way to express
-                // "to end of line" is the start of the next line. The previous
-                // u32::MAX sentinel was tolerated by Zed/VS Code but is undefined
-                // by the LSP spec and breaks stricter clients (T067).
+                // Compiler diagnostics only carry a start position today; the
+                // LSP-spec way to express "to end of line" is the start of the
+                // next line. The previous u32::MAX sentinel was tolerated by
+                // Zed/VS Code but is undefined by the LSP spec and breaks
+                // stricter clients (T067).
                 end: Position {
                     line: start_line.saturating_add(1),
                     character: 0,
@@ -252,10 +266,10 @@ fn group_compile_diagnostics(
             message: d.message.clone(),
             ..Default::default()
         };
-        // F-019: alc emits relative paths (`src/Foo.al`) when run from
-        // project_root. Url::from_file_path requires an absolute path, so resolve
-        // relative entries against the root before grouping — otherwise the
-        // per-file URI conversion silently drops the diagnostic.
+        // F-019: compilers may emit relative paths (`src/Foo.al`) when run from
+        // project_root. Url::from_file_path requires an absolute path, so
+        // resolve relative entries against the root before grouping; otherwise
+        // the per-file URI conversion silently drops the diagnostic.
         let abs_path = {
             let p = std::path::Path::new(&d.file);
             if p.is_absolute() {
@@ -269,7 +283,7 @@ fn group_compile_diagnostics(
     by_file
 }
 
-/// Publish alc compile diagnostics per file and clear squiggles for files
+/// Publish compiler diagnostics per file and clear squiggles for files
 /// that were affected last compile but are clean now (F-008).
 async fn publish_compile_result(
     server: &AlServer,
@@ -309,6 +323,18 @@ async fn publish_compile_result(
         server
             .client
             .show_message(MessageType::INFO, "Compilation succeeded")
+            .await;
+    } else {
+        let mut message = "Compilation failed".to_string();
+        let output = result.output.trim();
+        if !output.is_empty() {
+            let first_line = output.lines().next().unwrap_or(output);
+            message.push_str(": ");
+            message.push_str(first_line);
+        }
+        server
+            .client
+            .show_message(MessageType::ERROR, message)
             .await;
     }
 }

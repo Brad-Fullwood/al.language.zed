@@ -39,7 +39,6 @@ fn sanitize_version(v: &str) -> String {
     s
 }
 
-/// Cache directory: `~/.cache/al-lsp/semantic/`
 fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -47,7 +46,6 @@ fn cache_dir() -> PathBuf {
         .join("semantic")
 }
 
-/// Read a cached JSON file, returning None on miss or corruption.
 fn read_cache<T: DeserializeOwned>(version: &str, name: &str) -> Option<T> {
     let version = sanitize_version(version);
     let path = cache_dir().join(format!("{name}-{version}.json"));
@@ -67,7 +65,6 @@ fn read_cache<T: DeserializeOwned>(version: &str, name: &str) -> Option<T> {
     }
 }
 
-/// Write a JSON-serializable value to disk cache.
 fn write_cache<T: Serialize + ?Sized>(version: &str, name: &str, data: &T, count: usize) {
     let version = sanitize_version(version);
     let dir = cache_dir();
@@ -109,22 +106,18 @@ fn write_cache<T: Serialize + ?Sized>(version: &str, name: &str, data: &T, count
     }
 }
 
-/// Read cached builtins for the given toolchain version.
 pub fn read_builtins(version: &str) -> Option<Vec<BuiltinType>> {
     read_cache(version, "builtins")
 }
 
-/// Write builtins to disk cache.
 pub fn write_builtins(version: &str, types: &[BuiltinType]) {
     write_cache(version, "builtins", types, types.len());
 }
 
-/// Read cached error codes for the given toolchain version.
 pub fn read_error_codes(version: &str) -> Option<Vec<ErrorCodeInfo>> {
     read_cache(version, "error_codes")
 }
 
-/// Write error codes to disk cache.
 pub fn write_error_codes(version: &str, codes: &[ErrorCodeInfo]) {
     write_cache(version, "error_codes", codes, codes.len());
 }
@@ -156,7 +149,6 @@ mod tests {
         assert_eq!(loaded[0].name, "Text");
         assert_eq!(loaded[0].methods[0].name, "StrLen");
 
-        // Cleanup
         let path = cache_dir().join(format!("builtins-{version}.json"));
         let _ = std::fs::remove_file(path);
     }
@@ -195,7 +187,6 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].code, "AL0001");
 
-        // Cleanup
         let path = cache_dir().join(format!("error_codes-{version}.json"));
         let _ = std::fs::remove_file(path);
     }

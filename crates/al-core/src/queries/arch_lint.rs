@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::workspace::Workspace;
 
-/// An architectural lint violation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArchViolation {
@@ -43,7 +42,6 @@ pub enum ArchRuleKind {
     MaxComplexity,
 }
 
-/// Architecture rule definition.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArchRule {
@@ -56,7 +54,6 @@ pub struct ArchRule {
     pub values: Vec<String>,
 }
 
-/// Architecture configuration (parsed from .alarch.json).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArchConfig {
@@ -74,7 +71,6 @@ impl ArchConfig {
     }
 }
 
-/// Run architectural lint rules against workspace files.
 pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolation> {
     let mut violations = Vec::new();
 
@@ -146,9 +142,6 @@ fn apply_rule(
 
     match rule.kind {
         ArchRuleKind::NamingConvention => {
-            // Pattern is a literal token, NOT a regex. See ArchRuleKind doc.
-            // Only "[A-Z]" is currently meaningful (must start uppercase).
-            // Any other value is a no-op until a richer matcher is wired in.
             if let Some(name_pattern) = rule.values.first() {
                 if name_pattern == "[A-Z]"
                     && !obj_info
@@ -336,7 +329,6 @@ mod tests {
             "Unsupported regex-style pattern must be a no-op, not silently behave as [A-Z]"
         );
 
-        // Supported literal — DOES emit a violation for the lowercase name.
         let supported = ArchConfig {
             rules: vec![ArchRule {
                 id: "N2".to_string(),
@@ -384,7 +376,6 @@ mod tests {
             "Substring pattern 'code' must NOT match object kind 'codeunit'"
         );
 
-        // Exact kind keyword must match.
         let exact_pattern = ArchConfig {
             rules: vec![ArchRule {
                 id: "ARCH-EXACT".to_string(),
@@ -464,7 +455,6 @@ mod tests {
             "Malformed multi-dash range must be rejected, not parsed to u32::MAX: {v:?}"
         );
 
-        // A range with no dash at all is likewise ignored.
         let v2 = arch_lint(&ws, &required_property_rule("50000"));
         assert!(
             v2.is_empty(),

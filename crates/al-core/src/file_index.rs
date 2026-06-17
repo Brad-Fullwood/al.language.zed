@@ -9,14 +9,11 @@ use std::time::SystemTime;
 
 use dashmap::DashMap;
 
-/// Maximum number of .al files to scan. Prevents runaway memory usage
-/// if a workspace root accidentally includes a huge directory tree.
+/// Prevents runaway memory usage if a workspace root accidentally includes a huge directory tree.
 pub const MAX_WORKSPACE_FILES: usize = 10_000;
 
-/// Maximum directory depth to recurse into.
 const MAX_DEPTH: usize = 10;
 
-/// Maximum size of an individual `.al` file we will read into the index.
 /// Real AL source files are KB-scale; a multi-megabyte `.al` is almost
 /// certainly a build artifact, generated blob, or adversarial input. Reading
 /// it would pin its full contents in the in-memory `files` map. `scan` and
@@ -26,14 +23,11 @@ pub const MAX_AL_FILE_BYTES: u64 = 50 * 1024 * 1024; // 50 MiB
 /// Snapshot of file metadata used for change detection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMetadata {
-    /// Last modification time.
     pub modified: SystemTime,
-    /// File size in bytes.
     pub size: u64,
 }
 
 impl FileMetadata {
-    /// Read metadata for the given path. Returns `None` on error.
     pub fn read(path: &Path) -> Option<Self> {
         let meta = std::fs::metadata(path).ok()?;
         Some(Self {
@@ -43,7 +37,6 @@ impl FileMetadata {
     }
 }
 
-/// Result of an incremental workspace scan.
 #[derive(Debug, Default)]
 pub struct ScanDelta {
     /// Files that were added (new) or modified (re-parsed).
@@ -58,7 +51,6 @@ impl ScanDelta {
         self.changed.len() + self.removed.len()
     }
 
-    /// Whether any files changed.
     pub fn is_empty(&self) -> bool {
         self.changed.is_empty() && self.removed.is_empty()
     }
@@ -72,7 +64,6 @@ impl ScanDelta {
 pub struct CachedObjectInfo {
     /// Object kind string (e.g. "table", "page", "codeunit").
     pub kind: String,
-    /// Object numeric ID, if present.
     pub id: Option<i64>,
     /// Object name with original casing.
     pub name: String,
@@ -80,21 +71,9 @@ pub struct CachedObjectInfo {
     pub range: tree_sitter::Range,
 }
 
-/// Index of all .al files in a workspace directory.
-///
-/// Provides three synchronized maps:
-/// - `files`: path → file content (full text)
-/// - `objects`: lowercase object name → file path
-/// - `path_to_object`: file path → lowercase object name (reverse index)
-/// - `object_info`: file path → cached object declaration metadata
-/// - `file_trees`: file path → cached parse tree
-///
-/// Incremental scanning is supported via `incremental_scan`: only files whose
-/// mtime or size changed since the last scan are re-read and re-indexed.
 /// A procedure/event location cached at index time.
 #[derive(Debug, Clone)]
 pub struct CachedProcedureInfo {
-    /// File path containing this procedure.
     pub file: PathBuf,
     /// Selection range of the procedure name (for go-to-definition).
     pub selection_range: crate::queries::Range,
@@ -128,7 +107,6 @@ pub struct FileIndex {
 }
 
 impl FileIndex {
-    /// Create an empty file index.
     pub fn new() -> Self {
         Self {
             files: DashMap::new(),
@@ -143,7 +121,6 @@ impl FileIndex {
         }
     }
 
-    /// Look up procedure/event locations by name (case-insensitive).
     pub fn lookup_procedures(&self, name: &str) -> Option<Vec<CachedProcedureInfo>> {
         self.procedures
             .get(&name.to_lowercase())
@@ -187,8 +164,6 @@ impl FileIndex {
         None
     }
 
-    /// Get cached document symbols for a workspace file.
-    ///
     /// Returns the symbols extracted at index time. Falls back to extracting
     /// from the cached parse tree if symbols were not cached (shouldn't happen).
     pub fn get_cached_symbols(&self, path: &Path) -> Option<Vec<crate::queries::AlDocumentSymbol>> {
@@ -206,8 +181,6 @@ impl FileIndex {
         Some(symbols)
     }
 
-    /// Scan a directory tree for .al files and index their contents.
-    ///
     /// Skips hidden directories, `node_modules`, and `.alpackages`.
     /// On a re-scan, files that were previously indexed but no longer
     /// exist on disk are removed from every index (primary + secondary
@@ -256,14 +229,12 @@ impl FileIndex {
     pub fn incremental_scan(&self, root: &Path) -> ScanDelta {
         let mut delta = ScanDelta::default();
 
-        // Collect all .al paths currently on disk.
         let mut on_disk: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         let mut walk_count = 0;
         self.walk_al_files(root, &mut walk_count, 0, &mut |path| {
             on_disk.insert(path);
         });
 
-        // --- Step 1: detect new and modified files ---
         for path in &on_disk {
             let current_meta = match FileMetadata::read(path) {
                 Some(m) => m,
@@ -311,7 +282,6 @@ impl FileIndex {
             }
         }
 
-        // --- Step 2: detect deleted files ---
         let indexed_paths: Vec<PathBuf> = self.files.iter().map(|e| e.key().clone()).collect();
         for path in indexed_paths {
             if !on_disk.contains(&path) {
@@ -323,8 +293,6 @@ impl FileIndex {
         delta
     }
 
-    /// Add a single file to the index. Used when a file is opened/changed.
-    ///
     /// If the file was previously indexed, the old object-name mapping is
     /// removed before the new one is inserted, so no stale entries remain.
     /// Records current mtime+size so `incremental_scan` can skip this file
@@ -336,7 +304,6 @@ impl FileIndex {
     /// Like [`add_file`] but accepts pre-read metadata to avoid a redundant
     /// `stat()` when the caller already has it (e.g., `incremental_scan`).
     fn add_file_with_meta(&self, path: PathBuf, content: String, meta: Option<FileMetadata>) {
-        // Record metadata snapshot for incremental scan change detection.
         let meta = meta.or_else(|| FileMetadata::read(&path));
         if let Some(m) = meta {
             self.file_metadata.insert(path.clone(), m);
@@ -346,10 +313,8 @@ impl FileIndex {
         if let Some((_, old_obj_name)) = self.path_to_object.remove(&path) {
             self.remove_owned_object_mapping(&old_obj_name, &path);
         }
-        // Remove stale procedure entries for this file before re-indexing.
         self.remove_procedures_for_file(&path);
 
-        // Parse once; cache the tree for cross-file queries and extract object metadata.
         let result = crate::syntax::AlParser::parse_quick(&content);
         self.index_from_result(path, content, &result.tree);
     }
@@ -362,11 +327,9 @@ impl FileIndex {
     /// The caller is responsible for removing old object-name mappings via
     /// `path_to_object` and cleaning up stale procedure entries before calling this.
     pub fn add_file_with_tree(&self, path: PathBuf, content: String, tree: tree_sitter::Tree) {
-        // Remove the old object-name mapping for this path (if any).
         if let Some((_, old_obj_name)) = self.path_to_object.remove(&path) {
             self.remove_owned_object_mapping(&old_obj_name, &path);
         }
-        // Remove stale procedure entries for this file before re-indexing.
         self.remove_procedures_for_file(&path);
 
         self.index_from_result(path, content, &tree);
@@ -415,7 +378,6 @@ impl FileIndex {
                 },
             );
         } else {
-            // No object declaration — remove any stale cached metadata.
             self.object_info.remove(&path);
         }
 
@@ -453,7 +415,6 @@ impl FileIndex {
             self.path_to_procedures.insert(path.clone(), proc_names);
         }
 
-        // Cache document symbols for cross-file queries (convert to crate-local type).
         let al_doc_symbols: Vec<crate::queries::AlDocumentSymbol> =
             doc_symbols.into_iter().map(Into::into).collect();
         self.file_symbols.insert(path.clone(), al_doc_symbols);
@@ -461,7 +422,6 @@ impl FileIndex {
         self.files.insert(path, content);
     }
 
-    /// Remove a file from the index (e.g., on file close or delete).
     pub fn remove_file(&self, path: &Path) {
         self.files.remove(path);
         self.file_metadata.remove(path);
@@ -486,7 +446,6 @@ impl FileIndex {
             .remove_if(obj_name, |_, current_path| current_path == path);
     }
 
-    /// Remove all procedure index entries associated with a file path.
     fn remove_procedures_for_file(&self, path: &Path) {
         if let Some((_, old_proc_names)) = self.path_to_procedures.remove(path) {
             for proc_name in old_proc_names {
@@ -508,30 +467,24 @@ impl FileIndex {
         }
     }
 
-    /// Look up file content by path.
     pub fn get_content(&self, path: &Path) -> Option<String> {
         self.files.get(path).map(|r| r.value().clone())
     }
 
-    /// Look up file path by object name (case-insensitive).
     pub fn find_by_object_name(&self, name: &str) -> Option<PathBuf> {
         self.objects
             .get(&name.to_lowercase())
             .map(|r| r.value().clone())
     }
 
-    /// Number of indexed files.
     pub fn len(&self) -> usize {
         self.files.len()
     }
 
-    /// Whether the index is empty.
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
     }
 
-    /// Walk the directory tree for `.al` files, calling `visitor` for each one.
-    ///
     /// Skips hidden directories, `node_modules`, and `.alpackages`.
     /// Respects `MAX_DEPTH` and stops after `MAX_WORKSPACE_FILES` visits.
     fn walk_al_files(
@@ -576,7 +529,6 @@ impl FileIndex {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
 
-                // Skip hidden directories, node_modules, and .alpackages
                 if dir_name.starts_with('.')
                     || dir_name == "node_modules"
                     || dir_name == ".alpackages"
@@ -629,11 +581,9 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Create a temp directory with some .al files for testing.
     fn setup_test_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
 
-        // Create a valid AL file with object declaration
         let al_content = r#"table 50100 "My Test Table"
 {
     fields
@@ -644,7 +594,6 @@ mod tests {
 "#;
         fs::write(dir.path().join("MyTestTable.al"), al_content).unwrap();
 
-        // Create another AL file
         let page_content = r#"page 50100 "My Test Page"
 {
     SourceTable = "My Test Table";
@@ -652,10 +601,8 @@ mod tests {
 "#;
         fs::write(dir.path().join("MyTestPage.al"), page_content).unwrap();
 
-        // Create a non-AL file (should be ignored)
         fs::write(dir.path().join("readme.md"), "# Hello").unwrap();
 
-        // Create a subdirectory with an AL file
         let sub_dir = dir.path().join("src");
         fs::create_dir(&sub_dir).unwrap();
         let codeunit_content = r#"codeunit 50100 "My Codeunit"
@@ -667,12 +614,10 @@ mod tests {
 "#;
         fs::write(sub_dir.join("MyCodeunit.al"), codeunit_content).unwrap();
 
-        // Create a hidden directory (should be skipped)
         let hidden = dir.path().join(".hidden");
         fs::create_dir(&hidden).unwrap();
         fs::write(hidden.join("Secret.al"), "table 1 Secret {}").unwrap();
 
-        // Create .alpackages directory (should be skipped)
         let packages = dir.path().join(".alpackages");
         fs::create_dir(&packages).unwrap();
         fs::write(packages.join("Dep.al"), "table 2 Dep {}").unwrap();
@@ -697,7 +642,6 @@ mod tests {
     fn al_file_exceeds_cap_helper() {
         let dir = tempfile::tempdir().unwrap();
 
-        // A normal small file is under the cap.
         let small = dir.path().join("small.al");
         fs::write(&small, "codeunit 1 X {}").unwrap();
         assert!(!al_file_exceeds_cap(&small));
@@ -717,7 +661,6 @@ mod tests {
     #[test]
     fn scan_skips_oversized_al_file() {
         let dir = tempfile::tempdir().unwrap();
-        // One normal file and one oversized (sparse) file.
         fs::write(dir.path().join("ok.al"), "codeunit 1 Ok {}").unwrap();
         let big = dir.path().join("big.al");
         let f = std::fs::File::create(&big).unwrap();
@@ -770,7 +713,6 @@ mod tests {
         let index = FileIndex::new();
         index.scan(dir.path());
 
-        // .hidden/Secret.al and .alpackages/Dep.al should NOT be indexed
         assert!(index.find_by_object_name("secret").is_none());
         assert!(index.find_by_object_name("dep").is_none());
     }
@@ -781,7 +723,6 @@ mod tests {
         let index = FileIndex::new();
         index.scan(dir.path());
 
-        // Should find objects by name (case-insensitive)
         assert!(index.find_by_object_name("my test table").is_some());
         assert!(index.find_by_object_name("My Test Table").is_some());
         assert!(index.find_by_object_name("MY TEST TABLE").is_some());
@@ -915,11 +856,6 @@ mod tests {
         assert_eq!(obj_name.unwrap().value(), "reverse test");
     }
 
-    // -------------------------------------------------------------------------
-    // Incremental scan tests
-    // -------------------------------------------------------------------------
-
-    /// Verify that `incremental_scan` indexes new files on the first call.
     #[test]
     fn incremental_scan_first_call_behaves_like_full_scan() {
         let dir = setup_test_dir();
@@ -927,7 +863,6 @@ mod tests {
 
         let delta = index.incremental_scan(dir.path());
 
-        // 3 files: MyTestTable.al, MyTestPage.al, src/MyCodeunit.al
         assert_eq!(
             delta.changed.len(),
             3,
@@ -937,16 +872,13 @@ mod tests {
         assert_eq!(index.len(), 3);
     }
 
-    /// Verify that a second `incremental_scan` with no changes produces an empty delta.
     #[test]
     fn incremental_scan_no_changes_produces_empty_delta() {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        // First scan: index everything.
         index.incremental_scan(dir.path());
 
-        // Second scan: nothing changed on disk.
         let delta = index.incremental_scan(dir.path());
 
         assert!(
@@ -956,13 +888,11 @@ mod tests {
         assert_eq!(index.len(), 3);
     }
 
-    /// Verify that only the modified file is re-indexed when a single file changes.
     #[test]
     fn incremental_scan_only_reparses_changed_file() {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        // Initial full scan.
         index.incremental_scan(dir.path());
         assert_eq!(index.len(), 3);
 
@@ -979,7 +909,6 @@ mod tests {
 }
 "#;
 
-        // Write new content — this changes mtime and size.
         fs::write(&table_path, new_content).unwrap();
 
         // Flush the metadata cache entry so the next stat picks up the new mtime.
@@ -988,7 +917,6 @@ mod tests {
 
         let delta = index.incremental_scan(dir.path());
 
-        // Only the one modified file should be in the changed list.
         assert_eq!(
             delta.changed.len(),
             1,
@@ -997,31 +925,25 @@ mod tests {
         assert_eq!(delta.removed.len(), 0);
         assert_eq!(delta.changed[0], table_path);
 
-        // The index should reflect the new object name.
         assert!(
             index.find_by_object_name("my modified table").is_some(),
             "New object name should be findable after incremental re-index"
         );
-        // The old name should no longer be in the index.
         assert!(
             index.find_by_object_name("my test table").is_none(),
             "Old object name should be removed after file is re-indexed"
         );
-        // Total file count unchanged.
         assert_eq!(index.len(), 3);
     }
 
-    /// Verify that a newly created file is detected and indexed incrementally.
     #[test]
     fn incremental_scan_detects_new_file() {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        // First scan.
         index.incremental_scan(dir.path());
         assert_eq!(index.len(), 3);
 
-        // Add a new file.
         let new_path = dir.path().join("NewReport.al");
         fs::write(&new_path, r#"report 50100 "New Report" { }"#).unwrap();
 
@@ -1080,7 +1002,6 @@ mod tests {
         let initial_len = index.len();
         assert_eq!(initial_len, 3);
 
-        // Re-scan with no changes.
         index.scan(dir.path());
         assert_eq!(
             index.len(),
@@ -1091,17 +1012,14 @@ mod tests {
         assert!(index.find_by_object_name("my test table").is_some());
     }
 
-    /// Verify that a deleted file is removed from the index incrementally.
     #[test]
     fn incremental_scan_removes_deleted_file() {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        // First scan.
         index.incremental_scan(dir.path());
         assert_eq!(index.len(), 3);
 
-        // Delete one file.
         let page_path = dir.path().join("MyTestPage.al");
         fs::remove_file(&page_path).unwrap();
 
@@ -1128,13 +1046,11 @@ mod tests {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        // First scan.
         index.incremental_scan(dir.path());
 
         let old_path = dir.path().join("MyTestTable.al");
         let new_path = dir.path().join("RenamedTable.al");
 
-        // Simulate rename: the content stays the same but the path changes.
         let content = index.get_content(&old_path).unwrap();
         fs::remove_file(&old_path).unwrap();
         fs::write(&new_path, &content).unwrap();
@@ -1146,13 +1062,10 @@ mod tests {
         assert_eq!(delta.removed[0], old_path);
         assert_eq!(delta.changed[0], new_path);
 
-        // Content accessible under new path.
         assert!(index.get_content(&new_path).is_some());
-        // Old path gone.
         assert!(index.get_content(&old_path).is_none());
     }
 
-    /// Verify `ScanDelta::total` and `ScanDelta::is_empty` helpers.
     #[test]
     fn scan_delta_helpers() {
         let mut delta = ScanDelta::default();
@@ -1167,8 +1080,6 @@ mod tests {
         assert_eq!(delta.total(), 2);
     }
 
-    // --- Concurrency / stress tests ---
-
     #[test]
     fn concurrent_add_and_read_files() {
         use std::sync::Arc;
@@ -1176,7 +1087,6 @@ mod tests {
 
         let index = Arc::new(FileIndex::new());
 
-        // Spawn writers
         let mut handles = Vec::new();
         for i in 0..10 {
             let idx = Arc::clone(&index);
@@ -1188,7 +1098,6 @@ mod tests {
             }));
         }
 
-        // Spawn concurrent readers while writers are running
         for _ in 0..5 {
             let idx = Arc::clone(&index);
             handles.push(thread::spawn(move || {
@@ -1203,7 +1112,6 @@ mod tests {
             h.join().unwrap();
         }
 
-        // All 10 files should be indexed
         assert_eq!(index.files.len(), 10);
     }
 
@@ -1214,7 +1122,6 @@ mod tests {
 
         let index = Arc::new(FileIndex::new());
 
-        // Pre-populate
         for i in 0..10 {
             let path = PathBuf::from(format!("/test/src/T{i}.al"));
             let content = format!(
@@ -1224,7 +1131,6 @@ mod tests {
         }
         assert_eq!(index.files.len(), 10);
 
-        // Concurrently remove half and add new ones
         let mut handles = Vec::new();
         for i in 0..5 {
             let idx = Arc::clone(&index);
@@ -1255,7 +1161,6 @@ mod tests {
     fn rapid_fire_procedure_index_updates() {
         let index = FileIndex::new();
 
-        // Add and immediately update same file 50 times
         for i in 0..50 {
             let path = PathBuf::from("/test/src/Rapid.al");
             let content =
@@ -1263,10 +1168,8 @@ mod tests {
             index.add_file(path, content);
         }
 
-        // Only the latest version should remain
         let procs = index.procedures.get("version49");
         assert!(procs.is_some(), "latest procedure should be in index");
-        // Earlier versions should have been cleaned up
         let old = index.procedures.get("version0");
         assert!(old.is_none(), "old procedure should have been removed");
     }
@@ -1294,7 +1197,6 @@ mod tests {
         let index = Arc::new(FileIndex::new());
         let path = PathBuf::from("/test/src/Race.al");
 
-        // Seed so readers always find an entry.
         index.add_file(
             path.clone(),
             r#"codeunit 50100 "Race" { procedure A() begin end; }"#.to_string(),
@@ -1319,7 +1221,6 @@ mod tests {
             }));
         }
 
-        // Readers: assert the returned pair is always self-consistent.
         for _ in 0..4 {
             let idx = Arc::clone(&index);
             let p = path.clone();

@@ -38,7 +38,6 @@ pub fn sort_members(text: &str) -> Option<String> {
 
     let members = split_into_members(body_lines);
     if members.is_empty() {
-        // No members — body is empty or unparseable, return unchanged
         return Some(text.to_string());
     }
 
@@ -111,7 +110,6 @@ pub fn sort_members(text: &str) -> Option<String> {
         }
     }
 
-    // other (unrecognised sections) — append at end
     for member in other {
         for l in member {
             result_lines.push(l);
@@ -122,7 +120,6 @@ pub fn sort_members(text: &str) -> Option<String> {
         result_lines.push(l);
     }
 
-    // Preserve trailing newline if original had one
     let mut out = result_lines.join("\n");
     if text.ends_with('\n') {
         out.push('\n');
@@ -338,7 +335,6 @@ mod tests {
 }
 "#;
         let result = sort_members(input).expect("should sort");
-        // The content should be the same (possibly reordered, but since already sorted — same)
         assert!(result.contains("procedure Apple"));
         assert!(result.contains("procedure Zebra"));
         let apple_pos = result.find("procedure Apple").unwrap();

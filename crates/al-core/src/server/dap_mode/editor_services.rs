@@ -30,7 +30,6 @@ const PLATFORM_DIR: &str = "darwin";
 const PLATFORM_DIR: &str = "win32";
 
 pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError> {
-    // Strategy 1: explicit env var
     if let Ok(path) = std::env::var("AL_EDITOR_SERVICES_PATH") {
         let p = PathBuf::from(&path);
         if p.is_file() {
@@ -50,7 +49,6 @@ pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError
         }
     }
 
-    // Strategy 2: next to alc.dll
     let alongside_alc = toolchain.dotnet_root.join(HOST_BINARY);
     if alongside_alc.is_file() {
         info!(
@@ -60,7 +58,6 @@ pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError
         return Ok(alongside_alc);
     }
 
-    // Strategy 3: cached download location
     if let Some(home) = home_dir() {
         let cache_dir = home.join(".cache/al-lsp/editor-services");
         let cached = cache_dir.join(HOST_BINARY);
@@ -70,7 +67,6 @@ pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError
         }
     }
 
-    // Strategy 4: VS Code / Cursor AL extension installations
     if let Some(path) = find_in_vscode_extensions() {
         info!(
             "Found EditorServices.Host in IDE extension: {}",

@@ -11,24 +11,16 @@ use tracing::{debug, warn};
 
 use crate::project::AppDependency;
 
-/// BC environment type.
-///
-/// Re-exported from crate::dap to avoid duplication.
 pub use crate::dap::config::EnvironmentType;
 
-/// Authentication method for BC connections.
-///
-/// Re-exported from crate::dap to avoid duplication.
 pub use crate::dap::config::AuthMethod;
 
-/// A parsed debug configuration file.
 #[derive(Debug, Clone)]
 pub struct DebugConfigFile {
     pub path: PathBuf,
     pub configs: Vec<BcServerConfig>,
 }
 
-/// BC server connection configuration extracted from debug config.
 #[derive(Debug, Clone)]
 pub struct BcServerConfig {
     pub name: String,
@@ -43,14 +35,11 @@ pub struct BcServerConfig {
     pub environment_name: Option<String>,
     /// Tenant ID (Azure AD domain or "default" for on-prem)
     pub tenant: Option<String>,
-    /// Authentication method
     pub authentication: AuthMethod,
     /// Accept invalid/self-signed TLS certificates. Defaults to `false`.
     /// Set to `true` only for on-prem servers with self-signed certs.
     pub accept_invalid_certs: bool,
 }
-
-// EnvironmentType and AuthMethod are re-exported from crate::dap::config (see above).
 
 impl BcServerConfig {
     /// Construct the `/dev/packages` URL for downloading a single dependency.
@@ -104,7 +93,6 @@ impl BcServerConfig {
         }
     }
 
-    /// Human-readable display name for logging.
     pub fn display_name(&self) -> String {
         match self.environment_type {
             EnvironmentType::OnPrem => {
@@ -119,10 +107,6 @@ impl BcServerConfig {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Raw JSON types — Zed format (.zed/debug.json)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,10 +132,6 @@ struct ZedDebugConfigJson {
     #[serde(default)]
     accept_invalid_certs: bool,
 }
-
-// ---------------------------------------------------------------------------
-// Raw JSON types — VS Code format (.vscode/launch.json)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct VsCodeLaunchJson {
@@ -184,11 +164,6 @@ struct VsCodeLaunchConfigJson {
     accept_invalid_certs: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Parsing
-// ---------------------------------------------------------------------------
-
-/// Find and parse debug/launch configuration from the project root.
 pub fn find_launch_config(project_root: &Path) -> Option<DebugConfigFile> {
     let zed_path = project_root.join(".zed").join("debug.json");
     if zed_path.exists() {
@@ -232,8 +207,6 @@ pub fn find_launch_config(project_root: &Path) -> Option<DebugConfigFile> {
 /// the daemon on `read_to_string`.
 const MAX_LAUNCH_FILE_BYTES: u64 = 1_048_576;
 
-/// Read a launch/debug config file, refusing inputs larger than
-/// `MAX_LAUNCH_FILE_BYTES` before allocating.
 /// Allowlist check on the `server` field of an OnPrem BC config.
 ///
 /// AL launch configs let users specify the BC server URL freely. A misconfigured
@@ -246,7 +219,6 @@ pub(crate) fn is_safe_http_server(server: &str) -> bool {
     if s.is_empty() {
         return false;
     }
-    // Explicit schemes — only http(s) accepted.
     if let Some(rest) = s.split_once("://") {
         let scheme = rest.0.to_ascii_lowercase();
         return scheme == "http" || scheme == "https";

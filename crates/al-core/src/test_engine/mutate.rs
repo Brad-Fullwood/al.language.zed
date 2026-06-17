@@ -19,7 +19,6 @@ use tokio::sync::mpsc;
 
 use crate::workspace::Workspace;
 
-/// Errors that can occur during mutation testing.
 #[derive(Debug, Error)]
 pub enum MutationError {
     #[error("No test files found in workspace")]
@@ -30,28 +29,22 @@ pub enum MutationError {
     ApplyFailed(String),
 }
 
-/// A single mutation variant describing one source-level change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MutationVariant {
     /// Unique identifier for this variant (e.g. `"cb:file.al:42:0"`).
     pub id: String,
-    /// Path to the source file containing the mutation.
     pub file: String,
     /// 1-based line number of the mutated token.
     pub line: u32,
-    /// The original token text.
     pub original: String,
-    /// The replacement token text.
     pub mutated: String,
-    /// Human-readable description of the mutator applied.
     pub description: String,
     /// Byte range of the original token in the source (start inclusive, end exclusive).
     pub byte_start: usize,
     pub byte_end: usize,
 }
 
-/// Test identifier — file path + procedure name.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct TestId {
@@ -59,14 +52,12 @@ pub struct TestId {
     pub procedure: String,
 }
 
-/// Outcome for a single variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VariantOutcome {
     pub variant: MutationVariant,
     /// `true` when at least one test failed under this mutation.
     pub killed: bool,
-    /// First test that failed (if killed).
     pub killing_test: Option<TestId>,
     /// Error encountered while running (distinct from a test assertion failure).
     pub error: Option<String>,
@@ -88,7 +79,6 @@ pub enum MutationExecutorPhase {
     Interpreter,
 }
 
-/// Aggregated report for a full mutation-testing run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MutationReport {
@@ -126,7 +116,6 @@ impl MutationReport {
     }
 }
 
-/// Options controlling a mutation-testing run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MutationOptions {
@@ -154,7 +143,6 @@ impl Default for MutationOptions {
     }
 }
 
-/// Events streamed during a mutation-testing run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum MutationEvent {
@@ -193,7 +181,6 @@ pub(crate) fn generate_variants(
         if !visited.insert(node.id()) {
             continue;
         }
-        // Push all children so we visit the whole tree
         for i in (0..node.child_count()).rev() {
             if let Some(child) = node.child(i) {
                 stack.push(child);
@@ -345,7 +332,6 @@ fn make_variant(
             .unwrap_or(file),
         line,
         byte_start,
-        // Sanitize mutated text for use in an ID (replace non-alphanumeric)
         mutated
             .chars()
             .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' {
@@ -413,7 +399,6 @@ pub(crate) fn generate_variants_for_file(
 ) -> Vec<MutationVariant> {
     let path = std::path::Path::new(file_path);
     let Some((text, tree)) = workspace.file_index.get_cached_parse(path) else {
-        // Try via documents store
         let uri = url::Url::from_file_path(path).ok();
         if let Some(uri) = uri {
             if let Some(text) = workspace.documents.get_text(&uri) {
@@ -532,8 +517,7 @@ fn collect_mutation_files(
         let cached = workspace.file_index.get_cached_parse(path);
 
         if opts.affected_only {
-            // Only include files that have test procedures.
-            let Some((text, tree)) = cached.as_ref() else {
+                let Some((text, tree)) = cached.as_ref() else {
                 continue;
             };
             let root = tree.root_node();
@@ -569,15 +553,13 @@ async fn run_single_variant(
     variant: &MutationVariant,
     _opts: &MutationOptions,
 ) -> VariantOutcome {
-    // --- Apply the mutation to a temporary source copy ---
     let original_text = {
         let path = std::path::Path::new(&variant.file);
         let text_opt = workspace.file_index.get_cached_parse(path).map(|(t, _)| t);
         match text_opt {
             Some(t) => t,
             None => {
-                // Try documents store
-                if let Ok(uri) = url::Url::from_file_path(path) {
+                    if let Ok(uri) = url::Url::from_file_path(path) {
                     if let Some(t) = workspace.documents.get_text(&uri) {
                         t
                     } else {
@@ -602,8 +584,6 @@ async fn run_single_variant(
 
     let mutated_source = apply_variant(&original_text, variant);
 
-    // --- Execute interp-routed tests against the mutant (F-OPEN-270) ---
-    //
     // The mutant is swapped into the shared file_index for the duration of
     // the run, then the original is restored. Mutation runs are explicit,
     // single-flight user actions; concurrent readers may briefly observe the
@@ -616,7 +596,6 @@ async fn run_single_variant(
 
     let outcome = run_interp_tests_against_mutant(workspace, variant).await;
 
-    // Restore the original source no matter how the run went.
     workspace.file_index.add_file(path_buf, original_text);
 
     outcome
@@ -879,7 +858,6 @@ mod tests {
 
     #[test]
     fn integer_offset_produces_plus_one_variant() {
-        // 18 should become 19 and 17
         let tree = parse(AL_FIXTURE);
         let variants = generate_variants("test.al", AL_FIXTURE, &tree);
         let plus_one: Vec<_> = variants
@@ -951,7 +929,6 @@ mod tests {
         let source = "";
         let tree = parse(source);
         let variants = generate_variants("x.al", source, &tree);
-        // Empty source produces no variants
         assert!(variants.is_empty(), "Empty source should have no variants");
     }
 
@@ -1036,7 +1013,6 @@ mod tests {
             byte_end: 1005,
         };
         let result = apply_variant(source, &v);
-        // Should contain the original plus the replacement appended at the clamped position
         assert!(result.contains("long_replacement") || result == source);
     }
 
@@ -1071,8 +1047,6 @@ mod tests {
             byte_end: 6,
         };
         let result = apply_variant(source, &v);
-        // Byte 5 in "x := y + z;" is ' ' — the +  is at 7, but we apply at 5 anyway
-        // Result must not panic and must be a valid string of same total length ± delta
         assert!(!result.is_empty());
     }
 
@@ -1110,7 +1084,6 @@ mod tests {
                 }
             }
         }
-        // Just verify we got nodes
         assert!(!all_kinds.is_empty(), "Should have tree nodes");
         // Print for diagnostic purposes (only visible with --nocapture)
         for (kind, named, text) in &all_kinds {

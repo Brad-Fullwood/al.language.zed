@@ -25,20 +25,17 @@ use quick_xml::Writer;
 
 use crate::queries::test_coverage::CoverageReport;
 
-/// One procedure entry as it ends up inside a `<class>` line table.
 struct ProcLine {
     line: u32,
     hits: u32,
 }
 
-/// Information needed to emit one `<class>` element.
 struct ClassEntry {
     object: String,
     file: String,
     lines: Vec<ProcLine>,
 }
 
-/// Group covered + untested procedures by `(object, file)`.
 fn group_by_object(report: &CoverageReport) -> Vec<ClassEntry> {
     let mut classes: BTreeMap<(String, String), Vec<ProcLine>> = BTreeMap::new();
 
@@ -83,7 +80,6 @@ fn format_rate(covered: usize, total: usize) -> String {
     format!("{rate:.4}")
 }
 
-/// Serialize a `CoverageReport` as Cobertura XML to `out`.
 pub fn write_cobertura<W: Write>(report: &CoverageReport, out: W) -> Result<(), io::Error> {
     // Flatten + dedupe covered procedures (a procedure may be covered by
     // multiple tests; we want to count it once for the rate).
@@ -120,14 +116,12 @@ pub fn write_cobertura<W: Write>(report: &CoverageReport, out: W) -> Result<(), 
     coverage_start.push_attribute(("lines-valid", total.to_string().as_str()));
     writer.write_event(Event::Start(coverage_start))?;
 
-    // <sources><source>.</source></sources>
     writer.write_event(Event::Start(BytesStart::new("sources")))?;
     writer.write_event(Event::Start(BytesStart::new("source")))?;
     writer.write_event(Event::Text(quick_xml::events::BytesText::new(".")))?;
     writer.write_event(Event::End(BytesEnd::new("source")))?;
     writer.write_event(Event::End(BytesEnd::new("sources")))?;
 
-    // <packages><package name="al" line-rate=...>
     writer.write_event(Event::Start(BytesStart::new("packages")))?;
 
     let mut package_start = BytesStart::new("package");
@@ -203,7 +197,6 @@ mod tests {
         }
     }
 
-    // 7. Empty report
     #[test]
     fn test_cobertura_empty_report_valid_xml() {
         let report = CoverageReport {
@@ -222,7 +215,6 @@ mod tests {
         );
     }
 
-    // 8. With covered and untested procedures
     #[test]
     fn test_cobertura_with_covered_and_untested() {
         let report = CoverageReport {
@@ -278,7 +270,6 @@ mod tests {
         );
     }
 
-    // 9. Special characters in filename (NEGATIVE)
     #[test]
     fn test_cobertura_special_chars_in_filename() {
         let report = CoverageReport {

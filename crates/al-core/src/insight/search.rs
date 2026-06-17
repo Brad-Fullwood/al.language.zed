@@ -34,7 +34,6 @@ use super::node_kind;
 /// nodes per trace) never hit it.
 const MAX_CHAIN_NODES: usize = 10_000;
 
-/// A single step in an event trace.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceStep {
@@ -45,10 +44,6 @@ pub struct TraceStep {
     pub object: String,
 }
 
-/// Trace an event chain: starting from an event, follow SubscribesTo edges
-/// to find all subscribers, then follow their published events recursively.
-///
-/// Returns a flattened list of steps representing the event propagation chain.
 pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> Vec<TraceStep> {
     let event_lower = event_name.to_lowercase();
     let mut steps = Vec::new();
@@ -135,7 +130,6 @@ fn trace_from_node(
     }
     visited.insert(node_idx);
 
-    // Follow incoming SubscribesTo edges (subscribers pointing to this event)
     for edge_ref in graph.graph.edges_directed(node_idx, Direction::Incoming) {
         if *edge_ref.weight() != InsightEdge::SubscribesTo {
             continue;
@@ -156,9 +150,6 @@ fn trace_from_node(
                 object: object_name.clone(),
             });
 
-            // Events published by the same object — O(1) lookup via the
-            // pre-computed index. The bucket is already sorted by NodeIndex
-            // (see `trace_event`) so the fanout order is stable.
             let sub_obj_lower = object_name.to_lowercase();
             let empty: Vec<petgraph::graph::NodeIndex> = Vec::new();
             let event_indices = events_by_object.get(&sub_obj_lower).unwrap_or(&empty);
@@ -190,41 +181,26 @@ fn trace_from_node(
 // T902: Full event chain tracing via CallGraph
 
 /// A node in the event chain tree.
-///
-/// Each `ChainNode` represents one step in the propagation of an event through
-/// the system.  Children are the nodes reachable from this one (subscribers,
-/// called procedures that publish further events, etc.).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChainNode {
-    /// How this node was reached from its parent.
     pub edge_kind: String,
-    /// "event", "subscriber", "procedure", or "object".
     pub node_type: String,
-    /// Method/procedure/event name.
     pub name: String,
-    /// Owning object name.
     pub object: String,
-    /// Depth from the root event (0 = root).
     pub depth: usize,
-    /// Whether this node was already visited (cycle).  If `true`, children
-    /// are empty to prevent infinite recursion.
+    /// If `true`, children are empty to prevent infinite recursion.
     pub cycle: bool,
-    /// Child steps reachable from this node.
     pub children: Vec<ChainNode>,
 }
 
-/// Result of [`trace_event_chain`].
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventChain {
-    /// The publisher event name that was searched.
     pub event_name: String,
-    /// The publisher object name (empty when unresolved).
+    /// Empty when unresolved.
     pub publisher_object: String,
-    /// Roots of the chain tree (one per matching event node found in the graph).
     pub chains: Vec<ChainNode>,
-    /// Total distinct nodes visited.
     pub nodes_visited: usize,
 }
 
@@ -325,7 +301,6 @@ pub fn trace_event_chain(
     }
 }
 
-/// Recursive helper: given an event node, find all its subscribers and recurse.
 fn recurse_event(
     insight: &InsightGraph,
     cg: &CallGraph,
@@ -372,8 +347,6 @@ fn recurse_event(
     children
 }
 
-/// Recursive helper: given a subscriber node, find calls it makes that lead to
-/// further event publications.
 fn recurse_subscriber(
     insight: &InsightGraph,
     cg: &CallGraph,
@@ -417,7 +390,6 @@ fn recurse_subscriber(
 
         match node_type {
             t if t == node_kind::EVENT => {
-                // This subscriber's object also publishes an event — recurse into it.
                 let is_cycle = visited.contains(&callee_id);
                 let grandchildren = if is_cycle || depth >= max_depth {
                     vec![]
@@ -437,7 +409,6 @@ fn recurse_subscriber(
                 });
             }
             t if t == node_kind::PROCEDURE => {
-                // Follow the procedure's own callees one hop to detect event re-publications.
                 let is_cycle = visited.contains(&callee_id);
                 let grandchildren = if is_cycle || depth >= max_depth {
                     vec![]
@@ -458,24 +429,20 @@ fn recurse_subscriber(
                     });
                 }
             }
-            _ => {
-                // Objects and other node types: don't expand further.
-            }
+            _ => {}
         }
     }
 
     children
 }
 
-/// Find entry points: objects/procedures that have no incoming Calls/SubscribesTo edges.
-/// These are potential starting points for analysis.
+/// Find entry points: procedures that have no incoming Calls/SubscribesTo edges.
 pub fn find_entry_points(graph: &InsightGraph) -> Vec<&InsightNode> {
     graph
         .graph
         .node_indices()
         .filter(|&idx| {
             let node = &graph.graph[idx];
-            // Only consider procedures as entry points
             matches!(node, InsightNode::Procedure { .. })
                 && graph
                     .graph
@@ -486,7 +453,6 @@ pub fn find_entry_points(graph: &InsightGraph) -> Vec<&InsightNode> {
         .collect()
 }
 
-/// Export the graph as DOT format for Graphviz visualization.
 pub fn export_dot(graph: &InsightGraph) -> String {
     let mut dot = String::from("digraph insight {\n");
     dot.push_str("    rankdir=LR;\n");
@@ -533,7 +499,6 @@ pub fn export_dot(graph: &InsightGraph) -> String {
     dot
 }
 
-/// Export the graph as JSON.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphJson {
@@ -731,7 +696,6 @@ mod tests {
         graph.build_from_index(&index);
 
         let trace = trace_event(&graph, "MyEvent", 0);
-        // With max_depth=0, we only get the origin event
         assert_eq!(trace.len(), 1);
     }
 
@@ -770,7 +734,6 @@ mod tests {
 
         let json = export_json(&graph);
         assert!(!json.nodes.is_empty());
-        // Should have Contains edge (object -> event)
         assert!(!json.edges.is_empty());
         assert!(json.edges.iter().any(|e| e.edge_type == "publishes"));
     }
@@ -789,8 +752,6 @@ mod tests {
         graph.build_from_index(&index);
 
         let entry_points = find_entry_points(&graph);
-        // OnRun is not a Procedure node, it's an Event node
-        // There should be no procedure entry points in this graph
         assert!(entry_points.is_empty());
     }
 
@@ -892,7 +853,6 @@ mod tests {
 
         let chain = trace_event_chain(&insight, &cg, "OnRelease", 10);
         let root = &chain.chains[0];
-        // Three subscribers at depth 1
         assert_eq!(root.children.len(), 3);
         for child in &root.children {
             assert_eq!(child.node_type, "subscriber");
@@ -935,7 +895,6 @@ mod tests {
         // Must complete without hanging; cycle nodes get `cycle: true`.
         let chain = trace_event_chain(&insight, &cg, "EventA", 20);
         assert_eq!(chain.event_name, "EventA");
-        // Result exists (not empty) — chain was explored.
         assert!(!chain.chains.is_empty());
     }
 
@@ -957,7 +916,6 @@ mod tests {
         let cg = CallGraph::build_from_insight(&insight);
 
         let chain = trace_event_chain(&insight, &cg, "OnPost", 0);
-        // max_depth=0: only the root event, no children expanded.
         assert_eq!(chain.chains.len(), 1);
         assert!(chain.chains[0].children.is_empty());
     }
@@ -1019,7 +977,6 @@ mod tests {
         insight.build_from_index(&index);
         let cg = CallGraph::build_from_insight(&insight);
 
-        // Search with different case
         let chain_lower = trace_event_chain(&insight, &cg, "onpost", 10);
         let chain_upper = trace_event_chain(&insight, &cg, "ONPOST", 10);
         let chain_mixed = trace_event_chain(&insight, &cg, "OnPost", 10);
@@ -1195,7 +1152,6 @@ mod tests {
         let chain = trace_event_chain(&insight, &cg, "EventA", 2);
         assert_eq!(chain.chains.len(), 1);
         let root = &chain.chains[0];
-        // Subscriber HandleEventA in CU-B is found at depth 1.
         assert_eq!(root.children.len(), 1);
         let sub = &root.children[0];
         assert_eq!(sub.name, "HandleEventA");

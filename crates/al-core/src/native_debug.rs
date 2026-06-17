@@ -17,11 +17,9 @@ use tracing::{info, warn};
 /// recent hits which are by far the most useful for the user.
 const HISTORY_CAP: usize = 10_000;
 
-/// Wraps `BcDebugSession` with daemon-side state: breakpoint tracking, history.
 pub struct NativeDebugSession {
     pub session: BcDebugSession,
     pub config: BcDebugConfig,
-    /// file path → list of BC breakpoint IDs
     breakpoints: HashMap<String, Vec<i64>>,
     history: VecDeque<BreakpointHit>,
 }
@@ -36,10 +34,6 @@ fn push_with_cap(history: &mut VecDeque<BreakpointHit>, hit: BreakpointHit, cap:
 }
 
 impl NativeDebugSession {
-    /// Connect to BC and attach the debug session.
-    ///
-    /// `config` — BC server connection config (built from launch.json / debug.json).
-    /// `access_token` — OAuth Bearer token for the BC tenant.
     pub async fn start(config: BcDebugConfig, access_token: &str) -> Result<Self> {
         let session = BcDebugSession::connect(&config, access_token).await?;
 
@@ -56,15 +50,10 @@ impl NativeDebugSession {
         })
     }
 
-    /// Session identifier (SignalR connection ID).
     pub fn session_id(&self) -> &str {
         &self.session.connection_id
     }
 
-    /// Set breakpoints for a file. Removes old breakpoints for the same file first.
-    ///
-    /// `object_type` and `object_id` come from the workspace file index — the caller
-    /// resolves the AL file path to its BC object type + ID.
     pub async fn set_breakpoints(
         &mut self,
         file: &str,
@@ -72,7 +61,6 @@ impl NativeDebugSession {
         object_type: i32,
         object_id: i32,
     ) -> Result<Vec<BreakpointInfo>> {
-        // Remove existing breakpoints for this file
         if let Some(old_ids) = self.breakpoints.remove(file) {
             for bp_id in &old_ids {
                 if let Err(e) = self.session.remove_breakpoint(*bp_id).await {
@@ -81,7 +69,6 @@ impl NativeDebugSession {
             }
         }
 
-        // Add new breakpoints
         let mut results = Vec::new();
         let mut new_ids = Vec::new();
 
@@ -126,9 +113,7 @@ impl NativeDebugSession {
     /// `is_stopped == false` and an empty `history` even though a Break
     /// event landed in the SignalR pending queue between commands.
     async fn drain_events(&mut self) {
-        // First, anything `invoke()` buffered while we were busy.
         let pending = self.session.flush_pending_events().await;
-        // Then anything that arrived on the SignalR channel since.
         let pushed = self.session.try_drain_push_events().await;
         let mut next_seq = self.history.back().map(|h| h.seq + 1).unwrap_or(1);
         for event in pending.into_iter().chain(pushed) {
@@ -136,11 +121,7 @@ impl NativeDebugSession {
                 reason, location, ..
             } = event
             {
-                // Use the actual break site carried by the BC Break event's top
-                // StackFrame so history records the real stop position instead
-                // of a stale copy of the previous entry. The daemon doesn't
-                // resolve BC object ids to workspace file paths, so `file` stays
-                // empty; line/column/procedure now reflect the genuine location.
+                // `file` stays empty; the daemon doesn't resolve BC object ids to workspace file paths.
                 let location = match location {
                     Some(loc) => Location {
                         file: String::new(),
@@ -172,7 +153,6 @@ impl NativeDebugSession {
         }
     }
 
-    /// Get the current debug state. Queries variables if stopped.
     pub async fn state(&mut self) -> Result<DebugState> {
         self.drain_events().await;
         let is_stopped = self.session.is_stopped().await;
@@ -184,7 +164,6 @@ impl NativeDebugSession {
 
         let mut variables = Vec::new();
         if is_stopped {
-            // Get variables for frame 0
             if let Ok(vars_json) = self.session.get_variables(0).await {
                 variables = parse_bc_variables(&vars_json);
             }
@@ -194,13 +173,12 @@ impl NativeDebugSession {
             status,
             session_id: self.session.connection_id.clone(),
             location: self.history.back().map(|h| h.location.clone()),
-            stack: Vec::new(), // BC doesn't expose a full stack via SignalR the same way
+            stack: Vec::new(), // BC doesn't expose a full stack via SignalR
             variables,
             thread_id: Some(1),
         })
     }
 
-    /// Evaluate an expression in the current frame.
     pub async fn eval(&self, expr: &str) -> Result<EvalResult> {
         let result = self.session.evaluate(0, expr).await?;
 
@@ -226,14 +204,10 @@ impl NativeDebugSession {
 
     /// Continue execution after a breakpoint (BreakpointExitReason=0).
     pub async fn continue_exec(&mut self) -> Result<DebugState> {
-        // F-014: drain pending events so any Break that fired between the
-        // user's last command and `continue` is recorded in history before
-        // we tell BC to resume.
         self.drain_events().await;
         self.session
             .continue_execution(serde_json::json!(0))
             .await?;
-        // Return running state immediately — next state() call will show updated position
         Ok(DebugState {
             status: SessionStatus::Running,
             session_id: self.session.connection_id.clone(),
@@ -244,16 +218,9 @@ impl NativeDebugSession {
         })
     }
 
-    /// Step (over/in/out).
-    ///
     /// BC's `SetBreakpointResponse` controls step type via BreakpointExitReason:
     /// 0=Continue, 1=StepOver, 2=StepIn, 3=StepOut.
     pub async fn step(&mut self, step_type: &str) -> Result<DebugState> {
-        // F-014 symmetry with `continue_exec`: drain pending events so any
-        // Break that fired between the user's last command and this `step`
-        // is recorded in history before we tell BC to advance. Without this,
-        // a Break event that landed on the SignalR channel since the last
-        // command would be silently dropped from history.
         self.drain_events().await;
         match step_type {
             "in" => self.session.step_in().await?,
@@ -270,7 +237,6 @@ impl NativeDebugSession {
         })
     }
 
-    /// Get breakpoint hit history, optionally filtered by variable name.
     pub fn history(&self, var_filter: Option<&str>) -> Vec<&BreakpointHit> {
         match var_filter {
             Some(filter) => self
@@ -286,7 +252,6 @@ impl NativeDebugSession {
         }
     }
 
-    /// Stop the debug session and disconnect.
     pub async fn stop(&mut self) -> Result<()> {
         if let Err(e) = self.session.stop_debugging().await {
             warn!(error = %e, "stop_debugging failed during shutdown");
@@ -327,7 +292,6 @@ impl NativeDebugSession {
     }
 }
 
-/// Build a `BreakpointInfo` from the common fields, normalising empty conditions to `None`.
 fn make_bp_info(file: &str, line: u32, condition: &str, id: i64, verified: bool) -> BreakpointInfo {
     BreakpointInfo {
         id,
@@ -342,7 +306,6 @@ fn make_bp_info(file: &str, line: u32, condition: &str, id: i64, verified: bool)
     }
 }
 
-/// Parse BC's `LocalNode[]` JSON into our `Variable` type.
 fn parse_bc_variables(json: &serde_json::Value) -> Vec<Variable> {
     let arr = match json.as_array() {
         Some(a) => a,
@@ -388,8 +351,6 @@ fn format_event_timestamp(t: std::time::SystemTime) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // Manual y/m/d/h/m/s decomposition (seconds-since-epoch UTC).
-    // Avoid chrono / time crates per the "no new deps" rule.
     let days = (secs / 86_400) as i64;
     let hms = secs % 86_400;
     let h = hms / 3600;
@@ -422,7 +383,6 @@ mod timestamp_tests {
 
     #[test]
     fn epoch_renders_as_1970() {
-        // Positive: known reference point.
         assert_eq!(format_event_timestamp(UNIX_EPOCH), "1970-01-01T00:00:00Z");
     }
 
@@ -571,7 +531,6 @@ mod history_cap_tests {
 
     #[test]
     fn under_cap_keeps_everything() {
-        // Positive: below the cap, push behaves like a plain push_back.
         let mut h = VecDeque::new();
         for i in 0..5 {
             push_with_cap(&mut h, hit(i), 10);
@@ -643,7 +602,6 @@ mod make_bp_info_tests {
 
     #[test]
     fn non_empty_condition_is_preserved() {
-        // Positive: a real condition expression is carried through verbatim.
         let info = make_bp_info("src/Bar.al", 10, "x > 5", 3, true);
         assert_eq!(info.condition.as_deref(), Some("x > 5"));
     }
@@ -744,29 +702,16 @@ mod parse_bc_variables_tests {
 
     #[test]
     fn empty_array_yields_no_variables() {
-        // Boundary: an empty frame (no locals) returns an empty Vec.
         assert!(parse_bc_variables(&json!([])).is_empty());
     }
 }
 
-// ---------------------------------------------------------------------------
-// NativeDebugSession async methods — driven against a fake BC debug hub.
-//
-// `crate::dap::bc_debug::fake::FakeBc` wraps the SignalR channels the real
-// `connect()` builds (skipping the negotiate + WebSocket handshake) and spawns
-// a responder that records every frame the session sends and replies to each
-// `invoke` with a queued canned completion — exactly as the live hub would.
-// These tests therefore exercise the REAL invoke loop, breakpoint bookkeeping,
-// event draining (F-014) and response parsing, asserting on both the on-wire
-// request shape and the parsed results / state transitions.
-// ---------------------------------------------------------------------------
 #[cfg(test)]
 mod native_session_tests {
     use super::*;
     use crate::dap::bc_debug::fake::FakeBc;
     use serde_json::json;
 
-    /// Build a `NativeDebugSession` around a fresh fake hub.
     fn session(conn: &str) -> (NativeDebugSession, FakeBc) {
         let (bc, fake) = FakeBc::start(conn);
         (
@@ -795,12 +740,8 @@ mod native_session_tests {
         }
     }
 
-    // --- set_breakpoints -----------------------------------------------------
-
     #[tokio::test]
     async fn set_breakpoints_adds_and_parses_pascalcase_response() {
-        // Happy path: one breakpoint, PascalCase Id/Verified parsed, and the
-        // AddBreakpoint invoke carries object id + source position.
         let (mut nds, fake) = session("c1");
         fake.reply_ok("AddBreakpoint", json!({ "Id": 77, "Verified": true }));
 
@@ -863,8 +804,6 @@ mod native_session_tests {
 
     #[tokio::test]
     async fn set_breakpoints_removes_prior_ids_for_same_file() {
-        // F: file→breakpoint-id mapping. Re-setting breakpoints on the same
-        // file must remove the previously-added ids first.
         let (mut nds, fake) = session("c1");
         fake.reply_ok("AddBreakpoint", json!({ "Id": 100, "Verified": true }));
         fake.reply_ok("AddBreakpoint", json!({ "Id": 101, "Verified": true }));
@@ -894,8 +833,6 @@ mod native_session_tests {
 
     #[tokio::test]
     async fn set_breakpoints_partial_failure_marks_failed_unverified() {
-        // Some adds succeed, some fail: the failed one yields id=0/verified=false
-        // rather than aborting the whole batch.
         let (mut nds, fake) = session("c1");
         fake.reply_ok("AddBreakpoint", json!({ "Id": 11, "Verified": true }));
         fake.reply_err("AddBreakpoint", "compilation error");
@@ -912,13 +849,8 @@ mod native_session_tests {
         assert!(!infos[1].verified, "failed add → unverified");
     }
 
-    // --- state ---------------------------------------------------------------
-
     #[tokio::test]
     async fn state_stopped_reports_paused_with_variables_and_location() {
-        // A Break that arrived since the last command is drained (F-014),
-        // flips the session to Paused, records the location, and variables are
-        // queried for frame 0 and parsed.
         let (mut nds, fake) = session("sess-7");
         fake.push_callback(
             "Break",
@@ -948,8 +880,6 @@ mod native_session_tests {
 
     #[tokio::test]
     async fn state_running_reports_no_variables_and_no_query() {
-        // With no Break pending, the session is Running, has no variables/
-        // location, and must NOT issue a GetVariables request.
         let (mut nds, fake) = session("sess-run");
         let st = nds.state().await.unwrap();
 
@@ -964,12 +894,8 @@ mod native_session_tests {
         );
     }
 
-    // --- drain_events (F-014) ------------------------------------------------
-
     #[tokio::test]
     async fn drain_events_records_breaks_with_incrementing_seq() {
-        // Two Break events drained in one pass get FIFO seq numbers 1, 2 and
-        // their genuine locations.
         let (mut nds, fake) = session("c1");
         fake.push_callback(
             "Break",
@@ -1041,12 +967,8 @@ mod native_session_tests {
         assert_eq!(hist[0].location.line, 5);
     }
 
-    // --- eval ----------------------------------------------------------------
-
     #[tokio::test]
     async fn eval_extracts_value_and_type_name() {
-        // GetWatchNode result Value/TypeName map to EvalResult, and the invoke
-        // carries frame 0 + the expression.
         let (nds, fake) = session("c1");
         fake.reply_ok(
             "GetWatchNode",
@@ -1083,7 +1005,6 @@ mod native_session_tests {
 
     #[tokio::test]
     async fn eval_missing_fields_default_to_empty() {
-        // A watch node missing Value/Type yields empty strings, not an error.
         let (nds, fake) = session("c1");
         fake.reply_ok("GetWatchNode", json!({}));
         let r = nds.eval("nothing").await.unwrap();
@@ -1091,12 +1012,8 @@ mod native_session_tests {
         assert_eq!(r.type_name, "");
     }
 
-    // --- continue_exec -------------------------------------------------------
-
     #[tokio::test]
     async fn continue_exec_drains_pending_then_resumes_running() {
-        // F-014: a Break that fired before `continue` is recorded before we
-        // resume, and the resume sends BreakpointExitReason 0.
         let (mut nds, fake) = session("sess-c");
         fake.push_callback(
             "Break",
@@ -1121,11 +1038,8 @@ mod native_session_tests {
         assert_eq!(resume["arguments"][0], 0, "continue → exit reason 0");
     }
 
-    // --- step ----------------------------------------------------------------
-
     #[tokio::test]
     async fn step_dispatches_exit_reason_by_type() {
-        // over/in/out map to BreakpointExitReason 1/2/3 and report Running.
         for (kind, expected) in [("over", 1), ("in", 2), ("out", 3)] {
             let (mut nds, fake) = session("c");
             fake.reply_ok("SetBreakpointResponse", json!(null));
@@ -1142,7 +1056,6 @@ mod native_session_tests {
 
     #[tokio::test]
     async fn step_unknown_type_defaults_to_step_over() {
-        // The `_` arm of the match dispatches unknown step types to step-over.
         let (mut nds, fake) = session("c");
         fake.reply_ok("SetBreakpointResponse", json!(null));
         nds.step("bogus").await.unwrap();
@@ -1170,8 +1083,6 @@ mod native_session_tests {
         assert_eq!(hist.len(), 1, "F-014: Break recorded before step");
         assert_eq!(hist[0].location.line, 8);
     }
-
-    // --- history -------------------------------------------------------------
 
     #[tokio::test]
     async fn history_filters_by_variable_name_case_insensitive() {
@@ -1206,8 +1117,6 @@ mod native_session_tests {
         assert!(nds.history(Some("anything")).is_empty());
     }
 
-    // --- stop ----------------------------------------------------------------
-
     #[tokio::test]
     async fn stop_invokes_stop_debugging_then_terminate() {
         let (mut nds, fake) = session("c");
@@ -1234,8 +1143,6 @@ mod native_session_tests {
 
     #[tokio::test]
     async fn stop_tolerates_errors_and_still_attempts_both_teardowns() {
-        // Both teardown RPCs erroring must still yield Ok and must still have
-        // attempted both calls (terminate is not skipped after a stop error).
         let (mut nds, fake) = session("c");
         fake.reply_err("StopDebugging", "already gone");
         fake.reply_err("TerminateSession", "no session");

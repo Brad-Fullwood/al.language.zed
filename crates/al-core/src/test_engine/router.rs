@@ -27,7 +27,6 @@
 use crate::queries::tests::TestCodeunit;
 use crate::workspace::Workspace;
 
-/// Decision returned by the classifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutingDecision {
     /// Pure-logic — runs on the Rust interpreter alone.
@@ -65,7 +64,6 @@ pub struct RoutingReason {
     pub line: Option<u32>,
 }
 
-/// Result of classifying a single (codeunit, method) pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassifyResult {
     pub codeunit_id: i32,
@@ -98,11 +96,9 @@ pub struct ClassifyResult {
 /// SHOULD force a routing upgrade, append a new entry here and the
 /// classifier picks it up on the next test pass.
 struct DisqualifyingPattern {
-    /// Substring to look for.
     needle: &'static str,
     /// Decision floor: never go below this once matched.
     floor: RoutingDecision,
-    /// Human-readable reason.
     why: &'static str,
 }
 
@@ -469,7 +465,6 @@ mod tests {
 
     #[test]
     fn rank_ordering_is_transitive() {
-        // Property-style: max picks the higher-rank decision.
         assert_eq!(
             RoutingDecision::Interp.max(RoutingDecision::InterpRecord),
             RoutingDecision::InterpRecord

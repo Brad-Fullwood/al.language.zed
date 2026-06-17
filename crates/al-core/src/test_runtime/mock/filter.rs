@@ -31,7 +31,6 @@ pub enum FilterExpr {
     Or(Vec<FilterExpr>),
     /// Logical AND of two sub-expressions (`&`).
     And(Vec<FilterExpr>),
-    /// A single atom.
     Atom(FilterAtom),
 }
 
@@ -57,7 +56,6 @@ pub enum FilterAtom {
 /// A pattern used in equality comparisons; may contain wildcards.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pattern {
-    /// The raw pattern string.
     pub text: String,
     /// Whether this is a case-sensitive match (prefixed with `@`).
     pub case_sensitive: bool,
@@ -115,8 +113,6 @@ impl<'a> Parser<'a> {
         self.pos >= self.input.len()
     }
 
-    // ── Top-level: OR terms separated by `|` ─────────────────────────────────
-
     fn parse_expr(&mut self) -> Result<FilterExpr, FilterParseError> {
         let first = self.parse_and()?;
         let mut terms = vec![first];
@@ -136,8 +132,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // ── AND terms separated by `&` ────────────────────────────────────────────
-
     fn parse_and(&mut self) -> Result<FilterExpr, FilterParseError> {
         let first = self.parse_primary()?;
         let mut terms = vec![first];
@@ -156,8 +150,6 @@ impl<'a> Parser<'a> {
             Ok(FilterExpr::And(terms))
         }
     }
-
-    // ── Primary: parenthesised group or atom ─────────────────────────────────
 
     fn parse_primary(&mut self) -> Result<FilterExpr, FilterParseError> {
         self.skip_whitespace();
@@ -207,11 +199,10 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 // Could be a range `low..high` or a plain equality/wildcard pattern.
-                // Read the first "token" then check for `..`.
                 let first_str = self.read_token()?;
                 self.skip_whitespace();
                 if self.remaining().starts_with("..") {
-                    self.pos += 2; // consume '..'
+                    self.pos += 2;
                     let second_str = self.read_token()?;
                     let lo = parse_orderable_str(&first_str).ok_or(
                         FilterParseError::InvalidRange(first_str.clone(), second_str.clone()),

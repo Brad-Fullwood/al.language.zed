@@ -13,7 +13,6 @@ use tracing::{debug, warn};
 
 use super::json_util::strip_json_comments;
 
-/// A parsed debug configuration file.
 #[derive(Debug, Clone)]
 pub struct DebugConfigFile {
     pub path: PathBuf,
@@ -39,11 +38,9 @@ pub struct DapLaunchConfig {
     pub environment_name: Option<String>,
     /// Tenant ID (Azure AD domain or "default" for on-prem)
     pub tenant: Option<String>,
-    /// Authentication method
     pub authentication: AuthMethod,
 }
 
-/// BC environment type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnvironmentType {
     OnPrem,
@@ -51,7 +48,6 @@ pub enum EnvironmentType {
     Production,
 }
 
-/// Authentication method for BC connections.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuthMethod {
     Windows,
@@ -111,9 +107,6 @@ struct VsCodeLaunchConfigJson {
     authentication: Option<String>,
 }
 
-/// Find and parse debug/launch configuration from the project root.
-///
-/// Searches for `.zed/debug.json` first, then `.vscode/launch.json`.
 pub fn find_launch_config(project_root: &Path) -> Option<DebugConfigFile> {
     let zed_path = project_root.join(".zed").join("debug.json");
     if zed_path.exists() {
@@ -207,9 +200,6 @@ fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std:
     })
 }
 
-/// Shared constructor: resolve env type + auth, then build a [`DapLaunchConfig`].
-///
-/// Returns `None` if `environment_type_str` is absent or unrecognised.
 // Every parameter corresponds to a distinct JSON field in launch.json — the
 // shape is dictated externally by VS Code's DAP launch config schema. A
 // struct here would just mirror the schema in less-clear form.
@@ -355,8 +345,6 @@ mod tests {
         );
     }
 
-    // -- parse_environment_type ------------------------------------------
-
     #[test]
     fn env_type_known_values_parse() {
         assert_eq!(
@@ -382,8 +370,6 @@ mod tests {
         assert_eq!(parse_environment_type("sandbox"), None);
         assert_eq!(parse_environment_type("ONPREM"), None);
     }
-
-    // -- build_launch_config ---------------------------------------------
 
     #[test]
     fn build_launch_config_requires_env_type() {
@@ -469,8 +455,6 @@ mod tests {
         assert_eq!(sandbox.authentication, AuthMethod::AAD);
     }
 
-    // -- parse_zed_debug_file --------------------------------------------
-
     fn write(dir: &std::path::Path, rel: &str, content: &str) -> PathBuf {
         let path = dir.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -551,8 +535,6 @@ mod tests {
         assert!(parse_zed_debug_file(&path).is_err());
     }
 
-    // -- parse_vscode_launch_file ----------------------------------------
-
     #[test]
     fn vscode_file_parses_configurations_array() {
         let tmp = tempfile::tempdir().unwrap();
@@ -623,8 +605,6 @@ mod tests {
         assert!(parse_vscode_launch_file(&path).is_err());
     }
 
-    // -- find_launch_config ----------------------------------------------
-
     #[test]
     fn find_returns_none_when_no_config_files() {
         let tmp = tempfile::tempdir().unwrap();
@@ -693,8 +673,6 @@ mod tests {
         assert_eq!(df.configs[0].name, "VsCodeCfg");
     }
 
-    // -- parse_auth_method: remaining literal arms -----------------------
-
     #[test]
     fn auth_literal_aad_arm_matches() {
         // The match has two cloud spellings: "AAD" and "MicrosoftEntraID".
@@ -709,8 +687,6 @@ mod tests {
             AuthMethod::AAD
         );
     }
-
-    // -- convert_zed_config: full field passthrough ----------------------
 
     #[test]
     fn zed_file_passes_through_onprem_server_port_and_explicit_auth() {
@@ -768,8 +744,6 @@ mod tests {
         assert!(parse_zed_debug_file(&path).is_err());
     }
 
-    // -- parse_vscode_launch_file: multi-config --------------------------
-
     #[test]
     fn vscode_file_keeps_multiple_al_configs_and_filters_others() {
         // Multiple AL configurations in one launch.json must all be retained in
@@ -807,8 +781,6 @@ mod tests {
         assert!(parse_vscode_launch_file(&path).is_err());
     }
 
-    // -- find_launch_config: vscode-only & empty-zed paths ---------------
-
     #[test]
     fn find_uses_vscode_when_no_zed_file_present() {
         // No .zed/debug.json at all: the Zed branch is skipped entirely and the
@@ -839,8 +811,6 @@ mod tests {
         );
         assert!(find_launch_config(tmp.path()).is_none());
     }
-
-    // -- find_launch_config: log call sites execute under a subscriber ---
 
     /// Minimal `tracing::Subscriber` that claims every level is enabled, forcing
     /// `debug!`/`warn!` argument closures to actually run. No-ops everything

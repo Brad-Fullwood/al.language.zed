@@ -10,17 +10,13 @@ use tree_sitter::{Node, Tree};
 /// A resolved variable declaration with its type information.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VariableDecl {
-    /// The variable name (unquoted).
     pub name: String,
     /// The primary type keyword (e.g., "Record", "Integer", "Codeunit").
     pub type_name: String,
     /// The subtype for compound types (e.g., "Customer" in `Record "Customer"`).
     pub type_subtype: Option<String>,
-    /// Whether this is a `var` parameter (pass by reference).
     pub is_var: bool,
-    /// The scope of the declaration.
     pub scope: VariableScope,
-    /// Source range of the declaration.
     pub range: tree_sitter::Range,
 }
 
@@ -29,11 +25,9 @@ pub struct VariableDecl {
 pub enum VariableScope {
     /// Local variable in a procedure/trigger var section.
     Local,
-    /// Parameter of a procedure/trigger.
     Parameter,
     /// Global variable in the object's var section.
     Global,
-    /// Implicit `this` value for the current object.
     SelfImplicit,
     /// Implicit trigger variable (Rec, xRec, CurrPage, etc.).
     TriggerImplicit,
@@ -67,7 +61,6 @@ pub fn object_kind_to_al_type(kind: &str) -> String {
         _ => {}
     }
 
-    // For all other known object types, use the display_name from language_data.
     if let Some(ot) = super::language_data::object_type_by_keyword(kind) {
         return ot.display_name.clone();
     }
@@ -76,14 +69,12 @@ pub fn object_kind_to_al_type(kind: &str) -> String {
     kind.to_string()
 }
 
-/// Resolves variable types from the tree-sitter AST.
 pub struct TypeResolver<'a> {
     tree: &'a Tree,
     source: &'a [u8],
 }
 
 impl<'a> TypeResolver<'a> {
-    /// Create a new type resolver for the given parse tree and source text.
     pub fn new(tree: &'a Tree, text: &'a str) -> Self {
         Self {
             tree,
@@ -231,7 +222,6 @@ impl<'a> TypeResolver<'a> {
         }
     }
 
-    /// Collect local variables from the var_section within a procedure/trigger.
     fn collect_local_vars(&self, proc_node: Node<'a>, result: &mut Vec<VariableDecl>) {
         let mut cursor = proc_node.walk();
         for child in proc_node.children(&mut cursor) {
@@ -246,7 +236,6 @@ impl<'a> TypeResolver<'a> {
         }
     }
 
-    /// Collect parameters from a procedure/trigger's parameter list.
     fn collect_parameters(&self, proc_node: Node<'a>, result: &mut Vec<VariableDecl>) {
         let param_list = match proc_node.child_by_field_name("parameters") {
             Some(pl) => pl,
@@ -263,9 +252,7 @@ impl<'a> TypeResolver<'a> {
         }
     }
 
-    /// Collect global variables from object_var_section nodes in the object body.
     fn collect_global_vars(&self, root: Node<'a>, result: &mut Vec<VariableDecl>) {
-        // Walk into object_declaration > object_body > object_var_section
         let mut cursor = root.walk();
         for child in root.children(&mut cursor) {
             if child.kind() == "object_declaration" {
@@ -346,7 +333,6 @@ impl<'a> TypeResolver<'a> {
         None
     }
 
-    /// Parse a regular_variable_declaration node into a VariableDecl.
     fn parse_regular_var_decl(&self, node: Node<'a>, scope: VariableScope) -> Option<VariableDecl> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text_clean(name_node)?;
@@ -385,7 +371,6 @@ impl<'a> TypeResolver<'a> {
         })
     }
 
-    /// Parse a parameter node into a VariableDecl.
     fn parse_parameter(&self, node: Node<'a>) -> Option<VariableDecl> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text_clean(name_node)?;
@@ -424,7 +409,6 @@ impl<'a> TypeResolver<'a> {
         for child in node.children(&mut cursor) {
             let kind = child.kind();
 
-            // The first keyword-like child is the type name
             if type_keyword.is_empty() && kind.starts_with("kw_") {
                 if let Ok(text) = child.utf8_text(self.source) {
                     type_keyword = text.to_string();
@@ -442,7 +426,6 @@ impl<'a> TypeResolver<'a> {
                     || kind == "identifier"
                     || kind == "string")
             {
-                // This is the subtype (e.g., "Customer" in Record "Customer")
                 if let Ok(text) = child.utf8_text(self.source) {
                     let clean = text.trim_matches('"').trim_matches('\'').to_string();
                     if !clean.is_empty() {
@@ -524,7 +507,6 @@ impl<'a> TypeResolver<'a> {
     fn add_trigger_implicit_vars(&self, root: Node<'a>, result: &mut Vec<VariableDecl>) {
         self.add_record_implicit_vars(root, result);
 
-        // Add all implicit variables except Rec/xRec (already added above).
         for iv in super::language_data::implicit_variables() {
             if iv.name.eq_ignore_ascii_case("Rec") || iv.name.eq_ignore_ascii_case("xRec") {
                 continue;
@@ -551,7 +533,6 @@ impl<'a> TypeResolver<'a> {
                 if let Some(kind_node) = child.child_by_field_name("kind") {
                     let kind = kind_node.kind();
                     if kind == "kw_table" || kind == "kw_tableextension" {
-                        // For tables, the source table is the object name
                         let mut obj_cursor = child.walk();
                         for c in child.children(&mut obj_cursor) {
                             match c.kind() {
@@ -657,7 +638,6 @@ impl<'a> TypeResolver<'a> {
             if !trimmed_lower.starts_with("dataitem(") {
                 continue;
             }
-            // Parse: dataitem(VarName; "Table Name")
             // Use the lowercase version to strip the prefix, then index back into
             // original trimmed to preserve the original casing of the variable name.
             let prefix_len = "dataitem(".len();
@@ -738,8 +718,6 @@ impl<'a> TypeResolver<'a> {
             return;
         }
 
-        // Walk backwards from the cursor to find a `begin` keyword, then
-        // a `var` keyword, then a `trigger ...()` line.
         let mut begin_line = None;
         let mut var_line = None;
         let mut trigger_line = None;
@@ -770,7 +748,6 @@ impl<'a> TypeResolver<'a> {
                     // Trigger with no var section — no locals to add
                     return;
                 }
-                // Not a var pattern — bail
                 return;
             }
 
@@ -782,7 +759,6 @@ impl<'a> TypeResolver<'a> {
             if trimmed.is_empty() || trimmed.contains(':') {
                 continue;
             }
-            // Non-declaration, non-trigger line — bail
             return;
         }
 
@@ -819,7 +795,6 @@ impl<'a> TypeResolver<'a> {
             if trimmed.is_empty() {
                 continue;
             }
-            // Parse "VarName: Type" or "VarName: Type \"Subtype\""
             if let Some(colon_pos) = trimmed.find(':') {
                 let var_name = trimmed[..colon_pos].trim();
                 let type_part = trimmed[colon_pos + 1..].trim().trim_end_matches(';');
@@ -854,7 +829,6 @@ impl<'a> TypeResolver<'a> {
         }
     }
 
-    /// Extract text from a node, removing surrounding quotes.
     fn node_text_clean(&self, node: Node<'a>) -> Option<String> {
         super::node_text_clean(node, self.source)
     }
@@ -863,7 +837,6 @@ impl<'a> TypeResolver<'a> {
 /// Parse a type expression from plain text (e.g., `Record "Customer"` → ("Record", Some("Customer"))).
 fn parse_type_text(type_text: &str) -> (String, Option<String>) {
     let trimmed = type_text.trim();
-    // Split on first space — the type keyword is before, subtype after
     if let Some(space_pos) = trimmed.find(|c: char| c.is_whitespace()) {
         let type_name = trimmed[..space_pos].to_string();
         let rest = trimmed[space_pos..].trim();
@@ -903,7 +876,6 @@ mod tests {
         let (tree, text) = parse(src);
         let resolver = TypeResolver::new(&tree, &text);
 
-        // Position inside the procedure body (line 6, "MyVar := 42")
         let result = resolver.resolve_type(
             "MyVar",
             Position {
@@ -1154,7 +1126,6 @@ mod tests {
         let (tree, text) = parse(src);
         let resolver = TypeResolver::new(&tree, &text);
 
-        // Position inside the trigger body
         let result = resolver.resolve_type(
             "Rec",
             Position {
@@ -1189,7 +1160,6 @@ mod tests {
         let (tree, text) = parse(src);
         let resolver = TypeResolver::new(&tree, &text);
 
-        // Position inside the trigger body (line 8)
         let result = resolver.resolve_type(
             "StagingRec",
             Position {
@@ -1327,7 +1297,6 @@ mod tests {
         let (tree, text) = parse(src);
         let resolver = TypeResolver::new(&tree, &text);
 
-        // Position inside the action trigger body (line 18, "ProcessReport.SetAction")
         let pos = Position {
             line: 18,
             character: 20,

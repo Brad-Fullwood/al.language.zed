@@ -84,9 +84,6 @@ codeunit 50101 "Medium Codeunit"
 }
 "#;
 
-// ---------------------------------------------------------------------------
-// bench_parse — cold parse from scratch (no prior tree).
-// ---------------------------------------------------------------------------
 fn bench_parse(c: &mut Criterion) {
     c.bench_function("parser/parse_small_30loc", |b| {
         let mut parser = AlParser::new();
@@ -105,10 +102,8 @@ fn bench_parse(c: &mut Criterion) {
     });
 }
 
-// ---------------------------------------------------------------------------
 // bench_parse_incremental — re-parse with a prior tree.
 // Models a single-character edit between calls — the typical keystroke path.
-// ---------------------------------------------------------------------------
 fn bench_parse_incremental(c: &mut Criterion) {
     c.bench_function("parser/parse_incremental_small_30loc", |b| {
         let mut parser = AlParser::new();
@@ -129,9 +124,6 @@ fn bench_parse_incremental(c: &mut Criterion) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// bench_format — full document formatting via the canonical format_al path.
-// ---------------------------------------------------------------------------
 fn bench_format(c: &mut Criterion) {
     let opts = FormatOptions::default();
 

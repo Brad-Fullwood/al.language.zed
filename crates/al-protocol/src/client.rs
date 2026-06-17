@@ -17,7 +17,6 @@ use crate::jsonrpc::{Request, Response};
 #[cfg(unix)]
 use crate::socket::socket_path;
 
-/// Default delay between retries while the daemon reports "initializing".
 #[cfg(unix)]
 const INIT_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Default total time to keep retrying "Workspace is initializing"
@@ -114,7 +113,6 @@ fn read_bounded_line<R: BufRead>(
     }
 }
 
-/// Result of trying to acquire the per-socket spawn lock for the daemon.
 #[cfg(unix)]
 enum SpawnLockResult {
     /// This caller owns the lock and is responsible for spawning + cleanup.
@@ -143,7 +141,6 @@ const STALE_LOCK_AGE: Duration = Duration::from_secs(30);
 #[cfg(unix)]
 fn try_acquire_spawn_lock(sock_path: &Path) -> std::io::Result<SpawnLockResult> {
     let lock_path = sock_path.with_extension("lock");
-    // Stale-lock recovery: the previous spawner died mid-spawn.
     if let Ok(meta) = std::fs::metadata(&lock_path) {
         if let Ok(modified) = meta.modified() {
             // `elapsed()` errors when the system clock has moved backward since
@@ -178,7 +175,6 @@ fn try_acquire_spawn_lock(sock_path: &Path) -> std::io::Result<SpawnLockResult> 
     }
 }
 
-/// A synchronous client for the al-lsp daemon.
 #[cfg(unix)]
 pub struct DaemonClient {
     reader: BufReader<UnixStream>,
@@ -189,7 +185,6 @@ pub struct DaemonClient {
     request_timeout: Duration,
     /// Total budget for retrying "Workspace is initializing" errors.
     init_wait_total: Duration,
-    /// Delay between "initializing" retries.
     init_retry_delay: Duration,
 }
 
@@ -204,7 +199,6 @@ impl DaemonClient {
         let sock_path = socket_path(project_root)
             .ok_or_else(|| "Cannot determine Unix socket path: XDG_RUNTIME_DIR is not set and no secure runtime directory is available".to_string())?;
 
-        // Fast path: daemon already running.
         if let Ok(stream) = UnixStream::connect(&sock_path) {
             return Self::from_stream(stream);
         }
@@ -233,8 +227,6 @@ impl DaemonClient {
                 result
             }
             SpawnLockResult::Contended => {
-                // Another caller is spawning the daemon. Wait for the
-                // socket, then connect — no spawn from this caller.
                 Self::wait_for_daemon(&sock_path)?;
                 let stream = UnixStream::connect(&sock_path).map_err(|e| {
                     format!(
@@ -298,7 +290,6 @@ impl DaemonClient {
         self.init_retry_delay = retry_delay;
     }
 
-    /// Override the write timeout (useful for long-running operations).
     pub fn set_write_timeout(&mut self, timeout: Duration) {
         let _ = self.writer.set_write_timeout(Some(timeout));
     }
@@ -319,7 +310,6 @@ impl DaemonClient {
         self.request_with_timeout(method, params, self.request_timeout)
     }
 
-    /// [`Self::request`] with an explicit per-call response deadline.
     pub fn request_with_timeout(
         &mut self,
         method: &str,
@@ -534,7 +524,6 @@ mod tests {
             result.is_err(),
             "Connecting to a regular file as a socket should fail"
         );
-        // Also verify that a completely nonexistent path fails
         let result2 = UnixStream::connect(bogus);
         assert!(
             result2.is_err(),
@@ -559,8 +548,7 @@ mod tests {
                 let reader = std::io::BufReader::new(&stream);
                 let mut writer = &stream;
                 for line in reader.lines() {
-                    let _ = line.expect("test"); // consume request
-                                                 // Reply with mismatched id
+                    let _ = line.expect("test");
                     let response = Response::ok(999, serde_json::json!({"status": "mismatch"}));
                     let mut json = serde_json::to_string(&response).expect("test");
                     json.push('\n');
@@ -725,7 +713,6 @@ mod tests {
                 let mut writer = &stream;
                 for line in reader.lines() {
                     let _ = line.expect("test");
-                    // Send a blank line as the "response".
                     writer.write_all(b"\n").expect("test");
                     writer.flush().expect("test");
                 }
@@ -778,7 +765,6 @@ mod tests {
             }
         }
 
-        // Releasing lets a third caller acquire.
         std::fs::remove_file(&lock_path).ok();
         let third = try_acquire_spawn_lock(&sock).expect("io ok");
         match third {
@@ -806,7 +792,6 @@ mod tests {
     /// Serialise them on a local mutex (no extra dev-dependency needed).
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Create a fresh temp directory unique to this test invocation.
     fn unique_dir(tag: &str) -> PathBuf {
         let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!(
@@ -963,7 +948,6 @@ mod tests {
         if let Some(parent) = lock_path.parent() {
             std::fs::create_dir_all(parent).expect("mkdir");
         }
-        // Real first acquirer writes a fresh lock.
         let first = try_acquire_spawn_lock(&sock).expect("io ok");
         let SpawnLockResult::Acquired(held) = first else {
             panic!("first must be acquired");

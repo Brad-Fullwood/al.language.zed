@@ -20,8 +20,6 @@ pub(super) fn source_action_add_parens(
     // e.g. "Commit;" or "MyHelper;" — not "Commit();" or "x := Commit;"
     let is_bare_call = {
         let s = trimmed;
-        // Check pattern: identifier (possibly dotted e.g. Rec.Validate) followed immediately by ';'
-        // No '(' anywhere before the ';'
         if let Some(body) = s.strip_suffix(';') {
             let body = body.trim_end();
             !body.is_empty()
@@ -39,7 +37,6 @@ pub(super) fn source_action_add_parens(
         return None;
     }
 
-    // Find where to insert "()" — right before the ';'
     // rfind returns a byte index; convert to UTF-16 code unit offset for LSP.
     let semicolon_byte = line.rfind(';')?;
     let semicolon_col = line[..semicolon_byte].encode_utf16().count() as u32;
@@ -66,12 +63,6 @@ pub(super) fn source_action_add_parens(
     })
 }
 
-/// T1210: Convert EventSubscriber string literal to identifier.
-///
-/// Detects `[EventSubscriber(..., 'EventName', ...)]` where the third argument
-/// is a string literal and offers to convert it to an unquoted identifier:
-/// `[EventSubscriber(..., EventName, ...)]`.
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,7 +88,6 @@ mod tests {
         let uri = Url::parse("file:///test/AddParens.al").unwrap();
         open_doc(&ws, &uri, al_code);
 
-        // Cursor on "Commit" (line 4, col 8)
         let range = Range {
             start: super::super::Position {
                 line: 4,
@@ -135,7 +125,6 @@ mod tests {
         let uri = Url::parse("file:///test/AddParens2.al").unwrap();
         open_doc(&ws, &uri, al_code);
 
-        // Cursor on "Commit" (line 4, col 8)
         let range = Range {
             start: super::super::Position {
                 line: 4,
@@ -158,8 +147,4 @@ mod tests {
             "Should NOT offer when already has ()"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // T1210: Convert Event Subscriber Parameter Format
-    // -----------------------------------------------------------------------
 }

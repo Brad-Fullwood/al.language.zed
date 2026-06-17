@@ -11,7 +11,6 @@ pub struct SyntaxPosition {
     pub character: u32,
 }
 
-/// A range in a document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SyntaxRange {
     pub start: SyntaxPosition,
@@ -48,7 +47,6 @@ pub enum SyntaxSymbolKind {
     Key,
 }
 
-/// A document symbol (for outline/symbol views).
 #[derive(Debug, Clone)]
 pub struct SyntaxDocumentSymbol {
     pub name: std::string::String,
@@ -59,7 +57,6 @@ pub struct SyntaxDocumentSymbol {
     pub children: Option<Vec<SyntaxDocumentSymbol>>,
 }
 
-/// Folding range kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxFoldingRangeKind {
     Comment,
@@ -67,7 +64,6 @@ pub enum SyntaxFoldingRangeKind {
     Region,
 }
 
-/// A folding range in a document.
 #[derive(Debug, Clone)]
 pub struct SyntaxFoldingRange {
     pub start_line: u32,

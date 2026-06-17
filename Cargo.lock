@@ -83,6 +83,7 @@ dependencies = [
 name = "al-explorer"
 version = "0.2.2"
 dependencies = [
+ "al-core",
  "al-protocol",
  "clap",
  "clap_complete",

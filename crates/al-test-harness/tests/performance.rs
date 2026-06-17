@@ -28,7 +28,6 @@ fn test_project_dir() -> PathBuf {
     test_project_from_env().expect("AL_TEST_PROJECT_PATH must be set to run fixture tests")
 }
 
-/// Open a representative set of files for warm-up.
 async fn open_test_files(client: &mut LspClient) {
     let files = [
         "objects/API/ItemJournalStaging.Table.al",

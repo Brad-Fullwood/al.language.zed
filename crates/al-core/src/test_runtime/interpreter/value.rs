@@ -40,7 +40,6 @@ pub enum Value {
     /// AL `Decimal` — fixed-precision via string form for now (Phase 2
     /// uses f64; Phase 3 may upgrade to a proper decimal type).
     Decimal(f64),
-    /// AL `Boolean`.
     Boolean(bool),
     /// AL `Char` — single Unicode code point.
     Char(char),
@@ -64,19 +63,16 @@ pub enum Value {
         type_name: String,
         /// The selected member name (e.g. `Open`).
         member: String,
-        /// The numeric ordinal.
         ordinal: i64,
     },
     /// AL `Record` — boxed handle into the in-memory table store.
     /// Phase 3 fills in the inner type; Phase 2 uses the placeholder shape.
     Record(RecordValue),
-    /// AL `RecordRef` — dynamic record reference.
     RecordRef(RecordValue),
     /// AL `Variant` — tagged any-value.
     Variant(Box<Value>),
     /// AL `array[N]` of homogeneous values.
     Array(Vec<Value>),
-    /// AL `List of [T]`.
     List(Vec<Value>),
     /// AL `Dictionary of [K, V]` — keyed by serialised K.
     Dict(BTreeMap<String, Value>),
@@ -91,9 +87,7 @@ pub enum Value {
 /// Phase 3 lands, the interpreter constructs these only as placeholders.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordValue {
-    /// AL table object name.
     pub table_name: String,
-    /// AL table object ID.
     pub table_id: i32,
     /// Opaque handle into the mock table store. `None` means "no current
     /// record" (e.g. after `Reset` and before `FindFirst`).
@@ -316,8 +310,6 @@ mod tests {
         );
     }
 
-    // ── Adversarial tests (adversarial-h) ─────────────────────────────────────
-
     #[test]
     fn default_for_code_returns_code_variant_adversarial_h_1() {
         // FINDING P2 wrong-result: default_for("code") returns Value::Text,
@@ -355,8 +347,6 @@ mod tests {
         );
     }
 
-    // ── default_for: full coverage of every supported type arm ────────────────
-
     #[test]
     fn default_for_covers_every_supported_type() {
         use std::cmp::Ordering;
@@ -369,7 +359,6 @@ mod tests {
         assert_eq!(Value::default_for("datetime"), Some(Value::DateTime(0)));
         assert_eq!(Value::default_for("duration"), Some(Value::Duration(0)));
         assert_eq!(Value::default_for("char"), Some(Value::Char('\0')));
-        // Code is its own variant with an empty string.
         assert!(matches!(Value::default_for("code"), Some(Value::Code(s)) if s.is_empty()));
         // Guid default is the AL nil GUID.
         match Value::default_for("guid") {
@@ -385,8 +374,6 @@ mod tests {
         );
     }
 
-    // ── Ord: cross-variant ordering follows declaration index ─────────────────
-
     #[test]
     fn cross_variant_order_follows_declaration_index() {
         // Variants are ordered by their declaration index regardless of inner
@@ -400,7 +387,6 @@ mod tests {
             "Integer variant precedes Decimal variant"
         );
 
-        // A representative ascending chain across the whole enum.
         let ascending = vec![
             Value::Null,
             Value::Empty,
@@ -451,8 +437,6 @@ mod tests {
         }
     }
 
-    // ── Ord: within-variant natural ordering for scalar arms ──────────────────
-
     #[test]
     fn within_variant_scalar_ordering() {
         assert!(Value::Integer(-5) < Value::Integer(5));
@@ -467,8 +451,6 @@ mod tests {
         assert!(Value::Duration(-1) < Value::Duration(1));
         assert!(Value::Guid("a".into()) < Value::Guid("b".into()));
     }
-
-    // ── Ord: Option compares by (ordinal, type_name, member) ──────────────────
 
     #[test]
     fn option_orders_by_ordinal_first() {
@@ -486,8 +468,6 @@ mod tests {
         // Equal triple => Equal.
         assert_eq!(opt("S", "M", 3), opt("S", "M", 3));
     }
-
-    // ── Ord: Record / RecordRef compare by (table_id, table_name, handle) ─────
 
     #[test]
     fn record_orders_by_table_id_then_name_then_handle() {
@@ -515,8 +495,6 @@ mod tests {
         };
         assert!(rref(1) < rref(2));
     }
-
-    // ── Ord: structured collections (Variant, Array, List, Dict, Blob) ────────
 
     #[test]
     fn structured_collection_ordering() {
@@ -564,8 +542,6 @@ mod tests {
         assert_eq!(err("same"), err("same"));
     }
 
-    // ── PartialEq / Eq consistency with Ord ───────────────────────────────────
-
     #[test]
     fn eq_mirrors_cmp_including_nan_self_equality() {
         // Eq contract a == a must hold even for NaN decimals (total_cmp).
@@ -581,8 +557,6 @@ mod tests {
             Some(std::cmp::Ordering::Less)
         );
     }
-
-    // ── type_name: structured-variant labels ──────────────────────────────────
 
     #[test]
     fn type_name_covers_structured_variants() {
@@ -631,8 +605,6 @@ mod tests {
         );
     }
 
-    // ── Value as a BTreeMap key (the documented purpose of the Ord impl) ──────
-
     #[test]
     fn value_is_usable_as_btreemap_key() {
         // The whole point of the total Ord impl: Value must work as a key.
@@ -643,7 +615,6 @@ mod tests {
         // Lookups round-trip, including the NaN key (total_cmp makes it stable).
         assert_eq!(map.get(&Value::Integer(1)), Some(&"one"));
         assert_eq!(map.get(&Value::Decimal(f64::NAN)), Some(&"nan"));
-        // BTreeMap keeps keys sorted: Integer(1) before Integer(2).
         let keys: Vec<_> = map.keys().cloned().collect();
         assert!(keys[0] < keys[1]);
     }

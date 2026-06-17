@@ -73,8 +73,6 @@ struct TokenResponse {
     expires_in: u64,
 }
 
-/// Cached token on disk.
-///
 /// Secret fields are zeroized on drop for the same reason as [`TokenResponse`]
 /// (F-OPEN-010); `expires_at`/`tenant` are non-secret and skipped.
 #[derive(Debug, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -184,14 +182,12 @@ pub async fn acquire_token(
     Ok(tok.access_token.clone())
 }
 
-/// Try browser-based auth code + PKCE flow first, fall back to device code.
 async fn interactive_sign_in(
     client: &reqwest::Client,
     tenant: &str,
     client_id: &str,
     on_message: &impl Fn(&str),
 ) -> Result<TokenResponse, OAuthError> {
-    // Try auth code + PKCE with local redirect (opens browser, no code entry)
     match browser_auth_flow(client, tenant, client_id, on_message).await {
         Ok(tok) => return Ok(tok),
         Err(e) => {
@@ -298,7 +294,6 @@ async fn read_http_request<R: tokio::io::AsyncRead + Unpin>(
     })
 }
 
-/// Wait for the browser redirect to our local server, extract the auth code.
 async fn wait_for_auth_callback(
     listener: &tokio::net::TcpListener,
     expected_state: &str,
@@ -307,8 +302,6 @@ async fn wait_for_auth_callback(
 
     let (stream, _) = listener.accept().await?;
 
-    // Split the stream so read_http_request can consume the read half while we
-    // keep the write half for sending the HTTP response back to the browser.
     let (read_half, mut write_half) = tokio::io::split(stream);
 
     let request = read_http_request(read_half).await?;
@@ -397,7 +390,6 @@ async fn wait_for_auth_callback(
         })
 }
 
-/// Response from the `/devicecode` endpoint.
 #[derive(Debug, Deserialize)]
 struct DeviceCodeResponse {
     device_code: String,
@@ -421,7 +413,6 @@ fn default_5() -> u64 {
     5
 }
 
-/// Token endpoint error response.
 #[derive(Debug, Deserialize)]
 struct TokenErrorResponse {
     error: String,
@@ -484,7 +475,6 @@ async fn device_code_flow(
             return Ok(resp.json().await?);
         }
 
-        // Handle HTTP 429 Too Many Requests before attempting to parse the body.
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             let retry_after = resp
                 .headers()
@@ -631,7 +621,6 @@ fn html_escape(s: &str) -> String {
     out
 }
 
-/// Minimal percent-encoding for URL query parameter values.
 fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
     for b in s.bytes() {
@@ -649,7 +638,6 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
-/// Decode percent-encoded strings from query parameters.
 fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(s.len());
     let bytes = s.as_bytes();
@@ -889,8 +877,6 @@ mod cache_io_tests {
 
     #[test]
     fn save_cached_token_cleans_up_tempfile() {
-        // Negative: after a successful save, the per-pid tempfile must NOT
-        // linger in the cache directory.
         let (_dir, path) = temp_cache_path();
         save_cached_token(&path, "common", &sample_token());
         let pid = std::process::id();
@@ -964,7 +950,6 @@ mod cache_io_tests {
         let path = dir.path().join("scratch.json");
         save_cached_token(&path, "contoso.onmicrosoft.com", &sample_token());
         assert!(path.exists());
-        // Simulate the public API on our scratch path.
         std::fs::remove_file(&path).expect("remove ok");
         assert!(!path.exists());
     }
@@ -1007,7 +992,6 @@ mod zeroize_tests {
             tok.refresh_token.is_none() || tok.refresh_token.as_deref() == Some(""),
             "refresh_token must be wiped by zeroize()"
         );
-        // Non-secret field is skipped and therefore preserved.
         assert_eq!(tok.expires_in, 3600, "expires_in is #[zeroize(skip)]");
     }
 
@@ -1540,7 +1524,6 @@ mod tests {
         assert_eq!(percent_decode("a%2"), "a%2");
         // A '%' followed by non-hex is left as a literal '%'.
         assert_eq!(percent_decode("%zz"), "%zz");
-        // Mixed valid + plus-as-space.
         assert_eq!(percent_decode("a%2Bb+c"), "a+b c");
     }
 
@@ -1745,10 +1728,6 @@ mod tests {
             other => panic!("expected Other(Invalid tenant), got {other:?}"),
         }
     }
-
-    // -----------------------------------------------------------------------
-    // wait_for_auth_callback — code extraction, CSRF state, error params
-    // -----------------------------------------------------------------------
 
     /// Drive `wait_for_auth_callback` against a loopback listener: a client
     /// connects and sends a single GET line carrying `query`, then the callback

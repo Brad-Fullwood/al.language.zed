@@ -75,7 +75,6 @@ fn eval_stmt_inner(
     ctx: &mut DispatchCtx,
 ) -> Eval {
     match node.kind() {
-        // Grammar wrapper: delegate to the single inner child.
         "statement" => {
             if let Some(inner) = named_stmt_child(node, 0) {
                 eval_stmt(inner, source, stack, ctx)
@@ -94,7 +93,6 @@ fn eval_stmt_inner(
         "exit_statement" => eval_exit(node, source, stack, ctx),
         "asserterror_statement" => eval_asserterror(node, source, stack, ctx),
         "expression_statement" => {
-            // The only named child is the expression; evaluate for side effects.
             if let Some(inner) = node.named_child(0) {
                 eval_expression_stmt(inner, source, stack, ctx)
             } else {
@@ -116,7 +114,6 @@ fn eval_block(
     let mut cursor = node.walk();
     let mut last = Eval::Normal(Value::Empty);
     for child in node.named_children(&mut cursor) {
-        // Skip comment and pure punctuation nodes.
         if is_punctuation(child.kind()) {
             continue;
         }
@@ -476,8 +473,6 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
             None => continue,
         };
 
-        // Labels live in a case_label_list node; iterate its case_label_expression
-        // children.
         let label_list = child
             .child_by_field_name("labels")
             .or_else(|| child.named_child(0));
@@ -512,8 +507,6 @@ fn eval_assignment(
     stack: &mut ScopeStack,
     _ctx: &mut DispatchCtx,
 ) -> Eval {
-    // LHS: typically an identifier or member_access.
-    // RHS: the value expression after `:=`.
     let lhs_node = match node
         .child_by_field_name("target")
         .or_else(|| named_stmt_child(node, 0))
@@ -594,7 +587,6 @@ fn eval_asserterror(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    // The body is the first (and only) named child.
     let body_node = match named_stmt_child(node, 0) {
         Some(n) => n,
         None => return Eval::Error(simple_error("asserterror: missing body statement")),

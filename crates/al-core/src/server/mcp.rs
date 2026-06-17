@@ -21,7 +21,6 @@ use tokio::sync::Notify;
 
 use crate::workspace::Workspace;
 
-/// Protocol revision this server implements.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// One exposed MCP tool: its public name, the daemon method it forwards to,
@@ -41,16 +40,16 @@ fn obj_schema(props: serde_json::Value, required: &[&str]) -> serde_json::Value 
     })
 }
 
-/// The curated tool registry.
 fn tools() -> &'static [ToolDef] {
     &[
         ToolDef {
             name: "al_build",
             method: "compile",
-            description: "Compile the AL project. By default this uses the native \
-                          CodeAnalysis bridge and fails loudly if it is unavailable; \
-                          set al.useOfficialCompiler=true to opt into dotnet alc. \
-                          Returns success, diagnostics and the .app path.",
+            description: "Compile the AL project. By default this uses the pure-Rust \
+                          native `.app` emitter with no alc or C# bridge; set \
+                          al.useOfficialCompiler=true to opt into dotnet alc for \
+                          Microsoft compiler diagnostics. Returns success, \
+                          diagnostics and the .app path.",
             schema: || obj_schema(serde_json::json!({}), &[]),
         },
         ToolDef {

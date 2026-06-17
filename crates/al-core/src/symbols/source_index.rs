@@ -143,7 +143,6 @@ impl AppSourceIndex {
 pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     let cache = SOURCE_INDEX_CACHE.get_or_init(DashMap::new);
 
-    // Return the cached index iff it is still current with the file on disk.
     let fresh = || {
         let existing = cache.get(app_path)?;
         let meta = std::fs::metadata(app_path).ok()?;
@@ -151,12 +150,10 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
         (existing.modified == modified).then(|| existing.value().clone())
     };
 
-    // --- First check (no lock) ---
     if let Some(index) = fresh() {
         return Ok(index);
     }
 
-    // --- Serialise concurrent builds for this specific path ---
     let build_locks = SOURCE_BUILD_LOCKS.get_or_init(DashMap::new);
     let lock_arc = {
         // Avoid holding the DashMap shard lock while we await the build mutex.
@@ -168,7 +165,6 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     };
     let _guard = lock_arc.lock().unwrap_or_else(|e| e.into_inner());
 
-    // --- Second check (under lock) ---
     if let Some(index) = fresh() {
         return Ok(index);
     }
@@ -178,10 +174,6 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     Ok(built)
 }
 
-/// Clear all cached source indices, freeing memory.
-///
-/// Callers should invoke this when switching projects or when cached `.app`
-/// files are no longer needed.
 pub fn clear_source_index_cache() {
     if let Some(cache) = SOURCE_INDEX_CACHE.get() {
         cache.clear();
@@ -653,7 +645,6 @@ mod tests {
             Some(tab_src)
         );
 
-        // Quoted name with id.
         let helper = entry(ObjectKind::Codeunit, 50100, "My Helper");
         assert_eq!(
             idx.extract_source_for_entry(&helper).as_deref(),
@@ -718,7 +709,6 @@ mod tests {
             Some("codeunit 1 X { }")
         );
 
-        // After clearing the cache, a fresh build allocates a new Arc.
         clear_source_index_cache();
         let c = get_or_build(&p).unwrap();
         assert!(
@@ -954,7 +944,6 @@ mod tests {
             !Arc::ptr_eq(&first, &second),
             "changed mtime must force a fresh build, not the cached Arc"
         );
-        // New index reflects the rewritten package.
         assert_eq!(
             second.source_path_for_entry(&entry(ObjectKind::Table, 2, "V2")),
             Some("src/V2.al")

@@ -73,7 +73,6 @@ pub fn get_or_parse(
     Some((text, tree))
 }
 
-/// Count all nodes in a parse tree (for diagnostic/debug purposes).
 pub fn count_nodes(tree: &tree_sitter::Tree) -> usize {
     let mut count = 0;
     let mut cursor = tree.walk();
@@ -111,13 +110,11 @@ mod tests {
         let uri = test_uri("cached");
         store.open(uri.clone(), "codeunit 50100 Test { }".to_string());
 
-        // First call: should parse
         let result = get_or_parse(&store, &uri);
         assert!(result.is_some());
         let (text, _tree) = result.unwrap();
         assert_eq!(&*text, "codeunit 50100 Test { }");
 
-        // Second call: should use cache (same version)
         let result2 = get_or_parse(&store, &uri);
         assert!(result2.is_some());
     }
@@ -149,7 +146,6 @@ mod tests {
             t.join().unwrap();
         }
 
-        // Single shared cache entry after the storm.
         assert!(store.get_cached_tree(&uri).is_some());
     }
 
@@ -164,12 +160,9 @@ mod tests {
         let uri = test_uri("skew");
         store.open(uri.clone(), "codeunit 50100 A { }".to_string());
 
-        // Caller captures text + version atomically (version 0).
         let (_old_text, captured_version) = store.get_text_and_version(&uri).unwrap();
         assert_eq!(captured_version, 0);
 
-        // Concurrent edit advances the document to version 1 and another thread
-        // parses + caches the new version.
         store.apply_changes(
             &uri,
             &[crate::documents::TextChange {
@@ -185,7 +178,6 @@ mod tests {
         // The live-version-only check would (incorrectly) hand back the new tree.
         assert!(store.get_cached_tree(&uri).is_some());
 
-        // The version-pinned check must reject it for our captured version.
         assert!(
             store
                 .get_cached_tree_at_version(&uri, captured_version)
@@ -193,7 +185,6 @@ mod tests {
             "must not serve a newer-version tree to a caller holding older text"
         );
 
-        // It does serve the matching version.
         assert!(store
             .get_cached_tree_at_version(&uri, new_version)
             .is_some());
@@ -205,11 +196,9 @@ mod tests {
         let uri = test_uri("change");
         store.open(uri.clone(), "codeunit 50100 A { }".to_string());
 
-        // Parse and cache
         let _ = get_or_parse(&store, &uri);
         assert!(store.get_cached_tree(&uri).is_some());
 
-        // Change document
         store.apply_changes(
             &uri,
             &[crate::documents::TextChange {
@@ -218,10 +207,8 @@ mod tests {
             }],
         );
 
-        // Cache should be invalidated
         assert!(store.get_cached_tree(&uri).is_none());
 
-        // Re-parse
         let result = get_or_parse(&store, &uri);
         assert!(result.is_some());
         assert_eq!(&*result.unwrap().0, "codeunit 50100 B { }");

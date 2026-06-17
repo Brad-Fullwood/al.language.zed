@@ -227,7 +227,6 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                         if status == "stopped" {
                             println!("Debug session stopped.");
                         } else {
-                            // e.g. "no active debug session"
                             println!("Debug stop: {status}.");
                         }
                     }

@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
-/// The kind of an AL object.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
 )]
@@ -152,7 +151,6 @@ impl ObjectKind {
         }
     }
 
-    /// Whether this kind is an extension type.
     pub fn is_extension(&self) -> bool {
         self.base_kind().is_some()
     }
@@ -184,7 +182,6 @@ impl ObjectKind {
     }
 }
 
-/// A method/procedure on an AL object.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MethodSymbol {
     pub name: String,
@@ -210,7 +207,6 @@ impl fmt::Display for MethodSymbol {
     }
 }
 
-/// A method parameter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParameterSymbol {
     pub name: String,
@@ -237,7 +233,6 @@ pub struct AttributeSymbol {
     pub arguments: Vec<String>,
 }
 
-/// A property on an object, field, key, etc.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PropertyValue {
     pub name: String,
@@ -245,7 +240,6 @@ pub struct PropertyValue {
     pub value: String,
 }
 
-/// A key on a table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeySymbol {
     pub name: String,
@@ -254,7 +248,6 @@ pub struct KeySymbol {
     pub properties: Vec<PropertyValue>,
 }
 
-/// A global variable on an object.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VariableSymbol {
     pub name: String,
@@ -264,7 +257,6 @@ pub struct VariableSymbol {
     pub is_protected: bool,
 }
 
-/// A field on a table or table extension.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldSymbol {
     pub id: i32,
@@ -275,7 +267,6 @@ pub struct FieldSymbol {
     pub properties: Vec<PropertyValue>,
 }
 
-/// A control on a page or page extension.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlSymbol {
     pub name: String,
@@ -285,15 +276,12 @@ pub struct ControlSymbol {
     pub children: Vec<ControlSymbol>,
 }
 
-/// An enum value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnumValueSymbol {
     pub ordinal: i32,
     pub name: String,
 }
 
-/// A complete symbol entry for one AL object.
-///
 /// Derives `Default` for test construction with struct update syntax:
 /// `SymbolEntry { kind: ObjectKind::Page, name: "X".into(), ..Default::default() }`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -309,13 +297,11 @@ pub struct SymbolEntry {
     /// `id: -1` rows) but remain in the index for type resolution.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub synthetic: bool,
-    /// For extensions: the name of the object being extended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
     /// For codeunits: list of interface names from `implements` clause. Used by go-to-implementation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub implements: Vec<String>,
-    /// Package this symbol came from.
     #[serde(default)]
     pub package: String,
     /// AL namespace this object belongs to (empty if none). Used by namespace-aware code actions.
@@ -337,7 +323,6 @@ pub struct SymbolEntry {
     pub variables: Vec<VariableSymbol>,
 }
 
-/// A parsed symbol package (one .app file).
 #[derive(Debug, Clone)]
 pub struct SymbolPackage {
     pub app_id: String,
@@ -353,20 +338,15 @@ pub struct SymbolPackage {
     pub object_count: usize,
 }
 
-/// A composed object: base + merged extensions.
 /// Serialized via `serde_json::to_value` in daemon responses. `Arc<SymbolEntry>`
 /// fields are serializable because the workspace `serde` dependency enables the `rc` feature.
 #[derive(Debug, Clone, Serialize)]
 pub struct ComposedObject {
     pub base: Arc<SymbolEntry>,
     pub extensions: Vec<Arc<SymbolEntry>>,
-    /// Merged fields (base + all extension fields).
     pub all_fields: Vec<FieldSymbol>,
-    /// Merged methods (base + all extension methods).
     pub all_methods: Vec<MethodSymbol>,
-    /// Merged controls (base + all extension controls).
     pub all_controls: Vec<ControlSymbol>,
-    /// Merged enum values (base + all extension values).
     pub all_enum_values: Vec<EnumValueSymbol>,
 }
 
@@ -622,12 +602,10 @@ pub(crate) struct EnumValueJson {
 }
 
 impl SymbolReferenceJson {
-    /// Convert to a flat list of `SymbolEntry` values.
     pub fn into_entries(self, package_name: &str) -> Vec<SymbolEntry> {
         let mut entries = Vec::new();
         let mut stack = vec![self];
         while let Some(mut current) = stack.pop() {
-            // Drain nested namespaces onto the stack before processing this level
             let nested = std::mem::take(&mut current.namespaces);
             for ns in nested {
                 stack.push(ns);
@@ -665,8 +643,6 @@ impl SymbolReferenceJson {
             (ObjectKind::Entitlement, self.entitlements),
         ];
 
-        // Collect Option-typed parameters to create synthetic enum entries.
-        // Scan all objects before converting, since we borrow their contents.
         // Key: (object_kind, object_name, field_or_param_name) — prevents cross-object
         // collisions where two unrelated objects share the same field/parameter name but
         // have different OptionMembers. Each (object, field) pair produces its own entry.
@@ -681,7 +657,6 @@ impl SymbolReferenceJson {
                     existing_enum_names.insert(obj.name.to_lowercase());
                 }
             }
-            // Scan methods/fields for Option params with OptionMembers
             for obj in objects {
                 for method in &obj.methods {
                     for param in &method.parameters {
@@ -718,7 +693,6 @@ impl SymbolReferenceJson {
             }
         }
 
-        // Create synthetic enum entries from Option-typed parameters.
         // Each (object_kind, object_name, field_name) triple produces a separate entry
         // named after the field, so type resolution can find it by field/parameter name.
         for ((_obj_kind, _obj_name, field_name), members) in &option_enums {

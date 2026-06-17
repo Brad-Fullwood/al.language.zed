@@ -5,10 +5,8 @@
 
 use tree_sitter::{Node, Tree};
 
-/// Complexity measurement for a single procedure.
 #[derive(Debug, Clone)]
 pub struct ProcedureComplexity {
-    /// Procedure name.
     pub name: String,
     /// Cyclomatic complexity (decision-point count + 1).
     pub cyclomatic: u32,
@@ -18,7 +16,6 @@ pub struct ProcedureComplexity {
     pub line: u32,
 }
 
-/// Compute complexity metrics for all procedures in a parsed tree.
 pub fn compute_complexity(tree: &Tree, text: &str) -> Vec<ProcedureComplexity> {
     let root = tree.root_node();
     let source = text.as_bytes();

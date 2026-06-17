@@ -131,13 +131,8 @@ mod tests {
     use crate::workspace::Workspace;
     use std::path::PathBuf;
 
-    // -------------------------------------------------------------------------
-    // ascii_contains_ci — the pure substring matcher behind every search.
-    // -------------------------------------------------------------------------
-
     #[test]
     fn ascii_contains_ci_matches_case_insensitively() {
-        // query_lower must already be lowercase; haystack may be any casing.
         assert!(ascii_contains_ci("CustomerLedgerEntry", "customer"));
         assert!(ascii_contains_ci("customerledgerentry", "customer"));
         assert!(ascii_contains_ci("CUSTOMERLEDGERENTRY", "customer"));
@@ -145,7 +140,6 @@ mod tests {
 
     #[test]
     fn ascii_contains_ci_matches_interior_and_boundary_substrings() {
-        // Start, middle, and end positions all match.
         assert!(ascii_contains_ci("MyTestTable", "my"));
         assert!(ascii_contains_ci("MyTestTable", "test"));
         assert!(ascii_contains_ci("MyTestTable", "table"));
@@ -158,19 +152,13 @@ mod tests {
 
     #[test]
     fn ascii_contains_ci_query_longer_than_haystack_is_false() {
-        // The early `q.len() > h.len()` guard: a query longer than the
-        // haystack can never be a substring. Without this guard `windows(q.len())`
-        // on a shorter slice yields nothing (also false), but the guard avoids
-        // the work and is the documented fast path.
         assert!(!ascii_contains_ci("abc", "abcd"));
         assert!(!ascii_contains_ci("", "x"));
     }
 
     #[test]
     fn ascii_contains_ci_single_byte_query_boundary() {
-        // The minimal non-empty query. Both search callers guard `!query.is_empty()`
-        // before calling this function (a zero-length query would hit `windows(0)`,
-        // which panics), so the smallest input this is ever invoked with is one byte.
+        // `windows(0)` panics; callers guard `!query.is_empty()` so the minimum input is 1 byte.
         assert!(ascii_contains_ci("Foo", "f"));
         assert!(ascii_contains_ci("Foo", "o"));
         assert!(!ascii_contains_ci("Foo", "z"));
@@ -180,12 +168,6 @@ mod tests {
     fn ascii_contains_ci_full_string_equality_matches() {
         assert!(ascii_contains_ci("Foo", "foo"));
     }
-
-    // -------------------------------------------------------------------------
-    // Helpers to build a real, populated workspace via the file index. Using
-    // add_file exercises the genuine parse + index path so object_info and
-    // child symbols are produced exactly as in production.
-    // -------------------------------------------------------------------------
 
     fn ws_with_objects() -> Workspace {
         let ws = Workspace::new();
@@ -204,10 +186,6 @@ mod tests {
         );
         ws
     }
-
-    // -------------------------------------------------------------------------
-    // workspace_search
-    // -------------------------------------------------------------------------
 
     #[test]
     fn workspace_search_empty_query_returns_all_up_to_limit() {
@@ -234,7 +212,6 @@ mod tests {
     #[test]
     fn workspace_search_filters_by_name_case_insensitively() {
         let ws = ws_with_objects();
-        // Lowercase query must still match mixed-case object names.
         let results = workspace_search(&ws, "customer", 100);
         assert_eq!(results.len(), 2, "two objects contain 'customer'");
         for r in &results {
@@ -252,7 +229,6 @@ mod tests {
     #[test]
     fn workspace_search_respects_limit() {
         let ws = ws_with_objects();
-        // 3 objects exist but the limit caps the result set.
         let results = workspace_search(&ws, "", 2);
         assert_eq!(results.len(), 2, "limit must cap the number of results");
     }
@@ -277,10 +253,6 @@ mod tests {
         assert_eq!(r.info.name, "Vendor Card");
         assert_eq!(r.info.kind, "page");
     }
-
-    // -------------------------------------------------------------------------
-    // workspace_search_children
-    // -------------------------------------------------------------------------
 
     fn ws_with_children() -> Workspace {
         let ws = Workspace::new();
@@ -319,7 +291,6 @@ mod tests {
     #[test]
     fn workspace_search_children_filters_case_insensitively() {
         let ws = ws_with_children();
-        // Lowercase query against mixed-case procedure names.
         let results = workspace_search_children(&ws, "subtract", 100);
         assert_eq!(results.len(), 1, "only SubtractNumbers contains 'subtract'");
         assert_eq!(results[0].name, "SubtractNumbers");
@@ -385,7 +356,6 @@ mod tests {
                 "every child reports the table as its container"
             );
         }
-        // And the name filter still excludes children whose name doesn't match.
         let none = workspace_search_children(&ws, "ZZZ_no_such_child", 100);
         assert!(
             none.is_empty(),

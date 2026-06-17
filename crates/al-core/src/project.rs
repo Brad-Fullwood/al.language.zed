@@ -8,11 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::errors::DiscoveryError;
 
-// ---------------------------------------------------------------------------
-// Project types
-// ---------------------------------------------------------------------------
-
-/// A discovered AL project on disk.
 #[derive(Debug, Clone)]
 pub struct AlProject {
     pub root: PathBuf,
@@ -23,7 +18,6 @@ pub struct AlProject {
     pub server_configs: Vec<crate::launch::BcServerConfig>,
 }
 
-/// Parsed app.json manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppManifest {
@@ -46,7 +40,6 @@ pub struct AppManifest {
 /// Canonical type from crate::symbols — unified so no field-for-field conversion is needed.
 pub use crate::symbols::nuget::AppDependency;
 
-/// A NuGet feed for BC symbol packages.
 #[derive(Debug, Clone)]
 pub struct NuGetFeed {
     pub name: String,
@@ -110,11 +103,6 @@ impl AlProject {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Discovery functions
-// ---------------------------------------------------------------------------
-
-/// Find an AL project starting from the given directory, searching upward.
 pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
     let start = if start.is_absolute() {
         start.to_path_buf()
@@ -177,8 +165,6 @@ fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
         return Ok(None);
     }
 
-    // Refuse pathological inputs before allocating. A 100 GB `app.json` on a
-    // sparse filesystem would have OOM'd the daemon in `read_to_string`.
     let size = std::fs::metadata(&app_json_path)?.len();
     if size > MAX_APP_JSON_BYTES {
         return Err(DiscoveryError::InvalidAppJson {
@@ -280,7 +266,6 @@ fn dedup_package_versions(packages: Vec<PathBuf>) -> Vec<PathBuf> {
     result
 }
 
-/// Returns the 3 public BC NuGet feeds (Azure DevOps hosted).
 pub fn nuget_feeds() -> Vec<NuGetFeed> {
     vec![
         NuGetFeed {
@@ -302,7 +287,6 @@ pub fn nuget_feeds() -> Vec<NuGetFeed> {
     ]
 }
 
-/// Get the user's home directory.
 pub fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from).or({
         #[cfg(target_os = "windows")]

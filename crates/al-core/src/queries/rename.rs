@@ -5,8 +5,6 @@ use url::Url;
 use super::{Position, Range, TextEdit, WorkspaceEdit};
 use crate::workspace::Workspace;
 
-/// Prepare rename: check if the symbol at position can be renamed.
-/// Returns the range of the symbol and its current name.
 pub fn prepare_rename(
     workspace: &Workspace,
     uri: &Url,
@@ -28,7 +26,6 @@ pub fn prepare_rename(
     ))
 }
 
-/// Rename the symbol at the given position to `new_name`.
 #[must_use]
 pub fn rename(
     workspace: &Workspace,
@@ -111,7 +108,7 @@ pub fn rename(
         changes.push((uri.clone(), edits));
     }
 
-    let current_path = uri.to_file_path().ok(); // SILENT: non-file URIs legitimately have no path
+    let current_path = uri.to_file_path().ok();
     for entry in workspace.file_index.files.iter() {
         let file_path = entry.key().clone();
         if current_path.as_ref() == Some(&file_path) {
@@ -121,7 +118,6 @@ pub fn rename(
             Ok(u) => u,
             Err(_) => continue,
         };
-        // Use cached parse tree — avoids re-parsing every workspace file on each rename.
         let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(&file_path) else {
             continue;
         };
@@ -194,7 +190,7 @@ mod tests {
         let pos = Position {
             line: 6,
             character: 8,
-        }; // "MyVar" in assignment
+        };
         let result = prepare_rename(&ws, &uri, pos);
         assert!(result.is_some(), "should find renameable identifier");
         let (range, name) = result.unwrap();
@@ -219,7 +215,7 @@ mod tests {
         let pos = Position {
             line: 3,
             character: 4,
-        }; // "begin" keyword
+        };
         let result = prepare_rename(&ws, &uri, pos);
         assert!(result.is_none(), "keywords should not be renameable");
     }
@@ -287,7 +283,6 @@ mod tests {
 "#;
         open_doc(&ws, &uri, src);
 
-        // Cursor on Foo's `Status` usage on line 6.
         let pos = Position {
             line: 6,
             character: 8,
@@ -296,7 +291,6 @@ mod tests {
         let (edit_uri, edits) = &result.changes[0];
         assert_eq!(edit_uri, &uri);
 
-        // Every edit must land within Foo's source range (lines 2..=7).
         for e in edits {
             assert!(
                 e.range.start.line <= 7,
@@ -304,7 +298,6 @@ mod tests {
                 e.range.start.line
             );
         }
-        // And Foo's two `Status` sites must both be renamed.
         assert!(
             edits.len() >= 2,
             "expected at least 2 edits in Foo, got {}",
@@ -332,14 +325,12 @@ mod tests {
 }
 "#;
         open_doc(&ws, &uri, src);
-        // Cursor on `Foo` declaration name (line 2).
         let pos = Position {
             line: 2,
             character: 14,
         };
         let result = rename(&ws, &uri, pos, "Baz").expect("rename should produce edits");
         let (_uri, edits) = &result.changes[0];
-        // Both the declaration on line 2 and the call on line 8 should rename.
         let touched_lines: Vec<u32> = edits.iter().map(|e| e.range.start.line).collect();
         assert!(
             touched_lines.contains(&2) && touched_lines.contains(&8),
@@ -351,16 +342,12 @@ mod tests {
     fn rename_returns_none_when_no_refs() {
         let ws = Workspace::new();
         let uri = test_uri();
-        // Position on something with no textual references
         open_doc(&ws, &uri, "codeunit 50100 \"X\" { }");
         let pos = Position {
             line: 0,
             character: 0,
         };
         let result = rename(&ws, &uri, pos, "Y");
-        // Should be None — no variable refs for "codeunit" keyword
-        // (or Some if tree-sitter finds refs)
-        // Just verify it doesn't panic
         let _ = result;
     }
 
@@ -387,7 +374,6 @@ mod tests {
 
     #[test]
     fn make_rename_text_detects_quotes_from_text() {
-        // When node_kind is empty but text is quoted
         assert_eq!(make_rename_text("", "\"Quoted\"", "Renamed"), "\"Renamed\"");
     }
 }

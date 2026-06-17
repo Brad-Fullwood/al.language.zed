@@ -60,7 +60,6 @@ fn api_supports_schema(lock_path: &Path) -> bool {
     false
 }
 
-/// Parse a `key = "value"` line, returning the value when `key` matches.
 fn parse_toml_str(line: &str, key: &str) -> Option<String> {
     let rest = line.strip_prefix(key)?.trim_start();
     let rest = rest.strip_prefix('=')?.trim();
@@ -68,7 +67,6 @@ fn parse_toml_str(line: &str, key: &str) -> Option<String> {
     Some(inner.to_string())
 }
 
-/// True when `version` ("MAJOR.MINOR.…") is >= 0.8.0.
 fn version_ge_0_8(version: &str) -> bool {
     let mut parts = version.split('.');
     let major: u64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);

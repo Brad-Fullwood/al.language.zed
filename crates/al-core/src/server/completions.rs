@@ -4,7 +4,6 @@ use tower_lsp::lsp_types::*;
 
 use super::AlServer;
 
-/// Handle textDocument/completion.
 pub(crate) async fn handle_completion(
     server: &AlServer,
     uri: &Url,

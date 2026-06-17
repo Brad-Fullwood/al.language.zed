@@ -12,7 +12,6 @@ use tracing::{debug, warn};
 use super::app_reader;
 use super::model::{ObjectKind, SymbolEntry, SymbolPackage};
 
-/// Maximum number of entries kept in the default-completion cache.
 const DEFAULT_COMPLETIONS_CAP: usize = 30;
 
 /// Thread-safe symbol index over multiple AL packages.
@@ -22,19 +21,12 @@ pub struct SymbolIndex {
     /// (e.g., a Table and a Page with the same name, or objects from different packages).
     by_name: DashMap<String, Vec<Arc<SymbolEntry>>>,
     by_kind_id: DashMap<(ObjectKind, i32), Vec<Arc<SymbolEntry>>>,
-    /// Objects keyed by ObjectKind (secondary index for O(1) kind lookups).
     by_kind: DashMap<ObjectKind, Vec<Arc<SymbolEntry>>>,
-    /// Extension objects keyed by lowercase extends name (secondary index).
     by_extends: DashMap<String, Vec<Arc<SymbolEntry>>>,
-    /// All entries with pre-computed lowercase names (for search).
     all: DashMap<usize, (Arc<SymbolEntry>, String)>,
-    /// Next ID for the `all` map.
     next_id: std::sync::atomic::AtomicUsize,
-    /// Maps lowercase package name -> .app file path on disk.
     app_paths: DashMap<String, std::path::PathBuf>,
-    /// Lazy-loaded mapping of (PackageName, ObjectKind, ID) -> ZIP internal path.
     source_path_cache: DashMap<(String, ObjectKind, i32), String>,
-    /// Cached composed views keyed by (ObjectKind, lowercase name).
     composed_cache: DashMap<(ObjectKind, String), Arc<super::model::ComposedObject>>,
     /// Pre-computed slice of the first DEFAULT_COMPLETIONS_CAP entries for O(1)
     /// default completion responses. Populated by add_entries/add_entries_owned.
@@ -102,7 +94,6 @@ impl SymbolIndex {
                         );
                         self.app_paths
                             .insert(pkg.name.to_lowercase(), path.to_path_buf());
-                        // Use add_entries_owned to move objects into Arc without cloning.
                         self.add_entries_owned(std::mem::take(&mut pkg.objects));
                         Some(pkg)
                     }
@@ -148,7 +139,6 @@ impl SymbolIndex {
                             objects = pkg.objects.len(),
                             "Loaded package (cache miss)"
                         );
-                        // Save to cache for next time (before taking ownership of objects)
                         if let Err(e) = cache.save(path, &pkg) {
                             warn!(path = %path.display(), error = %e, "Failed to save to cache");
                         }
@@ -168,7 +158,6 @@ impl SymbolIndex {
         results
     }
 
-    /// Load a package from raw bytes (useful for in-memory / test scenarios).
     pub fn load_package_bytes(
         &self,
         data: &[u8],
@@ -185,7 +174,6 @@ impl SymbolIndex {
 
         let mut entries = Vec::new();
         for re in super::language_data::runtime_enums() {
-            // Skip if already present in the index (from a package)
             if !self.get_by_name(&re.name).is_empty() {
                 continue;
             }
@@ -225,7 +213,6 @@ impl SymbolIndex {
         }
     }
 
-    /// Insert a single Arc<SymbolEntry> into all five index maps.
     fn add_arc(&self, arc: Arc<SymbolEntry>) -> Arc<SymbolEntry> {
         let name_lower = arc.name.to_lowercase();
         let seq = self
@@ -282,7 +269,6 @@ impl SymbolIndex {
     /// Called after all entries from a batch are indexed. Uses a fast read-check
     /// to skip acquiring the write lock when the cache is already full.
     fn update_default_completions(&self, new_arcs: &[Arc<SymbolEntry>]) {
-        // Fast path: cache already full — skip write lock entirely.
         if self
             .default_completions
             .read()
@@ -315,8 +301,6 @@ impl SymbolIndex {
             .clone()
     }
 
-    /// Case-insensitive substring search across all object names.
-    /// Returns up to `limit` matching entries.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<SymbolEntry>> {
         let mut results = Vec::new();
 
@@ -325,7 +309,6 @@ impl SymbolIndex {
         // real enums with `id: -1` rows (FB-2). Exact-name lookups
         // (`get_by_name`) still see them for type resolution.
         if query.is_empty() {
-            // Short-circuit: return the first `limit` entries without filtering
             for entry in self.all.iter() {
                 let (arc, _) = entry.value();
                 if arc.synthetic {
@@ -352,15 +335,12 @@ impl SymbolIndex {
         results
     }
 
-    /// Search for objects within a specific package, case-insensitive substring search.
     pub fn search_in_package(&self, package_name: &str, query: &str) -> Vec<Arc<SymbolEntry>> {
         let mut results = Vec::new();
         let query_lower = query.to_lowercase();
 
         for entry in self.all.iter() {
             let (arc, name_lower) = entry.value();
-            // The package name on the entry might be differently cased, but
-            // usually matches; compare without allocating a lowercased copy.
             if !arc.synthetic
                 && arc.package.eq_ignore_ascii_case(package_name)
                 && (query_lower.is_empty() || name_lower.contains(&query_lower))
@@ -372,7 +352,6 @@ impl SymbolIndex {
         results
     }
 
-    /// Exact name match (case-insensitive). Returns all entries with that name.
     pub fn get_by_name(&self, name: &str) -> Vec<Arc<SymbolEntry>> {
         let key = name.to_lowercase();
         self.by_name
@@ -472,14 +451,10 @@ impl SymbolIndex {
         self.composed_cache.clear();
     }
 
-    /// Check if the composed cache is empty (for testing).
     pub fn is_composed_cache_empty(&self) -> bool {
         self.composed_cache.is_empty()
     }
 
-    /// Find event publishers and subscribers matching a name pattern.
-    ///
-    /// Convenience method that delegates to [`super::events::get_events`].
     pub fn get_events(&self, query: &str) -> super::events::EventResults {
         super::events::get_events(self, query)
     }
@@ -512,16 +487,13 @@ impl SymbolIndex {
             return;
         }
 
-        // Use Arc pointer equality to filter entries from the secondary maps.
         let ptrs: std::collections::HashSet<*const SymbolEntry> =
             to_remove.iter().map(|(_, arc)| Arc::as_ptr(arc)).collect();
 
-        // Remove from `all`.
         for (seq, _) in &to_remove {
             self.all.remove(seq);
         }
 
-        // Filter every Vec<Arc<SymbolEntry>>-valued DashMap secondary index.
         Self::retain_arcs_not_in(&self.by_name, &ptrs);
         Self::retain_arcs_not_in(&self.by_kind_id, &ptrs);
         Self::retain_arcs_not_in(&self.by_kind, &ptrs);
@@ -612,15 +584,12 @@ mod tests {
             make_entry(ObjectKind::Codeunit, 50100, "Sales Management"),
         ]);
 
-        // Substring search
         let results = index.search("customer", 10);
         assert_eq!(results.len(), 3); // Customer, Customer Ledger Entry, Customer Card
 
-        // Limit
         let results = index.search("customer", 2);
         assert_eq!(results.len(), 2);
 
-        // Case insensitive
         let results = index.search("SALES", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "Sales Management");
@@ -752,20 +721,15 @@ mod tests {
     #[test]
     fn remove_package_entries_clears_all_secondary_indexes() {
         let index = SymbolIndex::new();
-        // 1 table + 1 page-extension that extends it. After remove_package_entries,
-        // by_name(customer/customer ext)/by_kind_id((Table,50100), (PageExt,...))/
-        // by_kind(Table)/by_extends("Customer") must all be empty.
         let mut entries = vec![
             make_entry(ObjectKind::Table, 50100, "Customer"),
             make_extension(ObjectKind::PageExtension, 50100, "Customer Ext", "Customer"),
         ];
-        // Use a distinct package name we can target.
         for e in &mut entries {
             e.package = "Drop Target".to_string();
         }
         index.add_entries(&entries);
 
-        // Pre-state: every secondary index has the entries.
         assert!(!index.get_by_name("Customer").is_empty());
         assert!(!index.get_by_name("Customer Ext").is_empty());
         assert!(!index.get_by_id(ObjectKind::Table, 50100).is_empty());
@@ -773,10 +737,8 @@ mod tests {
         assert!(!index.get_by_kind(ObjectKind::Table).is_empty());
         assert!(!index.get_extensions_of("Customer").is_empty());
 
-        // Drop everything from "Drop Target".
         index.remove_package_entries("Drop Target");
 
-        // Every secondary index must report empty for the removed package.
         assert!(index.get_by_name("Customer").is_empty(), "by_name leak");
         assert!(
             index.get_by_name("Customer Ext").is_empty(),

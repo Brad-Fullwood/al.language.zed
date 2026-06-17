@@ -100,7 +100,7 @@ Examples:
     Packages,
     /// Show dependency graph
     Deps,
-    /// Compile the AL project using alc (produces .app file)
+    /// Compile the AL project (native by default; alc with al.useOfficialCompiler)
     #[command(after_help = "\
 Examples:
   al compile
@@ -110,6 +110,15 @@ Examples:
         /// Project directory (default: current dir)
         #[arg(short, long)]
         project: Option<String>,
+    },
+    /// Build a deployable .app natively (pure Rust, no Microsoft alc)
+    PackNative {
+        /// Project directory (default: current dir)
+        #[arg(short, long)]
+        project: Option<String>,
+        /// Output .app path (default: <project>/output/<publisher>_<name>_<version>.app)
+        #[arg(short, long)]
+        out: Option<String>,
     },
     /// Run native lint rules on AL file(s)
     #[command(after_help = "\
@@ -833,6 +842,9 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::Packages => lsp::cmd_packages(cli.json),
         Commands::Deps => lsp::cmd_deps(cli.json),
         Commands::Compile { project } => build::cmd_compile(project.as_deref(), cli.json),
+        Commands::PackNative { project, out } => {
+            build::cmd_pack_native(project.as_deref(), out.as_deref(), cli.json)
+        }
         Commands::Lint {
             file,
             all,

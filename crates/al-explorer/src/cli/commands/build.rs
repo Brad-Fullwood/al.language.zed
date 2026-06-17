@@ -62,8 +62,8 @@ fn print_build_result(result: &Value, json: bool) -> ExitCode {
     }
 }
 
-/// Real-project compiles routinely exceed the default 30s request
-/// deadline (alc on a large workspace, cold .NET start). 10 minutes.
+/// Real-project compiles can exceed the default 30s request deadline,
+/// especially when the user opts into Microsoft's compiler. 10 minutes.
 const BUILD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 pub fn cmd_compile(project_dir: Option<&str>, json: bool) -> ExitCode {
@@ -88,6 +88,52 @@ pub fn cmd_package(json: bool) -> ExitCode {
         Ok(result) => print_build_result(&result, json),
         Err(e) => report_error(&e, json),
     }
+}
+
+/// Build a deployable `.app` natively (pure Rust, no Microsoft `alc`): extract
+/// symbols, emit `SymbolReference.json`, and package the NAVX/ZIP. Writes to
+/// `--out`, or `<project>/output/<publisher>_<name>_<version>.app`.
+pub fn cmd_pack_native(project_dir: Option<&str>, out: Option<&str>, json: bool) -> ExitCode {
+    let dir = match project_dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => std::env::current_dir().unwrap_or_default(),
+    };
+    // Our native compiler identifies itself in the manifest's <Build>.
+    let compiler_version = concat!("al-explorer/", env!("CARGO_PKG_VERSION"));
+    let timestamp = al_core::emit::now_timestamp();
+
+    let built = match al_core::emit::build_app_from_project(&dir, compiler_version, &timestamp) {
+        Ok(b) => b,
+        Err(e) => return report_error(&format!("native pack failed: {e}"), json),
+    };
+
+    let out_path = match out {
+        Some(o) => std::path::PathBuf::from(o),
+        None => dir.join("output").join(&built.file_name),
+    };
+    if let Some(parent) = out_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return report_error(&format!("creating {}: {e}", parent.display()), json);
+        }
+    }
+    if let Err(e) = std::fs::write(&out_path, &built.bytes) {
+        return report_error(&format!("writing {}: {e}", out_path.display()), json);
+    }
+
+    if json {
+        print_json(&serde_json::json!({
+            "success": true,
+            "appPath": out_path.to_string_lossy(),
+            "bytes": built.bytes.len(),
+        }));
+    } else {
+        println!(
+            "Native package written: {} ({} bytes)",
+            out_path.display(),
+            built.bytes.len()
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {

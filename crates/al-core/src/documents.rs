@@ -51,7 +51,6 @@ struct CachedTree {
     last_access: u64,
 }
 
-/// Store for open documents.
 pub struct DocumentStore {
     docs: DashMap<Url, Document>,
     trees: DashMap<Url, CachedTree>,
@@ -115,7 +114,6 @@ impl DocumentStore {
             .store(cap.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Next monotonic access stamp for the LRU tree cache.
     #[inline]
     fn next_tree_stamp(&self) -> u64 {
         self.tree_access_counter
@@ -136,7 +134,6 @@ impl DocumentStore {
         if cap == 0 {
             return;
         }
-        // Cheap fast-path: nothing to do while under the cap.
         let len = self.trees.len();
         if len <= cap {
             return;
@@ -237,8 +234,6 @@ impl DocumentStore {
         self.parse_locks.remove(uri);
     }
 
-    /// Return the document text as a cloned `String`.
-    ///
     /// Prefer `get_text_arc` on hot paths to avoid deep-copying large file content.
     pub fn get_text(&self, uri: &Url) -> Option<String> {
         self.docs.get(uri).map(|d| d.text_cache.as_ref().clone())
@@ -274,12 +269,10 @@ impl DocumentStore {
         self.docs.get(uri).map(|d| d.version)
     }
 
-    /// Number of open documents.
     pub fn len(&self) -> usize {
         self.docs.len()
     }
 
-    /// Whether the store has no open documents.
     pub fn is_empty(&self) -> bool {
         self.docs.is_empty()
     }
@@ -319,7 +312,6 @@ impl DocumentStore {
                         position_to_offset(&doc.text, range.start_line, range.start_character);
                     let end = position_to_offset(&doc.text, range.end_line, range.end_character);
                     match (start, end) {
-                        // Well-formed forward range — apply.
                         (Some(s), Some(e)) if s <= e => {
                             doc.text.remove(s..e);
                             doc.text.insert(s, &change.text);
@@ -363,7 +355,6 @@ impl DocumentStore {
             }
             doc.text_cache = std::sync::Arc::new(doc.text.to_string());
             doc.version += 1;
-            // Invalidate cached tree since the document changed
             self.trees.remove(uri);
             Some((std::sync::Arc::clone(&doc.text_cache), doc.version))
         } else {
@@ -377,7 +368,6 @@ impl DocumentStore {
         let doc_version = self.docs.get(uri)?.version;
         let mut cached = self.trees.get_mut(uri)?;
         if cached.version == doc_version {
-            // Mark recently used so eviction prefers colder entries.
             cached.last_access = stamp;
             Some(cached.tree.clone())
         } else {
@@ -409,8 +399,6 @@ impl DocumentStore {
         }
     }
 
-    /// Cache a parse tree for the given document URI and version.
-    ///
     /// Bounded by [`set_max_cached_trees`](Self::set_max_cached_trees)
     /// (F-OPEN-043): after inserting, the least-recently-used trees are evicted
     /// if the cache exceeds its cap, so a long-running daemon that opens many
@@ -528,7 +516,6 @@ mod tests {
         let store = DocumentStore::new();
         store.set_max_cached_trees(Some(4));
 
-        // Open and cache trees for 10 distinct files.
         let mut uris = Vec::new();
         for i in 0..10 {
             let uri = test_uri(&format!("f{i}"));
@@ -537,14 +524,12 @@ mod tests {
             uris.push(uri);
         }
 
-        // Never more than the cap, despite caching 10 trees.
         assert!(
             store.cached_trees_len() <= 4,
             "tree cache must stay within cap; got {}",
             store.cached_trees_len()
         );
 
-        // The most-recently cached entry survives; an early one was evicted.
         assert!(
             store.get_cached_tree(&uris[9]).is_some(),
             "most-recent tree must still be cached"
@@ -573,7 +558,6 @@ mod tests {
             let uri = test_uri(&format!("cold{i}"));
             store.open(uri.clone(), "codeunit 50100 C { }".to_string());
             store.cache_tree(&uri, 0, parse_al("codeunit 50100 C { }"));
-            // Touch hot to refresh its LRU stamp.
             assert!(store.get_cached_tree(&hot).is_some());
         }
 
@@ -702,7 +686,6 @@ mod tests {
                 text: "this is far too long".to_string(),
             }],
         );
-        // Unchanged — the oversized replacement was refused.
         assert_eq!(store.get_text(&uri), Some("small".to_string()));
     }
 
@@ -893,7 +876,6 @@ mod tests {
         let store = Arc::new(DocumentStore::new());
         let mut handles = Vec::new();
 
-        // Concurrent opens
         for i in 0..20 {
             let s = Arc::clone(&store);
             handles.push(thread::spawn(move || {
@@ -902,7 +884,7 @@ mod tests {
             }));
         }
 
-        // Concurrent reads
+
         for i in 0..20 {
             let s = Arc::clone(&store);
             handles.push(thread::spawn(move || {
@@ -916,7 +898,6 @@ mod tests {
             h.join().unwrap();
         }
 
-        // Verify all 20 docs are accessible
         for i in 0..20 {
             let uri = Url::parse(&format!("file:///test/doc{i}.al")).unwrap();
             assert!(store.get_text(&uri).is_some(), "doc{i} should exist");
@@ -960,7 +941,6 @@ mod tests {
         let uri = test_uri("lockdiscipline");
         store.open(uri.clone(), "v0".to_string());
 
-        // Cache a tree at v0.
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&crate::syntax::parser::language())
@@ -970,7 +950,6 @@ mod tests {
         assert!(store.get_cached_tree(&uri).is_some());
         assert_eq!(store.get_version(&uri), Some(0));
 
-        // Apply a change.
         store.apply_changes(
             &uri,
             &[TextChange {
@@ -1010,7 +989,6 @@ mod tests {
         // text paired with the bumped version, never an older or newer mix.
         assert_eq!(text.as_str(), "v1");
         assert_eq!(version, 1);
-        // And it matches the store's own atomic accessor.
         assert_eq!(
             store.get_text_and_version(&uri),
             Some((text, version)),
@@ -1044,7 +1022,6 @@ mod tests {
         let store = Arc::new(DocumentStore::new());
         let mut handles = Vec::new();
 
-        // Race opens and closes
         for i in 0..10 {
             let s = Arc::clone(&store);
             handles.push(thread::spawn(move || {
@@ -1057,7 +1034,6 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        // All closed — docs should be gone
         for i in 0..10 {
             let uri = Url::parse(&format!("file:///race/{i}.al")).unwrap();
             assert!(store.get_text(&uri).is_none(), "doc{i} should be closed");
@@ -1088,13 +1064,11 @@ mod tests {
             }],
         );
 
-        // Text must not contain the bad inserted string.
         let after = store.get_text(&uri).unwrap();
         assert!(
             !after.contains("BAD"),
             "backward TextRange should not have been applied; got: {after}"
         );
-        // Original text content survives (the change was skipped).
         assert_eq!(
             after, before,
             "doc should be unchanged after skipped change"
@@ -1124,7 +1098,6 @@ mod tests {
             }],
         );
 
-        // No panic and no insertion.
         let after = store.get_text(&uri).unwrap();
         assert!(!after.contains("EVIL"));
         assert_eq!(after, "abc\n");

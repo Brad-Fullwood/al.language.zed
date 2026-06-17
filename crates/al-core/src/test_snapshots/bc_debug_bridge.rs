@@ -28,14 +28,12 @@ use crate::syntax::{find_object_declaration, AlParser};
 
 use super::replayer::{DebuggerSession, ReplayerError};
 
-/// Adapter that wraps a live [`BcDebugSession`] and exposes [`DebuggerSession`].
 pub struct BcDebugSessionAdapter {
     session: Arc<BcDebugSession>,
     config: BcDebugConfig,
 }
 
 impl BcDebugSessionAdapter {
-    /// Create a new adapter from an already-connected session and its config.
     pub fn new(session: Arc<BcDebugSession>, config: BcDebugConfig) -> Self {
         Self { session, config }
     }
@@ -119,16 +117,10 @@ impl DebuggerSession for BcDebugSessionAdapter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Positive: parse a minimal codeunit file and assert the correct
-    /// `(object_type, object_id)` metadata is extracted.
     #[test]
     fn extract_object_metadata_codeunit() {
         let dir = tempfile::tempdir().unwrap();
@@ -138,7 +130,6 @@ mod tests {
         let (kind, id) = extract_object_metadata(file.to_str().unwrap())
             .expect("should parse codeunit metadata");
 
-        // kind must map to the BC CODEUNIT object type integer
         let bc_type = kind_to_object_type(&kind);
         assert_eq!(
             bc_type,
@@ -148,7 +139,6 @@ mod tests {
         assert_eq!(id, 50100, "object id should be 50100");
     }
 
-    /// Positive: parse a table file and assert TABLE type + correct ID.
     #[test]
     fn extract_object_metadata_table() {
         let dir = tempfile::tempdir().unwrap();
@@ -167,7 +157,6 @@ mod tests {
         assert_eq!(id, 1234);
     }
 
-    /// Negative: missing file returns Io error.
     #[test]
     fn extract_object_metadata_missing_file_returns_error() {
         let result = extract_object_metadata("/nonexistent/path/to/file.al");
@@ -179,7 +168,6 @@ mod tests {
         );
     }
 
-    /// Negative: file with no AL object declaration returns Parse error.
     #[test]
     fn extract_object_metadata_no_declaration_returns_parse_error() {
         let dir = tempfile::tempdir().unwrap();

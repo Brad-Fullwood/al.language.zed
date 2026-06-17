@@ -2,11 +2,8 @@
 
 use super::super::{ensure_document, file_not_found, file_uri_from_params, invalid_params};
 use super::{ERR_INITIALIZING, ERR_NO_PROJECT};
-use crate::semantic::NATIVE_COMPILER_UNAVAILABLE;
 use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
-
-// Shared BC server connection params (used by snapshot and profiling)
 
 /// Common BC server connection parameters extracted from JSON-RPC params.
 struct BcServerParams {
@@ -243,8 +240,6 @@ pub(in crate::server::daemon) fn dispatch_event_source(
         },
     }
 }
-// Semantic / toolchain dispatchers
-
 pub(in crate::server::daemon) async fn dispatch_compile(
     workspace: &Workspace,
     id: u64,
@@ -308,75 +303,31 @@ pub(in crate::server::daemon) async fn dispatch_compile(
     drop(tc);
     drop(project);
 
-    // Native-first compile policy. Default keeps compilation on the native
-    // in-process CodeAnalysis bridge; `al.useOfficialCompiler: true` opts into
+    // Native-first compile policy. Default keeps compilation on the pure-Rust
+    // `.app` emitter; `al.useOfficialCompiler: true` opts into
     // Microsoft's `dotnet alc` subprocess. There is no silent fallback.
     let use_official_compiler = workspace.config.read().await.use_official_compiler;
 
     let result: Result<serde_json::Value, String> = async {
-        // Native-first: the in-process CodeAnalysis bridge pipeline (rich
-        // diagnostics with end positions) is the default. When the user has NOT
-        // opted into the official compiler we use the bridge and, critically,
-        // do NOT silently fall back to the `dotnet alc` subprocess if the bridge
-        // is unavailable; we fail loudly instead, so a non-native compile can
-        // never masquerade as the native one (the user's explicit requirement).
+        // Native-first: the pure-Rust native `.app` emitter is the default — no
+        // `alc`, no C# bridge. `al.useOfficialCompiler: true` opts into the
+        // Microsoft `dotnet alc` subprocess. The native emitter does no semantic
+        // analysis, so structured diagnostics come from the LSP, not this step.
         if !use_official_compiler {
-            if let Some(guard) = crate::semantic::get_or_init_bridge(workspace).await {
-                if let Some(bridge) = guard.as_ref() {
-                    // Pass the daemon's authoritative alc path and package cache;
-                    // the C# side's own discovery guesses VS Code extension
-                    // layouts and can pick a different (or no) compiler (FB-14).
-                    let compile_result = bridge
-                        .compile(
-                            &project_root,
-                            Some(&toolchain.alc),
-                            package_cache.as_deref(),
-                        )
-                        .await
-                        .map_err(|e| format!("Compilation failed: {}", e))?;
-                    // Semantic bridge may not return appPath; fall back to finding
-                    // the .app file on disk when compilation succeeded.
-                    let app_path = compile_result
-                        .app_path
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .or_else(|| {
-                            if compile_result.success {
-                                crate::build::find_app_file(&project_root)
-                                    .map(|p| p.display().to_string())
-                            } else {
-                                None
-                            }
-                        });
-                    return Ok(serde_json::json!({
-                        "success": compile_result.success,
-                        "diagnostics": compile_result.diagnostics.iter().map(|d| serde_json::json!({
-                            "file": d.file.display().to_string(),
-                            "line": d.line,
-                            "column": d.column,
-                            "endLine": d.end_line,
-                            "endColumn": d.end_column,
-                            "severity": d.severity,
-                            "code": d.code,
-                            "message": d.message,
-                        })).collect::<Vec<_>>(),
-                        "appPath": app_path,
-                        // Raw compiler output so the CLI can show WHY when a
-                        // failure produced no structured diagnostics (FB-14).
-                        "output": compile_result.output,
-                    }));
-                }
-            }
-            // Native bridge unavailable and the official compiler is not enabled.
-            tracing::error!("{NATIVE_COMPILER_UNAVAILABLE}");
-            return Err(NATIVE_COMPILER_UNAVAILABLE.to_string());
+            let compile_result = crate::build::native_compile(&project_root);
+            return Ok(serde_json::json!({
+                "success": compile_result.success,
+                "diagnostics": [],
+                "appPath": compile_result.app_path.as_ref().map(|p| p.display().to_string()),
+                "output": compile_result.output,
+            }));
         }
 
         // Opted into Microsoft's compiler subprocess (non-native). Warn so this
-        // is never mistaken for the native CodeAnalysis bridge pipeline.
+        // is never mistaken for the native `.app` emitter.
         tracing::warn!(
             "al.useOfficialCompiler=true - compiling via the NON-NATIVE Microsoft \
-             `dotnet alc` subprocess instead of the native CodeAnalysis bridge"
+             `dotnet alc` subprocess instead of the native `.app` emitter"
         );
         let compile_result =
             crate::build::compile_project(&toolchain, &project_root, package_cache.as_deref())
@@ -901,7 +852,6 @@ pub(in crate::server::daemon) fn dispatch_metrics(
         };
     }
 
-    // Single file mode
     let Some(uri) = file_uri_from_params(params) else {
         return invalid_params(id);
     };
@@ -1036,7 +986,6 @@ pub(in crate::server::daemon) fn dispatch_organize_files(
             None => continue,
         };
 
-        // Build expected filename: <Kind><Id>.<Name>.al
         let kind_cap = capitalize_first(&obj.kind);
         let id_part = obj.id.map(|i| i.to_string()).unwrap_or_default();
         let name_clean = sanitize_filename(&obj.name);
@@ -1178,8 +1127,6 @@ mod tests {
         path.canonicalize().unwrap().to_string_lossy().to_string()
     }
 
-    // --- dispatch_organize_files ----------------------------------------------
-
     /// F-OPEN-271: organize-files deadlocked the daemon — the dispatcher held
     /// a `file_index.files` DashMap shard guard across the rename loop while
     /// `rename_al_file_and_refresh` mutated the same map (the documented
@@ -1241,9 +1188,6 @@ mod tests {
         );
     }
 
-    // F-011: write_al_file_and_refresh / rename_al_file_and_refresh keep
-    // the workspace in sync with daemon-initiated file mutations.
-
     /// F-011 positive: write_al_file_and_refresh writes to disk AND
     /// updates documents + file_index + invalidates insight graph.
     #[test]
@@ -1253,16 +1197,13 @@ mod tests {
         let path = tmp.path().join("Foo.al");
         let content = r#"codeunit 50100 "Foo" { }"#.to_string();
         write_al_file_and_refresh(&ws, &path, content.clone()).expect("helper succeeds");
-        // On disk
         let on_disk = std::fs::read_to_string(&path).expect("file written");
         assert_eq!(on_disk, content);
-        // Document store
         let uri = url::Url::from_file_path(&path).unwrap();
         assert_eq!(
             ws.documents.get_text(&uri).as_deref(),
             Some(content.as_str())
         );
-        // File index
         assert_eq!(
             ws.file_index.get_content(&path).as_deref(),
             Some(content.as_str())
@@ -1311,8 +1252,6 @@ mod tests {
         ));
     }
 
-    // --- dispatch_location ---------------------------------------------------
-
     #[test]
     fn location_missing_name_is_invalid_params() {
         let ws = empty_ws();
@@ -1329,8 +1268,6 @@ mod tests {
         assert!(err.message.contains("Nope"), "error names the object");
     }
 
-    // --- dispatch_source -----------------------------------------------------
-
     #[test]
     fn source_missing_name_is_invalid_params() {
         let ws = empty_ws();
@@ -1346,8 +1283,6 @@ mod tests {
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("GhostObject"));
     }
-
-    // --- dispatch_metrics ----------------------------------------------------
 
     #[test]
     fn metrics_missing_file_is_invalid_params() {
@@ -1373,8 +1308,6 @@ mod tests {
         assert!(r.get("procedures").and_then(|v| v.as_array()).is_some());
     }
 
-    // --- dispatch_snapshot ---------------------------------------------------
-
     #[tokio::test]
     async fn snapshot_missing_cmd_is_invalid_params() {
         let resp = dispatch_snapshot(1, &serde_json::json!({})).await;
@@ -1398,8 +1331,6 @@ mod tests {
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("snapshotId"));
     }
-
-    // --- dispatch_profiling --------------------------------------------------
 
     #[tokio::test]
     async fn profiling_missing_cmd_is_invalid_params() {
@@ -1435,9 +1366,6 @@ mod tests {
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("absolute"), "got: {}", err.message);
     }
-
-    // parse_bc_server_params: defaults vs explicit overrides (shared by the
-    // snapshot + profiling dispatchers). Pure, no BC server required.
 
     #[test]
     fn bc_server_params_apply_documented_defaults_when_absent() {
@@ -1498,9 +1426,6 @@ mod tests {
         );
     }
 
-    // capitalize_first / sanitize_filename: pure helpers used by
-    // dispatch_organize_files to build canonical `.al` file names.
-
     #[test]
     fn capitalize_first_uppercases_only_leading_char() {
         assert_eq!(capitalize_first("table"), "Table");
@@ -1525,16 +1450,11 @@ mod tests {
             sanitize_filename(r#"a/b\c:d*e?f"g<h>i|j"#),
             "a_b_c_d_e_f_g_h_i_j"
         );
-        // Ordinary names with spaces and dots survive untouched.
         assert_eq!(sanitize_filename("Sales Header"), "Sales Header");
     }
 
-    // dispatch_sort_members: content path, dry-run, and missing-param branch.
-
     #[test]
     fn sort_members_with_content_returns_sorted_and_changed_flags() {
-        // The `content` branch must echo back `sorted` text and a `changed`
-        // bool without requiring a file on disk.
         let ws = empty_ws();
         let src = r#"codeunit 50100 "X" { procedure B() begin end; procedure A() begin end; }"#;
         let resp = dispatch_sort_members(&ws, 1, &serde_json::json!({ "content": src }));
@@ -1558,9 +1478,6 @@ mod tests {
         assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
     }
 
-    // dispatch_organize_files: no-project root must surface an error rather
-    // than scanning an undefined root.
-
     #[test]
     fn organize_files_without_project_returns_error() {
         let ws = empty_ws();
@@ -1571,9 +1488,6 @@ mod tests {
             resp.result
         );
     }
-
-    // dispatch_profiler_hints: an absent/empty `hotspots` array must produce
-    // a well-formed (array) result, never an error.
 
     #[test]
     fn profiler_hints_absent_hotspots_returns_array() {
@@ -1612,7 +1526,6 @@ mod tests {
     /// `ENV_LOCK` pattern in `toolchain.rs`.
     static AL_TOOL_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Build an `AlProject` rooted at `root` with no server configs/packages.
     fn make_project(root: &std::path::Path) -> crate::project::AlProject {
         crate::project::AlProject {
             root: root.to_path_buf(),
@@ -1641,12 +1554,8 @@ mod tests {
         std::fs::write(dir.join("Microsoft.Dynamics.Nav.CodeAnalysis.dll"), b"").unwrap();
     }
 
-    // --- dispatch_compile (toolchain + project validation, no .NET) ----------
-
     #[tokio::test]
     async fn compile_no_project_returns_internal_error() {
-        // With no project loaded the dispatcher must bail before touching the
-        // semantic bridge / toolchain.
         let ws = empty_ws();
         let resp = dispatch_compile(&ws, 1).await;
         let err = resp.error.expect("no project must error");
@@ -1676,16 +1585,22 @@ mod tests {
         );
     }
 
-    /// Native-first compile policy: when the semantic bridge is unavailable
-    /// and `al.useOfficialCompiler` is not enabled, `compile` must fail loudly
-    /// instead of silently falling back to the `dotnet alc` subprocess.
+    /// Native-first compile policy: the default `compile` path uses the pure-Rust
+    /// native `.app` emitter — no C# bridge, no `dotnet alc`. It must succeed and
+    /// produce an `appPath` from project source alone (no bridge available here).
     #[tokio::test]
-    async fn compile_fails_loudly_when_bridge_unavailable_without_official_compiler() {
+    async fn compile_uses_native_emitter_without_bridge_or_alc() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("app.json"),
-            r#"{"id":"x","name":"t","publisher":"p","version":"1.0.0.0"}"#,
+            r#"{"id":"aaaaaaaa-1111-2222-3333-444444444444","name":"t","publisher":"p","version":"1.0.0.0","runtime":"14.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("src").join("Lib.al"),
+            "codeunit 50100 \"T\" { procedure P() begin end; }",
         )
         .unwrap();
         {
@@ -1714,23 +1629,27 @@ mod tests {
             *g = Some(tc);
         }
         let resp = dispatch_compile(&ws, 3).await;
-        let err = resp
-            .error
-            .expect("native-first compile must fail when the bridge is unavailable");
         assert!(
-            err.message
-                .contains(crate::semantic::NATIVE_COMPILER_UNAVAILABLE),
-            "expected native compiler unavailable error, got: {}",
-            err.message
+            resp.error.is_none(),
+            "native compile should succeed: {:?}",
+            resp.error
+        );
+        let result = resp.result.expect("compile result");
+        assert_eq!(
+            result["success"], true,
+            "native emit should succeed: {result}"
+        );
+        let app_path = result["appPath"]
+            .as_str()
+            .expect("native emitter must produce an appPath");
+        assert!(
+            std::path::Path::new(app_path).is_file(),
+            "the native `.app` must exist on disk at {app_path}"
         );
     }
 
-    // --- dispatch_package (AL_TOOL_PATH seam + build error propagation) -------
-
     #[tokio::test]
     async fn package_without_toolchain_reports_setup_hint() {
-        // No toolchain → the dispatcher must NOT attempt a build; it returns
-        // the actionable "run 'al setup'" message.
         let ws = empty_ws();
         let resp = dispatch_package(&ws, 1).await;
         let err = resp.error.expect("missing toolchain must error");
@@ -1819,13 +1738,8 @@ mod tests {
         );
     }
 
-    // --- dispatch_snapshot via wiremock (BC HTTP request shape + parsing) -----
-
     #[tokio::test]
     async fn snapshot_start_posts_and_parses_id() {
-        // Positive: the dispatcher must POST to /dev/snapshot with the
-        // company query param taken from `parse_bc_server_params`, parse the
-        // returned id, and shape it into {cmd, snapshotId, status}.
         let server = MockServer::start().await;
         Mock::given(wm_method("POST"))
             .and(wm_path("/dev/snapshot"))
@@ -1920,8 +1834,6 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_download_writes_file_and_returns_path() {
-        // The download branch must GET /dev/snapshots/{id}, persist the bytes
-        // under the supplied outputDir, and report the written path + status.
         let server = MockServer::start().await;
         Mock::given(wm_method("GET"))
             .and(wm_path("/dev/snapshots/snap-9"))
@@ -1950,8 +1862,6 @@ mod tests {
             b"BINARY"
         );
     }
-
-    // --- dispatch_profiling via wiremock --------------------------------------
 
     #[tokio::test]
     async fn profiling_start_posts_and_parses_session_id() {
@@ -2012,8 +1922,6 @@ mod tests {
 
     #[tokio::test]
     async fn profiling_stop_posts_session_and_writes_profile() {
-        // The stop branch must POST the sessionId, persist the returned bytes
-        // under outputDir, and report the written path + status.
         let server = MockServer::start().await;
         Mock::given(wm_method("POST"))
             .and(wm_path("/dev/profiler/stop"))

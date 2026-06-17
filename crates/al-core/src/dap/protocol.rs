@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A DAP request message (client → adapter).
+/// client → adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DapRequest {
     pub seq: i64,
@@ -17,7 +17,7 @@ pub struct DapRequest {
     pub arguments: Option<serde_json::Value>,
 }
 
-/// A DAP response message (adapter → client).
+/// adapter → client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DapResponse {
     pub seq: i64,
@@ -32,7 +32,7 @@ pub struct DapResponse {
     pub body: Option<serde_json::Value>,
 }
 
-/// A DAP event message (adapter → client).
+/// adapter → client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DapEvent {
     pub seq: i64,
@@ -43,7 +43,6 @@ pub struct DapEvent {
     pub body: Option<serde_json::Value>,
 }
 
-/// A parsed DAP message (any of request, response, or event).
 #[derive(Debug, Clone)]
 pub enum DapMessage {
     Request(DapRequest),
@@ -52,7 +51,6 @@ pub enum DapMessage {
 }
 
 impl DapMessage {
-    /// Parse a DAP message from raw JSON bytes.
     pub fn parse(data: &[u8]) -> Result<Self, serde_json::Error> {
         let value: serde_json::Value = serde_json::from_slice(data)?;
         let type_ = value.get("type").and_then(|v| v.as_str()).unwrap_or("");

@@ -52,26 +52,16 @@ pub struct AlFormatConfig {
 }
 
 impl AlFormatConfig {
-    /// Parse an `.alformat.json` file.
-    ///
-    /// Returns `Ok(Default)` for an empty file.  Returns an error string if the
-    /// JSON is malformed.
     pub fn from_json(json: &str) -> Result<Self, String> {
         serde_json::from_str(json).map_err(|e| e.to_string())
     }
 
-    /// Load `.alformat.json` from the given workspace root.
-    ///
-    /// Returns `None` if the file does not exist.  Returns `Some(Err(...))` if
-    /// the file exists but cannot be parsed.
     pub fn load(workspace_root: &Path) -> Option<Result<Self, String>> {
         let path = workspace_root.join(".alformat.json");
         let text = std::fs::read_to_string(&path).ok()?;
         Some(Self::from_json(&text))
     }
 
-    /// Convert to `FormatOptions`, falling back to defaults for absent fields.
-    ///
     /// **Honesty note** (F-OPEN-024): only `tabSize` and `insertSpaces` are
     /// currently honoured by the formatter implementation. The other fields
     /// are parsed and stored on `FormatOptions` but the line-by-line state
@@ -153,9 +143,6 @@ impl AlFormatConfig {
         opts
     }
 
-    /// Load from workspace root and convert to `FormatOptions`.
-    ///
-    /// Falls back to `FormatOptions::default()` when no config is present or on error.
     pub fn load_options(workspace_root: &Path) -> FormatOptions {
         match Self::load(workspace_root) {
             Some(Ok(cfg)) => cfg.to_format_options(),
@@ -288,7 +275,6 @@ mod tests {
 
     #[test]
     fn tab_size_zero_ignored() {
-        // tabSize: 0 should be ignored and default (4) used
         let json = r#"{"tabSize": 0}"#;
         let cfg = AlFormatConfig::from_json(json).unwrap();
         let opts = cfg.to_format_options();
@@ -305,8 +291,6 @@ mod tests {
 
     #[test]
     fn format_options_not_broken_by_config() {
-        // Applying AlFormatConfig must not produce invalid AL — test by formatting
-        // a real AL snippet and verifying it still parses.
         let json = r#"{"keywordCasing": "lower", "tabSize": 2, "maxLineLength": 80}"#;
         let cfg = AlFormatConfig::from_json(json).unwrap();
         let opts = cfg.to_format_options();
@@ -321,7 +305,6 @@ end;
         let formatted = crate::syntax::format_al(al_code, &opts);
         // Must contain at least the object keyword lowercased
         assert!(formatted.contains("codeunit") || formatted.contains("CODEUNIT"));
-        // Must not be empty
         assert!(!formatted.is_empty());
     }
 }

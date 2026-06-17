@@ -9,7 +9,6 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-/// Errors from project/toolchain discovery.
 #[derive(Debug, Error)]
 pub enum DiscoveryError {
     #[error("ALTool is not installed. Install it with: {install_cmd}")]
@@ -28,10 +27,8 @@ pub enum DiscoveryError {
     Io(#[from] std::io::Error),
 }
 
-/// Unified error type for al-core operations.
 #[derive(Error, Debug)]
 pub enum AlError {
-    /// Project/toolchain discovery errors.
     #[error(transparent)]
     Discovery(#[from] DiscoveryError),
 
@@ -39,27 +36,21 @@ pub enum AlError {
     #[error(transparent)]
     Semantic(#[from] crate::semantic::SemanticError),
 
-    /// Document not found in store.
     #[error("document not open: {0}")]
     DocumentNotOpen(String),
 
-    /// Bridge restart limit exceeded.
     #[error("bridge restart limit exceeded ({attempts} attempts, max {max})")]
     BridgeRestartLimitExceeded { attempts: u32, max: u32 },
 
-    /// No toolchain available for an operation that requires one.
     #[error("no toolchain available")]
     NoToolchain,
 
-    /// Semantic bridge background task panicked.
     #[error("semantic bridge task panicked")]
     BridgePanicked,
 
-    /// IO errors (file read/write, socket, etc.)
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// JSON serialization/deserialization errors.
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 

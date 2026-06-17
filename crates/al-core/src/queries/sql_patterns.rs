@@ -121,9 +121,6 @@ fn analyze_proc_text(
 
     for (offset, line) in proc_text.lines().enumerate() {
         let line_num = start_line + offset as u32;
-        // Skip the line if it is a comment (`// ...`). Strip AL string literal
-        // content (`'...'`) so that text like `if x = 'FindFirst()' then ...`
-        // does not generate a false-positive FindInLoop violation.
         let trimmed = line.trim_start();
         if trimmed.starts_with("//") {
             continue;
@@ -132,28 +129,22 @@ fn analyze_proc_text(
         let lower = cleaned.trim().to_lowercase();
 
         if is_loop_start(&lower) {
-            // If the loop header ends with "begin" (e.g. "for ... do begin" or
-            // "while ... do begin"), the loop body is a begin..end block — start
-            // with depth 1 so the matching end; closes the body first.
             let opens_body =
                 lower.ends_with(" begin") || lower.ends_with("\tbegin") || lower == "begin";
             loop_begin_depth.push(if opens_body { 1 } else { 0 });
         } else if lower == "begin" {
-            // A standalone "begin" inside a loop opens a nested block.
             if let Some(top) = loop_begin_depth.last_mut() {
                 *top += 1;
             }
         } else if lower == "end;" || lower == "end" {
-            // Could close a nested begin..end block or the loop itself.
             if let Some(top) = loop_begin_depth.last_mut() {
                 if *top > 0 {
-                    *top -= 1; // closes a nested block; loop is still active
+                    *top -= 1;
                 } else {
-                    loop_begin_depth.pop(); // closes the loop (for/while)
+                    loop_begin_depth.pop();
                 }
             }
         } else if lower.starts_with("until ") {
-            // "until ..." always closes a repeat..until loop.
             loop_begin_depth.pop();
         }
 
@@ -213,15 +204,13 @@ fn analyze_proc_text(
 }
 
 fn contains_get_call(lower: &str) -> bool {
-    // Match .Get( but not getters like .GetValue( or .GetResult(
+    // Match .Get( but not .GetValue(, .GetResult( etc.
     if let Some(pos) = lower.find(".get(") {
-        // Make sure it's a standalone .Get(
         let before = &lower[..pos];
         let last_word: &str = before
             .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
             .next()
             .unwrap_or("");
-        // If last word before .get is an identifier, it's a record .Get() call
         !last_word.is_empty()
     } else {
         false

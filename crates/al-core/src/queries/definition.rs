@@ -9,7 +9,6 @@ use super::{Location, Position, Range};
 use crate::resolution::{self, ResolvedMemberKind};
 use crate::workspace::Workspace;
 
-/// Find the definition location of the symbol at the given position.
 #[must_use]
 pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Option<Vec<Location>> {
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
@@ -102,11 +101,6 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
-    // F-039: prefer a same-file procedure / trigger / event declaration
-    // BEFORE falling back to the first textual identifier match, which is
-    // typically a use site. Walk the tree iteratively looking for a
-    // `procedure_declaration` (or trigger/event variant) whose `name` field
-    // case-insensitively matches `clean_name`.
     if let Some(decl_range) = find_same_file_procedure_decl(&tree, source, clean_name) {
         let def_range: Range = crate::syntax_lsp::ts_range_to_lsp(&decl_range, source).into();
         if def_range.start != position {
@@ -117,8 +111,6 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
-    // textual fallback (last resort — may land on a usage if no declaration
-    // node matches; the procedure-decl scan above is the primary path).
     let refs = crate::syntax::find_variable_references(&tree, &text, clean_name);
     if !refs.is_empty() {
         let first = &refs[0];
@@ -131,13 +123,12 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
-    let current_path = uri.to_file_path().ok(); // SILENT: non-file URIs legitimately have no path
+    let current_path = uri.to_file_path().ok();
 
     if let Some(obj_path_entry) = workspace.file_index.objects.get(&clean_name.to_lowercase()) {
         let file_path = obj_path_entry.value().clone();
         let is_current = current_path.as_ref().is_some_and(|cp| *cp == file_path);
         if !is_current {
-            // Use cached object metadata — avoids re-parsing for go-to-definition.
             if let Some(obj_info_entry) = workspace.file_index.object_info.get(&file_path) {
                 let obj_info = obj_info_entry.value();
                 if let Some(file_text_entry) = workspace.file_index.files.get(&file_path) {
@@ -184,10 +175,6 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     None
 }
 
-/// F-039: scan the parse tree for a procedure / trigger / event declaration
-/// whose `name` field case-insensitively matches `target`. Returns the range
-/// of the name node (the canonical declaration site to navigate to). Walks
-/// iteratively to avoid stack overflow on deeply nested AL.
 fn find_same_file_procedure_decl(
     tree: &tree_sitter::Tree,
     source: &[u8],
@@ -258,8 +245,6 @@ mod tests {
         }
     }
 
-    // --- Unknown identifiers return None ---
-
     #[test]
     fn unknown_identifier_returns_none() {
         let ws = Workspace::new();
@@ -278,12 +263,10 @@ mod tests {
         let pos = Position {
             line: 4,
             character: 8,
-        }; // "UnknownThing"
+        };
         let result = definition(&ws, &uri, pos);
         assert!(result.is_none(), "unknown identifier should return None");
     }
-
-    // --- TypeResolver finds local variable declarations ---
 
     #[test]
     fn local_variable_resolved_by_type_resolver() {
@@ -302,7 +285,6 @@ mod tests {
     end;
 }"#,
         );
-        // Position on "MyVar" in the assignment (line 6, char 8)
         let pos = Position {
             line: 6,
             character: 8,
@@ -319,13 +301,10 @@ mod tests {
         );
     }
 
-    // --- Symbol index lookup for known package objects ---
-
     #[test]
     fn definition_returns_none_for_empty_workspace() {
         let ws = Workspace::new();
         let uri = test_uri();
-        // Don't open any document — definition should return None
         let pos = Position {
             line: 0,
             character: 0,
@@ -354,7 +333,6 @@ mod tests {
     end;
 }"#,
         );
-        // Quoted "Customer" on line 4
         let pos = Position {
             line: 4,
             character: 24,
@@ -362,8 +340,6 @@ mod tests {
         let result = definition(&ws, &uri, pos);
         assert!(result.is_some(), "known package object should return Some");
     }
-
-    // --- File index hit for workspace objects ---
 
     #[test]
     fn file_index_hit_for_workspace_object() {
@@ -395,7 +371,6 @@ mod tests {
     end;
 }"#,
         );
-        // "My Table" on line 4
         let pos = Position {
             line: 4,
             character: 24,
@@ -408,8 +383,6 @@ mod tests {
         let locs = result.unwrap();
         assert_eq!(locs[0].uri, Url::from_file_path(&table_path).unwrap());
     }
-
-    // --- Procedure reverse index for cross-file procedures ---
 
     #[test]
     fn procedure_reverse_index_hit() {
@@ -439,7 +412,6 @@ mod tests {
     end;
 }"#,
         );
-        // "DoSomething" on line 4
         let pos = Position {
             line: 4,
             character: 8,
@@ -452,8 +424,6 @@ mod tests {
         let locs = result.unwrap();
         assert_eq!(locs[0].uri, Url::from_file_path(&cu_path).unwrap());
     }
-
-    // --- find_package_entry_for_type ---
 
     #[test]
     fn find_package_entry_skips_extensions() {
@@ -495,7 +465,6 @@ mod tests {
         let src = "codeunit 50100 \"Test\"\n{\n    procedure Caller()\n    begin\n        Add(1, 2);\n    end;\n\n    procedure Add(A: Integer; B: Integer): Integer\n    begin\n        exit(A + B);\n    end;\n}\n";
         let ws = Workspace::new();
         let uri = open(&ws, src);
-        // Line 4 (0-indexed): "        Add(1, 2);" — col 8 → 'A' of Add (call site).
         let result = definition(
             &ws,
             &uri,
@@ -506,7 +475,6 @@ mod tests {
         )
         .expect("definition should resolve");
         let loc = result.first().expect("at least one location");
-        // Declaration is on line 7 (0-indexed): "    procedure Add(...)".
         assert_eq!(
             loc.range.start.line, 7,
             "expected declaration on line 7, got {:?}",
@@ -514,8 +482,6 @@ mod tests {
         );
     }
 
-    /// Negative: the helper must not return the call-site even when a
-    /// declaration exists at a different position.
     #[test]
     fn definition_does_not_return_callsite_for_known_procedure() {
         let src = "codeunit 50100 \"Test\"\n{\n    procedure Caller()\n    begin\n        Helper();\n    end;\n\n    procedure Helper()\n    begin\n    end;\n}\n";
@@ -531,7 +497,6 @@ mod tests {
         )
         .expect("definition should resolve");
         let loc = &result[0];
-        // Must point to declaration line 7, NOT call line 4.
         assert_ne!(loc.range.start.line, 4);
         assert_eq!(loc.range.start.line, 7);
     }
@@ -542,7 +507,6 @@ mod tests {
         ws.symbols
             .add_entries(&[make_entry(ObjectKind::Codeunit, 50100, "MyHelper")]);
 
-        // When type_name is not a generic type like "Record", it should use type_name as object name
         let result = find_package_entry_for_type(&ws, "MyHelper", None);
         assert!(result.is_some());
         assert_eq!(result.unwrap().name, "MyHelper");

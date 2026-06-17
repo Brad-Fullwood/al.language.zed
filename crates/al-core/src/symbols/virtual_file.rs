@@ -9,7 +9,6 @@ use super::model::SymbolEntry;
 use super::source_index;
 use super::source_index::{is_ident_char, is_ident_start, parse_quoted_ident};
 
-/// Cache directory for extracted / generated virtual AL files.
 pub fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -17,8 +16,6 @@ pub fn cache_dir() -> PathBuf {
         .join("symbols")
 }
 
-/// Get or create a virtual AL file for a package symbol entry.
-///
 /// Tries to extract source from the .app ZIP archive first.
 /// If no source is available, renders a complete outline from symbol metadata
 /// with full procedure signatures, fields, keys, enum values, and attributes.
@@ -88,7 +85,6 @@ fn clear_readonly(path: &Path) -> std::io::Result<()> {
     fs::set_permissions(path, perms)
 }
 
-/// Kinds of members used for line matching.
 #[derive(Debug, Clone)]
 pub enum MemberKind {
     Field,
@@ -106,14 +102,11 @@ pub struct MemberRange {
     pub col_end: u32,
 }
 
-/// Find a precise member range (line/column) for deep-linking.
 pub fn find_member_range(path: &Path, member_name: &str, kind: MemberKind) -> Option<MemberRange> {
     let content = fs::read_to_string(path).ok()?;
     find_member_range_in_text(&content, member_name, kind)
 }
 
-/// Check whether an `.app` file contains any `.al` source files.
-///
 /// Uses memory-mapped I/O to avoid reading the entire file into memory.
 /// Only examines zip entry names — no file content is read.
 pub fn app_has_source(app_path: &Path) -> bool {
@@ -141,7 +134,6 @@ pub fn app_has_source(app_path: &Path) -> bool {
         Err(_) => return false,
     };
 
-    // Only inspect entry names — no content is decompressed
     for i in 0..archive.len() {
         if let Ok(entry) = archive.by_index_raw(i) {
             if entry.name().to_ascii_lowercase().ends_with(".al") {
@@ -170,8 +162,6 @@ fn sanitize_filename(s: &str) -> String {
         .collect()
 }
 
-/// Render a complete AL outline from a SymbolEntry.
-///
 /// Produces valid AL syntax with full procedure signatures (parameters + types + return type),
 /// field declarations (id + name + type), key declarations, enum values, event declarations
 /// with attributes, and global variables. This is the standard output for packages without
@@ -207,7 +197,6 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
     }
 
     fn render_method(out: &mut String, m: &MethodSymbol) {
-        // Attributes
         for attr in &m.attributes {
             out.push_str(&format!("    [{}", attr.name));
             if !attr.arguments.is_empty() {
@@ -242,7 +231,6 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
     let name_str = format_name(&entry.name);
     let kw = entry.kind.al_keyword();
 
-    // Object header
     if let Some(ref extends) = entry.extends {
         let ext = format_name(extends);
         out.push_str(&format!(
@@ -254,7 +242,6 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
     }
     out.push_str("{\n");
 
-    // Fields
     if !entry.fields.is_empty() {
         out.push_str("    fields\n    {\n");
         for f in &entry.fields {
@@ -263,7 +250,6 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
         out.push_str("    }\n\n");
     }
 
-    // Keys
     if !entry.keys.is_empty() {
         out.push_str("    keys\n    {\n");
         for k in &entry.keys {
@@ -273,7 +259,6 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
         out.push_str("    }\n\n");
     }
 
-    // Enum values
     if !entry.enum_values.is_empty() {
         for v in &entry.enum_values {
             let v_name = format_name(&v.name);
@@ -282,7 +267,6 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
         out.push('\n');
     }
 
-    // Variables
     if !entry.variables.is_empty() {
         out.push_str("    var\n");
         for v in &entry.variables {
@@ -292,7 +276,6 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
         out.push('\n');
     }
 
-    // Methods
     for m in &entry.methods {
         render_method(&mut out, m);
     }
@@ -494,7 +477,6 @@ fn parse_call_arg(
             return Some((name, col_start, col_end));
         }
         i = token_end;
-        // Move to next separator at depth 0.
         let mut depth = 0i32;
         let mut in_string = false;
         while i < bytes.len() {

@@ -37,7 +37,6 @@ pub(crate) const ERROR_BODY_MAX: usize = 512;
 /// — but better than passing the body through verbatim.
 pub(crate) fn sanitize_error_body(body: &str) -> String {
     let mut out = if body.len() > ERROR_BODY_MAX {
-        // Find a UTF-8 char boundary at or before ERROR_BODY_MAX.
         let mut cut = ERROR_BODY_MAX;
         while cut > 0 && !body.is_char_boundary(cut) {
             cut -= 1;
@@ -50,8 +49,6 @@ pub(crate) fn sanitize_error_body(body: &str) -> String {
     } else {
         body.to_string()
     };
-    // Best-effort scrub of obvious credential echo patterns. Matches
-    // the conservative shape used by other BC clients in this crate.
     for needle in [
         "Authorization: Bearer ",
         "Authorization:Bearer ",
@@ -257,19 +254,14 @@ pub(crate) async fn read_error_body_capped(response: reqwest::Response) -> Strin
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtensionPublishResponse {
-    /// Extension app ID (GUID)
     pub app_id: Option<String>,
-    /// Extension name
     pub name: Option<String>,
-    /// Extension version
     pub version: Option<String>,
-    /// Status after publish: "Completed", "InProgress", etc.
+    /// "Completed", "InProgress", etc.
     pub status: Option<String>,
-    /// Operation ID for async operations
     pub operation_id: Option<String>,
 }
 
-/// Response from `GET /dev/applications/{appId}` — RAD state.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationStateResponse {
@@ -279,18 +271,14 @@ pub struct ApplicationStateResponse {
 }
 
 /// HTTP client for the BC Dev API.
-///
-/// Constructed from a `BcServerConfig` parsed out of launch.json.
 pub struct BcClient {
     client: Client,
-    /// Base URL: `{scheme}://{server}:{port}/{serverInstance}`
     base_url: String,
     auth: AuthMethod,
     tenant: Option<String>,
 }
 
 impl BcClient {
-    /// Build a BC client from the given server config.
     pub fn new(config: &BcServerConfig) -> Self {
         if config.accept_invalid_certs {
             crate::http_auth::warn_insecure_tls("BcClient");
@@ -323,13 +311,6 @@ impl BcClient {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Standard publish flow: upload → install
-    // -----------------------------------------------------------------------
-
-    /// Upload and publish a `.app` file to the BC server.
-    ///
-    /// Corresponds to the VS Code "Publish" command. Calls `POST /dev/extensions`.
     /// Returns the publish response (may be async — check `status`).
     pub async fn publish_extension(
         &self,
@@ -345,7 +326,6 @@ impl BcClient {
 
         debug!(url = %url, file = %file_name, bytes = app_bytes.len(), "Publishing extension");
 
-        // BC Dev API accepts the raw .app binary as the request body.
         let mut req = self
             .client
             .post(&url)
@@ -358,14 +338,6 @@ impl BcClient {
         self.handle_response(response).await
     }
 
-    // -----------------------------------------------------------------------
-    // RAD (Rapid Application Development) flow
-    // -----------------------------------------------------------------------
-
-    /// Incremental delta deploy via the RAD API.
-    ///
-    /// Calls `PATCH /dev/applications/{appId}` with the `.app` binary.
-    /// Returns the application state response.
     pub async fn rad_publish(
         &self,
         app_id: &str,
@@ -410,7 +382,6 @@ impl BcClient {
                 }
             }
             AuthMethod::AAD => {
-                // Bearer token from env var BC_TOKEN
                 let token = std::env::var("BC_TOKEN").unwrap_or_default();
                 let token = token.trim();
                 if token.is_empty() {
@@ -555,8 +526,6 @@ mod tests {
 
     #[test]
     fn on_prem_url_always_has_scheme() {
-        // If the server field omits the scheme, build_base_url must add http://
-        // to prevent accidental scheme-less URL construction.
         let mut config = on_prem_config();
         config.server = Some("localhost".to_string());
         let url = build_base_url(&config);
@@ -583,7 +552,6 @@ mod tests {
 
     #[test]
     fn bc_client_constructs_from_config() {
-        // Just ensure it doesn't panic on construction
         let config = on_prem_config();
         let _client = BcClient::new(&config);
     }
@@ -592,7 +560,6 @@ mod tests {
     fn sanitize_error_body_truncates_at_512_bytes() {
         let body = "x".repeat(2000);
         let out = sanitize_error_body(&body);
-        // Truncated portion is replaced; total stays below the original.
         assert!(out.len() < body.len());
         assert!(out.contains("more bytes truncated"));
     }
@@ -631,15 +598,11 @@ mod tests {
         // Truncation must land on a UTF-8 char boundary.
         let body = "a".repeat(510) + "🦀🦀🦀";
         let out = sanitize_error_body(&body);
-        // Should not panic and should be valid UTF-8.
         assert!(out.is_char_boundary(out.len()));
     }
 
-    // --- read_app_capped (F-OPEN-(xliff-publish-audit-3)) -------------------
-
     #[tokio::test]
     async fn read_app_capped_accepts_normal_sized_file() {
-        // Positive: a small `.app` file under the cap loads successfully.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("small.app");
         let payload = vec![0u8; 1024];
@@ -673,8 +636,6 @@ mod tests {
         }
     }
 
-    // --- read_json_body_capped (F-OPEN-044) ---------------------------------
-
     #[derive(Debug, serde::Deserialize)]
     struct DummyResp {
         ok: bool,
@@ -682,7 +643,6 @@ mod tests {
 
     #[tokio::test]
     async fn read_json_body_capped_accepts_small_response() {
-        // Positive: a Content-Length under the cap deserialises fine.
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(
@@ -787,11 +747,8 @@ mod tests {
         }
     }
 
-    // --- read_binary_body_capped (profiling / snapshot downloads) -----------
-
     #[tokio::test]
     async fn read_binary_body_capped_accepts_small_response() {
-        // Positive: a small binary body under the cap is returned verbatim.
         let body = b"\x00\x01\x02profile-data";
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
@@ -867,8 +824,6 @@ mod tests {
         assert_eq!(bytes, body);
     }
 
-    // --- read_error_body_capped (shared error-body cap, F-OPEN-014) ---------
-
     #[tokio::test]
     async fn read_error_body_capped_reads_small_error_body() {
         let body = "boom: something went wrong";
@@ -918,8 +873,6 @@ mod tests {
             );
         }
     }
-
-    // --- handle_response / map_error_response wiring (F-OPEN-118 / 119) ------
 
     /// Point a `BcClient` at a wiremock server. The on-prem `build_base_url`
     /// yields `{server}/{instance}`; passing the full mock URI as `server`
@@ -1017,8 +970,6 @@ mod tests {
 
     #[tokio::test]
     async fn handle_response_success_path_accepts_capped_json_with_length() {
-        // Positive companion: a well-formed 200 JSON body WITH a small
-        // Content-Length deserialises successfully through the capped reader.
         let body = r#"{"appId":"abc","status":"Completed"}"#;
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))

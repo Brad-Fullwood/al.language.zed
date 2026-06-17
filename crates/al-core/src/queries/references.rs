@@ -5,7 +5,6 @@ use url::Url;
 use super::{Location, Position, Range};
 use crate::workspace::Workspace;
 
-/// Find all references to the symbol at the given position.
 #[must_use]
 pub fn references(
     workspace: &Workspace,
@@ -17,8 +16,6 @@ pub fn references(
         return Vec::new();
     };
 
-    // Direct queries::Position -> SyntaxPosition (one hop) — matches the
-    // T015 / arch-001 cleanup pattern, no lsp_types round-trip.
     let Some(node) = crate::syntax::find_node_at_position(&tree, &text, position.into()) else {
         return Vec::new();
     };
@@ -41,12 +38,9 @@ pub fn references(
         });
     }
 
-    let current_path = uri.to_file_path().ok(); // SILENT: non-file URIs legitimately have no path
-
-    // Snapshot the file paths in a single short-lived DashMap iteration so we
-    // do not hold a shard lock across cached-parse lookups + AST walks. This
-    // matters because `find_variable_references` is non-trivial work and
-    // holding the shard lock blocks any concurrent file_index update.
+    let current_path = uri.to_file_path().ok();
+    // Snapshot file paths to avoid holding the DashMap shard lock across
+    // cached-parse lookups and AST walks.
     let file_paths: Vec<std::path::PathBuf> = workspace
         .file_index
         .files
@@ -58,7 +52,6 @@ pub fn references(
         if current_path.as_ref() == Some(&file_path) {
             continue;
         }
-        // Use cached parse tree — avoids re-parsing every workspace file on each request.
         let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(&file_path) else {
             continue;
         };
@@ -89,8 +82,6 @@ mod tests {
         ws
     }
 
-    // --- positive tests ---
-
     #[test]
     fn references_finds_variable_in_same_file() {
         let uri = Url::parse("file:///test/refs.al").expect("test");
@@ -108,7 +99,7 @@ mod tests {
         let pos = Position {
             line: 4,
             character: 8,
-        }; // on MyVar declaration
+        };
         let locs = references(&ws, &uri, pos, true);
         assert!(
             locs.len() >= 2,
@@ -137,17 +128,14 @@ mod tests {
         let pos = Position {
             line: 4,
             character: 8,
-        }; // on X declaration
+        };
         let with_decl = references(&ws, &uri, pos, true);
         let without_decl = references(&ws, &uri, pos, false);
-        // include_declaration=true should return >= include_declaration=false
         assert!(
             with_decl.len() >= without_decl.len(),
             "include_declaration=true should not return fewer results"
         );
     }
-
-    // --- negative tests ---
 
     #[test]
     fn references_missing_uri_returns_empty() {
@@ -166,7 +154,6 @@ mod tests {
         let uri = Url::parse("file:///test/out_of_range.al").expect("test");
         let src = "codeunit 50100 Test { }";
         let ws = ws_with_doc(&uri, src);
-        // Position way beyond file content
         let pos = Position {
             line: 9999,
             character: 9999,
@@ -183,11 +170,10 @@ mod tests {
         let uri = Url::parse("file:///test/whitespace.al").expect("test");
         let src = "codeunit 50100 Test\n{\n    // comment\n}";
         let ws = ws_with_doc(&uri, src);
-        // Position on blank/whitespace — not a valid identifier
         let pos = Position {
             line: 0,
             character: 19,
-        }; // after "Test", on whitespace
+        };
         let locs = references(&ws, &uri, pos, true);
         // May return empty or may match "Test" — either way must not panic
         let _ = locs;

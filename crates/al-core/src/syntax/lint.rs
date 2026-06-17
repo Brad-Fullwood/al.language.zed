@@ -7,7 +7,6 @@
 
 use tree_sitter::Tree;
 
-/// A lint diagnostic from a native rule.
 #[derive(Debug, Clone)]
 pub struct LintDiagnostic {
     pub code: String,
@@ -16,7 +15,6 @@ pub struct LintDiagnostic {
     pub severity: LintSeverity,
 }
 
-/// Severity level for lint diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LintSeverity {
     Error,
@@ -44,7 +42,6 @@ impl std::fmt::Display for LintSeverity {
 #[derive(Debug, Clone, Default)]
 pub struct LintConfig;
 
-/// Metadata for a lint rule (for listing/documentation).
 #[derive(Debug, Clone)]
 pub struct LintRuleInfo {
     pub code: &'static str,

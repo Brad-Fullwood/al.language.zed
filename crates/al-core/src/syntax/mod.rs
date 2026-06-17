@@ -84,7 +84,6 @@ pub fn node_text_clean(node: tree_sitter::Node, source: &[u8]) -> Option<String>
     }
 }
 
-/// Extract text from a node, stripping surrounding `"` quotes, returning `fallback` on empty.
 pub fn node_text_or(node: tree_sitter::Node, source: &[u8], fallback: &str) -> String {
     node_text_clean(node, source).unwrap_or_else(|| fallback.to_string())
 }
@@ -164,7 +163,6 @@ pub fn prev_named_sibling(node: tree_sitter::Node) -> Option<tree_sitter::Node> 
     }
 }
 
-/// Return `true` if any ancestor of `node` has the given node kind.
 pub fn has_ancestor_kind(node: tree_sitter::Node, kind: &str) -> bool {
     let mut current = node.parent();
     while let Some(parent) = current {
@@ -176,8 +174,6 @@ pub fn has_ancestor_kind(node: tree_sitter::Node, kind: &str) -> bool {
     false
 }
 
-/// Walk ancestor nodes from `node`'s parent upward, returning the first node
-/// for which `predicate` returns `true`, or `None` if the root is reached.
 pub fn find_ancestor(
     node: tree_sitter::Node,
     predicate: impl Fn(tree_sitter::Node) -> bool,

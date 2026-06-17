@@ -168,36 +168,47 @@ Deletion gate:
 
 ### 6. Compile/Package Production Path
 
-Current bridge role:
+**Status: DONE for the bridge — the production default is now pure-Rust.** As of
+2026-06-17 the daemon `compile` endpoint, `al.compile`, publish, and DAP launch compile all
+default to `crate::build::native_compile` (the pure-Rust `emit::build_app_from_project`
+emitter — no `alc`, no C# bridge). `SemanticBridge::compile` is no longer called from any of
+these paths; `al.useOfficialCompiler=true` is the explicit, documented Microsoft-`alc`
+fallback (Rust-managed `crate::build::compile_project`, not the bridge). The `.app` is
+byte-identical to `alc`'s output across all object types + metadata + cross-app references
+(see `BENCHMARKS.md`; ~10-12x faster end-to-end).
 
-- daemon `compile` and publish default to `SemanticBridge::compile`.
-- The C# handler currently shells out to Microsoft `alc`, parses SARIF/stdout,
-  discovers the output `.app`, and returns bridge-shaped diagnostics.
-- `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc`; that path
-  does not require the C# bridge but is still a Microsoft compiler path.
+Done: package dependencies/manifest fields, translations (`TextData/*.xliff`), resources
+(control add-in bundles + report layouts), profile symbols, control add-ins, permission sets
+(incl. system-object ids), cross-app subtype/extension/field resolution. Live-BC publish
+validation: a natively-emitted `.app` was accepted by a real sandbox (it reached PTE
+content-validation; the structure is sound).
 
-Native replacement required:
+Deletion gate (for §6 specifically): ✅ no call site uses `SemanticBridge::compile`.
+(The bridge crate still can't be deleted — §1-§5 keep other callers; see the checklist.)
 
-- Decide final production default:
-  - pure-Rust `pack-native`, or
-  - Rust-managed `dotnet alc`, or
-  - explicit per-command policy.
-- If pure-Rust is the default:
-  - wire `emit::build_app_from_project` / `pack-native` into daemon `compile`,
-    publish, LSP compile commands, and DAP launch compile where appropriate.
-  - validate natively emitted `.app` packages against a live BC tenant.
-  - preserve analyzer/semantic diagnostics separately from packaging success.
-  - handle package dependencies, translations, resources, profile symbols,
-    control add-ins, permission sets, and runtime-specific manifest fields.
-- If Rust-managed `dotnet alc` remains as fallback:
-  - keep it explicit and documented as Microsoft compiler fallback, not native.
-  - remove the bridge compile wrapper and call `crate::build::compile_project`
-    directly where official compile is requested.
+#### ⚠️ OPEN GAP — native compile does NOT validate (wire in after §1)
 
-Deletion gate:
+The native emitter does **parse → emit**; it does **NOT** do `alc`'s **bind → type-check**.
+So `native_compile` will pack syntactically-parseable-but-semantically-wrong AL into an
+`.app` that the BC server then rejects on publish. **This was a deliberate scope cut, and it
+MUST be closed.** Today the safety nets are the LSP's continuous diagnostics (syntax-level
+now; semantic once §1 lands) and the BC server's publish-time validation.
 
-- No call site uses `SemanticBridge::compile`.
-- Release binaries no longer need `AlBridge.dll` to build/package/publish.
+**Dependency + wire-in trigger:** native semantic validation depends on **§1 (Semantic
+Diagnostics And Analyzers)** being implemented natively. **When §1 lands:**
+
+1. Have `native_compile` (`crates/al-core/src/build.rs`) run the native semantic analysis
+   over the project first.
+2. If it yields any **error**-severity diagnostic, **fail the compile and emit nothing**
+   (return the diagnostics in `CompileResult`), exactly as `alc` does — never produce an
+   `.app` from invalid source.
+3. Only write the `.app` when the project type-checks clean. Then surface those diagnostics
+   in the daemon `compile`/publish responses (today they return an empty `diagnostics` list).
+
+Until §1 is done, `native_compile` always succeeds on parseable input. Tracked here so it is
+wired in the moment §1 is ready; do not ship a "validates on compile" claim before then.
+(`al.useOfficialCompiler=true` is the interim escape hatch for users who need `alc`'s
+compile-time guarantees now.)
 
 ### 7. Bridge Host, Build, Release, And Install Plumbing
 
@@ -244,7 +255,9 @@ Deletion gate:
 - [ ] `SemanticBridge::completions_at` has no callers.
 - [ ] `SemanticBridge::builtin_types` has no callers.
 - [ ] `SemanticBridge::error_codes` has no callers.
-- [ ] `SemanticBridge::compile` has no callers.
+- [x] `SemanticBridge::compile` has no callers. (2026-06-17 — compile/publish/DAP-deploy
+      default to `crate::build::native_compile`; `al.useOfficialCompiler=true` → Rust-managed
+      `dotnet alc`. ⚠️ native compile is emit-only until §1 adds semantic validation — see §6.)
 - [ ] `crates/al-core/bridge/` is deleted.
 - [ ] Release archives no longer include `bridge/AlBridge.dll` or
       `AlBridge.runtimeconfig.json`.

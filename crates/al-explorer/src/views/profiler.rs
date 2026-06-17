@@ -13,7 +13,6 @@ use crate::{
     App, MAX_INPUT_LEN, advance_list_selection, input_focused_style, truncate_with_ellipsis,
 };
 
-/// A single hotspot row parsed from a `.alcpuprofile` file.
 #[derive(Debug, Clone)]
 struct HotspotRow {
     procedure: String,
@@ -24,14 +23,10 @@ struct HotspotRow {
 }
 
 pub(crate) struct ProfilerView {
-    /// File path input typed by the user.
     pub(crate) file_path: String,
-    /// Whether the file path input is focused.
     pub(crate) input_focused: bool,
-    /// Parsed hotspot rows.
     hotspots: Vec<HotspotRow>,
     list_state: ListState,
-    /// Status/error message.
     status: String,
     /// Total session duration (ms).
     duration_ms: f64,
@@ -78,7 +73,6 @@ impl ProfilerView {
             }
         };
 
-        // Compute session duration
         let start = json
             .get("startTime")
             .and_then(|v| v.as_f64())
@@ -107,7 +101,6 @@ impl ProfilerView {
             &nodes[..]
         };
 
-        // Build a map: node id -> (functionName, url, hitCount)
         let mut rows: Vec<HotspotRow> = Vec::new();
         for node in nodes {
             let hit_count = node.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -126,7 +119,6 @@ impl ProfilerView {
                 .unwrap_or("")
                 .to_string();
 
-            // Skip internal/empty nodes
             if function_name == "(root)"
                 || function_name == "(idle)"
                 || function_name == "(garbage collector)"
@@ -155,7 +147,6 @@ impl ProfilerView {
             });
         }
 
-        // Sort descending by self_time_ms
         rows.sort_by(|a, b| {
             b.self_time_ms
                 .partial_cmp(&a.self_time_ms)
@@ -242,7 +233,6 @@ pub(crate) fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView
         ])
         .split(area);
 
-    // File path input
     let input_style = input_focused_style(view.input_focused);
     let cursor = if view.input_focused { "█" } else { "" };
     let input_block = Block::default()
@@ -271,7 +261,6 @@ pub(crate) fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView
             Style::default().fg(Color::DarkGray),
         )))]
     } else {
-        // Header row
         let header_text = format!(
             "{:<40} {:<30} {:>10} {:>10} {:>8}",
             "Procedure", "Object/File", "Self(ms)", "Total(ms)", "Hits"
@@ -335,7 +324,6 @@ pub(crate) fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView
         .highlight_symbol(">> ");
     f.render_stateful_widget(list, chunks[1], &mut view.list_state);
 
-    // Status bar
     f.render_widget(
         Paragraph::new(view.status.clone()).style(Style::default().fg(Color::DarkGray)),
         chunks[2],

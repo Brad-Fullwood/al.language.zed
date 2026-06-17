@@ -62,7 +62,6 @@ pub enum SnapshotError {
     RelativeOutputDir { path: String },
 }
 
-/// Build a [`reqwest::Client`] configured from the snapshot config.
 fn make_client(config: &SnapshotConfig) -> Result<reqwest::Client, SnapshotError> {
     Ok(crate::http_auth::build_http_client(
         config.accept_invalid_certs,
@@ -128,7 +127,6 @@ pub async fn start_snapshot(
     Ok(id)
 }
 
-/// List snapshots available on the BC server.
 pub async fn list_snapshots(config: &SnapshotConfig) -> Result<Vec<SnapshotInfo>, SnapshotError> {
     let client = make_client(config)?;
 
@@ -234,17 +232,14 @@ pub async fn download_snapshot(
         });
     }
 
-    // Validate that output_dir is an absolute path before writing.
     if !config.output_dir.is_absolute() {
         return Err(SnapshotError::RelativeOutputDir {
             path: config.output_dir.display().to_string(),
         });
     }
 
-    // Ensure output directory exists.
     tokio::fs::create_dir_all(&config.output_dir).await?;
 
-    // Sanitize snapshot_id for use as a filename: keep only alphanumerics, hyphens, underscores.
     let safe_id: String = snapshot_id
         .chars()
         .map(|c| {
@@ -320,7 +315,6 @@ mod tests {
 
     #[test]
     fn list_snapshots_odata_envelope() {
-        // Verify that the OData { "value": [...] } envelope is handled.
         // This is a pure JSON-parsing test, not a live HTTP call.
         let json = serde_json::json!({
             "value": [
@@ -343,8 +337,6 @@ mod tests {
         );
     }
 
-    // ---- HTTP-orchestration tests (mocked BC server via wiremock) ----
-    //
     // These exercise the real request construction, status handling, response
     // parsing, and file-writing logic in `start_snapshot`, `list_snapshots`,
     // and `download_snapshot` against a local mock server. They do not need a

@@ -44,7 +44,6 @@ pub mod token_types {
     pub const EVENT_SUBSCRIPTION: u32 = 29;
     pub const RETURN_PARAMETER: u32 = 30;
 
-    // 12 new AL-specific token types
     pub const PAGE_VIEW: u32 = 31;
     pub const REPORT_LAYOUT: u32 = 32;
     pub const QUERY_DATA_ITEM: u32 = 33;
@@ -128,7 +127,6 @@ pub mod token_modifiers {
     ];
 }
 
-/// A semantic token for syntax highlighting.
 #[derive(Debug, Clone)]
 pub struct SemanticToken {
     pub delta_line: u32,
@@ -138,19 +136,6 @@ pub struct SemanticToken {
     pub token_modifiers: u32,
 }
 
-/// Extract semantic tokens from a parsed tree.
-///
-/// Classifies tokens into types:
-/// - Keywords (begin, end, procedure, trigger, var, if, then, else, etc.)
-/// - Types (Integer, Text, Record, Code, Decimal, Boolean, etc.)
-/// - Strings (single-quoted)
-/// - Numbers (integer and decimal literals)
-/// - Comments (line and block)
-/// - Operators (+, -, :=, =, etc.)
-/// - Properties (property names in assignments)
-/// - Object references
-///
-/// Returns delta-encoded tokens as required by the LSP semantic tokens protocol.
 pub fn extract_semantic_tokens(tree: &Tree, text: &str) -> Vec<SemanticToken> {
     let root = tree.root_node();
     let source = text.as_bytes();
@@ -212,7 +197,6 @@ fn get_line<'a>(source: &'a [u8], line_starts: &[usize], row: usize) -> &'a [u8]
     &source[start..end]
 }
 
-/// Collect tokens from the AST using an iterative DFS traversal.
 fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u32)>) {
     // Pre-build line offsets once so every per-token line lookup is O(1).
     let line_starts = build_line_starts(source);
@@ -227,7 +211,6 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
             let end = current.end_position();
 
             if start.row == end.row {
-                // Single-line token: convert byte column to UTF-16 column.
                 let line_bytes = get_line(source, &line_starts, start.row);
                 let line_str = std::str::from_utf8(line_bytes).unwrap_or("");
                 let utf16_col = super::byte_col_to_utf16_col(line_str, start.column);
@@ -287,7 +270,6 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
     use super::language_data::token_classification;
 
     match kind {
-        // Generic keyword categories from external scanner.
         // control_keyword may appear as a structural name inside parenthesized_block
         // (e.g. `layout(DefaultLayout)`) — check structural context first.
         "control_keyword" => {
@@ -310,7 +292,6 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
 
         "operator" => Some(token_types::OPERATOR),
 
-        // Names and quoted object/type references need context-sensitive handling.
         "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword" => {
             classify_name_like_node(node, source)
         }
@@ -337,9 +318,6 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         // emit conflicting tokens on top of the EXCLUDED_CODE block).
         "inactive_code" => Some(token_types::EXCLUDED_CODE),
 
-        // All kw_* nodes are classified via the token_classification data.
-        // This covers control keywords, object keywords, and builtin type keywords
-        // without hardcoding individual node kinds.
         _ => {
             if !kind.starts_with("kw_") {
                 return None;
@@ -353,8 +331,6 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
             } else if tc.builtin_type.contains(kind) {
                 Some(token_types::BUILTIN_TYPE)
             } else {
-                // Fallback: unknown kw_* nodes that aren't in any classification set
-                // are treated as generic keywords.
                 Some(token_types::KEYWORD)
             }
         }
@@ -367,11 +343,9 @@ fn is_trigger_variable(text: &str) -> bool {
         .any(|v| v.name.eq_ignore_ascii_case(text))
 }
 
-/// Classify identifiers and quoted names based on parent/ancestor context.
 fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
     let parent = node.parent()?;
     match parent.kind() {
-        // Procedure names
         "procedure_declaration" | "event_procedure_declaration" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::FUNCTION)
@@ -379,7 +353,6 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 None
             }
         }
-        // Trigger names — distinct from procedures
         "trigger_declaration" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::TRIGGER_NAME)
@@ -387,7 +360,6 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 None
             }
         }
-        // Event declarations (IntegrationEvent, BusinessEvent)
         "event_declaration" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::EVENT_CREATION)
@@ -395,7 +367,6 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 None
             }
         }
-        // Member access (method calls)
         "member_call_suffix" | "scope_call_suffix" => {
             if parent.child_by_field_name("member").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::FUNCTION)
@@ -403,10 +374,8 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 None
             }
         }
-        // Variable declarations (both local and global use the same grammar node)
         "regular_variable_declaration" => {
             if is_regular_variable_name(node, parent) {
-                // Check if inside a procedure (local) vs object-level (global)
                 if has_ancestor_kind(node, "procedure_declaration")
                     || has_ancestor_kind(node, "trigger_declaration")
                 {
@@ -418,7 +387,6 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 None
             }
         }
-        // Object-level variable declarations (explicit grammar node when present)
         "object_variable_declaration" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::GLOBAL_VARIABLE)
@@ -450,7 +418,6 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 None
             }
         }
-        // Attribute decorator names (e.g. [EventSubscriber], [IntegrationEvent])
         "attribute" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::ATTRIBUTE_NAME)
@@ -507,7 +474,6 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 // Double-quoted identifiers in AL are always object/identifier references
                 Some(token_types::TYPE)
             } else if matches!(node.kind(), "identifier") {
-                // Check for implicit trigger variables (Rec, xRec, CurrPage, etc.)
                 if let Ok(text) = node.utf8_text(source) {
                     if is_trigger_variable(text) && has_ancestor_kind(node, "trigger_declaration") {
                         return Some(token_types::SELF_KEYWORD);
@@ -579,12 +545,10 @@ fn has_ancestor_kind(node: Node, kind: &str) -> bool {
 ///
 /// The discrimination is done by inspecting the `keyword` field of the `key_declaration`.
 fn classify_key_declaration_name(node: Node, declaration: Node, source: &[u8]) -> Option<u32> {
-    // Only classify the first name position
     if declaration.child_by_field_name("name").map(|n| n.id()) != Some(node.id()) {
         return None;
     }
 
-    // Look for the keyword child of the key_declaration
     let kw = {
         let keyword_node = declaration.child_by_field_name("keyword").or_else(|| {
             // Fallback: find first keyword/property_keyword child by index
@@ -726,12 +690,10 @@ mod tests {
         let tokens = extract_semantic_tokens(&result.tree, src);
         assert!(!tokens.is_empty(), "Should extract semantic tokens");
 
-        // Verify delta encoding is valid (non-negative deltas)
         for token in &tokens {
             assert!(token.length > 0, "Token length should be positive");
         }
 
-        // Verify we get keyword tokens (begin, end, var, procedure, etc.)
         let keyword_count = tokens
             .iter()
             .filter(|t| t.token_type == token_types::KEYWORD)
@@ -804,7 +766,6 @@ mod tests {
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
 
-        // Reconstruct absolute positions and verify they are monotonically increasing
         let mut line: u32 = 0;
         let mut col: u32 = 0;
         let mut prev_pos = (0u32, 0u32);
@@ -939,8 +900,6 @@ mod tests {
             token_types::GLOBAL_VARIABLE,
         );
     }
-
-    // Tests for the 12 new semantic token types (T1301)
 
     #[test]
     fn test_page_view_token() {

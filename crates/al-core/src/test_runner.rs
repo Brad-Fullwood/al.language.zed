@@ -25,10 +25,6 @@ use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 use crate::test_engine::error::TestRunnerError;
 use crate::test_engine::result::{TestCodeunitResult, TestMethodResult, TestStatus};
 
-// ---------------------------------------------------------------------------
-// BC Dev API raw response shapes
-// ---------------------------------------------------------------------------
-
 /// Response from `GET /dev/tests/{codeunit}` — list of test methods.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,10 +54,6 @@ struct DevTestResult {
     pub duration: Option<f64>,
 }
 
-// ---------------------------------------------------------------------------
-// Test runner client
-// ---------------------------------------------------------------------------
-
 /// Client for the BC test runner dev API.
 ///
 /// Constructed from a `BcServerConfig` (parsed from launch.json).
@@ -74,7 +66,6 @@ pub struct TestRunnerClient {
 }
 
 impl TestRunnerClient {
-    /// Build a test runner client from server configuration.
     pub fn new(config: &BcServerConfig) -> Self {
         if config.accept_invalid_certs {
             // Parity with bc_server / bc_debug / native_dap / http_auth so
@@ -203,7 +194,6 @@ impl TestRunnerClient {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|m| {
-                // Only include actual test methods, not fixtures/setup
                 let name = m.name?;
                 Some(name)
             })
@@ -211,10 +201,6 @@ impl TestRunnerClient {
 
         Ok(names)
     }
-
-    // -----------------------------------------------------------------------
-    // Auth helpers
-    // -----------------------------------------------------------------------
 
     fn apply_auth(
         &self,
@@ -256,10 +242,6 @@ impl TestRunnerClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn map_dev_result(r: DevTestResult) -> TestMethodResult {
     let name = r.name.unwrap_or_default();
     let status = match r.result.as_deref() {
@@ -283,7 +265,6 @@ fn map_dev_result(r: DevTestResult) -> TestMethodResult {
     }
 }
 
-/// Build the base URL for the BC dev API test endpoints.
 fn build_base_url(config: &BcServerConfig) -> String {
     match config.environment_type {
         EnvironmentType::OnPrem => {
@@ -314,10 +295,6 @@ fn build_base_url(config: &BcServerConfig) -> String {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -446,10 +423,6 @@ mod tests {
 mod adversarial_j_tests {
     use super::*;
     use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
-
-    // -------------------------------------------------------------------------
-    // Adversarial-j findings
-    // -------------------------------------------------------------------------
 
     /// Finding adversarial_j_1: build_base_url must include an http:// scheme even
     /// when config.server omits it.  Without a scheme, reqwest cannot parse the URL.

@@ -12,7 +12,6 @@ use tower_lsp::lsp_types::*;
 
 use super::AlServer;
 
-/// Wrap diagnostics in a full pull-diagnostics report.
 pub(crate) fn full_diagnostic_report(items: Vec<Diagnostic>) -> DocumentDiagnosticReportResult {
     DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
         RelatedFullDocumentDiagnosticReport {
@@ -54,7 +53,6 @@ pub(crate) async fn compute_diagnostics(
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    // Phase 1: Instant syntax + lint via shared al-core query.
     {
         let config_guard = server.workspace.config.read().await;
         let syntax_diags =
@@ -63,13 +61,11 @@ pub(crate) async fn compute_diagnostics(
         diagnostics.extend(syntax_diags.iter().map(syntax_diag_to_lsp));
     }
 
-    // Phase 2: Async semantic analysis via .NET bridge.
     diagnostics.extend(run_semantic_analysis(server, uri, text).await);
 
     diagnostics
 }
 
-/// Run two-phase diagnostics and publish results to the client.
 pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str) {
     // ISSUE-072: skip diagnostics for virtual symbol cache files — they are not
     // workspace files and Zed logs a warning for every publishDiagnostics on them.
@@ -81,7 +77,6 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
     tracing::debug!(uri = %uri, text_len = text.len(), "publish_diagnostics: entry");
     let mut diagnostics = Vec::new();
 
-    // Phase 1: Instant syntax + lint via shared al-core query.
     // Reuse the parse tree already cached by update_workspace_index to avoid a
     // redundant parse on every did_open / did_change (ISSUE-056 fix).
     {
@@ -96,7 +91,6 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
         diagnostics.extend(syntax_diags.iter().map(syntax_diag_to_lsp));
     }
 
-    // Publish phase 1 immediately
     let phase1_count = diagnostics.len();
     tracing::debug!(uri = %uri, phase1_count, "publish_diagnostics: publishing phase 1");
     server
@@ -104,7 +98,6 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
         .publish_diagnostics(uri.clone(), diagnostics.clone(), None)
         .await;
 
-    // Phase 2: Async semantic analysis via .NET bridge.
     let semantic_diags = run_semantic_analysis(server, uri, text).await;
     if !semantic_diags.is_empty() {
         diagnostics.extend(semantic_diags);
@@ -282,8 +275,6 @@ pub fn lint_to_diagnostic(lint: &crate::syntax::LintDiagnostic, source: &[u8]) -
     }
 }
 
-// T1503: Test diagnostics — convert test results to LSP publishDiagnostics
-
 /// Convert a `TestDiagnostic` (from al-core's test runner) to an LSP `Diagnostic`.
 ///
 /// Lines in `TestDiagnostic` are 1-based; LSP positions are 0-based.
@@ -336,7 +327,6 @@ pub async fn publish_test_diagnostics(
     }
 }
 
-/// Convert a semantic diagnostic entry to an LSP Diagnostic.
 pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagnostic {
     let severity = match entry.severity.to_lowercase().as_str() {
         "error" => DiagnosticSeverity::ERROR,
@@ -503,7 +493,6 @@ mod tests {
         );
     }
 
-    // T1503: test diagnostic conversion
     #[test]
     fn test_diag_fail_maps_to_error() {
         use crate::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
@@ -566,7 +555,6 @@ mod tests {
         let items = vec![sample_diag("a"), sample_diag("b")];
         let report = full_diagnostic_report(items);
 
-        // Drill into the nested report variant and assert the items survived.
         match report {
             DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(full)) => {
                 assert!(full.related_documents.is_none());
@@ -683,8 +671,6 @@ mod tests {
         );
     }
 
-    // semantic_to_diagnostic — additional edge / branch coverage
-
     #[test]
     fn semantic_to_diagnostic_unknown_severity_defaults_to_warning() {
         // Any unrecognized severity string must fall through to WARNING, not
@@ -784,8 +770,6 @@ mod tests {
         assert_eq!((diag.range.start.line, diag.range.start.character), (1, 2));
         assert_eq!((diag.range.end.line, diag.range.end.character), (3, 8));
     }
-
-    // test_diag_to_lsp — remaining severity variants
 
     #[test]
     fn test_diag_information_and_hint_severities() {

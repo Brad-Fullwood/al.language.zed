@@ -10,13 +10,11 @@ use zip::ZipArchive;
 use super::manifest::{self, NavxManifest};
 use super::model::{SymbolPackage, SymbolReferenceJson};
 
-/// NAVX magic bytes.
 const NAVX_MAGIC: &[u8; 4] = b"NAVX";
 
 /// ZIP local file header magic (PK\x03\x04).
 const ZIP_MAGIC: &[u8; 4] = &[0x50, 0x4B, 0x03, 0x04];
 
-/// Minimum header size before scanning for ZIP.
 const MIN_HEADER_SIZE: usize = 4;
 
 /// Maximum .app file size accepted (200 MB). Files larger than this are rejected
@@ -47,15 +45,6 @@ pub enum AppReaderError {
     Manifest(#[from] manifest::ManifestError),
 }
 
-/// Read and parse a `.app` file from raw bytes.
-///
-/// Steps:
-/// 1. Verify NAVX magic bytes at offset 0
-/// 2. Scan for ZIP PK signature (handles variable header sizes)
-/// 3. Open ZIP archive
-/// 4. Parse NavxManifest.xml for package metadata
-/// 5. Parse SymbolReference.json for symbols
-/// 6. Return SymbolPackage
 pub fn read_app_bytes(data: &[u8]) -> Result<SymbolPackage, AppReaderError> {
     if data.len() < MIN_HEADER_SIZE {
         return Err(AppReaderError::TooSmall(data.len()));
@@ -86,7 +75,6 @@ pub fn read_app_bytes(data: &[u8]) -> Result<SymbolPackage, AppReaderError> {
     })
 }
 
-/// Read and parse a `.app` file from a file path.
 pub fn read_app_file(path: &std::path::Path) -> Result<SymbolPackage, AppReaderError> {
     let file_size = std::fs::metadata(path)?.len();
     if file_size > MAX_APP_FILE_SIZE {
@@ -96,7 +84,6 @@ pub fn read_app_file(path: &std::path::Path) -> Result<SymbolPackage, AppReaderE
     read_app_bytes(&data)
 }
 
-/// Scan for the ZIP PK\x03\x04 signature starting from byte 4.
 pub(crate) fn find_zip_offset(data: &[u8]) -> Option<usize> {
     // The standard NAVX header is 40 bytes. Check there first (common case O(1)).
     const STANDARD_HEADER: usize = 40;
@@ -104,7 +91,6 @@ pub(crate) fn find_zip_offset(data: &[u8]) -> Option<usize> {
     {
         return Some(STANDARD_HEADER);
     }
-    // Fall back to scanning from byte 4 for non-standard headers.
     for i in MIN_HEADER_SIZE..data.len().saturating_sub(3) {
         if &data[i..i + 4] == ZIP_MAGIC {
             return Some(i);
@@ -113,7 +99,6 @@ pub(crate) fn find_zip_offset(data: &[u8]) -> Option<usize> {
     None
 }
 
-/// Extract and parse NavxManifest.xml from the ZIP archive.
 fn read_manifest(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<NavxManifest, AppReaderError> {
     let manifest_name =
         find_file_in_archive(archive, "NavxManifest.xml").ok_or(AppReaderError::NoManifest)?;
@@ -133,7 +118,6 @@ fn read_manifest(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<NavxManifest
     Ok(manifest::parse_manifest(xml_slice)?)
 }
 
-/// Extract and parse SymbolReference.json from the ZIP archive.
 fn read_symbol_reference(
     archive: &mut ZipArchive<Cursor<&[u8]>>,
     package_name: &str,
@@ -202,7 +186,6 @@ fn find_file_in_archive(archive: &mut ZipArchive<Cursor<&[u8]>>, target: &str) -
     for i in 0..entries {
         if let Ok(file) = archive.by_index(i) {
             let name = file.name().to_string();
-            // Match the filename part (after last /)
             let filename = name.rsplit('/').next().unwrap_or(&name);
             if filename.to_lowercase() == target_lower {
                 return Some(name);
@@ -218,14 +201,12 @@ mod tests {
     use std::io::Write;
     use zip::write::SimpleFileOptions;
 
-    /// Create a synthetic .app file for testing.
     fn make_test_app(manifest_xml: &str, symbol_json: &str) -> Vec<u8> {
         let mut data = Vec::new();
 
-        // NAVX header (40 bytes)
         data.extend_from_slice(b"NAVX");
-        data.extend_from_slice(&1u32.to_le_bytes()); // version
-        data.extend_from_slice(&[0u8; 32]); // padding to 40 bytes
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 32]);
 
         let mut zip_buf = Vec::new();
         {
@@ -320,13 +301,11 @@ mod tests {
         assert!(matches!(err, AppReaderError::TooSmall(2)));
     }
 
-    /// Build a NAVX-prefixed .app whose ZIP archive contains only the given
-    /// `(name, contents)` entries — used to exercise missing-file error paths.
     fn make_app_with_entries(entries: &[(&str, &str)]) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(b"NAVX");
         data.extend_from_slice(&1u32.to_le_bytes());
-        data.extend_from_slice(&[0u8; 32]); // 40-byte header
+        data.extend_from_slice(&[0u8; 32]);
 
         let mut zip_buf = Vec::new();
         {
@@ -346,8 +325,6 @@ mod tests {
 
     #[test]
     fn missing_navx_manifest() {
-        // A ZIP with SymbolReference.json but no NavxManifest.xml must surface
-        // AppReaderError::NoManifest, not a generic ZIP error.
         let data = make_app_with_entries(&[("SymbolReference.json", &test_symbols())]);
         let err = read_app_bytes(&data).unwrap_err();
         assert!(matches!(err, AppReaderError::NoManifest), "got {err:?}");
@@ -355,8 +332,6 @@ mod tests {
 
     #[test]
     fn missing_symbol_reference() {
-        // A ZIP with NavxManifest.xml but no SymbolReference.json must surface
-        // AppReaderError::NoSymbolReference.
         let data = make_app_with_entries(&[("NavxManifest.xml", &test_manifest())]);
         let err = read_app_bytes(&data).unwrap_err();
         assert!(
@@ -376,13 +351,12 @@ mod tests {
 
     #[test]
     fn variable_header_size() {
-        // Test with a non-standard header size (e.g., 50 bytes instead of 40)
         let manifest = test_manifest();
         let symbols = test_symbols();
 
         let mut data = Vec::new();
         data.extend_from_slice(b"NAVX");
-        data.extend_from_slice(&[0u8; 46]); // 50 byte header total
+        data.extend_from_slice(&[0u8; 46]);
 
         let mut zip_buf = Vec::new();
         {

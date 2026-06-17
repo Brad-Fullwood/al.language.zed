@@ -24,7 +24,6 @@ use super::graph::{EventNodeType, InsightEdge, InsightGraph, InsightNode, NodeKe
 use super::index::{CallGraph, EdgeResolutionState};
 use crate::file_index::FileIndex;
 
-/// A record operation that can fire table triggers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordOp {
     Insert,
@@ -55,14 +54,10 @@ impl RecordOp {
     }
 }
 
-/// A call site found in a procedure body.
 #[derive(Debug, Clone)]
 pub enum CallSite {
-    /// A bare call: `Foo()` or `Foo(args)`.
     BareCall { name: String },
-    /// A member/scope call: `Obj.Method()` or `Type::Method()`.
     MemberCall { object: String, method: String },
-    /// A record operation: `Rec.Insert(true)` / `Rec.Modify()` / `Rec.Delete(false)` / `Rec.Validate(...)`.
     RecordOp {
         variable: String,
         op: RecordOp,
@@ -70,10 +65,6 @@ pub enum CallSite {
     },
 }
 
-/// Extract a mapping of `lowercase_variable_name -> table_name` for all
-/// `Record "X"` variables in a procedure's `var` section and parameters.
-///
-/// Returns only `Record`-typed variables since those are what trigger table events.
 pub fn extract_procedure_var_types(
     tree: &tree_sitter::Tree,
     source: &str,
@@ -92,7 +83,6 @@ pub fn extract_procedure_var_types(
     result
 }
 
-/// Find a procedure/trigger declaration node by name.
 fn find_procedure_node<'a>(
     tree: &'a tree_sitter::Tree,
     source: &[u8],
@@ -101,7 +91,6 @@ fn find_procedure_node<'a>(
     let proc_name_lower = procedure_name.to_lowercase();
     let root = tree.root_node();
 
-    // Walk the object body looking for procedure_declaration / trigger_declaration
     find_procedure_in_node(root, source, &proc_name_lower)
 }
 
@@ -125,14 +114,12 @@ fn find_procedure_in_node<'a>(
             // Do not descend further into this procedure's body
             continue;
         }
-        // Recurse into braced_block, object_declaration, etc.
         let mut cursor = node.walk();
         stack.extend(node.children(&mut cursor));
     }
     None
 }
 
-/// Collect `Record`-typed variable declarations from a procedure/trigger node.
 fn collect_record_vars_from_procedure_node(
     proc_node: tree_sitter::Node,
     source: &[u8],
@@ -152,7 +139,6 @@ fn collect_record_vars_from_procedure_node(
     }
 }
 
-/// Extract Record variables from a `var_section` node.
 fn collect_record_vars_from_var_section(
     section: tree_sitter::Node,
     source: &[u8],
@@ -166,7 +152,6 @@ fn collect_record_vars_from_var_section(
     }
 }
 
-/// Extract Record variables from a `parameter_list` node.
 fn collect_record_vars_from_parameter_list(
     param_list: tree_sitter::Node,
     source: &[u8],
@@ -180,7 +165,6 @@ fn collect_record_vars_from_parameter_list(
     }
 }
 
-/// Extract Record variable from a `variable_declaration` container node.
 fn collect_record_from_variable_declaration(
     container: tree_sitter::Node,
     source: &[u8],
@@ -198,7 +182,6 @@ fn collect_record_from_variable_declaration(
     }
 }
 
-/// Extract Record variable from a `regular_variable_declaration` node.
 fn collect_record_from_regular_var_decl(
     node: tree_sitter::Node,
     source: &[u8],
@@ -218,7 +201,6 @@ fn collect_record_from_regular_var_decl(
         None => return,
     };
 
-    // Parse type_reference: look for kw_record + name
     let (type_kw, subtype) = parse_type_reference_for_record(type_node, source);
     if type_kw.eq_ignore_ascii_case("record") {
         if let Some(table_name) = subtype {
@@ -227,7 +209,6 @@ fn collect_record_from_regular_var_decl(
     }
 }
 
-/// Extract Record variable from a `parameter` node.
 fn collect_record_from_parameter(
     node: tree_sitter::Node,
     source: &[u8],
@@ -299,7 +280,6 @@ fn collect_object_vars_from_var_section(
     let mut cursor = section.walk();
     for child in section.children(&mut cursor) {
         if child.kind() == "variable_declaration" {
-            // Walk inner regular_variable_declaration(s).
             let mut inner_cursor = child.walk();
             for inner in child.children(&mut inner_cursor) {
                 if inner.kind() == "regular_variable_declaration" {
@@ -363,7 +343,6 @@ fn extract_object_subtype(
         return;
     }
     let (type_kw, subtype) = parse_type_reference_for_record(type_node, source);
-    // Object-typed var kinds whose subtype is the receiver-object name.
     // Lowercased so the match handles "Codeunit"/"codeunit"/"CODEUNIT".
     let kw_lower = type_kw.to_ascii_lowercase();
     let is_object_var = matches!(
@@ -377,7 +356,6 @@ fn extract_object_subtype(
     }
 }
 
-/// Parse a `type_reference` node, returning `(type_keyword, optional_subtype)`.
 fn parse_type_reference_for_record(
     node: tree_sitter::Node,
     source: &[u8],
@@ -434,7 +412,6 @@ pub fn extract_call_sites(
         None => return sites,
     };
 
-    // Find the begin_end_block inside the procedure
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
         if child.kind() == "begin_end_block" {
@@ -469,10 +446,6 @@ fn collect_call_sites_from_block(
     }
 }
 
-/// Parse a `postfix_expression` node into a `CallSite`.
-///
-/// A `postfix_expression` has: `primary_expression` followed by zero or more suffixes.
-/// We only care about expressions that end with a call (have an `argument_list` at the end).
 fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -> Option<CallSite> {
     let children: Vec<tree_sitter::Node> = {
         let mut cursor = node.walk();
@@ -489,16 +462,11 @@ fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -> Option<Ca
 
     match last_kind {
         "call_suffix" => {
-            // Bare call: primary_expression + call_suffix
-            // primary_expression is the first child
             let primary = children.first()?;
             let name = extract_primary_expression_name(*primary, source)?;
             Some(CallSite::BareCall { name })
         }
         "member_call_suffix" => {
-            // Member call: primary_expression [+ suffixes...] + member_call_suffix
-            // The object name is from the first primary_expression (or its chain).
-            // For simplicity, take the text of the primary_expression.
             let primary = children.first()?;
             let object_name = extract_primary_expression_name(*primary, source)?;
 
@@ -524,7 +492,6 @@ fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -> Option<Ca
             }
         }
         "scope_call_suffix" => {
-            // Scope call: Type::Method()
             let primary = children.first()?;
             let object_name = extract_primary_expression_name(*primary, source)?;
 
@@ -549,11 +516,7 @@ fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -> Option<Ca
     }
 }
 
-/// Extract the name text from a `primary_expression` node.
-///
-/// Handles `name`, `name_or_keyword`, `identifier`, and `quoted_identifier` kinds.
 fn extract_primary_expression_name(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
-    // primary_expression wraps one child
     let mut cursor = node.walk();
     let children: Vec<_> = node.children(&mut cursor).collect();
 
@@ -593,13 +556,11 @@ fn parse_run_trigger_arg(
         return true;
     }
 
-    // Find the argument_list
     let arg_list = match member_call_suffix.child_by_field_name("call") {
         Some(n) => n,
         None => return true, // no arg list → default true
     };
 
-    // Get first argument
     let mut cursor = arg_list.walk();
     for child in arg_list.children(&mut cursor) {
         // argument_list: '(' [expression (',' expression)*] ')'
@@ -608,7 +569,6 @@ fn parse_run_trigger_arg(
         if kind != "(" && kind != ")" && kind != "," {
             if let Ok(text) = child.utf8_text(source) {
                 let trimmed = text.trim().to_lowercase();
-                // Trivial literal cases — match exactly.
                 if trimmed == "false" {
                     return false;
                 }
@@ -682,7 +642,6 @@ pub fn populate_call_edges_for_procedure(
             CallSite::BareCall { name } => {
                 let name_lower = name.to_lowercase();
                 let obj_lower = object_name.to_lowercase();
-                // Resolve against the same object's procedures in insight
                 let callee_key =
                     NodeKey::Procedure(object_kind, obj_lower.clone(), name_lower.clone());
                 if let Some(callee_id) = CallGraph::node_id_for(insight, &callee_key) {
@@ -724,17 +683,14 @@ pub fn populate_call_edges_for_procedure(
                 op,
                 run_trigger: true,
             } => {
-                // Resolve variable to table name
                 let table_name = match var_types.get(&variable.to_lowercase()) {
                     Some(t) => t.clone(),
                     None => continue,
                 };
 
-                // Find OnBefore/OnAfterEvent for the table in the insight graph
                 let (before_event, after_event) = record_op_event_names(*op);
 
                 for event_name in &[before_event, after_event] {
-                    // Try Table kind first, then fallback to Codeunit (for global table events)
                     let event_key = NodeKey::Event(
                         ObjectKind::Table,
                         table_name.to_lowercase(),
@@ -747,9 +703,7 @@ pub fn populate_call_edges_for_procedure(
             }
             CallSite::RecordOp {
                 run_trigger: false, ..
-            } => {
-                // RunTrigger=false → no trigger edges
-            }
+            } => {}
         }
     }
 }
@@ -899,11 +853,7 @@ pub fn register_workspace_nodes(
         });
     }
 
-    // Clear any previously registered workspace entries before re-adding to prevent
-    // duplicates when the call graph is rebuilt.
     symbols.remove_package_entries("workspace");
-
-    // Add workspace objects to the SymbolIndex so queries can resolve params
     if !workspace_entries.is_empty() {
         symbols.add_entries_owned(workspace_entries);
     }
@@ -1017,7 +967,6 @@ fn field_symbol_from_section(
     })
 }
 
-/// Extract `MethodSymbol` data from all procedures in an AL object AST.
 fn extract_methods_from_tree(
     root: tree_sitter::Node,
     source: &[u8],
@@ -1049,7 +998,6 @@ fn collect_methods_recursive(
     }
 }
 
-/// Extract a `MethodSymbol` from a procedure/trigger AST node.
 fn extract_method_symbol(
     proc_node: tree_sitter::Node,
     source: &[u8],
@@ -1070,7 +1018,6 @@ fn extract_method_symbol(
     let al_attrs: Vec<crate::symbols::AttributeSymbol> = attributes
         .iter()
         .map(|(name, args_text)| {
-            // Parse attribute arguments from the raw text: [Name(arg1, arg2, ...)]
             let arguments = parse_attr_args_from_text(args_text);
             crate::symbols::AttributeSymbol {
                 name: name.clone(),
@@ -1092,7 +1039,6 @@ fn extract_method_symbol(
     })
 }
 
-/// Extract parameters from a procedure's parameter_list node.
 fn extract_parameters_from_proc(
     proc_node: tree_sitter::Node,
     source: &[u8],
@@ -1115,7 +1061,6 @@ fn extract_parameters_from_proc(
     params
 }
 
-/// Extract a single parameter's name, type, and var-ness.
 fn extract_single_parameter(
     param_node: tree_sitter::Node,
     source: &[u8],
@@ -1232,7 +1177,6 @@ fn register_procedures_from_tree(
     }
 }
 
-/// Register a single procedure/trigger node in the insight graph.
 fn register_single_procedure(
     proc_node: tree_sitter::Node,
     source: &[u8],
@@ -1330,7 +1274,6 @@ fn register_single_procedure(
     }
 }
 
-/// Collect `(attribute_name, args_text)` pairs from a procedure node.
 pub(crate) fn collect_procedure_attributes(
     proc_node: tree_sitter::Node,
     source: &[u8],
@@ -1354,7 +1297,6 @@ pub(crate) fn collect_procedure_attributes(
     attrs
 }
 
-/// Check whether a procedure has the `local` modifier.
 fn has_local_modifier(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
@@ -1378,7 +1320,6 @@ fn parse_subscriber_target_from_attrs(attrs: &[(String, String)]) -> (String, St
         // Case-insensitive: see the corresponding comment at the procedure-attribute
         // collection site — raw tree-sitter text preserves source case.
         if name.eq_ignore_ascii_case(super::attr_names::EVENT_SUBSCRIBER) {
-            // Parse args from the raw text: split by comma inside parens
             let args = extract_attribute_args(args_text);
             let target_object = args.get(1).map(|s| clean_attr_arg(s)).unwrap_or_default();
             let target_event = args.get(2).map(|s| clean_attr_arg(s)).unwrap_or_default();
@@ -1455,10 +1396,8 @@ pub(crate) fn extract_attribute_args(attr_text: &str) -> Vec<String> {
     args
 }
 
-/// Clean an attribute argument: strip surrounding quotes, type prefixes like `Codeunit::`.
 pub(crate) fn clean_attr_arg(s: &str) -> String {
     let s = s.trim();
-    // Remove type prefix like `Codeunit::`
     let s = if let Some(pos) = s.find("::") {
         &s[pos + 2..]
     } else {
@@ -1484,7 +1423,6 @@ pub fn populate_workspace_call_edges(
     insight: &InsightGraph,
     call_graph: &mut CallGraph,
 ) -> usize {
-    // Collect (path, source, tree, object_info, fanout)
     let mut file_scores: Vec<(
         std::path::PathBuf,
         String,
@@ -1524,7 +1462,6 @@ pub fn populate_workspace_call_edges(
             Err(_) => continue,
         };
 
-        // Find all procedures in this file and populate edges for each
         let procedures = collect_procedure_names_from_tree(tree.root_node(), source.as_bytes());
         for proc_name in procedures {
             let proc_key =
@@ -1565,7 +1502,6 @@ fn tier1_threshold(
         return 5;
     }
 
-    // Top 20% threshold
     let mut scores: Vec<usize> = files.iter().map(|(_, _, _, _, s)| *s).collect();
     scores.sort_unstable();
     let cutoff_idx = scores.len() * 8 / 10; // 80th percentile index
@@ -1579,7 +1515,6 @@ fn tier1_threshold(
     percentile_threshold.clamp(1, 5)
 }
 
-/// Collect all procedure names from the AST (not just locally — recursively).
 fn collect_procedure_names_from_tree(node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
     let mut names = Vec::new();
     collect_procedure_names_from_node(node, source, &mut names);
@@ -1916,7 +1851,6 @@ mod tests {
         let result = crate::syntax::AlParser::parse_quick(source);
         let sites = extract_call_sites(&result.tree, source, "DoWork");
 
-        // Should find: SalesPost.Post(), Cust.Insert(true), Cust.Modify(), Cust.Delete(false), DoSomething()
         assert!(!sites.is_empty(), "Should find call sites");
 
         let bare_calls: Vec<_> = sites
@@ -2010,7 +1944,6 @@ mod tests {
 "#;
         let result = crate::syntax::AlParser::parse_quick(source);
 
-        // Set up symbol index with Customer table having OnBeforeInsertEvent
         let index = SymbolIndex::new();
         index.add_entries(&[
             make_codeunit(
@@ -2054,7 +1987,6 @@ mod tests {
         let callees = call_graph.callees_of(caller_id);
         assert!(!callees.is_empty(), "DoPost should have outgoing edges");
 
-        // Should have a DirectCall to CheckHeader
         let direct_calls: Vec<_> = callees
             .iter()
             .filter(|e| e.kind == super::super::index::EdgeKind::DirectCall)
@@ -2064,7 +1996,6 @@ mod tests {
             "Should have at least one direct call (CheckHeader)"
         );
 
-        // Should have RecordTrigger edges to Customer table events
         let triggers: Vec<_> = callees
             .iter()
             .filter(|e| e.kind == super::super::index::EdgeKind::RecordTrigger)
@@ -2227,7 +2158,6 @@ mod tests {
         let _index = SymbolIndex::new();
         let mut insight = InsightGraph::new();
 
-        // Simulate file_index registration by directly testing register_single_procedure
         let source_bytes = source.as_bytes();
         let obj_key = NodeKey::Object(ObjectKind::Codeunit, "test publisher".to_string());
         let obj_idx = insight.ensure_node(
@@ -2240,7 +2170,6 @@ mod tests {
             },
         );
 
-        // Find and register each procedure
         register_procedures_from_tree(
             result.tree.root_node(),
             source_bytes,
@@ -2250,7 +2179,6 @@ mod tests {
             &mut insight,
         );
 
-        // Check that event node was created
         let event_key = NodeKey::Event(
             ObjectKind::Codeunit,
             "test publisher".to_string(),
@@ -2261,7 +2189,6 @@ mod tests {
             "OnBeforeTest should be registered as an Event node"
         );
 
-        // Check that subscriber node was created
         let sub_key = NodeKey::Subscriber(
             ObjectKind::Codeunit,
             "test publisher".to_string(),
@@ -2272,7 +2199,6 @@ mod tests {
             "HandleAfterPost should be registered as a Subscriber node"
         );
 
-        // Check that normal procedure node was created
         let proc_key = NodeKey::Procedure(
             ObjectKind::Codeunit,
             "test publisher".to_string(),

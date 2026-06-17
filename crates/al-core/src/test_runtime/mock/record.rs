@@ -69,7 +69,6 @@ impl SortKey {
         SortKey { fields }
     }
 
-    /// Extract the sort-key tuple from a row.
     fn key_of(&self, row: &Row) -> Vec<Value> {
         self.fields
             .iter()
@@ -85,9 +84,7 @@ impl SortKey {
 /// IsEmpty, Count.
 #[derive(Debug, Clone)]
 pub struct MockRecord {
-    /// The AL table ID.
     pub table_id: i32,
-    /// The AL table name.
     pub table_name: String,
     /// The field numbers that form the primary key (in order).
     primary_key_fields: Vec<FieldNo>,
@@ -97,7 +94,6 @@ pub struct MockRecord {
     current: Row,
     /// Snapshot of `current` before the last Modify/Rename (xRec).
     x_rec: Row,
-    /// Active per-field filters.
     filters: BTreeMap<FieldNo, FieldFilter>,
     /// Current sort/key order for iteration.
     sort_key: SortKey,
@@ -108,7 +104,6 @@ pub struct MockRecord {
 }
 
 impl MockRecord {
-    /// Create a new, empty MockRecord for the given table.
     pub fn new(
         table_id: i32,
         table_name: impl Into<String>,
@@ -130,19 +125,15 @@ impl MockRecord {
         }
     }
 
-    // ── Buffer / current-record helpers ─────────────────────────────────────
-
     /// Set a field value in the current buffer.
     pub fn field_set(&mut self, field: FieldNo, value: Value) {
         self.current.insert(field, value);
     }
 
-    /// Get a field value from the current buffer.
     pub fn field_get(&self, field: FieldNo) -> Option<&Value> {
         self.current.get(&field)
     }
 
-    /// Extract the primary key from the current buffer.
     fn current_primary_key(&self) -> Result<PrimaryKey, RecordError> {
         self.primary_key_fields
             .iter()
@@ -154,8 +145,6 @@ impl MockRecord {
             })
             .collect()
     }
-
-    // ── AL Record API ─────────────────────────────────────────────────────────
 
     /// `INIT` — reset the current buffer to empty defaults.
     pub fn init(&mut self) {
@@ -261,8 +250,6 @@ impl MockRecord {
         Ok(())
     }
 
-    // ── Internal: build filtered, sorted iteration set ────────────────────────
-
     fn build_iter_set(&mut self) {
         let mut keys: Vec<PrimaryKey> = self
             .rows
@@ -276,7 +263,6 @@ impl MockRecord {
             })
             .collect();
 
-        // Sort by current-key fields.
         let sort_key = self.sort_key.clone();
         keys.sort_by(|a, b| {
             let row_a = self.rows.get(a).unwrap();
@@ -305,8 +291,6 @@ impl MockRecord {
         self.iter_pos = Some(pos);
         Ok(())
     }
-
-    // ── Iteration ─────────────────────────────────────────────────────────────
 
     /// `FINDFIRST` — position on the first matching record.
     pub fn find_first(&mut self) -> Result<bool, RecordError> {
@@ -362,8 +346,6 @@ impl MockRecord {
         Ok(steps)
     }
 
-    // ── Aggregates ────────────────────────────────────────────────────────────
-
     /// `ISEMPTY` — `true` if no rows match the current filters.
     pub fn is_empty(&self) -> bool {
         self.rows.values().all(|row| !self.row_matches_filters(row))
@@ -376,8 +358,6 @@ impl MockRecord {
             .filter(|row| self.row_matches_filters(row))
             .count()
     }
-
-    // ── xRec access ───────────────────────────────────────────────────────────
 
     /// Return the `xRec` snapshot (the row before the last Modify/Rename).
     pub fn x_rec(&self) -> &Row {
@@ -394,7 +374,6 @@ impl MockRecord {
 mod tests {
     use super::*;
 
-    /// Helper: create a simple single-field-PK table.
     fn make_table() -> MockRecord {
         MockRecord::new(27, "Item", vec![1])
     }
@@ -416,8 +395,6 @@ mod tests {
         rec.insert(false).expect("insert should succeed");
     }
 
-    // ── Positive: insert → get ────────────────────────────────────────────────
-
     #[test]
     fn test_insert_then_get_matches() {
         let mut rec = make_table();
@@ -427,8 +404,6 @@ mod tests {
         assert_eq!(rec2.field_get(2), Some(&Value::Text("Bike".to_string())));
     }
 
-    // ── Positive: delete → isEmpty ────────────────────────────────────────────
-
     #[test]
     fn test_delete_then_is_empty() {
         let mut rec = make_table();
@@ -437,8 +412,6 @@ mod tests {
         rec.delete(false).unwrap();
         assert!(rec.is_empty());
     }
-
-    // ── Positive: modify → xRec preserved ────────────────────────────────────
 
     #[test]
     fn test_modify_xrec_preserved() {
@@ -457,8 +430,6 @@ mod tests {
         assert_eq!(rec.field_get(2), Some(&Value::Text("NewName".to_string())));
     }
 
-    // ── Positive: count after mass delete ────────────────────────────────────
-
     #[test]
     fn test_count_after_mass_delete_is_zero() {
         let mut rec = make_table();
@@ -467,7 +438,6 @@ mod tests {
         }
         assert_eq!(rec.count(), 10);
 
-        // Delete all rows.
         for i in 1..=10i64 {
             rec.field_set(1, Value::Integer(i));
             rec.delete(false).unwrap();
@@ -475,8 +445,6 @@ mod tests {
         assert_eq!(rec.count(), 0);
         assert!(rec.is_empty());
     }
-
-    // ── Positive: FindSet iteration order matches sort key ────────────────────
 
     #[test]
     fn test_findset_iteration_order_matches_sort_key() {
@@ -490,12 +458,9 @@ mod tests {
         while rec.next(1).unwrap() != 0 {
             order.push(rec.field_get(1).unwrap().clone());
         }
-        // Should be in ascending key order.
         let expected: Vec<Value> = (1i64..=5).map(Value::Integer).collect();
         assert_eq!(order, expected);
     }
-
-    // ── Positive: SetRange filters before iteration ───────────────────────────
 
     #[test]
     fn test_setrange_filters_before_iteration() {
@@ -513,8 +478,6 @@ mod tests {
         let expected: Vec<Value> = (3i64..=7).map(Value::Integer).collect();
         assert_eq!(seen, expected);
     }
-
-    // ── Positive: SetCurrentKey changes order ─────────────────────────────────
 
     #[test]
     fn test_set_current_key_changes_iteration_order() {
@@ -540,8 +503,6 @@ mod tests {
         );
     }
 
-    // ── Positive: Rename ──────────────────────────────────────────────────────
-
     #[test]
     fn test_rename_moves_row() {
         let mut rec = make_table();
@@ -549,27 +510,20 @@ mod tests {
         rec.get(vec![Value::Integer(100)]).unwrap();
         rec.rename(vec![(1, Value::Integer(200))]).unwrap();
 
-        // Old key gone.
         assert!(rec.get(vec![Value::Integer(100)]).is_err());
-        // New key present.
         rec.get(vec![Value::Integer(200)]).unwrap();
         assert_eq!(rec.field_get(2), Some(&Value::Text("Alpha".to_string())));
     }
-
-    // ── Negative: duplicate insert ────────────────────────────────────────────
 
     #[test]
     fn test_insert_duplicate_key_error() {
         let mut rec = make_table();
         insert_row(&mut rec, 1, "A");
-        // Reset buffer to same key.
         rec.field_set(1, Value::Integer(1));
         rec.field_set(2, Value::Text("B".to_string()));
         let err = rec.insert(false).unwrap_err();
         assert_eq!(err, RecordError::DuplicateKey);
     }
-
-    // ── Negative: get missing record ─────────────────────────────────────────
 
     #[test]
     fn test_get_missing_record_error() {
@@ -577,8 +531,6 @@ mod tests {
         let err = rec.get(vec![Value::Integer(999)]).unwrap_err();
         assert_eq!(err, RecordError::NotFound);
     }
-
-    // ── Negative: modify non-existent ────────────────────────────────────────
 
     #[test]
     fn test_modify_nonexistent_error() {
@@ -588,8 +540,6 @@ mod tests {
         assert_eq!(err, RecordError::NotFound);
     }
 
-    // ── Negative: delete non-existent ────────────────────────────────────────
-
     #[test]
     fn test_delete_nonexistent_error() {
         let mut rec = make_table();
@@ -598,8 +548,6 @@ mod tests {
         assert_eq!(err, RecordError::NotFound);
     }
 
-    // ── Negative: Next without FindSet ───────────────────────────────────────
-
     #[test]
     fn test_next_without_findset_error() {
         let mut rec = make_table();
@@ -607,24 +555,17 @@ mod tests {
         assert_eq!(err, RecordError::NoCurrentRow);
     }
 
-    // ── Negative: FindSet on empty table ─────────────────────────────────────
-
     #[test]
     fn test_findset_empty_table_returns_false() {
         let mut rec = make_table();
         assert!(!rec.find_set().unwrap());
     }
 
-    // ── Negative: bad SetFilter expression ───────────────────────────────────
-
     #[test]
     fn test_invalid_setfilter_returns_error() {
         let mut rec = make_table();
-        // Empty expression is a parse error.
         assert!(rec.set_filter(1, "").is_err());
     }
-
-    // ── Negative: rename to existing key ─────────────────────────────────────
 
     #[test]
     fn test_rename_to_existing_key_error() {
@@ -636,20 +577,15 @@ mod tests {
         assert_eq!(err, RecordError::DuplicateKey);
     }
 
-    // ── Positive: SetFilter with BC expression ────────────────────────────────
-
     #[test]
     fn test_setfilter_bc_expression() {
         let mut rec = make_table();
         for i in 1i64..=5 {
             insert_row(&mut rec, i, "item");
         }
-        // Keep only rows where field 1 >= 3.
         rec.set_filter(1, ">=3").unwrap();
         assert_eq!(rec.count(), 3);
     }
-
-    // ── Positive: FindFirst / FindLast ───────────────────────────────────────
 
     #[test]
     fn test_find_first_and_last() {
@@ -664,8 +600,6 @@ mod tests {
         assert_eq!(rec.field_get(1), Some(&Value::Integer(5)));
     }
 
-    // ── Positive: Find('-') and Find('+') ────────────────────────────────────
-
     #[test]
     fn test_find_directions() {
         let mut rec = make_table();
@@ -678,8 +612,6 @@ mod tests {
         assert!(rec.find('+').unwrap());
         assert_eq!(rec.field_get(1), Some(&Value::Integer(30)));
     }
-
-    // ── Positive: composite primary key ──────────────────────────────────────
 
     #[test]
     fn test_composite_primary_key() {
@@ -695,8 +627,6 @@ mod tests {
         assert_eq!(rec.field_get(3), Some(&Value::Integer(10)));
     }
 
-    // ── Positive: IsEmpty respects filters ───────────────────────────────────
-
     #[test]
     fn test_is_empty_respects_filters() {
         let mut rec = make_table();
@@ -710,8 +640,6 @@ mod tests {
         rec.reset();
         assert!(!rec.is_empty());
     }
-
-    // ── Positive: Reset clears filters ───────────────────────────────────────
 
     #[test]
     fn test_reset_clears_filters() {
@@ -796,7 +724,6 @@ mod tests {
         rec.set_filter(1, ">=5").unwrap();
         // If last-write-wins: count == 6 (5..=10).
         // If AND semantics:    count == 3 (5..=7).
-        // Document which one actually happens:
         let count = rec.count();
         assert_eq!(count, 6, "SetFilter after SetRange on same field must overwrite (last-write-wins), giving >=5 → 6 rows");
     }
@@ -834,7 +761,6 @@ mod tests {
         let mut rec = make_table();
         insert_row(&mut rec, 1, "Row");
         rec.init(); // clears current buffer
-                    // Now modify() — current buffer is empty, no PK field set.
         let err = rec.modify(false).unwrap_err();
         assert!(
             matches!(err, RecordError::MissingKeyField(_)),
@@ -876,11 +802,9 @@ mod tests {
         loop {
             let key = rec.field_get(1).unwrap().clone();
             visited.push(key.clone());
-            // Modify the current row's non-PK field.
             rec.field_set(2, Value::Text("modified".to_string()));
             rec.modify(false)
                 .expect("modify during iteration must not fail");
-            // Advance to next record.
             if rec.next(1).unwrap() == 0 {
                 break;
             }
@@ -911,7 +835,6 @@ mod tests {
         assert_eq!(rec.count(), 5);
         assert!(!rec.is_empty());
 
-        // Delete all rows via direct key deletion.
         for i in 1i64..=5 {
             rec.field_set(1, Value::Integer(i));
             rec.delete(false).unwrap();
@@ -971,7 +894,6 @@ mod tests {
             vec![Value::Integer(10), Value::Integer(20), Value::Integer(30)]
         );
 
-        // Change sort key to field3 (priority).
         rec.set_current_key(vec![3]);
 
         // Second FindSet must use new sort key: priority 10→no=20, 20→no=30, 30→no=10.

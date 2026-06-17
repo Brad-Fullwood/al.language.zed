@@ -115,8 +115,6 @@ pub struct TokenClassification {
     pub builtin_function: HashSet<String>,
 }
 
-// ── Private wrapper structs for JSON files with top-level object envelopes ───
-
 #[derive(serde::Deserialize)]
 struct ObjectTypesFile {
     object_types: Vec<ObjectType>,
@@ -178,6 +176,25 @@ static RUNTIME_ENUMS: LazyLock<Vec<RuntimeEnum>> = LazyLock::new(|| {
     .expect("runtime_enums.json must be valid")
 });
 
+/// `NavTypeKind` name → id (Microsoft CodeAnalysis enum values). Generated from
+/// the toolchain DLL — see `tree-sitter-al/generator/tools/nav-type-kinds`.
+static NAV_TYPE_KINDS: LazyLock<HashMap<String, i32>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!(
+        "../../../../tree-sitter-al/data/nav_type_kinds.json"
+    ))
+    .expect("nav_type_kinds.json must be valid")
+});
+
+/// Platform system-permission objects (display name → id), e.g.
+/// `Tools, Object Designer` → 5210. Used by the emitter to resolve `system`-type
+/// permissions, whose ids are platform built-ins absent from `.alpackages`.
+static SYSTEM_OBJECTS: LazyLock<HashMap<String, i32>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!(
+        "../../../../tree-sitter-al/data/system_objects.json"
+    ))
+    .expect("system_objects.json must be valid")
+});
+
 static TOKEN_CLASSIFICATION: LazyLock<TokenClassification> = LazyLock::new(|| {
     let raw: TokenClassificationRaw = serde_json::from_str(include_str!(
         "../../../../tree-sitter-al/data/token_classification.json"
@@ -192,7 +209,6 @@ static TOKEN_CLASSIFICATION: LazyLock<TokenClassification> = LazyLock::new(|| {
     }
 });
 
-/// O(1) lookup set for `is_keyword`. Keys are lowercase keyword strings.
 static KEYWORD_SET: LazyLock<HashSet<String>> = LazyLock::new(|| {
     let kw = &*KEYWORDS;
     kw.control
@@ -204,7 +220,6 @@ static KEYWORD_SET: LazyLock<HashSet<String>> = LazyLock::new(|| {
         .collect()
 });
 
-/// O(1) lookup map for `builtin_function_by_name`. Keys are lowercase function names.
 static BUILTIN_FUNCTION_MAP: LazyLock<HashMap<String, usize>> = LazyLock::new(|| {
     BUILTIN_FUNCTIONS
         .iter()
@@ -213,7 +228,6 @@ static BUILTIN_FUNCTION_MAP: LazyLock<HashMap<String, usize>> = LazyLock::new(||
         .collect()
 });
 
-/// O(1) lookup map for `object_type_by_keyword`. Keys are lowercase keywords.
 static OBJECT_TYPE_MAP: LazyLock<HashMap<String, usize>> = LazyLock::new(|| {
     OBJECT_TYPES
         .iter()
@@ -222,7 +236,6 @@ static OBJECT_TYPE_MAP: LazyLock<HashMap<String, usize>> = LazyLock::new(|| {
         .collect()
 });
 
-/// O(1) lookup map for `page_control_by_keyword`. Keys are lowercase keywords.
 static PAGE_CONTROL_MAP: LazyLock<HashMap<String, usize>> = LazyLock::new(|| {
     PAGE_CONTROLS
         .iter()
@@ -261,6 +274,29 @@ pub fn runtime_enums() -> &'static [RuntimeEnum] {
 
 pub fn token_classification() -> &'static TokenClassification {
     &TOKEN_CLASSIFICATION
+}
+
+/// The Microsoft `NavTypeKind` id for an AL type name (e.g. `"Integer"`,
+/// `"Text"`, `"Record"`), case-insensitive. `None` for unknown types. Used by
+/// the native `.app` emitter's method-id hashing.
+pub fn nav_type_kind_id(name: &str) -> Option<i32> {
+    NAV_TYPE_KINDS.get(name).copied().or_else(|| {
+        NAV_TYPE_KINDS
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| *v)
+    })
+}
+
+/// The id of a platform system-permission object by its AL display name (e.g.
+/// `Tools, Object Designer` → 5210), case-insensitive. `None` for unknown names.
+pub fn system_object_id(name: &str) -> Option<i32> {
+    SYSTEM_OBJECTS.get(name).copied().or_else(|| {
+        SYSTEM_OBJECTS
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| *v)
+    })
 }
 
 pub fn builtin_function_by_name(name: &str) -> Option<&'static BuiltinFunction> {
@@ -353,7 +389,7 @@ mod tests {
         let funcs = builtin_functions();
         assert!(funcs.len() >= 30);
         assert!(builtin_function_by_name("Message").is_some());
-        assert!(builtin_function_by_name("message").is_some()); // case-insensitive
+        assert!(builtin_function_by_name("message").is_some());
     }
 
     #[test]

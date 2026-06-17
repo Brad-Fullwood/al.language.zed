@@ -22,8 +22,6 @@ pub(crate) fn warn_insecure_tls(context: &str) {
     eprintln!("al-lsp: {msg}");
 }
 
-/// Build a `reqwest::Client` with the given TLS and timeout settings.
-///
 /// Shared by `profiling` and `snapshot` so their `make_client` wrappers are
 /// reduced to a single delegating call rather than duplicated builder chains.
 ///
@@ -45,9 +43,6 @@ pub(crate) fn build_http_client(
         .build()
 }
 
-/// Apply Basic auth to a request builder if credentials are provided.
-///
-/// Used by both `profiling` and `snapshot` modules.
 pub(crate) fn apply_basic_auth(
     req: reqwest::RequestBuilder,
     username: &Option<String>,
@@ -95,15 +90,12 @@ mod tests {
 
     #[test]
     fn build_http_client_with_valid_certs_succeeds() {
-        // Happy path: standard TLS verification, normal timeout.
         let client = build_http_client(false, 30);
         assert!(client.is_ok(), "client builder should succeed: {client:?}");
     }
 
     #[test]
     fn build_http_client_accepting_invalid_certs_succeeds() {
-        // The insecure path must still produce a usable client (it only
-        // disables verification + logs a warning).
         let client = build_http_client(true, 30);
         assert!(client.is_ok(), "client builder should succeed: {client:?}");
     }
@@ -128,8 +120,6 @@ mod tests {
 
     #[test]
     fn apply_basic_auth_with_both_credentials_sets_authorization() {
-        // RED-GREEN anchor: with both username and password present, the
-        // request must carry the correctly base64-encoded Basic credential.
         // `admin:password` => base64 "YWRtaW46cGFzc3dvcmQ=".
         let req = apply_basic_auth(
             get_request(),
@@ -151,7 +141,6 @@ mod tests {
 
     #[test]
     fn apply_basic_auth_without_credentials_leaves_request_unauthenticated() {
-        // No credentials -> no Authorization header (Windows auth path).
         let req = apply_basic_auth(get_request(), &None, &None);
         assert!(
             authorization_header(req).is_none(),
@@ -161,7 +150,6 @@ mod tests {
 
     #[test]
     fn apply_basic_auth_with_only_username_leaves_request_unauthenticated() {
-        // Partial credentials -> the tuple match fails -> request untouched.
         let req = apply_basic_auth(get_request(), &Some("admin".to_string()), &None);
         assert!(
             authorization_header(req).is_none(),
@@ -171,7 +159,6 @@ mod tests {
 
     #[test]
     fn apply_basic_auth_with_only_password_leaves_request_unauthenticated() {
-        // Partial credentials -> the tuple match fails -> request untouched.
         let req = apply_basic_auth(get_request(), &None, &Some("password".to_string()));
         assert!(
             authorization_header(req).is_none(),

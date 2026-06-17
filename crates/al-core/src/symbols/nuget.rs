@@ -31,21 +31,17 @@ pub enum NuGetError {
     Json(#[from] serde_json::Error),
 }
 
-/// A reference to a NuGet package to download.
 #[derive(Debug, Clone)]
 pub struct PackageRef {
     /// NuGet package ID (e.g., "microsoft.application.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972")
     pub id: String,
     /// Desired version (e.g., "24.0.12345.0"), or None for latest.
     pub version: Option<String>,
-    /// Original app name (for display purposes).
     pub display_name: String,
 }
 
-/// A NuGet feed configuration.
 #[derive(Debug, Clone)]
 pub struct NuGetFeed {
-    /// The NuGet v3 service index URL.
     pub index_url: String,
 }
 
@@ -57,8 +53,6 @@ impl Default for NuGetFeed {
     }
 }
 
-/// A dependency from app.json.
-///
 /// Fields use camelCase for JSON serialization to match the app.json format.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,7 +115,6 @@ pub fn resolve_dependencies_for_country(
 fn resolve_package_id(dep: &AppDependency, country: Option<&str>) -> String {
     let id_lower = dep.id.to_lowercase();
 
-    // Core Microsoft packages have special naming on the MSSymbols feed.
     // These were found empirically — Microsoft is inconsistent about GUID inclusion.
     match id_lower.as_str() {
         APPLICATION_APP_ID => match country {
@@ -158,8 +151,6 @@ fn resolve_package_id(dep: &AppDependency, country: Option<&str>) -> String {
     }
 }
 
-// -- NuGet v3 service index types --
-
 #[derive(Debug, serde::Deserialize)]
 struct ServiceIndex {
     resources: Vec<ServiceResource>,
@@ -178,11 +169,9 @@ struct VersionIndex {
     versions: Vec<String>,
 }
 
-/// A NuGet client that manages feeds and downloads symbol packages.
 pub struct NuGetClient {
     client: reqwest::Client,
     feeds: Vec<NuGetFeed>,
-    /// Cache of service index base addresses keyed by feed index_url.
     base_address_cache: Mutex<HashMap<String, String>>,
     /// Per-package download mutexes. Two concurrent downloads of the SAME
     /// package id will serialise on the same `tokio::sync::Mutex`, so the
@@ -196,7 +185,6 @@ pub struct NuGetClient {
 }
 
 impl NuGetClient {
-    /// Create a new NuGet client with the given feeds.
     pub fn new(feeds: Vec<NuGetFeed>) -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
@@ -217,7 +205,6 @@ impl NuGetClient {
         self
     }
 
-    /// Get or create the per-package serialisation mutex for `pkg_id`.
     fn lock_for(&self, pkg_id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
         let key = pkg_id.to_lowercase();
         let mut map = self.package_locks.lock().unwrap_or_else(|e| e.into_inner());
@@ -291,7 +278,6 @@ async fn download(
     pkg: &PackageRef,
     dest: &Path,
 ) -> Result<PathBuf, NuGetError> {
-    // 1. Get service index (cached per feed index_url)
     let cached = {
         let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
         guard.get(&feed.index_url).cloned()
@@ -310,7 +296,6 @@ async fn download(
 
     let id_lower = pkg.id.to_lowercase();
 
-    // 2. Get version list
     let version_url = format!("{}{}/index.json", base_url, id_lower);
     debug!(url = %version_url, "Fetching version index");
     let version_index: VersionIndex = fetch_metadata_json(client, &version_url).await?;
@@ -319,9 +304,7 @@ async fn download(
         return Err(NuGetError::NoVersions(pkg.id.clone()));
     }
 
-    // 3. Determine version to download
     let version = if let Some(ref requested) = pkg.version {
-        // Try exact match first
         if let Some(v) = version_index.versions.iter().find(|v| *v == requested) {
             v.clone()
         } else {
@@ -341,7 +324,6 @@ async fn download(
                 );
                 (*v).clone()
             } else {
-                // Fall back to latest available
                 let latest = version_index
                     .versions
                     .last()
@@ -355,7 +337,6 @@ async fn download(
             }
         }
     } else {
-        // Use latest
         version_index
             .versions
             .last()
@@ -363,7 +344,6 @@ async fn download(
             .clone()
     };
 
-    // 4. Download .nupkg
     let nupkg_url = format!(
         "{}{}/{}/{}.{}.nupkg",
         base_url, id_lower, version, id_lower, version
@@ -411,7 +391,6 @@ async fn download(
         )));
     }
 
-    // 5. Extract .app from .nupkg
     let app_path = extract_app_from_nupkg(&nupkg_bytes, dest, &pkg.display_name)?;
     info!(
         package = %pkg.display_name,
@@ -495,7 +474,6 @@ async fn fetch_metadata_json<T: serde::de::DeserializeOwned>(
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-/// Get the PackageBaseAddress URL from the NuGet v3 service index.
 async fn get_package_base_address(
     client: &reqwest::Client,
     index_url: &str,
@@ -541,7 +519,6 @@ async fn get_package_base_address(
     Ok(url)
 }
 
-/// Extract the first .app file from a .nupkg (ZIP) archive.
 fn extract_app_from_nupkg(
     nupkg_bytes: &[u8],
     dest: &Path,
@@ -581,7 +558,6 @@ fn extract_app_from_nupkg(
                 let mut limited = std::io::Read::take(file, MAX_APP_SIZE);
                 let bytes_copied = std::io::copy(&mut limited, &mut out_file)?;
                 if bytes_copied >= MAX_APP_SIZE {
-                    // Remove the partial temp file before returning the error.
                     let _ = std::fs::remove_file(&tmp_path);
                     return Err(NuGetError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -599,7 +575,6 @@ fn extract_app_from_nupkg(
         }
     }
 
-    // If no .app file found directly, some packages put it in a subfolder
     warn!(
         package = %display_name,
         "No .app file found at root of nupkg, trying any path"
@@ -749,7 +724,6 @@ mod tests {
 
     #[test]
     fn resolve_third_party_lowercases_guid_and_strips_spaces() {
-        // General pattern: spaces removed from publisher+name, GUID lowercased.
         let deps = vec![AppDependency {
             id: "AB12CD34-0000-0000-0000-000000000000".to_string(),
             name: "Cool Tool".to_string(),
@@ -799,7 +773,6 @@ mod tests {
     fn version_prefix_extracts_major_minor() {
         assert_eq!(version_prefix("26.5.0.0"), "26.5.");
         assert_eq!(version_prefix("26.0.40469"), "26.0.");
-        // Exactly two components still works.
         assert_eq!(version_prefix("12.3"), "12.3.");
     }
 
@@ -952,7 +925,6 @@ mod tests {
 
     #[test]
     fn parse_version_invalid_empty() {
-        // Empty string should not panic
         assert_eq!(parse_version(""), (0, 0, 0, 0));
     }
 
@@ -986,8 +958,6 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dest);
     }
-
-    // --- fetch_metadata_json (F-OPEN-018) -----------------------------------
 
     #[derive(Debug, serde::Deserialize)]
     struct DummyJson {
@@ -1056,8 +1026,6 @@ mod tests {
         // Content-Length does NOT result in successfully deserialised JSON.
         assert!(res.is_err(), "oversized Content-Length must not yield Ok");
     }
-
-    // --- per-package serialisation lock (F-OPEN-019) -----------------------
 
     #[test]
     fn lock_for_same_id_returns_same_arc() {

@@ -192,10 +192,6 @@ fn to_f64(v: &Value) -> Option<f64> {
     }
 }
 
-/// Resolve a procedure name (case-insensitive) to its Rust impl. The
-/// dispatch layer calls this when the receiver of a member-call is a
-/// Library Assert codeunit (or when the bare procedure name is known
-/// to belong to Library Assert). Returns `None` if the name is unknown.
 pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
     match procedure.to_ascii_lowercase().as_str() {
         "istrue" => Some(is_true),
@@ -238,8 +234,6 @@ mod tests {
 
     #[test]
     fn istrue_fails_for_false_with_message() {
-        // Negative: false condition produces an Eval::Error containing
-        // the user-supplied message.
         assert_fail_contains(
             is_true(&[Value::Boolean(false), Value::Text("expected truth".into())]),
             "expected truth",
@@ -315,7 +309,6 @@ mod tests {
 
     #[test]
     fn fail_always_fails() {
-        // Negative: Fail unconditionally produces Eval::Error.
         assert_fail_contains(fail(&[Value::Text("kaboom".into())]), "kaboom");
         assert_fail_contains(fail(&[]), "Assert.Fail invoked");
     }
@@ -330,13 +323,9 @@ mod tests {
 
     #[test]
     fn arity_mismatch_is_error() {
-        // Negative: wrong arg count produces a clear error rather than
-        // panicking or silently succeeding.
         assert_fail_contains(is_true(&[Value::Integer(1)]), "Assert.IsTrue expects");
         assert_fail_contains(are_equal(&[Value::Integer(1)]), "Assert.AreEqual expects");
     }
-
-    // ── Adversarial tests (adversarial-h) ─────────────────────────────────────
 
     #[test]
     fn are_nearly_equal_nan_inputs_adversarial_h_11() {

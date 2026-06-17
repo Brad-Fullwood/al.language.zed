@@ -34,22 +34,17 @@ use std::cell::Cell;
 use crate::test_runtime::interpreter::scope::Eval;
 use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
 
-// ---------------------------------------------------------------------------
-// Shared thread-local LCG
-//
 // We import the same Cell type and use the same algorithm as library_random,
 // but we keep a *separate* thread-local here so the two stubs don't need to
 // be in the same compilation unit.  If you need both codeunits to share a
 // *single* seed you can route them through a common module; for test
 // isolation (each test method creates its own `Any` codeunit variable), the
 // separation is intentional.
-// ---------------------------------------------------------------------------
 
 thread_local! {
     static LCG_STATE: Cell<u64> = const { Cell::new(1) };
 }
 
-/// Advance the LCG and return a value in [1, max].
 fn next_rand(max: i64) -> i64 {
     if max <= 1 {
         return 1;
@@ -112,15 +107,12 @@ pub fn integer_in_range(args: &[Value]) -> Eval {
 /// `Any.DecimalInRange(Min: Decimal; Max: Decimal; DecimalPlaces: Integer): Decimal`
 pub fn decimal_in_range(args: &[Value]) -> Eval {
     match args {
-        // Two-arg form: DecimalInRange(Max, Places)
         [Value::Integer(max), Value::Integer(places)] => {
             decimal_in_range_impl(0.0, *max as f64, *places)
         }
-        // Three-arg integer form: DecimalInRange(Min, Max, Places)
         [Value::Integer(min), Value::Integer(max), Value::Integer(places)] => {
             decimal_in_range_impl(*min as f64, *max as f64, *places)
         }
-        // Three-arg decimal form
         [Value::Decimal(min), Value::Decimal(max), Value::Integer(places)] => {
             decimal_in_range_impl(*min, *max, *places)
         }
@@ -192,8 +184,6 @@ pub fn alphanumeric_text(args: &[Value]) -> Eval {
     if length < 0 {
         return err("Any.AlphanumericText: Length must be ≥ 0");
     }
-    // Generate using hex-like chars (0–9, a–f) from random bytes — mirrors
-    // the GUID-stripping strategy in the AL source.
     const HEX: &[u8] = b"0123456789abcdef";
     let s: String = (0..length as usize)
         .map(|_| HEX[(next_rand(16) - 1) as usize] as char)
@@ -237,18 +227,15 @@ pub fn email(args: &[Value]) -> Eval {
     if local_len < 1 || domain_len < 1 {
         return err("Any.Email: lengths must be ≥ 1");
     }
-    // local part: alphanumeric
     let local: String = (0..local_len as usize)
         .map(|_| {
             const HEX: &[u8] = b"0123456789abcdef";
             HEX[(next_rand(16) - 1) as usize] as char
         })
         .collect();
-    // domain: alphabetic
     let domain: String = (0..domain_len as usize)
         .map(|_| char::from_u32((96 + next_rand(26)) as u32).unwrap_or('a'))
         .collect();
-    // tld: 3 alphabetic chars
     let tld: String = (0..3)
         .map(|_| char::from_u32((96 + next_rand(26)) as u32).unwrap_or('a'))
         .collect();
@@ -321,7 +308,6 @@ pub fn set_default_seed(args: &[Value]) -> Eval {
     ok(Value::Empty)
 }
 
-/// Resolve a procedure name (case-insensitive) to its Rust implementation.
 pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
     match procedure.to_ascii_lowercase().as_str() {
         "boolean" => Some(boolean),
@@ -362,8 +348,6 @@ mod tests {
         }
     }
 
-    // ── Boolean ───────────────────────────────────────────────────────────────
-
     #[test]
     fn boolean_returns_bool() {
         seed(1);
@@ -386,12 +370,9 @@ mod tests {
 
     #[test]
     fn boolean_no_args_required() {
-        // Negative: extra arg → error.
         let msg = is_err(boolean(&[Value::Integer(1)]));
         assert!(msg.contains("expects"), "got: {msg}");
     }
-
-    // ── IntegerInRange ────────────────────────────────────────────────────────
 
     #[test]
     fn integer_in_range_single_arg_in_range() {
@@ -438,12 +419,9 @@ mod tests {
 
     #[test]
     fn integer_in_range_wrong_args_is_error() {
-        // Negative: boolean arg → error.
         let msg = is_err(integer_in_range(&[Value::Boolean(true)]));
         assert!(msg.contains("expects"), "got: {msg}");
     }
-
-    // ── DecimalInRange ────────────────────────────────────────────────────────
 
     #[test]
     fn decimal_in_range_two_args_in_range() {
@@ -482,12 +460,9 @@ mod tests {
 
     #[test]
     fn decimal_in_range_negative_places_is_error() {
-        // Negative: negative decimal places → error.
         let msg = is_err(decimal_in_range(&[Value::Integer(10), Value::Integer(-1)]));
         assert!(msg.contains("≥ 0"), "got: {msg}");
     }
-
-    // ── AlphabeticText ────────────────────────────────────────────────────────
 
     #[test]
     fn alphabetic_text_returns_correct_length() {
@@ -515,19 +490,15 @@ mod tests {
 
     #[test]
     fn alphabetic_text_wrong_args_is_error() {
-        // Negative: two args → error.
         let msg = is_err(alphabetic_text(&[Value::Integer(5), Value::Integer(10)]));
         assert!(msg.contains("expects"), "got: {msg}");
     }
 
     #[test]
     fn alphabetic_text_negative_length_is_error() {
-        // Negative: negative length → error.
         let msg = is_err(alphabetic_text(&[Value::Integer(-1)]));
         assert!(msg.contains("≥ 0"), "got: {msg}");
     }
-
-    // ── AlphanumericText ──────────────────────────────────────────────────────
 
     #[test]
     fn alphanumeric_text_returns_correct_length() {
@@ -553,8 +524,6 @@ mod tests {
         let b = ok_val(alphanumeric_text(&[Value::Integer(12)]));
         assert_eq!(a, b);
     }
-
-    // ── UnicodeText ───────────────────────────────────────────────────────────
 
     #[test]
     fn unicode_text_returns_correct_length() {
@@ -583,12 +552,9 @@ mod tests {
 
     #[test]
     fn unicode_text_negative_length_is_error() {
-        // Negative: negative length → error.
         let msg = is_err(unicode_text(&[Value::Integer(-3)]));
         assert!(msg.contains("≥ 0"), "got: {msg}");
     }
-
-    // ── Email ─────────────────────────────────────────────────────────────────
 
     #[test]
     fn email_contains_at_sign() {
@@ -613,12 +579,9 @@ mod tests {
 
     #[test]
     fn email_wrong_args_is_error() {
-        // Negative: one arg (not two) → error.
         let msg = is_err(email(&[Value::Integer(10)]));
         assert!(msg.contains("expects"), "got: {msg}");
     }
-
-    // ── GuidValue ─────────────────────────────────────────────────────────────
 
     #[test]
     fn guid_value_returns_guid_string() {
@@ -634,12 +597,9 @@ mod tests {
 
     #[test]
     fn guid_value_no_args_required() {
-        // Negative: extra arg → error.
         let msg = is_err(guid_value(&[Value::Integer(1)]));
         assert!(msg.contains("expects"), "got: {msg}");
     }
-
-    // ── SetSeed / GetSeed ─────────────────────────────────────────────────────
 
     #[test]
     fn set_seed_then_get_seed_round_trips() {
@@ -666,23 +626,18 @@ mod tests {
 
     #[test]
     fn set_seed_no_args_is_error() {
-        // Negative: no argument → error.
         let msg = is_err(set_seed(&[]));
         assert!(msg.contains("requires"), "got: {msg}");
     }
 
     #[test]
     fn get_seed_no_args_required() {
-        // Negative: extra arg → error.
         let msg = is_err(get_seed(&[Value::Integer(1)]));
         assert!(msg.contains("expects"), "got: {msg}");
     }
 
-    // ── SetDefaultSeed ────────────────────────────────────────────────────────
-
     #[test]
     fn set_default_seed_is_noop_and_returns_empty() {
-        // SetDefaultSeed() in the interpreter is a no-op (keeps existing seed).
         seed(42);
         ok_val(set_default_seed(&[]));
         // The seed is still set to 42 — next rand call is deterministic.
@@ -694,12 +649,9 @@ mod tests {
 
     #[test]
     fn set_default_seed_no_args_required() {
-        // Negative: extra arg → error.
         let msg = is_err(set_default_seed(&[Value::Integer(1)]));
         assert!(msg.contains("expects"), "got: {msg}");
     }
-
-    // ── Resolver ──────────────────────────────────────────────────────────────
 
     #[test]
     fn resolve_is_case_insensitive() {
@@ -713,7 +665,6 @@ mod tests {
 
     #[test]
     fn resolve_unknown_returns_none() {
-        // Negative: unknown procedure → None.
         assert!(resolve("DoesNotExist").is_none());
         assert!(resolve("").is_none());
     }

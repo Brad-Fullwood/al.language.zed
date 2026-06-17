@@ -20,12 +20,12 @@ pub use lifecycle::{
     get_or_init_bridge, restart_bridge, set_builtins, shutdown_bridge, SemanticCache,
 };
 
-/// User-facing error when native-first compilation cannot run because the
-/// in-process CodeAnalysis bridge is unavailable and the user has not opted
-/// into Microsoft's `dotnet alc` subprocess. Shared by every compile path so
-/// the "fail loud, no silent fallback" message is identical everywhere.
+/// Legacy bridge-compile error text retained for compatibility with older
+/// callers. The native `.app` emitter no longer depends on the CodeAnalysis
+/// bridge; this message now only describes semantic bridge availability.
+#[deprecated(note = "native `.app` compilation no longer depends on the CodeAnalysis bridge")]
 pub const NATIVE_COMPILER_UNAVAILABLE: &str =
-    "Native compiler unavailable: the in-process CodeAnalysis bridge could not be initialized \
+    "Semantic CodeAnalysis bridge unavailable: the in-process .NET bridge could not be initialized \
      (binary built without the `semantic` feature, missing .NET runtime, or CLR init failed). \
-     Native-first compilation is enabled with no silent fallback. Fix the bridge, or set \
-     `al.useOfficialCompiler: true` to compile via Microsoft's `dotnet alc` subprocess.";
+     Native `.app` emission does not require this bridge; set `al.useOfficialCompiler: true` only \
+     when you intentionally want Microsoft's `dotnet alc` subprocess.";

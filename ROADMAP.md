@@ -34,23 +34,21 @@ Remaining release hygiene improvements:
 The current architecture is powerful but still split across separate entrypoints.
 
 - Unify compile behavior across daemon `compile`, daemon `package`, LSP `al.compile`, publish, and DAP launch.
-  - Current gap: daemon `compile` prefers the semantic bridge and fails loudly unless `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc`; other surfaces still use direct `dotnet alc` paths.
-  - Desired state: all compile-capable surfaces should share one build service with the same artifact selection, diagnostics shape, cancellation, timeout, and temp-output/final-handoff behavior.
-- Bring semantic-bridge compile results, and any future bridge-emitted `.app` output, into the same deterministic artifact and diagnostics pipeline as the Rust-managed `dotnet alc` path.
+  - Current state: daemon `compile`, LSP `al.compile`, publish, and native DAP launch default to the pure-Rust `.app` emitter; `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc`.
+  - Current gap: daemon `package` is still the analyzer-backed Microsoft compiler surface, and compile-capable paths do not yet share one service abstraction for artifact selection, diagnostics shape, cancellation, timeout, and final handoff.
+- Bring analyzer-backed Microsoft compiler results and native emitter results into one deterministic artifact and diagnostics pipeline where that makes sense.
 - Wire ruleset, assembly probing, analyzer statistics, and external ruleset settings through the build and semantic paths or mark them clearly as parsed-only.
 - Decide whether LSP execute commands should call the daemon dispatcher, a shared service layer, or remain direct LSP handlers. Document and test the boundary.
 - Add optional toolchain overrides where they genuinely help reproducibility, including a custom `dotnet` executable path if the project wants to support nonstandard environments.
 
 ## Native App Emission
 
-The project now has research-grade evidence that AL source `.app` packages are feasible to emit natively, but this is not yet production build behavior.
+The project now has a production-wired pure-Rust `.app` emitter, but it still needs hardening against more real-world app shapes and live Business Central validation.
 
-- Finish the pure-Rust NAVX/ZIP packager around the existing `.app` inspector.
-- Build the full `SymbolReference.json` emitter from parsed AL objects and the symbol model.
-- Extend `emit::method_id` beyond scalar signatures: overload-disambiguation subtype hashes for Record/Codeunit/Enum parameters, trigger id folding, and complete AL-type to `NavTypeKind` mapping.
-- Differential-test every emitted package against local `alc` output.
-- Validate natively emitted `.app` packages against a live BC tenant before advertising native emit as a supported build path.
-- Decide whether production native compile means pure-Rust emit, CodeAnalysis in-process emit, or a staged hybrid; document the decision and keep the fallback explicit.
+- Expand fixture coverage beyond the current ALC-matching project to more object kinds, resource combinations, dependencies, profiles, permissions, reports, translations, control add-ins, and extension-heavy packages.
+- Differential-test emitted packages against local `alc` output for every supported fixture and keep the intentional deltas documented.
+- Validate natively emitted `.app` packages against a live BC tenant before removing fallback paths or broadening compatibility claims.
+- Keep `al.useOfficialCompiler` explicit and tested so Microsoft `alc` remains available for semantic validation, analyzer behavior, and compatibility triage.
 
 ## Native Test Runtime
 

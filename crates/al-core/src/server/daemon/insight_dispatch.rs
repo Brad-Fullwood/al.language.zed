@@ -38,9 +38,6 @@ pub(super) fn dispatch_trace(
 }
 
 pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
-    // F-OPEN-269: serve the WORKSPACE-ENRICHED graph (packages + workspace
-    // objects/procedures/calls), not the package-only one. The enriched build
-    // is cached; the returned call-graph read guard is held only while serving.
     let (graph, _cg_guard) = workspace.get_or_build_call_graph();
     let entry_points = crate::insight::search::find_entry_points(&graph);
     // SILENT: serialization of valid Vec<&InsightNode> should not fail
@@ -62,9 +59,6 @@ pub(super) fn dispatch_graph_export(
         .get("format")
         .and_then(|v| v.as_str())
         .unwrap_or("json");
-    // F-OPEN-269: serve the WORKSPACE-ENRICHED graph (packages + workspace
-    // objects/procedures/calls), not the package-only one. The enriched build
-    // is cached; the returned call-graph read guard is held only while serving.
     let (graph, _cg_guard) = workspace.get_or_build_call_graph();
 
     // Refuse to materialise an unbounded graph into one JSON-RPC response.
@@ -113,9 +107,6 @@ pub(super) fn dispatch_graph_export(
 }
 
 pub(super) fn dispatch_insight_stats(workspace: &Workspace, id: u64) -> Response {
-    // F-OPEN-269: serve the WORKSPACE-ENRICHED graph (packages + workspace
-    // objects/procedures/calls), not the package-only one. The enriched build
-    // is cached; the returned call-graph read guard is held only while serving.
     let (graph, _cg_guard) = workspace.get_or_build_call_graph();
     Response {
         id,
@@ -330,8 +321,6 @@ mod tests {
 
     #[test]
     fn dispatch_table_impact_returns_table_impact_result_shape() {
-        // Wired to insight::analysis::table_impact — result is the
-        // TableImpactResult shape (tableName / objects / totalImpacts).
         let ws = Workspace::new();
         let resp = dispatch_table_impact(&ws, 41, &serde_json::json!({ "table": "Customer" }));
         let value = resp.result.expect("must carry a result");
@@ -352,8 +341,6 @@ mod tests {
 
     #[test]
     fn dispatch_trace_chain_returns_event_chain_shape() {
-        // Wired to insight::search::trace_event_chain — result is the EventChain
-        // tree shape (eventName / chains / nodesVisited).
         let ws = Workspace::new();
         let resp = dispatch_trace_chain(&ws, 43, &serde_json::json!({ "event": "OnAfterPost" }));
         let value = resp.result.expect("must carry a result");
@@ -367,8 +354,6 @@ mod tests {
 
     #[test]
     fn dispatch_event_map_returns_discovery_result_shape() {
-        // Wired to insight::discovery::discover_events — result is the
-        // EventDiscoveryResult shape (events / orphanSubscribers / totals).
         let ws = Workspace::new();
         let resp = dispatch_event_map(&ws, 44);
         let value = resp.result.expect("must carry a result");
@@ -383,8 +368,6 @@ mod tests {
     #[test]
     fn dispatch_suggest_event_malformed_query_is_invalid_params() {
         let ws = Workspace::new();
-        // `query` is present but the wrong shape (a string, not an object),
-        // so deserialization into EventQuery must fail and surface as an error.
         let resp = dispatch_suggest_event(&ws, 4, &serde_json::json!({ "query": "not-an-object" }));
         assert_invalid_params(&resp);
     }
@@ -392,8 +375,6 @@ mod tests {
     #[test]
     fn dispatch_trace_valid_event_returns_result() {
         let ws = Workspace::new();
-        // Empty workspace: the trace is empty, but the call must still succeed
-        // (a well-formed result, not an error).
         let resp = dispatch_trace(&ws, 5, &serde_json::json!({ "event": "OnAfterPost" }));
         assert!(resp.error.is_none(), "valid event must not error");
         assert!(resp.result.is_some());
@@ -409,10 +390,6 @@ mod tests {
         assert_invalid_params(&resp);
     }
 
-    /// `depth` is clamped to 50; passing a huge value (or an out-of-range /
-    /// non-numeric one that defaults to 10) must still succeed without error.
-    /// On an empty graph the trace is empty regardless of depth, but the call
-    /// must remain well-formed.
     #[test]
     fn dispatch_trace_oversized_depth_is_clamped_and_succeeds() {
         let ws = Workspace::new();
@@ -431,7 +408,6 @@ mod tests {
         let resp = dispatch_entrypoints(&ws, 8);
         assert!(resp.error.is_none(), "entrypoints must not error");
         let value = resp.result.expect("entrypoints must carry a result");
-        // An empty workspace has no entry points, but the result is a JSON array.
         assert!(value.is_array(), "expected a JSON array of entry points");
         assert_eq!(resp.id, 8);
     }
@@ -442,7 +418,6 @@ mod tests {
         let resp = dispatch_insight_stats(&ws, 9);
         assert!(resp.error.is_none());
         let value = resp.result.expect("stats must carry a result");
-        // Both counts must be present and numeric (0 for an empty workspace).
         assert_eq!(value.get("nodes").and_then(|v| v.as_u64()), Some(0));
         assert_eq!(value.get("edges").and_then(|v| v.as_u64()), Some(0));
     }
@@ -521,11 +496,9 @@ mod tests {
     #[test]
     fn dispatch_graph_export_defaults_to_json() {
         let ws = Workspace::new();
-        // No `format` field at all -> the `_` arm exports JSON.
         let resp = dispatch_graph_export(&ws, 11, &serde_json::json!({}));
         assert!(resp.error.is_none());
         let value = resp.result.expect("json export must carry a result");
-        // GraphJson serializes as an object (not the {"format","content"} dot shape).
         assert!(value.is_object());
         assert!(
             value.get("content").is_none(),
@@ -540,12 +513,9 @@ mod tests {
         assert!(resp.error.is_none());
         let value = resp.result.expect("dot export must carry a result");
         assert_eq!(value.get("format").and_then(|v| v.as_str()), Some("dot"));
-        // The DOT body is a string (a graphviz digraph), even when empty.
         assert!(value.get("content").and_then(|v| v.as_str()).is_some());
     }
 
-    /// An unrecognised format string falls through the `_` arm to JSON export,
-    /// it must not error.
     #[test]
     fn dispatch_graph_export_unknown_format_falls_back_to_json() {
         let ws = Workspace::new();
@@ -556,9 +526,6 @@ mod tests {
         assert!(value.get("content").is_none());
     }
 
-    /// The size cap is `node_count + edge_count > MAX`. An empty workspace is
-    /// well under the cap, so export must succeed rather than tripping the
-    /// INVALID_PARAMS guard.
     #[test]
     fn dispatch_graph_export_under_cap_succeeds() {
         let ws = Workspace::new();
@@ -580,7 +547,6 @@ mod tests {
         let resp = dispatch_impact(&ws, 15, &serde_json::json!({ "symbol": "MyCodeunit" }));
         assert!(resp.error.is_none(), "valid symbol must not error");
         let value = resp.result.expect("impact must carry a result");
-        // The response echoes the queried symbol and lists impacted entries.
         assert_eq!(
             value.get("symbol").and_then(|v| v.as_str()),
             Some("MyCodeunit")
@@ -588,8 +554,6 @@ mod tests {
         assert!(value.get("impacted").is_some());
     }
 
-    /// A non-string `symbol` does not satisfy `as_str()`, so it defaults to ""
-    /// and trips the empty-symbol guard.
     #[test]
     fn dispatch_impact_non_string_symbol_is_invalid_params() {
         let ws = Workspace::new();
@@ -600,7 +564,6 @@ mod tests {
     #[test]
     fn dispatch_suggest_event_structured_query_succeeds() {
         let ws = Workspace::new();
-        // A well-formed `query` with a `source` discriminated union.
         let resp = dispatch_suggest_event(
             &ws,
             17,
@@ -615,13 +578,10 @@ mod tests {
             "valid structured query must not error"
         );
         let value = resp.result.expect("suggest_event must carry a result");
-        // The result carries integrationPoints + partial fields.
         assert!(value.get("integrationPoints").is_some());
         assert!(value.get("partial").is_some());
     }
 
-    /// When no `query` field is present, the whole params object is used as the
-    /// query (legacy/flat shape). A valid flat `source` must therefore succeed.
     #[test]
     fn dispatch_suggest_event_legacy_flat_query_succeeds() {
         let ws = Workspace::new();
@@ -636,8 +596,6 @@ mod tests {
         assert!(resp.result.is_some());
     }
 
-    /// A flat params object missing the required `source` field cannot
-    /// deserialize into `EventQuery` and must surface as INVALID_PARAMS.
     #[test]
     fn dispatch_suggest_event_missing_source_is_invalid_params() {
         let ws = Workspace::new();

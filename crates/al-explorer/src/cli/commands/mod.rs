@@ -36,7 +36,6 @@ pub fn kind_has_numeric_id(kind: &str) -> bool {
     )
 }
 
-/// Build JSON params for a BC server command with common connection fields.
 pub fn bc_server_params(
     cmd: &str,
     server: &str,
@@ -83,7 +82,6 @@ pub fn absolutize_path(input: &str) -> String {
     }
 }
 
-/// Get the project root directory.
 pub fn project_root(project_arg: Option<&str>) -> PathBuf {
     project_arg
         .map(PathBuf::from)
@@ -114,7 +112,6 @@ pub fn file_to_uri(file: &str) -> Option<String> {
     url::Url::from_file_path(canon).ok().map(|u| u.to_string())
 }
 
-/// Connect to the daemon, auto-starting if needed.
 pub fn connect(project_dir: Option<&str>) -> Result<DaemonClient, String> {
     let root = project_root(project_dir);
     DaemonClient::connect(&root).map_err(|e| {
@@ -134,7 +131,6 @@ pub fn connect(project_dir: Option<&str>) -> Result<DaemonClient, String> {
     })
 }
 
-/// Report an error in the appropriate format and return FAILURE.
 pub fn report_error(msg: &str, json: bool) -> ExitCode {
     if json {
         print_json(&serde_json::json!({ "error": msg }));
@@ -144,7 +140,6 @@ pub fn report_error(msg: &str, json: bool) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Collect all .al files under a directory.
 pub fn collect_al_files(dir: &std::path::Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut visited = std::collections::HashSet::new();
@@ -312,7 +307,6 @@ mod path_tests {
 
     #[test]
     fn absolutize_path_passes_through_absolute_paths() {
-        // Positive: already-absolute paths must round-trip unchanged.
         let abs = "/tmp/foo/bar";
         assert_eq!(absolutize_path(abs), abs);
     }

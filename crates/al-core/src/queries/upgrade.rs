@@ -8,7 +8,6 @@ use serde::Serialize;
 use super::breaking_changes::{analyze_breaking_changes, BreakingChange, BreakingChangeKind};
 use crate::symbols::SymbolEntry;
 
-/// Category of upgrade issue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UpgradeIssueKind {
@@ -21,7 +20,6 @@ pub enum UpgradeIssueKind {
     NewPermission,
 }
 
-/// A single upgrade issue with migration hints.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpgradeIssue {
@@ -36,18 +34,15 @@ pub struct UpgradeIssue {
     pub severity: String,
 }
 
-/// Generate an upgrade report comparing two symbol sets.
 pub fn upgrade_report(baseline: &[SymbolEntry], current: &[SymbolEntry]) -> Vec<UpgradeIssue> {
     let mut issues = Vec::new();
 
-    // Get breaking changes from T1703
     let breaking = analyze_breaking_changes(baseline, current);
     for change in breaking {
         let issue = breaking_change_to_upgrade_issue(change);
         issues.push(issue);
     }
 
-    // Find data migration needs (field type changes in tables)
     let baseline_tables: std::collections::HashMap<String, &SymbolEntry> = baseline
         .iter()
         .filter(|e| matches!(e.kind, crate::symbols::ObjectKind::Table))

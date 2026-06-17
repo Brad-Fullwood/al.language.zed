@@ -21,11 +21,6 @@ use thiserror::Error;
 use super::format::{Sample, Snapshot};
 use super::replayer::{DebuggerSession, ReplayerError};
 
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
-
-/// Errors produced by the snapshot recorder.
 #[derive(Debug, Error)]
 pub enum RecorderError {
     #[error("Session error: {0}")]
@@ -40,22 +35,15 @@ impl From<ReplayerError> for RecorderError {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Recorder
-// ---------------------------------------------------------------------------
-
-/// Records breakpoint-sampled state snapshots from a debug session.
 pub struct SnapshotRecorder {
     /// Identifies this recording run (e.g. a UUID or build ID).
     pub run_id: String,
-    /// BC server version string.
     pub bc_version: String,
     /// SHA-256 hex digest of the source files being exercised.
     pub source_hash: String,
 }
 
 impl SnapshotRecorder {
-    /// Create a new recorder.
     pub fn new(
         run_id: impl Into<String>,
         bc_version: impl Into<String>,
@@ -88,8 +76,6 @@ impl SnapshotRecorder {
         codeunit_id: i32,
         method_name: &str,
     ) -> Result<Snapshot, RecorderError> {
-        // Register breakpoints and remember their assigned IDs.
-        // `bp_id_to_coords` maps assigned_id → (file, line).
         let mut bp_id_to_coords: HashMap<u32, (String, u32)> = HashMap::new();
 
         for (file, line) in &breakpoints {
@@ -105,7 +91,6 @@ impl SnapshotRecorder {
             .await
             .map_err(RecorderError::from)?;
 
-        // Iteration counters per breakpoint.
         let mut iterations: HashMap<u32, u32> = HashMap::new();
         let mut samples: Vec<Sample> = Vec::new();
 
@@ -131,9 +116,6 @@ impl SnapshotRecorder {
             let bp_id = if seq_index < bp_sequence.len() {
                 let id = bp_sequence[seq_index];
                 let iter = *iterations.get(&id).unwrap_or(&0);
-                if iter == 0 {
-                    // First hit: stay on this bp_id.
-                }
                 id
             } else {
                 // More Break events than expected breakpoints — reuse the last.
@@ -179,10 +161,6 @@ impl SnapshotRecorder {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -235,7 +213,6 @@ mod tests {
         }
     }
 
-    // Positive: record with one breakpoint and two Break events.
     #[test]
     fn test_record_builds_correct_snapshot_shape() {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -263,7 +240,6 @@ mod tests {
         assert_eq!(snap.samples[1].iteration, 1);
     }
 
-    // Positive: record with no Break events → empty samples.
     #[test]
     fn test_record_no_break_events_yields_empty_samples() {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -275,7 +251,6 @@ mod tests {
         assert!(snap.samples.is_empty());
     }
 
-    // Negative: session error on add_breakpoint propagates.
     #[test]
     fn test_record_session_error_on_add_breakpoint_returns_err() {
         struct FailOnBreakpoint;
@@ -308,7 +283,6 @@ mod tests {
         assert!(result.is_err(), "expected error from failed add_breakpoint");
     }
 
-    // Negative: session error on get_variables propagates.
     #[test]
     fn test_record_session_error_on_get_variables_returns_err() {
         struct FailOnGetVars {

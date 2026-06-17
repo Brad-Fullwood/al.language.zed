@@ -20,7 +20,6 @@ use zip::ZipArchive;
 
 use super::app_reader::{find_zip_offset, AppReaderError};
 
-/// NAVX magic bytes.
 const NAVX_MAGIC: &[u8; 4] = b"NAVX";
 
 /// Max bytes peeked from each entry to classify its content.
@@ -31,7 +30,6 @@ const PEEK_LEN: usize = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AppEntryKind {
-    /// AL source (`.al`).
     AlSource,
     /// JSON (e.g. `SymbolReference.json`).
     Json,
@@ -39,7 +37,6 @@ pub enum AppEntryKind {
     Xml,
     /// A .NET assembly (PE/`MZ`) - indicates compiled code in the package.
     DotNetAssembly,
-    /// Anything else.
     Other,
 }
 
@@ -53,7 +50,6 @@ pub struct AppEntry {
     pub size: u64,
     /// Compressed size in bytes.
     pub compressed_size: u64,
-    /// Content classification from the entry's name + leading bytes.
     pub kind: AppEntryKind,
 }
 
@@ -81,13 +77,11 @@ impl AppEntry {
     }
 }
 
-/// A `.app` package's full contents listing.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppContents {
     /// Byte offset where the ZIP payload starts (size of the NAVX header).
     pub navx_header_len: usize,
-    /// Every entry in the archive.
     pub entries: Vec<AppEntry>,
 }
 
@@ -100,7 +94,6 @@ impl AppContents {
             .any(|e| e.kind == AppEntryKind::DotNetAssembly)
     }
 
-    /// True when the package physically contains AL source files.
     pub fn has_source(&self) -> bool {
         self.entries
             .iter()
@@ -127,7 +120,6 @@ fn open_archive(data: &[u8]) -> Result<(usize, AppArchive<'_>), AppReaderError> 
     Ok((offset, archive))
 }
 
-/// List every entry in a `.app` without extracting it to disk.
 pub fn list_app_entries(data: &[u8]) -> Result<AppContents, AppReaderError> {
     let (offset, mut archive) = open_archive(data)?;
     let mut entries = Vec::with_capacity(archive.len());
@@ -151,7 +143,6 @@ pub fn list_app_entries(data: &[u8]) -> Result<AppContents, AppReaderError> {
     })
 }
 
-/// Read + list a `.app` file from disk.
 pub fn list_app_file(path: &Path) -> Result<AppContents, AppReaderError> {
     let data = std::fs::read(path)?;
     list_app_entries(&data)
@@ -214,7 +205,6 @@ mod tests {
     use std::io::{Cursor, Write};
     use zip::write::SimpleFileOptions;
 
-    /// Build a NAVX `.app` whose ZIP holds the given `(name, bytes)` entries.
     fn make_app(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(b"NAVX");
@@ -254,15 +244,12 @@ mod tests {
         assert_eq!(by_name("SymbolReference.json"), AppEntryKind::Json);
         assert_eq!(by_name("logo.png"), AppEntryKind::Other);
 
-        // A source package carries source but no compiled assembly.
         assert!(contents.has_source());
         assert!(!contents.has_compiled_code());
     }
 
     #[test]
     fn detects_compiled_assembly() {
-        // An entry beginning with the PE/`MZ` magic is flagged as a .NET
-        // assembly - the signal that a package carries compiled code.
         let data = make_app(&[("CompiledLogic.dll", b"MZ\x90\x00\x03\x00\x00\x00")]);
         let contents = list_app_entries(&data).unwrap();
         assert_eq!(contents.entries[0].kind, AppEntryKind::DotNetAssembly);

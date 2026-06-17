@@ -1,10 +1,7 @@
-//! Format handler — delegates to crate::syntax.
-
 use tower_lsp::lsp_types::*;
 
 use super::AlServer;
 
-/// Handle textDocument/formatting.
 pub(crate) fn handle_formatting(
     server: &AlServer,
     uri: &Url,
@@ -24,7 +21,6 @@ pub(crate) fn handle_formatting(
         return Some(Vec::new());
     }
 
-    // Replace the entire document
     let line_count = text.lines().count();
     let last_line = text.lines().last().unwrap_or("");
 

@@ -6,12 +6,9 @@
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// A package entry: (name, publisher, version, transitive-dependencies).
-///
-/// Each dependency tuple is (dep_name, dep_publisher, required_version).
+/// Each tuple is `(name, publisher, version, [(dep_name, dep_publisher, required_version)])`
 pub type PackageEntry = (String, String, String, Vec<(String, String, String)>);
 
-/// A single dependency node in the graph.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DepNode {
@@ -21,7 +18,6 @@ pub struct DepNode {
     pub version: String,
 }
 
-/// An edge in the dependency graph.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DepEdge {
@@ -30,7 +26,6 @@ pub struct DepEdge {
     pub required_version: String,
 }
 
-/// Version conflict: multiple versions of the same package required.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionConflict {
@@ -39,7 +34,6 @@ pub struct VersionConflict {
     pub required_by: Vec<String>,
 }
 
-/// Full dependency graph.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DependencyGraph {
@@ -52,7 +46,6 @@ pub struct DependencyGraph {
 }
 
 impl DependencyGraph {
-    /// Export the graph in DOT format for Graphviz.
     pub fn to_dot(&self) -> String {
         let mut s = String::from("digraph AL_Dependencies {\n  rankdir=LR;\n  node [shape=box];\n");
         s.push_str(&format!(
@@ -88,10 +81,6 @@ impl DependencyGraph {
     }
 }
 
-/// Build a dependency graph from app.json manifest JSON and loaded package info.
-///
-/// `app_json` is the raw content of the workspace's app.json.
-/// `packages` is a list of (name, publisher, version, dependencies_json).
 pub fn build_dependency_graph(app_json: &str, packages: &[PackageEntry]) -> DependencyGraph {
     let root_app = parse_root_app(app_json);
     let root_deps = parse_deps_from_app_json(app_json);
@@ -99,8 +88,7 @@ pub fn build_dependency_graph(app_json: &str, packages: &[PackageEntry]) -> Depe
     let mut nodes: HashMap<String, DepNode> = HashMap::new();
     let mut edges: Vec<DepEdge> = Vec::new();
 
-    // Add package nodes — key is composite (name|publisher|version) to prevent
-    // collisions when multiple versions or publishers share the same package name.
+    // key is composite (name|publisher|version) to prevent collisions when multiple versions share the same name.
     for (name, publisher, version, _) in packages {
         let key = format!(
             "{}|{}|{}",
@@ -134,7 +122,6 @@ pub fn build_dependency_graph(app_json: &str, packages: &[PackageEntry]) -> Depe
         }
     }
 
-    // Find transitive dependencies (BFS from root)
     // direct set uses composite keys matching the nodes HashMap.
     let direct: HashSet<String> = root_deps
         .iter()
@@ -142,8 +129,6 @@ pub fn build_dependency_graph(app_json: &str, packages: &[PackageEntry]) -> Depe
         .collect();
     let transitive = find_transitive_deps(&root_app.name, &direct, &edges, &nodes);
 
-    // Find missing dependencies — a dependency is missing when no loaded node has
-    // a matching name (composite keys in nodes, plain names in edge targets).
     let loaded_names: HashSet<String> = nodes.values().map(|n| n.name.to_lowercase()).collect();
     let missing: Vec<String> = edges
         .iter()
@@ -179,13 +164,11 @@ fn parse_root_app(app_json: &str) -> DepNode {
 }
 
 fn parse_deps_from_app_json(app_json: &str) -> Vec<(String, String, String)> {
-    // Simple text extraction for "dependencies" array
     let mut deps = Vec::new();
     if let Some(deps_start) = app_json.find("\"dependencies\"") {
         let after = &app_json[deps_start..];
         if let Some(arr_start) = after.find('[') {
             let arr = &after[arr_start..];
-            // Find each object in the array
             let mut depth = 0i32;
             let mut obj_start = None;
             for (i, ch) in arr.char_indices() {
@@ -239,8 +222,6 @@ fn find_transitive_deps(
     edges: &[DepEdge],
     nodes: &HashMap<String, DepNode>,
 ) -> Vec<DepNode> {
-    // Build a reverse lookup: display name (lowercase) → composite keys in nodes.
-    // One display name may map to multiple composite keys (different versions/publishers).
     let mut name_to_keys: HashMap<String, Vec<String>> = HashMap::new();
     for key in nodes.keys() {
         if let Some(name_lower) = key.split('|').next() {
@@ -251,13 +232,11 @@ fn find_transitive_deps(
         }
     }
 
-    // visited and queue use composite keys to avoid re-visiting the same package.
     let mut visited: HashSet<String> = direct.clone();
     let mut queue: VecDeque<String> = direct.iter().cloned().collect();
     let mut transitive = Vec::new();
 
     while let Some(composite_key) = queue.pop_front() {
-        // Extract display name from composite key to match against edge.from
         let pkg_name_lower = composite_key.split('|').next().unwrap_or("").to_string();
 
         for edge in edges {
@@ -286,9 +265,8 @@ fn find_version_conflicts(
     edges: &[DepEdge],
     nodes: &HashMap<String, DepNode>,
 ) -> Vec<VersionConflict> {
-    // requirements key is display name (lowercase) — composite node keys cannot be
-    // used here because edges only carry display names, not publisher/version.
-    let mut requirements: HashMap<String, Vec<(String, String)>> = HashMap::new(); // name_lower -> [(requirer, version)]
+    // requirements keyed by display name (lowercase) — edges carry display names, not composite keys.
+    let mut requirements: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
     for edge in edges {
         if !edge.required_version.is_empty() && edge.required_version != "*" {
@@ -303,7 +281,6 @@ fn find_version_conflicts(
     for (dep_name_lower, reqs) in &requirements {
         let versions: HashSet<&String> = reqs.iter().map(|(_, v)| v).collect();
         if versions.len() > 1 {
-            // Look up display name by iterating node values (nodes keyed by composite).
             let actual_name = nodes
                 .values()
                 .find(|n| n.name.to_lowercase() == *dep_name_lower)
@@ -388,7 +365,6 @@ mod tests {
 
     #[test]
     fn no_collision_same_name_different_publisher() {
-        // Two packages with the same name but different publishers must both appear as nodes.
         let app_json = r#"{
     "name": "My App",
     "publisher": "Me",
@@ -419,10 +395,6 @@ mod tests {
         );
     }
 
-    /// T016 regression: package-level dependency edges (line 130-138)
-    /// produce an edge for every (pkg_name -> dep_name) entry in pkg_deps.
-    /// Without this fixture the path was effectively dead test code —
-    /// only root-app deps were exercised.
     #[test]
     fn package_level_dependency_edges_emitted_in_dot_output() {
         let app_json = r#"{
@@ -434,8 +406,6 @@ mod tests {
     ]
 }"#;
 
-        // Base Application depends on System Application — this exercises
-        // the (pkg_name, _, _, pkg_deps) loop in build_dependency_graph.
         let packages = vec![
             (
                 "Base Application".to_string(),
@@ -458,9 +428,6 @@ mod tests {
         let graph = build_dependency_graph(app_json, &packages);
         let dot = graph.to_dot();
 
-        // Both edges must appear in the DOT output:
-        //   "My App" -> "Base Application"   (root)
-        //   "Base Application" -> "System Application" (package-level)
         assert!(
             dot.contains("\"My App\" -> \"Base Application\""),
             "expected root->package edge in DOT; got: {dot}"
@@ -471,19 +438,13 @@ mod tests {
         );
     }
 
-    /// T016 negative: a malformed root app.json (invalid JSON) does not
-    /// panic — `build_dependency_graph` falls back to `name = "Unknown"`
-    /// and `dependencies = []`.
     #[test]
     fn malformed_root_app_json_does_not_panic() {
-        // Truncated JSON — invalid syntax.
         let graph = build_dependency_graph("{ \"name\": ", &[]);
         assert_eq!(graph.root_app.name, "Unknown");
         assert!(graph.nodes.is_empty() || graph.nodes.len() == 1);
     }
 
-    /// T016 negative: a package with no dependencies (`pkg_deps` is empty)
-    /// emits NO package-level edges, only nodes.
     #[test]
     fn empty_pkg_deps_emits_no_package_level_edges() {
         let app_json = r#"{
@@ -496,7 +457,7 @@ mod tests {
             "Standalone".to_string(),
             "Vendor".to_string(),
             "1.0.0.0".to_string(),
-            vec![], // no deps -> no edges
+            vec![],
         )];
         let graph = build_dependency_graph(app_json, &packages);
         let dot = graph.to_dot();
@@ -508,7 +469,6 @@ mod tests {
 
     #[test]
     fn no_collision_same_name_different_version() {
-        // Two packages with the same name and publisher but different versions must both appear.
         let app_json = r#"{
     "name": "My App",
     "publisher": "Me",

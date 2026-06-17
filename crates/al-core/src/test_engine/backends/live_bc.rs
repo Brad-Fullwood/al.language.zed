@@ -17,13 +17,11 @@ use crate::test_engine::result::{TestCodeunitResult, TestMethodResult, TestStatu
 use crate::test_engine::session::{RunOptions, TestEvent, TestId, TestSession};
 use crate::test_runner::TestRunnerClient;
 
-/// Live BC backend: dispatches test runs to a real Business Central server.
 pub struct LiveBcMode {
     config: BcServerConfig,
 }
 
 impl LiveBcMode {
-    /// Construct a `LiveBcMode` from a server config.
     pub fn new(config: BcServerConfig) -> Self {
         Self { config }
     }
@@ -81,16 +79,13 @@ async fn run_one_codeunit(
     let client = TestRunnerClient::new(config);
     let mut events = Vec::new();
 
-    // Determine which method calls to make.
     let has_specific_methods = methods.iter().any(|m| m.is_some());
 
     if has_specific_methods {
-        // Run once per specific method name.
         for method_opt in methods {
             let method_str = method_opt.as_deref();
             let method_display = method_str.unwrap_or(codeunit_name).to_string();
 
-            // Synthesize a CaseStarted with a method-scoped TestId.
             let started_id = TestId {
                 codeunit_id,
                 codeunit_name: codeunit_name.to_string(),
@@ -141,8 +136,7 @@ async fn run_one_codeunit(
                     });
                 }
                 Err(_elapsed) => {
-                    // Timeout: emit a synthetic Skip CaseResult.
-                    let skip_result = TestMethodResult {
+                        let skip_result = TestMethodResult {
                         name: method_display,
                         status: TestStatus::Skip,
                         error: Some(format!("timeout after {} ms", timeout_dur.as_millis())),
@@ -174,7 +168,6 @@ async fn run_one_codeunit(
             }
         }
     } else {
-        // Run the whole codeunit once (no method filter).
         let started_id = TestId {
             codeunit_id,
             codeunit_name: codeunit_name.to_string(),
@@ -260,7 +253,6 @@ async fn run_one_codeunit(
 }
 
 impl TestSession for LiveBcMode {
-    /// Execute test cases, streaming events to `tx`.
     async fn run(
         &self,
         tests: Vec<TestId>,
@@ -291,7 +283,6 @@ impl TestSession for LiveBcMode {
         // SessionComplete, inflating total/passed/failed/skipped.
         let mut seen: HashSet<(i32, Option<String>)> = HashSet::new();
 
-        // Group tests by codeunit_id → (codeunit_name, Vec<method_name>).
         let mut groups: HashMap<i32, (String, Vec<Option<String>>)> = HashMap::new();
         for test in tests {
             if !seen.insert((test.codeunit_id, test.method_name.clone())) {
@@ -303,20 +294,17 @@ impl TestSession for LiveBcMode {
             entry.1.push(test.method_name);
         }
 
-        // Collect all codeunit batches for dispatch.
         let codeunits: Vec<(i32, String, Vec<Option<String>>)> = groups
             .into_iter()
             .map(|(id, (name, methods))| (id, name, methods))
             .collect();
 
-        // Tally across codeunits.
         let mut total_total: usize = 0;
         let mut total_passed: usize = 0;
         let mut total_failed: usize = 0;
         let mut total_skipped: usize = 0;
 
         if opts.parallel && codeunits.len() > 1 {
-            // Parallel dispatch via JoinSet.
             let mut join_set: JoinSet<Vec<TestEvent>> = JoinSet::new();
             for (codeunit_id, codeunit_name, methods) in codeunits {
                 let config = self.config.clone();
@@ -342,7 +330,6 @@ impl TestSession for LiveBcMode {
                 }
             }
         } else {
-            // Sequential dispatch.
             for (codeunit_id, codeunit_name, methods) in codeunits {
                 let events = run_one_codeunit(
                     &self.config,
@@ -381,8 +368,6 @@ impl TestSession for LiveBcMode {
 
 #[cfg(test)]
 mod tests {
-    // Reproduces: p1-2-live-bc-mode — LiveBcMode::run not implemented; all test cases panic.
-
     use tokio::sync::mpsc;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -419,10 +404,6 @@ mod tests {
         }
     }
 
-    // Test 1: construction from config
-
-    // method_matches — pure-function tests, no MockServer needed
-
     use super::method_matches;
 
     #[test]
@@ -430,7 +411,6 @@ mod tests {
         assert!(method_matches("TestAlpha", "TestAlpha"));
         assert!(method_matches("TestAlpha", "testalpha"));
         assert!(method_matches("TESTALPHA", "TestAlpha"));
-        // Negative: a non-glob pattern must match the whole name.
         assert!(!method_matches("TestAlpha", "Alpha"));
         assert!(!method_matches("TestAlphaExtra", "TestAlpha"));
     }
@@ -439,7 +419,6 @@ mod tests {
     fn method_matches_leading_wildcard() {
         assert!(method_matches("TestAlpha", "*Alpha"));
         assert!(method_matches("Alpha", "*Alpha"));
-        // Negative.
         assert!(!method_matches("AlphaTest", "*Alpha"));
     }
 
@@ -447,7 +426,6 @@ mod tests {
     fn method_matches_trailing_wildcard() {
         assert!(method_matches("TestAlpha", "Test*"));
         assert!(method_matches("Test", "Test*"));
-        // Negative.
         assert!(!method_matches("UnitTest", "Test*"));
     }
 
@@ -465,7 +443,6 @@ mod tests {
         assert!(method_matches("AlphaBeta", "*Beta*"));
         assert!(method_matches("BetaAlpha", "*Beta*"));
         assert!(method_matches("XBetaY", "*Beta*"));
-        // Negative.
         assert!(!method_matches("Gamma", "*Beta*"));
     }
 
@@ -475,25 +452,15 @@ mod tests {
         assert!(method_matches("", "*"));
     }
 
-    /// Positive: LiveBcMode can be constructed from a BcServerConfig without panicking.
     #[tokio::test]
     async fn test_live_bc_mode_constructs_from_config() {
-        // Reproduces: p1-2-live-bc-mode — LiveBcMode::new does not exist yet.
         let server = MockServer::start().await;
         let cfg = config_for(&server.uri());
-        // Phase 4: construction should succeed without panicking.
         let _mode = LiveBcMode::new(cfg);
-        // Test passes only when LiveBcMode::new is a real no-panicking constructor.
-        // (Currently it doesn't panic, so this test passes — see test 2 for the
-        // first failure that pins the implementation gap.)
     }
 
-    // Test 2: empty test list → only SessionComplete{total:0}
-
-    /// Positive: empty input emits exactly one event — SessionComplete{0,0,0,0}.
     #[tokio::test]
     async fn test_live_bc_mode_empty_tests_emits_only_session_complete() {
-        // Reproduces: p1-2-live-bc-mode — TestSession::run not implemented; panics.
         let server = MockServer::start().await;
         let cfg = config_for(&server.uri());
         let mode = LiveBcMode::new(cfg);
@@ -501,7 +468,6 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<TestEvent>(16);
         mode.run(vec![], RunOptions::default(), tx).await.unwrap();
 
-        // Drain all events.
         let mut events = Vec::new();
         while let Ok(ev) = rx.try_recv() {
             events.push(ev);
@@ -527,16 +493,11 @@ mod tests {
             other => panic!("expected SessionComplete, got {other:?}"),
         }
 
-        // No HTTP calls should have been made.
         assert_eq!(server.received_requests().await.unwrap().len(), 0);
     }
 
-    // Test 3: single codeunit happy path
-
-    /// Positive: single codeunit pass path emits correct event sequence.
     #[tokio::test]
     async fn test_live_bc_mode_single_codeunit_pass_path() {
-        // Reproduces: p1-2-live-bc-mode — CaseStarted/CaseResult/SuiteComplete/SessionComplete events not emitted.
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -562,14 +523,12 @@ mod tests {
             events.push(ev);
         }
 
-        // Must have at least: CaseStarted, CaseResult, SuiteComplete, SessionComplete.
         assert!(
             events.len() >= 4,
             "expected ≥4 events, got {}: {events:?}",
             events.len()
         );
 
-        // First event: CaseStarted for codeunit 50100.
         match &events[0] {
             TestEvent::CaseStarted { id } => {
                 assert_eq!(id.codeunit_id, 50100, "wrong codeunit_id in CaseStarted");
@@ -577,7 +536,6 @@ mod tests {
             other => panic!("expected CaseStarted, got {other:?}"),
         }
 
-        // Find a CaseResult with Pass.
         let case_result = events
             .iter()
             .find(|e| matches!(e, TestEvent::CaseResult { .. }));
@@ -588,7 +546,6 @@ mod tests {
             _ => panic!("no CaseResult event found in {events:?}"),
         }
 
-        // Find SuiteComplete for codeunit 50100.
         let suite = events.iter().find(|e| {
             matches!(
                 e,
@@ -605,7 +562,6 @@ mod tests {
             _ => panic!("no SuiteComplete for codeunit 50100 in {events:?}"),
         }
 
-        // Last event: SessionComplete with total=1, passed=1.
         let last = events.last().unwrap();
         match last {
             TestEvent::SessionComplete {
@@ -623,12 +579,8 @@ mod tests {
         }
     }
 
-    // Test 4: two codeunits in parallel
-
-    /// Positive: two codeunits with parallel=true both complete.
     #[tokio::test]
     async fn test_live_bc_mode_two_codeunits_parallel() {
-        // Reproduces: p1-2-live-bc-mode — parallel JoinSet dispatch not implemented.
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -669,7 +621,6 @@ mod tests {
             events.push(ev);
         }
 
-        // Both SuiteComplete events must be present.
         let suite_100 = events.iter().any(|e| {
             matches!(
                 e,
@@ -691,7 +642,6 @@ mod tests {
         assert!(suite_100, "missing SuiteComplete for 50100 in {events:?}");
         assert!(suite_200, "missing SuiteComplete for 50200 in {events:?}");
 
-        // SessionComplete must be last with total=2.
         match events.last() {
             Some(TestEvent::SessionComplete { total, .. }) => {
                 assert_eq!(*total, 2, "expected total=2 in SessionComplete");
@@ -700,12 +650,8 @@ mod tests {
         }
     }
 
-    // Test 5: per-test timeout produces Skip (NEGATIVE)
-
-    /// Negative: slow server + tight timeout → CaseResult{Skip} with timeout message.
     #[tokio::test]
     async fn test_live_bc_mode_per_test_timeout() {
-        // Reproduces: p1-2-live-bc-mode — per-codeunit timeout not implemented; run hangs or errors.
         use std::time::Duration;
 
         let server = MockServer::start().await;
@@ -729,7 +675,6 @@ mod tests {
         };
 
         let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
-        // Should complete (not hang) even though server is slow.
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             mode.run(vec![test_id(50100, "SlowSuite")], opts, tx),
@@ -751,7 +696,6 @@ mod tests {
             events.push(ev);
         }
 
-        // Must have a CaseResult with Skip and a timeout-related error message.
         let skip_result = events.iter().find(|e| {
             if let TestEvent::CaseResult { result, .. } = e {
                 result.status == TestStatus::Skip
@@ -770,7 +714,6 @@ mod tests {
             "expected a Skip CaseResult with timeout message, got {events:?}"
         );
 
-        // SessionComplete must appear with skipped >= 1.
         let session_complete = events
             .iter()
             .find(|e| matches!(e, TestEvent::SessionComplete { .. }));
@@ -782,8 +725,6 @@ mod tests {
             _ => unreachable!(),
         }
     }
-
-    // Test: duplicate TestIds are deduplicated (no inflated counts)
 
     /// Regression: passing the same TestId twice must run the codeunit once and
     /// report total=1 (not 2). Previously each duplicate invoked the BC API and
@@ -818,14 +759,12 @@ mod tests {
             events.push(ev);
         }
 
-        // The BC endpoint must have been hit exactly once.
         assert_eq!(
             server.received_requests().await.unwrap().len(),
             1,
             "duplicate TestId must not cause a second BC call"
         );
 
-        // Exactly one SuiteComplete for the codeunit.
         let suite_count = events
             .iter()
             .filter(|e| {
@@ -840,7 +779,6 @@ mod tests {
             .count();
         assert_eq!(suite_count, 1, "expected one SuiteComplete, got {events:?}");
 
-        // SessionComplete must report total=1, passed=1 (not doubled).
         match events.last() {
             Some(TestEvent::SessionComplete {
                 total,
@@ -857,22 +795,16 @@ mod tests {
         }
     }
 
-    // Test 6: server 500 emits Error event and continues (NEGATIVE)
-
-    /// Negative: 500 on one codeunit emits Error event but run continues for next codeunit.
     #[tokio::test]
     async fn test_live_bc_mode_server_500_emits_error_event_and_continues() {
-        // Reproduces: p1-2-live-bc-mode — server errors should produce Error events, not abort the whole session.
         let server = MockServer::start().await;
 
-        // codeunit 50100 → 500
         Mock::given(method("POST"))
             .and(path("/BC/dev/tests/50100/run"))
             .respond_with(ResponseTemplate::new(500).set_body_string("internal server error"))
             .mount(&server)
             .await;
 
-        // codeunit 50200 → 200 with one passing test
         Mock::given(method("POST"))
             .and(path("/BC/dev/tests/50200/run"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -898,7 +830,6 @@ mod tests {
             events.push(ev);
         }
 
-        // Must have an Error event mentioning "500".
         let error_event = events.iter().find(|e| {
             if let TestEvent::Error { message } = e {
                 message.contains("500")
@@ -911,7 +842,6 @@ mod tests {
             "expected Error event containing '500', got {events:?}"
         );
 
-        // SuiteComplete for 50200 must be present (run did NOT abort).
         let suite_200 = events.iter().any(|e| {
             matches!(
                 e,
@@ -926,7 +856,6 @@ mod tests {
             "expected SuiteComplete for codeunit 50200 (run must continue after 500), got {events:?}"
         );
 
-        // SessionComplete must fire.
         assert!(
             events
                 .iter()

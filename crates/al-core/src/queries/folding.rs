@@ -5,8 +5,6 @@ use url::Url;
 use super::AlFoldingRange;
 use crate::workspace::Workspace;
 
-/// Get folding ranges for a document.
-///
 /// Returns transport-agnostic `AlFoldingRange` values; al-lsp converts to
 /// `tower_lsp::lsp_types::FoldingRange` at the boundary.
 #[must_use]
@@ -64,7 +62,6 @@ mod tests {
 }"#;
         ws.documents.open(uri.clone(), src.to_string());
         let ranges = folding_ranges(&ws, &uri).expect("test");
-        // Expect region-kind folds for object + two procedures
         let region_count = ranges
             .iter()
             .filter(|r| r.kind == Some(crate::queries::AlFoldingRangeKind::Region))
@@ -90,7 +87,6 @@ mod tests {
         let uri = Url::parse("file:///test/empty_fold.al").expect("test");
         ws.documents.open(uri.clone(), String::new());
         let result = folding_ranges(&ws, &uri);
-        // An empty document should parse and return Some([])
         assert!(
             result.is_some(),
             "Empty document should return Some (not None)"

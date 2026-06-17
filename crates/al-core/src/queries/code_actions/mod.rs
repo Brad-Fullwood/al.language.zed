@@ -10,7 +10,6 @@ use super::parse_detail_params;
 use super::{AlDocumentSymbol, AlSymbolKind, Position, Range, TextEdit, WorkspaceEdit};
 use crate::workspace::Workspace;
 
-/// A code action (quick fix, refactoring, etc.).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CodeActionEntry {
     pub title: String,
@@ -20,7 +19,6 @@ pub struct CodeActionEntry {
     pub is_preferred: bool,
 }
 
-/// Code action kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeActionKind {
     QuickFix,
@@ -39,7 +37,6 @@ impl serde::Serialize for CodeActionKind {
     }
 }
 
-/// Diagnostic info passed to code action providers.
 #[derive(Debug, Clone)]
 pub struct DiagnosticInfo {
     pub range: Range,
@@ -47,7 +44,6 @@ pub struct DiagnosticInfo {
     pub code: Option<String>,
 }
 
-/// Build a `WorkspaceEdit` with a single file's edits — the overwhelmingly common case.
 fn single_edit_ws(uri: &Url, edits: Vec<TextEdit>) -> WorkspaceEdit {
     WorkspaceEdit {
         changes: vec![(uri.clone(), edits)],
@@ -88,51 +84,42 @@ pub fn source_actions(workspace: &Workspace, uri: &Url, range: Range) -> Vec<Cod
         actions.push(action);
     }
 
-    // Eliminate with statement (AA0205)
     if let Some(action) =
         with_elimination::source_action_eliminate_with(workspace, uri, &text, range)
     {
         actions.push(action);
     }
 
-    // Make method local (T1208)
     if let Some(action) = make_local::source_action_make_local(workspace, uri, &text, range) {
         actions.push(action);
     }
 
-    // Implement interface stub methods (T1202)
     actions.extend(implement_interface::source_action_implement_interface(
         workspace, uri, &text, range,
     ));
 
-    // Add parentheses to bare method call (T1209)
     if let Some(action) = add_parens::source_action_add_parens(workspace, uri, &text, range) {
         actions.push(action);
     }
 
-    // Convert event subscriber string literal to identifier (T1210)
     if let Some(action) =
         events::source_action_convert_event_subscriber(workspace, uri, &text, range)
     {
         actions.push(action);
     }
 
-    // Move ToolTip from page field to table field (T1211)
     if let Some(action) = events::source_action_move_tooltip(workspace, uri, &text, range) {
         actions.push(action);
     }
 
-    // Convert promoted actions to actionRef syntax (T1205)
     actions.extend(promoted::source_action_convert_promoted_actions(
         uri, &text, range,
     ));
 
-    // Set default ApplicationArea on page/report (T1206)
     if let Some(action) = promoted::source_action_set_application_area(uri, &text, range) {
         actions.push(action);
     }
 
-    // Fix old report layout to rendering section (T1207)
     if let Some(action) = promoted::source_action_fix_report_layout(uri, &text, range) {
         actions.push(action);
     }
@@ -343,14 +330,12 @@ mod tests {
             },
         };
 
-        // Enabled (default): the doc-comment action (at minimum) is offered.
         let enabled = source_actions(&ws, &uri, range);
         assert!(
             !enabled.is_empty(),
             "expected at least one source action with code actions enabled"
         );
 
-        // Disabled: the query returns nothing on any transport.
         {
             let mut cfg = ws.config.try_write().expect("config lock");
             cfg.enable_code_actions = false;
@@ -365,7 +350,6 @@ mod tests {
 
     #[test]
     fn detect_object_kind_routes_known_types() {
-        // Routing variants for the four kinds that gate code-actions.
         assert_eq!(
             detect_object_kind("page 50 X { }"),
             Some(AlObjectKind::Page)

@@ -86,8 +86,6 @@ fn wrap_prev(current: Option<usize>, len: usize) -> usize {
     }
 }
 
-/// Connect to the al-lsp daemon if not already connected, recording any
-/// connection failure in `status`.
 #[cfg(unix)]
 pub(crate) fn ensure_daemon_client(
     client: &mut Option<DaemonClient>,
@@ -102,8 +100,6 @@ pub(crate) fn ensure_daemon_client(
     }
 }
 
-/// Move a list selection one step (forward or backward) with wrap-around,
-/// doing nothing when the list is empty.
 #[cfg(unix)]
 pub(crate) fn advance_list_selection(list_state: &mut ListState, len: usize, forward: bool) {
     if len == 0 {
@@ -200,7 +196,6 @@ type InitResult = Result<(DaemonClient, Vec<types::SymbolEntry>), String>;
 pub(crate) struct App {
     pub(crate) view_mode: ViewMode,
 
-    // Object browser state
     pub(crate) active_pane: ActivePane,
     pub(crate) search_query: String,
     pub(crate) global_search: bool,
@@ -224,7 +219,6 @@ pub(crate) struct App {
     pub(crate) last_click_target: Option<ClickTarget>,
     pub(crate) last_click_index: usize,
 
-    // Event chain, call graph, profiler, and test runner views
     pub(crate) event_chain: EventChainView,
     pub(crate) call_graph: CallGraphView,
     pub(crate) profiler: ProfilerView,
@@ -252,9 +246,6 @@ pub(crate) struct App {
 #[cfg(unix)]
 impl App {
     fn new() -> App {
-        // Resolve project_root ONCE here. al-explorer is long-running and the
-        // user can `cd` after launch, so we must not re-call current_dir() in
-        // later code paths or the daemon socket key would drift.
         let project_root =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         App {
@@ -854,7 +845,6 @@ impl App {
         if let Some(selected) = self.object_list_state.selected()
             && let Some(entry) = self.current_objects.get(selected)
         {
-            // Ask the daemon for the workspace file path for this object.
             // Reconnect if the persistent client has been dropped.
             if self.daemon_client.is_none() {
                 match DaemonClient::connect(&self.project_root) {
@@ -1027,7 +1017,6 @@ fn run_app<B: Backend<Error = io::Error>>(
             let evt = event::read()?;
             match evt {
                 Event::Key(key) => {
-                    // Global quit
                     if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
@@ -1102,7 +1091,6 @@ fn run_app<B: Backend<Error = io::Error>>(
 fn ui(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
-    // Mode bar at top (1 line)
     let top_split = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
@@ -1251,12 +1239,10 @@ mod tests {
     #[test]
     fn search_query_is_length_capped() {
         let mut app = App::new();
-        // Feed far more characters than the cap allows.
         for _ in 0..(MAX_INPUT_LEN + 500) {
             handle_object_browser_key(&mut app, KeyEvent::from(KeyCode::Char('a')));
         }
         assert_eq!(app.search_query.len(), MAX_INPUT_LEN);
-        // One more keystroke must not grow it further.
         handle_object_browser_key(&mut app, KeyEvent::from(KeyCode::Char('b')));
         assert_eq!(app.search_query.len(), MAX_INPUT_LEN);
     }
@@ -1309,10 +1295,8 @@ mod tests {
         app.package_list_state.select(Some(base_idx));
 
         app.update_objects_list(true);
-        // Empty query -> all kinds present for the Base package.
         assert!(app.kinds.contains(&ObjectKind::Table));
         assert!(app.kinds.contains(&ObjectKind::Codeunit));
-        // The "Other" package's Page must not appear.
         assert!(!app.kinds.contains(&ObjectKind::Page));
     }
 
@@ -1329,7 +1313,6 @@ mod tests {
         app.search_query = "vend".to_string();
 
         app.update_objects_list(true);
-        // Only "Vendor" matches; it is a Table, selected automatically.
         assert_eq!(app.current_objects.len(), 1);
         assert_eq!(app.current_objects[0].name, "Vendor");
     }

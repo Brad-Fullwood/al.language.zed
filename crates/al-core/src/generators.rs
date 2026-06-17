@@ -5,7 +5,6 @@
 
 use crate::symbols::model::{FieldSymbol, SymbolEntry};
 
-/// The type of page to generate.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum PageType {
     #[default]
@@ -30,35 +29,28 @@ impl std::str::FromStr for PageType {
     }
 }
 
-/// Configuration for page generation.
 #[derive(Debug, Clone)]
 pub struct GeneratePageConfig {
     pub object_id: i32,
     pub page_name: String,
     pub page_type: PageType,
-    /// The source table symbol (used to extract fields).
     pub source_table: SymbolEntry,
 }
 
-/// Configuration for report generation.
 #[derive(Debug, Clone)]
 pub struct GenerateReportConfig {
     pub object_id: i32,
     pub report_name: String,
-    /// The source table symbol.
     pub source_table: SymbolEntry,
 }
 
-/// Configuration for test codeunit generation.
 #[derive(Debug, Clone)]
 pub struct GenerateTestConfig {
     pub object_id: i32,
     pub test_name: String,
-    /// The subject under test (optional — generates tests for each procedure).
     pub subject: Option<SymbolEntry>,
 }
 
-/// Generate an AL page from a table symbol.
 pub fn generate_page(config: &GeneratePageConfig) -> String {
     let page_type_str = match config.page_type {
         PageType::List => "List",
@@ -105,7 +97,6 @@ pub fn generate_page(config: &GeneratePageConfig) -> String {
     )
 }
 
-/// Generate an AL report from a table symbol.
 pub fn generate_report(config: &GenerateReportConfig) -> String {
     let report_name = crate::permissions::al_escape_name(&config.report_name);
     let table_name = crate::permissions::al_escape_name(&config.source_table.name);
@@ -145,7 +136,6 @@ pub fn generate_report(config: &GenerateReportConfig) -> String {
     )
 }
 
-/// Generate a test codeunit that creates stub tests for each procedure on the subject.
 pub fn generate_test(config: &GenerateTestConfig) -> String {
     let test_stubs = if let Some(subject) = &config.subject {
         generate_test_stubs(subject)
@@ -175,9 +165,6 @@ pub fn generate_test(config: &GenerateTestConfig) -> String {
     )
 }
 
-// --- internal helpers ---
-
-/// Filter out system/flow fields that shouldn't appear as page controls.
 fn collect_normal_fields(fields: &[FieldSymbol]) -> Vec<&FieldSymbol> {
     fields
         .iter()
@@ -265,7 +252,6 @@ fn default_test_stub() -> String {
     "    [Test]\n    procedure TestSomething()\n    begin\n        // Arrange\n\n        // Act\n\n        // Assert\n        Assert.IsTrue(true, 'Placeholder test');\n    end;\n".to_string()
 }
 
-/// Convert a field/method name to a camelCase AL identifier (no spaces/special chars).
 fn al_identifier(name: &str) -> String {
     let mut out = String::new();
     let mut capitalize_next = false;
@@ -282,7 +268,6 @@ fn al_identifier(name: &str) -> String {
     if out.is_empty() {
         "field".to_string()
     } else {
-        // Lowercase first character for camelCase
         let mut chars = out.chars();
         match chars.next() {
             None => String::new(),
@@ -291,7 +276,6 @@ fn al_identifier(name: &str) -> String {
     }
 }
 
-/// Sanitize an object name to a valid identifier (remove non-alphanumeric, preserve spaces).
 fn sanitize_identifier(name: &str) -> String {
     name.chars()
         .filter(|c| c.is_alphanumeric() || *c == '_')
@@ -358,7 +342,7 @@ mod tests {
         };
         let page = generate_page(&config);
         assert!(page.contains("PageType = Card"));
-        assert!(!page.contains("actions")); // Card pages don't get action area by default
+        assert!(!page.contains("actions"));
     }
 
     #[test]
@@ -417,8 +401,8 @@ mod tests {
 
         let test = generate_test(&config);
         assert!(test.contains("Subtype = Test"));
-        assert!(test.contains("TestProcessOrder")); // public method gets a test
-        assert!(!test.contains("TestInternalHelper")); // local method skipped
+        assert!(test.contains("TestProcessOrder"));
+        assert!(!test.contains("TestInternalHelper"));
     }
 
     #[test]
@@ -456,7 +440,6 @@ mod tests {
             source_table: table,
         };
         let page = generate_page(&config);
-        // No. is included, Balance (FlowField) is excluded
         assert!(page.contains("\"No.\""));
         assert!(!page.contains("\"Balance\""));
     }
@@ -500,7 +483,6 @@ mod tests {
         };
         let out = generate_page(&config);
 
-        // Both the page name and the table name must have their `"` doubled.
         assert!(
             out.contains(r#"page 50100 "Demo ""Page""""#),
             "page name must escape `\"` → `\"\"`, got:\n{out}"
@@ -509,9 +491,6 @@ mod tests {
             out.contains(r#"SourceTable = "Bad""Table";"#),
             "table name must escape `\"` → `\"\"`, got:\n{out}"
         );
-        // And no spurious un-escaped quote should remain inside an identifier.
-        // (Doubled-quote `""` is fine; a single bare `"` between the opening
-        // and closing identifier quotes would mean the escape didn't fire.)
         let in_identifier = out
             .split('"')
             .nth(2) // payload between the page-name opening and closing quotes
@@ -574,8 +553,6 @@ mod tests {
             "report column field name must escape `\"` → `\"\"`, got:\n{out}"
         );
     }
-
-    // --- Round-trip parse: generated .al must actually parse (F-OPEN-035) ---
 
     fn assert_al_parses(label: &str, source: &str) {
         let result = crate::syntax::parser::AlParser::parse_quick(source);

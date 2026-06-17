@@ -8,16 +8,12 @@ use url::Url;
 use super::Range;
 use crate::workspace::Workspace;
 
-/// The kind of a CodeLens entry — determines how the server converts it to an
-/// LSP `CodeLens` and which command (if any) is attached.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum CodeLensKind {
-    /// How many times this procedure is referenced across the workspace.
     Reference(usize),
-    /// Profiler timing/hit-count label (e.g. `"⏱ 42ms · 3 calls"`).
+    /// e.g. `"⏱ 42ms · 3 calls"`
     Profiler(String),
-    /// Per-[Test]-procedure run status, sourced from `TestResultStore`.
     Test(TestLensStatus),
 }
 
@@ -28,32 +24,21 @@ pub enum CodeLensKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum TestLensStatus {
-    /// Test has never been run (no history in `TestResultStore`).
     NotRun,
-    /// Test is currently executing.
     Running,
-    /// Last run passed.
     Pass {
-        /// Wall-clock duration of the last run in milliseconds.
         duration_ms: u64,
     },
-    /// Last run failed.
     Fail {
-        /// Error message from the last run, if available.
         error: Option<String>,
     },
-    /// Last run was skipped.
     Skip,
 }
 
-/// A transport-agnostic CodeLens entry.
 pub struct CodeLensEntry {
-    /// The range covering the declaration name (used to position the lens).
     pub range: Range,
-    /// Human-readable label, e.g. "3 references".
     pub title: String,
-    /// Structured kind — consumed by the LSP server to choose the command and
-    /// (for Test lenses) the icon.
+    /// Structured kind — the LSP server uses this to choose the command and (for Test lenses) the icon.
     pub kind: CodeLensKind,
     /// For Test lenses: which test the attached `al.runTest` command targets.
     /// Without this the command is unactionable — the client has no way to
@@ -61,8 +46,6 @@ pub struct CodeLensEntry {
     pub test_target: Option<TestTarget>,
 }
 
-/// Identifies the test a Test lens points at, for the `al.runTest` command
-/// arguments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestTarget {
@@ -70,14 +53,6 @@ pub struct TestTarget {
     pub method_name: String,
 }
 
-/// Return CodeLens entries for all referenceable symbols in the document.
-///
-/// Produces two kinds of lenses:
-/// - **Reference lenses** — show how many times each procedure/trigger/event
-///   is referenced across the workspace (e.g. `"3 references"`).
-/// - **Profiler lenses** — shown only when a `.alcpuprofile` is loaded into the
-///   workspace; display self-time and hit count for the procedure
-///   (e.g. `"⏱ 42ms · 3 calls"`).
 #[must_use]
 pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
@@ -86,8 +61,6 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
 
     let symbols = crate::syntax::extract_document_symbols(&tree, &text);
 
-    // Collect the names of all procedure symbols we need reference counts for.
-    // This avoids building the full reference map when there are no procedures.
     let mut proc_names: Vec<String> = Vec::new();
     for sym in &symbols {
         if let Some(children) = &sym.children {
@@ -103,7 +76,6 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
     }
 
     if proc_names.is_empty() {
-        // No procedure symbols — skip scanning, fall through to profiler lenses.
         let profiler_lenses = {
             let guard = workspace
                 .profiler_session
@@ -121,11 +93,6 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
 
     let test_lens_ctx = build_test_lens_context(workspace, uri, &text, &tree);
 
-    // Build a workspace-wide reference count map in a single pass over all
-    // files: O(F + P) instead of O(P * F).
-    //
-    // Key: lowercased procedure name (AL identifiers are case-insensitive).
-    // Value: number of distinct (uri, line, col) positions referencing that name.
     let ref_counts = build_reference_counts(workspace, uri);
 
     let mut lenses = Vec::new();
@@ -203,23 +170,13 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
     lenses
 }
 
-// ---------------------------------------------------------------------------
-// Test lens helpers
-// ---------------------------------------------------------------------------
-
-/// Per-file context used to generate test lenses.
 struct TestLensContext {
-    /// Codeunit ID of the test codeunit in this file.
     codeunit_id: i32,
-    /// Names of procedures that carry a `[Test]` attribute (lowercased for lookup).
     test_proc_names_lower: std::collections::HashSet<String>,
-    /// Snapshot of test results read from the workspace store.
     store_snapshot: Option<Vec<crate::test_engine::TestRunRecord>>,
 }
 
 impl TestLensContext {
-    /// Return the `TestLensStatus` for a procedure name, or `None` if the
-    /// procedure has no `[Test]` attribute.
     fn status_for(&self, proc_name: &str) -> Option<TestLensStatus> {
         let lower = proc_name.to_lowercase();
         if !self.test_proc_names_lower.contains(&lower) {
@@ -249,8 +206,6 @@ impl TestLensContext {
     }
 }
 
-/// Build a `TestLensContext` for a document if it contains a test codeunit,
-/// returning `None` otherwise (fast-path for non-test files).
 fn build_test_lens_context(
     workspace: &Workspace,
     uri: &Url,
@@ -261,7 +216,6 @@ fn build_test_lens_context(
     let root = tree.root_node();
 
     if !crate::queries::tests::has_test_subtype(root, source) {
-        // Also check: any [Test] attributes at all?
         if crate::queries::tests::collect_test_procedures(root, source).is_empty() {
             return None;
         }
@@ -281,7 +235,6 @@ fn build_test_lens_context(
         return None;
     }
 
-    // Read a snapshot of test results (non-blocking — holds std::sync::RwLock briefly).
     let store_snapshot = {
         let guard = workspace
             .test_results
@@ -290,7 +243,7 @@ fn build_test_lens_context(
         guard.as_ref().map(|store| store.all_records())
     };
 
-    let _ = uri; // URI currently unused — codeunit_id identifies the codeunit.
+    let _ = uri;
     Some(TestLensContext {
         codeunit_id,
         test_proc_names_lower,
@@ -304,7 +257,6 @@ fn build_test_lens_context(
 /// serializer's `MAX_FAILURE_MSG_BYTES`.
 const MAX_ERROR_DISPLAY_BYTES: usize = 256;
 
-/// Truncate `s` to at most `max_bytes`, respecting UTF-8 char boundaries.
 fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
         return s;
@@ -316,7 +268,6 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-/// Human-readable label for a `TestLensStatus`.
 fn test_lens_title(status: &TestLensStatus) -> String {
     match status {
         TestLensStatus::NotRun => "○ Not run".to_string(),
@@ -344,33 +295,10 @@ fn reference_label(count: usize) -> String {
     }
 }
 
-/// Build a map of lowercased procedure name → distinct reference count by
-/// scanning every file in the workspace exactly once.
-///
-/// Complexity: O(F) where F is the number of workspace files (times the work
-/// of walking each file's parse tree).  The caller then does O(P) lookups —
-/// total O(F + P) versus the previous O(P * F).
 fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<String, usize> {
     // name_lower → set of (uri_string, line, col) to deduplicate locations
     let mut seen: HashMap<String, std::collections::HashSet<(String, u32, u32)>> = HashMap::new();
 
-    /// Walk a single file's parse tree once, recording the *name* of every
-    /// call site (`Foo()`, `obj.Foo()`, `T::Foo()`) into `seen`.
-    ///
-    /// Previously this counted every `identifier` / `quoted_identifier` /
-    /// `name` node, which conflated declaration sites, type references and
-    /// bare field references with actual call sites — a procedure declared
-    /// once and never called appeared as "1 reference" because of the
-    /// declaration itself, and any field with the same name doubled the
-    /// count.
-    ///
-    /// AL grammar shapes (mirrors `crate::syntax::is_call_reference`):
-    /// - bare call `Foo()`: `identifier → name → primary_expression`,
-    ///   whose `postfix_expression` parent has a `call_suffix` child;
-    /// - method call `obj.Foo()`: `identifier → name → member_call_suffix`
-    ///   as the `member` field;
-    /// - scope call `T::Foo()`: `identifier → name → scope_call_suffix`
-    ///   as the `member` field.
     fn record_file(
         uri_str: &str,
         text: &str,
@@ -403,9 +331,6 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
         });
     }
 
-    /// Walk parents of an `identifier` / `quoted_identifier` node to decide
-    /// whether it sits in a call position. Mirrors the private
-    /// `crate::syntax::is_call_reference` so we don't expose it just for this.
     fn is_call_site(node: tree_sitter::Node<'_>) -> bool {
         let Some(name_parent) = node.parent() else {
             return false;
@@ -459,13 +384,11 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
         None
     }
 
-    // Current (open) document — read from the document store.
     if let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, current_uri) {
         let uri_str = current_uri.to_string();
         record_file(&uri_str, &text, &tree, &mut seen);
     }
 
-    // All other workspace files — read from the file index cache.
     let current_path = current_uri.to_file_path().ok();
     for entry in workspace.file_index.files.iter() {
         let file_path = entry.key().clone();
@@ -481,13 +404,8 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
         }
     }
 
-    // Flatten: we only need the count, not the individual positions.
     seen.into_iter().map(|(k, v)| (k, v.len())).collect()
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -525,7 +443,6 @@ codeunit 50100 MyCodeunit
         );
 
         let titles: Vec<&str> = lenses.iter().map(|l| l.title.as_str()).collect();
-        // All lenses must have a "reference" label (either "N references" or "1 reference")
         for title in &titles {
             assert!(
                 title.contains("reference"),
@@ -535,7 +452,6 @@ codeunit 50100 MyCodeunit
         }
     }
 
-    // Positive test: a procedure that is called shows the correct reference count.
     #[test]
     fn test_code_lens_with_references() {
         let uri = Url::parse("file:///test.al").unwrap();
@@ -560,7 +476,6 @@ codeunit 50100 MyCodeunit
         let greet_lens = lenses.iter().find(|l| l.title.contains("reference"));
         assert!(greet_lens.is_some(), "no reference lens found for Greet");
 
-        // Count must be > 0 (the calls within the body are references)
         assert_ne!(
             greet_lens.unwrap().title,
             "0 references",
@@ -568,7 +483,6 @@ codeunit 50100 MyCodeunit
         );
     }
 
-    // Negative test: empty file returns empty vec (no panic).
     #[test]
     fn test_code_lens_empty_file() {
         let uri = Url::parse("file:///empty.al").unwrap();
@@ -577,16 +491,14 @@ codeunit 50100 MyCodeunit
         assert!(lenses.is_empty(), "empty file should produce no lenses");
     }
 
-    // Negative test: URI with no document in the store returns empty vec.
     #[test]
     fn test_code_lens_unknown_uri() {
         let uri = Url::parse("file:///does_not_exist.al").unwrap();
-        let ws = Workspace::new(); // no documents registered
+        let ws = Workspace::new();
         let lenses = code_lens(&ws, &uri);
         assert!(lenses.is_empty(), "unknown URI should produce no lenses");
     }
 
-    // Negative test: reference_label handles zero and plural correctly.
     #[test]
     fn test_reference_label_values() {
         assert_eq!(reference_label(0), "0 references");
@@ -594,10 +506,6 @@ codeunit 50100 MyCodeunit
         assert_eq!(reference_label(2), "2 references");
         assert_eq!(reference_label(100), "100 references");
     }
-
-    // ---------------------------------------------------------------------------
-    // Profiler CodeLens integration tests
-    // ---------------------------------------------------------------------------
 
     use crate::queries::profiler_hints::{ProfilerHint, ProfilerSession};
 
@@ -608,7 +516,6 @@ codeunit 50100 MyCodeunit
     ) -> Workspace {
         let ws = workspace_with_doc(uri, content);
         let file_path = uri.to_file_path().unwrap().to_string_lossy().to_string();
-        // Attach file info so profiler_code_lenses can match by path.
         let hints_with_file: Vec<ProfilerHint> = hints
             .into_iter()
             .map(|mut h| {
@@ -635,7 +542,6 @@ codeunit 50100 MyCodeunit
 }
 "#;
 
-    // Positive test: profiler lenses appear alongside reference lenses.
     #[test]
     fn test_profiler_lenses_added_when_session_active() {
         let uri = Url::parse("file:///test.al").unwrap();
@@ -645,14 +551,12 @@ codeunit 50100 MyCodeunit
             self_time_ms: 42.0,
             total_time_ms: 42.0,
             hit_count: 3,
-            file: None, // will be filled in by helper
+            file: None,
             line: None,
         };
         let ws = workspace_with_doc_and_profile(&uri, PROF_SRC, vec![hint]);
         let lenses = code_lens(&ws, &uri);
 
-        // Must have at least 2 reference lenses (one per procedure)
-        // plus 1 profiler lens for SlowProc.
         let prof_lenses: Vec<&CodeLensEntry> =
             lenses.iter().filter(|l| l.title.contains('⏱')).collect();
         assert_eq!(
@@ -665,7 +569,6 @@ codeunit 50100 MyCodeunit
         assert_eq!(prof_lenses[0].title, "⏱ 42ms · 3 calls");
     }
 
-    // Positive test: correct pluralisation for 1 call.
     #[test]
     fn test_profiler_lens_single_call_label() {
         let uri = Url::parse("file:///test.al").unwrap();
@@ -699,7 +602,6 @@ codeunit 50100 MyCodeunit
         );
     }
 
-    // Negative test: profiler hint for a procedure not in this file → no lens.
     #[test]
     fn test_profiler_lens_unmatched_procedure() {
         let uri = Url::parse("file:///test.al").unwrap();
@@ -725,10 +627,6 @@ codeunit 50100 MyCodeunit
             "unmatched procedure should produce no profiler lens"
         );
     }
-
-    // ---------------------------------------------------------------------------
-    // Test CodeLens integration tests
-    // ---------------------------------------------------------------------------
 
     use crate::test_engine::{TestRunRecord, TestStatus};
 
@@ -759,8 +657,6 @@ codeunit 50100 MyCodeunit
     ) -> Workspace {
         use std::io::Write;
         let ws = workspace_with_doc(uri, content);
-        // Persist test history via the on-disk JSONL format the real
-        // store uses. A scoped tempfile keeps the test hermetic.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("test-results.json");
         let mut f = std::fs::File::create(&path).expect("create");
@@ -775,13 +671,10 @@ codeunit 50100 MyCodeunit
             .expect("open");
         *ws.test_results.write().unwrap_or_else(|e| e.into_inner()) =
             Some(std::sync::Arc::new(store));
-        // Keep the tempdir alive for the lifetime of the test by leaking
-        // it; the OS reclaims on process exit.
         std::mem::forget(dir);
         ws
     }
 
-    /// Collect all lenses that are `CodeLensKind::Test`.
     fn test_lenses(lenses: &[CodeLensEntry]) -> Vec<&CodeLensEntry> {
         lenses
             .iter()
@@ -792,7 +685,6 @@ codeunit 50100 MyCodeunit
     #[test]
     fn test_lens_not_run_when_no_history() {
         let uri = Url::parse("file:///my_tests.al").unwrap();
-        // No TestResultStore attached → all [Test] procedures show NotRun.
         let ws = workspace_with_doc(&uri, TEST_CODEUNIT_SRC);
         let lenses = code_lens(&ws, &uri);
         let tl = test_lenses(&lenses);
@@ -908,7 +800,6 @@ codeunit 50100 MyCodeunit
         let ws = workspace_with_test_results(&uri, TEST_CODEUNIT_SRC, vec![record]);
         let lenses = code_lens(&ws, &uri);
         let tl = test_lenses(&lenses);
-        // Both TestAlpha and TestBeta should be NotRun (no matching history).
         assert_eq!(tl.len(), 2);
         for l in &tl {
             assert_eq!(
@@ -924,7 +815,6 @@ codeunit 50100 MyCodeunit
         let uri = Url::parse("file:///my_tests.al").unwrap();
         let ws = workspace_with_doc(&uri, TEST_CODEUNIT_SRC);
         let lenses = code_lens(&ws, &uri);
-        // HelperProc has no [Test] attribute — it must not appear in test lenses.
         let helper_test_lenses: Vec<&CodeLensEntry> = lenses
             .iter()
             .filter(|l| matches!(l.kind, CodeLensKind::Test(_)) && l.title.contains("Helper"))

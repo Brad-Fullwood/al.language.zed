@@ -47,7 +47,6 @@ pub struct DiscoveredEvent {
     pub subscribers: Vec<SubscriberInfo>,
     /// Subscriber count (convenience field for JSON consumers).
     pub subscriber_count: usize,
-    /// Whether any subscribers are attached.
     pub has_subscribers: bool,
 }
 
@@ -58,9 +57,7 @@ pub struct OrphanSubscriber {
     pub object_kind: String,
     pub object_name: String,
     pub method_name: String,
-    /// The publisher object name the subscriber targets.
     pub target_object: String,
-    /// The event name the subscriber targets.
     pub target_event: String,
 }
 
@@ -72,9 +69,7 @@ pub struct EventDiscoveryResult {
     pub events: Vec<DiscoveredEvent>,
     /// Subscribers that reference events not present in the workspace.
     pub orphan_subscribers: Vec<OrphanSubscriber>,
-    /// Total number of events discovered.
     pub total_events: usize,
-    /// Total number of orphan subscribers.
     pub total_orphans: usize,
 }
 
@@ -93,7 +88,6 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
     let mut event_subscribers: HashMap<petgraph::graph::NodeIndex, Vec<SubscriberInfo>> =
         HashMap::new();
 
-    // Collect all Event nodes.
     for (key, indices) in &graph.index {
         if matches!(key, NodeKey::Event(..)) {
             for &idx in indices {
@@ -102,7 +96,6 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
         }
     }
 
-    // Collect all Subscriber nodes and check whether they are connected.
     let mut orphans: Vec<OrphanSubscriber> = Vec::new();
 
     for (key, indices) in &graph.index {
@@ -128,7 +121,6 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
                 _ => continue,
             };
 
-            // Find outgoing SubscribesTo edges from this subscriber.
             let subscribed_events: Vec<_> = graph
                 .graph
                 .edges_directed(sub_idx, Direction::Outgoing)
@@ -146,7 +138,6 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
                     target_event,
                 });
             } else {
-                // Register this subscriber against each event it subscribes to.
                 for event_idx in subscribed_events {
                     event_subscribers
                         .entry(event_idx)
@@ -161,7 +152,6 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
         }
     }
 
-    // Build DiscoveredEvent list.
     let mut events: Vec<DiscoveredEvent> = Vec::new();
 
     for (event_idx, mut subs) in event_subscribers {
@@ -181,7 +171,6 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
             _ => continue,
         };
 
-        // Sort subscribers by object_name then method_name for stability.
         subs.sort_by(|a, b| {
             a.object_name
                 .as_bytes()
@@ -214,7 +203,6 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
         });
     }
 
-    // Sort events by (publisher object_name, event_name).
     events.sort_by(|a, b| {
         a.publisher
             .object_name
@@ -237,7 +225,6 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
             })
     });
 
-    // Sort orphans by (object_name, method_name).
     orphans.sort_by(|a, b| {
         a.object_name
             .as_bytes()
@@ -348,8 +335,6 @@ mod tests {
         g
     }
 
-    // --- empty graph ---
-
     #[test]
     fn empty_graph_returns_empty_result() {
         let g = InsightGraph::new();
@@ -359,8 +344,6 @@ mod tests {
         assert!(result.events.is_empty());
         assert!(result.orphan_subscribers.is_empty());
     }
-
-    // --- single event, no subscribers ---
 
     #[test]
     fn event_with_no_subscribers() {
@@ -381,8 +364,6 @@ mod tests {
         assert_eq!(ev.subscriber_count, 0);
     }
 
-    // --- business event type ---
-
     #[test]
     fn business_event_type_detected() {
         let mut publisher = base_entry(ObjectKind::Codeunit, 80, "Sales-Post");
@@ -395,8 +376,6 @@ mod tests {
         let ev = &result.events[0];
         assert_eq!(ev.publisher.event_type, "Business");
     }
-
-    // --- single event with one subscriber ---
 
     #[test]
     fn event_with_one_subscriber() {
@@ -423,8 +402,6 @@ mod tests {
         assert_eq!(ev.subscribers[0].object_name, "My Extension");
         assert_eq!(ev.subscribers[0].method_name, "HandleAfterPost");
     }
-
-    // --- multiple subscribers ---
 
     #[test]
     fn event_with_multiple_subscribers() {
@@ -455,11 +432,8 @@ mod tests {
         assert_eq!(ev.subscriber_count, 2);
     }
 
-    // --- orphan subscriber ---
-
     #[test]
     fn orphan_subscriber_detected() {
-        // Only the subscriber exists — no matching publisher.
         let mut orphan_cu = base_entry(ObjectKind::Codeunit, 50100, "Orphan Sub");
         orphan_cu.methods = vec![subscriber_method(
             "HandleMissing",
@@ -480,8 +454,6 @@ mod tests {
         assert_eq!(orphan.target_object, "NonExistent");
         assert_eq!(orphan.target_event, "OnMissingEvent");
     }
-
-    // --- mix of real events and orphans ---
 
     #[test]
     fn mix_of_events_and_orphans() {
@@ -513,8 +485,6 @@ mod tests {
         assert_eq!(result.orphan_subscribers[0].object_name, "Orphan Sub");
     }
 
-    // --- multiple events, sorted ---
-
     #[test]
     fn events_sorted_by_publisher_then_event_name() {
         let mut cu_a = base_entry(ObjectKind::Codeunit, 1, "Alpha");
@@ -531,18 +501,15 @@ mod tests {
 
         assert_eq!(result.total_events, 3);
 
-        // First two events should belong to "Alpha" (sorted before "Beta")
         let alpha_events: Vec<&DiscoveredEvent> = result
             .events
             .iter()
             .filter(|e| e.publisher.object_name == "Alpha")
             .collect();
         assert_eq!(alpha_events.len(), 2);
-        // Within Alpha: OnA before OnZ
         assert_eq!(alpha_events[0].event_name, "OnA");
         assert_eq!(alpha_events[1].event_name, "OnZ");
 
-        // Beta after Alpha
         let beta_idx = result
             .events
             .iter()
@@ -556,8 +523,6 @@ mod tests {
         assert!(beta_idx > alpha_last_idx);
     }
 
-    // --- publisher.event_name filled correctly ---
-
     #[test]
     fn publisher_event_name_matches_event_name() {
         let mut cu = base_entry(ObjectKind::Codeunit, 1, "CU");
@@ -569,8 +534,6 @@ mod tests {
         let ev = &result.events[0];
         assert_eq!(ev.publisher.event_name, ev.event_name);
     }
-
-    // --- circular event chains don't infinite-loop ---
 
     #[test]
     fn circular_event_chain_terminates() {
@@ -598,7 +561,6 @@ mod tests {
         let g = build_graph(&[cu_a, cu_b, cu_c]);
         let result = discover_events(&g);
 
-        // 3 events, 3 subscribers (one per event), no orphans
         assert_eq!(result.total_events, 3);
         assert_eq!(result.total_orphans, 0);
         for ev in &result.events {

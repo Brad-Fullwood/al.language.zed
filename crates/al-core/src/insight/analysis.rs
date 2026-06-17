@@ -20,7 +20,6 @@ pub enum TableOperationKind {
     /// This enables Read (Get, FindSet, FindFirst, FindLast, CalcFields) and
     /// Write (Insert, Modify, Delete) operations.
     RecordVariable,
-    /// A procedure parameter is typed as a Record of this table.
     RecordParameter,
     /// This object has a field with a TableRelation property pointing to the table.
     Relation,
@@ -43,7 +42,6 @@ impl std::fmt::Display for TableOperationKind {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableImpact {
-    /// The kind of interaction.
     pub operation: TableOperationKind,
     /// Optional: the name of the variable, parameter, or field that references the table.
     pub location_hint: Option<String>,
@@ -84,7 +82,6 @@ pub struct TableImpactResult {
 pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResult {
     // All comparisons use `eq_ignore_ascii_case` so we can pass `table_name`
     // directly without allocating a lowercased copy. AL identifiers are ASCII.
-    // Resolve canonical name from the index (use the first exact Table match).
     let canonical_name = symbols
         .get_by_name(table_name)
         .into_iter()
@@ -94,13 +91,11 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
 
     let all_entries = symbols.all_entries();
 
-    // Accumulate impacts per object (keyed by (kind, name) to merge duplicates).
     let mut by_object: HashMap<(String, String), ObjectImpact> = HashMap::new();
 
     for entry in &all_entries {
         let mut impacts: Vec<TableImpact> = Vec::new();
 
-        // 1. Extends: TableExtension pointing at this table.
         if entry.kind == ObjectKind::TableExtension {
             if let Some(ref ext_target) = entry.extends {
                 if ext_target.eq_ignore_ascii_case(table_name) {
@@ -112,7 +107,6 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
             }
         }
 
-        // 2. Relation: fields with TableRelation property.
         if matches!(entry.kind, ObjectKind::Table | ObjectKind::TableExtension) {
             for field in &entry.fields {
                 for prop in &field.properties {
@@ -130,7 +124,6 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
             }
         }
 
-        // 3. RecordVariable: global variables whose type is `Record "<TableName>"`.
         for var in &entry.variables {
             if is_record_of(&var.type_name, table_name) {
                 impacts.push(TableImpact {
@@ -140,7 +133,6 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
             }
         }
 
-        // 4. RecordParameter: procedure parameters typed as Record of the target table.
         for method in &entry.methods {
             for param in &method.parameters {
                 if is_record_of(&param.type_name, table_name) {
@@ -170,7 +162,6 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
         obj_entry.impacts.extend(impacts);
     }
 
-    // Sort objects by name for stable output.
     let mut objects: Vec<ObjectImpact> = by_object.into_values().collect();
     objects.sort_by(|a, b| {
         a.object_name
@@ -240,24 +231,18 @@ pub(crate) fn extract_table_relation_table(value: &str) -> Option<&str> {
 /// - `Record Customer`
 /// - `Record "Sales Header"`
 pub(crate) fn is_record_of(type_name: &str, table_name: &str) -> bool {
-    // Guard: an empty table name cannot be a valid match.
     if table_name.is_empty() {
         return false;
     }
     let t = type_name.trim();
-    // Must start with "Record" (case-insensitive). Split on ANY whitespace
-    // (the prior `split_once(' ')` missed tabs).
     let rest = match t.split_once(|c: char| c.is_whitespace()) {
         Some((prefix, rest)) if prefix.eq_ignore_ascii_case("Record") => rest.trim(),
         _ => return false,
     };
-    // Strip surrounding quotes
     let name = rest.trim_matches('"').trim_matches('\'');
-    // Guard: an empty name after stripping cannot match anything.
     if name.is_empty() {
         return false;
     }
-    // Compare case-insensitively without allocating a lowercased copy.
     name.eq_ignore_ascii_case(table_name)
 }
 
@@ -456,7 +441,6 @@ mod tests {
         index.add_entries(&[base_entry(ObjectKind::Table, 18, "Customer")]);
 
         let result = table_impact(&index, "Customer");
-        // Customer itself has no variables/parameters pointing to itself
         assert!(result.objects.is_empty());
         assert_eq!(result.total_impacts, 0);
     }
@@ -466,7 +450,6 @@ mod tests {
         let index = SymbolIndex::new();
         index.add_entries(&[base_entry(ObjectKind::Table, 18, "Customer")]);
 
-        // Query with wrong casing — result should use canonical name from index.
         let result = table_impact(&index, "CUSTOMER");
         assert_eq!(result.table_name, "Customer");
     }

@@ -41,7 +41,6 @@ pub struct InterpMode {
 }
 
 impl InterpMode {
-    /// Construct an interpreter session backed by the given workspace.
     pub fn new(workspace: Arc<Workspace>) -> Self {
         Self { workspace }
     }
@@ -95,7 +94,6 @@ impl TestSession for InterpMode {
                 .push(test_id.method_name.clone());
         }
 
-        // Collect results for the final tally.
         let mut all_summaries: Vec<TestCodeunitResult> = Vec::new();
 
         // Build the per-codeunit work list.

@@ -14,7 +14,6 @@ use crate::workspace::Workspace;
 /// - `"'Foo' does not exist in the current context"`
 /// - `"Foo could not be found"` (no quotes)
 pub(super) fn extract_type_name_from_diagnostic(message: &str) -> Option<String> {
-    // Try quoted name first: 'TypeName'
     if let Some(start) = message.find('\'') {
         let rest = &message[start + 1..];
         if let Some(end) = rest.find('\'') {
@@ -108,17 +107,14 @@ fn extract_word_at_position(text: &str, range: Range) -> String {
     }
     let line = lines[line_idx];
 
-    // Convert UTF-16 column offsets to byte offsets (safe for non-ASCII identifiers).
     let start_byte =
         crate::resolution::utf16_col_to_byte_offset(line, range.start.character as usize);
     let end_byte = crate::resolution::utf16_col_to_byte_offset(line, range.end.character as usize);
 
-    // If we have a real selection range, use it directly.
     if start_byte < end_byte && end_byte <= line.len() {
         return line[start_byte..end_byte].trim_matches('"').to_string();
     }
 
-    // Otherwise expand the word around the cursor using byte-level scanning.
     // Non-ASCII bytes (>= 0x80) are not alphanumeric, so they act as word boundaries.
     if start_byte >= line.len() {
         return String::new();
@@ -148,8 +144,6 @@ fn extract_word_at_position(text: &str, range: Range) -> String {
     line[word_start..word_end].to_string()
 }
 
-/// If `cursor` is within a `"..."` quoted identifier span on the line, return the inner content.
-/// Returns `None` if the cursor is not inside a quoted span.
 fn try_extract_quoted_identifier(bytes: &[u8], cursor: usize) -> Option<String> {
     if cursor >= bytes.len() {
         return None;
@@ -241,7 +235,6 @@ pub(super) fn parse_using_directives(text: &str) -> (Vec<String>, u32) {
             last_directive_line = i as u32;
             found_any_directive = true;
         } else if found_any_directive && !trimmed.is_empty() && !trimmed.starts_with("//") {
-            // Stop scanning after we pass the header section
             break;
         }
     }
@@ -262,8 +255,6 @@ mod tests {
     use crate::workspace::Workspace;
     use url::Url;
 
-    /// Open `al_code` in `ws` at `uri`.  Centralises the `uri.clone()` +
-    /// `to_string()` noise that appeared in every test.
     fn open_doc(ws: &Workspace, uri: &Url, al_code: &str) {
         ws.documents.open(uri.clone(), al_code.to_string());
     }
@@ -429,7 +420,6 @@ codeunit 50100 "My Codeunit"
     fn add_using_offers_multiple_namespaces() {
         let ws = Workspace::new();
 
-        // Same type name in different namespaces
         ws.symbols.add_entries(&[
             make_entry_with_namespace(ObjectKind::Table, 18, "Customer", "Microsoft.Sales"),
             make_entry_with_namespace(ObjectKind::Table, 50100, "Customer", "MyCompany.CRM"),
@@ -552,7 +542,6 @@ codeunit 50100 "My Codeunit"
         let edit = actions[0].edit.as_ref().unwrap();
         let (_, edits) = &edit.changes[0];
         assert!(edits[0].new_text.contains("using Microsoft.Sales;"));
-        // Insert after namespace line (line 0), so at line 1
         assert_eq!(edits[0].range.start.line, 1);
     }
 
@@ -625,7 +614,6 @@ codeunit 50100 "My Codeunit"
         let uri = Url::parse("file:///test/T.al").unwrap();
         open_doc(&ws, &uri, al_code);
 
-        // Unrelated diagnostic code
         let diag = DiagnosticInfo {
             range: Range::default(),
             message: "Some other compile error".to_string(),
@@ -664,10 +652,6 @@ codeunit 50100 "My Codeunit"
         assert!(actions[0].title.contains("MyNs.Finance"));
     }
 
-    // -----------------------------------------------------------------------
-    // Tests for if-to-case conversion (T1203)
-    // -----------------------------------------------------------------------
-
     // Bug: extract_word_at_position closing quote
     // When cursor is on a closing `"` of a quoted identifier, the word
     // extracted should be the full inner name, not empty.
@@ -680,7 +664,6 @@ codeunit 50100 "My Codeunit"
         //   `r` at col 31
         //   `"` close at col 32
         let text = "        SH: Record \"Sales Header\";\n";
-        // Place cursor on the closing quote (col 32)
         let range = Range {
             start: super::super::Position {
                 line: 0,
@@ -699,7 +682,4 @@ codeunit 50100 "My Codeunit"
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Tests for with-statement elimination (T1204)
-    // -----------------------------------------------------------------------
 }

@@ -18,12 +18,15 @@
 //! where `FNV` is FNV-1 over the UTF-16LE bytes and `Combine`/the constants are
 //! Microsoft's `Hash` helper.
 
-use super::nav_type_kind::NavTypeKind;
-
 /// FNV offset bias (`0x811C9DC5` as `i32`).
 const FNV_OFFSET_BIAS: i32 = -2128831035;
-/// FNV prime.
 const FNV_PRIME: i32 = 16777619;
+
+/// Public FNV-1 hash (Microsoft `Hash.GetFNVHashCode(string)`) — used by other
+/// emit code needing the same hash (e.g. generated object ids).
+pub fn fnv1_hash(s: &str) -> i32 {
+    fnv1_utf16(s)
+}
 
 /// FNV-1 over the UTF-16LE bytes of `s` - matches `Hash.GetFNVHashCode(string)`
 /// (which hashes `Encoding.Unicode.GetBytes(s)`).
@@ -60,50 +63,85 @@ fn adjust_for_system_codeunits(hash: i32, object_id: i64) -> i32 {
     }
 }
 
-/// One method parameter, as it affects the generated id.
+/// One method parameter, as it affects the generated id. `kind` is the
+/// parameter type's `NavTypeKind` id (from `language_data::nav_type_kind_id`) —
+/// this module stays free of AL-type knowledge, just hashing the values.
 #[derive(Debug, Clone, Copy)]
 pub struct ParamSig {
-    /// The parameter's AL type kind.
-    pub kind: NavTypeKind,
+    /// The parameter type's `NavTypeKind` id.
+    pub kind: i32,
     /// Whether the parameter is `var` (by-reference).
     pub is_var: bool,
+    /// `GetSubTypeHashCodeForNewVersions` for this parameter's type — the
+    /// referenced object's id for Record/Enum/Codeunit/Page/…, `FNV(name)` for
+    /// an interface, `1` for scalars. Only folded in when `disambiguate` is set.
+    pub subtype_hash: i32,
 }
 
 /// Compute the generated method id alc writes into `SymbolReference.json`
-/// (runtime >= Spring2021). `containing_object_id` is the owning object's id
-/// (only matters for system codeunits, id >= 2_000_000_000).
-///
-/// Exact for scalar signatures. Parameters whose type carries a *subtype*
-/// (Record / Codeunit / Enum / ...) trigger an extra disambiguation hash in
-/// alc (`RequiresRuntimeOverloadDisambiguation`) that is not yet modelled here;
-/// such methods are tracked as follow-up. Triggers (vs procedures) also fold in
-/// the trigger name - likewise not yet modelled.
+/// (runtime >= Spring2021). `return_kind` and each `ParamSig.kind` are
+/// `NavTypeKind` ids. `disambiguate` mirrors alc's
+/// `RequiresRuntimeOverloadDisambiguation` — when set, every parameter also
+/// folds in its `subtype_hash`. `containing_object_id` only matters for system
+/// codeunits (id >= 2_000_000_000).
 pub fn method_id(
     name: &str,
-    return_kind: NavTypeKind,
+    return_kind: i32,
     params: &[ParamSig],
+    disambiguate: bool,
     containing_object_id: i64,
 ) -> i32 {
     // ToUpperInvariant: AL identifiers are effectively ASCII; uppercase is a
     // close match. (Quoted Unicode identifiers are a known edge case.)
     let mut h = fnv1_utf16(&name.to_uppercase());
-    h = combine(h, return_kind.hash_code());
+    h = combine(h, return_kind);
     for (i, p) in params.iter().enumerate() {
-        h = combine(
-            combine(combine(h, i as i32), bool_hash(p.is_var)),
-            p.kind.hash_code(),
-        );
+        h = combine(combine(combine(h, i as i32), bool_hash(p.is_var)), p.kind);
+        if disambiguate {
+            h = combine(h, p.subtype_hash);
+        }
     }
     adjust_for_system_codeunits(h, containing_object_id)
+}
+
+/// `Hash.Combine(h1, h2)`, exposed for other emit code (e.g. object-id hashing).
+pub fn combine_hash(h1: i32, h2: i32) -> i32 {
+    combine(h1, h2)
+}
+
+/// `IdSpace.GetMemberId(s)` — `Math.Abs(FNV(s))`, with the `i32::MIN` edge
+/// mapped to `i32::MAX`. Used for page-control / query-column / query-element
+/// ids (the caller composes `s`: `Name`, or `objectId + Name` for page controls).
+pub fn member_id(s: &str) -> i32 {
+    let h = fnv1_utf16(s);
+    if h == i32::MIN {
+        i32::MAX
+    } else {
+        h.abs()
+    }
+}
+
+/// FNV-1 over raw bytes (`Hash.GetFNVHashCode(byte[])`) — e.g. for a GUID's
+/// `ToByteArray()` bytes in object-id hashing.
+pub fn fnv1_hash_bytes(data: &[u8]) -> i32 {
+    let mut num = FNV_OFFSET_BIAS;
+    for &b in data {
+        num = (num ^ b as i32).wrapping_mul(FNV_PRIME);
+    }
+    num
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use NavTypeKind as K;
 
-    fn p(kind: NavTypeKind, is_var: bool) -> ParamSig {
-        ParamSig { kind, is_var }
+    /// NavTypeKind id by name, from the generated data (no hardcoded values).
+    fn k(name: &str) -> i32 {
+        crate::syntax::language_data::nav_type_kind_id(name).unwrap()
+    }
+
+    fn p(kind: &str, is_var: bool) -> ParamSig {
+        ParamSig { kind: k(kind), is_var, subtype_hash: 1 }
     }
 
     /// Vectors captured from real `alc` 17.0.34 output (a user codeunit, id
@@ -111,25 +149,25 @@ mod tests {
     /// algorithm changes in a future toolchain, these break loudly.
     #[test]
     fn reproduces_alc_method_ids() {
-        let cases: &[(&str, NavTypeKind, Vec<ParamSig>, i32)] = &[
-            ("M0", K::None, vec![], -2118248254),
-            ("M1", K::Integer, vec![], 1756487754),
-            ("M2", K::Text, vec![], 1319086004),
-            ("M3", K::None, vec![p(K::Integer, false)], 409225226),
+        let cases: Vec<(&str, i32, Vec<ParamSig>, i32)> = vec![
+            ("M0", k("None"), vec![], -2118248254),
+            ("M1", k("Integer"), vec![], 1756487754),
+            ("M2", k("Text"), vec![], 1319086004),
+            ("M3", k("None"), vec![p("Integer", false)], 409225226),
             (
                 "M4",
-                K::None,
-                vec![p(K::Integer, false), p(K::Text, false)],
+                k("None"),
+                vec![p("Integer", false), p("Text", false)],
                 11450251,
             ),
-            ("M5", K::None, vec![p(K::Integer, true)], 363343141),
-            ("M6", K::Boolean, vec![p(K::Boolean, false)], 56457289),
-            ("M7", K::None, vec![p(K::Code, false)], 296523416),
+            ("M5", k("None"), vec![p("Integer", true)], 363343141),
+            ("M6", k("Boolean"), vec![p("Boolean", false)], 56457289),
+            ("M7", k("None"), vec![p("Code", false)], 296523416),
         ];
         for (name, ret, params, expected) in cases {
-            let got = method_id(name, *ret, params, 50100);
+            let got = method_id(name, ret, &params, false, 50100);
             assert_eq!(
-                got, *expected,
+                got, expected,
                 "method {name}: got {got}, expected {expected}"
             );
         }
@@ -140,16 +178,17 @@ mod tests {
     /// `1462331901` in two different codeunits.
     #[test]
     fn id_is_object_independent_void_methods() {
+        let none = k("None");
         for (name, expected) in [
             ("Greet", 1462331901),
             ("A", -981080143),
             ("AB", 1554881421),
             ("Hello", 267291819),
         ] {
-            assert_eq!(method_id(name, K::None, &[], 50100), expected, "{name}");
+            assert_eq!(method_id(name, none, &[], false, 50100), expected, "{name}");
             // Same signature in a different object id gives the same id.
             assert_eq!(
-                method_id(name, K::None, &[], 50101),
+                method_id(name, none, &[], false, 50101),
                 expected,
                 "{name} obj 50101"
             );
@@ -158,10 +197,10 @@ mod tests {
 
     #[test]
     fn name_is_uppercased_before_hashing() {
-        // ToUpperInvariant: casing must not change the id.
+        let none = k("None");
         assert_eq!(
-            method_id("greet", K::None, &[], 50100),
-            method_id("GREET", K::None, &[], 50100)
+            method_id("greet", none, &[], false, 50100),
+            method_id("GREET", none, &[], false, 50100)
         );
     }
 }

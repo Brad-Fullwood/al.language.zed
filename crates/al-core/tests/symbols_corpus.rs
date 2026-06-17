@@ -11,10 +11,6 @@ use al_core::symbols::{
 };
 use zip::write::SimpleFileOptions;
 
-// ---------------------------------------------------------------------------
-// Test .app builder
-// ---------------------------------------------------------------------------
-
 /// Build a realistic .app file from manifest XML and symbol JSON.
 ///
 /// Layout: 40-byte NAVX header + ZIP archive with NavxManifest.xml and
@@ -28,7 +24,6 @@ fn build_test_app(manifest_xml: &str, symbol_json: &str) -> Vec<u8> {
     data.extend_from_slice(&40u32.to_le_bytes()); // header size (4 bytes)
     data.extend_from_slice(&[0u8; 28]); // padding to 40 bytes
 
-    // Create ZIP in memory
     let mut zip_buf = Vec::new();
     {
         let cursor = Cursor::new(&mut zip_buf);
@@ -48,10 +43,6 @@ fn build_test_app(manifest_xml: &str, symbol_json: &str) -> Vec<u8> {
     data.extend_from_slice(&zip_buf);
     data
 }
-
-// ---------------------------------------------------------------------------
-// Manifest templates
-// ---------------------------------------------------------------------------
 
 fn base_app_manifest() -> &'static str {
     r#"<?xml version="1.0" encoding="utf-8"?>
@@ -90,10 +81,6 @@ fn extension_app_manifest() -> &'static str {
        Version="2.5.0.0" />
 </Package>"#
 }
-
-// ---------------------------------------------------------------------------
-// SymbolReference JSON templates
-// ---------------------------------------------------------------------------
 
 /// Realistic "Base Application" subset.
 fn base_app_symbols() -> &'static str {
@@ -302,7 +289,6 @@ fn base_app_symbols() -> &'static str {
 }"#
 }
 
-/// Extension app symbols (table extension, enum extension, subscriber).
 fn extension_app_symbols() -> &'static str {
     r#"{
     "TableExtensions": [{
@@ -375,16 +361,11 @@ fn extension_app_symbols() -> &'static str {
 }"#
 }
 
-// ---------------------------------------------------------------------------
-// Test: load a real .app structure
-// ---------------------------------------------------------------------------
-
 #[test]
 fn test_load_real_app_structure() {
     let data = build_test_app(base_app_manifest(), base_app_symbols());
     let pkg = read_app_bytes(&data).unwrap();
 
-    // Manifest metadata
     assert_eq!(pkg.app_id, "63ca2fa4-4f03-4f2b-a480-172fef340d3f");
     assert_eq!(pkg.name, "Base Application");
     assert_eq!(pkg.publisher, "Microsoft");
@@ -393,7 +374,6 @@ fn test_load_real_app_structure() {
     // Object counts: 3 tables + 2 pages + 3 codeunits + 1 report + 2 enums + 1 interface + 1 permission set
     assert_eq!(pkg.objects.len(), 13);
 
-    // Verify Customer table
     let customer = pkg
         .objects
         .iter()
@@ -405,7 +385,6 @@ fn test_load_real_app_structure() {
     assert_eq!(customer.methods[0].name, "GetBalance");
     assert_eq!(customer.methods[0].return_type.as_deref(), Some("Decimal"));
 
-    // Verify field details
     let no_field = customer.fields.iter().find(|f| f.name == "No.").unwrap();
     assert_eq!(no_field.id, 1);
     assert_eq!(no_field.type_name, "Code");
@@ -418,7 +397,6 @@ fn test_load_real_app_structure() {
     assert_eq!(balance_field.id, 59);
     assert_eq!(balance_field.type_name, "Decimal");
 
-    // Verify Customer Card page with nested controls
     let card = pkg
         .objects
         .iter()
@@ -430,7 +408,6 @@ fn test_load_real_app_structure() {
     assert_eq!(card.controls[0].kind, "group");
     assert_eq!(card.controls[0].children.len(), 3); // No., Name, Search Name
 
-    // Verify Sales-Post codeunit with events
     let sales_post = pkg
         .objects
         .iter()
@@ -449,7 +426,6 @@ fn test_load_real_app_structure() {
     assert_eq!(event_method.parameters.len(), 1);
     assert!(event_method.parameters[0].is_var);
 
-    // Verify enum with values
     let doc_type_enum = pkg
         .objects
         .iter()
@@ -461,7 +437,6 @@ fn test_load_real_app_structure() {
     assert_eq!(doc_type_enum.enum_values[5].name, "Return Order");
     assert_eq!(doc_type_enum.enum_values[5].ordinal, 5);
 
-    // Verify interface
     let iface = pkg
         .objects
         .iter()
@@ -470,15 +445,10 @@ fn test_load_real_app_structure() {
     assert_eq!(iface.methods.len(), 1);
     assert_eq!(iface.methods[0].name, "ProcessPayment");
 
-    // Verify package name is set on all objects
     for obj in &pkg.objects {
         assert_eq!(obj.package, "Base Application");
     }
 }
-
-// ---------------------------------------------------------------------------
-// Test: load extension app
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_load_extension_app_structure() {
@@ -492,7 +462,6 @@ fn test_load_extension_app_structure() {
     // Should have: 1 table ext + 1 page ext + 1 enum ext + 1 codeunit + 1 table = 5
     assert_eq!(pkg.objects.len(), 5);
 
-    // Verify table extension
     let cust_ext = pkg
         .objects
         .iter()
@@ -503,7 +472,6 @@ fn test_load_extension_app_structure() {
     assert_eq!(cust_ext.fields.len(), 2);
     assert_eq!(cust_ext.methods.len(), 1);
 
-    // Verify enum extension
     let enum_ext = pkg
         .objects
         .iter()
@@ -514,7 +482,6 @@ fn test_load_extension_app_structure() {
     assert_eq!(enum_ext.enum_values[0].ordinal, 50100);
     assert_eq!(enum_ext.enum_values[0].name, "Custom Document");
 
-    // Verify page extension
     let page_ext = pkg
         .objects
         .iter()
@@ -523,7 +490,6 @@ fn test_load_extension_app_structure() {
     assert_eq!(page_ext.extends.as_deref(), Some("Customer Card"));
     assert_eq!(page_ext.controls.len(), 1);
 
-    // Verify subscriber codeunit
     let subscriber = pkg
         .objects
         .iter()
@@ -532,10 +498,6 @@ fn test_load_extension_app_structure() {
     assert_eq!(subscriber.methods[0].attributes[0].name, "EventSubscriber");
     assert_eq!(subscriber.methods[0].attributes[0].arguments.len(), 6);
 }
-
-// ---------------------------------------------------------------------------
-// Test: read .app from file on disk
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_read_app_file_from_disk() {
@@ -549,10 +511,6 @@ fn test_read_app_file_from_disk() {
     assert_eq!(pkg.name, "Base Application");
     assert_eq!(pkg.objects.len(), 13);
 }
-
-// ---------------------------------------------------------------------------
-// Test: index multiple packages
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_index_multiple_packages() {
@@ -570,8 +528,6 @@ fn test_index_multiple_packages() {
     // Total objects: 14 from base + 5 from extension = 19
     assert_eq!(index.len(), 18);
 
-    // Search for "Customer" -- should find Customer table, Customer Card page,
-    // Customer List page, Customer Blocked enum, Customer Ext, Customer Card Ext
     let results = index.search("Customer", 20);
     assert!(
         results.len() >= 5,
@@ -579,35 +535,26 @@ fn test_index_multiple_packages() {
         results.len()
     );
 
-    // Exact name match
     let by_name = index.get_by_name("Customer");
     assert_eq!(by_name.len(), 1);
     assert_eq!(by_name[0].kind, ObjectKind::Table);
     assert_eq!(by_name[0].id, 18);
 
-    // Lookup by kind + ID
     let by_id = index.get_by_id(ObjectKind::Table, 18);
     assert_eq!(by_id.len(), 1);
     assert_eq!(by_id[0].name, "Customer");
 
-    // Get all enums
     let enums = index.get_by_kind(ObjectKind::Enum);
     assert_eq!(enums.len(), 2); // Sales Document Type + Customer Blocked
 
-    // Get all tables
     let tables = index.get_by_kind(ObjectKind::Table);
     assert_eq!(tables.len(), 4); // Customer + Sales Header + Sales Line + Custom Setup
 
-    // Get extensions of Customer
     let exts = index.get_extensions_of("Customer");
     assert_eq!(exts.len(), 1);
     assert_eq!(exts[0].kind, ObjectKind::TableExtension);
     assert_eq!(exts[0].name, "Customer Ext");
 }
-
-// ---------------------------------------------------------------------------
-// Test: index with load_packages (file-based)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_index_load_packages_from_files() {
@@ -633,15 +580,10 @@ fn test_index_load_packages_from_files() {
     assert_eq!(packages.len(), 2);
     assert_eq!(index.len(), 18);
 
-    // Verify the packages contain correct names
     let pkg_names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
     assert!(pkg_names.contains(&"Base Application"));
     assert!(pkg_names.contains(&"Contoso Extension"));
 }
-
-// ---------------------------------------------------------------------------
-// Test: table composition with real data
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_composition_with_real_data() {
@@ -659,19 +601,16 @@ fn test_composition_with_real_data() {
     let composed =
         get_composed(&index, ObjectKind::Table, "Customer").expect("Should compose Customer table");
 
-    // Base object check
     assert_eq!(composed.base.name, "Customer");
     assert_eq!(composed.base.id, 18);
     assert_eq!(composed.base.kind, ObjectKind::Table);
 
-    // Extensions check
     assert_eq!(composed.extensions.len(), 1);
     assert_eq!(composed.extensions[0].name, "Customer Ext");
 
     // Merged fields: 5 base + 2 extension = 7
     assert_eq!(composed.all_fields.len(), 7);
 
-    // Fields should be sorted by ID
     for i in 1..composed.all_fields.len() {
         assert!(
             composed.all_fields[i].id >= composed.all_fields[i - 1].id,
@@ -681,7 +620,6 @@ fn test_composition_with_real_data() {
         );
     }
 
-    // Verify base fields are present
     assert!(
         composed
             .all_fields
@@ -704,7 +642,6 @@ fn test_composition_with_real_data() {
         "Should contain base field Balance (LCY)"
     );
 
-    // Verify extension fields are merged in
     assert!(
         composed
             .all_fields
@@ -731,10 +668,6 @@ fn test_composition_with_real_data() {
     assert!(method_names.contains(&"CalcCustomValue"));
 }
 
-// ---------------------------------------------------------------------------
-// Test: page composition with real data
-// ---------------------------------------------------------------------------
-
 #[test]
 fn test_page_composition_with_real_data() {
     let index = SymbolIndex::new();
@@ -751,14 +684,11 @@ fn test_page_composition_with_real_data() {
     let composed = get_composed(&index, ObjectKind::Page, "Customer Card")
         .expect("Should compose Customer Card page");
 
-    // Base has 2 control groups, extension adds 1
     assert_eq!(composed.all_controls.len(), 3);
 
-    // Verify base controls
     assert!(composed.all_controls.iter().any(|c| c.name == "General"));
     assert!(composed.all_controls.iter().any(|c| c.name == "Invoicing"));
 
-    // Verify extension control
     assert!(
         composed
             .all_controls
@@ -767,10 +697,6 @@ fn test_page_composition_with_real_data() {
         "Should contain extension control"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Test: enum composition with real data
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_enum_composition_with_real_data() {
@@ -791,7 +717,6 @@ fn test_enum_composition_with_real_data() {
     // 6 base values + 1 extension value = 7
     assert_eq!(composed.all_enum_values.len(), 7);
 
-    // Values should be sorted by ordinal
     for i in 1..composed.all_enum_values.len() {
         assert!(
             composed.all_enum_values[i].ordinal >= composed.all_enum_values[i - 1].ordinal,
@@ -799,7 +724,6 @@ fn test_enum_composition_with_real_data() {
         );
     }
 
-    // Verify base values present
     assert!(composed
         .all_enum_values
         .iter()
@@ -813,7 +737,6 @@ fn test_enum_composition_with_real_data() {
         .iter()
         .any(|v| v.name == "Return Order" && v.ordinal == 5));
 
-    // Verify extension value merged
     assert!(
         composed
             .all_enum_values
@@ -822,16 +745,11 @@ fn test_enum_composition_with_real_data() {
         "Should contain extension enum value 'Custom Document'"
     );
 
-    // Extension value should be last (highest ordinal)
     assert_eq!(
         composed.all_enum_values.last().unwrap().name,
         "Custom Document"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Test: event discovery with real data
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_event_discovery_with_real_data() {
@@ -860,17 +778,14 @@ fn test_event_discovery_with_real_data() {
             .map(|p| &p.method.name)
             .collect::<Vec<_>>()
     );
-    // Subscribers: HandleOnBeforePost = 1
     assert_eq!(all_events.subscribers.len(), 1);
 
-    // Search for sales-specific events
     let sales_events = get_events(&index, "Sales");
     assert!(
         sales_events.publishers.len() >= 2,
         "Should find at least 2 Sales publishers"
     );
 
-    // Verify integration event type
     let before_post = all_events
         .publishers
         .iter()
@@ -879,7 +794,6 @@ fn test_event_discovery_with_real_data() {
     assert_eq!(before_post.event_type, EventType::Integration);
     assert_eq!(before_post.object.name, "Sales-Post");
 
-    // Verify business event type
     let purch_event = all_events
         .publishers
         .iter()
@@ -887,16 +801,11 @@ fn test_event_discovery_with_real_data() {
         .expect("Should find OnBeforePostPurchDoc");
     assert_eq!(purch_event.event_type, EventType::Business);
 
-    // Verify subscriber details
     let subscriber = &all_events.subscribers[0];
     assert_eq!(subscriber.method.name, "HandleOnBeforePost");
     assert_eq!(subscriber.target_object_name, "Sales-Post");
     assert_eq!(subscriber.target_event_name, "OnBeforePostSalesDoc");
 }
-
-// ---------------------------------------------------------------------------
-// Test: manifest from real app
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_manifest_from_real_app() {
@@ -920,13 +829,8 @@ fn test_manifest_extension_app() {
     assert_eq!(pkg.version, "2.5.0.0");
 }
 
-// ---------------------------------------------------------------------------
-// Test: large symbol reference (performance)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn test_large_symbol_reference() {
-    // Generate a SymbolReference with 200 tables, 100 pages, 50 codeunits
     let mut tables = Vec::new();
     for i in 1..=200 {
         tables.push(format!(
@@ -1014,22 +918,18 @@ fn test_large_symbol_reference() {
     let pkg = index.load_package_bytes(&data).unwrap();
     let elapsed = start.elapsed();
 
-    // Should parse 350 objects total
     assert_eq!(pkg.objects.len(), 350);
     assert_eq!(index.len(), 350);
 
-    // Parsing 350 objects should be fast (well under 1 second)
     assert!(
         elapsed.as_millis() < 1000,
         "Loading 350 objects took {}ms, should be under 1000ms",
         elapsed.as_millis()
     );
 
-    // Search should work across all objects
     let results = index.search("Table", 500);
     assert_eq!(results.len(), 200, "Should find all 200 tables");
 
-    // Verify specific lookups still work
     let by_id = index.get_by_id(ObjectKind::Table, 50100);
     assert_eq!(by_id.len(), 1);
     assert_eq!(by_id[0].name, "Table 50100");
@@ -1038,17 +938,11 @@ fn test_large_symbol_reference() {
     assert_eq!(by_kind.len(), 50);
 }
 
-// ---------------------------------------------------------------------------
-// Test: full end-to-end pipeline
-// ---------------------------------------------------------------------------
-
 #[test]
 fn test_full_pipeline() {
-    // 1. Build .app files
     let base_data = build_test_app(base_app_manifest(), base_app_symbols());
     let ext_data = build_test_app(extension_app_manifest(), extension_app_symbols());
 
-    // 2. Write to temp files
     let dir = tempfile::tempdir().unwrap();
     let base_path = dir
         .path()
@@ -1059,28 +953,23 @@ fn test_full_pipeline() {
     std::fs::write(&base_path, &base_data).unwrap();
     std::fs::write(&ext_path, &ext_data).unwrap();
 
-    // 3. Load into index
     let index = SymbolIndex::new();
     let packages = index.load_packages(&[&base_path, &ext_path]);
     assert_eq!(packages.len(), 2);
 
-    // 4. Search
     let customer_results = index.search("Customer", 10);
     assert!(!customer_results.is_empty());
 
-    // 5. Compose
     let composed = index
         .get_composed_cached(ObjectKind::Table, "Customer")
         .unwrap();
     assert_eq!(composed.all_fields.len(), 7);
     assert_eq!(composed.all_methods.len(), 2);
 
-    // 6. Events
     let events = index.get_events("Post");
     assert!(!events.publishers.is_empty());
     assert!(!events.subscribers.is_empty());
 
-    // 7. Cross-check: subscriber targets a publisher we found
     let sub = &events.subscribers[0];
     assert_eq!(sub.target_event_name, "OnBeforePostSalesDoc");
     let pub_match = events
@@ -1093,10 +982,6 @@ fn test_full_pipeline() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test: composition with no extensions returns base only
-// ---------------------------------------------------------------------------
-
 #[test]
 fn test_composition_standalone_table() {
     let index = SymbolIndex::new();
@@ -1104,17 +989,12 @@ fn test_composition_standalone_table() {
         .load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols()))
         .unwrap();
 
-    // Sales Header has no extensions
     let composed = get_composed(&index, ObjectKind::Table, "Sales Header")
         .expect("Should compose Sales Header");
     assert!(composed.extensions.is_empty());
     assert_eq!(composed.all_fields.len(), 4);
     assert!(composed.all_methods.is_empty());
 }
-
-// ---------------------------------------------------------------------------
-// Test: composition returns None for nonexistent objects
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_composition_nonexistent_object() {
@@ -1126,10 +1006,6 @@ fn test_composition_nonexistent_object() {
     assert!(get_composed(&index, ObjectKind::Table, "Nonexistent").is_none());
     assert!(get_composed(&index, ObjectKind::Codeunit, "Customer").is_none());
 }
-
-// ---------------------------------------------------------------------------
-// Test: codeunit methods with parameters
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_codeunit_method_parameters() {

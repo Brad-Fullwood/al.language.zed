@@ -6,7 +6,6 @@ use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response};
 use std::path::PathBuf;
 
-/// multi-day or 584-year (u64::MAX ms) test run.
 const MAX_TIMEOUT_MS: u64 = 60 * 60 * 1000;
 
 fn clamp_timeout_ms(t: Option<u64>) -> Option<u64> {
@@ -28,14 +27,12 @@ fn resolve_output_path_within_project(
     requested: &std::path::Path,
     project_root: &std::path::Path,
 ) -> Option<PathBuf> {
-    // Resolve relative paths against project_root.
     let absolute = if requested.is_absolute() {
         requested.to_path_buf()
     } else {
         project_root.join(requested)
     };
 
-    // Logical (non-filesystem) normalisation: collapse `.` and `..` segments.
     // We can't use `Path::canonicalize` because the file may not yet exist.
     let mut normalised = PathBuf::new();
     for comp in absolute.components() {
@@ -70,7 +67,6 @@ fn resolve_output_path_within_project(
         match existing.canonicalize() {
             Ok(c) => break c,
             Err(_) => {
-                // Walk up one component, remembering the stripped tail.
                 let file = existing.file_name()?;
                 let mut new_tail = PathBuf::from(file);
                 new_tail.push(&tail);
@@ -82,14 +78,11 @@ fn resolve_output_path_within_project(
     let resolved = canonical_existing.join(&tail);
 
     if resolved.starts_with(&project_canonical) {
-        // Return the canonical, symlink-resolved path so the subsequent write
-        // targets exactly what we validated.
         Some(resolved)
     } else {
         None
     }
 }
-// WP15: Test runner
 
 pub(in crate::server::daemon) fn dispatch_tests_discover(
     workspace: &Workspace,
@@ -178,7 +171,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
         .map(String::from);
     let config_name = params.get("config").and_then(|v| v.as_str());
 
-    // -- Find launch config (sync fs read → run on blocking thread) ----------
     let launch_cfg_root = project_root.clone();
     let launch_cfg_opt =
         match tokio::task::spawn_blocking(move || find_launch_config(&launch_cfg_root)).await {
@@ -222,7 +214,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
         }
     };
 
-    // -- Run tests via BC REST API (T1502) ------------------------------------
     let client = TestRunnerClient::new(server_config);
     let run_result = client
         .run_codeunit(codeunit_id, &codeunit_name, method.as_deref())
@@ -239,7 +230,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
         }
     };
 
-    // -- Convert to diagnostics (T1503) ----------------------------------------
     let diagnostics = results_to_diagnostics(std::slice::from_ref(&result), workspace);
 
     // Persist per-method records so CodeLens / tests.last_results /
@@ -278,8 +268,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
         ..Default::default()
     }
 }
-// p1-5: New test_engine endpoints — additive; existing tests.run is frozen.
-
 /// `tests.run_batch` — run multiple codeunits, optionally in parallel,
 /// optionally writing JUnit/Cobertura output to disk.
 ///
@@ -407,12 +395,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
             .map(String::from),
     };
 
-    // -- Route per codeunit (F-OPEN-270) ----------------------------------------
-    // A codeunit whose discovered [Test] methods ALL classify as `Interp`
-    // runs on the Rust interpreter (no BC server, no launch config needed).
-    // Everything else — mixed codeunits, record-touching tests, codeunits
-    // not discoverable in the workspace — keeps the previous LiveBcMode path
-    // unchanged. The launch config is only required when live tests exist.
     let discovered = crate::queries::tests::discover_tests(workspace);
     let classifications = crate::test_engine::router::classify_codeunits(workspace, &discovered);
     let mut all_interp: std::collections::HashMap<i32, bool> = std::collections::HashMap::new();
@@ -427,7 +409,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         .into_iter()
         .partition(|t| all_interp.get(&t.codeunit_id).copied().unwrap_or(false));
 
-    // -- Resolve launch config (only needed for the live path) ------------------
     let server_config = if live_tests.is_empty() {
         None
     } else {
@@ -453,7 +434,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         }
     };
 
-    // -- Run interp + live backends, merging their event streams ----------------
     let (tx, mut rx) = mpsc::channel::<TestEvent>(256);
     let mut run_handles = Vec::new();
     if !interp_tests.is_empty() {
@@ -517,7 +497,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         }
     }
 
-    // -- Optional JUnit / Cobertura outputs -----------------------------------
     if let Some(path) = &opts.junit_out {
         if let Err(e) = write_junit_to_path(&summaries, path).await {
             tracing::warn!(error = %e, path = %path.display(), "junit write failed");
@@ -616,7 +595,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_last_results(
         }
     };
 
-    // Single (codeunit, method) lookup short-circuits to lastResult.
     if let (Some(cu), Some(method)) = (
         params.get("codeunitId").and_then(|v| v.as_i64()),
         params.get("methodName").and_then(|v| v.as_str()),
@@ -642,7 +620,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_last_results(
         };
     }
 
-    // Otherwise return all (optionally filtered by codeunitId).
     let all = match store.read_all().await {
         Ok(v) => v,
         Err(e) => {
@@ -904,7 +881,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_mutate(
     use crate::test_engine::mutate::MutationOptions;
     use al_protocol::jsonrpc::error_codes;
 
-    // Require a loaded project
     let _project_root = match workspace
         .project
         .try_read()
@@ -917,7 +893,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_mutate(
         }
     };
 
-    // Parse options. An explicit `files` array narrows the mutation scope.
     let parallel = params
         .get("parallel")
         .and_then(|v| v.as_bool())
@@ -936,10 +911,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_mutate(
         files,
     };
 
-    // Run the real engine (F-OPEN-270): variants are executed against the
-    // interp-routed test suite in-process; the previous dispatcher-local loop
-    // was a stub that marked every mutant survived. Progress events are
-    // drained — this JSON-RPC endpoint returns only the final report.
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = match crate::test_engine::mutate::run_mutation_testing(workspace, opts, tx).await {
@@ -988,12 +959,8 @@ mod tests {
         Workspace::new()
     }
 
-    // --- clamp_timeout_ms ----------------------------------------------------
-
     #[test]
     fn clamp_timeout_ms_passes_through_sensible_values() {
-        // Positive: realistic timeouts (a few seconds to a few minutes)
-        // pass through unchanged.
         assert_eq!(clamp_timeout_ms(Some(0)), Some(0));
         assert_eq!(clamp_timeout_ms(Some(30_000)), Some(30_000));
         assert_eq!(clamp_timeout_ms(Some(15 * 60 * 1000)), Some(900_000));
@@ -1006,26 +973,20 @@ mod tests {
         // daemon doesn't get pinned to a multi-day test run.
         let huge = u64::MAX;
         assert_eq!(clamp_timeout_ms(Some(huge)), Some(MAX_TIMEOUT_MS));
-        // Exactly one tick above the cap also clamps.
         assert_eq!(
             clamp_timeout_ms(Some(MAX_TIMEOUT_MS + 1)),
             Some(MAX_TIMEOUT_MS)
         );
-        // Exactly the cap is allowed through unchanged.
         assert_eq!(clamp_timeout_ms(Some(MAX_TIMEOUT_MS)), Some(MAX_TIMEOUT_MS));
     }
 
     #[test]
     fn clamp_timeout_ms_propagates_none() {
-        // None (param omitted entirely) stays None — caller decides the default.
         assert_eq!(clamp_timeout_ms(None), None);
     }
 
-    // --- resolve_output_path_within_project ----------------------------------
-
     #[test]
     fn output_path_accepts_relative_inside_project() {
-        // Positive: a plain relative path resolves to inside the project.
         let project = tempfile::tempdir().unwrap();
         let resolved = resolve_output_path_within_project(
             std::path::Path::new("out/junit.xml"),
@@ -1039,7 +1000,6 @@ mod tests {
 
     #[test]
     fn output_path_accepts_absolute_inside_project() {
-        // Positive: an absolute path that points inside the project is fine.
         let project = tempfile::tempdir().unwrap();
         let abs = project.path().canonicalize().unwrap().join("results.xml");
         let resolved = resolve_output_path_within_project(&abs, project.path());
@@ -1051,7 +1011,6 @@ mod tests {
 
     #[test]
     fn output_path_rejects_parent_dir_escape() {
-        // Negative: `../escape.xml` resolves to outside the project — reject.
         let project = tempfile::tempdir().unwrap();
         let resolved = resolve_output_path_within_project(
             std::path::Path::new("../escape.xml"),
@@ -1065,7 +1024,6 @@ mod tests {
 
     #[test]
     fn output_path_rejects_deep_parent_dir_escape() {
-        // Negative: multiple `..` segments that resolve above the project.
         let project = tempfile::tempdir().unwrap();
         let resolved = resolve_output_path_within_project(
             std::path::Path::new("subdir/../../../etc/passwd"),
@@ -1076,7 +1034,6 @@ mod tests {
 
     #[test]
     fn output_path_rejects_absolute_outside_project() {
-        // Negative: a totally unrelated absolute path must be rejected.
         let project = tempfile::tempdir().unwrap();
         let resolved =
             resolve_output_path_within_project(std::path::Path::new("/etc/hosts"), project.path());
@@ -1149,8 +1106,6 @@ mod tests {
         let canonical_root = project.path().canonicalize().unwrap();
         assert!(resolved.unwrap().starts_with(&canonical_root));
     }
-
-    // --- dispatch_tests_run_batch --------------------------------------------
 
     /// F-OPEN-270: pure-logic test codeunits (router decision: Interp) must
     /// run on the INTERPRETER — actually executing the [Test] procedures —
@@ -1271,7 +1226,6 @@ mod tests {
         // miss codeunitIds — must return INVALID_PARAMS, not crash.
         let ws = std::sync::Arc::new(empty_ws());
         let tmp = tempfile::TempDir::new().unwrap();
-        // Write a minimal launch.json so find_launch_config succeeds.
         let dot_zed = tmp.path().join(".zed");
         std::fs::create_dir_all(&dot_zed).unwrap();
         std::fs::write(
@@ -1469,8 +1423,6 @@ mod tests {
         assert!(err.message.contains("out of range"), "got: {}", err.message);
     }
 
-    // p1-7 freeze gate: existing wire formats must not drift.
-
     #[test]
     fn freeze_test_codeunit_result_wire_format() {
         use crate::test_engine::result::{TestCodeunitResult, TestMethodResult, TestStatus};
@@ -1563,9 +1515,6 @@ mod tests {
 
     #[tokio::test]
     async fn run_batch_persistence_roundtrip_via_dispatchers() {
-        // Bypass live BC: persist a record directly through the same store
-        // the dispatchers use, then call dispatch_tests_last_results and
-        // assert the record appears.
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
         // SAFETY: tests run on a single thread by default in cargo test.
@@ -1625,8 +1574,6 @@ mod tests {
         assert_eq!(results[0]["methodName"], "TestRoundtrip");
         assert_eq!(results[0]["status"], "pass");
     }
-
-    // p2 dispatcher tests — affected + classify
 
     #[test]
     fn affected_missing_changed_files_returns_invalid_params() {
@@ -1691,10 +1638,6 @@ mod tests {
         }
     }
 
-    // Wire-format freeze gates for new endpoints landed in this session.
-    // These pin the JSON response shapes; failures here flag callers who
-    // rename fields without bumping the protocol version.
-
     #[tokio::test]
     async fn freeze_run_batch_response_shape() {
         // run_batch with no project produces an error envelope; the shape
@@ -1719,7 +1662,6 @@ mod tests {
 
     #[tokio::test]
     async fn freeze_last_results_response_shapes() {
-        // No-codeunit query → results array.
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
         // SAFETY: cargo test runs single-threaded by default.
@@ -1745,7 +1687,6 @@ mod tests {
                 server_configs: Vec::new(),
             });
         }
-        // Bulk: shape = { "results": [...] }.
         let bulk = dispatch_tests_last_results(&ws, 100, &serde_json::json!({})).await;
         let r = bulk.result.expect("ok");
         assert!(
@@ -1769,9 +1710,6 @@ mod tests {
 
     #[test]
     fn freeze_classify_response_shape() {
-        // dispatch_tests_classify on an empty workspace returns an empty
-        // classifications array — pin both that the array exists and that
-        // when populated each item carries the required keys.
         let ws = empty_ws();
         let resp = dispatch_tests_classify(&ws, 200);
         let r = resp.result.expect("ok");
@@ -1780,7 +1718,6 @@ mod tests {
             "tests.classify shape must expose `classifications`"
         );
 
-        // Synthetic classification entry to pin the per-item shape.
         let item = serde_json::json!({
             "codeunitId": 1,
             "codeunitName": "X",
@@ -1822,8 +1759,6 @@ mod tests {
             "empty changedFiles must yield empty affected"
         );
     }
-
-    // --- dispatch_tests_snapshot_record / replay / diff ----------------------
 
     #[tokio::test]
     async fn snapshot_record_missing_codeunit_is_invalid_params() {
@@ -1914,9 +1849,6 @@ mod tests {
         let err = none.error.expect("missing pathA must error");
         assert!(err.message.contains("pathA"));
     }
-
-    // dispatch_tests_mutate: no-project must short-circuit to an error before
-    // any variant generation.
 
     #[tokio::test]
     async fn tests_mutate_no_project_returns_error() {

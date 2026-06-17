@@ -40,30 +40,19 @@ use crate::queries::code_lens::CodeLensEntry;
 use crate::queries::Range;
 use crate::workspace::Workspace;
 
-/// A profiler hotspot with source location.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfilerHint {
-    /// Procedure name (from profile callFrame.functionName).
     pub procedure: String,
-    /// Object name (from profile callFrame.url or manually mapped).
     pub object: String,
-    /// Self execution time in milliseconds.
     pub self_time_ms: f64,
-    /// Total execution time including callees in milliseconds.
     pub total_time_ms: f64,
-    /// Number of samples / call count.
     pub hit_count: u64,
-    /// Source file path (workspace-relative or absolute).  None if not mapped.
     pub file: Option<String>,
-    /// 1-based line number of the procedure declaration.  None if not mapped.
+    /// 1-based line number of the procedure declaration.
     pub line: Option<u32>,
 }
 
-/// Parse a `.alcpuprofile` JSON document into a list of hotspot nodes.
-///
-/// Only nodes with `hitCount > 0` are included.  Internal nodes
-/// (`(root)`, `(idle)`, `(garbage collector)`, `(program)`) are skipped.
 pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
     let json: serde_json::Value =
         serde_json::from_str(profile_json).map_err(|e| format!("JSON parse error: {e}"))?;
@@ -79,7 +68,7 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
         .unwrap_or(0.0);
     let end_us = json.get("endTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let duration_ms = (end_us - start_us) / 1000.0;
-    let _ = duration_ms; // used for context; individual times are hit-count based
+    let _ = duration_ms;
 
     let mut hints = Vec::new();
     for node_val in nodes {
@@ -97,7 +86,6 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
             .unwrap_or("(unknown)")
             .to_string();
 
-        // Skip internal runtime nodes
         if matches!(
             function_name.as_str(),
             "(root)" | "(idle)" | "(garbage collector)" | "(program)" | ""
@@ -111,14 +99,13 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
             .unwrap_or("")
             .to_string();
 
-        // Each sample ≈ 1ms for Chrome profiles; use hit_count as self-time estimate
-        let self_time_ms = hit_count as f64;
+        let self_time_ms = hit_count as f64; // Each sample ≈ 1ms for Chrome profiles
 
         hints.push(ProfilerHint {
             procedure: function_name,
             object: url,
             self_time_ms,
-            total_time_ms: self_time_ms, // simplified (no call-tree aggregation)
+            total_time_ms: self_time_ms,
             hit_count,
             file: None,
             line: None,
@@ -134,14 +121,6 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
     Ok(hints)
 }
 
-/// Map profiler hotspots to workspace source locations.
-///
-/// Iterates workspace files, parses procedure declarations, and resolves
-/// the file + line for each hint whose `procedure` matches a declaration.
-///
-/// Matching is case-insensitive on the procedure name; the `object` field
-/// (AL object name or codeunit name) is used to disambiguate when multiple
-/// procedures share the same name.
 pub fn profiler_hints(workspace: &Workspace, hotspots: &[serde_json::Value]) -> Vec<ProfilerHint> {
     let mut hints: Vec<ProfilerHint> = hotspots
         .iter()
@@ -168,10 +147,6 @@ pub fn profiler_hints(workspace: &Workspace, hotspots: &[serde_json::Value]) -> 
     hints
 }
 
-/// Map profiler hints parsed from a profile file to workspace source locations.
-///
-/// This is the higher-level entry point used when a full `.alcpuprofile` is
-/// available — combines `parse_profile` + `resolve_source_locations`.
 pub fn profile_hints_with_locations(
     workspace: &Workspace,
     profile_json: &str,
@@ -181,19 +156,14 @@ pub fn profile_hints_with_locations(
     Ok(hints)
 }
 
-/// Walk workspace files and resolve `file` + `line` for each hint.
 fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
     if hints.is_empty() {
         return;
     }
 
-    // Build two lookup tables to support object-name disambiguation (ISSUE-146):
-    //   qualified:  (object_name_lc, proc_name_lc) -> (file, line)
-    //   fallback:   proc_name_lc                   -> (file, line)
-    //
-    // When the hint carries an object name we use the qualified key first so
-    // that two procedures with the same name in different objects resolve to
-    // their correct source files.
+    // Two tables (ISSUE-146): qualified (object_lc, proc_lc) → location disambiguates
+    // procs with the same name in different objects; fallback proc_lc → location for
+    // hints without an object name.
     let mut qualified: std::collections::HashMap<(String, String), (String, u32)> =
         std::collections::HashMap::new();
     let mut fallback: std::collections::HashMap<String, (String, u32)> =
@@ -206,7 +176,6 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
             continue;
         };
 
-        // Extract the AL object name declared in this file (e.g. "Alpha Codeunit").
         let object_name = crate::syntax::find_object_declaration(&parsed_tree, &text)
             .map(|o| o.name.to_lowercase())
             .unwrap_or_default();
@@ -240,7 +209,6 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
     }
 }
 
-/// Extract procedure declaration positions from a parsed AL tree.
 fn collect_procedure_locations(
     tree: &tree_sitter::Tree,
     text: &str,
@@ -277,22 +245,16 @@ fn collect_procs(
                     if !name.is_empty() {
                         let line = node.start_position().row as u32 + 1; // 1-based
                         let loc = (file_path.to_string(), line);
-                        // Qualified key: always insert (overwrites — last file wins per object,
-                        // which is fine since object names should be unique in a workspace).
                         if !object_name.is_empty() {
                             qualified.insert(
                                 (object_name.to_string(), name.to_lowercase()),
                                 loc.clone(),
                             );
                         }
-                        // Fallback: only the first occurrence (DashMap iteration is unordered,
-                        // so this remains non-deterministic for identically-named procs in
-                        // different objects — the qualified key should be used instead).
                         fallback.entry(name.to_lowercase()).or_insert(loc);
                     }
                 }
             }
-            // Don't recurse into procedure body
             continue;
         }
 
@@ -301,14 +263,6 @@ fn collect_procs(
     }
 }
 
-/// Build `CodeLensEntry` items for an open document from a set of active profiler hints.
-///
-/// For each procedure declaration in the document, this looks up whether an active
-/// `ProfilerHint` matches (by file path + procedure name). When a match is found a lens
-/// like `"⏱ 42ms · 3 calls"` is attached to the procedure's declaration line.
-///
-/// Returns an empty `Vec` when `active_hints` is empty, or when the `uri` cannot be
-/// resolved to a file path.
 pub fn profiler_code_lenses(
     active_hints: &[ProfilerHint],
     uri: &Url,
@@ -324,8 +278,6 @@ pub fn profiler_code_lenses(
         Err(_) => return vec![],
     };
 
-    // Build a lookup: procedure_name_lc → hint (first match per name, file-scoped).
-    // Only include hints whose resolved `file` matches this document.
     let mut by_proc: std::collections::HashMap<String, &ProfilerHint> =
         std::collections::HashMap::new();
     for hint in active_hints {
@@ -346,8 +298,6 @@ pub fn profiler_code_lenses(
     lenses
 }
 
-/// Walk the tree iteratively, emitting a `CodeLensEntry` for every
-/// `procedure_declaration` or `trigger_declaration` that has a matching hint.
 fn collect_profiler_lenses(
     root: tree_sitter::Node,
     source: &[u8],
@@ -392,7 +342,6 @@ fn collect_profiler_lenses(
                     }
                 }
             }
-            // Do not recurse into procedure bodies — no nested procedures in AL.
             continue;
         }
 
@@ -403,9 +352,6 @@ fn collect_profiler_lenses(
     }
 }
 
-/// Format the human-readable label for a profiler CodeLens.
-///
-/// E.g. `"⏱ 42ms · 3 calls"` or `"⏱ 1ms · 1 call"`.
 fn profiler_lens_title(hint: &ProfilerHint) -> String {
     let ms = hint.self_time_ms.round() as u64;
     let calls = hint.hit_count;
@@ -413,10 +359,6 @@ fn profiler_lens_title(hint: &ProfilerHint) -> String {
     format!("⏱ {ms}ms · {calls} {call_word}")
 }
 
-/// Load profiler hints from a `.alcpuprofile` file on disk and activate them
-/// on the workspace's profiler session.
-///
-/// Returns the number of hints mapped to source locations.
 pub fn load_profile_file(workspace: &Workspace, profile_path: &str) -> Result<usize, String> {
     let data = std::fs::read(profile_path)
         .map_err(|e| format!("Cannot read profile file '{profile_path}': {e}"))?;
@@ -436,21 +378,14 @@ pub fn load_profile_file(workspace: &Workspace, profile_path: &str) -> Result<us
     Ok(mapped)
 }
 
-/// Clear the active profiler session from the workspace.
 pub fn clear_profile(workspace: &Workspace) {
     if let Ok(mut guard) = workspace.profiler_session.write() {
         *guard = None;
     }
 }
 
-/// The `.alcpuprofile` path associated with the current session.
-///
-/// Stored in the workspace so al-lsp can publish hints when the profile changes
-/// and clear them when explicitly requested.
 pub struct ProfilerSession {
-    /// The profile hints currently active (published as inlay hints).
     pub hints: Vec<ProfilerHint>,
-    /// The profile file path this session was loaded from.
     pub profile_path: String,
 }
 
@@ -462,18 +397,15 @@ impl ProfilerSession {
         }
     }
 
-    /// Clear the session — removes all hints.
     pub fn clear(&mut self) {
         self.hints.clear();
     }
 
-    /// True if there are active profiler hints.
     pub fn is_active(&self) -> bool {
         !self.hints.is_empty()
     }
 }
 
-/// Decode `row` (0-indexed) of `source` as UTF-8, or `""` on bad UTF-8 / OOB.
 fn source_line(source: &[u8], row: usize) -> &str {
     source
         .split(|&b| b == b'\n')
@@ -560,7 +492,6 @@ mod tests {
     fn case_insensitive_procedure_matching() {
         let ws = workspace_with(vec![("/src/MyCodeunit.al", CODEUNIT_AL)]);
 
-        // Profiler may emit different casing
         let hotspots = vec![make_hotspot("processrecord", "", 3.0, 3.0, 3)];
 
         let hints = profiler_hints(&ws, &hotspots);
@@ -686,7 +617,6 @@ mod tests {
         let hints = profile_hints_with_locations(&ws, profile_json).expect("should parse");
         assert_eq!(hints.len(), 2);
 
-        // Both should be mapped (sorted by hit count descending)
         let process = hints
             .iter()
             .find(|h| h.procedure == "ProcessRecord")
@@ -730,7 +660,6 @@ mod tests {
 }"#;
         let ws = workspace_with(vec![("/src/Alpha.al", file_a), ("/src/Beta.al", file_b)]);
 
-        // Hint for Beta Codeunit should resolve to /src/Beta.al
         let hotspots_beta = vec![make_hotspot(
             "OnAfterValidate",
             "Beta Codeunit",
@@ -751,7 +680,6 @@ mod tests {
             h_beta.file
         );
 
-        // Hint for Alpha Codeunit should resolve to /src/Alpha.al
         let hotspots_alpha = vec![make_hotspot(
             "OnAfterValidate",
             "Alpha Codeunit",
@@ -832,7 +760,6 @@ mod tests {
     fn profiler_code_lenses_case_insensitive_match() {
         let uri = Url::parse("file:///src/MyCU.al").unwrap();
         let file_path = uri.to_file_path().unwrap().to_string_lossy().to_string();
-        // Profiler may emit uppercase
         let hint = make_hint_with_file("PROCESSRECORD", &file_path, 10.0, 5);
 
         let parsed = AlParser::parse_quick(CODEUNIT_AL);
@@ -859,7 +786,6 @@ mod tests {
     #[test]
     fn profiler_code_lenses_hint_for_different_file_is_ignored() {
         let uri = Url::parse("file:///src/MyCU.al").unwrap();
-        // Hint points to a different file
         let hint = make_hint_with_file("ProcessRecord", "/src/OtherCU.al", 99.0, 7);
 
         let parsed = AlParser::parse_quick(CODEUNIT_AL);

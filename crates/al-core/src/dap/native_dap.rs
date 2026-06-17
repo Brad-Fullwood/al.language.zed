@@ -71,7 +71,6 @@ pub fn kind_to_object_type(kind: &str) -> i32 {
 pub struct ResolvedObject {
     /// BC ObjectTypeWrapper value — use `bc_object_type` constants.
     pub object_type: i32,
-    /// Object numeric ID
     pub object_id: i32,
 }
 
@@ -172,7 +171,6 @@ where
         request_seq: i64,
         command: &str,
     ) -> Result<()> {
-        // Respond with our capabilities
         let resp = make_response(
             &self.seq,
             request_seq,
@@ -194,7 +192,6 @@ where
         );
         write_dap(out, &resp).await?;
 
-        // Send initialized event
         let evt = make_event(&self.seq, "initialized", None);
         write_dap(out, &evt).await?;
         Ok(())
@@ -234,7 +231,6 @@ where
         // Store config for use in the configurationDone handler.
         *self.debug_config.lock().await = Some(config.clone());
 
-        // Compile if alc is available and this is a launch
         if command == "launch" {
             // Fix #7: only emit "Compiling" for launch, not attach
             write_dap(
@@ -249,8 +245,14 @@ where
                 ),
             )
             .await?;
-            if let Some(alc) = self.alc_path.as_deref() {
-                match compile_project(alc, &self.project_root).await {
+            // Native-first: build the deploy `.app` with the pure-Rust native
+            // emitter (no `alc`, no C# bridge). A configured toolchain gates the
+            // compile step; the emitter itself does not need `alc`.
+            if self.alc_path.is_some() {
+                let cr = crate::build::native_compile(std::path::Path::new(&self.project_root));
+                let compile_outcome: std::result::Result<String, String> =
+                    if cr.success { Ok(cr.output) } else { Err(cr.output) };
+                match compile_outcome {
                     Ok(output) => {
                         if !output.is_empty() {
                             write_dap(
@@ -310,7 +312,6 @@ where
             }
         }
 
-        // Acquire token
         write_dap(
             out,
             &make_event(
@@ -343,7 +344,6 @@ where
             }
         };
 
-        // Publish .app if launching
         if command == "launch" {
             write_dap(
                 out,
@@ -377,7 +377,6 @@ where
                 .await?;
             }
 
-            // Find the .app file
             let app_path = find_app_file(&self.project_root).await;
             if let Some(app_path) = app_path {
                 let http = reqwest::Client::builder()
@@ -443,7 +442,6 @@ where
             }
         }
 
-        // Connect to debug hub
         write_dap(
             out,
             &make_event(
@@ -459,7 +457,6 @@ where
 
         match BcDebugSession::connect(&config, &token).await {
             Ok(debug_session) => {
-                // Attach to debug session
                 if let Err(e) = debug_session.attach(&config).await {
                     write_dap(
                         out,
@@ -505,7 +502,6 @@ where
                 if config.launch_browser {
                     let web_url = build_debug_browser_url(&config, &conn_id);
 
-                    // Send the URL as an event for Zed to handle
                     write_dap(
                         out,
                         &make_event(
@@ -874,7 +870,6 @@ where
                 "expensive": false,
             }));
 
-            // Globals scope — only add if get_globals succeeds and returns data
             match s.get_globals(frame_id).await {
                 Ok(globals) if !globals.as_array().map(|a| a.is_empty()).unwrap_or(true) => {
                     let globals_ref = frame_id * 100 + 2;
@@ -1041,7 +1036,6 @@ where
         )
         .await?;
 
-        // Send terminated event
         write_dap(out, &make_event(&self.seq, "terminated", None)).await?;
         Ok(())
     }
@@ -1052,7 +1046,6 @@ where
         request_seq: i64,
         command: &str,
     ) -> Result<()> {
-        // Unknown command — respond with error
         write_dap(
             out,
             &make_response(
@@ -1090,7 +1083,6 @@ where
             // If cancel_rx_clone sees a newer value, the task exits.
             let my_generation = generation;
             loop {
-                // Check for cancellation (non-blocking).
                 if *cancel_rx_clone.borrow() != my_generation {
                     return;
                 }
@@ -1159,7 +1151,6 @@ where
                     }
                 }
 
-                // Wait for cancellation or next poll interval.
                 tokio::select! {
                     _ = cancel_rx_clone.changed() => {
                         if *cancel_rx_clone.borrow() != my_generation {
@@ -1215,7 +1206,6 @@ where
             }
         }
 
-        // Read DAP message from Zed
         let body = match read_dap_body(&mut stdin).await {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
@@ -1321,9 +1311,6 @@ fn build_debug_browser_url(config: &BcDebugConfig, conn_id: &str) -> String {
     }
 }
 
-/// Serialize `msg` to JSON and write a DAP frame to `writer`.
-///
-/// Delegates to [`framing::write_dap_frame`] after serialization.
 async fn write_dap<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     msg: &serde_json::Value,
@@ -1333,17 +1320,10 @@ async fn write_dap<W: tokio::io::AsyncWrite + Unpin>(
     write_dap_frame(writer, &body).await
 }
 
-/// Compile the AL project for a debug launch, returning the compiler's console
-/// output.
-///
-/// Native-first: on Unix this delegates to the warm `al-lsp` daemon - the SAME
-/// in-process CodeAnalysis bridge pipeline the LSP and `al-explorer compile`
-/// use - instead of shelling out to `dotnet alc` from this transient debug
-/// process. The daemon owns the native-first policy (the `al.useOfficialCompiler`
-/// opt-in and the fail-loud, no-silent-fallback behaviour), so a debug deploy
-/// can never silently diverge onto a non-native compiler. The daemon
-/// auto-starts if one isn't already running for the project (the same mechanism
-/// `al-explorer compile`, the pre-launch build step, uses).
+/// Compile via `dotnet alc` and return raw output. Retained for the official
+/// (`al.useOfficialCompiler`) fallback and tests; the default debug-deploy path
+/// now builds the `.app` with the pure-Rust native emitter (no `alc`).
+#[allow(dead_code)]
 async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<String, DapError> {
     let project_path = Path::new(project_root);
     if !project_path.join("app.json").is_file() {
@@ -1352,89 +1332,11 @@ async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<
         )));
     }
 
-    #[cfg(unix)]
-    {
-        // The compiler backend is chosen by the daemon, not here.
-        let _ = alc;
-        compile_via_daemon(project_root).await
-    }
-    #[cfg(not(unix))]
-    {
-        // No daemon transport off Unix - compile in-process via alc subprocess.
-        compile_via_alc_subprocess(alc, project_root).await
-    }
-}
-
-/// Native-first compile: delegate to the daemon's `compile` (CodeAnalysis bridge).
-#[cfg(unix)]
-async fn compile_via_daemon(project_root: &str) -> std::result::Result<String, DapError> {
-    let root = std::path::PathBuf::from(project_root);
-    // `DaemonClient` is blocking Unix-socket I/O - run it off the async runtime.
-    let value = tokio::task::spawn_blocking(move || {
-        let mut client = al_protocol::DaemonClient::connect(&root)?;
-        client.set_request_timeout(std::time::Duration::from_secs(600));
-        client.request("compile", None)
-    })
-    .await
-    .map_err(|e| DapError::CompilationFailed(format!("compile task panicked: {e}")))?
-    .map_err(|e| DapError::CompilationFailed(format!("native compile via daemon failed: {e}")))?;
-
-    // Daemon `compile` response shape: { success, diagnostics, appPath, output }.
-    let success = value
-        .get("success")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let output = value
-        .get("output")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if success {
-        Ok(output)
-    } else if !output.is_empty() {
-        Err(DapError::CompilationFailed(output))
-    } else {
-        Err(DapError::CompilationFailed(summarize_diagnostics(&value)))
-    }
-}
-
-/// Render a daemon `compile` response's diagnostics into a console-friendly
-/// string, used when a failed compile produced no raw output.
-#[cfg(unix)]
-fn summarize_diagnostics(value: &serde_json::Value) -> String {
-    let diags = match value.get("diagnostics").and_then(|d| d.as_array()) {
-        Some(d) if !d.is_empty() => d,
-        _ => return "Compilation failed".to_string(),
-    };
-    diags
-        .iter()
-        .map(|d| {
-            let file = d.get("file").and_then(|v| v.as_str()).unwrap_or("");
-            let line = d.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-            let col = d.get("column").and_then(|v| v.as_u64()).unwrap_or(0);
-            let sev = d
-                .get("severity")
-                .and_then(|v| v.as_str())
-                .unwrap_or("error");
-            let code = d.get("code").and_then(|v| v.as_str()).unwrap_or("");
-            let msg = d.get("message").and_then(|v| v.as_str()).unwrap_or("");
-            format!("{file}({line},{col}): {sev} {code}: {msg}")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Fallback compile path for non-Unix targets, which have no daemon transport.
-#[cfg(not(unix))]
-async fn compile_via_alc_subprocess(
-    alc: &Path,
-    project_root: &str,
-) -> std::result::Result<String, DapError> {
     // Roll net8.0 `alc.dll` forward onto a newer .NET major (DOTNET_ROLL_FORWARD).
     let mut cmd = crate::toolchain::dotnet_command_async(alc);
     cmd.arg(format!("/project:{project_root}"));
 
-    let packages_dir = Path::new(project_root).join(".alpackages");
+    let packages_dir = project_path.join(".alpackages");
     if packages_dir.is_dir() {
         cmd.arg(format!("/packagecachepath:{}", packages_dir.display()));
     }
@@ -1512,17 +1414,6 @@ fn try_spawn(cmd: &str, args: &[&str]) -> bool {
         .is_ok()
 }
 
-/// Convert a BC `GetStackTrace` result (array of StackFrame objects) to DAP StackFrame objects.
-///
-/// BC StackFrame fields (from EditorServices.Protocol.dll reverse-engineering):
-///   - `ApplicationObjectId.ObjectType` / `ApplicationObjectId.ObjectNumber` — BC object ref
-///   - `SourcePosition.Line` / `SourcePosition.Column` — source location
-///   - `DisplayName` — human-readable frame name (procedure name, trigger name, etc.)
-///
-/// Convert a BC `GetStackTrace` result (array of StackFrame objects) to DAP StackFrame objects.
-///
-/// `resolve_path` maps a BC (ObjectType integer, ObjectNumber) to a workspace source file path.
-/// When a match is found the DAP `source` object is populated so Zed can navigate to the frame.
 /// Pull a usable breakpoint id out of BC's `AddBreakpoint` response.
 ///
 /// BC may answer with `Value::Null` or a payload lacking an `Id`/`id` field
@@ -2101,7 +1992,6 @@ mod tests {
     #[tokio::test]
     async fn compile_project_errors_when_no_app_json() {
         let dir = tempfile::tempdir().unwrap();
-        // Empty project root — no app.json present.
         let err = compile_project(
             Path::new("/nonexistent/alc.dll"),
             dir.path().to_str().unwrap(),

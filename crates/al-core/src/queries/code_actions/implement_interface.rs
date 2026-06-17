@@ -131,7 +131,6 @@ pub(super) fn source_action_implement_interface(
     actions
 }
 
-/// Find the codeunit object declaration node containing `point`.
 fn find_codeunit_at_point<'a>(
     root: tree_sitter::Node<'a>,
     source: &[u8],
@@ -146,7 +145,6 @@ fn find_codeunit_at_point<'a>(
         if point.row < ts_range.start_point.row || point.row > ts_range.end_point.row {
             continue;
         }
-        // Check it's a codeunit (only kind that can implement interfaces)
         let is_codeunit = child
             .child(0)
             .and_then(|kw| kw.utf8_text(source).ok())
@@ -172,7 +170,6 @@ fn extract_interface_names(obj_node: tree_sitter::Node, source: &[u8]) -> Vec<St
         };
 
         if child.kind() == "implements_clause" {
-            // The name is the second child (after the metadata_keyword)
             for j in 0..child.child_count() {
                 let Some(inner) = child.child(j) else {
                     continue;
@@ -195,7 +192,6 @@ fn extract_interface_names(obj_node: tree_sitter::Node, source: &[u8]) -> Vec<St
     names
 }
 
-/// Collect names of existing procedure declarations in the object node.
 fn collect_existing_procedures(obj_node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
     let mut procs = Vec::new();
     // Iterative BFS/DFS to avoid stack overflow on deep trees.
@@ -219,7 +215,6 @@ fn collect_existing_procedures(obj_node: tree_sitter::Node, source: &[u8]) -> Ve
     procs
 }
 
-/// Find the line to insert stubs — the line of the closing `}` of the codeunit.
 fn find_stub_insertion_line(obj_node: tree_sitter::Node) -> u32 {
     obj_node.end_position().row as u32
 }
@@ -301,7 +296,6 @@ mod tests {
         let uri = Url::parse("file:///test/Impl.al").unwrap();
         open_doc(&ws, &uri, al_code);
 
-        // Cursor on line 0 (the codeunit declaration line)
         let range = Range {
             start: super::super::Position {
                 line: 0,
@@ -329,7 +323,6 @@ mod tests {
         let (_, edits) = &edit.changes[0];
         let new_text = &edits[0].new_text;
 
-        // Should generate stubs for both methods
         assert!(
             new_text.contains("procedure DoSomething"),
             "Should have DoSomething stub"
@@ -340,7 +333,6 @@ mod tests {
             "Should have GetValue stub"
         );
         assert!(new_text.contains(": Integer"), "Should have return type");
-        // Stubs should have Error placeholder bodies
         assert!(
             new_text.contains("Error('Not implemented')"),
             "Should have Error placeholder"
@@ -359,7 +351,6 @@ mod tests {
             ],
         )]);
 
-        // Codeunit already has DoSomething implemented
         let al_code = r#"codeunit 50100 "My Codeunit" implements IMyInterface
 {
     procedure DoSomething()
@@ -397,12 +388,10 @@ mod tests {
         let (_, edits) = &edit.changes[0];
         let new_text = &edits[0].new_text;
 
-        // Should NOT generate stub for DoSomething (already exists)
         assert!(
             !new_text.contains("procedure DoSomething"),
             "Should skip existing method"
         );
-        // Should generate stub for GetValue
         assert!(
             new_text.contains("procedure GetValue"),
             "Should generate missing method"

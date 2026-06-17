@@ -22,7 +22,6 @@ use tracing::info;
 
 use super::SemanticError;
 
-// Function pointer types — only needed by the real DotNetHost implementation.
 #[cfg(feature = "semantic")]
 type InitFn = unsafe extern "system" fn(*const u8, c_int) -> c_int;
 #[cfg(feature = "semantic")]
@@ -50,8 +49,6 @@ pub(crate) struct DotNetHost {
     free_buffer_fn: FreeBufferFn,
 }
 
-/// Stub host used when the `semantic` Cargo feature is disabled.
-/// All methods return `SemanticError::NotInitialized`.
 #[cfg(not(feature = "semantic"))]
 pub(crate) struct DotNetHost;
 
@@ -65,11 +62,6 @@ unsafe impl Sync for DotNetHost {}
 
 #[cfg(feature = "semantic")]
 impl DotNetHost {
-    /// Initialize the .NET runtime and load the bridge DLL.
-    ///
-    /// `bridge_dll` is the path to the compiled AlBridge.dll.
-    /// `runtime_config` is the path to AlBridge.runtimeconfig.json.
-    /// `code_analysis_path` is the path to CodeAnalysis.dll from the toolchain.
     pub fn new(
         bridge_dll: &Path,
         runtime_config: &Path,
@@ -77,23 +69,19 @@ impl DotNetHost {
     ) -> Result<Self, SemanticError> {
         info!(bridge = %bridge_dll.display(), config = %runtime_config.display(), "Loading .NET runtime");
 
-        // Load hostfxr from the system .NET installation
         let hostfxr = netcorehost::nethost::load_hostfxr()
             .map_err(|e| SemanticError::HostInit(format!("Failed to load hostfxr: {e}")))?;
 
-        // Initialize runtime using the bridge's runtimeconfig.json
         let config_path = path_to_pdcstring(runtime_config)?;
         let context = hostfxr
             .initialize_for_runtime_config(config_path)
             .map_err(|e| SemanticError::HostInit(format!("Failed to initialize runtime: {e}")))?;
 
-        // Get delegate loader for the bridge assembly
         let dll_path = path_to_pdcstring(bridge_dll)?;
         let fn_loader = context
             .get_delegate_loader_for_assembly(dll_path)
             .map_err(|e| SemanticError::HostInit(format!("Failed to load bridge assembly: {e}")))?;
 
-        // Load function pointers
         let type_name = pdcstr!("AlBridge.Bridge, AlBridge");
 
         let init_fn: InitFn = *fn_loader
@@ -114,7 +102,6 @@ impl DotNetHost {
             )
             .map_err(|e| SemanticError::HostInit(format!("Failed to get FreeBuffer: {e}")))?;
 
-        // Initialize the bridge with the CodeAnalysis.dll path
         let ca_path = code_analysis_path.to_string_lossy();
         let ca_bytes = ca_path.as_bytes();
         let ca_len = c_int::try_from(ca_bytes.len()).map_err(|_| {
@@ -147,11 +134,6 @@ impl DotNetHost {
         })
     }
 
-    /// Call a bridge method with JSON params, returning the JSON result.
-    ///
-    /// Takes `&mut self` because the CLR response buffer is shared and not
-    /// safe for concurrent access. The caller (SemanticBridge) serializes
-    /// calls via a `std::sync::Mutex<DotNetHost>`.
     pub fn call(
         &mut self,
         method: &str,
@@ -215,8 +197,6 @@ impl DotNetHost {
             )));
         }
 
-        // Copy the response bytes before freeing. ClrBuf ensures the buffer is
-        // freed even if to_vec panics (e.g. on OOM), avoiding a leak.
         struct ClrBuf {
             ptr: *mut u8,
             free: FreeBufferFn,
@@ -247,7 +227,6 @@ impl DotNetHost {
             SemanticError::SerializationError(format!("Failed to parse bridge response: {e}"))
         })?;
 
-        // Check for error in response
         if let Some(error) = response.get("error") {
             let code = error.get("code").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
             let message = error
@@ -258,7 +237,6 @@ impl DotNetHost {
             return Err(SemanticError::RpcError { code, message });
         }
 
-        // Extract the result field
         Ok(response
             .get("result")
             .cloned()
@@ -266,7 +244,6 @@ impl DotNetHost {
     }
 }
 
-/// Stub implementation compiled when the `semantic` feature is disabled.
 #[cfg(not(feature = "semantic"))]
 impl DotNetHost {
     pub fn new(
@@ -286,7 +263,6 @@ impl DotNetHost {
     }
 }
 
-/// Return `Some((dll, config))` if both files exist, otherwise `None`.
 fn check_bridge_pair(dll: PathBuf, config: PathBuf) -> Option<(PathBuf, PathBuf)> {
     if dll.is_file() && config.is_file() {
         Some((dll, config))
@@ -303,7 +279,6 @@ fn check_bridge_pair(dll: PathBuf, config: PathBuf) -> Option<(PathBuf, PathBuf)
 /// 3. `AL_BRIDGE_DIR` environment variable
 /// 4. Compile the bridge on-the-fly from source (development mode)
 pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
-    // Strategy 1: OUT_DIR from build.rs (baked in at compile time)
     if let Some(out_dir) = option_env!("OUT_DIR") {
         let bridge_dir = PathBuf::from(out_dir).join("bridge");
         let dll = bridge_dir.join("AlBridge.dll");
@@ -314,7 +289,6 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
         }
     }
 
-    // Strategy 2: Next to the current executable
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             let dll = exe_dir.join("bridge").join("AlBridge.dll");
@@ -323,7 +297,6 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
                 debug!(path = %pair.0.display(), "Found bridge DLL next to executable");
                 return Ok(pair);
             }
-            // Also check flat layout
             let dll = exe_dir.join("AlBridge.dll");
             let config = exe_dir.join("AlBridge.runtimeconfig.json");
             if let Some(pair) = check_bridge_pair(dll, config) {
@@ -333,7 +306,6 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
         }
     }
 
-    // Strategy 3: Environment variable
     if let Ok(dir) = std::env::var("AL_BRIDGE_DIR") {
         let bridge_dir = PathBuf::from(&dir);
         let dll = bridge_dir.join("AlBridge.dll");
@@ -344,7 +316,6 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
         }
     }
 
-    // Strategy 4: Compile from source (development mode)
     if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
         let bridge_proj = PathBuf::from(manifest_dir)
             .join("bridge")
@@ -397,7 +368,6 @@ fn compile_bridge_from_source(csproj: &Path) -> Result<(PathBuf, PathBuf), Seman
     })
 }
 
-/// Convert a Path to a PdCString for netcorehost.
 #[cfg(feature = "semantic")]
 fn path_to_pdcstring(path: &Path) -> Result<netcorehost::pdcstring::PdCString, SemanticError> {
     netcorehost::pdcstring::PdCString::from_os_str(path.as_os_str())
@@ -411,12 +381,7 @@ mod tests {
 
     #[test]
     fn test_find_bridge_returns_error_when_not_found() {
-        // Clear env so strategy 3 doesn't fire
         std::env::remove_var("AL_BRIDGE_DIR");
-        // This should fail gracefully (not panic) when bridge isn't available.
-        // In dev mode the source project may be present, causing strategy 4 to
-        // attempt `dotnet build`; without .NET installed that also returns Err.
-        // Either way it must not panic.
         let result = find_bridge_dll();
         match result {
             Ok((dll, config)) => {
@@ -438,7 +403,6 @@ mod tests {
 
     #[test]
     fn test_stub_new_returns_not_initialized_without_semantic_feature() {
-        // When semantic feature is disabled the stub always fails
         #[cfg(not(feature = "semantic"))]
         {
             use std::path::Path;
@@ -449,16 +413,10 @@ mod tests {
                 "stub DotNetHost::new must always return Err"
             );
         }
-        // When semantic feature is enabled this test is a no-op (covered by runtime behaviour)
         #[cfg(feature = "semantic")]
-        {
-            // nothing to assert — real impl tested via integration tests with .NET
-        }
+        {}
     }
 
-    // ---- check_bridge_pair: both files must exist for Some(...) ----------
-
-    /// Both files present -> Some, and the returned tuple echoes the inputs.
     #[test]
     fn test_check_bridge_pair_both_present() {
         let dir = tempfile::tempdir().unwrap();
@@ -471,9 +429,6 @@ mod tests {
         assert_eq!(result, Some((dll, config)));
     }
 
-    /// DLL present but config missing -> None. This guards the AND in the
-    /// `dll.is_file() && config.is_file()` check: dropping the second
-    /// conjunct would make this return Some.
     #[test]
     fn test_check_bridge_pair_config_missing_is_none() {
         let dir = tempfile::tempdir().unwrap();
@@ -484,7 +439,6 @@ mod tests {
         assert_eq!(check_bridge_pair(dll, config), None);
     }
 
-    /// Config present but DLL missing -> None (guards the first conjunct).
     #[test]
     fn test_check_bridge_pair_dll_missing_is_none() {
         let dir = tempfile::tempdir().unwrap();
@@ -495,7 +449,6 @@ mod tests {
         assert_eq!(check_bridge_pair(dll, config), None);
     }
 
-    /// Neither file present -> None.
     #[test]
     fn test_check_bridge_pair_neither_present_is_none() {
         let dir = tempfile::tempdir().unwrap();
@@ -505,8 +458,6 @@ mod tests {
         assert_eq!(check_bridge_pair(dll, config), None);
     }
 
-    /// A directory at the DLL path is not a regular file -> None. `is_file()`
-    /// must reject directories; `exists()` alone would wrongly accept them.
     #[test]
     fn test_check_bridge_pair_directory_is_not_a_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -518,18 +469,9 @@ mod tests {
         assert_eq!(check_bridge_pair(dll, config), None);
     }
 
-    // ---- find_bridge_dll: strategy 3 (AL_BRIDGE_DIR) --------------------
-
-    /// When `AL_BRIDGE_DIR` points at a directory containing both bridge
-    /// files, `find_bridge_dll` resolves to a valid existing pair. Serialized
-    /// because it mutates a process-global env var that other tests also read.
-    ///
-    /// Strategies 1 (OUT_DIR) and 2 (next to the test exe) run before
-    /// strategy 3, and the unit-test build may bake a real bridge into
-    /// OUT_DIR. So we don't assert the resolved paths equal our temp dir;
-    /// instead we assert success and that both resolved files actually exist
-    /// on disk. (The exact path-matching guarantee for strategy 3 is proven by
-    /// `check_bridge_pair` tests above, which strategy 3 calls verbatim.)
+    /// Strategies 1 (OUT_DIR) and 2 (next to the test exe) run before strategy 3, and the
+    /// unit-test build may bake a real bridge into OUT_DIR. So we assert that both resolved
+    /// files exist, not that they equal our temp dir.
     #[test]
     #[serial]
     fn test_find_bridge_dll_uses_al_bridge_dir() {
@@ -544,15 +486,12 @@ mod tests {
         std::env::set_var("AL_BRIDGE_DIR", dir.path());
         let result = find_bridge_dll();
 
-        // restore env before asserting
         match prev {
             Some(v) => std::env::set_var("AL_BRIDGE_DIR", v),
             None => std::env::remove_var("AL_BRIDGE_DIR"),
         }
 
         let (got_dll, got_config) = result.expect("a valid bridge pair should resolve");
-        // Whichever strategy won, the contract is that both returned paths
-        // are real files.
         assert!(got_dll.is_file(), "resolved DLL must exist: {got_dll:?}");
         assert!(
             got_config.is_file(),
@@ -560,10 +499,6 @@ mod tests {
         );
     }
 
-    /// `AL_BRIDGE_DIR` set to a directory that is missing the config file must
-    /// NOT resolve via strategy 3 (the pair check fails). It then falls
-    /// through to strategy 4 / the final error, so the result must not be the
-    /// half-populated temp dir.
     #[test]
     #[serial]
     fn test_find_bridge_dll_al_bridge_dir_incomplete_does_not_resolve() {
@@ -572,7 +507,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dll = dir.path().join("AlBridge.dll");
         std::fs::write(&dll, b"fake dll").unwrap();
-        // deliberately do NOT create the runtimeconfig.json
 
         std::env::set_var("AL_BRIDGE_DIR", dir.path());
         let result = find_bridge_dll();
@@ -582,8 +516,6 @@ mod tests {
             None => std::env::remove_var("AL_BRIDGE_DIR"),
         }
 
-        // Whatever happens downstream, strategy 3 must not have returned our
-        // incomplete temp dir's DLL.
         if let Ok((got_dll, _)) = result {
             assert_ne!(
                 got_dll, dll,

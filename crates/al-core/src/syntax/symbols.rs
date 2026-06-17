@@ -43,10 +43,6 @@ pub fn extract_document_symbols(tree: &Tree, text: &str) -> Vec<DocumentSymbol> 
     symbols
 }
 
-/// Convert a symbol kind string (as stored in object_types.json) to a
-/// `SyntaxSymbolKind` value.
-///
-/// This is an infrastructure mapping — not AL language knowledge.
 fn lsp_symbol_kind_from_str(s: &str) -> SymbolKind {
     match s {
         "File" => SymbolKind::File,
@@ -82,7 +78,6 @@ fn object_kind_display(kind: &str) -> String {
         .find(|ot| ot.node_kind == kind)
         .map(|ot| ot.keyword.clone())
         .unwrap_or_else(|| {
-            // Strip the kw_ prefix for unknown kinds as a best-effort fallback.
             kind.strip_prefix("kw_").unwrap_or(kind).to_string()
         })
 }
@@ -95,7 +90,6 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     // Grammar doesn't assign a field name to the object name;
     // use the shared extract_object_name helper.
     let name = super::extract_object_name(node, source).unwrap_or_else(|| "(unnamed)".to_string());
-    // Also track the name node range for the selection_range below.
     let name_node_range = {
         let mut found_range = None;
         let mut obj_cursor = node.walk();
@@ -177,7 +171,6 @@ fn extract_namespace_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol>
     })
 }
 
-/// Extract children symbols from an object body.
 fn extract_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
     let mut cursor = body.walk();
     for child in body.children(&mut cursor) {
@@ -223,9 +216,6 @@ fn extract_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSy
     }
 }
 
-/// Shared helper: build a `DocumentSymbol` for any named node (procedure, trigger, event).
-///
-/// `kind` is the LSP `SymbolKind`.  `detail` is the optional detail string shown in the outline.
 fn extract_named_symbol(
     node: Node,
     source: &[u8],
@@ -415,7 +405,6 @@ fn extract_enum_value_from_section(node: Node, source: &[u8]) -> Option<Document
 
     let paren = paren_node?;
 
-    // Walk paren children: expect integer, semicolon, then name
     let mut ordinal = String::new();
     let mut name = String::new();
     let mut name_node_range = paren.range();
@@ -526,8 +515,6 @@ fn extract_dataitem_from_section(node: Node, source: &[u8]) -> Option<DocumentSy
     })
 }
 
-/// Map a page control keyword's `lsp_symbol_kind` string (from page_controls.json) to a
-/// tower-lsp [`SymbolKind`].
 fn control_keyword_to_symbol_kind(keyword: &str) -> SymbolKind {
     match super::language_data::page_control_by_keyword(keyword)
         .map(|e| e.lsp_symbol_kind.as_str())
@@ -542,11 +529,6 @@ fn control_keyword_to_symbol_kind(keyword: &str) -> SymbolKind {
     }
 }
 
-/// Extract children from braced blocks within sections (fields, keys, etc.)
-///
-/// Page controls in the grammar appear as sibling sequences:
-///   metadata_keyword ("area") + parenthesized_block ("(Content)") + braced_block ("{ ... }")
-/// Uses next_sibling() for zero-allocation look-ahead instead of collecting all children.
 fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
     // Iterative in-order walk with an explicit frame stack (CLAUDE.md rule;
     // F-OPEN-265): nested braced_blocks previously recursed, so degenerate
@@ -720,8 +702,6 @@ fn extract_triggers_from_braced_block(
     }
 }
 
-/// Try to extract a page control symbol from a metadata_keyword node.
-/// Looks ahead at next_sibling() for parenthesized_block and braced_block.
 fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let kw_text = kw_node.utf8_text(source).ok()?;
 
@@ -753,7 +733,6 @@ fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymb
 
     let sym_kind = control_keyword_to_symbol_kind(kw_text);
 
-    // Compute range from keyword start to body end (or paren end if no body)
     let end_node = body_node.or(paren_node).unwrap_or(kw_node);
     let range = ts_range_to_lsp(
         &tree_sitter::Range {
@@ -805,7 +784,6 @@ fn extract_control_name(paren: Node, source: &[u8]) -> String {
             _ => {}
         }
     }
-    // Fallback: show the full paren text without parens
     paren
         .utf8_text(source)
         .map(|t| t.trim_matches(|c| c == '(' || c == ')').trim().to_string())
@@ -907,8 +885,6 @@ fn is_dataitem_key_declaration(node: Node, source: &[u8]) -> bool {
 /// (`control_keyword("trigger") identifier("OnPreDataItem") ...`) that are not
 /// parsed as `trigger_declaration` nodes.
 fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
-    // The dataitem name is the first name_or_keyword / identifier / quoted_identifier
-    // child (before the semicolon).
     let mut name = "(unnamed)".to_string();
     let mut name_node_range = node.range();
     let mut seen_semicolon = false;
@@ -917,14 +893,12 @@ fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> 
         for child in node.children(&mut c) {
             match child.kind() {
                 "keyword" | "metadata_keyword" | "control_keyword" => {
-                    // skip the "dataitem" keyword itself
                 }
                 "semicolon" => {
                     seen_semicolon = true;
                 }
                 "(" | ")" => {}
                 _ if !seen_semicolon => {
-                    // First non-keyword token before the semicolon is the name.
                     // Use index-based child access to avoid iterator borrow issues.
                     let raw = child.utf8_text(source).unwrap_or("");
                     let mut resolved = raw.to_string();
@@ -985,7 +959,6 @@ fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> 
     })
 }
 
-/// Extract variable symbols from a var section.
 fn extract_var_section_children(node: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
     collect_var_symbols_recursive(node, source, symbols);
     collect_label_symbols_from_text(node, source, symbols);
@@ -1036,7 +1009,6 @@ fn collect_var_symbols_recursive(root: Node, source: &[u8], symbols: &mut Vec<Do
                 // Do not descend into label_declaration children
             }
             _ => {
-                // Descend into container nodes (variable_declaration wrappers, etc.)
                 let mut cursor = child.walk();
                 let grandchildren: Vec<Node> = child.children(&mut cursor).collect();
                 for gc in grandchildren.into_iter().rev() {
@@ -1229,7 +1201,6 @@ fn extract_field_name_from_paren(paren: Node, source: &[u8]) -> String {
             _ => {}
         }
     }
-    // Fallback: use the full paren text
     paren
         .utf8_text(source)
         .map(|t| {
@@ -1408,7 +1379,6 @@ mod tests {
         );
     }
 
-    /// Recursively collect every symbol name in the tree (depth-first).
     fn collect_names_rec(syms: &[DocumentSymbol]) -> Vec<String> {
         let mut names = Vec::new();
         for sym in syms {
@@ -1420,7 +1390,6 @@ mod tests {
         names
     }
 
-    /// Find the first symbol (anywhere in the tree) matching `name`.
     fn find_sym<'a>(syms: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {
         for sym in syms {
             if sym.name == name {
@@ -1449,7 +1418,6 @@ using System.Utilities;
 codeunit 50100 Test { }"#;
         let symbols = parse_symbols(src);
 
-        // namespace + using + the codeunit
         let ns = find_sym(&symbols, "MyApp.Sales").expect("namespace symbol");
         assert_eq!(ns.kind, SymbolKind::Namespace);
         assert_eq!(ns.detail.as_deref(), Some("namespace"));
@@ -1483,7 +1451,6 @@ codeunit 50100 Test { }"#;
         let obj = &symbols[0];
         assert_eq!(obj.name, "My Interface");
         assert_eq!(obj.kind, SymbolKind::Interface);
-        // No numeric id present → detail is the keyword alone.
         assert_eq!(obj.detail.as_deref(), Some("interface"));
     }
 
@@ -1517,7 +1484,6 @@ codeunit 50100 Test { }"#;
             .expect("keys section");
         assert_eq!(keys_section.kind, SymbolKind::Key);
 
-        // Field names extracted from the parenthesized triplet (after first ';').
         let no_field = find_sym(&symbols, "No.").expect("No. field");
         assert_eq!(no_field.kind, SymbolKind::Field);
         assert_eq!(no_field.detail.as_deref(), Some("field"));
@@ -1556,7 +1522,6 @@ codeunit 50100 Test { }"#;
         let symbols = parse_symbols(src);
         let all = collect_names_rec(&symbols);
 
-        // Quoted page-field name is unquoted in the outline.
         assert!(
             all.iter().any(|n| n == "Customer Name"),
             "page field name should be unquoted. Got: {:?}",
@@ -1565,7 +1530,6 @@ codeunit 50100 Test { }"#;
         let field = find_sym(&symbols, "Customer Name").unwrap();
         assert_eq!(field.kind, SymbolKind::Field);
 
-        // The OnAction trigger nested inside the action body is captured.
         let trig = find_sym(&symbols, "OnAction").expect("OnAction trigger");
         assert_eq!(trig.kind, SymbolKind::Event);
         assert_eq!(trig.detail.as_deref(), Some("trigger"));
@@ -1586,14 +1550,12 @@ codeunit 50100 Test { }"#;
         let symbols = parse_symbols(src);
         let no_return = find_sym(&symbols, "NoReturn").expect("NoReturn proc");
         assert_eq!(no_return.kind, SymbolKind::Function);
-        // Detail is just the parameter list (no return type).
         let detail = no_return.detail.as_deref().unwrap();
         assert!(detail.contains("Integer"), "got detail {:?}", detail);
         assert!(!detail.contains(':') || detail.starts_with('('));
 
         let with_return = find_sym(&symbols, "WithReturn").expect("WithReturn proc");
         let detail = with_return.detail.as_deref().unwrap();
-        // Return type is appended after ": ".
         assert!(
             detail.ends_with(": Boolean"),
             "return type should be in detail, got {:?}",
@@ -1636,7 +1598,6 @@ codeunit 50100 Test { }"#;
         let symbols = parse_symbols(src);
         let item = find_sym(&symbols, "MyItem").expect("dataitem symbol");
         assert_eq!(item.detail.as_deref(), Some("dataitem"));
-        // Nested trigger captured under the dataitem.
         let all = collect_names_rec(&symbols);
         assert!(
             all.iter().any(|n| n == "OnAfterGetRecord"),
@@ -1732,7 +1693,6 @@ codeunit 50100 Test { }"#;
         assert_eq!(lsp_symbol_kind_from_str("Enum"), SymbolKind::Enum);
         assert_eq!(lsp_symbol_kind_from_str("Interface"), SymbolKind::Interface);
         assert_eq!(lsp_symbol_kind_from_str("Class"), SymbolKind::Class);
-        // Unknown strings fall back to Object.
         assert_eq!(lsp_symbol_kind_from_str("Nonsense"), SymbolKind::Object);
     }
 
@@ -1743,7 +1703,6 @@ codeunit 50100 Test { }"#;
         // F-OPEN-103: any kw_* node counts as an identifier fallback.
         assert!(is_variable_name_node("kw_record"));
         assert!(is_variable_name_node("kw_anything_at_all"));
-        // Non-identifier punctuation does not.
         assert!(!is_variable_name_node("semicolon"));
         assert!(!is_variable_name_node(";"));
     }
@@ -1778,7 +1737,6 @@ table 50101 "T2" { fieldgroups { fieldgroup(DropDown; "No.") { } } }
 report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } dataset { } }"#;
         let symbols = parse_symbols(src);
 
-        // Helper that returns the kind of the first section named `name`.
         fn kind_of(syms: &[DocumentSymbol], name: &str) -> Option<SymbolKind> {
             for s in syms {
                 if s.name == name {
@@ -1964,7 +1922,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
         (result.tree, src.to_string())
     }
 
-    /// Depth-first search for the first node whose kind equals `kind`.
     fn find_node_of_kind<'a>(root: Node<'a>, kind: &str) -> Option<Node<'a>> {
         let mut cursor = root.walk();
         let mut stack = vec![root];
@@ -2052,7 +2009,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
             "quoted control name must be unquoted"
         );
 
-        // The area(Content) paren yields the bare identifier.
         let area_paren = find_node_kind_text(tree.root_node(), "metadata_keyword", "area", &src)
             .and_then(|kw| kw.parent())
             .and_then(find_parenthesized_block)
@@ -2074,7 +2030,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
         let (tree, src) =
             parse_tree("table 50100 \"T\"\n{\n    fields { field(1; \"No.\"; Code[20]) { } }\n}");
         if let Some(ck) = find_node_of_kind(tree.root_node(), "control_keyword") {
-            // "Code" is not "trigger" -> must be rejected.
             if !ck
                 .utf8_text(src.as_bytes())
                 .unwrap_or("")
@@ -2167,7 +2122,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
 
     #[test]
     fn test_extract_dataitem_from_section_direct_and_empty_guard() {
-        // Happy path: report dataitem `(StagingRec; "Item Journal Staging")`.
         let (tree, src) = parse_tree(
             "report 50200 \"R\"\n{\n    dataset\n    {\n        dataitem(StagingRec; \"Src\")\n        {\n        }\n    }\n}",
         );
@@ -2183,7 +2137,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
 
     #[test]
     fn test_find_parenthesized_block_present_and_absent() {
-        // Present: a page field section has a parenthesized_block.
         let (tree, src) = parse_tree("page 50100 \"P\"\n{\n    layout { area(Content) { } }\n}");
         let section = find_node_kind_text(tree.root_node(), "metadata_keyword", "area", &src)
             .and_then(|kw| kw.parent())
@@ -2193,8 +2146,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
             "area(Content) section has a parenthesized_block"
         );
 
-        // Absent: the object_body (braced block) itself has no direct
-        // parenthesized_block child.
         let body = find_node_of_kind(tree.root_node(), "object_body").expect("object_body");
         assert!(
             find_parenthesized_block(body).is_none(),
@@ -2269,7 +2220,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
         let sym = extract_key_symbol(proc, src.as_bytes()).expect("always Some");
         assert_eq!(sym.name, "Pk");
         assert_eq!(sym.kind, SymbolKind::Key);
-        // No `fields` field present -> detail is None (the empty-fields branch).
         assert!(sym.detail.is_none(), "no fields -> None detail");
     }
 
@@ -2353,7 +2303,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
         let sym = extract_named_symbol(obj, src.as_bytes(), SymbolKind::Function, None)
             .expect("always Some");
         assert_eq!(sym.name, "(unnamed)");
-        // selection_range falls back to the whole node range.
         assert_eq!(sym.selection_range, sym.range);
     }
 }

@@ -96,8 +96,6 @@ fn spawn_signal_handlers() {
 async fn main() {
     let log_dir = log_dir();
 
-    // File logging layer — INFO by default to avoid logging sensitive data;
-    // override the level with AL_LOG_FILE_LEVEL (see below).
     let log_path = log_dir.join("al-lsp.log");
 
     // Bounded growth: al-lsp is a long-lived daemon, so an unrotated log would
@@ -119,8 +117,6 @@ async fn main() {
                 "al-lsp: failed to open log file {}: {e}",
                 log_path.display()
             );
-            // Fall back to /dev/null or continue without file logging by using stderr
-            // We cannot proceed with structured logging — exit so Zed can restart us.
             std::process::exit(1);
         }
     };
@@ -144,7 +140,6 @@ async fn main() {
         .with_target(true)
         .with_thread_ids(true);
 
-    // Stderr layer — respects RUST_LOG env, default INFO
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
         .with_target(false);
@@ -167,7 +162,6 @@ async fn main() {
 
     registry.init();
 
-    // Install panic handler that logs panics before aborting
     std::panic::set_hook(Box::new(|info| {
         tracing::error!("{info}");
     }));
@@ -186,10 +180,6 @@ async fn main() {
 
     let args: Vec<String> = env::args().collect();
 
-    // Lifecycle hardening: detect parent death and handle signals gracefully.
-    // In daemon mode, run_daemon handles signals internally (SIGTERM/SIGINT break
-    // the accept loop so SocketCleanup drops before exit). The global handlers here
-    // are only registered for LSP and DAP modes where there is no socket to clean up.
     let is_daemon_mode = args.iter().any(|a| a == "daemon");
     #[cfg(unix)]
     if !is_daemon_mode {
@@ -224,8 +214,6 @@ async fn main() {
             );
             std::process::exit(1);
         };
-        // Forward everything except our own mode flags ("--stdio" is the
-        // native server's transport flag; the official server is stdio-only).
         let forward: Vec<String> = args
             .iter()
             .skip(1)
@@ -257,15 +245,12 @@ async fn main() {
             }
         }
     } else if args.iter().any(|a| a == "--dap") {
-        // DAP mode — native BC debug (no EditorServices.Host dependency)
         let project_root = env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
 
         let alc_path = al_core::toolchain::find_toolchain().ok().map(|tc| tc.alc);
 
-        // Initialize a lightweight file index for resolving AL object types + IDs.
-        // The DAP server needs this to map file paths to BC's ApplicationObjectIdWrapper.
         let file_index = std::sync::Arc::new(al_core::file_index::FileIndex::new());
         {
             let root = PathBuf::from(&project_root);
@@ -316,10 +301,6 @@ async fn main() {
             std::process::exit(1);
         }
     } else if args.iter().any(|a| a == "--dap-legacy") {
-        // Legacy DAP mode - proxy through EditorServices.Host.
-        // This is the NON-NATIVE Microsoft fallback, opted into via
-        // `al.useOfficialDap: true`. Warn loudly so it's never mistaken for the
-        // native BC debug adapter (`--dap`), which is the default.
         tracing::warn!(
             "Using LEGACY DAP (Microsoft EditorServices.Host proxy) - non-native fallback \
              enabled via al.useOfficialDap. The native BC debug adapter is the default."
@@ -336,8 +317,6 @@ async fn main() {
             std::process::exit(1);
         }
     } else if args.iter().any(|a| a == "mcp") {
-        // MCP server mode (F-OPEN-261) — newline-delimited JSON-RPC on stdio
-        // exposing AL tools (al_build, al_symbolsearch, …) to agents.
         let project_arg = args
             .iter()
             .position(|a| a == "--project")
@@ -360,7 +339,6 @@ async fn main() {
             std::process::exit(1);
         }
     } else if args.iter().any(|a| a == "daemon") {
-        // Daemon mode — JSON-RPC over Unix socket
         let project_arg = args
             .iter()
             .position(|a| a == "--project")
@@ -384,7 +362,6 @@ async fn main() {
             std::process::exit(1);
         }
     } else {
-        // LSP mode (default)
         al_core::server::run_lsp().await;
     }
 }

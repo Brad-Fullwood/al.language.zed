@@ -17,7 +17,6 @@ use tracing::{debug, info, warn};
 use super::nuget::AppDependency;
 use super::oauth;
 
-/// Authentication method for BC server connections.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuthMethod {
     Windows,
@@ -262,7 +261,6 @@ impl BcServerClient {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Add authentication headers to the request based on the auth method.
     async fn add_auth(
         &self,
         request: reqwest::RequestBuilder,
@@ -281,7 +279,6 @@ impl BcServerClient {
                 Ok(request)
             }
             AuthMethod::AAD => {
-                // Azure AD / Microsoft Entra ID — device code flow with token caching
                 // Check for explicit env var first (manual override). Skip it
                 // once a 401/403 has flagged that env token as stale, so we can
                 // recover via the OAuth flow instead of re-presenting a dead
@@ -294,7 +291,6 @@ impl BcServerClient {
 
                 let tenant = self.tenant.as_deref().unwrap_or("common");
 
-                // Fast path: return the cached token under a read lock.
                 if let Some(token) = self.cached_token.read().await.as_ref() {
                     return Ok(request.bearer_auth(token));
                 }
@@ -390,7 +386,6 @@ mod tests {
         assert!(!filename.contains('\\'), "got {filename}");
         assert!(filename.ends_with(".app"));
 
-        // The joined path stays inside the destination directory.
         let dest = Path::new("/tmp/alpackages");
         let joined = dest.join(&filename);
         assert!(
@@ -398,7 +393,6 @@ mod tests {
             "filename escaped dest: {}",
             joined.display()
         );
-        // No `..` component should appear in the joined path.
         assert!(
             !joined
                 .components()
@@ -448,7 +442,6 @@ mod tests {
         let _a = AuthMethod::AAD;
     }
 
-    /// Build a dependency with the given name/publisher/version for download tests.
     fn dep(name: &str, publisher: &str, version: &str) -> AppDependency {
         AppDependency {
             id: "00000000-0000-0000-0000-000000000000".into(),
@@ -562,8 +555,6 @@ mod tests {
 
     #[tokio::test]
     async fn download_all_preserves_order_and_per_entry_results() {
-        // download_all returns one result per input entry, in the same order,
-        // mixing a success (first) with a 404 failure (second).
         let server = wiremock::MockServer::start().await;
         let body = b"ok-bytes";
         wiremock::Mock::given(wiremock::matchers::method("GET"))
@@ -641,8 +632,6 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn add_auth_aad_uses_env_access_token() {
-        // AAD auth honours an explicit BC_ACCESS_TOKEN override (fast path that
-        // never touches the OAuth flow), and skips it once flagged stale.
         std::env::set_var("BC_ACCESS_TOKEN", "env-token-123");
         let client = BcServerClient::new(
             AuthMethod::AAD,

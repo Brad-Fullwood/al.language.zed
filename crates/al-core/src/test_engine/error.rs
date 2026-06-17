@@ -5,7 +5,6 @@
 
 use thiserror::Error;
 
-/// Errors that can occur when interacting with the BC test runner API.
 #[derive(Debug, Error)]
 pub enum TestRunnerError {
     #[error("HTTP request failed: {0}")]

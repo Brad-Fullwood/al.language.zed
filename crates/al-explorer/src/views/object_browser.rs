@@ -61,7 +61,6 @@ fn inner_area(rect: Rect) -> Rect {
 pub(crate) fn handle_object_browser_key(app: &mut App, key: crossterm::event::KeyEvent) {
     use crossterm::event::KeyCode;
 
-    // Tab bindings for type filters
     if key.code == KeyCode::Tab {
         app.next_kind();
         return;

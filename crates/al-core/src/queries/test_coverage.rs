@@ -19,19 +19,12 @@ use serde::Serialize;
 use crate::queries::tests::{collect_test_procedures, has_test_subtype};
 use crate::workspace::Workspace;
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
 /// A production procedure identified as being covered by tests.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoveredProcedure {
-    /// Name of the production procedure.
     pub name: String,
-    /// Object that contains this procedure.
     pub object: String,
-    /// File path of the object.
     pub file: String,
     /// Line number of the procedure declaration (1-based).
     pub line: u32,
@@ -41,11 +34,8 @@ pub struct CoveredProcedure {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UntestedProcedure {
-    /// Procedure name.
     pub name: String,
-    /// Object that contains this procedure.
     pub object: String,
-    /// File path.
     pub file: String,
     /// Line number (1-based).
     pub line: u32,
@@ -55,9 +45,7 @@ pub struct UntestedProcedure {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestCoverageEntry {
-    /// Test codeunit name.
     pub codeunit: String,
-    /// Test procedure name.
     pub test_procedure: String,
     /// Production procedures called (directly) by this test.
     pub covers: Vec<CoveredProcedure>,
@@ -67,15 +55,10 @@ pub struct TestCoverageEntry {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageReport {
-    /// Per-test coverage entries.
     pub coverage: Vec<TestCoverageEntry>,
     /// Public production procedures not called by any test.
     pub untested: Vec<UntestedProcedure>,
 }
-
-// ---------------------------------------------------------------------------
-// Internal helper types
-// ---------------------------------------------------------------------------
 
 /// A procedure definition collected from workspace files.
 #[derive(Debug, Clone)]
@@ -88,21 +71,9 @@ struct ProcDef {
     is_test: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/// Build a test-coverage map for the workspace.
-///
-/// 1. Scans all .al files and collects all procedure definitions.
-/// 2. For each test procedure, walks its body collecting called identifiers.
-/// 3. Matches identifiers against production procedure names.
-/// 4. Reports untested public production procedures.
 pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
-    // Step 1: collect all procedure defs
     let all_procs = collect_all_procedures(workspace);
 
-    // Build a lookup map: lowercase name → list of ProcDef
     let mut proc_lookup: HashMap<String, Vec<&ProcDef>> = HashMap::new();
     for p in &all_procs {
         proc_lookup
@@ -111,7 +82,6 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
             .push(p);
     }
 
-    // Step 2: for each test procedure, collect the names it calls
     let mut coverage: Vec<TestCoverageEntry> = Vec::new();
     let mut covered_proc_names: HashSet<String> = HashSet::new();
 
@@ -156,7 +126,6 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
         );
     }
 
-    // Step 3: untested public (non-local, non-test) procedures
     let untested: Vec<UntestedProcedure> = all_procs
         .iter()
         .filter(|p| {
@@ -172,10 +141,6 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
 
     CoverageReport { coverage, untested }
 }
-
-// ---------------------------------------------------------------------------
-// Implementation helpers
-// ---------------------------------------------------------------------------
 
 fn collect_all_procedures(workspace: &Workspace) -> Vec<ProcDef> {
     let mut result = Vec::new();
@@ -282,9 +247,6 @@ fn has_test_attr_child(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     false
 }
 
-// Eight tree-walk inputs (tree-sitter node, source, workspace, file path,
-// per-file maps for callers / coverage / unresolved, accumulator). Grouping
-// into a struct would not reduce the per-call setup.
 #[allow(clippy::too_many_arguments)]
 fn collect_coverage_from_tree(
     root: tree_sitter::Node,
@@ -299,9 +261,6 @@ fn collect_coverage_from_tree(
 ) {
     let test_names: HashSet<String> = test_procs.iter().map(|p| p.name.to_lowercase()).collect();
 
-    // Walk the tree: when we find a procedure_declaration whose name is a test,
-    // collect all identifier calls inside its body.
-    // Iterative TreeCursor walk — owns its own cursor.
     let mut cursor = root.walk();
     let mut did_visit = false;
     loop {
@@ -373,8 +332,6 @@ fn collect_identifiers_recursive(
     loop {
         if !did_visit {
             let node = cursor.node();
-            // Look for function call patterns: identifier followed by argument_list
-            // In AL tree-sitter: method_call / function_call / invocation_expression
             let kind = node.kind();
             if kind == "method_call"
                 || kind == "function_call"
@@ -385,7 +342,6 @@ fn collect_identifiers_recursive(
                     let key = callee.to_lowercase();
                     if !seen.contains(&key) {
                         if let Some(defs) = proc_lookup.get(&key) {
-                            // Only include non-test, non-local procedures
                             for def in defs {
                                 if !def.is_test {
                                     seen.insert(key.clone());
@@ -433,10 +389,6 @@ fn find_callee_name<'a>(node: tree_sitter::Node, source: &'a [u8]) -> Option<&'a
     }
     None
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -491,17 +443,8 @@ mod tests {
         assert!(json.contains("untested"));
     }
 
-    // -----------------------------------------------------------------------
-    // End-to-end behavior over a real (in-process) workspace.
-    //
-    // These exercise `test_coverage` through `collect_all_procedures`,
-    // `collect_procs_recursive`, the test-codeunit gating, and the untested
-    // filter — the logic that was previously only hit via the e2e harness.
-    // -----------------------------------------------------------------------
-
     use std::path::PathBuf;
 
-    /// Build an in-memory workspace from `(path, al_source)` pairs.
     fn workspace_with(files: &[(&str, &str)]) -> crate::workspace::Workspace {
         let ws = crate::workspace::Workspace::new();
         for (name, content) in files {
@@ -537,8 +480,6 @@ mod tests {
     end;
 }"#;
 
-    /// A test codeunit's test procedures produce a coverage entry; its `[Test]`
-    /// procedure must never be reported as untested production code.
     #[test]
     fn test_codeunit_yields_coverage_entry_and_excludes_test_procs_from_untested() {
         let ws = workspace_with(&[("/src/Test.al", TEST_CU)]);
@@ -568,8 +509,6 @@ mod tests {
         );
     }
 
-    /// Public production procedures with no resolved test call are reported as
-    /// untested; `local` procedures are excluded from the untested list.
     #[test]
     fn untested_lists_public_excludes_local() {
         let ws = workspace_with(&[("/src/Prod.al", PROD_CU)]);
@@ -602,12 +541,8 @@ mod tests {
         assert_eq!(pub_entry.file, "/src/Prod.al");
     }
 
-    /// Non-codeunit objects are skipped for *coverage* (only codeunits are
-    /// scanned for test procedures) but their public procedures are still
-    /// collected and surface in `untested`.
     #[test]
     fn non_codeunit_object_skipped_for_coverage_but_procs_collected() {
-        // A table with a public procedure — not a codeunit, so never a test CU.
         let table = r#"table 50200 "My Table"
 {
     fields
@@ -632,8 +567,6 @@ mod tests {
         );
     }
 
-    /// A codeunit WITHOUT `Subtype = Test` is not scanned for test procedures,
-    /// even if it declares a `[Test]`-attributed procedure.
     #[test]
     fn normal_codeunit_not_treated_as_test() {
         let normal = r#"codeunit 50300 "Normal CU"
@@ -658,8 +591,6 @@ mod tests {
         );
     }
 
-    /// A test codeunit with no `[Test]` procedures produces no coverage entries
-    /// (the `test_procs.is_empty()` early-continue).
     #[test]
     fn test_codeunit_without_test_procs_yields_no_coverage() {
         let cu = r#"codeunit 50400 "Empty Test CU"
@@ -678,8 +609,6 @@ mod tests {
         );
     }
 
-    /// Multiple test codeunits each contribute their own coverage entries, and
-    /// the codeunit name is carried correctly per entry.
     #[test]
     fn multiple_test_codeunits_each_contribute_entries() {
         let cu_a = r#"codeunit 50500 "Test A"
@@ -714,8 +643,6 @@ mod tests {
         assert_eq!(from_b, 2, "both Test B procedures carry the right codeunit");
     }
 
-    /// `find_callee_name` returns the first identifier/name child, stripping
-    /// surrounding double-quotes from a quoted callee.
     #[test]
     fn find_callee_name_returns_first_identifier() {
         let src = r#"codeunit 50600 "X"
@@ -729,7 +656,6 @@ mod tests {
         let tree = result.tree;
         let source = src.as_bytes();
 
-        // Walk to find a node whose first identifier child text is "DoThing".
         let mut cursor = tree.root_node().walk();
         let mut stack = vec![tree.root_node()];
         let mut found: Option<String> = None;
@@ -751,8 +677,6 @@ mod tests {
         );
     }
 
-    /// `has_local_modifier` distinguishes `local procedure` from a plain
-    /// `procedure`. Drives the helper directly off a parsed tree.
     #[test]
     fn has_local_modifier_detects_local_keyword() {
         let src = r#"codeunit 50700 "Y"

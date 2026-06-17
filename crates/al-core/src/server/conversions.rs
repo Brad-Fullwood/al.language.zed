@@ -466,7 +466,6 @@ mod tests {
 
     #[test]
     fn inlay_hint_from_lsp_label_parts_concatenated() {
-        // The defensive LabelParts branch concatenates the part values.
         let parts = vec![
             tower_lsp::lsp_types::InlayHintLabelPart {
                 value: "Foo".to_string(),

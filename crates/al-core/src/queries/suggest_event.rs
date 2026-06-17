@@ -16,8 +16,6 @@ use crate::insight::index::{CallGraph, EdgeResolutionState, NodeId};
 use crate::symbols::ParameterSymbol;
 use crate::workspace::Workspace;
 
-/// Resolve an object's `ObjectKind` from the symbol index, defaulting to
-/// `Codeunit` when the object is not found.
 fn resolve_object_kind(workspace: &Workspace, object_name: &str) -> ObjectKind {
     workspace
         .symbols
@@ -28,7 +26,6 @@ fn resolve_object_kind(workspace: &Workspace, object_name: &str) -> ObjectKind {
         .unwrap_or(ObjectKind::Codeunit)
 }
 
-/// Map symbol-index parameters into transport-agnostic `ParamInfo`.
 fn map_parameters_to_param_info(parameters: &[ParameterSymbol]) -> Vec<ParamInfo> {
     parameters
         .iter()
@@ -40,11 +37,6 @@ fn map_parameters_to_param_info(parameters: &[ParameterSymbol]) -> Vec<ParamInfo
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Public query types
-// ---------------------------------------------------------------------------
-
-/// A structured query for integration point discovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventQuery {
@@ -55,7 +47,6 @@ pub struct EventQuery {
     pub filter_field: Option<String>,
 }
 
-/// The starting point for an integration point query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum QuerySource {
@@ -71,11 +62,6 @@ pub enum QuerySource {
     Event { object: String, event: String },
 }
 
-// ---------------------------------------------------------------------------
-// Result types
-// ---------------------------------------------------------------------------
-
-/// The result of an integration point query.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SuggestEventResult {
@@ -85,7 +71,6 @@ pub struct SuggestEventResult {
     pub partial: bool,
 }
 
-/// A single reachable integration point.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationPoint {
@@ -100,7 +85,6 @@ pub struct IntegrationPoint {
     pub example: String,
 }
 
-/// One parameter on an event.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParamInfo {
@@ -109,7 +93,6 @@ pub struct ParamInfo {
     pub is_var: bool,
 }
 
-/// One hop in the path from query source to an integration point.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceHop {
@@ -118,11 +101,6 @@ pub struct TraceHop {
     pub edge_kind: String,
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-/// Find all reachable integration points from the given query source.
 pub fn suggest_event(workspace: &Workspace, query: &EventQuery) -> SuggestEventResult {
     match &query.source {
         QuerySource::Procedure { object, procedure } => query_procedure(
@@ -145,10 +123,6 @@ pub fn suggest_event(workspace: &Workspace, query: &EventQuery) -> SuggestEventR
     }
 }
 
-// ---------------------------------------------------------------------------
-// Query implementations
-// ---------------------------------------------------------------------------
-
 fn query_procedure(
     workspace: &Workspace,
     object_name: &str,
@@ -159,7 +133,6 @@ fn query_procedure(
     let (insight, cg_guard) = workspace.get_or_build_call_graph();
     let cg_opt = cg_guard.as_ref();
 
-    // Look up the object's kind from the symbol index.
     let object_kind = resolve_object_kind(workspace, object_name);
 
     let mut points: Vec<IntegrationPoint> = Vec::new();
@@ -167,7 +140,6 @@ fn query_procedure(
     let mut partial = false;
 
     if let Some(proc_name) = procedure_name {
-        // Specific procedure — look it up and trace from it.
         let proc_key = NodeKey::Procedure(
             object_kind,
             object_name.to_lowercase(),
@@ -198,7 +170,6 @@ fn query_procedure(
             }
         }
     } else {
-        // All procedures of this object.
         let obj_lower = object_name.to_lowercase();
         for (key, _) in insight.index.iter() {
             let proc_id = match key {
@@ -242,7 +213,6 @@ fn query_procedure(
             }
         }
 
-        // Also collect events directly published by this object.
         collect_published_events(
             &insight,
             &workspace.symbols,
@@ -269,7 +239,6 @@ fn query_table(
 
     let mut points: Vec<IntegrationPoint> = Vec::new();
 
-    // Collect events directly published by the table.
     collect_published_events(
         &insight,
         &workspace.symbols,
@@ -278,7 +247,6 @@ fn query_table(
         &mut points,
     );
 
-    // Scan ALL event publishers for those with a `var Record "TableName"` parameter.
     let table_lower = table_name.to_lowercase();
     let all_events = crate::symbols::get_events(&workspace.symbols, "");
     for pub_event in &all_events.publishers {
@@ -331,7 +299,6 @@ fn query_event(
     let (insight, cg_guard) = workspace.get_or_build_call_graph();
     let cg_opt = cg_guard.as_ref();
 
-    // Resolve the object kind.
     let object_kind = resolve_object_kind(workspace, object_name);
 
     let mut points: Vec<IntegrationPoint> = Vec::new();
@@ -345,7 +312,6 @@ fn query_event(
     );
 
     if let Some(event_node_id) = CallGraph::node_id_for(&insight, &event_key) {
-        // Collect this event as the first integration point.
         let (event_type_str, params) =
             resolve_event_details(&insight, &workspace.symbols, &event_key);
         let example = format_example(object_kind, object_name, event_name);
@@ -361,7 +327,6 @@ fn query_event(
 
         visited.insert(event_node_id);
 
-        // Follow subscribers downstream.
         if let Some(cg) = cg_opt {
             for sub_id in cg.subscribers_of(event_node_id) {
                 if visited.contains(&sub_id) {
@@ -404,14 +369,7 @@ fn query_event(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Core tracing logic
-// ---------------------------------------------------------------------------
-
-/// Recursively trace from a node, collecting events along the way.
-// All arguments are recursion state (graph / call-graph / current node / visited
-// set / filter / accumulator / depth) that flows through every call. Bundling
-// them into a Context struct moves the cognitive load rather than reducing it.
+// Bundling all args into a Context struct moves cognitive load rather than reducing it.
 #[allow(clippy::too_many_arguments)]
 fn trace_from_node(
     node_id: NodeId,
@@ -440,7 +398,6 @@ fn trace_from_node(
             name,
             event_type,
         } => {
-            // Collect this event as an integration point.
             let event_type_str = match event_type {
                 EventNodeType::Integration => "integration",
                 EventNodeType::Business => "business",
@@ -460,7 +417,6 @@ fn trace_from_node(
                 example,
             });
 
-            // Follow subscribers of this event.
             for sub_id in cg.subscribers_of(node_id) {
                 if visited.contains(&sub_id) {
                     continue;
@@ -501,12 +457,10 @@ fn trace_from_node(
         | InsightNode::Subscriber {
             object_name, name, ..
         } => {
-            // Check resolution state; mark partial if unresolved.
             if cg.resolution_state(node_id) == EdgeResolutionState::Unresolved {
                 *partial = true;
             }
 
-            // Walk callees.
             for edge in cg.callees_of(node_id) {
                 if visited.contains(&edge.to) {
                     continue;
@@ -533,17 +487,10 @@ fn trace_from_node(
             }
         }
 
-        InsightNode::Object { .. } => {
-            // Objects are not traced directly.
-        }
+        InsightNode::Object { .. } => {}
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper functions
-// ---------------------------------------------------------------------------
-
-/// Collect events directly published by `object_name` of `object_kind`.
 fn collect_published_events(
     insight: &InsightGraph,
     symbols: &Arc<SymbolIndex>,
@@ -578,14 +525,12 @@ fn collect_published_events(
     }
 }
 
-/// Resolve the event type string and parameter list for an event node.
 fn resolve_event_details(
     insight: &InsightGraph,
     symbols: &Arc<SymbolIndex>,
     event_key: &NodeKey,
 ) -> (String, Vec<ParamInfo>) {
     if let NodeKey::Event(kind, obj_lower, event_lower) = event_key {
-        // Get event type from graph node.
         let event_type_str =
             if let Some(&idx) = insight.index.get(event_key).and_then(|v| v.first()) {
                 match &insight.graph[idx] {
@@ -607,7 +552,6 @@ fn resolve_event_details(
     }
 }
 
-/// Look up event parameters from the symbol index.
 fn lookup_event_params(
     symbols: &Arc<SymbolIndex>,
     object_kind: ObjectKind,
@@ -628,7 +572,6 @@ fn lookup_event_params(
     Vec::new()
 }
 
-/// Generate a ready-to-paste [EventSubscriber] attribute.
 fn format_example(object_kind: ObjectKind, object_name: &str, event_name: &str) -> String {
     let kind_str = format!("{object_kind}");
     format!(
@@ -636,7 +579,6 @@ fn format_example(object_kind: ObjectKind, object_name: &str, event_name: &str) 
     )
 }
 
-/// Remove duplicate integration points by (object, event) key.
 fn dedup_points(points: Vec<IntegrationPoint>) -> Vec<IntegrationPoint> {
     let mut seen: HashSet<(String, String)> = HashSet::new();
     points
@@ -645,7 +587,6 @@ fn dedup_points(points: Vec<IntegrationPoint>) -> Vec<IntegrationPoint> {
         .collect()
 }
 
-/// Retain only integration points that match the table/field filter.
 fn apply_filters(
     points: Vec<IntegrationPoint>,
     filter_table: Option<&str>,
@@ -680,23 +621,16 @@ fn apply_filters(
         .collect()
 }
 
-/// Check whether `type_name` is a `Record "TableName"` or `Record TableName` reference.
 fn is_record_of_table(type_name: &str, table_lower: &str) -> bool {
     let tn = type_name.to_lowercase();
-    // Must start with "record"
     let rest = if let Some(r) = tn.strip_prefix("record") {
         r.trim()
     } else {
         return false;
     };
-    // Strip surrounding quotes.
     let clean = rest.trim_matches('"').trim_matches('\'').trim();
     clean == table_lower
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -754,7 +688,6 @@ mod tests {
         }
     }
 
-    /// Build a workspace with a codeunit that has an IntegrationEvent method.
     fn workspace_with_event() -> Workspace {
         let ws = Workspace::new();
         ws.symbols.add_entries(&[make_codeunit(
@@ -774,15 +707,10 @@ mod tests {
         ws
     }
 
-    // -----------------------------------------------------------------------
-    // Test: procedure query finds published events
-    // -----------------------------------------------------------------------
-
     #[test]
     fn procedure_query_finds_published_events() {
         let ws = workspace_with_event();
 
-        // Build the insight + call graph
         let _ = ws.get_or_build_call_graph();
 
         let query = EventQuery {
@@ -810,10 +738,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Test: table filter narrows results
-    // -----------------------------------------------------------------------
-
     #[test]
     fn table_filter_narrows_results() {
         let ws = Workspace::new();
@@ -821,12 +745,10 @@ mod tests {
             80,
             "Sales-Post",
             vec![
-                // Has Sales Header as var param → should be included
                 integration_event_with_params(
                     "OnBeforePostSalesDoc",
                     vec![param("SalesHeader", "Record \"Sales Header\"", true)],
                 ),
-                // No Sales Header param → should be excluded
                 integration_event_with_params(
                     "OnAfterPost",
                     vec![param("Result", "Boolean", false)],
@@ -853,10 +775,6 @@ mod tests {
         );
         assert_eq!(result.integration_points[0].event, "OnBeforePostSalesDoc");
     }
-
-    // -----------------------------------------------------------------------
-    // Test: table query finds events with var param for that table
-    // -----------------------------------------------------------------------
 
     #[test]
     fn table_query_finds_var_params() {
@@ -894,10 +812,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Test: empty results for unknown object
-    // -----------------------------------------------------------------------
-
     #[test]
     fn empty_results_for_unknown_object() {
         let ws = Workspace::new();
@@ -920,10 +834,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Test: is_record_of_table helper
-    // -----------------------------------------------------------------------
-
     #[test]
     fn is_record_of_table_matches_various_formats() {
         assert!(is_record_of_table(
@@ -939,10 +849,6 @@ mod tests {
         assert!(!is_record_of_table("Boolean", "sales header"));
         assert!(!is_record_of_table("", "sales header"));
     }
-
-    // -----------------------------------------------------------------------
-    // Test: event query source collects the event itself
-    // -----------------------------------------------------------------------
 
     #[test]
     fn event_query_returns_event_itself() {
@@ -966,10 +872,6 @@ mod tests {
         assert_eq!(result.integration_points[0].event, "OnBeforePostSalesDoc");
     }
 
-    // -----------------------------------------------------------------------
-    // Test: format_example produces correct attribute
-    // -----------------------------------------------------------------------
-
     #[test]
     fn format_example_produces_event_subscriber_attribute() {
         let example = format_example(ObjectKind::Codeunit, "Sales-Post", "OnAfterPost");
@@ -984,10 +886,6 @@ mod tests {
             "Should contain ObjectType"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Test: dedup removes duplicates
-    // -----------------------------------------------------------------------
 
     #[test]
     fn dedup_removes_duplicate_events() {
@@ -1005,18 +903,8 @@ mod tests {
         assert_eq!(deduped.len(), 1);
     }
 
-    // -----------------------------------------------------------------------
-    // Traversal-safety tests (white-box, exercise trace_from_node directly).
-    //
-    // The depth limit and `visited` set are the two safeguards that keep
-    // call-graph traversal bounded on deep, cyclic, or fan-out graphs. The
-    // higher-level query tests above only build shallow, acyclic graphs, so
-    // these drive the recursion bounds explicitly via a hand-built graph.
-    // -----------------------------------------------------------------------
-
     use crate::insight::graph::InsightEdge;
 
-    /// Add a Procedure node to the insight graph and return its NodeId.
     fn add_proc(g: &mut InsightGraph, object: &str, name: &str) -> NodeId {
         let idx = g.ensure_node(
             NodeKey::Procedure(
@@ -1034,7 +922,6 @@ mod tests {
         NodeId::from(idx)
     }
 
-    /// Add an Event node to the insight graph and return its NodeId.
     fn add_event(g: &mut InsightGraph, object: &str, name: &str) -> NodeId {
         let idx = g.ensure_node(
             NodeKey::Event(
@@ -1052,7 +939,6 @@ mod tests {
         NodeId::from(idx)
     }
 
-    /// Add a Subscriber node to the insight graph and return its NodeId.
     fn add_subscriber(
         g: &mut InsightGraph,
         object: &str,
@@ -1087,9 +973,6 @@ mod tests {
 
     #[test]
     fn trace_deep_call_chain_respects_max_depth() {
-        // Build a 15-deep linear chain P0 -> P1 -> ... -> P14, where every
-        // procedure also publishes an event Ek. With max_depth = 10 the trace
-        // must stop before reaching the deeper events.
         let mut g = InsightGraph::new();
         let chain: Vec<NodeId> = (0..15)
             .map(|i| add_proc(&mut g, "CU", &format!("P{i}")))
@@ -1103,7 +986,6 @@ mod tests {
         for i in 0..14 {
             cg.add_direct_call(chain[i], chain[i + 1]);
         }
-        // Each Pi calls its event Ei (a DirectCall edge into the Event node).
         for i in 0..15 {
             cg.add_direct_call(chain[i], events[i]);
         }
@@ -1126,8 +1008,6 @@ mod tests {
             10,
         );
 
-        // Every reported event must lie within the depth bound. Each path's
-        // length (number of hops) cannot exceed max_depth.
         assert!(!points.is_empty(), "should discover some events");
         for p in &points {
             assert!(
@@ -1137,7 +1017,6 @@ mod tests {
                 p.event
             );
         }
-        // Deep events past the bound must NOT appear.
         let found: HashSet<&str> = points.iter().map(|p| p.event.as_str()).collect();
         assert!(found.contains("E0"), "shallow event should be found");
         assert!(
@@ -1148,19 +1027,13 @@ mod tests {
 
     #[test]
     fn trace_circular_subscriptions_terminate() {
-        // Cycle: ProcA -> EventA -(subscription)-> SubB -> EventB
-        //        -(subscription)-> SubA -> EventA (back to start).
-        // The visited set must break the cycle and the trace must terminate.
         let mut g = InsightGraph::new();
         let proc_a = add_proc(&mut g, "CU", "ProcA");
         let event_a = add_event(&mut g, "CU", "EventA");
         let event_b = add_event(&mut g, "CU", "EventB");
-        // Subscriber nodes; SubscribesTo edges are what build_from_insight
-        // turns into EventSubscription edges (followed when tracing an Event).
         let sub_b = add_subscriber(&mut g, "CU", "SubB", "CU", "EventA");
         let sub_a = add_subscriber(&mut g, "CU", "SubA", "CU", "EventB");
 
-        // SubscribesTo edges (subscriber -> event) in the insight graph.
         let sub_b_idx = petgraph::graph::NodeIndex::new(sub_b.0);
         let sub_a_idx = petgraph::graph::NodeIndex::new(sub_a.0);
         let event_a_idx = petgraph::graph::NodeIndex::new(event_a.0);
@@ -1170,7 +1043,6 @@ mod tests {
         let g = Arc::new(g);
 
         let mut cg = CallGraph::build_from_insight(&g);
-        // ProcA publishes EventA; SubB calls EventB; SubA calls EventA (cycle).
         cg.add_direct_call(proc_a, event_a);
         cg.add_direct_call(sub_b, event_b);
         cg.add_direct_call(sub_a, event_a);
@@ -1179,7 +1051,6 @@ mod tests {
         let mut points = Vec::new();
         let mut visited = HashSet::new();
         let mut partial = false;
-        // Must return (not hang / overflow) despite the cycle.
         trace_from_node(
             proc_a,
             &g,
@@ -1193,11 +1064,9 @@ mod tests {
             10,
         );
 
-        // Both events are reachable exactly once; the cycle does not blow up.
         let events: HashSet<&str> = points.iter().map(|p| p.event.as_str()).collect();
         assert!(events.contains("EventA"));
         assert!(events.contains("EventB"));
-        // Each node is visited at most once, so each event appears once.
         assert_eq!(
             points.iter().filter(|p| p.event == "EventA").count(),
             1,
@@ -1207,11 +1076,6 @@ mod tests {
 
     #[test]
     fn trace_fanout_graph_bounded() {
-        // A 3-wide fan-out at each of 3 levels: root calls 3 children, each
-        // child calls 3 grandchildren, each grandchild publishes an event.
-        // The visited set keeps shared nodes from being re-explored, so the
-        // number of discovered events is bounded by the node count, not the
-        // number of distinct root->leaf paths.
         let mut g = InsightGraph::new();
         let root = add_proc(&mut g, "CU", "Root");
         let children: Vec<NodeId> = (0..3)
@@ -1256,7 +1120,6 @@ mod tests {
             10,
         );
 
-        // All 9 leaf events discovered, each exactly once (no exponential blowup).
         assert_eq!(
             points.len(),
             9,

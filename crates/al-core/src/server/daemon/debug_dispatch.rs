@@ -71,12 +71,6 @@ fn missing_cmd(id: u64, msg: &str) -> Response {
     Response::error(id, al_protocol::jsonrpc::error_codes::INVALID_PARAMS, msg)
 }
 
-/// Build a `BcDebugConfig` from a named (or default) configuration in the project's
-/// debug config file (`.zed/debug.json` or `.vscode/launch.json`).
-///
-/// Fix #4: `al debug start` sends `{"cmd":"start","config":name}` which does not
-/// include full DAP launch args. This function looks up the named config file entry
-/// and constructs the `BcDebugConfig` from it instead of from `params` directly.
 /// F-016: resolve `(objectType, objectId)` from the workspace file_index for
 /// a given file path, so daemon breakpoints land at the correct BC object
 /// instead of `(0, 0)`. Returns `None` when the file isn't indexed yet — the
@@ -187,7 +181,6 @@ pub(super) async fn dispatch_debug(
             // Fix #4: look up config from project debug file if a config name is given,
             // or fall back to parsing full DAP args from params for backward compat.
             let config = if params.get("config").is_some() || params.get("server").is_none() {
-                // Either a named config reference or no server specified — look up from file
                 match resolve_debug_config(workspace, params) {
                     Ok(c) => c,
                     Err(msg) => {
@@ -203,7 +196,6 @@ pub(super) async fn dispatch_debug(
                     }
                 }
             } else {
-                // Full DAP args provided — parse directly (legacy / direct invocation)
                 BcDebugConfig::from_dap_args(params)
             };
 
@@ -545,8 +537,6 @@ mod pick_named_config_tests {
 
     #[test]
     fn no_name_returns_first_config() {
-        // Positive: backward-compatible default behaviour when caller does
-        // not specify a config name.
         let configs = vec![cfg("alpha"), cfg("beta")];
         let picked = pick_named_config(&configs, None).expect("first should win");
         assert_eq!(picked.name, "alpha");
@@ -554,7 +544,6 @@ mod pick_named_config_tests {
 
     #[test]
     fn matching_name_returns_that_config() {
-        // Positive: exact-match path.
         let configs = vec![cfg("alpha"), cfg("beta")];
         let picked = pick_named_config(&configs, Some("beta")).expect("beta should match");
         assert_eq!(picked.name, "beta");
@@ -572,7 +561,6 @@ mod pick_named_config_tests {
 
     #[test]
     fn empty_config_list_errors_when_no_name_given() {
-        // Negative: missing-config-list path is its own clear error.
         let err = pick_named_config(&[], None).expect_err("empty list must error");
         assert!(err.contains("no configs"));
     }
@@ -585,8 +573,6 @@ mod resolve_object_metadata_tests {
 
     #[test]
     fn resolves_indexed_codeunit_to_object_type_and_id() {
-        // Positive (F-016 invariant): when the file is indexed, the helper
-        // must return the BC object type code and id, NOT (0, 0).
         let ws = Workspace::new();
         let path = std::path::PathBuf::from("/tmp/SomeCodeunit.al");
         let src = "codeunit 50100 \"Some Codeunit\"\n{\n}\n".to_string();
@@ -605,9 +591,6 @@ mod resolve_object_metadata_tests {
 
     #[test]
     fn returns_none_for_unindexed_file() {
-        // Negative: when the file isn't in the index, return None so the
-        // caller can either accept caller-supplied metadata or error out
-        // cleanly instead of silently using (0, 0).
         let ws = Workspace::new();
         assert!(resolve_object_metadata(&ws, "/nonexistent/Foo.al").is_none());
     }
@@ -644,11 +627,6 @@ mod resolve_object_metadata_tests {
 
 #[cfg(test)]
 mod dispatch_debug_tests {
-    //! In-process coverage for [`dispatch_debug`]'s param-validation and
-    //! no-session error paths. A fresh `Workspace` starts with
-    //! `debug_session == None`, so every "no active session" branch and every
-    //! argument-validation branch is reachable without spawning a real BC
-    //! debugger.
     use super::dispatch_debug;
     use crate::workspace::Workspace;
     use al_protocol::jsonrpc::error_codes;
@@ -664,7 +642,6 @@ mod dispatch_debug_tests {
 
     #[tokio::test]
     async fn missing_cmd_is_invalid_params() {
-        // No `cmd` key at all → INVALID_PARAMS, not a panic or success.
         let ws = Workspace::new();
         let r = dispatch_debug(&ws, 1, &json!({})).await;
         assert_eq!(r.id, 1);
@@ -675,7 +652,6 @@ mod dispatch_debug_tests {
 
     #[tokio::test]
     async fn non_string_cmd_is_invalid_params() {
-        // `cmd` present but not a string → as_str() is None → same branch.
         let ws = Workspace::new();
         let r = dispatch_debug(&ws, 2, &json!({"cmd": 42})).await;
         assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
@@ -695,7 +671,6 @@ mod dispatch_debug_tests {
 
     #[tokio::test]
     async fn breakpoint_missing_file_is_invalid_params() {
-        // The `file` guard fires before any session lock is taken.
         let ws = Workspace::new();
         let r = dispatch_debug(&ws, 4, &json!({"cmd": "breakpoint", "line": 5})).await;
         assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
@@ -704,7 +679,6 @@ mod dispatch_debug_tests {
 
     #[tokio::test]
     async fn breakpoint_missing_line_is_invalid_params() {
-        // The `line` guard rejects a missing line rather than defaulting to 0.
         let ws = Workspace::new();
         let r = dispatch_debug(&ws, 5, &json!({"cmd": "breakpoint", "file": "/tmp/Foo.al"})).await;
         assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
@@ -713,7 +687,6 @@ mod dispatch_debug_tests {
 
     #[tokio::test]
     async fn breakpoint_out_of_range_line_is_invalid_params() {
-        // A line beyond u32::MAX must be rejected, not wrapped.
         let ws = Workspace::new();
         let big = u64::from(u32::MAX) + 1;
         let r = dispatch_debug(
@@ -728,10 +701,6 @@ mod dispatch_debug_tests {
 
     #[tokio::test]
     async fn breakpoint_unresolvable_metadata_is_invalid_params() {
-        // file + valid line present, but the file isn't indexed and the caller
-        // supplied neither objectType nor objectId → metadata cannot be
-        // resolved → INVALID_PARAMS (NOT the no-session error, which would
-        // only be reached after metadata resolves).
         let ws = Workspace::new();
         let r = dispatch_debug(
             &ws,
@@ -745,9 +714,6 @@ mod dispatch_debug_tests {
 
     #[tokio::test]
     async fn breakpoint_with_caller_metadata_but_no_session_is_no_session() {
-        // Caller supplies objectType + objectId so metadata resolves; we then
-        // hit the session lock and find None → INTERNAL_ERROR "No active
-        // debug session". This proves the metadata path can fall through.
         let ws = Workspace::new();
         let r = dispatch_debug(
             &ws,
@@ -779,7 +745,6 @@ mod dispatch_debug_tests {
 
     #[tokio::test]
     async fn eval_missing_expr_is_invalid_params() {
-        // The expr guard fires before the session lock.
         let ws = Workspace::new();
         let r = dispatch_debug(&ws, 10, &json!({"cmd": "eval"})).await;
         assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
@@ -804,7 +769,6 @@ mod dispatch_debug_tests {
 
     #[tokio::test]
     async fn step_without_session_is_no_session() {
-        // step defaults stepType to "over" and still requires a session.
         let ws = Workspace::new();
         let r = dispatch_debug(&ws, 13, &json!({"cmd": "step"})).await;
         assert_eq!(err_code(&r), error_codes::INTERNAL_ERROR);
@@ -836,8 +800,6 @@ mod dispatch_debug_tests {
 
     #[tokio::test]
     async fn start_without_project_or_config_is_invalid_params() {
-        // No `server` key and no project → resolve_debug_config errors with
-        // "No active project", surfaced as INVALID_PARAMS (not a panic).
         let ws = Workspace::new();
         let r = dispatch_debug(&ws, 16, &json!({"cmd": "start"})).await;
         assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);

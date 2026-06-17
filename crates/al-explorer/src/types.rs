@@ -193,7 +193,6 @@ impl SymbolIndex {
         }
     }
 
-    /// Populate the index from a flat list of `SymbolEntry` values.
     pub fn load(&mut self, entries: Vec<SymbolEntry>) {
         self.entries.clear();
         self.by_package.clear();
@@ -207,7 +206,6 @@ impl SymbolIndex {
         }
     }
 
-    /// Return all entries for a given package (case-insensitive).
     pub fn search_in_package(&self, package: &str) -> Vec<Arc<SymbolEntry>> {
         self.by_package
             .get(&package.to_lowercase())
@@ -215,7 +213,6 @@ impl SymbolIndex {
             .unwrap_or_default()
     }
 
-    /// Return entries matching `query` in their name or ID (up to `limit`).
     pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<SymbolEntry>> {
         if query.is_empty() {
             return self.entries.iter().take(limit).cloned().collect();
@@ -238,7 +235,6 @@ impl SymbolIndex {
             .by_package
             .keys()
             .map(|k| {
-                // Return the original-case package name from the first entry
                 self.by_package[k]
                     .first()
                     .map(|e| e.package.clone())

@@ -20,8 +20,6 @@ use super::framing::{ensure_seq, read_dap_body, write_dap_frame};
 use super::protocol::{DapEvent, DapMessage, DapResponse};
 use super::{DapError, Result};
 
-/// Low-level DAP client that manages a subprocess.
-///
 /// Not `Sync` because `events_rx` is an `mpsc::UnboundedReceiver` which is
 /// single-consumer. Use from a single task only; share via `Arc<Mutex<DapClient>>`
 /// if cross-task access is needed.
@@ -31,14 +29,11 @@ pub struct DapClient {
     seq_counter: AtomicI64,
     /// Pending response waiters: request_seq → oneshot sender.
     pending: Arc<Mutex<HashMap<i64, oneshot::Sender<DapResponse>>>>,
-    /// Events received from the adapter.
     events_rx: mpsc::UnboundedReceiver<DapEvent>,
-    /// Background reader task handle.
     reader_task: tokio::task::JoinHandle<()>,
 }
 
 impl DapClient {
-    /// Spawn a subprocess and start reading DAP messages from its stdout.
     pub fn spawn(binary: &Path, args: &[&str]) -> Result<Self> {
         let mut child = tokio::process::Command::new(binary)
             .args(args)
@@ -62,11 +57,10 @@ impl DapClient {
             Arc::new(Mutex::new(HashMap::new()));
         let (events_tx, events_rx) = mpsc::unbounded_channel();
 
-        // Background task: read DAP frames from stdout, dispatch responses and events
         let pending_clone = pending.clone();
         let reader_task = tokio::spawn(async move {
             let mut reader = tokio::io::BufReader::new(stdout);
-            let patch_counter = AtomicI64::new(1000); // separate counter for seq patching
+            let patch_counter = AtomicI64::new(1000);
             loop {
                 match read_dap_body(&mut reader).await {
                     Ok(body) => {
@@ -88,7 +82,6 @@ impl DapClient {
                                 let _ = events_tx.send(event);
                             }
                             Ok(DapMessage::Request(req)) => {
-                                // Reverse requests from adapter (e.g., runInTerminal)
                                 tracing::debug!(command = %req.command, "Ignoring reverse request from adapter");
                             }
                             Err(e) => {
@@ -118,7 +111,6 @@ impl DapClient {
         })
     }
 
-    /// Send a DAP request and wait for the matching response.
     pub async fn send_request(
         &mut self,
         command: &str,
@@ -128,7 +120,6 @@ impl DapClient {
             .await
     }
 
-    /// Send a DAP request with a custom timeout.
     pub async fn send_request_timeout(
         &mut self,
         command: &str,
@@ -143,16 +134,13 @@ impl DapClient {
             arguments,
         };
 
-        // Register response waiter before sending
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(seq, tx);
 
-        // Send the request
         let body = serde_json::to_vec(&request)
             .map_err(|e| DapError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
         write_dap_frame(&mut self.stdin, &body).await?;
 
-        // Wait for response with timeout
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(response)) => {
                 if response.success {
@@ -171,14 +159,12 @@ impl DapClient {
                 message: "Response channel closed (subprocess may have died)".to_string(),
             }),
             Err(_) => {
-                // Clean up pending entry on timeout
                 self.pending.lock().await.remove(&seq);
                 Err(DapError::Timeout(timeout))
             }
         }
     }
 
-    /// Drain all pending events (non-blocking).
     pub fn drain_events(&mut self) -> Vec<DapEvent> {
         let mut events = Vec::new();
         while let Ok(event) = self.events_rx.try_recv() {
@@ -187,12 +173,10 @@ impl DapClient {
         events
     }
 
-    /// Wait for the next event (blocking).
     pub async fn next_event(&mut self) -> Option<DapEvent> {
         self.events_rx.recv().await
     }
 
-    /// Wait for a specific event by name, with timeout.
     pub async fn wait_for_event(
         &mut self,
         event_name: &str,
@@ -214,7 +198,6 @@ impl DapClient {
         }
     }
 
-    /// Kill the subprocess.
     pub async fn kill(&mut self) -> Result<()> {
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
@@ -225,7 +208,6 @@ impl DapClient {
 
 impl Drop for DapClient {
     fn drop(&mut self) {
-        // Best-effort kill to prevent orphan processes
         let _ = self.child.start_kill();
         self.reader_task.abort();
     }
@@ -235,11 +217,6 @@ impl Drop for DapClient {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-
-    // We can't easily test DapClient::spawn() in unit tests since it needs
-    // a real DAP subprocess. These tests verify the type system and basic
-    // construction. Integration tests with a mock subprocess would go in
-    // a separate test file.
 
     #[test]
     fn spawn_nonexistent_binary_returns_error() {
@@ -259,10 +236,8 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_echo_and_kill() {
-        // Spawn a simple process that we can kill
         let result = DapClient::spawn(&PathBuf::from("/usr/bin/cat"), &[]);
         if let Ok(mut client) = result {
-            // Just verify we can kill it without panicking
             client.kill().await.unwrap();
         }
         // If cat doesn't exist (unlikely), that's ok — skip

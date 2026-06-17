@@ -24,7 +24,6 @@ pub mod format;
 pub mod recorder;
 pub mod replayer;
 
-// Re-export the most commonly used types at the module root.
 pub use diff::{diff_snapshots, Divergence};
 pub use format::{deserialize_snapshot, serialize_snapshot, FormatError, Sample, Snapshot};
 pub use recorder::{RecorderError, SnapshotRecorder};

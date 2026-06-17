@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-/// Result of a bulk fix operation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BulkFixResult {
@@ -182,8 +181,6 @@ fn detect_object_keyword(source: &str) -> Option<&'static str> {
     crate::syntax::language_data::object_type_by_keyword(token).map(|ot| ot.keyword.as_str())
 }
 
-/// Detect if source text contains a page-family declaration
-/// (page, pageextension, report, reportextension, requestpage, pagecustomization).
 fn is_page_file(source: &str) -> bool {
     matches!(
         detect_object_keyword(source),
@@ -196,7 +193,6 @@ fn is_page_file(source: &str) -> bool {
     )
 }
 
-/// Detect if source text contains a table/tableextension declaration.
 fn is_table_file(source: &str) -> bool {
     matches!(
         detect_object_keyword(source),
@@ -243,7 +239,6 @@ fn inject_application_area(source: &str, value: &str) -> (String, usize) {
 
         let has_area = lower.contains("applicationarea");
 
-        // Before emitting a closing brace, check if we need to inject
         if brace_close_count > 0 && !stack.is_empty() {
             let closes = brace_close_count.saturating_sub(brace_open_count);
             for _ in 0..closes {
@@ -272,13 +267,11 @@ fn inject_application_area(source: &str, value: &str) -> (String, usize) {
             }
         }
 
-        // Update pending state: if this is a bare field/action decl with no `{`, next `{` is for it
         if !trimmed.is_empty() {
             pending_control_start = is_control_decl && !trimmed.contains('{');
         }
     }
 
-    // Preserve trailing newline
     let result = if source.ends_with('\n') {
         output.join("\n") + "\n"
     } else {
@@ -288,7 +281,6 @@ fn inject_application_area(source: &str, value: &str) -> (String, usize) {
     (result, changes)
 }
 
-/// Inject `ToolTip = '...';` into page field blocks that are missing it.
 fn inject_tooltips(source: &str, tooltips: &[(String, String)]) -> (String, usize) {
     let lines: Vec<&str> = source.lines().collect();
     let mut output = Vec::with_capacity(lines.len() + 16);
@@ -393,8 +385,6 @@ fn inject_tooltips(source: &str, tooltips: &[(String, String)]) -> (String, usiz
     (result, changes)
 }
 
-/// Inject `DataClassification = <value>;` into table field blocks that lack it.
-///
 /// Skips fields that have `FieldClass = FlowField` or `FieldClass = FlowFilter`.
 fn inject_data_classification(source: &str, value: &str) -> (String, usize) {
     let lines: Vec<&str> = source.lines().collect();
@@ -488,10 +478,7 @@ fn leading_whitespace(line: &str) -> &str {
 /// Extract the source field name from `field(varName; Rec."FieldName")` or `field(varName; "FieldName")`.
 fn extract_field_source_name(line: &str) -> Option<String> {
     let s = line.trim_start();
-    // Require line to start with "field(" (case-insensitive enough for AL)
     let after_field = s.strip_prefix("field(")?;
-    // Strip everything after the closing ')' of field(...) — trim trailing `{` and whitespace
-    // Find the last ')' and take only up to (not including) it.
     let close_paren = after_field.rfind(')')?;
     let inner = after_field[..close_paren].trim();
 
@@ -699,7 +686,6 @@ mod tests {
         let result = add_application_area(dir.path(), "All", true).unwrap();
         assert!(result.dry_run);
         assert!(result.changes_count > 0);
-        // File unchanged in dry run
         let content = std::fs::read_to_string(&page_path).unwrap();
         assert!(!content.contains("ApplicationArea"));
     }

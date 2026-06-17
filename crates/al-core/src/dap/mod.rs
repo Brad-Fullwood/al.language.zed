@@ -19,7 +19,6 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-/// Errors from DAP operations.
 #[derive(Debug, Error)]
 pub enum DapError {
     #[error("IO error: {0}")]
@@ -56,5 +55,4 @@ pub enum DapError {
     ServerError(String),
 }
 
-/// Convenience alias for `Result<T, DapError>`.
 pub type Result<T> = std::result::Result<T, DapError>;

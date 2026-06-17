@@ -15,11 +15,6 @@ use al_core::syntax::{
 };
 use tower_lsp::lsp_types::*;
 
-// ---------------------------------------------------------------------------
-// Test fixtures
-// ---------------------------------------------------------------------------
-
-/// Minimal page AL code for integration testing.
 const PAGE_AL: &str = r#"page 50100 "Customer Card Ext"
 {
     PageType = CardPart;
@@ -71,7 +66,6 @@ const PAGE_AL: &str = r#"page 50100 "Customer Card Ext"
     }
 }"#;
 
-/// Codeunit AL code for integration testing.
 const CODEUNIT_AL: &str = r#"codeunit 50100 "Sales Helper"
 {
     // Process sales orders
@@ -111,7 +105,6 @@ const CODEUNIT_AL: &str = r#"codeunit 50100 "Sales Helper"
     end;
 }"#;
 
-/// Simple test fixture codeunit.
 const SIMPLE_CODEUNIT: &str = r#"codeunit 50100 "Test Codeunit"
 {
     procedure HelloWorld()
@@ -132,10 +125,6 @@ const SIMPLE_CODEUNIT: &str = r#"codeunit 50100 "Test Codeunit"
         Counter += 1;
     end;
 }"#;
-
-// ---------------------------------------------------------------------------
-// Helper: build a symbol index with test data
-// ---------------------------------------------------------------------------
 
 fn build_test_index() -> SymbolIndex {
     let index = SymbolIndex::new();
@@ -267,10 +256,6 @@ fn build_test_index() -> SymbolIndex {
     index
 }
 
-// ---------------------------------------------------------------------------
-// Document Store tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn document_store_open_change_close_lifecycle() {
     let store = al_core::documents::DocumentStore::new();
@@ -317,17 +302,9 @@ fn document_store_open_change_close_lifecycle() {
     assert_eq!(store.get_text(&uri), None);
 }
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 fn make_parser() -> AlParser {
     AlParser::new()
 }
-
-// ---------------------------------------------------------------------------
-// Parse -> Diagnostics integration
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_valid_code_produces_no_syntax_errors() {
@@ -427,10 +404,6 @@ fn lint_diagnostics_convert_to_lsp() {
     assert!(diagnostics.is_empty(), "no lint diagnostics expected");
 }
 
-// ---------------------------------------------------------------------------
-// Symbol Index integration
-// ---------------------------------------------------------------------------
-
 #[test]
 fn symbol_index_search_and_lookup() {
     let index = build_test_index();
@@ -486,10 +459,6 @@ fn symbol_index_get_by_kind() {
     let enums = index.get_by_kind(ObjectKind::Enum);
     assert_eq!(enums.len(), 1);
 }
-
-// ---------------------------------------------------------------------------
-// Document Symbols integration (al-syntax parse -> al-lsp handler)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn document_symbols_from_codeunit() {
@@ -552,10 +521,6 @@ fn document_symbols_from_codeunit_with_events() {
         names
     );
 }
-
-// ---------------------------------------------------------------------------
-// Semantic Tokens integration
-// ---------------------------------------------------------------------------
 
 #[test]
 fn semantic_tokens_cover_all_token_types() {
@@ -627,10 +592,6 @@ fn semantic_tokens_delta_encoding_is_valid() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Folding Ranges integration
-// ---------------------------------------------------------------------------
-
 #[test]
 fn folding_ranges_cover_structural_elements() {
     let mut parser = make_parser();
@@ -682,10 +643,6 @@ codeunit 50100 Test
     );
 }
 
-// ---------------------------------------------------------------------------
-// Formatting integration
-// ---------------------------------------------------------------------------
-
 #[test]
 fn formatting_idempotent() {
     // Format once
@@ -733,10 +690,6 @@ fn formatting_produces_valid_parseable_output() {
         result.errors
     );
 }
-
-// ---------------------------------------------------------------------------
-// Lint integration
-// ---------------------------------------------------------------------------
 
 #[test]
 fn lint_returns_empty_for_codeunit() {
@@ -799,10 +752,6 @@ fn lint_returns_empty_for_clean_code() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Object Declaration navigation
-// ---------------------------------------------------------------------------
-
 #[test]
 fn find_object_declaration_in_page() {
     let mut parser = make_parser();
@@ -829,10 +778,6 @@ fn find_object_declaration_in_codeunit() {
     assert_eq!(obj.name, "Sales Helper");
 }
 
-// ---------------------------------------------------------------------------
-// Variable references
-// ---------------------------------------------------------------------------
-
 #[test]
 fn find_variable_references_in_codeunit() {
     let mut parser = make_parser();
@@ -852,10 +797,6 @@ fn find_variable_references_in_codeunit() {
         refs.len()
     );
 }
-
-// ---------------------------------------------------------------------------
-// Workspace file scanning
-// ---------------------------------------------------------------------------
 
 #[test]
 fn workspace_scans_al_files() {
@@ -908,10 +849,6 @@ fn workspace_scans_al_files() {
     // Cleanup
     let _ = fs::remove_dir_all(&tmp);
 }
-
-// ---------------------------------------------------------------------------
-// Cross-crate: parse + format + lint pipeline
-// ---------------------------------------------------------------------------
 
 #[test]
 fn full_pipeline_parse_format_lint() {

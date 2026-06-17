@@ -7,23 +7,19 @@ extern "C" {
     fn tree_sitter_al() -> Language;
 }
 
-/// Get the tree-sitter AL language.
 pub fn language() -> Language {
     unsafe { tree_sitter_al() }
 }
 
-/// AL parser with tree-sitter.
 pub struct AlParser {
     parser: Parser,
 }
 
-/// Result of parsing AL source code.
 pub struct ParseResult {
     pub tree: Tree,
     pub errors: Vec<SyntaxError>,
 }
 
-/// A syntax error found during parsing.
 #[derive(Debug, Clone)]
 pub struct SyntaxError {
     pub message: String,
@@ -107,7 +103,6 @@ mod tests {
     fn test_parse_empty_string() {
         let mut parser = AlParser::new();
         let result = parser.parse("");
-        // Empty source should produce a tree (even if trivial)
         assert!(result.tree.root_node().child_count() == 0 || result.errors.is_empty());
     }
 
@@ -217,9 +212,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // T1307: List of [Interface IFoo] syntax
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_parse_list_of_interface_variable() {

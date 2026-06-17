@@ -30,7 +30,6 @@ pub(super) fn source_action_if_to_case(
     let point = tree_sitter::Point::new(range.start.line as usize, col_bytes);
     let if_node = find_outermost_if_at_point(root, point)?;
 
-    // Walk the if-else chain collecting (variable_text, value_text, body_text) triples
     let mut branches: Vec<(String, String, String)> = Vec::new();
     let mut else_body: Option<String> = None;
     let mut common_var: Option<String> = None;
@@ -91,8 +90,6 @@ pub(super) fn source_action_if_to_case(
     })
 }
 
-/// Find the outermost if_statement containing the given point.
-/// Walks up the tree to find the topmost if_statement in the chain.
 fn find_outermost_if_at_point(
     root: tree_sitter::Node,
     point: tree_sitter::Point,
@@ -126,8 +123,6 @@ fn find_outermost_if_at_point(
     Some(node)
 }
 
-/// Walk an if-else chain iteratively, collecting branches.
-///
 /// Each branch is (variable_text, value_text, body_text).  Sets
 /// `common_var` to `None` if variables differ across branches.  An iterative
 /// loop avoids unbounded recursion on deeply nested if/else chains
@@ -145,7 +140,6 @@ fn walk_if_chain(
             return;
         }
 
-        // Extract condition: expect `<var> = <value>`.
         if let Some(condition) = current.child_by_field_name("condition") {
             if let Some((var, val)) = extract_equality_operands(condition, source) {
                 match common_var {
@@ -228,7 +222,6 @@ fn extract_equality_operands(node: tree_sitter::Node, source: &[u8]) -> Option<(
         return None;
     }
 
-    // Use byte ranges for precise text extraction
     let left_start = node.child(0)?.start_byte();
     let left_end = node.child(eq_idx)?.start_byte();
     let left = std::str::from_utf8(&source[left_start..left_end])
@@ -256,11 +249,9 @@ fn extract_equality_operands(node: tree_sitter::Node, source: &[u8]) -> Option<(
     }
 }
 
-/// Returns true if `s` looks like a literal value rather than a variable.
 /// Handles: integer/decimal numbers, single-quoted AL strings, `true`/`false`.
 fn is_literal(s: &str) -> bool {
     let t = s.trim();
-    // Numeric literal
     if t.chars()
         .next()
         .is_some_and(|c| c.is_ascii_digit() || c == '-')
@@ -268,21 +259,14 @@ fn is_literal(s: &str) -> bool {
     {
         return true;
     }
-    // Single-quoted string
     if t.starts_with('\'') && t.ends_with('\'') && t.len() >= 2 {
         return true;
     }
-    // Boolean keywords
     if t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("false") {
         return true;
     }
     false
 }
-
-/// Generate "Implement interface" code actions for codeunits with `implements` clauses.
-///
-/// For each interface that the codeunit declares it implements, checks which methods
-/// are missing and offers to generate stub procedure declarations.
 
 #[cfg(test)]
 mod tests {
@@ -315,7 +299,6 @@ mod tests {
         let uri = Url::parse("file:///test/IfCase.al").unwrap();
         open_doc(&ws, &uri, al_code);
 
-        // Cursor on the first `if` line (line 4)
         let range = Range {
             start: super::super::Position {
                 line: 4,
@@ -529,10 +512,8 @@ mod tests {
         let edit = case_actions[0].edit.as_ref().unwrap();
         let (_, edits) = &edit.changes[0];
         let new_text = &edits[0].new_text;
-        // The generated case body should have begin/end preserved at correct indent
         assert!(new_text.contains("begin"), "Body should contain begin");
         assert!(new_text.contains("end"), "Body should contain end");
-        // The body lines (Message, assignment) should be indented more than the case label
         let msg_line = new_text
             .lines()
             .find(|l| l.contains("Message('one')"))
@@ -593,16 +574,11 @@ mod tests {
         let edit = case_actions[0].edit.as_ref().unwrap();
         let (_, edits) = &edit.changes[0];
         let new_text = &edits[0].new_text;
-        // The variable in the case should be 'x', not a literal
         assert!(
             new_text.contains("case x of"),
             "Should use variable x in case, not literal"
         );
     }
-
-    // Bug: extract_word_at_position closing quote
-    // When cursor is on a closing `"` of a quoted identifier, the word
-    // extracted should be the full inner name, not empty.
 
     #[test]
     fn if_to_case_offered_when_line_has_multibyte_prefix() {
@@ -612,7 +588,6 @@ mod tests {
         let uri = Url::parse("file:///test/IfUtf16.al").unwrap();
         open_doc(&ws, &uri, al_code);
 
-        // Cursor on "if x = 1 then" (line 4, col 8 in UTF-16 and bytes — ASCII prefix)
         let range = Range {
             start: super::super::Position {
                 line: 4,
@@ -650,7 +625,6 @@ mod tests {
         let uri = Url::parse("file:///test/IfRange.al").unwrap();
         open_doc(&ws, &uri, al_code);
 
-        // Line just past end of document.
         let total_lines = al_code.lines().count() as u32;
         let range = Range {
             start: super::super::Position {

@@ -15,7 +15,6 @@ use crate::{
     App, MAX_INPUT_LEN, advance_list_selection, ensure_daemon_client, input_focused_style,
 };
 
-/// A single row shown in the event chain results list.
 #[derive(Debug, Clone)]
 struct TraceRow {
     depth: usize,
@@ -26,11 +25,8 @@ struct TraceRow {
 }
 
 pub(crate) struct EventChainView {
-    /// Current text in the search input.
     pub(crate) query: String,
-    /// Whether the search input is focused (vs. the results list).
     pub(crate) input_focused: bool,
-    /// Flattened trace rows from the daemon.
     rows: Vec<TraceRow>,
     list_state: ListState,
     /// Live event-name suggestions for the current query (FB-6:
@@ -38,9 +34,7 @@ pub(crate) struct EventChainView {
     /// results area until a trace is run.
     suggestions: Vec<String>,
     suggestion_state: ListState,
-    /// Status/error message shown below the list.
     status: String,
-    /// Daemon client (None if not connected).
     client: Option<DaemonClient>,
     project_root: std::path::PathBuf,
 }
@@ -266,7 +260,6 @@ pub(crate) fn handle_event_chain_key(app: &mut App, key: crossterm::event::KeyEv
 }
 
 pub(crate) fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChainView) {
-    // Split: search input (3 lines) + results list + status bar (1 line)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

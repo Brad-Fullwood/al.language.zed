@@ -68,9 +68,6 @@ pub fn dotnet_command_async(alc: &Path) -> tokio::process::Command {
     cmd
 }
 
-// ---------------------------------------------------------------------------
-// Toolchain types
-// ---------------------------------------------------------------------------
 
 /// Paths to the AL toolchain components.
 #[derive(Debug, Clone)]
@@ -96,9 +93,6 @@ pub struct AnalyzerPaths {
     pub custom: Vec<PathBuf>,
 }
 
-// ---------------------------------------------------------------------------
-// Discovery constants
-// ---------------------------------------------------------------------------
 
 const ALC_DLL: &str = "alc.dll";
 const ALDOC_DLL: &str = "aldoc.dll";
@@ -120,9 +114,6 @@ const DOTNET_TOOL_PACKAGE_PREFIX: &str = "microsoft.dynamics.businesscentral.dev
 const INSTALL_CMD: &str =
     "dotnet tool install --global Microsoft.Dynamics.BusinessCentral.Development.Tools";
 
-// ---------------------------------------------------------------------------
-// Discovery
-// ---------------------------------------------------------------------------
 
 /// Discover the AL toolchain (ALTool installation).
 ///
@@ -377,9 +368,6 @@ fn search_path_for(cmd_name: &str) -> Option<AlToolchain> {
     search_dir_recursive(dir)
 }
 
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
 
 /// Result of validating an AlToolchain's components.
 #[derive(Debug, Clone, Serialize)]
@@ -439,9 +427,6 @@ pub fn validate_toolchain(tc: &AlToolchain) -> ToolchainValidation {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Doctor
-// ---------------------------------------------------------------------------
 
 /// Full workspace health report.
 #[derive(Debug, Clone, Serialize)]
@@ -535,7 +520,6 @@ mod tests {
         let alc = std::path::Path::new("/some/tools/net8.0/any/alc.dll");
         let cmd = dotnet_command(alc);
         assert_eq!(cmd.get_program(), "dotnet");
-        // First arg is the alc dll path.
         let args: Vec<_> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -544,7 +528,6 @@ mod tests {
             args.first().map(String::as_str),
             Some("/some/tools/net8.0/any/alc.dll")
         );
-        // DOTNET_ROLL_FORWARD=Major lets the net8.0 tool run on a newer major.
         let rf = cmd
             .get_envs()
             .find(|(k, _)| *k == std::ffi::OsStr::new("DOTNET_ROLL_FORWARD"))
@@ -619,7 +602,6 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let tc = fake_toolchain(&dir);
-        // Create all required files
         std::fs::write(&tc.alc, b"").unwrap();
         std::fs::write(&tc.code_analysis, b"").unwrap();
         std::fs::write(tc.aldoc.as_ref().unwrap(), b"").unwrap();
@@ -746,11 +728,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = tmp.path().join(".store");
         std::fs::create_dir_all(&store).unwrap();
-        // Unrelated package — wrong prefix entirely.
         let other = store.join("some.other.dotnet.tool/1.0.0/tools/net8.0/any");
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join(ALC_DLL), b"").unwrap();
-        // The real AL package the discovery should find.
         let leaf = make_fake_dotnet_tool_store(&store, "17.0.34.45391");
 
         let tc = search_dotnet_tool_store(&store).expect("expected AL package");
@@ -784,7 +764,6 @@ mod tests {
     /// Serializes tests that mutate process-global env (`PATH`, `AL_TOOL_PATH`).
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Create a minimal valid toolchain (alc.dll + CodeAnalysis.dll) in `dir`.
     fn write_minimal_toolchain(dir: &std::path::Path) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join(ALC_DLL), b"").unwrap();

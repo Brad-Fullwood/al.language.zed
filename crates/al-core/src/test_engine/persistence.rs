@@ -35,22 +35,16 @@ use tokio::sync::Mutex;
 
 use crate::test_engine::result::TestStatus;
 
-/// Maximum number of records kept per (codeunit_id, method_name) bucket.
 const MAX_PER_BUCKET: usize = 1000;
 
-/// One persisted test execution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestRunRecord {
     /// Unix epoch seconds when the record was appended.
     pub timestamp: u64,
-    /// AL codeunit object ID.
     pub codeunit_id: i32,
-    /// AL codeunit name.
     pub codeunit_name: String,
-    /// Test method name.
     pub method_name: String,
-    /// Pass / Fail / Skip.
     pub status: TestStatus,
     /// Test duration in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,7 +54,6 @@ pub struct TestRunRecord {
     pub error: Option<String>,
 }
 
-/// Persistence-layer errors.
 #[derive(Debug, Error)]
 pub enum PersistenceError {
     #[error("test results IO error: {0}")]
@@ -69,7 +62,6 @@ pub enum PersistenceError {
     Json(#[from] serde_json::Error),
 }
 
-/// Append-only JSONL store of `TestRunRecord`s.
 pub struct TestResultStore {
     path: PathBuf,
     /// Serializes appends within this process. Cross-process is best-effort.
@@ -103,7 +95,6 @@ impl TestResultStore {
         Self::open(path).await
     }
 
-    /// File path backing this store (for diagnostics / tests).
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
@@ -135,8 +126,6 @@ impl TestResultStore {
         let bucket_count = counts.get(&key).copied().unwrap_or(0);
 
         if bucket_count >= MAX_PER_BUCKET {
-            // At capacity: re-read everything, drop the oldest matching
-            // entry, rewrite, and refresh the in-memory counter.
             let mut existing = read_records_no_lock(&self.path).await?;
             if let Some(oldest_idx) = existing.iter().position(|r| {
                 r.codeunit_id == record.codeunit_id && r.method_name == record.method_name
@@ -192,7 +181,6 @@ impl TestResultStore {
         out
     }
 
-    /// Most recent record for a given (codeunit_id, method_name) pair, if any.
     pub async fn last_for(
         &self,
         codeunit_id: i32,
@@ -235,7 +223,6 @@ fn short_hash(bytes: &[u8]) -> String {
     format!("{h:016x}")
 }
 
-/// Synchronous timestamp-now helper.
 pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -358,7 +345,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = store_path(&tmp);
 
-        // Write: one valid, one garbage, one valid.
         let valid = serde_json::to_string(&rec("Test_A", TestStatus::Pass, 1)).unwrap();
         let valid2 = serde_json::to_string(&rec("Test_B", TestStatus::Pass, 2)).unwrap();
         let content = format!("{valid}\nnot json\n{valid2}\n");
@@ -403,7 +389,6 @@ mod tests {
     async fn bucket_cap_enforced_on_append() {
         let tmp = TempDir::new().unwrap();
         let store = TestResultStore::open(store_path(&tmp)).await.unwrap();
-        // Append MAX_PER_BUCKET + 5 to a single (codeunit, method).
         for i in 0..(MAX_PER_BUCKET + 5) {
             store
                 .append(rec("Test_Capped", TestStatus::Pass, i as u64))
@@ -437,7 +422,6 @@ mod tests {
     async fn cap_is_per_bucket_not_global() {
         let tmp = TempDir::new().unwrap();
         let store = TestResultStore::open(store_path(&tmp)).await.unwrap();
-        // Two methods in same codeunit, each at half-cap.
         for i in 0..600 {
             store
                 .append(rec("Test_A", TestStatus::Pass, i))
@@ -494,7 +478,6 @@ mod tests {
 
     #[test]
     fn canonical_path_uses_xdg_data_home() {
-        // Save existing env, set ours, restore.
         let prev_xdg = std::env::var_os("XDG_DATA_HOME");
         // SAFETY: tests run on a single thread by default in cargo test
         // unless --test-threads is set; this is acceptable for the unit.

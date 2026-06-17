@@ -4,7 +4,6 @@ use tower_lsp::lsp_types::*;
 
 use super::AlServer;
 
-/// Handle textDocument/definition.
 pub(crate) fn handle_definition(
     server: &AlServer,
     uri: &Url,
@@ -26,7 +25,6 @@ pub(crate) fn handle_definition(
 // T028: handle_references was inlined into the LanguageServer::references impl
 // and wrapped in spawn_blocking so it can be cancel-friendly. Removed.
 
-/// Handle textDocument/rename.
 pub(crate) fn handle_rename(
     server: &AlServer,
     uri: &Url,
@@ -38,7 +36,6 @@ pub(crate) fn handle_rename(
     Some(super::handlers::core_workspace_edit_to_lsp(result))
 }
 
-/// Handle textDocument/prepareRename.
 pub(crate) fn handle_prepare_rename(
     server: &AlServer,
     uri: &Url,

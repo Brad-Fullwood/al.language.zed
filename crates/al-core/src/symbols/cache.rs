@@ -29,16 +29,13 @@ struct CacheHeader {
     /// Cache schema version; pre-versioning caches default to 0.
     #[serde(default)]
     schema_version: u32,
-    /// Modification time seconds component (Unix timestamp).
     mtime_secs: u64,
     /// Modification time nanoseconds component (sub-second precision).
     /// Defaults to 0 on older cache files (serde default); when 0 only
     /// seconds are compared during validation.
     #[serde(default)]
     mtime_nanos: u32,
-    /// Size of the .app file when it was cached.
     file_size: u64,
-    /// Name of the package (from NavxManifest.xml).
     package_name: String,
     /// Publisher from NavxManifest.xml. Defaults to empty string on older caches.
     #[serde(default)]
@@ -51,13 +48,11 @@ struct CacheHeader {
     version: String,
 }
 
-/// The disk cache for symbol packages.
 pub struct SymbolCache {
     cache_dir: PathBuf,
 }
 
 impl SymbolCache {
-    /// Create a cache at the default location (`~/.cache/al-lsp/index/`).
     pub fn default_location() -> Self {
         let cache_dir = dirs::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -66,7 +61,6 @@ impl SymbolCache {
         Self { cache_dir }
     }
 
-    /// Create a cache at a specific directory (useful for testing).
     pub fn at(cache_dir: PathBuf) -> Self {
         Self { cache_dir }
     }
@@ -89,8 +83,6 @@ impl SymbolCache {
         let mtime_secs = mtime_duration.as_secs();
         let mtime_nanos = mtime_duration.subsec_nanos();
 
-        // Compare mtime (seconds + nanos) and file size.
-        // If the header has mtime_nanos == 0 (old cache format), only compare seconds.
         let mtime_matches = header.mtime_secs == mtime_secs
             && (header.mtime_nanos == 0 || header.mtime_nanos == mtime_nanos);
 
@@ -173,7 +165,6 @@ impl SymbolCache {
         }
     }
 
-    /// Save a parsed package to the disk cache.
     pub fn save(&self, app_path: &Path, pkg: &SymbolPackage) -> Result<(), std::io::Error> {
         let cache_path = self.cache_path_for(app_path);
         let meta = fs::metadata(app_path)?;
@@ -256,7 +247,6 @@ impl SymbolCache {
         Ok(())
     }
 
-    /// Clear the entire cache directory.
     pub fn clear(&self) -> Result<(), std::io::Error> {
         if self.cache_dir.exists() {
             fs::remove_dir_all(&self.cache_dir)?;
@@ -264,7 +254,6 @@ impl SymbolCache {
         Ok(())
     }
 
-    /// Get the cache file path for a given .app file.
     fn cache_path_for(&self, app_path: &Path) -> PathBuf {
         let filename = app_path
             .file_name()
@@ -275,7 +264,6 @@ impl SymbolCache {
     }
 }
 
-/// Decode cache data into (header, objects_data_slice).
 fn decode_cache(data: &[u8]) -> Option<(CacheHeader, &[u8])> {
     if data.len() < 4 {
         return None;
@@ -312,7 +300,6 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_test_app(dir: &Path, name: &str) -> (PathBuf, SymbolPackage) {
-        // Create a minimal .app file (NAVX header + ZIP with manifest + symbols)
         let manifest = format!(
             r#"<?xml version="1.0" encoding="utf-8"?><Package><App Id="test-id" Name="{}" Publisher="Test" Version="1.0.0.0" /></Package>"#,
             name

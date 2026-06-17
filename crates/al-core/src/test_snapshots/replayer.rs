@@ -19,11 +19,6 @@ use super::diff::{diff_snapshots, Divergence};
 use super::format::{Sample, Snapshot};
 use super::recorder::RecorderError;
 
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
-
-/// Errors from the replayer.
 #[derive(Debug, Error)]
 pub enum ReplayerError {
     #[error("Recorder error during live replay: {0}")]
@@ -38,11 +33,6 @@ pub enum ReplayerError {
     NotYetWired(String),
 }
 
-// ---------------------------------------------------------------------------
-// Verdict
-// ---------------------------------------------------------------------------
-
-/// The result of replaying a snapshot.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "divergences")]
 pub enum ReplayVerdict {
@@ -51,10 +41,6 @@ pub enum ReplayVerdict {
     /// At least one field differs; the list describes each divergence.
     Diverged(Vec<Divergence>),
 }
-
-// ---------------------------------------------------------------------------
-// Trait for session abstraction (enables testing without live BC)
-// ---------------------------------------------------------------------------
 
 /// Minimal async interface over a BC debug session, used by the replayer.
 ///
@@ -74,21 +60,14 @@ pub trait DebuggerSession {
     /// Capture the current variable state at frame 0.
     async fn get_variables(&self) -> Result<serde_json::Value, ReplayerError>;
 
-    /// Resume execution after a breakpoint.
     async fn continue_execution(&self) -> Result<(), ReplayerError>;
 }
 
-// ---------------------------------------------------------------------------
-// Replayer
-// ---------------------------------------------------------------------------
-
-/// Replays recorded [`Snapshot`]s against the current BC state.
 pub struct SnapshotReplayer {
     _private: (),
 }
 
 impl SnapshotReplayer {
-    /// Create a new replayer.
     pub fn new() -> Self {
         Self { _private: () }
     }
@@ -134,7 +113,6 @@ impl SnapshotReplayer {
         snapshot: &Snapshot,
         session: &S,
     ) -> Result<ReplayVerdict, ReplayerError> {
-        // Register all breakpoints.
         let mut bp_map: std::collections::HashMap<u32, (String, u32)> =
             std::collections::HashMap::new();
         for sample in &snapshot.samples {
@@ -151,7 +129,6 @@ impl SnapshotReplayer {
 
         session.configuration_done().await?;
 
-        // Iteration counters keyed by breakpoint_id.
         let mut iterations: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
 
         let mut observed: Vec<Sample> = Vec::new();
@@ -159,7 +136,7 @@ impl SnapshotReplayer {
         loop {
             let stopped = session.wait_for_break().await?;
             if !stopped {
-                break; // Session ended.
+                break;
             }
 
             let vars = session.get_variables().await?;
@@ -214,13 +191,11 @@ fn find_next_expected_bp(
     snapshot: &Snapshot,
     iterations: &std::collections::HashMap<u32, u32>,
 ) -> u32 {
-    // Count how many times each bp_id should fire (from snapshot).
     let mut expected: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
     for s in &snapshot.samples {
         *expected.entry(s.breakpoint_id).or_insert(0) += 1;
     }
 
-    // Find the first bp_id (in snapshot order) that hasn't reached its count.
     for s in &snapshot.samples {
         let seen = *iterations.get(&s.breakpoint_id).unwrap_or(&0);
         let needed = *expected.get(&s.breakpoint_id).unwrap_or(&0);
@@ -229,17 +204,12 @@ fn find_next_expected_bp(
         }
     }
 
-    // Fallback: return the first bp_id in the snapshot (or 0 if empty).
     snapshot
         .samples
         .first()
         .map(|s| s.breakpoint_id)
         .unwrap_or(0)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -268,7 +238,6 @@ mod tests {
         }
     }
 
-    // Positive: matched samples → Match.
     #[test]
     fn test_replay_against_identical_samples_yields_match() {
         let snap = base_snapshot(vec![sample(1, 0, serde_json::json!({"x": 42}))]);
@@ -280,7 +249,6 @@ mod tests {
         );
     }
 
-    // Positive: no samples in either → Match.
     #[test]
     fn test_replay_against_empty_samples_yields_match() {
         let snap = base_snapshot(vec![]);
@@ -288,7 +256,6 @@ mod tests {
         assert_eq!(replayer.replay_against(&snap, &[]), ReplayVerdict::Match);
     }
 
-    // Negative: mismatched field → Diverged with at least one entry.
     #[test]
     fn test_replay_against_mismatched_field_yields_diverged() {
         let snap = base_snapshot(vec![sample(1, 0, serde_json::json!({"x": 1}))]);
@@ -301,7 +268,6 @@ mod tests {
         );
     }
 
-    // Negative: missing observed sample → Diverged.
     #[test]
     fn test_replay_against_missing_sample_yields_diverged() {
         let snap = base_snapshot(vec![sample(1, 0, serde_json::json!({"x": 1}))]);
@@ -309,8 +275,6 @@ mod tests {
         let verdict = replayer.replay_against(&snap, &[]);
         assert!(matches!(verdict, ReplayVerdict::Diverged(_)));
     }
-
-    // --- FakeSession tests (structural, no live BC) ---
 
     use std::sync::{Arc, Mutex};
     use tokio::runtime::Runtime;
@@ -355,7 +319,6 @@ mod tests {
         }
 
         async fn get_variables(&self) -> Result<serde_json::Value, ReplayerError> {
-            // Return a simple value; callers compare against snapshot.
             Ok(serde_json::json!({"x": 1}))
         }
 
@@ -364,7 +327,6 @@ mod tests {
         }
     }
 
-    // Positive: replay_via_dap with FakeSession that returns matching vars → Match.
     #[test]
     fn test_replay_via_dap_matching_fake_session_yields_match() {
         let rt = Runtime::new().unwrap();
@@ -377,13 +339,10 @@ mod tests {
         assert_eq!(verdict, ReplayVerdict::Match);
     }
 
-    // Negative: replay_via_dap with FakeSession that returns mismatched vars → Diverged.
     #[test]
     fn test_replay_via_dap_mismatched_fake_session_yields_diverged() {
         let rt = Runtime::new().unwrap();
         let snap = base_snapshot(vec![sample(1, 0, serde_json::json!({"x": 1}))]);
-        // FakeSession always returns {"x": 1}, but we override get_variables behaviour
-        // by constructing a second fake that returns different data.
         struct DivergentSession;
         impl DebuggerSession for DivergentSession {
             async fn add_breakpoint(&self, _: &str, _: u32) -> Result<u32, ReplayerError> {
@@ -393,8 +352,7 @@ mod tests {
                 Ok(())
             }
             async fn wait_for_break(&self) -> Result<bool, ReplayerError> {
-                // Fire exactly once.
-                Ok(false) // Return false immediately — simulates "no more breaks".
+                Ok(false)
             }
             async fn get_variables(&self) -> Result<serde_json::Value, ReplayerError> {
                 Ok(serde_json::json!({"x": 99}))
@@ -403,7 +361,6 @@ mod tests {
                 Ok(())
             }
         }
-        // With no Break events, observed is empty → diverged (snapshot has 1 sample).
         let replayer = SnapshotReplayer::new();
         let verdict = rt
             .block_on(replayer.replay_via_dap(&snap, &DivergentSession))

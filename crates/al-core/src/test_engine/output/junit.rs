@@ -10,12 +10,10 @@ use crate::test_engine::result::{TestCodeunitResult, TestStatus};
 const MAX_FAILURE_BODY_BYTES: usize = 4096;
 const MAX_FAILURE_MSG_BYTES: usize = 256;
 
-/// Truncate a string to `max_bytes` at a valid UTF-8 boundary.
 fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
         return s;
     }
-    // Walk backwards from max_bytes to find a valid char boundary.
     let mut end = max_bytes;
     while !s.is_char_boundary(end) {
         end -= 1;
@@ -36,10 +34,8 @@ fn ms_to_secs(ms: Option<u64>) -> String {
 pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(), io::Error> {
     let mut writer = Writer::new(out);
 
-    // XML declaration
     writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
 
-    // Compute totals across all codeunits
     let total_tests: usize = results.iter().map(|cu| cu.total).sum();
     let total_failures: usize = results.iter().map(|cu| cu.failed).sum();
     let total_skipped: usize = results.iter().map(|cu| cu.skipped).sum();
@@ -50,7 +46,6 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
         .sum();
     let total_time = format!("{:.3}", total_ms as f64 / 1000.0);
 
-    // <testsuites>
     let mut suites_start = BytesStart::new("testsuites");
     suites_start.push_attribute(("tests", total_tests.to_string().as_str()));
     suites_start.push_attribute(("failures", total_failures.to_string().as_str()));
@@ -62,7 +57,6 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
         let cu_ms: u64 = cu.methods.iter().map(|m| m.duration_ms.unwrap_or(0)).sum();
         let cu_time = format!("{:.3}", cu_ms as f64 / 1000.0);
 
-        // <testsuite>
         let mut suite_start = BytesStart::new("testsuite");
         suite_start.push_attribute(("name", cu.name.as_str()));
         suite_start.push_attribute(("id", cu.id.to_string().as_str()));
@@ -77,7 +71,6 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
 
             match method.status {
                 TestStatus::Pass => {
-                    // Self-closing <testcase ... />
                     let mut tc = BytesStart::new("testcase");
                     tc.push_attribute(("classname", cu.name.as_str()));
                     tc.push_attribute(("name", method.name.as_str()));
@@ -85,7 +78,6 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
                     writer.write_event(Event::Empty(tc))?;
                 }
                 TestStatus::Skip => {
-                    // <testcase ...><skipped/></testcase>
                     let mut tc = BytesStart::new("testcase");
                     tc.push_attribute(("classname", cu.name.as_str()));
                     tc.push_attribute(("name", method.name.as_str()));
@@ -95,13 +87,10 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
                     writer.write_event(Event::End(BytesEnd::new("testcase")))?;
                 }
                 TestStatus::Fail => {
-                    // <testcase ...><failure message="..." type="AssertionError">body</failure></testcase>
                     let error_str = method.error.as_deref().unwrap_or("");
 
-                    // Truncate body to MAX_FAILURE_BODY_BYTES
                     let body = truncate_utf8(error_str, MAX_FAILURE_BODY_BYTES);
 
-                    // message attribute: first line, capped at MAX_FAILURE_MSG_BYTES
                     let first_line = error_str.lines().next().unwrap_or("");
                     let msg = truncate_utf8(first_line, MAX_FAILURE_MSG_BYTES);
 
@@ -180,8 +169,6 @@ mod tests {
     }
 
     fn assert_well_formed_xml(xml: &str) {
-        // Use quick_xml::Reader to parse through the entire document.
-        // If it returns an error, the XML is malformed.
         use quick_xml::events::Event;
         use quick_xml::Reader;
         let mut reader = Reader::from_str(xml);
@@ -194,8 +181,6 @@ mod tests {
             }
         }
     }
-
-    // 1. Empty suite
 
     #[test]
     fn test_junit_empty_suite_emits_zero_count() {
@@ -211,8 +196,6 @@ mod tests {
             "Expected <testsuites root element, got:\n{xml}"
         );
     }
-
-    // 2. All-pass codeunit
 
     #[test]
     fn test_junit_all_pass_codeunit() {
@@ -244,8 +227,6 @@ mod tests {
             "Expected 0 <skipped> elements for all-pass suite"
         );
     }
-
-    // 3. All-fail codeunit
 
     #[test]
     fn test_junit_all_fail_codeunit() {
@@ -284,8 +265,6 @@ mod tests {
             "Expected error message in output"
         );
     }
-
-    // 4. Mixed pass / fail / skip
 
     #[test]
     fn test_junit_mixed_pass_fail_skip() {
@@ -326,8 +305,6 @@ mod tests {
         );
     }
 
-    // 5. Special characters escaped (NEGATIVE)
-
     #[test]
     fn test_junit_special_chars_escaped() {
         // Reproduces: p1-3-junit-cobertura — error messages with <, >, &, ", ' must be escaped
@@ -342,7 +319,6 @@ mod tests {
         // Must parse as valid XML — if escaping is wrong, quick_xml will error.
         assert_well_formed_xml(&xml);
 
-        // Round-trip: parse back and find the failure text content.
         use quick_xml::events::Event;
         use quick_xml::Reader;
         let mut reader = Reader::from_str(&xml);
@@ -371,8 +347,6 @@ mod tests {
             "Round-tripped failure text must equal original"
         );
     }
-
-    // 6. Oversized error message truncated (NEGATIVE)
 
     #[test]
     fn test_junit_oversized_message_truncated() {

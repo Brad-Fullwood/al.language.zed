@@ -9,8 +9,6 @@ use super::build::write_al_file_and_refresh;
 use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response};
 
-// Analysis dispatchers (lint, format, fix, rules, parse, source)
-
 pub(in crate::server::daemon) fn dispatch_lint(
     workspace: &Workspace,
     id: u64,
@@ -83,7 +81,6 @@ pub(in crate::server::daemon) fn dispatch_format(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Accept direct content or file path
     let content = if let Some(text) = params.get("content").and_then(|v| v.as_str()) {
         text.to_string()
     } else if let Some(uri) = file_uri_from_params(params) {
@@ -98,7 +95,6 @@ pub(in crate::server::daemon) fn dispatch_format(
         return invalid_params(id);
     };
 
-    // Load per-workspace formatting options from .alformat.json (falls back to defaults).
     let options = workspace
         .project
         .try_read()
@@ -253,8 +249,6 @@ pub(in crate::server::daemon) fn dispatch_parse(
         ..Default::default()
     }
 }
-// Bulk fix dispatchers (T1603-T1605)
-
 pub(in crate::server::daemon) fn dispatch_fix_application_area(
     workspace: &Workspace,
     id: u64,
@@ -299,7 +293,6 @@ pub(in crate::server::daemon) fn dispatch_fix_tooltips(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Build tooltip map: field_name -> tooltip from symbol data
     let table_name = params
         .get("fromTable")
         .and_then(|v| v.as_str())
@@ -368,10 +361,9 @@ pub(in crate::server::daemon) fn dispatch_fix_data_classification(
     }
 }
 pub(in crate::server::daemon) fn dispatch_arch_lint(workspace: &Workspace, id: u64) -> Response {
-    // Load .alarch.json from project root if present; fall back to defaults.
-    // The synchronous fs::read_to_string is wrapped in block_in_place so the
-    // async runtime hosting this dispatch can re-schedule the parked thread
-    // for other work while the read is in flight (matches dispatch_format).
+    // fs::read_to_string is wrapped in block_in_place so the async runtime can
+    // re-schedule the parked thread for other work while the read is in flight
+    // (matches dispatch_format).
     let config = workspace
         .project
         .try_read()
@@ -400,10 +392,6 @@ mod tests {
         Workspace::new()
     }
 
-    // Analysis dispatchers: param-validation & happy-path branches.
-    // These exercise the synchronous, in-process error/edge paths that need
-    // neither a live BC server nor a spawned binary.
-
     /// Open a real `.al` file on disk and return its `file://` URI string,
     /// suitable for the `{ "file": ... }` param shape the dispatchers accept.
     /// The file must exist because `file_uri_from_params` canonicalises it.
@@ -412,8 +400,6 @@ mod tests {
         std::fs::write(&path, content).unwrap();
         path.canonicalize().unwrap().to_string_lossy().to_string()
     }
-
-    // --- dispatch_lint -------------------------------------------------------
 
     #[test]
     fn lint_missing_file_param_is_invalid_params() {
@@ -425,8 +411,6 @@ mod tests {
 
     #[test]
     fn lint_single_file_reports_parse_errors() {
-        // Positive + behavior: a file with a syntax error must surface at
-        // least one diagnostic (the parse-error branch appends them).
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
         // Deliberately malformed AL — unterminated object.
@@ -452,7 +436,6 @@ mod tests {
 
     #[test]
     fn lint_all_mode_returns_array_for_empty_workspace() {
-        // `all` mode iterates the file index; an empty workspace yields [].
         let ws = empty_ws();
         let resp = dispatch_lint(&ws, 3, &serde_json::json!({ "all": true }));
         assert!(resp.error.is_none());
@@ -463,12 +446,8 @@ mod tests {
         assert!(arr.is_empty(), "empty workspace → no per-file lint entries");
     }
 
-    // --- dispatch_format -----------------------------------------------------
-
     #[test]
     fn format_content_returns_formatted_text() {
-        // Positive: passing raw `content` avoids any file I/O and returns the
-        // formatted source plus a `changed` flag.
         let ws = empty_ws();
         let resp = dispatch_format(
             &ws,
@@ -483,7 +462,6 @@ mod tests {
 
     #[test]
     fn format_check_mode_only_reports_changed_flag() {
-        // In check mode the response carries ONLY `changed`, never `formatted`.
         let ws = empty_ws();
         let resp = dispatch_format(
             &ws,
@@ -506,8 +484,6 @@ mod tests {
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
     }
 
-    // --- dispatch_fix --------------------------------------------------------
-
     #[test]
     fn fix_missing_file_is_invalid_params() {
         let ws = empty_ws();
@@ -517,8 +493,6 @@ mod tests {
 
     #[test]
     fn fix_reports_zero_fixes_for_clean_file() {
-        // No custom lint rules are registered, so `fixes` is always 0 and the
-        // dryRun flag round-trips. Exercises the happy path + filter branch.
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
         let file = write_al(&tmp, "Ok.al", "codeunit 50100 \"Ok\"\n{\n}\n");
@@ -529,14 +503,8 @@ mod tests {
         assert_eq!(r["dryRun"], serde_json::json!(true));
     }
 
-    // --- dispatch_rules ------------------------------------------------------
-
     #[test]
     fn rules_returns_json_array_mirroring_registry() {
-        // Native lint rules are intentionally empty (all diagnostics come from
-        // the .NET bridge), so the dispatcher must return a JSON array whose
-        // length matches the registry exactly — proving it maps the registry
-        // rather than fabricating entries.
         let resp = dispatch_rules(1);
         assert!(resp.error.is_none());
         let arr = resp
@@ -549,8 +517,6 @@ mod tests {
             "dispatch_rules length must mirror the lint-rule registry"
         );
     }
-
-    // --- dispatch_parse ------------------------------------------------------
 
     #[test]
     fn parse_missing_file_is_invalid_params() {

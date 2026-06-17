@@ -12,7 +12,6 @@ use ratatui::{
 
 use crate::{App, ViewMode, advance_list_selection, ensure_daemon_client};
 
-/// Status of a single test method as reported by the daemon.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum MethodStatus {
     NotRun,
@@ -21,7 +20,6 @@ pub(crate) enum MethodStatus {
     Skip,
 }
 
-/// A single row in the test runner tree — either a codeunit header or a method.
 #[derive(Debug, Clone)]
 pub(crate) enum TestRow {
     Codeunit {
@@ -58,14 +56,12 @@ impl TestRunnerView {
         ensure_daemon_client(&mut self.client, &self.project_root, &mut self.status);
     }
 
-    /// Discover tests and load last results, populating `rows`.
     pub(crate) fn refresh_discovery(&mut self) {
         self.ensure_client();
         let Some(client) = self.client.as_mut() else {
             return;
         };
 
-        // Discover test codeunits / methods.
         let discovered = match client.request("tests.discover", None) {
             Ok(v) => v,
             Err(e) => {
@@ -75,7 +71,6 @@ impl TestRunnerView {
             }
         };
 
-        // Optionally load last results.
         let last_results = client
             .request("tests.last_results", None)
             .unwrap_or(serde_json::Value::Null);
@@ -105,7 +100,6 @@ impl TestRunnerView {
                         .and_then(|v| v.as_str())
                         .unwrap_or("(unknown)")
                         .to_string();
-                    // Look up status from last_results.
                     let status = find_method_status(&last_results, cu_id, &method_name);
                     self.rows.push(TestRow::Method {
                         codeunit_id: cu_id,
@@ -124,7 +118,6 @@ impl TestRunnerView {
         }
     }
 
-    /// Run the currently-selected codeunit (if the selected row is a Codeunit or Method).
     fn run_selected(&mut self) {
         let codeunit_id = match self.list_state.selected().and_then(|i| self.rows.get(i)) {
             Some(TestRow::Codeunit { id, .. }) => *id,
@@ -152,7 +145,6 @@ impl TestRunnerView {
         self.refresh_discovery();
     }
 
-    /// Run all discovered tests.
     fn run_all(&mut self) {
         self.ensure_client();
         let Some(client) = self.client.as_mut() else {
@@ -179,7 +171,6 @@ impl TestRunnerView {
         advance_list_selection(&mut self.list_state, self.rows.len(), false);
     }
 
-    /// Return the error message of the currently-selected method (if any).
     fn selected_error(&self) -> Option<&str> {
         match self.list_state.selected().and_then(|i| self.rows.get(i)) {
             Some(TestRow::Method {
@@ -245,19 +236,16 @@ pub(crate) fn handle_test_runner_key(app: &mut App, key: crossterm::event::KeyEv
 }
 
 pub(crate) fn render_test_runner(f: &mut Frame, area: Rect, view: &mut TestRunnerView) {
-    // Split vertically: list (left 60%) | error detail (right 40%).
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(area);
 
-    // Status bar at bottom of left column.
     let left_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(columns[0]);
 
-    // Build list items.
     let items: Vec<ListItem> = view
         .rows
         .iter()
@@ -306,7 +294,6 @@ pub(crate) fn render_test_runner(f: &mut Frame, area: Rect, view: &mut TestRunne
     let status_p = Paragraph::new(view.status.as_str()).style(Style::default().fg(Color::DarkGray));
     f.render_widget(status_p, left_rows[1]);
 
-    // Right pane: error detail for selected Fail row.
     let error_text = view
         .selected_error()
         .unwrap_or("(select a failed test to see error)");

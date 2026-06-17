@@ -112,7 +112,6 @@ mod tests {
         let p = Path::new("/tmp");
         let path_a = socket_path_with_runtime_dir(p, "/run/user/1000").expect("returns Some");
         let path_b = socket_path_with_runtime_dir(p, "/run/user/1001").expect("returns Some");
-        // Same project hash but different parent directories
         assert_ne!(path_a, path_b);
         assert!(path_a.starts_with("/run/user/1000/al-lsp/"));
         assert!(path_b.starts_with("/run/user/1001/al-lsp/"));

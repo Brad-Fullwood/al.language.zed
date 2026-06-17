@@ -13,14 +13,12 @@ pub struct HoverResult {
     pub range: Option<Range>,
 }
 
-/// Get hover information at a position in a document.
 #[must_use]
 pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<HoverResult> {
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
 
     let node = crate::syntax::find_node_at_position(&tree, &text, position.into())?;
     let source = text.as_bytes();
-    // Non-UTF8 node text means the node isn't a valid identifier — skip silently
     let node_text = node.utf8_text(source).unwrap_or("");
     let clean_name = node_text.trim_matches('"');
 
@@ -36,7 +34,6 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     );
     let node_range: Range = crate::syntax::ts_range_to_syntax(&node.range(), source).into();
 
-    // Access path resolution (e.g., Rec.Name, Enum::Value)
     if let Some(access) = resolution::access_path_at(&tree, &text, position) {
         tracing::debug!(receiver = %access.receiver, member = %access.member, "hover: access path found");
         if let Some(receiver) = resolution::resolve_expression_type(
@@ -147,7 +144,6 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         }
     }
 
-    // 1. Check if we're on a procedure name or a local parameter
     if let Some(proc_info) = crate::syntax::find_procedure_at(&tree, &text, position.into()) {
         if proc_info.name.eq_ignore_ascii_case(clean_name) {
             let mut content = format_procedure_hover(&proc_info);
@@ -163,7 +159,6 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             });
         }
 
-        // Cursor on the parameter name itself.
         for param in &proc_info.parameters {
             if param.name.eq_ignore_ascii_case(clean_name) {
                 let content = format!("```al\n{}\n```\n*(parameter)*", param);
@@ -200,7 +195,6 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         }
     }
 
-    // 2b. Check local/global variable declarations via TypeResolver
     {
         let resolver = crate::syntax::type_resolver::TypeResolver::new(&tree, &text);
         if let Some(decl) = resolver.resolve_type(clean_name, position.into()) {
@@ -222,7 +216,6 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         }
     }
 
-    // 3. Check package symbols from SymbolIndex
     if let Some(entry) = workspace.symbols.find_by_name(clean_name) {
         let content = format_symbol_hover(&entry);
         return Some(HoverResult {
@@ -231,7 +224,6 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         });
     }
 
-    // 3b. Check built-in global functions (Message, Error, Confirm, etc.)
     if let Some(builtin) = crate::syntax::language_data::builtin_function_by_name(clean_name) {
         let mut content = format!("```al\n{}\n```", builtin.signature);
         if !builtin.description.is_empty() {
@@ -258,7 +250,6 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         });
     }
 
-    // 4. Check built-in types
     {
         let cache = workspace
             .semantic_cache
@@ -290,7 +281,6 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         // earlier O(n*m) double-loop over workspace.builtins.
         let method_hits = cache.find_methods_by_name(clean_name);
         if !method_hits.is_empty() {
-            // Group by type name so we can emit a single hover per type with all overloads
             let mut by_type: std::collections::HashMap<&str, Vec<&crate::semantic::BuiltinMethod>> =
                 std::collections::HashMap::new();
             for (type_name, method) in &method_hits {
@@ -302,9 +292,6 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             let mut sorted_types: Vec<(&str, &Vec<&crate::semantic::BuiltinMethod>)> =
                 by_type.iter().map(|(k, v)| (*k, v)).collect();
             sorted_types.sort_by_key(|(k, _)| *k);
-            // Log the candidate set + selection so it's clear which type
-            // hover picked when an ambiguous method name has multiple
-            // owners (e.g. several builtins all expose `Count()`).
             if sorted_types.len() > 1 {
                 let candidates: Vec<&str> = sorted_types.iter().map(|(t, _)| *t).collect();
                 tracing::debug!(
@@ -344,7 +331,6 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         }
     }
 
-    // 5. Check workspace object name index.
     // Clone the file_path out of the first DashMap entry and drop the ref
     // before doing the second lookup, so we are never holding two shard
     // locks across the format! call.
@@ -372,8 +358,6 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     None
 }
 
-/// Full hover: native resolution first, then .NET CodeAnalysis bridge.
-///
 /// This is the single code path for all entry points (LSP and daemon).
 /// SemanticBridge already enforces a 30s internal timeout — no outer wrapper needed.
 pub async fn hover_full(
@@ -498,7 +482,6 @@ mod tests {
     fn hover_on_parameter_name_returns_parameter_info() {
         let ws = Workspace::new();
         let uri = open_doc(&ws, PARAM_FIXTURE);
-        // Line 2, col 18 — cursor on 'A' parameter name.
         let r = hover(
             &ws,
             &uri,
@@ -516,7 +499,6 @@ mod tests {
     fn hover_on_parameter_type_returns_parameter_info() {
         let ws = Workspace::new();
         let uri = open_doc(&ws, PARAM_FIXTURE);
-        // Line 2, col 22 — cursor on 'n' inside 'Integer' (param type).
         let r = hover(
             &ws,
             &uri,
@@ -533,7 +515,6 @@ mod tests {
     #[test]
     fn hover_on_unknown_identifier_returns_none() {
         let ws = Workspace::new();
-        // Identifier with no matching procedure, parameter, variable, symbol or builtin.
         let src = "codeunit 50150 \"Test\"\n{\n    procedure Foo()\n    begin\n        TotallyUnknownThing;\n    end;\n}\n";
         let uri = open_doc(&ws, src);
         let r = hover(
@@ -664,8 +645,6 @@ mod tests {
         assert_eq!(result, "CopyStr(String: Text; Position: Integer): Text");
     }
 
-    // Helpers for the symbol-/index-backed hover paths.
-
     fn table_entry() -> crate::symbols::SymbolEntry {
         crate::symbols::SymbolEntry {
             synthetic: false,
@@ -700,8 +679,6 @@ mod tests {
             variables: vec![],
         }
     }
-
-    // format_symbol_hover branches not covered by the original test.
 
     #[test]
     fn format_symbol_hover_filters_out_local_methods() {
@@ -756,7 +733,6 @@ mod tests {
         let mut entry = table_entry();
         entry.id = 0;
         let result = format_symbol_hover(&entry);
-        // The codeblock line should be `Table "Customer"` with no leading id.
         assert!(
             result.contains("Table \"Customer\""),
             "id 0 should be omitted: {result:?}"
@@ -767,18 +743,13 @@ mod tests {
         );
     }
 
-    // End-to-end hover via the SymbolIndex (path 3).
-
     #[test]
     fn hover_resolves_package_symbol_from_index() {
         let ws = Workspace::new();
-        // Reference an object name that is in the SymbolIndex but is not a
-        // procedure/parameter/variable/builtin so we fall through to path 3.
         let src = "codeunit 50150 \"Test\"\n{\n    procedure Foo()\n    var\n        C: Record Customer;\n    begin\n        C.Init();\n    end;\n}\n";
         let uri = open_doc(&ws, src);
         ws.symbols.add_entries(std::slice::from_ref(&table_entry()));
 
-        // Line 4, col 18 — cursor on "Customer" in the Record subtype.
         let r = hover(
             &ws,
             &uri,
@@ -797,8 +768,6 @@ mod tests {
         assert!(r.range.is_some());
     }
 
-    // Built-in global function hover (path 3b).
-
     #[test]
     fn hover_resolves_builtin_global_function() {
         // Guard: this path only exists if the static language data ships the
@@ -811,7 +780,6 @@ mod tests {
         let src = "codeunit 50150 \"Test\"\n{\n    procedure Foo()\n    begin\n        Message('hi');\n    end;\n}\n";
         let uri = open_doc(&ws, src);
 
-        // Line 4, col 10 — cursor on the "Message" identifier.
         let r = hover(
             &ws,
             &uri,
@@ -834,15 +802,12 @@ mod tests {
         );
     }
 
-    // Local variable declaration hover (path 2b — TypeResolver).
-
     #[test]
     fn hover_resolves_local_variable_declaration() {
         let ws = Workspace::new();
         let src = "codeunit 50150 \"Test\"\n{\n    procedure Foo()\n    var\n        Counter: Integer;\n    begin\n        Counter := 1;\n    end;\n}\n";
         let uri = open_doc(&ws, src);
 
-        // Line 6, col 8 — cursor on "Counter" in the assignment statement.
         let r = hover(
             &ws,
             &uri,
@@ -859,25 +824,18 @@ mod tests {
         );
     }
 
-    // Workspace object index hover (path 5).
-
     #[test]
     fn hover_resolves_workspace_object_from_file_index() {
         let ws = Workspace::new();
-        // Index a workspace object "MyHelper" so it lives in file_index.objects.
         let helper_src = "codeunit 50160 \"MyHelper\"\n{\n    procedure Run() begin end;\n}\n";
         ws.file_index.add_file(
             std::path::PathBuf::from("/tmp/MyHelper.al"),
             helper_src.to_string(),
         );
 
-        // The document we hover in references "MyHelper" by name. It is not a
-        // procedure/parameter/variable/builtin/package symbol here, so the
-        // only resolver that can answer is the workspace object index (path 5).
         let src = "codeunit 50150 \"Caller\"\n{\n    var\n        H: Codeunit \"MyHelper\";\n}\n";
         let uri = open_doc(&ws, src);
 
-        // Line 3, col 22 — cursor on "MyHelper" in the subtype reference.
         let r = hover(
             &ws,
             &uri,
@@ -894,8 +852,6 @@ mod tests {
             r.contents
         );
     }
-
-    // Edge: hover on a position that resolves to no identifier.
 
     #[test]
     fn hover_on_empty_document_returns_none() {
@@ -914,9 +870,6 @@ mod tests {
             "empty document should yield no hover, got {r:?}"
         );
     }
-
-    // hover_full falls back to the synchronous native hover when it succeeds,
-    // without needing the .NET bridge.
 
     #[tokio::test]
     async fn hover_full_returns_native_result_without_bridge() {

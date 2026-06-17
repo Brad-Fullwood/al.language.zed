@@ -143,7 +143,6 @@ pub fn rand_text(args: &[Value]) -> Eval {
         _ => return err("LibraryRandom.RandText expects ([Integer])"),
     };
     let length = next_rand(max_len) as usize;
-    // Build the string char-by-char using the seeded RNG (a–z only).
     let s: String = (0..length)
         .map(|_| {
             let code = 97 + (next_rand(26) - 1); // 97 = 'a'
@@ -190,8 +189,6 @@ pub fn rand_date_from(args: &[Value]) -> Eval {
     ok(Value::Date(start + offset))
 }
 
-/// Resolve a procedure name (case-insensitive) to its Rust implementation.
-/// Returns `None` if the name is not part of this stub's API surface.
 pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
     match procedure.to_ascii_lowercase().as_str() {
         "randint" => Some(rand_int),
@@ -208,7 +205,6 @@ pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
 mod tests {
     use super::*;
 
-    /// Seed the thread-local RNG to a known value so tests are deterministic.
     fn seed(n: u64) {
         LCG_STATE.with(|c| c.set(n));
     }
@@ -227,8 +223,6 @@ mod tests {
             other => panic!("expected error, got {other:?}"),
         }
     }
-
-    // ── RandInt ───────────────────────────────────────────────────────────────
 
     #[test]
     fn rand_int_returns_value_in_range() {
@@ -264,19 +258,15 @@ mod tests {
 
     #[test]
     fn rand_int_no_args_is_error() {
-        // Negative: missing argument → Eval::Error.
         let msg = is_err(rand_int(&[]));
         assert!(msg.contains("requires"), "got: {msg}");
     }
 
     #[test]
     fn rand_int_wrong_arg_type_is_error() {
-        // Negative: Text argument → Eval::Error.
         let msg = is_err(rand_int(&[Value::Text("bad".into())]));
         assert!(msg.contains("expects"), "got: {msg}");
     }
-
-    // ── RandIntInRange ────────────────────────────────────────────────────────
 
     #[test]
     fn rand_int_in_range_returns_value_in_range() {
@@ -299,12 +289,9 @@ mod tests {
 
     #[test]
     fn rand_int_in_range_wrong_args_is_error() {
-        // Negative: only one arg → error.
         let msg = is_err(rand_int_in_range(&[Value::Integer(1)]));
         assert!(msg.contains("expects"), "got: {msg}");
     }
-
-    // ── RandDec ───────────────────────────────────────────────────────────────
 
     #[test]
     fn rand_dec_returns_decimal_in_range() {
@@ -330,19 +317,15 @@ mod tests {
 
     #[test]
     fn rand_dec_negative_places_is_error() {
-        // Negative: negative decimal places → error.
         let msg = is_err(rand_dec(&[Value::Integer(10), Value::Integer(-1)]));
         assert!(msg.contains("≥ 0"), "got: {msg}");
     }
 
     #[test]
     fn rand_dec_excessive_places_is_error() {
-        // Negative: > 9 decimal places → error.
         let msg = is_err(rand_dec(&[Value::Integer(10), Value::Integer(10)]));
         assert!(msg.contains("≤ 9"), "got: {msg}");
     }
-
-    // ── RandText ──────────────────────────────────────────────────────────────
 
     #[test]
     fn rand_text_returns_alphabetic_string() {
@@ -371,7 +354,6 @@ mod tests {
     #[test]
     fn rand_text_no_args_uses_default_max() {
         seed(3);
-        // With no args, default max is 30.
         match rand_text(&[]) {
             Eval::Normal(Value::Text(s)) => {
                 assert!(s.len() <= 30, "default max is 30, got len {}", s.len())
@@ -382,19 +364,15 @@ mod tests {
 
     #[test]
     fn rand_text_wrong_args_is_error() {
-        // Negative: two Integer args → error.
         let msg = is_err(rand_text(&[Value::Integer(1), Value::Integer(2)]));
         assert!(msg.contains("expects"), "got: {msg}");
     }
-
-    // ── SetSeed ───────────────────────────────────────────────────────────────
 
     #[test]
     fn set_seed_changes_output() {
         seed(1);
         let before = ok_val(rand_int(&[Value::Integer(1000)]));
 
-        // Re-seed with a different value.
         ok_val(set_seed(&[Value::Integer(12345)]));
         let after = ok_val(rand_int(&[Value::Integer(1000)]));
 
@@ -408,7 +386,6 @@ mod tests {
 
     #[test]
     fn set_seed_zero_treated_as_one() {
-        // Seed 0 → effective seed 1.
         ok_val(set_seed(&[Value::Integer(0)]));
         let r0 = ok_val(rand_int(&[Value::Integer(100)]));
 
@@ -420,12 +397,9 @@ mod tests {
 
     #[test]
     fn set_seed_no_args_is_error() {
-        // Negative: missing argument → error.
         let msg = is_err(set_seed(&[]));
         assert!(msg.contains("requires"), "got: {msg}");
     }
-
-    // ── RandDateFrom ──────────────────────────────────────────────────────────
 
     #[test]
     fn rand_date_from_returns_date_in_range() {
@@ -453,12 +427,9 @@ mod tests {
 
     #[test]
     fn rand_date_from_wrong_args_is_error() {
-        // Negative: wrong arg types → error.
         let msg = is_err(rand_date_from(&[Value::Integer(100), Value::Integer(30)]));
         assert!(msg.contains("expects"), "got: {msg}");
     }
-
-    // ── Resolver ──────────────────────────────────────────────────────────────
 
     #[test]
     fn resolve_is_case_insensitive() {
@@ -471,7 +442,6 @@ mod tests {
 
     #[test]
     fn resolve_unknown_returns_none() {
-        // Negative: unknown procedure name → None.
         assert!(resolve("DoesNotExist").is_none());
         assert!(resolve("").is_none());
     }

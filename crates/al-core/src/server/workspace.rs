@@ -54,7 +54,6 @@ pub(crate) async fn initialize_workspace(
         .log_message(MessageType::INFO, "AL workspace: initializing...")
         .await;
 
-    // 1. Discover toolchain.
     // find_toolchain() does sync filesystem traversal (PATH walk, ALTool
     // probe) which can take tens of ms — must run on a blocking thread so
     // we don't stall the tokio runtime during init.
@@ -81,7 +80,6 @@ pub(crate) async fn initialize_workspace(
         }
     }
 
-    // 2. Find project and load packages
     let workspace_root = root_uri
         .as_ref()
         .and_then(|u| u.to_file_path().ok()) // SILENT: non-file URIs legitimately have no path
@@ -134,8 +132,6 @@ pub(crate) async fn initialize_workspace(
             ready_flag.store(true, Ordering::Release);
             init_notify.notify_waiters();
 
-            // Auto-download missing packages if needed.
-            // Prompt the user and let them choose the download source.
             if project.packages.is_empty() {
                 let deps = project.all_dependencies();
                 if !deps.is_empty() {
@@ -155,7 +151,6 @@ pub(crate) async fn initialize_workspace(
                         if !downloaded.is_empty() {
                             project.packages = downloaded;
 
-                            // Now load the freshly-downloaded packages.
                             let cache = crate::symbols::cache::SymbolCache::default_location();
                             let loaded = workspace
                                 .symbols
@@ -174,7 +169,6 @@ pub(crate) async fn initialize_workspace(
 
             log_source_availability(&project.packages);
 
-            // Update project reference after any package downloads completed.
             *workspace.project.write().await = Some(project.clone());
         }
         Err(e) => {
@@ -183,7 +177,6 @@ pub(crate) async fn initialize_workspace(
                 .show_message(MessageType::INFO, format!("No AL project found: {e}"))
                 .await;
 
-            // Still try to scan for .al files in the workspace root
             let count = tokio::task::block_in_place(|| workspace.file_index.scan(&workspace_root));
             if count > 0 {
                 info!(count, "Scanned workspace .al files");
@@ -293,7 +286,6 @@ pub(crate) async fn initialize_workspace(
                     tokio::task::yield_now().await;
                 }
                 if let Ok(uri) = url::Url::from_file_path(&path) {
-                    // Use cached parse tree from file_index instead of re-parsing.
                     if let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) {
                         let source = text.as_bytes();
                         let errors = crate::syntax::AlParser::errors_from_tree(&tree);
@@ -381,8 +373,6 @@ fn log_source_availability(packages: &[PathBuf]) {
     }
 }
 
-/// Prompt the user to choose a download source via `window/showMessageRequest`.
-///
 /// Returns `Some(source)` if the user picks an option, `None` if dismissed.
 async fn prompt_download_symbols(
     client: &tower_lsp::Client,
@@ -442,8 +432,6 @@ async fn prompt_download_symbols(
     }
 }
 
-/// Download symbols from a running BC instance defined in launch.json.
-///
 /// Uses the first available server config. Returns downloaded .app file paths.
 async fn download_symbols_from_server(
     project: &crate::project::AlProject,
@@ -529,8 +517,6 @@ async fn download_symbols_from_server(
     downloaded
 }
 
-/// Convert the global NuGet feed list to the symbol-loader type.
-///
 /// Called from both the LSP workspace initializer and the daemon download dispatcher
 /// so the mapping is defined exactly once.
 pub(crate) fn map_nuget_feeds(
@@ -565,9 +551,6 @@ pub(crate) fn effective_nuget_feeds(
     feeds
 }
 
-/// Download symbol packages from NuGet into the project's .alpackages directory.
-///
-/// Returns paths to successfully downloaded .app files.
 async fn download_packages_nuget(
     workspace: &crate::workspace::Workspace,
     deps: &[crate::project::AppDependency],
@@ -616,9 +599,6 @@ async fn download_packages_nuget(
     downloaded
 }
 
-/// Handle the `al.downloadSymbols*` commands.
-///
-/// Downloads symbols from the specified source and reloads the symbol index.
 pub(crate) async fn download_symbols_command(server: &AlServer, source: DownloadSource) {
     let project = server.workspace.project.read().await.clone();
     let Some(project) = project else {
@@ -674,7 +654,6 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         return;
     }
 
-    // Reload symbol index (with cache for fast subsequent starts)
     let cache = crate::symbols::cache::SymbolCache::default_location();
     let loaded = server
         .workspace
@@ -704,8 +683,6 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         .await;
 }
 
-/// Handle workspace/symbol request.
-///
 /// Package symbols (from .app NuGet packages) are intentionally excluded — like
 /// VS Code, this feature returns only the user's project files. Package symbols
 /// are accessible via completion, hover, and go-to-definition.
@@ -721,7 +698,6 @@ pub(crate) fn handle_workspace_symbol(
 
     let mut results = Vec::new();
 
-    // Top-level objects (table, page, codeunit, etc.)
     for r in ws_results {
         if let Some(file_text_entry) = server.workspace.file_index.files.get(&r.file_path) {
             if let Ok(file_uri) = Url::from_file_path(&r.file_path) {
@@ -744,7 +720,6 @@ pub(crate) fn handle_workspace_symbol(
         }
     }
 
-    // Child symbols: procedures, triggers, events.
     let remaining = MAX_LSP_SYMBOLS.saturating_sub(results.len());
     if remaining > 0 {
         let child_results =
@@ -778,9 +753,6 @@ pub(crate) fn handle_workspace_symbol(
     }
 }
 
-// Recommended settings helpers
-
-/// Check whether the settings prompt has already been shown (persistent sentinel).
 fn settings_prompt_shown() -> bool {
     sentinel_path().map(|p| p.exists()).unwrap_or(false)
 }
@@ -796,7 +768,6 @@ fn ensure_parent_dir(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Mark that the settings prompt has been shown.
 fn mark_settings_prompt_shown() {
     if let Some(path) = sentinel_path() {
         if let Err(e) = ensure_parent_dir(&path) {
@@ -817,7 +788,6 @@ fn mark_settings_prompt_shown() {
     }
 }
 
-/// Path to the sentinel file that records the popup was shown.
 fn sentinel_path() -> Option<PathBuf> {
     let data_dir = std::env::var("XDG_DATA_HOME")
         .ok()
@@ -830,8 +800,6 @@ fn sentinel_path() -> Option<PathBuf> {
     Some(data_dir.join("al-lsp").join(".settings-prompt-shown"))
 }
 
-/// Check whether Zed's settings.json already has correct AL settings.
-///
 /// Returns true only if both `lsp.al-lsp` exists AND
 /// `languages.AL.language_servers` contains "al-lsp". This prevents the
 /// prompt from being skipped when settings are present but broken (e.g.
@@ -850,7 +818,6 @@ fn zed_has_al_settings() -> bool {
         return false;
     };
     let has_lsp_section = v.get("lsp").and_then(|lsp| lsp.get("al-lsp")).is_some();
-    // Check languages.AL.language_servers contains "al-lsp"
     let has_lang_server = v
         .get("languages")
         .and_then(|l| l.get("AL"))
@@ -861,14 +828,9 @@ fn zed_has_al_settings() -> bool {
     has_lsp_section && has_lang_server
 }
 
-/// Apply recommended AL settings to Zed's settings.json.
-///
-/// Reads the current settings, merges recommended AL-specific settings,
-/// and writes back. Creates the file (and parent directories) if needed.
 pub(crate) fn apply_recommended_settings() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let settings_path = zed_settings_path().ok_or("Cannot determine Zed settings path")?;
 
-    // Read current settings (or empty object if file doesn't exist yet).
     let current: serde_json::Value = if settings_path.exists() {
         let content = std::fs::read_to_string(&settings_path)?;
         strip_jsonc_comments_and_parse(&content)?
@@ -886,7 +848,6 @@ pub(crate) fn apply_recommended_settings() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// Get the path to Zed's settings.json.
 fn zed_settings_path() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
@@ -911,7 +872,6 @@ fn zed_settings_path() -> Option<PathBuf> {
     }
 }
 
-/// Strip JSONC comments (`//` and `/* */`) and parse as JSON.
 fn strip_jsonc_comments_and_parse(
     input: &str,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
@@ -944,11 +904,9 @@ fn strip_jsonc_comments_and_parse(
             }
             '/' => {
                 if chars.peek() == Some(&'/') {
-                    // Line comment — skip to end of line (handle both LF and CRLF).
                     for c2 in chars.by_ref() {
                         if c2 == '\n' || c2 == '\r' {
                             result.push('\n');
-                            // Consume trailing \n after \r (CRLF)
                             if c2 == '\r' && chars.peek() == Some(&'\n') {
                                 chars.next();
                             }
@@ -956,12 +914,11 @@ fn strip_jsonc_comments_and_parse(
                         }
                     }
                 } else if chars.peek() == Some(&'*') {
-                    // Block comment — skip to `*/`.
-                    chars.next(); // consume `*`
+                    chars.next();
                     loop {
                         match chars.next() {
                             Some('*') if chars.peek() == Some(&'/') => {
-                                chars.next(); // consume `/`
+                                chars.next();
                                 break;
                             }
                             Some('\n') => result.push('\n'), // preserve line numbers
@@ -988,8 +945,6 @@ fn strip_jsonc_comments_and_parse(
     Ok(serde_json::from_str(&result)?)
 }
 
-/// Deep-merge `overrides` into `base`.
-///
 /// Objects are merged recursively; all other value types are replaced by
 /// the override value.  Existing user settings are never removed.
 fn deep_merge(base: &serde_json::Value, overrides: &serde_json::Value) -> serde_json::Value {
@@ -1009,7 +964,6 @@ fn deep_merge(base: &serde_json::Value, overrides: &serde_json::Value) -> serde_
     }
 }
 
-/// Recommended Zed settings for optimal AL development.
 fn recommended_al_settings() -> serde_json::Value {
     serde_json::json!({
         "lsp": {
@@ -1185,8 +1139,6 @@ mod tests {
         assert!(settings["languages"]["AL"].is_object());
     }
 
-    // DownloadSource::display_name
-
     #[test]
     fn download_source_display_names() {
         assert_eq!(DownloadSource::Server.display_name(), "BC server");
@@ -1199,11 +1151,9 @@ mod tests {
     #[test]
     fn effective_feeds_honor_custom_and_only_flags() {
         let mut cfg = crate::config::AlConfig::default();
-        // Defaults only.
         let feeds = effective_nuget_feeds(&cfg);
         assert_eq!(feeds.len(), 3, "the three public Microsoft feeds");
 
-        // Custom feed first, defaults appended.
         cfg.nuget_feeds = vec![crate::config::NuGetFeedConfig {
             name: "corp".into(),
             url: "https://nuget.corp.example/v3/index.json".into(),
@@ -1215,14 +1165,11 @@ mod tests {
             "https://nuget.corp.example/v3/index.json"
         );
 
-        // Only-custom drops the defaults entirely.
         cfg.use_only_custom_feeds = true;
         let feeds = effective_nuget_feeds(&cfg);
         assert_eq!(feeds.len(), 1);
         assert_eq!(feeds[0].name, "corp");
     }
-
-    // map_nuget_feeds
 
     #[test]
     fn map_nuget_feeds_preserves_index_urls_in_order() {
@@ -1249,8 +1196,6 @@ mod tests {
         assert!(mapped.is_empty());
     }
 
-    // ensure_parent_dir
-
     #[test]
     fn ensure_parent_dir_creates_missing_parents() {
         let tmp = std::env::temp_dir().join(format!("al-ws-test-{}", std::process::id()));
@@ -1258,7 +1203,6 @@ mod tests {
         let target = tmp.join("nested").join("deep").join("file.txt");
         ensure_parent_dir(&target).unwrap();
         assert!(target.parent().unwrap().is_dir());
-        // Now an actual write into the created directory must succeed.
         std::fs::write(&target, b"ok").unwrap();
         assert!(target.exists());
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1271,8 +1215,6 @@ mod tests {
         assert!(ensure_parent_dir(p).is_ok());
     }
 
-    // log_source_availability — must not panic on odd inputs / empty list
-
     #[test]
     fn log_source_availability_handles_empty_and_missing_files() {
         // Empty package list: no-op, no panic.
@@ -1283,8 +1225,6 @@ mod tests {
         // Path with no file stem must fall back to "unknown" without panic.
         log_source_availability(&[PathBuf::from("/")]);
     }
-
-    // sentinel_path / settings_prompt_shown / mark_settings_prompt_shown
 
     /// RAII guard that snapshots and restores process env vars used by the
     /// path helpers, so these serial tests don't leak state into one another.
@@ -1356,16 +1296,12 @@ mod tests {
         let base = std::env::temp_dir().join(format!("al-sentinel-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         guard.set("XDG_DATA_HOME", &base);
-        // Fresh: sentinel absent → not shown.
         assert!(!settings_prompt_shown());
-        // After marking, the sentinel exists → shown.
         mark_settings_prompt_shown();
         assert!(settings_prompt_shown());
         assert!(sentinel_path().unwrap().exists());
         let _ = std::fs::remove_dir_all(&base);
     }
-
-    // zed_has_al_settings
 
     #[cfg(target_os = "linux")]
     fn write_zed_settings(guard: &EnvGuard, contents: &str) -> PathBuf {
@@ -1443,11 +1379,8 @@ mod tests {
         let base = std::env::temp_dir().join(format!("al-zedcfg-missing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         guard.set("XDG_CONFIG_HOME", &base);
-        // File does not exist → read fails → false.
         assert!(!zed_has_al_settings());
     }
-
-    // apply_recommended_settings (end-to-end merge + write)
 
     #[test]
     #[serial_test::serial]
@@ -1466,10 +1399,8 @@ mod tests {
 
         let written = std::fs::read_to_string(&path).unwrap();
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
-        // Recommended settings applied.
         assert_eq!(v["languages"]["AL"]["language_servers"][0], "al-lsp");
         assert!(v["lsp"]["al-lsp"]["settings"].is_object());
-        // Pre-existing user values preserved.
         assert_eq!(v["ui_font_size"], 18);
         assert_eq!(v["theme"], "Custom");
         // The just-written file is itself recognized as having AL settings.
@@ -1477,12 +1408,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    // strip_jsonc_comments_and_parse — block-comment & escape edge paths
-
     #[test]
     fn block_comment_preserves_following_keys() {
-        // A multi-line block comment in the middle must be removed entirely
-        // while leaving surrounding keys intact.
         let input = "{\n  \"a\": 1,\n  /* this\n     spans\n     lines */\n  \"b\": 2\n}";
         let parsed = strip_jsonc_comments_and_parse(input).unwrap();
         assert_eq!(parsed["a"], 1);
@@ -1495,7 +1422,6 @@ mod tests {
         // runs to EOF without a closing `*/`. The content up to the comment is
         // still valid JSON, so the value before it must parse.
         let input = "{ \"a\": 1 } /* dangling comment never closed";
-        // Everything after the `}` is stripped, leaving a parseable object.
         let parsed = strip_jsonc_comments_and_parse(input).unwrap();
         assert_eq!(parsed["a"], 1);
     }
@@ -1526,8 +1452,6 @@ mod tests {
         assert!(strip_jsonc_comments_and_parse(input).is_err());
     }
 
-    // deep_merge — type-replacement at nested depth
-
     #[test]
     fn deep_merge_override_object_replaces_base_scalar() {
         // base has a scalar where the override has an object: the object wins
@@ -1557,8 +1481,6 @@ mod tests {
         assert_eq!(merged["a"]["b"]["add"], 2);
     }
 
-    // recommended_al_settings — load-bearing keys the apply flow depends on
-
     #[test]
     fn recommended_settings_registers_al_lsp_language_server() {
         let s = recommended_al_settings();
@@ -1576,8 +1498,6 @@ mod tests {
             true
         );
     }
-
-    // zed_has_al_settings — remaining early-return branches
 
     #[test]
     #[serial_test::serial]
@@ -1617,8 +1537,6 @@ mod tests {
         assert!(zed_has_al_settings());
         let _ = std::fs::remove_dir_all(&base);
     }
-
-    // apply_recommended_settings — fresh-file and JSONC-input paths
 
     #[test]
     #[serial_test::serial]
@@ -1664,15 +1582,11 @@ mod tests {
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        // User values from the commented JSONC survived.
         assert_eq!(v["ui_font_size"], 20);
         assert_eq!(v["theme"], "Solarized");
-        // Recommended AL settings were merged in.
         assert!(v["lsp"]["al-lsp"]["settings"].is_object());
         let _ = std::fs::remove_dir_all(&base);
     }
-
-    // handle_workspace_symbol — top-level objects + child symbols
 
     /// Build an `AlServer` (with a real tower-lsp `Client`) for in-process tests.
     /// `LspService::new` wires a live client without spawning the LSP transport.
@@ -1708,9 +1622,7 @@ mod tests {
         let sym = &results[0];
         assert_eq!(sym.name, "Customer Card");
         assert_eq!(sym.kind, SymbolKind::OBJECT);
-        // container_name carries the object kind (e.g. "page").
         assert_eq!(sym.container_name.as_deref(), Some("page"));
-        // Location URI points at the originating .al file.
         assert!(sym.location.uri.as_str().ends_with("CustomerCard.al"));
     }
 
@@ -1742,7 +1654,6 @@ mod tests {
             std::path::PathBuf::from("/proj/CustomerCard.al"),
             r#"page 50100 "Customer Card" { }"#.to_string(),
         );
-        // A query matching nothing must yield None.
         assert!(handle_workspace_symbol(server, "ZZZ_no_such_symbol").is_none());
     }
 
@@ -1765,10 +1676,8 @@ mod tests {
             .iter()
             .find(|s| s.name == "AddNumbers")
             .expect("AddNumbers child must be present");
-        // Procedure maps to FUNCTION, distinguishing it from a top-level OBJECT.
         assert_eq!(child.kind, SymbolKind::FUNCTION);
         assert_ne!(child.kind, SymbolKind::OBJECT);
-        // Container is the parent object name, mapped to Some(...).
         assert_eq!(child.container_name.as_deref(), Some("Math Util"));
     }
 
@@ -1798,8 +1707,6 @@ mod tests {
             "child procedure must be present for empty query"
         );
     }
-
-    // strip_jsonc_comments_and_parse — block-comment EOF + CRLF-in-block edges
 
     #[test]
     fn block_comment_terminated_exactly_at_eof_after_star() {
@@ -1831,8 +1738,6 @@ mod tests {
         assert_eq!(parsed["a"], 1);
     }
 
-    // deep_merge — base-without-key insert path
-
     #[test]
     fn deep_merge_inserts_override_key_absent_in_base() {
         // The `None => override_val.clone()` arm: a nested object key present in
@@ -1840,15 +1745,12 @@ mod tests {
         let base = json!({"lsp": {"existing": 1}});
         let overrides = json!({"lsp": {"al-lsp": {"settings": {"x": 5}}}});
         let merged = deep_merge(&base, &overrides);
-        // The brand-new nested subtree is inserted verbatim...
         assert_eq!(merged["lsp"]["al-lsp"]["settings"]["x"], 5);
-        // ...without disturbing the sibling that only existed in base.
         assert_eq!(merged["lsp"]["existing"], 1);
     }
 
     #[test]
     fn deep_merge_into_empty_base_yields_overrides() {
-        // Merging into an empty object returns the overrides intact.
         let merged = deep_merge(&json!({}), &recommended_al_settings());
         assert!(merged["lsp"]["al-lsp"]["settings"].is_object());
         assert_eq!(merged["languages"]["AL"]["language_servers"][0], "al-lsp");

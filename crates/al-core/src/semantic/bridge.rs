@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 
 use super::host::DotNetHost;
 
-/// Request to analyze a file with CodeAnalysis analyzers.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyzeRequest {
@@ -23,7 +22,6 @@ pub struct AnalyzeRequest {
     pub package_cache: PathBuf,
 }
 
-/// Result of a compilation invocation.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompileResult {
@@ -36,7 +34,6 @@ pub struct CompileResult {
     pub output: Option<String>,
 }
 
-/// A single diagnostic from compilation or analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticEntry {
@@ -50,7 +47,6 @@ pub struct DiagnosticEntry {
     pub message: String,
 }
 
-/// Type information resolved at a position.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TypeInfo {
     pub name: String,
@@ -58,7 +54,6 @@ pub struct TypeInfo {
     pub documentation: Option<String>,
 }
 
-/// A completion item from the CodeAnalysis API.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CompletionItem {
     pub label: String,
@@ -67,7 +62,6 @@ pub struct CompletionItem {
     pub documentation: Option<String>,
 }
 
-/// A built-in AL type from CodeAnalysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuiltinType {
@@ -78,7 +72,6 @@ pub struct BuiltinType {
     pub enum_values: Vec<String>,
 }
 
-/// A method on a built-in type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuiltinMethod {
@@ -91,7 +84,6 @@ pub struct BuiltinMethod {
     pub documentation: String,
 }
 
-/// A method parameter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MethodParameter {
@@ -112,7 +104,6 @@ impl std::fmt::Display for MethodParameter {
     }
 }
 
-/// Information about a compiler error code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorCodeInfo {
     pub code: String,
@@ -120,7 +111,6 @@ pub struct ErrorCodeInfo {
     pub severity: String,
 }
 
-/// Errors from the semantic bridge.
 #[derive(Debug, thiserror::Error)]
 pub enum SemanticError {
     #[error("Failed to initialize .NET host: {0}")]
@@ -190,8 +180,6 @@ fn check_text_size(text: Option<&str>) -> Result<(), SemanticError> {
 /// calls are serialized by a `std::sync::Mutex` around `DotNetHost` — the CLR
 /// response buffer is shared, so only one call may be in flight at a time.
 pub struct SemanticBridge {
-    /// Mutex-wrapped host — serializes concurrent bridge calls (CLR response
-    /// buffer is shared and not safe to access from multiple threads at once).
     host: Arc<std::sync::Mutex<DotNetHost>>,
     version: String,
     /// Unix timestamp (seconds) when the most recent timeout fired, or 0 if
@@ -202,7 +190,6 @@ pub struct SemanticBridge {
     last_timeout_secs: std::sync::atomic::AtomicU64,
 }
 
-/// Default timeout for bridge calls.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Cooldown after a timeout: bridge calls are short-circuited to `Poisoned`
@@ -231,9 +218,7 @@ fn seed_timeout_stamp(stamp: &std::sync::atomic::AtomicU64, secs: u64) {
 /// to model a panicked call, or leave it free — without loading the CLR.
 #[derive(Debug)]
 enum CooldownDecision {
-    /// Gate is open — let the call proceed to the bridge.
     Proceed,
-    /// Gate is closed — short-circuit with this error.
     ShortCircuit(SemanticError),
 }
 
@@ -268,13 +253,8 @@ fn cooldown_gate<T>(
             "cooldown window after timeout",
         ));
     }
-    // Cooldown elapsed — probe the Mutex before releasing the gate.
-    // If it's still held, the previous call is stuck; re-stamp the
-    // cooldown and keep the gate closed for another cooldown window.
     match host.try_lock() {
         Ok(_guard) => {
-            // Lock is free — the previous timeout has completed; clear
-            // the stamp so subsequent calls go through normally.
             last_timeout_secs.store(0, std::sync::atomic::Ordering::Relaxed);
             tracing::info!(
                 method,
@@ -284,7 +264,6 @@ fn cooldown_gate<T>(
             CooldownDecision::Proceed
         }
         Err(std::sync::TryLockError::WouldBlock) => {
-            // Lock is still held by the hung call — extend cooldown.
             last_timeout_secs.store(now, std::sync::atomic::Ordering::Relaxed);
             tracing::warn!(
                 method,
@@ -296,9 +275,6 @@ fn cooldown_gate<T>(
             ))
         }
         Err(std::sync::TryLockError::Poisoned(_)) => {
-            // Mutex was poisoned by a panicking call — we know the
-            // CLR state is suspect. Extend cooldown to avoid piling
-            // on; a restart_bridge() is the proper recovery path.
             last_timeout_secs.store(now, std::sync::atomic::Ordering::Relaxed);
             tracing::warn!(
                 method,
@@ -310,12 +286,6 @@ fn cooldown_gate<T>(
 }
 
 impl SemanticBridge {
-    /// Initialize the .NET bridge with explicit paths.
-    ///
-    /// - `code_analysis`: path to `Microsoft.Dynamics.Nav.CodeAnalysis.dll`
-    /// - `version`: toolchain version string (used for cache keying)
-    ///
-    /// This loads the CLR in-process and initializes the bridge DLL.
     pub fn new(code_analysis: &Path, version: &str) -> Result<Self, SemanticError> {
         let (bridge_dll, runtime_config) = super::host::find_bridge_dll()?;
         let host = DotNetHost::new(&bridge_dll, &runtime_config, code_analysis)?;
@@ -327,7 +297,6 @@ impl SemanticBridge {
         })
     }
 
-    /// The toolchain version this bridge was initialized with.
     pub fn version(&self) -> &str {
         &self.version
     }
@@ -350,7 +319,6 @@ impl SemanticBridge {
         seed_timeout_stamp(&self.last_timeout_secs, secs);
     }
 
-    /// Deserialize a bridge response value, converting JSON errors to [`SemanticError`].
     fn parse_response<T: serde::de::DeserializeOwned>(
         value: serde_json::Value,
     ) -> Result<T, SemanticError> {
@@ -382,12 +350,6 @@ impl SemanticBridge {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, SemanticError> {
-        // If a previous call timed out, short-circuit during the cooldown
-        // window to avoid piling up new calls on a potentially-hung Mutex.
-        // After the cooldown elapses, we probe the lock — only if it's
-        // actually free do we let the call through. The decision (and the
-        // `last_timeout_secs` re-stamping) lives in the pure `cooldown_gate`
-        // helper so the `try_lock()` race is unit-testable (T047).
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -406,8 +368,6 @@ impl SemanticBridge {
         let host = self.host.clone();
         let method = method.to_string();
 
-        // Run the .NET call on a blocking thread to avoid blocking the tokio runtime.
-        // Lock is acquired inside spawn_blocking so the critical section is sync.
         let result = tokio::time::timeout(
             DEFAULT_TIMEOUT,
             tokio::task::spawn_blocking(move || {
@@ -423,8 +383,6 @@ impl SemanticBridge {
                 "Bridge call panicked: {join_err}"
             ))),
             Err(_) => {
-                // Stamp the timeout time so the cooldown window kicks in;
-                // future calls fail fast for TIMEOUT_COOLDOWN, then retry.
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -436,13 +394,10 @@ impl SemanticBridge {
         }
     }
 
-    /// Run CodeAnalysis analyzers on a source file.
     pub async fn analyze(
         &self,
         req: AnalyzeRequest,
     ) -> Result<Vec<DiagnosticEntry>, SemanticError> {
-        // Bound the caller-supplied editor buffer before serialising a multi-MB
-        // string into the CLR call (matches type_at / completions_at).
         check_text_size(Some(&req.source))?;
         let params = serde_json::to_value(&req)
             .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
@@ -513,11 +468,7 @@ impl SemanticBridge {
         Self::parse_response(result)
     }
 
-    /// Extract all built-in types and methods from CodeAnalysis.
-    ///
-    /// Checks disk cache first. On cache miss, calls the bridge and caches the result.
     pub async fn builtin_types(&self) -> Result<Vec<BuiltinType>, SemanticError> {
-        // Check cache
         if let Some(cached) = super::cache::read_builtins(&self.version) {
             return Ok(cached);
         }
@@ -525,15 +476,12 @@ impl SemanticBridge {
         let result = self.call("builtins", serde_json::Value::Null).await?;
         let types: Vec<BuiltinType> = Self::parse_response(result)?;
 
-        // Cache for next time
         super::cache::write_builtins(&self.version, &types);
 
         Ok(types)
     }
 
-    /// List all compiler error codes from CodeAnalysis.
-    ///
-    /// Default: cached. Set `AL_ERROR_CODES_LIVE=1` for fresh extraction.
+    /// Set `AL_ERROR_CODES_LIVE=1` for fresh extraction (bypasses disk cache).
     pub async fn error_codes(&self) -> Result<Vec<ErrorCodeInfo>, SemanticError> {
         let live = std::env::var("AL_ERROR_CODES_LIVE").is_ok();
 
@@ -551,10 +499,6 @@ impl SemanticBridge {
         Ok(codes)
     }
 
-    /// Compile an AL project using alc (the Microsoft AL compiler).
-    ///
-    /// This invokes alc as a subprocess via the .NET bridge, parses the SARIF
-    /// error log for structured diagnostics, and returns the path to the .app file.
     pub async fn compile(
         &self,
         project: &Path,
@@ -573,7 +517,6 @@ impl SemanticBridge {
         Self::parse_response(result)
     }
 
-    /// Health check — verifies the .NET bridge is responsive.
     pub async fn ping(&self) -> Result<(), SemanticError> {
         let _ = self.call("ping", serde_json::Value::Null).await?;
         Ok(())
@@ -583,8 +526,6 @@ impl SemanticBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // -- Serialization tests --
 
     #[test]
     fn test_analyze_request_serialization() {
@@ -597,7 +538,6 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["file"], "/src/MyTable.al");
         assert_eq!(json["analyzers"].as_array().unwrap().len(), 2);
-        // Verify camelCase serialization
         assert!(json.get("packageCache").is_some());
     }
 
@@ -759,8 +699,6 @@ mod tests {
         assert_eq!(parsed.code, "AL0001");
     }
 
-    // -- Error tests --
-
     #[test]
     fn test_semantic_error_display() {
         let err = SemanticError::HostInit("dotnet not found".to_string());
@@ -849,12 +787,6 @@ mod tests {
 
     #[test]
     fn test_analyze_source_over_limit_rejected() {
-        // analyze() guards req.source with check_text_size before serialising
-        // the buffer into the CLR call — exactly as type_at/completions_at guard
-        // their `text`. Constructing a live SemanticBridge needs the CLR, so we
-        // assert the same guard the method applies to its `source` field. An
-        // oversized editor buffer (diagnostics.rs feeds unsanitised text here)
-        // must be rejected with InputTooLarge, not forwarded to the bridge.
         let req = AnalyzeRequest {
             file: std::path::PathBuf::from("/tmp/Over.al"),
             source: "a".repeat(MAX_TEXT_BYTES + 1),
@@ -868,7 +800,6 @@ mod tests {
             }
             other => panic!("expected InputTooLarge for analyze source, got {other:?}"),
         }
-        // A normal-sized source still passes the guard.
         let ok_req = AnalyzeRequest {
             source: "codeunit 50000 Foo { }".to_string(),
             ..req
@@ -884,11 +815,6 @@ mod tests {
         assert!(msg.contains("16"), "message should contain max: {msg}");
     }
 
-    // -- Cooldown gate (T047 / F-OPEN-135) --
-    //
-    // `cooldown_gate` is generic over the locked type, so these tests model
-    // the CLR-call mutex with a plain `Mutex<()>` and never touch the CLR.
-
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
 
@@ -896,8 +822,6 @@ mod tests {
 
     #[test]
     fn test_cooldown_gate_no_prior_timeout_proceeds() {
-        // Stamp of 0 means no recent timeout — gate is always open and the
-        // lock is never even probed.
         let stamp = AtomicU64::new(0);
         let host = Mutex::new(());
         let decision = cooldown_gate(&stamp, &host, 1_000, COOLDOWN, "typeAt");
@@ -907,10 +831,6 @@ mod tests {
 
     #[test]
     fn test_cooldown_gate_inside_window_short_circuits_without_probe() {
-        // A timeout fired 10s ago; cooldown is 60s. Still inside the window:
-        // short-circuit WITHOUT probing the lock. We prove the lock is never
-        // probed by holding it for the duration of the call — a probe would
-        // observe WouldBlock and produce the "hung call" message instead.
         let stamp = AtomicU64::new(1_000);
         let host = Mutex::new(());
         let _held = host.lock().unwrap();
@@ -921,14 +841,11 @@ mod tests {
             }
             other => panic!("expected in-window Cooldown, got {other:?}"),
         }
-        // Stamp is left untouched while inside the window.
         assert_eq!(stamp.load(Ordering::Relaxed), 1_000);
     }
 
     #[test]
     fn test_cooldown_gate_elapsed_lock_free_resumes_and_clears() {
-        // Cooldown elapsed (70s > 60s) and the lock is free — the previous
-        // call recovered. Gate opens and the stamp is cleared to 0.
         let stamp = AtomicU64::new(1_000);
         let host = Mutex::new(());
         let decision = cooldown_gate(&stamp, &host, 1_070, COOLDOWN, "typeAt");
@@ -938,9 +855,6 @@ mod tests {
 
     #[test]
     fn test_cooldown_gate_elapsed_lock_held_extends_cooldown() {
-        // This is the race the finding flags: cooldown elapsed but the prior
-        // CLR call is STILL hung (lock held). The gate must stay closed and
-        // re-stamp to `now` so the cooldown extends another full window.
         let stamp = AtomicU64::new(1_000);
         let host = Mutex::new(());
         let _held = host.lock().unwrap();
@@ -952,14 +866,11 @@ mod tests {
             }
             other => panic!("expected hung-lock Cooldown, got {other:?}"),
         }
-        // Re-stamped to `now`, not cleared — the next window starts fresh.
         assert_eq!(stamp.load(Ordering::Relaxed), now);
     }
 
     #[test]
     fn test_cooldown_gate_elapsed_lock_poisoned_extends_cooldown() {
-        // A panic inside the critical section poisons the mutex; the gate
-        // reports Poisoned and re-stamps to keep the gate closed.
         let stamp = AtomicU64::new(1_000);
         let host = Mutex::new(());
         let _ = std::panic::catch_unwind(|| {
@@ -978,10 +889,6 @@ mod tests {
 
     #[test]
     fn test_cooldown_gate_held_lock_recovers_after_release() {
-        // Full race-recovery sequence on one stamp+mutex pair:
-        //  1. cooldown elapsed but lock held -> extend (re-stamp to now)
-        //  2. still within the extended window -> short-circuit
-        //  3. lock released + window elapsed -> proceed and clear
         let stamp = AtomicU64::new(1_000);
         let host = Mutex::new(());
 
@@ -991,12 +898,9 @@ mod tests {
             assert!(matches!(d1, CooldownDecision::ShortCircuit(_)));
             assert_eq!(stamp.load(Ordering::Relaxed), 1_070);
 
-            // Still inside the freshly-extended window — short-circuit again.
             let d2 = cooldown_gate(&stamp, &host, 1_100, COOLDOWN, "typeAt");
             assert!(matches!(d2, CooldownDecision::ShortCircuit(_)));
-        } // lock released here
-
-        // Window elapsed (1_140 > 1_070 + 60) and lock now free -> resume.
+        }
         let d3 = cooldown_gate(&stamp, &host, 1_140, COOLDOWN, "typeAt");
         assert!(matches!(d3, CooldownDecision::Proceed));
         assert_eq!(stamp.load(Ordering::Relaxed), 0);
@@ -1004,9 +908,6 @@ mod tests {
 
     #[test]
     fn test_seed_timeout_stamp_carries_nonzero_forward() {
-        // Restart path: a brand-new bridge starts at 0, but a hung call from
-        // the prior generation left a cooldown stamp. Seeding must carry that
-        // stamp forward so the new bridge's first call still hits the gate.
         let fresh = AtomicU64::new(0);
         seed_timeout_stamp(&fresh, 1_000);
         assert_eq!(fresh.load(Ordering::Relaxed), 1_000);
@@ -1014,9 +915,6 @@ mod tests {
 
     #[test]
     fn test_seed_timeout_stamp_zero_is_noop() {
-        // A healthy old bridge (no recent timeout) must not clobber the new
-        // bridge's stamp — seeding 0 is a no-op so we never shorten/erase an
-        // active cooldown that may have been set in the meantime.
         let existing = AtomicU64::new(1_000);
         seed_timeout_stamp(&existing, 0);
         assert_eq!(existing.load(Ordering::Relaxed), 1_000);
@@ -1024,29 +922,13 @@ mod tests {
 
     #[test]
     fn test_seed_timeout_stamp_only_advances_via_caller_guard() {
-        // The free function itself unconditionally stores a non-zero value;
-        // restart_bridge only calls it with the prior stamp, so the net effect
-        // is "carry forward the prior cooldown". Document that a non-zero seed
-        // overwrites whatever was there (the new bridge starts at 0 anyway).
         let new_bridge = AtomicU64::new(0);
         seed_timeout_stamp(&new_bridge, 1_234);
         assert_eq!(new_bridge.load(Ordering::Relaxed), 1_234);
     }
 
-    // -- parse_response: the shared response-deserialization boundary --
-    //
-    // Every async bridge method funnels its raw JSON result through
-    // `SemanticBridge::parse_response`. It maps a successful `serde_json`
-    // decode straight through and converts any decode failure into
-    // `SemanticError::SerializationError` carrying the serde message. These
-    // exercise that boundary without a live CLR (the value is constructed
-    // directly, exactly as `call()` would hand it over).
-
     #[test]
     fn test_parse_response_ok_maps_through() {
-        // A well-formed CompileResult value decodes successfully and the
-        // fields survive the round-trip — this is the happy path shared by
-        // compile(), builtin_types(), error_codes(), etc.
         let value = serde_json::json!({
             "success": true,
             "diagnostics": [],
@@ -1060,9 +942,6 @@ mod tests {
 
     #[test]
     fn test_parse_response_type_mismatch_is_serialization_error() {
-        // `success` is required to be a bool; a string here is a hard schema
-        // violation. parse_response must convert the serde error into
-        // SemanticError::SerializationError (NOT panic, NOT a silent default).
         let value = serde_json::json!({
             "success": "yes",          // wrong type
             "diagnostics": [],
@@ -1078,9 +957,6 @@ mod tests {
 
     #[test]
     fn test_parse_response_missing_required_field_is_serialization_error() {
-        // `diagnostics` is a required (non-defaulted) field of CompileResult.
-        // Its absence is a decode failure that must surface as
-        // SerializationError, mirroring a malformed bridge response.
         let value = serde_json::json!({ "success": true, "appPath": null });
         assert!(matches!(
             SemanticBridge::parse_response::<CompileResult>(value),
@@ -1090,8 +966,6 @@ mod tests {
 
     #[test]
     fn test_parse_response_vec_of_diagnostics() {
-        // builtin_types()/error_codes()/analyze() decode into Vec<T>. A JSON
-        // array of diagnostic entries must decode into the corresponding Vec.
         let value = serde_json::json!([
             {
                 "file": "/src/a.al", "line": 1, "column": 2,
@@ -1105,11 +979,6 @@ mod tests {
         assert_eq!(parsed[0].code, "AL0001");
     }
 
-    // -- MethodParameter Display (signature rendering) --
-    //
-    // The Display impl renders a parameter for signature help / hover. Both
-    // the `var` and non-`var` branches feed user-visible signature strings.
-
     #[test]
     fn test_method_parameter_display_by_value() {
         let p = MethodParameter {
@@ -1117,7 +986,6 @@ mod tests {
             type_name: "Integer".to_string(),
             is_var: false,
         };
-        // No `var ` prefix for a by-value parameter.
         assert_eq!(p.to_string(), "Position: Integer");
     }
 
@@ -1128,21 +996,11 @@ mod tests {
             type_name: "Text".to_string(),
             is_var: true,
         };
-        // A `var` parameter is prefixed with `var ` — this is the branch the
-        // signature renderer relies on to mark by-reference args.
         assert_eq!(p.to_string(), "var Result: Text");
     }
 
-    // -- serde defaults on the builtin-type schema --
-    //
-    // BuiltinMethod / MethodParameter carry `#[serde(default)]` on every
-    // optional field so a sparse bridge payload (older bridge build, omitted
-    // fields) still decodes. Exercise the default-fallback paths.
-
     #[test]
     fn test_builtin_method_defaults_when_fields_omitted() {
-        // Only `name` present — parameters, returnType and documentation must
-        // fall back to their defaults rather than failing to decode.
         let value = serde_json::json!({ "name": "StrLen" });
         let m: BuiltinMethod =
             serde_json::from_value(value).expect("sparse method should decode via defaults");
@@ -1154,19 +1012,16 @@ mod tests {
 
     #[test]
     fn test_method_parameter_defaults_when_fields_omitted() {
-        // An empty object decodes into a fully-defaulted parameter.
         let m: MethodParameter =
             serde_json::from_value(serde_json::json!({})).expect("empty param should decode");
         assert_eq!(m.name, "");
         assert_eq!(m.type_name, "");
         assert!(!m.is_var);
-        // And the Display of the defaulted parameter is well-formed.
         assert_eq!(m.to_string(), ": ");
     }
 
     #[test]
     fn test_builtin_type_defaults_when_collections_omitted() {
-        // `methods` and `enumValues` both default to empty.
         let bt: BuiltinType = serde_json::from_value(serde_json::json!({ "name": "Boolean" }))
             .expect("sparse builtin type should decode");
         assert_eq!(bt.name, "Boolean");
@@ -1176,15 +1031,11 @@ mod tests {
 
     #[test]
     fn test_compile_result_missing_app_path_defaults_to_none() {
-        // `appPath` is an Option; omitting the key entirely (not just null)
-        // must decode to None, not error.
         let value = serde_json::json!({ "success": true, "diagnostics": [] });
         let r: CompileResult =
             serde_json::from_value(value).expect("missing appPath should decode to None");
         assert!(r.app_path.is_none());
     }
-
-    // -- Cooldown / Poisoned error Display (failure-mode messages) --
 
     #[test]
     fn test_cooldown_and_poisoned_error_display() {

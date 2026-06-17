@@ -37,7 +37,6 @@ fn external_caller_exists(workspace: &Workspace, current_uri: &Url, proc_name: &
                     .as_bytes()
                     .get(pos - 1)
                     .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
-            // Find next non-whitespace char.
             let after = text_lower[end..]
                 .chars()
                 .find(|c| !c.is_whitespace())
@@ -104,7 +103,6 @@ pub(super) fn source_action_make_local(
         return None;
     }
 
-    // Find `procedure` keyword position in the line and replace with `local procedure`.
     // F-042: `find` returns a BYTE offset; LSP `Position.character` is a UTF-16 code
     // unit count. Convert before using, otherwise a multi-byte character earlier on
     // the line shifts the edit to the wrong column.
@@ -312,7 +310,4 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // T1209: Add Parentheses to Method Calls
-    // -----------------------------------------------------------------------
 }

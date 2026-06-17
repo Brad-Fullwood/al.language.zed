@@ -593,7 +593,6 @@ pub(crate) fn resolve_member(
         }
     }
 
-    // Use semantic cache for O(1) builtin type lookup
     let cache = workspace
         .semantic_cache
         .read()
@@ -641,7 +640,6 @@ pub(crate) fn resolve_builtin_overloads(
     target_name: &str,
 ) -> Vec<ResolvedMember> {
     let mut results = Vec::new();
-    // Use semantic cache for O(1) builtin type lookup
     let cache = workspace
         .semantic_cache
         .read()
@@ -681,7 +679,6 @@ pub(crate) fn format_xml_doc(s: &str) -> String {
     let mut remarks = String::new();
     let mut example = String::new();
 
-    // Try structured extraction from XML tags
     if let Some(text) = extract_tag_content(s, "summary") {
         summary = text;
     }
@@ -729,7 +726,6 @@ pub(crate) fn format_xml_doc(s: &str) -> String {
         example = text;
     }
 
-    // If no structured content was found, fall back to plain stripping
     if summary.is_empty()
         && params.is_empty()
         && returns.is_empty()
@@ -779,7 +775,6 @@ pub(crate) fn format_xml_doc(s: &str) -> String {
     result
 }
 
-/// Extract text content between `<tag>` and `</tag>`, stripping inner XML tags.
 fn extract_tag_content(s: &str, tag: &str) -> Option<String> {
     let open = format!("<{}", tag);
     let close = format!("</{}>", tag);
@@ -809,7 +804,6 @@ fn extract_attribute(tag_text: &str, attr: &str) -> Option<String> {
     Some(tag_part[start..end].to_string())
 }
 
-/// Strip all XML tags, keeping inner text. Fallback for unstructured content.
 fn strip_all_tags(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut in_tag = false;
@@ -865,7 +859,6 @@ pub(crate) struct CompletionCandidate {
     pub sort_text: Option<String>,
 }
 
-/// Completion item kind for `CompletionCandidate` (transport-agnostic).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompletionCandidateKind {
     Variable,
@@ -986,7 +979,6 @@ pub(crate) fn completion_items_for_receiver(
         }
     }
 
-    // Use semantic cache for O(1) builtin type lookup
     let cache = workspace
         .semantic_cache
         .read()
@@ -1040,7 +1032,6 @@ pub(crate) fn enum_completion_items(
     let mut index_values = 0usize;
     let mut builtin_values = 0usize;
 
-    // Check workspace enum objects
     if let Some(path) = workspace.file_index.objects.get(&enum_name.to_lowercase()) {
         if let Some((file_text, tree)) = workspace.file_index.get_cached_parse(path.value()) {
             for symbol in crate::syntax::extract_document_symbols(&tree, &file_text) {
@@ -1444,8 +1435,6 @@ fn extract_return_type(detail: &str) -> Option<&str> {
     Some(ret)
 }
 
-/// Map AL object kind names (from `find_object_declaration`) to their
-/// corresponding builtin type names used in the semantic bridge.
 pub(crate) fn extract_doc_comment(text: &str, line_idx: usize) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();
     if line_idx == 0 || line_idx > lines.len() {
@@ -1481,7 +1470,6 @@ mod tests {
         let text =
             "table 50100 T\n{\n    fields\n    {\n        field(1; Name; Text[50]) { }\n    }\n}";
         let (_ty, range) = find_workspace_field(text, "Name").expect("field found");
-        // "        field(1; Name; ..." — count the leading spaces (8) + "field(1; " (9).
         let line = text.lines().nth(4).unwrap();
         let expected = line.find("Name").unwrap() as u32;
         assert_eq!(range.start.character, expected);
@@ -1621,8 +1609,6 @@ mod tests {
         assert_eq!(kind, AccessKind::Member);
     }
 
-    // --- UTF-16 offset helpers ---
-
     #[test]
     fn utf16_col_to_byte_offset_ascii_only() {
         let line = "Hello.World";
@@ -1749,10 +1735,6 @@ mod tests {
         let result = format_xml_doc(xml);
         assert!(result.contains("s"));
     }
-
-    // ------------------------------------------------------------------
-    // Composition-aware resolution (extension-added members).
-    // ------------------------------------------------------------------
 
     use crate::symbols::{EnumValueSymbol, FieldSymbol, MethodSymbol, ObjectKind, SymbolEntry};
     use crate::workspace::Workspace;
@@ -1902,7 +1884,6 @@ mod tests {
             .expect("extension-added method should resolve");
         assert!(matches!(method.kind, ResolvedMemberKind::Procedure { .. }));
 
-        // Base field still resolves.
         assert!(resolve_member(&ws, &uri, &receiver, "No.").is_some());
     }
 
@@ -1961,10 +1942,6 @@ mod tests {
         assert!(labels.contains(&"Blue"), "extension value present");
     }
 
-    // ------------------------------------------------------------------
-    // parse_type_expr — type-string parsing.
-    // ------------------------------------------------------------------
-
     #[test]
     fn parse_type_expr_splits_name_and_quoted_subtype() {
         let ty = parse_type_expr("Record \"Sales Header\"");
@@ -2014,10 +1991,6 @@ mod tests {
         assert_eq!(ty.type_subtype.as_deref(), Some("Only"));
     }
 
-    // ------------------------------------------------------------------
-    // extract_return_type — pull return type from a signature detail.
-    // ------------------------------------------------------------------
-
     #[test]
     fn extract_return_type_finds_trailing_type() {
         assert_eq!(
@@ -2028,7 +2001,6 @@ mod tests {
 
     #[test]
     fn extract_return_type_takes_last_colon_segment() {
-        // rsplit_once on ": " -> takes the final segment after the last ": ".
         assert_eq!(extract_return_type("(x: Code[20]): Text"), Some("Text"));
     }
 
@@ -2041,13 +2013,8 @@ mod tests {
 
     #[test]
     fn extract_return_type_none_without_separator() {
-        // No ": " anywhere -> None.
         assert_eq!(extract_return_type("(Integer)"), None);
     }
-
-    // ------------------------------------------------------------------
-    // split_last — rfind-based split used for scope/dot chains.
-    // ------------------------------------------------------------------
 
     #[test]
     fn split_last_splits_on_last_occurrence() {
@@ -2059,10 +2026,6 @@ mod tests {
     fn split_last_none_when_missing() {
         assert_eq!(split_last("abc", "::"), None);
     }
-
-    // ------------------------------------------------------------------
-    // format_method_signature / format_builtin_signature.
-    // ------------------------------------------------------------------
 
     #[test]
     fn format_method_signature_with_params_and_return() {
@@ -2122,10 +2085,6 @@ mod tests {
         assert_eq!(format_builtin_signature(&method), "Init()");
     }
 
-    // ------------------------------------------------------------------
-    // format_type_detail.
-    // ------------------------------------------------------------------
-
     #[test]
     fn format_type_detail_with_subtype_quotes_it() {
         assert_eq!(
@@ -2140,14 +2099,9 @@ mod tests {
         assert_eq!(format_type_detail("Integer", None), "Integer");
     }
 
-    // ------------------------------------------------------------------
-    // extract_doc_comment — gather /// lines above a declaration line.
-    // ------------------------------------------------------------------
-
     #[test]
     fn extract_doc_comment_collects_preceding_triple_slash_lines() {
         let text = "/// First line.\n/// Second line.\nprocedure Foo()";
-        // line_idx 2 is the procedure; docs are on lines 0 and 1.
         let doc = extract_doc_comment(text, 2).expect("doc comment found");
         assert_eq!(doc, "First line.\nSecond line.");
     }
@@ -2168,15 +2122,9 @@ mod tests {
     #[test]
     fn extract_doc_comment_boundary_line_zero_and_past_end() {
         let text = "/// doc\nprocedure Foo()";
-        // line_idx 0 -> there is nothing above; documented guard returns None.
         assert_eq!(extract_doc_comment(text, 0), None);
-        // line_idx beyond the number of lines returns None.
         assert_eq!(extract_doc_comment(text, 99), None);
     }
-
-    // ------------------------------------------------------------------
-    // parse_field_line — parse a `field(id; name; type)` declaration.
-    // ------------------------------------------------------------------
 
     #[test]
     fn parse_field_line_extracts_name_and_type() {
@@ -2192,19 +2140,13 @@ mod tests {
 
     #[test]
     fn parse_field_line_none_when_missing_segments() {
-        // Only an id present, no name/type segments.
         assert_eq!(parse_field_line("field(1)"), None);
     }
 
     #[test]
     fn parse_field_line_none_when_name_empty() {
-        // Empty name segment must be rejected.
         assert_eq!(parse_field_line("field(1; ; Integer)"), None);
     }
-
-    // ------------------------------------------------------------------
-    // XML helpers: extract_tag_content, extract_attribute, strip_all_tags.
-    // ------------------------------------------------------------------
 
     #[test]
     fn extract_tag_content_returns_inner_text() {
@@ -2255,10 +2197,6 @@ mod tests {
         assert!(result.contains("```al\nFoo();\n```"));
     }
 
-    // ------------------------------------------------------------------
-    // resolve_expression_type — empty / scope-split / object-index paths.
-    // ------------------------------------------------------------------
-
     #[test]
     fn resolve_expression_type_empty_returns_none() {
         let ws = Workspace::new();
@@ -2273,8 +2211,6 @@ mod tests {
 
     #[test]
     fn resolve_expression_type_resolves_object_from_symbol_index() {
-        // An expression naming a known object resolves to that object's type
-        // via the symbol index (kind + subtype).
         let ws = workspace_with(vec![table_entry(18, "Customer", vec![])]);
         let uri = Url::parse("file:///x.al").unwrap();
         let mut parser = AlParser::new();
@@ -2308,10 +2244,6 @@ mod tests {
         .is_none());
     }
 
-    // ------------------------------------------------------------------
-    // resolve_member — unresolvable receiver returns None.
-    // ------------------------------------------------------------------
-
     #[test]
     fn resolve_member_unknown_member_returns_none() {
         let ws = workspace_with(vec![table_entry(
@@ -2343,10 +2275,6 @@ mod tests {
         let info = member.type_info.expect("field has a type");
         assert_eq!(info.type_name, "Code[20]");
     }
-
-    // ------------------------------------------------------------------
-    // ResolvedType Display.
-    // ------------------------------------------------------------------
 
     #[test]
     fn resolved_type_display_with_and_without_subtype() {

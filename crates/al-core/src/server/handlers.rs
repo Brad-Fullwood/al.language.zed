@@ -1,5 +1,3 @@
-//! LSP method dispatch — thin wrappers over al-core queries.
-
 use tower_lsp::lsp_types::*;
 
 use super::formatting;
@@ -63,7 +61,6 @@ pub(crate) fn handle_code_action(
     let text = server.workspace.documents.get_text(uri)?;
     let mut actions = Vec::new();
 
-    // Diagnostic-based quick fixes via al-core
     for diag in diagnostics {
         let code = diag.code.as_ref().map(|c| match c {
             NumberOrString::String(s) => s.clone(),
@@ -94,13 +91,11 @@ pub(crate) fn handle_code_action(
         }
     }
 
-    // Source actions via al-core
     let core_range: crate::queries::Range = range.into();
     for entry in crate::queries::code_actions::source_actions(&server.workspace, uri, core_range) {
         actions.push(core_action_to_lsp(entry, None));
     }
 
-    // Format File (calculate edits directly)
     if let Some(edits) = formatting::handle_formatting(
         server,
         uri,
@@ -125,7 +120,6 @@ pub(crate) fn handle_code_action(
         }
     }
 
-    // Lint File command
     actions.push(CodeActionOrCommand::CodeAction(CodeAction {
         title: "AL: Lint File".to_string(),
         kind: Some(CodeActionKind::SOURCE),

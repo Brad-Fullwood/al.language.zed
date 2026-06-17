@@ -5,8 +5,6 @@ use url::Url;
 use super::{detect_indent, detect_object_kind, single_edit_ws};
 use super::{AlObjectKind, CodeActionEntry, CodeActionKind, Range, TextEdit};
 
-// T1205: Convert Promoted Actions to actionRef Syntax
-
 /// Detect page actions that use old-style `Promoted = true` / `PromotedCategory` properties
 /// and offer to convert them to the new `actionRef` syntax inside `area(Promoted)`.
 ///
@@ -72,7 +70,6 @@ struct PromotedActionInfo {
     remove_lines: Vec<usize>,
 }
 
-/// Scan the file text and return info about every action with `Promoted = true`.
 fn collect_promoted_actions(text: &str) -> Vec<PromotedActionInfo> {
     let lines: Vec<&str> = text.lines().collect();
     let mut result = Vec::new();
@@ -145,8 +142,6 @@ fn extract_action_name(line: &str) -> Option<String> {
     Some(inner.trim_matches('"').to_string())
 }
 
-/// Given lines and a starting index (the `action(...)` line), find the extent of the
-/// following `{ ... }` block. Returns (last_line_index, vec_of_inner_line_indices).
 fn find_block_extent(lines: &[&str], start: usize) -> (usize, Vec<usize>) {
     let mut depth = 0i32;
     let mut inner = Vec::new();
@@ -185,7 +180,6 @@ fn extract_property_value(line: &str) -> String {
     }
 }
 
-/// Build a code action that removes promoted properties and adds an actionRef.
 fn build_promoted_action_conversion(
     uri: &Url,
     text: &str,
@@ -256,7 +250,6 @@ fn build_promoted_action_conversion(
     })
 }
 
-/// Find the closing line of the `actions { }` block (0-based).
 fn find_actions_block_end(text: &str) -> Option<u32> {
     let lines: Vec<&str> = text.lines().collect();
     let mut depth = 0i32;
@@ -286,8 +279,6 @@ fn find_actions_block_end(text: &str) -> Option<u32> {
     }
     None
 }
-
-// T1206: Set Default ApplicationArea on Page/Report
 
 /// Offer to add an object-level `ApplicationArea` property to a page or report
 /// and remove redundant field-level properties that duplicate the object default.
@@ -373,7 +364,6 @@ pub(super) fn source_action_set_application_area(
         });
     }
 
-    // Sort edits ascending for LSP
     edits.sort_by_key(|e| e.range.start.line);
 
     Some(CodeActionEntry {
@@ -385,7 +375,6 @@ pub(super) fn source_action_set_application_area(
     })
 }
 
-/// Returns true if the object already has a top-level `ApplicationArea` property.
 fn object_has_application_area(text: &str) -> bool {
     for line in text.lines() {
         let trimmed = line.trim().to_lowercase();
@@ -429,7 +418,6 @@ fn collect_field_application_area_lines(text: &str, value: &str) -> Vec<usize> {
         .collect()
 }
 
-/// Find the line after the object's opening `{` where properties can be inserted.
 fn find_object_properties_insert_line(text: &str) -> Option<u32> {
     for (i, line) in text.lines().enumerate() {
         let trimmed = line.trim();
@@ -439,8 +427,6 @@ fn find_object_properties_insert_line(text: &str) -> Option<u32> {
     }
     None
 }
-
-// T1207: Fix Old Report Layout to rendering Section
 
 /// Convert legacy `RDLCLayout`/`WordLayout` properties to the new
 /// `rendering { layout(...) { ... } }` section syntax.
@@ -480,11 +466,9 @@ struct LegacyLayoutProp {
     line: usize,
     /// Layout type: "RDLC" or "Word"
     layout_type: String,
-    /// File path value
     path: String,
 }
 
-/// Scan the file and collect all `RDLCLayout` and `WordLayout` property lines.
 fn collect_legacy_layout_properties(text: &str) -> Vec<LegacyLayoutProp> {
     let mut result = Vec::new();
 
@@ -514,7 +498,6 @@ fn collect_legacy_layout_properties(text: &str) -> Vec<LegacyLayoutProp> {
     result
 }
 
-/// Build the code action that replaces legacy layout properties with a `rendering { }` section.
 fn build_report_layout_conversion(
     uri: &Url,
     text: &str,
@@ -601,7 +584,6 @@ fn find_rendering_insert_line(text: &str) -> u32 {
         }
     }
 
-    // Fall back to before the last closing brace (report closing `}`)
     for i in (0..lines.len()).rev() {
         if lines[i].trim() == "}" {
             return i as u32;
@@ -611,10 +593,6 @@ fn find_rendering_insert_line(text: &str) -> u32 {
     lines.len() as u32
 }
 
-/// T1209: Add parentheses to a bare method call (e.g. `Commit;` → `Commit();`).
-///
-/// Detects when the cursor is on a line containing a standalone identifier statement
-/// without parentheses (e.g. `Commit;`, `MyProc;`) and offers to add `()`.
 
 #[cfg(test)]
 mod tests {
@@ -717,7 +695,6 @@ mod tests {
         let uri = Url::parse("file:///test/MyPage2.al").unwrap();
         open_doc(&ws, &uri, al_code);
 
-        // Cursor on the action declaration line (line 6)
         let range = Range {
             start: super::super::Position {
                 line: 6,
@@ -831,8 +808,6 @@ mod tests {
             "Should NOT offer conversion when no Promoted = true"
         );
     }
-
-    // Tests for T1206: Set Default ApplicationArea on Page/Report
 
     #[test]
     fn t1206_application_area_action_offered_on_page_with_field_aa() {
@@ -1044,8 +1019,6 @@ mod tests {
             "Should NOT offer action on table objects"
         );
     }
-
-    // Tests for T1207: Fix Old Report Layout to rendering Section
 
     #[test]
     fn t1207_report_layout_conversion_offered_for_rdlclayout() {

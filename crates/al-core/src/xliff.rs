@@ -36,9 +36,6 @@ pub fn xlf_exceeds_cap(path: &Path) -> Option<bool> {
     Some(meta.len() > MAX_XLF_FILE_BYTES)
 }
 
-// ---------------------------------------------------------------------------
-// Data types
-// ---------------------------------------------------------------------------
 
 /// A single translatable text unit extracted from AL source.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,15 +44,12 @@ pub struct TranslationUnit {
     pub id: String,
     /// Object type (e.g. "Table", "Page", "Codeunit")
     pub object_type: String,
-    /// Object ID
     pub object_id: u32,
-    /// Object name
     pub object_name: String,
     /// Source text (English caption/tooltip/label value)
     pub source: String,
     /// Translated text (if available — None means untranslated)
     pub target: Option<String>,
-    /// Translation state
     pub state: TranslationState,
     /// Note (context from AL property name and field)
     pub note: Option<String>,
@@ -95,9 +89,6 @@ impl TranslationState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Extraction from AL source
-// ---------------------------------------------------------------------------
 
 /// Extract all translatable text units from the workspace AL files.
 ///
@@ -127,7 +118,6 @@ pub fn extract_translation_units(workspace: &Workspace) -> Vec<TranslationUnit> 
 
 /// Extract translation units from a single AL file.
 fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) {
-    // Detect object declaration (type, id, name) from the first line matching pattern
     let (obj_type, obj_id, obj_name) = match detect_object_header(text) {
         Some(v) => v,
         None => return,
@@ -152,7 +142,6 @@ fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) 
         }
         let context = current_field.as_deref().unwrap_or(&obj_name);
 
-        // Caption = 'text';
         if let Some(caption) = parse_property_value(trimmed, "Caption") {
             let id = make_translation_id(
                 &obj_type, obj_id, &obj_name, "Caption", field_id, context, path,
@@ -167,7 +156,6 @@ fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) 
             ));
         }
 
-        // ToolTip = 'text';
         if let Some(tooltip) = parse_property_value(trimmed, "ToolTip") {
             let id = make_translation_id(
                 &obj_type, obj_id, &obj_name, "ToolTip", field_id, context, path,
@@ -198,8 +186,6 @@ fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) 
     }
 }
 
-/// Build a `TranslationUnit` with the common object/target/state fields,
-/// cloning the borrowed object identifiers.
 fn make_translation_unit(
     id: String,
     obj_type: &str,
@@ -290,7 +276,6 @@ fn capitalize(s: &str) -> String {
 }
 
 /// Parse a `field(50; MyField; ...)` or `field(MyField; ...)` declaration.
-/// Returns the field ID if present.
 fn parse_field_declaration(line: &str) -> Option<u32> {
     let lower = line.to_lowercase();
     if lower.starts_with("field(") {
@@ -304,7 +289,6 @@ fn parse_field_declaration(line: &str) -> Option<u32> {
     None
 }
 
-/// Parse the field name from a field declaration line.
 fn parse_field_name(line: &str) -> Option<String> {
     if line.to_lowercase().starts_with("field(") {
         let inner = &line[6..line.find(')')?];
@@ -346,7 +330,6 @@ fn parse_label_declaration(line: &str) -> Option<String> {
     extract_single_quoted(after_label)
 }
 
-/// Extract the first single-quoted string from the input.
 fn extract_single_quoted(s: &str) -> Option<String> {
     let start = s.find('\'')?;
     let inner = &s[start + 1..];
@@ -356,7 +339,6 @@ fn extract_single_quoted(s: &str) -> Option<String> {
     while let Some(ch) = chars.next() {
         if ch == '\'' {
             if chars.peek() == Some(&'\'') {
-                // Escaped quote
                 chars.next();
                 result.push('\'');
             } else {
@@ -373,7 +355,6 @@ fn extract_single_quoted(s: &str) -> Option<String> {
     }
 }
 
-/// Build a deterministic translation unit ID.
 fn make_translation_id(
     obj_type: &str,
     obj_id: u32,
@@ -393,7 +374,6 @@ fn make_translation_id(
     }
 }
 
-/// Build an ID for a Label variable.
 fn make_label_id(
     obj_type: &str,
     obj_id: u32,
@@ -405,9 +385,6 @@ fn make_label_id(
     format!("{} {} {} - Label {}", obj_type, obj_id, obj_name, index)
 }
 
-// ---------------------------------------------------------------------------
-// XLIFF generation
-// ---------------------------------------------------------------------------
 
 /// Generate a `.g.xlf` XLIFF 1.2 file from translation units.
 ///
@@ -476,9 +453,6 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-// ---------------------------------------------------------------------------
-// XLIFF parsing
-// ---------------------------------------------------------------------------
 
 /// Parse an XLIFF 1.2 file into a map of `id → TranslationUnit`.
 ///
@@ -538,8 +512,6 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
         Some(xml_unescape(after))
     }
 
-    /// Append `text` to the multi-line accumulator, inserting a newline
-    /// separator before it when the accumulator already holds content.
     fn append_to_accumulator(acc: &mut String, text: &str) {
         if !acc.is_empty() {
             acc.push('\n');
@@ -550,8 +522,6 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        // Are we collecting a multi-line body? Append until we find the
-        // closing tag on the current line.
         if let Some(tag) = multi.target_tag {
             let close_marker = format!("</{tag}>");
             if let Some(close_idx) = line.find(&close_marker) {
@@ -651,9 +621,6 @@ fn xml_unescape(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
-// ---------------------------------------------------------------------------
-// XLIFF refresh
-// ---------------------------------------------------------------------------
 
 /// Result of refreshing a language XLIFF against the generated XLIFF.
 #[derive(Debug, Default, Serialize)]
@@ -699,12 +666,10 @@ pub fn refresh_xliff(
                 });
                 refresh.changed.push(gen_unit.id.clone());
             } else {
-                // Unchanged — preserve existing translation
                 result_units.push(lang_unit.clone());
                 refresh.preserved += 1;
             }
         } else {
-            // New unit
             result_units.push(TranslationUnit {
                 state: TranslationState::New,
                 ..gen_unit.clone()
@@ -727,9 +692,6 @@ pub fn refresh_xliff(
     (result_units, refresh)
 }
 
-// ---------------------------------------------------------------------------
-// Find untranslated
-// ---------------------------------------------------------------------------
 
 /// Find all translation units that have no target translation.
 ///
@@ -747,9 +709,6 @@ pub fn find_untranslated(units: &[TranslationUnit]) -> Vec<&TranslationUnit> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Translation suggestions from base app symbols
-// ---------------------------------------------------------------------------
 
 /// A translation suggestion from the base app symbol data.
 #[derive(Debug, Clone, Serialize)]
@@ -788,16 +747,12 @@ pub fn suggest_translations(
     let mut suggestions = Vec::new();
 
     for unit in untranslated {
-        // Search symbols for matching captions/tooltips
         let source_lower = unit.source.to_lowercase();
 
-        // Search in symbol index by caption similarity
         let matches = workspace.symbols.search(&unit.source, 5);
         for entry in &matches {
-            // Check object name caption match
             let entry_name_lower = entry.name.to_lowercase();
             if entry_name_lower == source_lower {
-                // Exact match — confidence 1.0
                 suggestions.push(make_suggestion(
                     unit,
                     entry.name.clone(),
@@ -807,7 +762,6 @@ pub fn suggest_translations(
                 continue;
             }
 
-            // Check field captions
             for field in &entry.fields {
                 if field.name.to_lowercase() == source_lower {
                     suggestions.push(make_suggestion(
@@ -821,7 +775,6 @@ pub fn suggest_translations(
         }
     }
 
-    // Sort by confidence descending
     suggestions.sort_by(|a, b| {
         b.confidence
             .partial_cmp(&a.confidence)
@@ -830,9 +783,6 @@ pub fn suggest_translations(
     suggestions
 }
 
-// ---------------------------------------------------------------------------
-// Build integration
-// ---------------------------------------------------------------------------
 
 /// Generate the `.g.xlf` file for a workspace and write it to the Translations directory.
 ///
@@ -846,7 +796,6 @@ pub fn build_xliff(
     workspace: &Workspace,
     project_root: &Path,
 ) -> std::io::Result<Option<(PathBuf, usize)>> {
-    // Read app name from app.json
     let app_name = read_app_name(project_root).unwrap_or_else(|| "App".to_string());
 
     let units = extract_translation_units(workspace);
@@ -873,9 +822,6 @@ fn read_app_name(project_root: &Path) -> Option<String> {
         .map(|s| s.replace([' ', '"', '\''], ""))
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -976,7 +922,6 @@ mod tests {
         assert!(xml.contains("Gibt den Namen an"));
         assert!(xml.contains("state=\"translated\""));
 
-        // Parse back
         let parsed = parse_xliff(&xml);
         assert_eq!(parsed.len(), 2);
         assert!(parsed.contains_key("Table 50100 MyTable - Caption"));
@@ -1052,7 +997,6 @@ mod tests {
         }];
 
         let xml = generate_xliff("MyApp", "en-US", "de-DE", &units);
-        // The literal quote in the id must have been escaped in the attribute.
         assert!(
             xml.contains("&quot;"),
             "quote in id should be XML-escaped in the attribute value"
@@ -1122,13 +1066,9 @@ mod tests {
 
         let (updated, result) = refresh_xliff(&generated, &existing);
 
-        // T1 should be added
         assert!(result.added.contains(&"T1".to_string()));
-        // T2 source changed — should be marked needs-review
         assert!(result.changed.contains(&"T2".to_string()));
-        // T_OLD should be marked removed
         assert!(result.removed.contains(&"T_OLD".to_string()));
-        // Translation for T2 should be preserved
         let t2 = updated.iter().find(|u| u.id == "T2").unwrap();
         assert_eq!(t2.target.as_deref(), Some("Welt"));
         assert_eq!(t2.state, TranslationState::NeedsReviewTranslation);
@@ -1235,7 +1175,6 @@ mod tests {
         SecondLabel: Label 'Second';
 }"#;
 
-        // Extract into a fresh vector.
         let mut units_a = Vec::new();
         extract_from_file(Path::new("a.al"), al, &mut units_a);
         let ids_a: Vec<String> = units_a.iter().map(|u| u.id.clone()).collect();
@@ -1375,7 +1314,6 @@ le monde</target>
 
     #[test]
     fn xlf_exceeds_cap_small_file_returns_some_false() {
-        // Positive: a normal-sized .xlf is allowed through.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ok.xlf");
         std::fs::write(&path, b"<xliff/>").unwrap();
@@ -1396,8 +1334,6 @@ le monde</target>
 
     #[test]
     fn xlf_exceeds_cap_missing_file_returns_none() {
-        // Negative: a path that doesn't exist returns None — caller
-        // decides whether to surface the error.
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(xlf_exceeds_cap(&dir.path().join("nope.xlf")), None);
     }

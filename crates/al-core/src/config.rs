@@ -21,13 +21,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AlConfig {
-    // -----------------------------------------------------------------------
-    // Semantic analysis
-    // -----------------------------------------------------------------------
     /// Enable semantic code analysis via .NET bridge.
     pub enable_code_analysis: bool,
 
-    /// Run code analysis in the background continuously.
     pub background_code_analysis: bool,
 
     /// Scope for diagnostics: "project" (all .al files) or "openFiles" (only open tabs).
@@ -59,18 +55,11 @@ pub struct AlConfig {
     /// Output analyzer performance statistics in diagnostics.
     pub output_analyzer_statistics: bool,
 
-    // -----------------------------------------------------------------------
-    // Features
-    // -----------------------------------------------------------------------
     /// Enable code actions (quick fixes, refactorings).
     pub enable_code_actions: bool,
 
-    /// Inlay hint settings.
     pub inlay_hints: InlayHintConfig,
 
-    // -----------------------------------------------------------------------
-    // Native lint (placeholder — see notes)
-    // -----------------------------------------------------------------------
     /// Retained for future use — native lint rules are not yet implemented;
     /// `crate::syntax::lint()` always returns an empty `Vec`. All AL diagnostics
     /// currently come from the .NET CodeAnalysis bridge (`crate::semantic`), not
@@ -81,9 +70,6 @@ pub struct AlConfig {
     /// Inert until native lint rules are implemented (see `enable_native_lint`).
     pub native_lint_rules: HashMap<String, bool>,
 
-    // -----------------------------------------------------------------------
-    // Symbol management
-    // -----------------------------------------------------------------------
     /// Custom package cache path. If None, uses `<project>/.alpackages/`.
     pub package_cache_path: Option<PathBuf>,
 
@@ -99,35 +85,24 @@ pub struct AlConfig {
     /// Use only custom feeds (disable built-in `dynamicssmb2` feed).
     pub use_only_custom_feeds: bool,
 
-    // -----------------------------------------------------------------------
-    // Compiler
-    // -----------------------------------------------------------------------
     /// Additional compilation options passed to alc.
     pub compilation_options: Vec<String>,
 
-    /// Use incremental build when compiling.
     pub incremental_build: bool,
 
     /// Escape hatch: compile via Microsoft's `dotnet alc` subprocess directly
-    /// instead of the native in-process CodeAnalysis bridge pipeline. Native
-    /// (bridge) is the default; when it is unavailable the daemon fails loudly
-    /// rather than silently switching; set this to `true` to opt into the
-    /// subprocess. (Note: the bridge itself still invokes `alc` internally; a
-    /// fully alc-free emit path is separate, future work.)
+    /// instead of the pure-Rust native `.app` emitter. The native emitter is the
+    /// default for the daemon compile endpoint, `al.compile`, and publish; it
+    /// produces the package without `alc` or the C# bridge. Set this to `true`
+    /// when you need Microsoft's full compile-time semantic validation.
     pub use_official_compiler: bool,
 
-    // -----------------------------------------------------------------------
-    // Debug / DAP
-    // -----------------------------------------------------------------------
     /// Path to EditorServices.Host binary. If None, auto-discovered.
     pub editor_services_path: Option<PathBuf>,
 
     /// Log level for EditorServices.Host DAP process.
     pub editor_services_log_level: LogLevel,
 
-    // -----------------------------------------------------------------------
-    // Project scaffolding
-    // -----------------------------------------------------------------------
     /// Default root namespace for scaffolding new objects.
     pub root_namespace: Option<String>,
 
@@ -140,9 +115,6 @@ pub struct AlConfig {
     /// Suggested folder for AL:Go scaffolding.
     pub algo_suggested_folder: Option<PathBuf>,
 
-    // -----------------------------------------------------------------------
-    // Resource limits
-    // -----------------------------------------------------------------------
     /// Optional per-document size cap, in bytes. When set, the language server
     /// refuses to ingest a single document whose content exceeds this many
     /// bytes (e.g. a multi-gigabyte file accidentally opened in the workspace),
@@ -162,7 +134,6 @@ pub struct NuGetFeedConfig {
     pub url: String,
 }
 
-/// Scope for diagnostics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DiagnosticsScope {
@@ -173,18 +144,15 @@ pub enum DiagnosticsScope {
     OpenFiles,
 }
 
-/// When to trigger diagnostics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DiagnosticsTrigger {
     /// Run on every change (debounced). Fast enough for our native lint.
     #[default]
     Continuous,
-    /// Only run when the file is saved.
     OnSave,
 }
 
-/// Log level for editor services.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LogLevel {
@@ -197,7 +165,6 @@ pub enum LogLevel {
     Trace,
 }
 
-/// Configuration for inlay hints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct InlayHintConfig {
@@ -211,7 +178,6 @@ pub struct InlayHintConfig {
 impl Default for AlConfig {
     fn default() -> Self {
         Self {
-            // Semantic
             enable_code_analysis: true,
             background_code_analysis: true,
             diagnostics_scope: DiagnosticsScope::default(),
@@ -226,31 +192,24 @@ impl Default for AlConfig {
             rule_set_path: None,
             assembly_probing_paths: Vec::new(),
             output_analyzer_statistics: false,
-            // Features
             enable_code_actions: true,
             inlay_hints: InlayHintConfig::default(),
-            // Native lint
             enable_native_lint: true,
             native_lint_rules: HashMap::new(),
-            // Symbols
             package_cache_path: None,
             app_local_folder_paths: Vec::new(),
             nuget_feeds: Vec::new(),
             symbols_country_region: None,
             use_only_custom_feeds: false,
-            // Compiler
             compilation_options: Vec::new(),
             incremental_build: false,
             use_official_compiler: false,
-            // DAP
             editor_services_path: None,
             editor_services_log_level: LogLevel::default(),
-            // Scaffolding
             root_namespace: None,
             publisher: None,
             namespace_template: None,
             algo_suggested_folder: None,
-            // Resource limits
             max_document_size_bytes: None,
         }
     }
@@ -379,7 +338,6 @@ impl AlConfig {
 
         for key in obj.keys() {
             match key.as_str() {
-                // -- Semantic --
                 "enableCodeAnalysis" => merge_bool(obj, key, &mut self.enable_code_analysis),
                 "backgroundCodeAnalysis" => {
                     merge_bool(obj, key, &mut self.background_code_analysis)
@@ -418,7 +376,6 @@ impl AlConfig {
                 "outputAnalyzerStatistics" => {
                     merge_bool(obj, key, &mut self.output_analyzer_statistics)
                 }
-                // -- Features --
                 "enableCodeActions" => merge_bool(obj, key, &mut self.enable_code_actions),
                 "inlayHints" => {
                     if let Some(hints) = obj.get(key) {
@@ -440,7 +397,6 @@ impl AlConfig {
                         }
                     }
                 }
-                // -- Symbols --
                 "packageCachePath" => merge_optional_path(obj, key, &mut self.package_cache_path),
                 "appLocalFolderPaths" => {
                     merge_path_array(obj, key, &mut self.app_local_folder_paths)
@@ -464,11 +420,9 @@ impl AlConfig {
                     merge_optional_string(obj, key, &mut self.symbols_country_region)
                 }
                 "useOnlyCustomFeeds" => merge_bool(obj, key, &mut self.use_only_custom_feeds),
-                // -- Compiler --
                 "compilationOptions" => merge_string_array(obj, key, &mut self.compilation_options),
                 "incrementalBuild" => merge_bool(obj, key, &mut self.incremental_build),
                 "useOfficialCompiler" => merge_bool(obj, key, &mut self.use_official_compiler),
-                // -- DAP --
                 "editorServicesPath" => {
                     merge_optional_path(obj, key, &mut self.editor_services_path)
                 }
@@ -482,7 +436,6 @@ impl AlConfig {
                         }
                     }
                 }
-                // -- Scaffolding --
                 "rootNamespace" => merge_optional_string(obj, key, &mut self.root_namespace),
                 "publisher" => merge_optional_string(obj, key, &mut self.publisher),
                 "namespaceTemplate" => {
@@ -491,7 +444,6 @@ impl AlConfig {
                 "algoSuggestedFolder" => {
                     merge_optional_path(obj, key, &mut self.algo_suggested_folder)
                 }
-                // -- Resource limits --
                 "maxDocumentSizeBytes" => match obj.get(key) {
                     Some(serde_json::Value::Null) => self.max_document_size_bytes = None,
                     Some(v) => match v.as_u64() {
@@ -511,10 +463,6 @@ impl AlConfig {
         unknown_keys
     }
 }
-
-// ---------------------------------------------------------------------------
-// Merge helpers
-// ---------------------------------------------------------------------------
 
 fn merge_bool(obj: &serde_json::Map<String, serde_json::Value>, key: &str, target: &mut bool) {
     if let Some(v) = obj.get(key).and_then(|v| v.as_bool()) {
@@ -604,7 +552,6 @@ mod tests {
     #[test]
     fn default_config_matches_ms_defaults() {
         let config = AlConfig::default();
-        // Semantic
         assert!(config.enable_code_analysis);
         assert!(config.background_code_analysis);
         assert_eq!(
@@ -615,28 +562,22 @@ mod tests {
         assert!(config.rule_set_path.is_none());
         assert!(config.assembly_probing_paths.is_empty());
         assert!(!config.output_analyzer_statistics);
-        // Features
         assert!(config.enable_code_actions);
         assert!(config.inlay_hints.parameter_names);
         assert!(!config.inlay_hints.return_types);
-        // Symbols
         assert!(config.package_cache_path.is_none());
         assert!(config.app_local_folder_paths.is_empty());
         assert!(config.nuget_feeds.is_empty());
         assert!(config.symbols_country_region.is_none());
         assert!(!config.use_only_custom_feeds);
-        // Compiler
         assert!(config.compilation_options.is_empty());
         assert!(!config.incremental_build);
-        // DAP
         assert!(config.editor_services_path.is_none());
         assert_eq!(config.editor_services_log_level, LogLevel::Warning);
-        // Scaffolding
         assert!(config.root_namespace.is_none());
         assert!(config.publisher.is_none());
         assert!(config.namespace_template.is_none());
         assert!(config.algo_suggested_folder.is_none());
-        // Native lint
         assert!(config.enable_native_lint);
         assert!(config.native_lint_rules.is_empty());
     }
@@ -661,7 +602,6 @@ mod tests {
 
         assert!(!config.enable_code_analysis);
         assert_eq!(config.code_analyzers, vec!["CodeCop", "AppSourceCop"]);
-        // Untouched fields remain at defaults
         assert!(config.background_code_analysis);
         assert!(config.enable_code_actions);
         assert!(unknown.is_empty());
@@ -678,11 +618,9 @@ mod tests {
         assert_eq!(config.max_document_size_bytes, Some(1_048_576));
         assert!(unknown.is_empty());
 
-        // null resets to None (unbounded).
         config.merge(&serde_json::json!({ "maxDocumentSizeBytes": null }));
         assert_eq!(config.max_document_size_bytes, None);
 
-        // A non-integer value is surfaced as unknown, leaving the field intact.
         config.max_document_size_bytes = Some(42);
         let unknown = config.merge(&serde_json::json!({ "maxDocumentSizeBytes": "huge" }));
         assert_eq!(config.max_document_size_bytes, Some(42));
@@ -797,7 +735,6 @@ mod tests {
         assert_eq!(unknown.len(), 2);
         assert!(unknown.contains(&"fakeSetting".to_string()));
         assert!(unknown.contains(&"anotherBogus".to_string()));
-        // Valid setting still applied
         assert!(!config.enable_code_analysis);
     }
 
@@ -943,7 +880,7 @@ mod tests {
         let mut config = AlConfig::default();
         let unknown = config.merge(&serde_json::json!("not an object"));
         assert!(unknown.is_empty());
-        assert!(config.enable_code_analysis); // unchanged
+        assert!(config.enable_code_analysis);
     }
 
     #[test]
@@ -1054,8 +991,8 @@ mod tests {
             .native_lint_rules
             .insert("AL-L001".to_string(), false);
         config.native_lint_rules.insert("AL-L002".to_string(), true);
-        assert!(!config.is_lint_rule_enabled("AL-L001")); // explicitly disabled
-        assert!(config.is_lint_rule_enabled("AL-L002")); // explicitly enabled
+        assert!(!config.is_lint_rule_enabled("AL-L001"));
+        assert!(config.is_lint_rule_enabled("AL-L002"));
         assert!(config.is_lint_rule_enabled("AL-L003")); // absent = default on
     }
 

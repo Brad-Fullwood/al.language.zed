@@ -8,44 +8,31 @@ use std::collections::BTreeMap;
 
 use crate::symbols::{MethodSymbol, SymbolEntry};
 
-/// Kind of breaking change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BreakingChangeKind {
-    /// Object was removed entirely.
     ObjectRemoved,
-    /// Procedure was removed from an object.
     ProcedureRemoved,
     /// Procedure signature changed (parameter added/removed/reordered).
     SignatureChanged,
-    /// Return type changed.
     ReturnTypeChanged,
     /// Field was removed from a table/page.
     FieldRemoved,
-    /// Enum value was removed.
     EnumValueRemoved,
 }
 
-/// A single breaking change between baseline and current symbol sets.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BreakingChange {
-    /// What kind of change this is.
     pub kind: BreakingChangeKind,
-    /// Object affected.
     pub object: String,
-    /// Member affected (if applicable).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
-    /// Human-readable description.
     pub description: String,
     /// Whether this is definitely breaking (vs potentially non-breaking).
     pub is_breaking: bool,
 }
 
-/// Compare two symbol entry lists and return breaking changes.
-///
-/// `baseline` is the old version; `current` is the new version.
 pub fn analyze_breaking_changes(
     baseline: &[SymbolEntry],
     current: &[SymbolEntry],
@@ -114,7 +101,6 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
                 });
             }
             Some(new_method) => {
-                // Check signature compatibility
                 check_signature_change(&old.name, old_method, new_method, changes);
             }
         }
@@ -504,7 +490,7 @@ mod tests {
             variables: Vec::new(),
         };
         let baseline = vec![make_enum(vec!["Open", "Pending", "Closed"])];
-        let current = vec![make_enum(vec!["Open", "Closed"])]; // dropped Pending
+        let current = vec![make_enum(vec!["Open", "Closed"])];
         let changes = analyze_breaking_changes(&baseline, &current);
         assert!(
             changes

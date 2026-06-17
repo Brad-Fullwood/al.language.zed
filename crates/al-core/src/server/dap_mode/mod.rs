@@ -41,7 +41,6 @@ pub use editor_services::find_editor_services;
 /// Defence-in-depth only. Stops a developer's accidentally-shared log
 /// file from leaking credentials.
 fn redact_dap_body_for_log(body: &[u8]) -> String {
-    /// Field names (lowercased) whose string value should be replaced.
     const SENSITIVE_FIELDS: &[&str] = &[
         "password",
         "accesstoken",
@@ -108,7 +107,6 @@ pub enum DapError {
     CompilationFailed(String),
 }
 
-/// Run the DAP proxy: spawn EditorServices.Host and pipe stdio bidirectionally.
 pub async fn run_dap_server(toolchain: &AlToolchain) -> Result<(), DapError> {
     let project_root = std::env::current_dir()
         .map(|p| p.display().to_string())
@@ -119,7 +117,6 @@ pub async fn run_dap_server(toolchain: &AlToolchain) -> Result<(), DapError> {
 
 /// Spawn EditorServices.Host in DAP mode and proxy stdin/stdout,
 /// patching messages for compatibility in both directions.
-/// Run the legacy EditorServices.Host DAP proxy.
 ///
 /// **Cancellation note** (F-OPEN-041). Unlike the native DAP backend
 /// (`crate::dap::native_dap`), this proxy does NOT implement the DAP
@@ -234,7 +231,6 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
     let stdout_writer: std::sync::Arc<tokio::sync::Mutex<io::Stdout>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(io::stdout()));
 
-    // Zed → EditorServices.Host (compile on launch, patch config)
     let mut stdin_writer = child_stdin;
     let seq_counter_ref = &seq_counter;
     let stdout_writer_out = stdout_writer.clone();
@@ -265,7 +261,6 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
         Ok::<(), std::io::Error>(())
     };
 
-    // EditorServices.Host → Zed (patch missing `seq` field)
     let stdout_writer_in = stdout_writer.clone();
     let child_to_stdout = async {
         let mut reader = BufReader::new(child_stdout);
@@ -312,8 +307,6 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
     }
     Ok(())
 }
-
-// Message patching
 
 async fn patch_outgoing(
     body: &[u8],
@@ -412,8 +405,6 @@ fn patch_launch_args(args: &mut serde_json::Map<String, serde_json::Value>) {
     }
 }
 
-// AL compilation
-
 async fn compile_project(toolchain: &AlToolchain, project_root: &str) -> Result<String, DapError> {
     let project_path = Path::new(project_root);
     if !project_path.join("app.json").is_file() {
@@ -487,7 +478,6 @@ fn patch_incoming(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
         None => return body.to_vec(),
     };
 
-    // Inject seq if missing (EditorServices.Host often omits it)
     if !obj.contains_key("seq") {
         obj.insert(
             "seq".to_string(),
@@ -495,7 +485,6 @@ fn patch_incoming(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
         );
     }
 
-    // Patch null string fields that Zed requires to be non-null
     for field in &["command", "event", "message", "type"] {
         if let Some(val) = obj.get(*field) {
             if val.is_null() {
@@ -512,8 +501,6 @@ fn patch_incoming(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    // --- redact_dap_body_for_log (F-OPEN-(dap-audit-1)) ---------------------
-
     #[test]
     fn redacts_password_in_launch_arguments() {
         let body =
@@ -525,7 +512,6 @@ mod tests {
 
     #[test]
     fn redacts_access_token_field_variants() {
-        // Both camelCase and snake_case, both compact and with space.
         let body = br#"{"accessToken":"AAA","access_token": "BBB"}"#;
         let out = redact_dap_body_for_log(body);
         assert!(!out.contains("AAA"));
@@ -534,7 +520,6 @@ mod tests {
 
     #[test]
     fn redactor_preserves_non_sensitive_fields() {
-        // Positive: a field like "name" must NOT be redacted.
         let body = br#"{"name":"keep me","password":"drop me"}"#;
         let out = redact_dap_body_for_log(body);
         assert!(out.contains("\"name\":\"keep me\""));
@@ -567,13 +552,10 @@ mod tests {
 
     #[test]
     fn redactor_passes_through_non_json_body() {
-        // Non-JSON capture content must be returned unchanged (best-effort log).
         let body = b"this is not json at all";
         let out = redact_dap_body_for_log(body);
         assert_eq!(out, "this is not json at all");
     }
-
-    // --- patch_launch_args ---------------------------------------------------
 
     /// Helper: parse a JSON object literal into the map shape `patch_launch_args`
     /// expects, run the patcher, and hand back the mutated map.
@@ -586,7 +568,6 @@ mod tests {
 
     #[test]
     fn patch_launch_args_converts_break_on_error_string_to_bool() {
-        // Any value other than "none" must become boolean `true`.
         let map = run_patch_launch_args(r#"{"breakOnError":"All"}"#);
         assert_eq!(
             map.get("breakOnError"),
@@ -667,8 +648,6 @@ mod tests {
         assert!(!map.contains_key("breakOnRecordWrite"));
     }
 
-    // --- patch_incoming ------------------------------------------------------
-
     #[test]
     fn patch_incoming_injects_missing_seq() {
         let counter = AtomicI64::new(42);
@@ -676,7 +655,6 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         // The counter started at 42, fetch_add returns the pre-increment value.
         assert_eq!(v.get("seq").and_then(|s| s.as_i64()), Some(42));
-        // And the counter advanced for the next message.
         assert_eq!(counter.load(Ordering::Relaxed), 43);
     }
 
@@ -768,8 +746,6 @@ mod tests {
         assert_eq!(v.get("extra").and_then(|x| x.as_i64()), Some(123));
     }
 
-    // --- redact: nested arrays / object recursion ---------------------------
-
     #[test]
     fn redactor_recurses_into_arrays_of_objects() {
         // The array branch of `walk` must be exercised: a secret nested inside
@@ -789,8 +765,6 @@ mod tests {
         assert!(out.contains("12345"), "got: {out}");
         assert!(!out.contains("<redacted>"), "got: {out}");
     }
-
-    // --- compile_project: pure early-return error path ----------------------
 
     /// Build a throwaway toolchain pointing at non-existent paths. Sufficient
     /// for the `compile_project` early-return branch, which never reaches the
@@ -836,8 +810,6 @@ mod tests {
             other => panic!("expected CompilationFailed, got: {other:?}"),
         }
     }
-
-    // --- patch_outgoing: pass-through paths (no spawn) ----------------------
 
     #[tokio::test]
     async fn patch_outgoing_passes_through_invalid_json() {

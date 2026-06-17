@@ -29,18 +29,15 @@ const EVENT_PUBLISHER_KINDS: [ObjectKind; 10] = [
     ObjectKind::ReportExtension,
 ];
 
-/// A node in the insight graph.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum InsightNode {
-    /// An AL object (table, page, codeunit, etc.)
     Object {
         kind: ObjectKind,
         id: i32,
         name: String,
         package: String,
     },
-    /// A procedure/method on an object.
     Procedure {
         object_kind: ObjectKind,
         object_name: String,
@@ -64,25 +61,19 @@ pub enum InsightNode {
     },
 }
 
-/// Type of event for Event nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum EventNodeType {
     Integration,
     Business,
 }
 
-/// An edge in the insight graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum InsightEdge {
     /// Object A extends Object B (table extension, page extension, etc.)
     Extends,
-    /// Procedure A calls Procedure B.
     Calls,
-    /// Object A publishes Event B.
     Publishes,
-    /// Subscriber A subscribes to Event B.
     SubscribesTo,
-    /// Object A contains Procedure/Event/Subscriber B.
     Contains,
     /// Table A has a field with TableRelation to Table B.
     RelatesTo,
@@ -104,7 +95,6 @@ impl std::fmt::Display for InsightEdge {
     }
 }
 
-/// Key for looking up nodes in the graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NodeKey {
     /// Object node: (kind, name_lowercase)
@@ -141,7 +131,6 @@ pub struct InsightGraph {
 }
 
 impl InsightGraph {
-    /// Create an empty insight graph.
     pub fn new() -> Self {
         Self {
             graph: DiGraph::new(),
@@ -304,12 +293,10 @@ impl InsightGraph {
         }
     }
 
-    /// Number of nodes in the graph.
     pub fn node_count(&self) -> usize {
         self.graph.node_count()
     }
 
-    /// Number of edges in the graph.
     pub fn edge_count(&self) -> usize {
         self.graph.edge_count()
     }
@@ -334,7 +321,6 @@ impl InsightGraph {
             self.add_object_and_members(entry);
         }
 
-        // Second pass: resolve Extends edges and SubscribesTo targets
         for entry in &all_entries {
             self.resolve_relationships(entry, symbols);
         }
@@ -349,7 +335,6 @@ impl InsightGraph {
         );
     }
 
-    /// Add an object node and all its procedure/event/subscriber nodes.
     fn add_object_and_members(&mut self, entry: &Arc<SymbolEntry>) {
         let obj_key = NodeKey::Object(entry.kind, entry.name.to_lowercase());
         let obj_idx = self.ensure_node(
@@ -443,7 +428,6 @@ impl InsightGraph {
         entry: &Arc<SymbolEntry>,
         _symbols: &crate::symbols::SymbolIndex,
     ) {
-        // Extends edges
         if let Some(ref extends_name) = entry.extends {
             if let Some(base_kind) = entry.kind.base_kind() {
                 let ext_key = NodeKey::Object(entry.kind, entry.name.to_lowercase());
@@ -457,7 +441,6 @@ impl InsightGraph {
             }
         }
 
-        // SubscribesTo edges: connect Subscriber nodes to their target Event nodes
         for method in &entry.methods {
             if method
                 .attributes
@@ -484,7 +467,6 @@ impl InsightGraph {
                     EVENT_PUBLISHER_KINDS.to_vec()
                 };
 
-                // sub_idx is resolved once outside the kinds loop.
                 let sub_idx = self.get_node(&sub_key);
                 for kind in &kinds_to_try {
                     let event_key =
@@ -509,7 +491,6 @@ impl InsightGraph {
             }
         }
 
-        // RelatesTo edges: table fields with TableRelation property
         if matches!(entry.kind, ObjectKind::Table | ObjectKind::TableExtension) {
             for field in &entry.fields {
                 for prop in &field.properties {
@@ -575,7 +556,6 @@ fn parse_subscriber_target_full(
                 .get(1)
                 .map(|s| {
                     let s = s.trim();
-                    // Remove "Codeunit::" or "Table::" prefix and quotes
                     if let Some(pos) = s.find("::") {
                         clean_quotes(&s[pos + 2..])
                     } else {
@@ -594,13 +574,11 @@ fn parse_subscriber_target_full(
     (None, String::new(), String::new())
 }
 
-/// Parse EventSubscriber attribute to extract target object and event names.
 fn parse_subscriber_target(attributes: &[crate::symbols::AttributeSymbol]) -> (String, String) {
     let (_, obj, evt) = parse_subscriber_target_full(attributes);
     (obj, evt)
 }
 
-/// Remove surrounding single/double quotes.
 fn clean_quotes(s: &str) -> String {
     let s = s.trim();
     let s = s.strip_prefix('"').unwrap_or(s);
@@ -773,7 +751,6 @@ mod tests {
         let mut g = InsightGraph::new();
         g.build_from_index(&index);
 
-        // 2 objects + 1 procedure
         assert_eq!(g.node_count(), 3);
         assert!(g
             .get_node(&NodeKey::Object(ObjectKind::Table, "customer".to_string()))
@@ -801,7 +778,6 @@ mod tests {
         let mut g = InsightGraph::new();
         g.build_from_index(&index);
 
-        // 1 object + 2 procedures
         assert_eq!(g.node_count(), 3);
 
         let obj = g
@@ -818,7 +794,6 @@ mod tests {
             ))
             .unwrap();
 
-        // Object -> Procedure via Contains
         assert!(g.graph.find_edge(obj, proc).is_some());
         assert_eq!(
             *g.graph
@@ -844,7 +819,6 @@ mod tests {
         let mut g = InsightGraph::new();
         g.build_from_index(&index);
 
-        // 1 object + 2 events + 1 procedure
         assert_eq!(g.node_count(), 4);
 
         let obj = g
@@ -861,7 +835,6 @@ mod tests {
             ))
             .unwrap();
 
-        // Object -> Event via Publishes
         assert!(g.graph.find_edge(obj, event).is_some());
         assert_eq!(
             *g.graph
@@ -870,7 +843,6 @@ mod tests {
             InsightEdge::Publishes
         );
 
-        // Verify event type
         if let InsightNode::Event { event_type, .. } = &g.graph[event] {
             assert_eq!(*event_type, EventNodeType::Integration);
         } else {
@@ -898,7 +870,6 @@ mod tests {
         let mut g = InsightGraph::new();
         g.build_from_index(&index);
 
-        // 2 objects + 1 event + 1 subscriber
         assert_eq!(g.node_count(), 4);
 
         let sub = g
@@ -916,7 +887,6 @@ mod tests {
             ))
             .unwrap();
 
-        // Subscriber -> Event via SubscribesTo
         assert!(g.graph.find_edge(sub, event).is_some());
         assert_eq!(
             *g.graph
@@ -947,7 +917,6 @@ mod tests {
             .get_node(&NodeKey::Object(ObjectKind::Table, "customer".to_string()))
             .unwrap();
 
-        // Extension -> Base via Extends
         assert!(g.graph.find_edge(ext, base).is_some());
         assert_eq!(
             *g.graph
@@ -993,12 +962,8 @@ mod tests {
         let mut g = InsightGraph::new();
         g.build_from_index(&index);
 
-        // Graph should build without errors or infinite loops
-        // 3 objects + 3 events + 3 subscribers = 9 nodes
         assert_eq!(g.node_count(), 9);
 
-        // Verify the cycle exists in the graph:
-        // SubA -> EventC, SubB -> EventA, SubC -> EventB
         assert!(g
             .get_node(&NodeKey::Subscriber(
                 ObjectKind::Codeunit,
@@ -1006,12 +971,6 @@ mod tests {
                 "handleeventc".to_string(),
             ))
             .is_some());
-
-        // petgraph handles cycles naturally — no special handling needed
-        // The cycle is: EventA <- SubB (in CU-B) and CU-B publishes EventB,
-        //               EventB <- SubC (in CU-C) and CU-C publishes EventC,
-        //               EventC <- SubA (in CU-A) and CU-A publishes EventA
-        // This verifies the fail criteria: "Graph data structure cannot represent circular event chains"
     }
 
     #[test]
@@ -1037,7 +996,7 @@ mod tests {
         );
 
         g.add_edge(a, b, InsightEdge::Extends);
-        g.add_edge(a, b, InsightEdge::Extends); // duplicate
+        g.add_edge(a, b, InsightEdge::Extends);
         assert_eq!(g.edge_count(), 1);
     }
 
@@ -1081,7 +1040,6 @@ mod tests {
 
         let index = SymbolIndex::new();
 
-        // Customer table
         let customer = SymbolEntry {
             synthetic: false,
             kind: ObjectKind::Table,
@@ -1105,7 +1063,6 @@ mod tests {
             variables: Vec::new(),
         };
 
-        // Sales Header with TableRelation to Customer
         let sales_header = SymbolEntry {
             synthetic: false,
             kind: ObjectKind::Table,
@@ -1137,7 +1094,6 @@ mod tests {
         let mut g = InsightGraph::new();
         g.build_from_index(&index);
 
-        // Should have RelatesTo edge from Sales Header -> Customer
         let sh_idx = g
             .get_node(&NodeKey::Object(
                 ObjectKind::Table,
@@ -1184,7 +1140,6 @@ mod tests {
             variables: Vec::new(),
         };
 
-        // Sales Line with a quoted TableRelation that includes a WHERE clause.
         let sales_line = SymbolEntry {
             synthetic: false,
             kind: ObjectKind::Table,
@@ -1254,7 +1209,6 @@ mod tests {
     fn remove_edges_from_clears_outgoing() {
         let mut g = InsightGraph::new();
 
-        // Create two Procedure nodes
         let a = g.ensure_node(
             NodeKey::Procedure(ObjectKind::Codeunit, "cu".to_string(), "proc_a".to_string()),
             InsightNode::Procedure {

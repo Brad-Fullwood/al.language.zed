@@ -51,7 +51,6 @@ fn test_file_index_does_not_embed_tower_lsp_document_symbol() {
     // Check the file_symbols field declaration line specifically.
     // We scan line by line so we only flag the field declaration, not comments.
     let field_violation = source.lines().any(|line| {
-        // The line must declare file_symbols as a DashMap containing the LSP wire type.
         line.contains("file_symbols") && line.contains("tower_lsp::lsp_types::DocumentSymbol")
     });
     assert!(
@@ -62,7 +61,6 @@ fn test_file_index_does_not_embed_tower_lsp_document_symbol() {
          convert to DocumentSymbol at the al-lsp boundary."
     );
 
-    // Also check get_cached_symbols return type.
     let return_violation = source.lines().any(|line| {
         line.contains("get_cached_symbols") && line.contains("tower_lsp::lsp_types::DocumentSymbol")
     });
@@ -95,7 +93,6 @@ fn test_resolution_helpers_do_not_return_tower_lsp_completion_item() {
 
     for helper in helpers {
         let needle = format!("fn {helper}");
-        // Find the byte offset of the fn declaration.
         let fn_pos = source.find(&needle).unwrap_or_else(|| {
             panic!("resolution.rs: could not find `fn {helper}` — test assumption broken")
         });
@@ -355,11 +352,9 @@ fn test_collect_call_sites_from_block_is_iterative() {
     let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/insight/calls.rs"))
         .expect("failed to read insight/calls.rs");
 
-    // Locate the function body.
     let fn_pos = source
         .find("fn collect_call_sites_from_block")
         .expect("could not find collect_call_sites_from_block");
-    // Grab a generous window for the function body.
     let window_end = (fn_pos + 1500).min(source.len());
     let window = &source[fn_pos..window_end];
 

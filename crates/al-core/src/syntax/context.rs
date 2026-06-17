@@ -14,11 +14,9 @@ pub enum CompletionContext {
     EnumAccess,
     /// In a type position (after `:` in a var declaration)
     TypePosition,
-    /// Default completion context
     Default,
 }
 
-/// Detect the completion context from the text before the cursor.
 pub fn detect_context(text: &str, position: Position) -> CompletionContext {
     let line_idx = position.line as usize;
     let col = position.character as usize;
@@ -56,7 +54,6 @@ pub fn detect_context(text: &str, position: Position) -> CompletionContext {
         let before_cursor = prefix.trim();
 
         // Find the last colon in `s` that is not part of `::` or `:=`.
-        // Returns the byte position, or None.
         let find_type_colon = |s: &str| -> Option<usize> {
             let b = s.as_bytes();
             let mut idx = b.len();
@@ -93,7 +90,6 @@ pub fn detect_context(text: &str, position: Position) -> CompletionContext {
         };
 
         if before_cursor.ends_with(':') && !before_cursor.ends_with(":=") {
-            // Cursor is directly after a colon — check it's a type-annotation colon
             let without_trailing = before_cursor.trim_end_matches(':').trim_end();
             let token_before_trimmed = without_trailing
                 .trim_end_matches(|c: char| c.is_alphanumeric() || c == '_')
@@ -103,8 +99,6 @@ pub fn detect_context(text: &str, position: Position) -> CompletionContext {
             }
         }
 
-        // Check if the line has a var declaration pattern: `varname: <typing>`
-        // but exclude assignments (`:=`) and enum scopes (`::`) near the colon.
         if let Some(colon_pos) = find_type_colon(before_cursor) {
             let after_colon = before_cursor[colon_pos + 1..].trim();
             if !after_colon.is_empty() {
@@ -149,14 +143,12 @@ pub fn extract_last_identifier(s: &str) -> &str {
     }
 }
 
-/// Find the function name and active parameter index from text before cursor.
 /// Returns (function_name, active_parameter_index).
 pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
     let bytes = prefix.as_bytes();
     let mut paren_depth = 0i32;
     let mut comma_count = 0u32;
 
-    // Walk backwards from end.
     // When we encounter a closing quote (`'` or `"`), skip backwards past the
     // entire string literal (handling doubled-quote escapes) so that parens and
     // commas inside strings are not counted.
@@ -166,7 +158,6 @@ pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
         match bytes[i] {
             // Single-quoted string — scan backwards to its opening `'`
             b'\'' => {
-                // We are sitting on a `'`. Walk left past the string contents.
                 // A doubled `''` is an escape sequence inside the string.
                 loop {
                     if i == 0 {
@@ -202,7 +193,6 @@ pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
                 if paren_depth > 0 {
                     paren_depth -= 1;
                 } else {
-                    // Found the matching open paren
                     let before_paren = prefix[..i].trim_end();
                     let func_name = extract_trailing_identifier(before_paren)?;
                     debug!(
@@ -224,7 +214,6 @@ pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
     None
 }
 
-/// Extract the trailing identifier from a string.
 fn extract_trailing_identifier(s: &str) -> Option<&str> {
     let result = extract_last_identifier(s);
     if result.is_empty() {

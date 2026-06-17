@@ -173,7 +173,6 @@ pub fn get_or_create_virtual_file(
     }
 }
 
-/// Transport-agnostic symbol kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AlSymbolKind {
     File,
@@ -201,7 +200,6 @@ pub enum AlSymbolKind {
     TypeParameter,
 }
 
-/// A document symbol (for outline/symbol views).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AlDocumentSymbol {
     pub name: std::string::String,
@@ -212,7 +210,6 @@ pub struct AlDocumentSymbol {
     pub children: Option<Vec<AlDocumentSymbol>>,
 }
 
-/// Folding range kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AlFoldingRangeKind {
     Comment,
@@ -220,7 +217,6 @@ pub enum AlFoldingRangeKind {
     Region,
 }
 
-/// A folding range in a document.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AlFoldingRange {
     pub start_line: u32,
@@ -230,20 +226,17 @@ pub struct AlFoldingRange {
     pub kind: Option<AlFoldingRangeKind>,
 }
 
-/// Inlay hint kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AlInlayHintKind {
     Type,
     Parameter,
 }
 
-/// Inlay hint label.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum AlInlayHintLabel {
     String(std::string::String),
 }
 
-/// An inlay hint.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AlInlayHint {
     pub position: Position,
@@ -253,15 +246,10 @@ pub struct AlInlayHint {
     pub padding_right: Option<bool>,
 }
 
-/// Check if a symbol kind represents a procedure or event.
 pub fn is_procedure_symbol(kind: AlSymbolKind) -> bool {
     kind == AlSymbolKind::Function || kind == AlSymbolKind::Event
 }
 
-/// Human-readable label for a `VariableScope` variant.
-///
-/// Used in hover and completion detail strings. Centralised here so both
-/// callers stay in sync without a Display impl in crate::syntax.
 pub(crate) fn scope_label(scope: &crate::syntax::type_resolver::VariableScope) -> &'static str {
     match scope {
         crate::syntax::type_resolver::VariableScope::Local => "local variable",
@@ -272,28 +260,24 @@ pub(crate) fn scope_label(scope: &crate::syntax::type_resolver::VariableScope) -
     }
 }
 
-/// A position in a document (0-indexed line and character).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     pub line: u32,
     pub character: u32,
 }
 
-/// A range in a document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
 }
 
-/// A location in a specific document.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Location {
     pub uri: Url,
     pub range: Range,
 }
 
-/// A text edit (replacement text for a range).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TextEdit {
     pub range: Range,
@@ -301,7 +285,6 @@ pub struct TextEdit {
     pub new_text: String,
 }
 
-/// A set of edits across multiple documents.
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceEdit {
     pub changes: Vec<(Url, Vec<TextEdit>)>,
@@ -310,11 +293,6 @@ pub struct WorkspaceEdit {
 impl serde::Serialize for WorkspaceEdit {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        // Serialize the edits Vec<TextEdit> directly via the parent serializer
-        // rather than going through serde_json::to_value first. The previous
-        // implementation called `serde_json::to_value(edits).unwrap_or_default()`
-        // which silently dropped serialization errors and forced an extra
-        // allocation per entry.
         let mut map = serializer.serialize_map(Some(1))?;
         let changes_map: std::collections::HashMap<&str, &Vec<TextEdit>> = self
             .changes
@@ -325,9 +303,6 @@ impl serde::Serialize for WorkspaceEdit {
         map.end()
     }
 }
-
-// LSP wire-type conversions live in `crate::server::conversions` — the
-// transport boundary. Query code must stay lsp_types-free (F-OPEN-267).
 
 impl From<crate::syntax::types::SyntaxPosition> for Position {
     fn from(p: crate::syntax::types::SyntaxPosition) -> Self {
@@ -390,7 +365,6 @@ mod query_types_tests {
             )],
         };
         let v = serde_json::to_value(&edit).unwrap();
-        // Must be {"changes": {"file:///test.al": [{"range": ..., "newText": "replaced"}]}}
         assert!(v["changes"].is_object(), "changes must be a map");
         let file_edits = &v["changes"]["file:///test.al"];
         assert!(file_edits.is_array(), "URI value must be an array of edits");
@@ -406,8 +380,6 @@ mod query_types_tests {
         assert_eq!(v["changes"].as_object().unwrap().len(), 0);
     }
 
-    /// Parse `source` and return the named node whose text equals `target`,
-    /// so we can exercise `node_clean_name` against a real tree-sitter node.
     fn first_node_with_text<'a>(
         tree: &'a tree_sitter::Tree,
         source: &[u8],
@@ -431,7 +403,6 @@ mod query_types_tests {
         let result = parser.parse(source);
         let bytes = source.as_bytes();
         let node = first_node_with_text(&result.tree, bytes, "\"My Codeunit\"");
-        // The quoted identifier must come back without its double-quotes.
         assert_eq!(node_clean_name(node, bytes), Some("My Codeunit"));
     }
 
@@ -447,7 +418,6 @@ mod query_types_tests {
 
     #[test]
     fn node_clean_name_returns_none_for_empty_after_strip() {
-        // A node whose entire text is `""` (empty quoted name) trims to "".
         let source = "codeunit 50000 \"\"\n{\n}\n";
         let mut parser = crate::syntax::AlParser::new();
         let result = parser.parse(source);
@@ -458,13 +428,9 @@ mod query_types_tests {
 
     #[test]
     fn node_clean_name_invalid_utf8_returns_none() {
-        // utf8_text fails on invalid UTF-8 within the node's byte span,
-        // which must surface as None rather than a panic.
         let source = "codeunit 50000 MyCodeunit\n{\n}\n";
         let mut parser = crate::syntax::AlParser::new();
         let result = parser.parse(source);
-        // Same byte length as the source but with an invalid UTF-8 byte where
-        // the identifier sits, so utf8_text() over the node's range errors.
         let mut bad = source.as_bytes().to_vec();
         let idx = source.find("MyCodeunit").unwrap();
         bad[idx] = 0xFF;
@@ -476,9 +442,7 @@ mod query_types_tests {
     fn parse_detail_params_basic_named_typed() {
         let params = parse_detail_params("(var SalesHeader: Record; Preview: Boolean): Boolean");
         assert_eq!(params.len(), 2);
-        // raw label keeps the `var` modifier
         assert_eq!(params[0].0, "var SalesHeader: Record");
-        // name strips `var ` prefix
         assert_eq!(params[0].1, "SalesHeader");
         assert_eq!(params[0].2, "Record");
         assert_eq!(params[1].0, "Preview: Boolean");
@@ -508,7 +472,6 @@ mod query_types_tests {
 
     #[test]
     fn parse_detail_params_param_without_colon_has_empty_type() {
-        // A bare name with no `:` yields an empty type string.
         let params = parse_detail_params("(SomeName)");
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].1, "SomeName");
@@ -517,8 +480,6 @@ mod query_types_tests {
 
     #[test]
     fn parse_detail_params_nested_parens_in_type() {
-        // Depth-aware scanning must keep the outer parameter list intact when a
-        // type contains parentheses, e.g. a Dictionary type.
         let params = parse_detail_params("(Items: Dictionary of [Integer, Text]; Flag: Boolean)");
         assert_eq!(params.len(), 2);
         assert_eq!(params[0].1, "Items");
@@ -527,7 +488,6 @@ mod query_types_tests {
 
     #[test]
     fn parse_detail_params_skips_blank_segments() {
-        // A trailing `;` produces an empty segment which must be filtered out.
         let params = parse_detail_params("(A: Integer; )");
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].1, "A");
@@ -587,7 +547,6 @@ mod query_types_tests {
         use crate::syntax::types::SyntaxSymbolKind as S;
         let k: AlSymbolKind = S::Key.into();
         assert_eq!(k, AlSymbolKind::Struct);
-        // a representative non-Key mapping
         let f: AlSymbolKind = S::Function.into();
         assert_eq!(f, AlSymbolKind::Function);
     }

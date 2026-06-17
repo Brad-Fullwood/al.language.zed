@@ -45,7 +45,6 @@ public static class Bridge
 
             var alExtDir = Path.GetDirectoryName(path) ?? ".";
 
-            // Set up assembly resolution for dependent DLLs
             AppDomain.CurrentDomain.AssemblyResolve += (_, args) =>
             {
                 var name = new AssemblyName(args.Name);
@@ -129,21 +128,15 @@ public static class Bridge
         return ptr;
     }
 
-    /// <summary>Free a buffer previously returned by HandleRequest.</summary>
     [UnmanagedCallersOnly]
     public static unsafe void FreeBuffer(byte* ptr) => Marshal.FreeCoTaskMem((nint)ptr);
 }
-
-// ---------------------------------------------------------------------------
-// CodeAnalysis reflection bridge
-// ---------------------------------------------------------------------------
 
 internal class CodeAnalysisBridge
 {
     private readonly Assembly _asm;
     private readonly string _alExtDir;
 
-    // Cached types
     private readonly Type? _syntaxTreeType;
     private readonly Type? _sourceTextType;
     private readonly Type? _compilationType;
@@ -153,7 +146,6 @@ internal class CodeAnalysisBridge
     private readonly Type? _errorCodeEnum;
     private readonly Type? _navDiagnosticInfoType;
 
-    // Cached methods
     private readonly MethodInfo? _parseObjectTextMethod;
     private readonly MethodInfo? _sourceTextFromStringMethod;
     private readonly MethodInfo? _getCompilationUnitRootMethod;
@@ -188,10 +180,6 @@ internal class CodeAnalysisBridge
         catch (ReflectionTypeLoadException ex) { return ex.Types.Where(t => t?.Namespace?.StartsWith(ns) == true)!; }
     }
 
-    // -----------------------------------------------------------------------
-    // analyze
-    // -----------------------------------------------------------------------
-
     public object? HandleAnalyze(JsonElement prms)
     {
         var file = prms.GetProperty("file").GetString() ?? "";
@@ -220,10 +208,6 @@ internal class CodeAnalysisBridge
         return diags;
     }
 
-    // -----------------------------------------------------------------------
-    // builtins
-    // -----------------------------------------------------------------------
-
     public object? HandleBuiltins()
     {
         var types = new Dictionary<string, BTypeInfo>(StringComparer.OrdinalIgnoreCase);
@@ -249,10 +233,6 @@ internal class CodeAnalysisBridge
             enumValues = t.EnumValues.ToArray(),
         }).ToArray();
     }
-
-    // -----------------------------------------------------------------------
-    // typeAt
-    // -----------------------------------------------------------------------
 
     public object? HandleTypeAt(JsonElement prms)
     {
@@ -320,10 +300,6 @@ internal class CodeAnalysisBridge
         return new { name = typeName, kind = typeKind, documentation = doc };
     }
 
-    // -----------------------------------------------------------------------
-    // completions
-    // -----------------------------------------------------------------------
-
     public object? HandleCompletions(JsonElement prms)
     {
         var file = prms.GetProperty("file").GetString() ?? "";
@@ -359,10 +335,6 @@ internal class CodeAnalysisBridge
         return ExtractCompletions(sm, offset);
     }
 
-    // -----------------------------------------------------------------------
-    // errorCodes
-    // -----------------------------------------------------------------------
-
     public object? HandleErrorCodes()
     {
         var results = new List<object>();
@@ -376,7 +348,6 @@ internal class CodeAnalysisBridge
 
         if (ctor == null || descProp == null)
         {
-            // Fallback: just enumerate enum names
             if (_errorCodeEnum.IsEnum)
                 foreach (var n in Enum.GetNames(_errorCodeEnum))
                     if (n != "None" && n != "Unknown")
@@ -410,10 +381,6 @@ internal class CodeAnalysisBridge
         }
         return results;
     }
-
-    // -----------------------------------------------------------------------
-    // compile — invoke alc as a subprocess, parse SARIF error log
-    // -----------------------------------------------------------------------
 
     public object? HandleCompile(JsonElement prms)
     {
@@ -495,15 +462,12 @@ internal class CodeAnalysisBridge
             var diagnostics = new List<object>();
             string? appPath = null;
 
-            // Parse SARIF error log
             if (File.Exists(errorLogPath))
                 diagnostics = ParseSarifErrorLog(errorLogPath);
 
-            // Fallback: parse stdout
             if (diagnostics.Count == 0 && !string.IsNullOrWhiteSpace(stdout))
                 diagnostics = ParseAlcStdout(stdout);
 
-            // Find output .app file
             try
             {
                 var appJsonPath = Path.Combine(project, "app.json");
@@ -619,10 +583,6 @@ internal class CodeAnalysisBridge
         }
         return results;
     }
-
-    // -----------------------------------------------------------------------
-    // Shared helpers
-    // -----------------------------------------------------------------------
 
     private object? ParseSource(string source, string filePath)
     {
@@ -1057,10 +1017,6 @@ internal class CodeAnalysisBridge
         return ("", "", null);
     }
 
-    // -----------------------------------------------------------------------
-    // Micro-helpers
-    // -----------------------------------------------------------------------
-
     private MethodInfo? ResolveSourceTextFrom()
     {
         if (_sourceTextType == null) return null;
@@ -1141,7 +1097,6 @@ internal class CodeAnalysisBridge
     };
 }
 
-// Internal data types
 internal class BTypeInfo { public string Name = ""; public List<BMethodInfo> Methods = new(); public List<string> EnumValues = new(); }
 internal class BMethodInfo { public string Name = ""; public List<BParamInfo> Params = new(); public string? ReturnType; public string? Doc; }
 internal class BParamInfo { public string Name = ""; public string TypeName = "Variant"; public bool IsVar; }

@@ -1,18 +1,10 @@
 //! Transport-agnostic syntax diagnostics query.
-//!
-//! Consolidates the parse+lint+config-filter pattern that was previously
-//! duplicated across `al-lsp/src/server.rs` (schedule_diagnostics) and
-//! `al-lsp/src/diagnostics.rs` (compute_diagnostics + publish_diagnostics).
-//!
-//! Uses the DocumentStore parse cache (`parsing::get_or_parse`) and falls back
-//! to a direct parse only when the document is not in the store.
 
 use url::Url;
 
 use crate::config::AlConfig;
 use crate::workspace::Workspace;
 
-/// Severity of a syntax or lint diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxDiagnosticSeverity {
     Error,
@@ -21,44 +13,22 @@ pub enum SyntaxDiagnosticSeverity {
     Hint,
 }
 
-/// A transport-agnostic syntax / lint diagnostic.
 #[derive(Debug, Clone)]
 pub struct SyntaxDiagnostic {
-    /// Human-readable diagnostic message.
     pub message: String,
-    /// Source range (0-indexed lines, UTF-16 code unit columns — LSP-ready).
+    /// 0-indexed lines, UTF-16 code unit columns — LSP-ready.
     pub range: crate::queries::Range,
     pub severity: SyntaxDiagnosticSeverity,
-    /// Diagnostic code, e.g. `"syntax"` or `"AL-L001"`.
     pub code: String,
-    /// Source label, e.g. `"al"` or `"al-lint"`.
     pub source: String,
 }
 
-/// Compute syntax and lint diagnostics for a single document.
-///
-/// Uses the DocumentStore parse cache when the document is present; falls back
-/// to a direct parse on a cache miss so callers that pre-populate the store
-/// (e.g. `did_open` / `did_change`) get a zero-cost cache hit.
-///
-/// Lint results are filtered by `config.is_lint_rule_enabled`. Note:
-/// `crate::syntax::lint()` is currently a stub that always returns an empty
-/// `Vec` — all AL diagnostics surfaced today come from the syntax-error
-/// pass on the parse tree, not from native lint rules. The lint-filter
-/// branch remains for forward-compatibility with the planned rule engine.
-///
-/// Returns a transport-agnostic `Vec<SyntaxDiagnostic>`. The caller is
-/// responsible for converting to LSP `Diagnostic` values.
 pub fn syntax_diagnostics(
     workspace: &Workspace,
     uri: &Url,
     config: &AlConfig,
 ) -> Vec<SyntaxDiagnostic> {
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
-        // Document not in DocumentStore. Callers (did_open / did_change) are
-        // expected to pre-populate the store, so a cache miss is unexpected.
-        // Surface it via tracing rather than silently parsing an empty string,
-        // which would always return zero diagnostics and mask real issues.
         tracing::warn!(
             target: "al_core::diagnostics",
             uri = %uri,
@@ -112,10 +82,7 @@ fn collect_diagnostics_from_tree(
     diags
 }
 
-/// Convert a tree-sitter `Range` to the crate-local `queries::Range`.
-///
-/// tree-sitter ranges use byte-offset columns; this helper converts them to
-/// UTF-16 code unit columns so callers get LSP-ready ranges directly.
+/// Converts tree-sitter byte-offset columns to UTF-16 code unit columns for LSP.
 fn ts_range_to_query_range(r: tree_sitter::Range, source: &[u8]) -> crate::queries::Range {
     let start_line = source_line(source, r.start_point.row);
     let end_line = if r.end_point.row == r.start_point.row {
@@ -135,7 +102,6 @@ fn ts_range_to_query_range(r: tree_sitter::Range, source: &[u8]) -> crate::queri
     }
 }
 
-/// Return the bytes of `row` (0-indexed) decoded as UTF-8, or `""` on bad UTF-8 / OOB.
 fn source_line(source: &[u8], row: usize) -> &str {
     source
         .split(|&b| b == b'\n')
@@ -153,14 +119,12 @@ mod tests {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/test.al").unwrap();
         ws.documents.open(uri.clone(), text.to_string());
-        // Prime the parse cache so syntax_diagnostics hits the cache path.
         let _ = crate::parsing::get_or_parse(&ws.documents, &uri);
         (ws, uri)
     }
 
     #[test]
     fn test_syntax_diagnostics_invalid_al_returns_errors() {
-        // Missing closing paren is a well-known trigger for tree-sitter parse errors.
         let src = "codeunit 50100 Test\n{\n    procedure Broken(\n    begin\n    end;\n}\n";
         let (ws, uri) = make_workspace_with_text(src);
         let config = AlConfig::default();
@@ -190,8 +154,6 @@ mod tests {
         );
     }
 
-    /// Consistency test: calling syntax_diagnostics twice on the same URI
-    /// returns the same error set (verifies cache path produces consistent output).
     #[test]
     fn test_syntax_diagnostics_consistent_across_calls() {
         let src = "codeunit 50100 Test\n{\n    procedure Broken(\n    begin\n    end;\n}\n";
@@ -210,26 +172,21 @@ mod tests {
         }
     }
 
-    /// Negative test: missing document returns empty vec (no panic, no false positives).
     #[test]
     fn test_syntax_diagnostics_missing_document_returns_empty() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///nonexistent.al").unwrap();
         let config = AlConfig::default();
         let diags = syntax_diagnostics(&ws, &uri, &config);
-        // The important thing is: no panic.
         let _ = diags;
     }
 
-    /// Regression: `ts_range_to_query_range` must convert byte columns to UTF-16
-    /// code units. `é` is 2 UTF-8 bytes but 1 UTF-16 code unit; `好` is 3 bytes
-    /// but 1 UTF-16 code unit.
     #[test]
     fn test_ts_range_to_query_range_converts_to_utf16() {
         let line = "// é好X";
         let source = line.as_bytes();
         let byte_col_x = line.find('X').unwrap();
-        assert_eq!(byte_col_x, 8); // 2 (//) + 1 ( ) + 2 (é) + 3 (好) = 8 bytes
+        assert_eq!(byte_col_x, 8); // 2(//) + 1( ) + 2(é) + 3(好) = 8 bytes
         let ts_range = tree_sitter::Range {
             start_byte: byte_col_x,
             end_byte: byte_col_x + 1,
@@ -243,7 +200,6 @@ mod tests {
             },
         };
         let q = ts_range_to_query_range(ts_range, source);
-        // Expected UTF-16 column of 'X': 2 (//) + 1 ( ) + 1 (é) + 1 (好) = 5
         assert_eq!(
             q.start.character, 5,
             "expected UTF-16 column 5 for 'X', got {} — looks like raw byte column",

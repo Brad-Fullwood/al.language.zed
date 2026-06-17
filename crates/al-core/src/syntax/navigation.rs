@@ -20,7 +20,6 @@ pub fn find_node_at_position<'a>(tree: &'a Tree, source: &str, pos: Position) ->
     root.descendant_for_point_range(point, point)
 }
 
-/// Information about an AL object declaration.
 #[derive(Debug, Clone)]
 pub struct ObjectInfo {
     pub kind: String,
@@ -29,7 +28,6 @@ pub struct ObjectInfo {
     pub range: tree_sitter::Range,
 }
 
-/// Information about a procedure.
 #[derive(Debug, Clone)]
 pub struct ProcedureInfo {
     pub name: String,
@@ -39,7 +37,6 @@ pub struct ProcedureInfo {
     pub is_local: bool,
 }
 
-/// Information about a procedure parameter.
 #[derive(Debug, Clone)]
 pub struct ParameterInfo {
     pub name: String,
@@ -122,7 +119,6 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
     let child = root.child(0)?;
     let kind = child.kind().to_string();
 
-    // Only accept known object types
     if !is_object_type_kind(&kind) && kind != "object_declaration" {
         return None;
     }
@@ -150,7 +146,6 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
     })
 }
 
-/// Find a procedure at the given position.
 pub fn find_procedure_at(tree: &Tree, text: &str, pos: Position) -> Option<ProcedureInfo> {
     let node = find_node_at_position(tree, text, pos)?;
     let source = text.as_bytes();
@@ -181,7 +176,6 @@ pub fn find_procedure_at(tree: &Tree, text: &str, pos: Position) -> Option<Proce
     }
 }
 
-/// Find all references to a variable by name within the tree.
 pub fn find_variable_references(tree: &Tree, text: &str, name: &str) -> Vec<tree_sitter::Range> {
     let root = tree.root_node();
     let source = text.as_bytes();
@@ -338,13 +332,11 @@ fn is_call_reference(node: Node, _source: &[u8]) -> bool {
             let field = get_field_name_of_child(parent, name_node);
             field.as_deref() == Some("member")
         }
-        // Declaration: procedure ProcName() — not a call
         "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => false,
         _ => false,
     }
 }
 
-/// Return the field name that `child` has within `parent`, if any.
 fn get_field_name_of_child(parent: Node, child: Node) -> Option<String> {
     let child_id = child.id();
     for i in 0..parent.child_count() {
@@ -357,7 +349,6 @@ fn get_field_name_of_child(parent: Node, child: Node) -> Option<String> {
     None
 }
 
-/// Extract parameters from a procedure/trigger declaration node.
 fn extract_parameters(node: Node, source: &[u8]) -> Vec<ParameterInfo> {
     let mut params = Vec::new();
 
@@ -644,7 +635,6 @@ mod tests {
 }"#;
         let mut parser = AlParser::new();
         let result = parser.parse(src);
-        // Position on the codeunit keyword (outside any procedure)
         let info = find_procedure_at(
             &result.tree,
             src,
@@ -670,7 +660,6 @@ mod tests {
 }"#;
         let mut parser = AlParser::new();
         let result = parser.parse(src);
-        // Position inside the procedure body
         let info = find_procedure_at(
             &result.tree,
             src,

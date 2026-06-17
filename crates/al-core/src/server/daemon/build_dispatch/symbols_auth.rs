@@ -29,11 +29,10 @@ pub(in crate::server::daemon) async fn dispatch_clear_cache(id: u64) -> Response
         }
     }
 
-    // Report the actual outcome — `deleted` reflects whether the dir was
-    // both present AND successfully removed. `error` is populated only on
-    // failure, so callers can detect a partial-clear and retry/notify
-    // (cycle-3 review note: previous implementation reported success
-    // even when remove failed, which silently lost partial-state info).
+    // `deleted` reflects whether the dir was both present AND successfully
+    // removed. `error` is populated only on failure so callers can detect a
+    // partial-clear; a previous implementation reported success even when
+    // remove failed.
     Response {
         id,
         result: Some(serde_json::json!({
@@ -247,7 +246,6 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
     let dest = project.packages_dir.clone();
     let project_configs = project.server_configs.clone();
 
-    // Release the lock before async work
     let _ = project;
 
     // Audit 2026-06-12: don't re-download dependencies already satisfied in
@@ -458,12 +456,6 @@ mod tests {
         Workspace::new()
     }
 
-    // -----------------------------------------------------------------------    // F-009: dispatch_download_symbols must refresh workspace symbol indexes
-    // after a successful download so hover/completion/definition see the new
-    // packages without a daemon restart.
-
-    /// Empty result vector — no successful downloads — must short-circuit
-    /// to 0 loaded packages and not touch the workspace symbol index.
     #[test]
     fn f009_refresh_after_download_returns_zero_for_empty_result() {
         let ws = empty_ws();
@@ -477,7 +469,6 @@ mod tests {
         );
     }
 
-    /// All-error result — no `path` entries — must also short-circuit.
     #[test]
     fn f009_refresh_after_download_skips_failed_downloads() {
         let ws = empty_ws();
@@ -510,15 +501,9 @@ mod tests {
             "status": "ok",
             "path": bogus.display().to_string()
         })];
-        // Must not panic, must not error — just returns 0 loaded for
-        // unreadable paths. The point is that the code path is now
-        // exercised on every successful download.
         let loaded = refresh_workspace_after_download(&ws, &result);
         assert_eq!(loaded, 0, "unreadable path should yield 0 loaded");
     }
-
-    // -----------------------------------------------------------------------    // dispatch_authenticate: status/clear branches resolve without a network
-    // call when the workspace has no configured tenants.
 
     #[tokio::test]
     async fn authenticate_status_no_tenants_returns_empty_list() {
@@ -548,10 +533,6 @@ mod tests {
             "no tenants → cleared count of 0"
         );
     }
-
-    // -----------------------------------------------------------------------    // dispatch_clear_cache: response shape — `deleted`/`existed` booleans and
-    // a `path`. With no index dir present, both flags must be false and no
-    // error must be reported.
 
     #[tokio::test]
     async fn clear_cache_reports_shape_and_no_error() {

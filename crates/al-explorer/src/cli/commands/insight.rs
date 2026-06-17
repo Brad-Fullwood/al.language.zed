@@ -439,7 +439,6 @@ pub fn cmd_suggest_event(
     event: Option<String>,
     json: bool,
 ) -> ExitCode {
-    // Build the query source from CLI args
     let source = if let Some(ref evt) = event {
         let obj = match &object {
             Some(o) => o.as_str(),

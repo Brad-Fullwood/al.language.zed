@@ -25,7 +25,6 @@ use super::model::{ComposedObject, ObjectKind, SymbolEntry};
 /// `TableExtension Foo extends Bar` and `TableExtension Bar extends Foo`
 /// reference each other.
 pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option<ComposedObject> {
-    // Don't compose extension objects themselves
     if kind.is_extension() {
         return None;
     }
@@ -34,12 +33,10 @@ pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option
     let candidates = index.get_by_name(name);
     let base: Arc<SymbolEntry> = candidates.into_iter().find(|e| e.kind == kind)?;
 
-    // Find all extensions — keep as Arc references
     let extensions = index.get_extensions_of(name);
     let relevant_extensions: Vec<Arc<SymbolEntry>> = extensions
         .into_iter()
         .filter(|ext| {
-            // Only include extensions of the matching kind
             ext.kind.base_kind() == Some(kind)
         })
         .collect();
@@ -64,7 +61,6 @@ fn compose(base: Arc<SymbolEntry>, extensions: Vec<Arc<SymbolEntry>>) -> Compose
         all_enum_values.extend(ext.enum_values.iter().cloned());
     }
 
-    // Sort fields by ID for consistent output
     all_fields.sort_by_key(|f| f.id);
 
     // Defensive de-duplication. BC validation guarantees field IDs are unique
@@ -262,12 +258,9 @@ mod tests {
         let composed = get_composed(&index, ObjectKind::Table, "Customer").unwrap();
         assert_eq!(composed.base.name, "Customer");
         assert_eq!(composed.extensions.len(), 2);
-        // 2 base fields + 2 extension fields
         assert_eq!(composed.all_fields.len(), 4);
-        // Fields are sorted by ID
         assert_eq!(composed.all_fields[0].id, 1);
         assert_eq!(composed.all_fields[3].id, 50101);
-        // 1 base method + 1 extension method
         assert_eq!(composed.all_methods.len(), 2);
     }
 
@@ -300,7 +293,6 @@ mod tests {
         ]);
 
         let composed = get_composed(&index, ObjectKind::Table, "Customer").unwrap();
-        // 1 base + 1 deduped extension field == 2, not 3.
         assert_eq!(composed.all_fields.len(), 2);
         let custom_count = composed.all_fields.iter().filter(|f| f.id == 50100).count();
         assert_eq!(custom_count, 1, "duplicate field id must appear once");
@@ -308,7 +300,6 @@ mod tests {
 
     #[test]
     fn compose_keeps_distinct_ids() {
-        // Sanity: distinct field IDs are NOT collapsed by the dedup.
         let index = SymbolIndex::new();
         index.add_entries(&[
             make_table(
@@ -421,10 +412,6 @@ mod tests {
         assert_eq!(composed.all_fields.len(), 1);
     }
 
-    // -----------------------------------------------------------------------
-    // T702: Composition caching tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn cached_composed_returns_same_arc() {
         let index = SymbolIndex::new();
@@ -460,7 +447,6 @@ mod tests {
         let b = index
             .get_composed_cached(ObjectKind::Table, "Customer")
             .unwrap();
-        // Same Arc pointer — no recomputation
         assert!(Arc::ptr_eq(&a, &b));
     }
 
@@ -486,9 +472,7 @@ mod tests {
         let b = index
             .get_composed_cached(ObjectKind::Table, "Customer")
             .unwrap();
-        // Different Arc — cache was invalidated, recomputed
         assert!(!Arc::ptr_eq(&a, &b));
-        // But data is the same
         assert_eq!(a.base.name, b.base.name);
     }
 
@@ -516,7 +500,6 @@ mod tests {
     fn composed_many_extensions_under_5ms() {
         let index = SymbolIndex::new();
 
-        // Base table with a few fields
         let mut entries = vec![make_table(
             18,
             "Customer",
@@ -543,7 +526,6 @@ mod tests {
             }],
         )];
 
-        // 15 extensions, each adding a field and a method
         for i in 0..15 {
             entries.push(make_table_ext(
                 50100 + i,
@@ -566,7 +548,6 @@ mod tests {
         }
         index.add_entries(&entries);
 
-        // First call (cold cache): should be fast
         let start = std::time::Instant::now();
         let composed = index
             .get_composed_cached(ObjectKind::Table, "Customer")
@@ -582,7 +563,6 @@ mod tests {
             cold_elapsed.as_millis()
         );
 
-        // Second call (warm cache): should be near-instant
         let start = std::time::Instant::now();
         let _cached = index
             .get_composed_cached(ObjectKind::Table, "Customer")

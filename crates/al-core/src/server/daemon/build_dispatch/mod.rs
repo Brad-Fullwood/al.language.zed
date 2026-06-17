@@ -8,7 +8,6 @@ mod symbols_auth;
 mod tests_dispatch;
 mod xliff;
 
-// Re-export everything from submodules so daemon/mod.rs call sites are unchanged.
 pub(super) use build::*;
 pub(super) use codegen::*;
 pub(super) use fixes::*;
@@ -19,7 +18,6 @@ pub(super) use xliff::*;
 use crate::workspace::Workspace;
 use al_protocol::jsonrpc::Response;
 
-// Shared constants — used by multiple submodules via `super::ERR_*`
 pub(super) const ERR_INITIALIZING: &str = "Workspace is initializing, try again";
 pub(super) const ERR_NO_PROJECT: &str = "No project loaded";
 
@@ -30,8 +28,6 @@ pub(super) const ERR_NO_PROJECT: &str = "No project loaded";
 /// scan loop into pathological territory. F-OPEN-007.
 const MAX_DUPLICATES_MIN_TOKENS: u64 = 10_000;
 
-/// Clamp the duplicate-detection `minTokens` param to a sensible upper
-/// bound; default 20 when absent.
 fn clamp_min_tokens(t: Option<u64>) -> usize {
     t.unwrap_or(20).min(MAX_DUPLICATES_MIN_TOKENS) as usize
 }
@@ -48,8 +44,6 @@ fn clamp_min_similarity(s: Option<f64>) -> f32 {
         0.8
     }
 }
-
-// Analysis dispatchers (no dedicated submodule — reported as left-in-mod)
 
 pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
     let entries = crate::queries::obsolescence::obsolescence_timeline(workspace);
@@ -94,7 +88,6 @@ pub(super) fn dispatch_deps_graph(
         .and_then(|v| v.as_str())
         .unwrap_or("json");
 
-    // Read app.json from project root
     let app_json = workspace
         .project
         .try_read()
@@ -110,11 +103,6 @@ pub(super) fn dispatch_deps_graph(
         })
         .unwrap_or_default();
 
-    // Build package list from loaded symbols — name, publisher, version, deps.
-    // Currently we pass the packages list without transitive dependency info;
-    // the dep graph will still resolve direct dependencies from app.json.
-    // Uses the `PackageEntry` alias defined in `queries::deps` so the type
-    // stays in one place if its shape ever changes.
     let packages: Vec<crate::queries::deps::PackageEntry> = Vec::new();
 
     let graph = crate::queries::deps::build_dependency_graph(&app_json, &packages);
@@ -143,9 +131,7 @@ pub(super) fn dispatch_breaking_changes(
     id: u64,
     _params: &serde_json::Value,
 ) -> Response {
-    // Compare baseline (empty) against current workspace symbols to find
-    // all changes relative to a clean slate.  Callers can pass baseline
-    // symbols in params.baselineSymbols in a future iteration.
+    // Callers can pass baseline symbols in params.baselineSymbols in a future iteration.
     let current: Vec<crate::symbols::SymbolEntry> = workspace
         .symbols
         .all_entries()
@@ -187,8 +173,7 @@ pub(super) fn dispatch_upgrade_report(
     id: u64,
     _params: &serde_json::Value,
 ) -> Response {
-    // Use empty baseline to find all symbols that are new/changed relative
-    // to a fresh install.  In practice callers supply a previous .app snapshot.
+    // In practice callers supply a previous .app snapshot; empty baseline finds all new/changed symbols.
     let current: Vec<crate::symbols::SymbolEntry> = workspace
         .symbols
         .all_entries()
@@ -236,11 +221,8 @@ mod tests {
     use crate::workspace::Workspace;
     use al_protocol::jsonrpc::error_codes;
 
-    // --- clamp_min_tokens / clamp_min_similarity (F-OPEN-007) ----------------
-
     #[test]
     fn clamp_min_tokens_defaults_when_absent() {
-        // None → the documented default of 20.
         assert_eq!(clamp_min_tokens(None), 20);
     }
 
@@ -256,7 +238,6 @@ mod tests {
 
     #[test]
     fn clamp_min_tokens_caps_oversized_input() {
-        // Hostile / fat-fingered values cap at MAX, not panic and not pass through.
         assert_eq!(
             clamp_min_tokens(Some(u64::MAX)),
             MAX_DUPLICATES_MIN_TOKENS as usize
@@ -269,7 +250,6 @@ mod tests {
 
     #[test]
     fn clamp_min_similarity_defaults_when_absent() {
-        // None → the documented default of 0.8.
         assert!((clamp_min_similarity(None) - 0.8).abs() < 1e-6);
     }
 
@@ -282,7 +262,6 @@ mod tests {
 
     #[test]
     fn clamp_min_similarity_rejects_out_of_range() {
-        // Negative reals clamp to 0, super-1 to 1.
         assert!((clamp_min_similarity(Some(-1.0)) - 0.0).abs() < 1e-6);
         assert!((clamp_min_similarity(Some(2.5)) - 1.0).abs() < 1e-6);
         assert!((clamp_min_similarity(Some(1e308)) - 1.0).abs() < 1e-6);
@@ -290,14 +269,10 @@ mod tests {
 
     #[test]
     fn clamp_min_similarity_rejects_non_finite() {
-        // NaN / ±inf must fall back to the safe default, not propagate and
-        // poison downstream `>=` comparisons.
         assert!((clamp_min_similarity(Some(f64::NAN)) - 0.8).abs() < 1e-6);
         assert!((clamp_min_similarity(Some(f64::INFINITY)) - 0.8).abs() < 1e-6);
         assert!((clamp_min_similarity(Some(f64::NEG_INFINITY)) - 0.8).abs() < 1e-6);
     }
-
-    // --- dispatch_deps_graph -------------------------------------------------
 
     #[test]
     fn deps_graph_dot_format_returns_dot_content() {
@@ -314,7 +289,6 @@ mod tests {
         let ws = empty_ws();
         let resp = dispatch_deps_graph(&ws, 2, &serde_json::json!({}));
         assert!(resp.error.is_none());
-        // JSON branch serialises the graph struct (not the {format,content} shape).
         let r = resp.result.expect("result");
         assert!(
             r.get("content").is_none(),

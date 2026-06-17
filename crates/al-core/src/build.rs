@@ -71,7 +71,6 @@ pub(crate) async fn run_alc_with_timeout(
     }
 }
 
-/// Result of a compilation attempt.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompileResult {
@@ -79,13 +78,11 @@ pub struct CompileResult {
     pub success: bool,
     /// Path to the produced .app file (if successful).
     pub app_path: Option<PathBuf>,
-    /// Compiler diagnostics (errors and warnings).
     pub diagnostics: Vec<CompileDiagnostic>,
     /// Raw compiler output (stdout + stderr).
     pub output: String,
 }
 
-/// A single compiler diagnostic parsed from alc output.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompileDiagnostic {
@@ -97,7 +94,6 @@ pub struct CompileDiagnostic {
     pub message: String,
 }
 
-/// Severity level for compiler diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DiagnosticSeverity {
@@ -124,7 +120,6 @@ pub async fn compile_project(
     compile_project_with_analyzers(toolchain, project_root, package_cache, None).await
 }
 
-/// Compile with specific analyzer selection.
 pub async fn compile_project_with_analyzers(
     toolchain: &AlToolchain,
     project_root: &Path,
@@ -201,7 +196,6 @@ pub async fn compile_project_with_analyzers(
     cmd.arg(format!("/project:{}", project_root.display()));
     cmd.arg(format!("/out:{}", out_dir.display()));
 
-    // Use explicit package cache path, or fall back to .alpackages
     let pkg_dir = package_cache
         .map(PathBuf::from)
         .unwrap_or_else(|| project_root.join(".alpackages"));
@@ -232,7 +226,6 @@ pub async fn compile_project_with_analyzers(
         }
         analyzer_paths.push(path.display().to_string());
     }
-    // Custom DLL paths from toolchain (pre-populated from workspace config).
     for custom_path in &toolchain.analyzers.custom {
         if !custom_path.is_file() {
             continue;
@@ -419,8 +412,6 @@ fn find_diagnostic_coord_span(line: &str) -> Option<(usize, usize)> {
             search_from = close;
             continue;
         }
-        // Walk back from `close` to find the matching `(` that opens a
-        // `digits,digits` payload.
         if let Some(open_rel) = line[..close].rfind('(') {
             let payload = &line[open_rel + 1..close];
             if !payload.is_empty() && payload.split(',').all(|s| s.trim().parse::<u32>().is_ok()) {
@@ -452,8 +443,6 @@ fn parse_alc_output(output: &str) -> Vec<CompileDiagnostic> {
 /// rightmost `(<digits>,<digits>):` followed by a severity keyword instead
 /// of the first `(`, so the path keeps its embedded parentheses.
 fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
-    // Find the rightmost `):` that is immediately preceded by `(N,M)` and
-    // immediately followed by ` <severity>`.
     let (paren_open, paren_close) = find_diagnostic_coord_span(line)?;
     let coords = &line[paren_open + 1..paren_close];
     let mut parts = coords.split(',');
@@ -462,7 +451,6 @@ fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
 
     let file = line[..paren_open].to_string();
 
-    // After ): find severity and code
     let rest = line[paren_close + 1..].trim();
     let rest = rest.strip_prefix(':')?;
     let rest = rest.trim();
@@ -477,7 +465,6 @@ fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
         return None;
     };
 
-    // Code: message
     let (code, message) = if let Some(colon_pos) = rest.find(':') {
         let code = rest[..colon_pos].trim().to_string();
         let message = rest[colon_pos + 1..].trim().to_string();
@@ -503,13 +490,48 @@ fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
 /// when multiple .app files from old builds are present in the project root.
 /// Falls back to the most-recently-modified .app file if the manifest cannot
 /// be read or the expected path does not exist.
+/// Compile via the pure-Rust native `.app` emitter — no Microsoft `alc`, no C#
+/// bridge. Emits a deployable `.app` straight from the project source and writes
+/// it to `{publisher}_{name}_{version}.app` in the project root.
+///
+/// The native emitter does no semantic analysis, so it reports no diagnostics
+/// here — type/semantic errors surface through the LSP (which runs continuously),
+/// not through this compile step.
+pub fn native_compile(project_root: &Path) -> CompileResult {
+    let timestamp = crate::emit::now_timestamp();
+    let version = concat!("native-emit/", env!("CARGO_PKG_VERSION"));
+    let fail = |msg: String| CompileResult {
+        success: false,
+        app_path: None,
+        diagnostics: Vec::new(),
+        output: msg,
+    };
+    match crate::emit::build_app_from_project(project_root, version, &timestamp) {
+        Ok(built) => {
+            let out = project_root.join(&built.file_name);
+            match std::fs::write(&out, &built.bytes) {
+                Ok(()) => CompileResult {
+                    success: true,
+                    app_path: Some(out.clone()),
+                    diagnostics: Vec::new(),
+                    output: format!(
+                        "native emitter produced {} ({} bytes)",
+                        out.display(),
+                        built.bytes.len()
+                    ),
+                },
+                Err(e) => fail(format!("writing {}: {e}", out.display())),
+            }
+        }
+        Err(e) => fail(format!("native emit failed: {e}")),
+    }
+}
+
 pub fn find_app_file(project_root: &Path) -> Option<PathBuf> {
-    // Try the deterministic path derived from app.json
     if let Some(path) = find_app_file_from_manifest(project_root) {
         return Some(path);
     }
 
-    // Fallback: pick the most recently modified .app in the project root
     let entries = std::fs::read_dir(project_root).ok()?; // SILENT: dir read failure means no .app
     let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = entries
         .flatten()
@@ -531,7 +553,7 @@ pub fn find_app_file(project_root: &Path) -> Option<PathBuf> {
         })
         .collect();
 
-    candidates.sort_by_key(|b| std::cmp::Reverse(b.0)); // most-recent first
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.0));
     candidates.into_iter().next().map(|(_, path)| path)
 }
 
@@ -679,7 +701,6 @@ Build failed.";
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
 
-        // Write app.json
         std::fs::write(
             root.join("app.json"),
             r#"{"publisher":"MyPub","name":"MyApp","version":"2.0.0.0"}"#,
@@ -689,7 +710,6 @@ Build failed.";
         // Create a stale .app with a different name (old build artifact)
         std::fs::write(root.join("OldPub_OldApp_1.0.0.0.app"), b"stale").unwrap();
 
-        // Create the expected .app from the manifest
         std::fs::write(root.join("MyPub_MyApp_2.0.0.0.app"), b"fresh").unwrap();
 
         let result = find_app_file(root).unwrap();
@@ -756,7 +776,6 @@ Build failed.";
             r#"{"publisher":"MyPub","name":"MyApp","version":"2.0.0.0"}"#,
         )
         .unwrap();
-        // A legitimate regular .app file is still returned.
         std::fs::write(root.join("MyPub_MyApp_2.0.0.0.app"), b"fresh").unwrap();
 
         let result = find_app_file(root).unwrap();
@@ -831,7 +850,6 @@ Build failed.";
             h.await.unwrap();
         }
 
-        // No tmp dirs should remain after all invocations complete.
         let leaked: Vec<_> = std::fs::read_dir(&root)
             .unwrap()
             .filter_map(|e| e.ok())

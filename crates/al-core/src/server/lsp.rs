@@ -21,7 +21,6 @@ use super::workspace;
 /// ISSUE-025 fix: prevents bridge calls (up to 5s) from blocking hover/completion.
 const DIAGNOSTICS_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 
-/// The AL language server.
 pub struct AlServer {
     pub(crate) client: Client,
     pub(crate) workspace: Arc<Workspace>,
@@ -45,8 +44,6 @@ pub struct AlServer {
     /// `await_ready` checks this flag, NOT `init_done`, so it only returns once the
     /// background work has actually finished (not just been scheduled).
     pub(crate) workspace_ready: Arc<AtomicBool>,
-    /// Notified when workspace initialization completes.
-    /// Handlers that need the workspace ready await this before proceeding.
     pub(crate) init_notify: Arc<Notify>,
     /// Set the first time we report a persistent semantic-bridge failure
     /// (`Timeout` / `Poisoned`) to the user, so subsequent file opens with
@@ -59,7 +56,6 @@ impl AlServer {
         let workspace = Arc::new(Workspace::new());
 
         // Register a notify sink so al-core can surface bridge failures to the user.
-        // The closure spawns a task to fire-and-forget the async show_message call.
         let sink_client = client.clone();
         let _ = workspace
             .notify_sink
@@ -98,8 +94,6 @@ impl AlServer {
             .swap(true, std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Await workspace initialization.
-    ///
     /// If initialization has already completed (`workspace_ready` is true) this returns
     /// immediately. Otherwise it waits for the `init_notify` signal with a 30s
     /// timeout so that handlers opened immediately after server startup receive
@@ -110,11 +104,9 @@ impl AlServer {
     /// between the flag check and the `.await`. By calling `notified()` first we pin
     /// a permit that survives that window.
     async fn await_ready(&self) {
-        // Subscribe *before* the flag check so we cannot miss a wakeup fired
-        // between the check and the await.
         let notified = self.init_notify.notified();
         if self.workspace_ready.load(Ordering::Acquire) {
-            return; // Already initialized
+            return;
         }
         if tokio::time::timeout(std::time::Duration::from_secs(30), notified)
             .await
@@ -124,7 +116,6 @@ impl AlServer {
         }
     }
 
-    /// Ensure builtins are loaded. Tries disk cache first, then bridge.
     pub(crate) async fn ensure_builtins_loaded(&self) {
         if !self
             .workspace
@@ -136,7 +127,6 @@ impl AlServer {
             return;
         }
 
-        // Try to get/init bridge and load builtins
         if let Some(guard) = self.get_or_init_bridge().await {
             if let Some(bridge) = guard.as_ref() {
                 match bridge.builtin_types().await {
@@ -159,7 +149,6 @@ impl AlServer {
         }
     }
 
-    /// Ensure error codes are loaded. Tries disk cache first, then bridge.
     pub(crate) async fn ensure_error_codes_loaded(&self) {
         if !self.workspace.error_codes.is_empty() {
             return;
@@ -198,9 +187,6 @@ impl AlServer {
             .map(|v| v.value().clone())
     }
 
-    /// Get the semantic bridge, initializing it lazily if needed.
-    ///
-    /// Delegates to `crate::semantic::get_or_init_bridge`.
     pub(crate) async fn get_or_init_bridge(
         &self,
     ) -> Option<tokio::sync::RwLockReadGuard<'_, Option<crate::semantic::SemanticBridge>>> {
@@ -225,8 +211,6 @@ impl AlServer {
             old.abort();
         }
 
-        // Clone Arc<Workspace> so the spawned closure can call the workspace-aware
-        // syntax_diagnostics query (cache hit after on_document_change).
         let workspace = Arc::clone(&self.workspace);
         let client = self.client.clone();
         let handle = tokio::spawn(async move {
@@ -300,7 +284,6 @@ impl LanguageServer for AlServer {
 
         *self.root_uri.write().await = root_uri;
 
-        // Parse initialization options into config
         if let Some(init_opts) = params.initialization_options {
             let al_settings = extract_al_settings(init_opts);
             let cap = {
@@ -426,7 +409,6 @@ impl LanguageServer for AlServer {
             .log_message(MessageType::INFO, "AL Language Server initialized")
             .await;
 
-        // Use the root URI stored during initialize()
         let root_uri = self.root_uri.read().await.clone();
         tracing::info!(root_uri = ?root_uri, "initialized: spawning workspace init in background");
 
@@ -496,7 +478,6 @@ impl LanguageServer for AlServer {
             }
         }
 
-        // Convert LSP types → al-core types at the boundary
         let changes: Vec<crate::documents::TextChange> = params
             .content_changes
             .iter()
@@ -522,10 +503,6 @@ impl LanguageServer for AlServer {
             .apply_changes_and_get(&uri, &changes)
         {
             crate::workspace::on_document_change(&self.workspace, &uri, &text_arc);
-            // ISSUE-025 fix: diagnostics are debounced and run async.
-            // Each keystroke cancels the previous pending task to avoid bridge calls
-            // (up to bridge timeout = 5s) blocking hover/completion.
-            //
             // Only schedule per-keystroke diagnostics when trigger is Continuous.
             // In OnSave mode, diagnostics are deferred to did_save to avoid per-keystroke work.
             let trigger = self.workspace.config.read().await.diagnostics_trigger;
@@ -563,7 +540,6 @@ impl LanguageServer for AlServer {
                 self.workspace.file_index.remove_file(&path);
                 self.client.publish_diagnostics(uri, vec![], None).await;
             }
-            // If project-scoped, diagnostics persist (file is still in the project)
         } else {
             self.client.publish_diagnostics(uri, vec![], None).await;
         }
@@ -585,7 +561,6 @@ impl LanguageServer for AlServer {
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         tracing::info!("did_change_configuration");
-        // Zed sends settings nested under "al" key, or as a flat object
         let al_settings = extract_al_settings(params.settings);
         let (unknown, cap) = {
             let mut config = self.workspace.config.write().await;
@@ -971,7 +946,6 @@ impl LanguageServer for AlServer {
         tracing::info!(command = %params.command, "execute_command");
 
         let start = std::time::Instant::now();
-        // F-OPEN-264: one function per command in `server::commands`.
         let result = match params.command.as_str() {
             "al.downloadSymbols" | "al.downloadSymbolsNuget" => {
                 workspace::download_symbols_command(self, workspace::DownloadSource::NuGet).await;

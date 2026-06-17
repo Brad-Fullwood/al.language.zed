@@ -8,13 +8,10 @@ use std::collections::HashMap;
 
 use crate::workspace::Workspace;
 
-/// A pair of duplicate/similar code blocks.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DuplicateBlock {
-    /// First occurrence.
     pub first: BlockLocation,
-    /// Second occurrence.
     pub second: BlockLocation,
     /// Similarity score 0.0..=1.0 (1.0 = exact).
     pub similarity: f32,
@@ -22,7 +19,6 @@ pub struct DuplicateBlock {
     pub token_count: usize,
 }
 
-/// Location of a code block.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockLocation {
@@ -32,9 +28,6 @@ pub struct BlockLocation {
     pub line: u32,
 }
 
-/// Find duplicate/similar procedures across workspace files.
-///
-/// Minimum similarity threshold and minimum token count can be configured.
 pub fn find_duplicates(
     workspace: &Workspace,
     min_tokens: usize,
@@ -63,13 +56,11 @@ pub fn find_duplicates(
             let a = &procedures[i];
             let b = &procedures[j];
 
-            // Skip trivially short procedures
             let shorter = a.tokens.len().min(b.tokens.len());
             if shorter < min_tokens {
                 continue;
             }
 
-            // Skip identical procedure names in the same object (same proc, different file sections)
             if a.location.object == b.location.object
                 && a.location.procedure == b.location.procedure
             {
@@ -149,7 +140,6 @@ fn collect_procs_recursive(
                     },
                     tokens,
                 });
-                // Skip children of procedure/trigger declarations
                 did_visit = true;
                 continue;
             }
@@ -182,7 +172,6 @@ fn collect_tokens(node: tree_sitter::Node, source: &[u8], tokens: &mut Vec<Strin
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {
         if !current.is_named() {
-            // Punctuation/keywords — keep as-is
             if let Ok(text) = current.utf8_text(source) {
                 let lower = text.to_lowercase();
                 tokens.push(lower);
@@ -192,7 +181,6 @@ fn collect_tokens(node: tree_sitter::Node, source: &[u8], tokens: &mut Vec<Strin
 
         match current.kind() {
             "identifier" | "name" => {
-                // Normalize identifiers to their category
                 tokens.push("$ID".to_string());
             }
             "string" | "verbatim_string" => {
@@ -201,11 +189,8 @@ fn collect_tokens(node: tree_sitter::Node, source: &[u8], tokens: &mut Vec<Strin
             "integer" | "decimal" => {
                 tokens.push("$NUM".to_string());
             }
-            "comment" => {
-                // Skip comments in similarity analysis
-            }
+            "comment" => {}
             _ => {
-                // Push children in reverse order for left-to-right DFS
                 for i in (0..current.child_count()).rev() {
                     if let Some(child) = current.child(i) {
                         stack.push(child);
@@ -334,7 +319,6 @@ mod tests {
             ),
         ]);
 
-        // With high threshold, no duplicates for clearly different code
         let dups = find_duplicates(&ws, 10, 0.9);
         assert!(dups.is_empty(), "Unique code should have no duplicates");
     }

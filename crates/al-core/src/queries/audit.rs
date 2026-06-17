@@ -7,10 +7,6 @@ use serde::Serialize;
 
 use crate::workspace::Workspace;
 
-// ---------------------------------------------------------------------------
-// DataClassification Audit (T1702)
-// ---------------------------------------------------------------------------
-
 /// The GDPR risk level of a DataClassification value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,25 +17,19 @@ pub enum GdprRisk {
     Personal,
     /// Non-personal organizational data.
     OrganizationIdentifiableInformation,
-    /// System metadata / no personal data.
     SystemMetadata,
     /// Explicitly set to no personal data.
     None,
 }
 
-/// A single field's DataClassification audit entry.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataClassificationEntry {
-    /// Table name.
     pub table: String,
-    /// Field name.
     pub field: String,
     /// DataClassification value found (or "(none)" if missing).
     pub classification: String,
-    /// GDPR risk level.
     pub risk: GdprRisk,
-    /// File path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
     /// Line number (1-based).
@@ -47,7 +37,6 @@ pub struct DataClassificationEntry {
     pub line: Option<u32>,
 }
 
-/// Enumerate all table fields in workspace and report their DataClassification.
 #[must_use]
 pub fn data_classification_audit(workspace: &Workspace) -> Vec<DataClassificationEntry> {
     let mut results = Vec::new();
@@ -197,32 +186,20 @@ fn classify_gdpr_risk(classification: &str) -> GdprRisk {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Permission Set Audit (T1706)
-// ---------------------------------------------------------------------------
-
-/// Coverage for a single object in permission analysis.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionCoverageEntry {
-    /// Object type.
     pub kind: String,
-    /// Object ID.
     pub id: u32,
-    /// Object name.
     pub name: String,
-    /// Whether this object is covered by any permission set.
     pub covered: bool,
-    /// Which permission sets cover this object.
     pub covered_by: Vec<String>,
 }
 
-/// Audit permission sets against actual workspace objects.
 pub fn permission_set_audit(workspace: &Workspace) -> Vec<PermissionCoverageEntry> {
     let mut results = Vec::new();
 
-    // Collect all permission set definitions
-    let mut perm_sets: Vec<(String, Vec<String>)> = Vec::new(); // (name, covered object names)
+    let mut perm_sets: Vec<(String, Vec<String>)> = Vec::new();
 
     for entry in workspace.file_index.files.iter() {
         let path = entry.key();
@@ -239,7 +216,6 @@ pub fn permission_set_audit(workspace: &Workspace) -> Vec<PermissionCoverageEntr
         }
     }
 
-    // Check workspace objects against permission sets
     for entry in workspace.file_index.files.iter() {
         let path = entry.key();
         let Some((text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {

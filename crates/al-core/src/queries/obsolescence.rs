@@ -7,7 +7,6 @@ use serde::Serialize;
 
 use crate::workspace::Workspace;
 
-/// ObsoleteState value from the attribute.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ObsoleteState {
@@ -16,35 +15,26 @@ pub enum ObsoleteState {
     Unknown,
 }
 
-/// A symbol marked as obsolete.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObsoleteEntry {
-    /// Object name containing the symbol.
     pub object: String,
-    /// Symbol name (procedure, field, object, etc.).
     pub symbol: String,
-    /// Kind of symbol: "object", "procedure", "field".
+    /// "object", "procedure", or "field"
     pub kind: String,
-    /// Obsolescence state.
     pub state: ObsoleteState,
-    /// The ObsoleteReason text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// The ObsoleteTag (version or date).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
-    /// File path (if in workspace).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
-    /// Line number (1-based).
+    /// 1-based line number
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
-    /// Number of callers/references found in the workspace.
     pub caller_count: u32,
 }
 
-/// Find all obsolete symbols in the workspace files.
 #[must_use]
 pub fn obsolescence_timeline(workspace: &Workspace) -> Vec<ObsoleteEntry> {
     let mut results = Vec::new();
@@ -71,13 +61,6 @@ pub fn obsolescence_timeline(workspace: &Workspace) -> Vec<ObsoleteEntry> {
         scan_file_for_obsolete(file_path, file_text, file_tree, &all, &mut results);
     }
 
-    // Also scan symbol packages for obsolete entries.
-    //
-    // No reverse index exists today from "has Obsolete attribute" → entries,
-    // so we still walk the full set. Use `all_entries()` to make that
-    // intent explicit (it replaces the misleading `search("", usize::MAX)`
-    // call). We skip entries with no methods up-front so the inner loop is
-    // not entered for the majority of symbols (tables, enums, etc).
     let symbols = workspace.symbols.all_entries();
     for sym in symbols.iter().filter(|s| !s.methods.is_empty()) {
         for method in &sym.methods {
@@ -126,7 +109,6 @@ fn scan_file_for_obsolete(
     let root = file_tree.root_node();
     let source = file_text.as_bytes();
 
-    // Check for object-level Obsolete attribute
     let obj_obsolete = extract_obsolete_from_preceding_attr(root, source);
     if let Some((state, reason, tag)) = obj_obsolete {
         let caller_count = count_references_in_files(all_files, &obj_info.name);
@@ -143,7 +125,6 @@ fn scan_file_for_obsolete(
         });
     }
 
-    // Check for procedure-level Obsolete attributes
     scan_procedures_for_obsolete(
         file_path,
         file_text,
@@ -193,8 +174,7 @@ fn scan_procedures_for_obsolete(
                     caller_count,
                 });
             }
-            // Do not recurse into procedure body
-            continue;
+                continue;
         }
 
         let mut cursor = node.walk();
@@ -202,8 +182,6 @@ fn scan_procedures_for_obsolete(
     }
 }
 
-/// Extract ObsoleteState/ObsoleteReason/ObsoleteTag from attributes preceding a node.
-/// Returns (state, reason, tag) if any Obsolete attribute is found.
 fn extract_obsolete_from_preceding_attr(
     node: tree_sitter::Node,
     source: &[u8],
@@ -252,7 +230,6 @@ fn parse_obsolete_attr(text: &str) -> Option<(ObsoleteState, Option<String>, Opt
         return Some((state, reason, tag));
     }
 
-    // Also check for [Obsolete('reason', 'tag')] attribute form
     if lower.trim_start().starts_with("[obsolete") || lower.contains("obsolete(") {
         let reason = extract_attr_arg(text, 0);
         let tag = extract_attr_arg(text, 1);
@@ -288,7 +265,6 @@ fn extract_attr_arg(text: &str, idx: usize) -> Option<String> {
     }
     let inner = &text[start + 1..end];
 
-    // Split by comma, respecting quotes
     let mut args = Vec::new();
     let mut current = String::new();
     let mut in_q = false;
@@ -424,8 +400,6 @@ mod tests {
                 return_type: None,
                 attributes: vec![AttributeSymbol {
                     name: "Obsolete".to_string(),
-                    // Quoted arguments must be trimmed of single AND
-                    // double quotes by the symbol-package scan path.
                     arguments: vec![
                         "'Use NewHelper instead'".to_string(),
                         "\"24.0\"".to_string(),

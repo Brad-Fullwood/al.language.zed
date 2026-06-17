@@ -13,7 +13,6 @@ use crate::queries::tests::{collect_test_procedures, TestCodeunit};
 use crate::test_engine::result::{TestCodeunitResult, TestStatus};
 use crate::workspace::Workspace;
 
-/// Severity of a test diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiagnosticSeverity {
     Error,
@@ -38,9 +37,7 @@ pub struct TestDiagnostic {
     /// Human-readable message (the error/assertion message from BC, or a
     /// generic "skipped" message).
     pub message: String,
-    /// Name of the test procedure.
     pub test_name: String,
-    /// Name of the test codeunit.
     pub codeunit: String,
 }
 
@@ -107,7 +104,6 @@ fn results_to_diagnostics_inner(
                     .unwrap_or(0);
                 (cu.file.clone(), proc_line)
             } else {
-                // Unknown file: attach to line 0
                 (String::new(), 0)
             };
 
@@ -137,18 +133,9 @@ fn results_to_diagnostics_inner(
     diagnostics
 }
 
-/// Clear test diagnostics by returning an empty set.
-///
-/// Convenience for callers that need to reset diagnostics when re-running
-/// tests or closing a workspace.
 pub fn clear_diagnostics() -> Vec<TestDiagnostic> {
     Vec::new()
 }
-
-// ---------------------------------------------------------------------------
-// Helpers for building test diagnostics from static discovery only
-// (no network — for tests that were never run)
-// ---------------------------------------------------------------------------
 
 /// Build "not run" informational diagnostics for all discovered test
 /// procedures in a workspace. Useful for showing which tests exist but
@@ -173,10 +160,6 @@ pub fn unrun_test_hints(workspace: &Workspace) -> Vec<TestDiagnostic> {
     hints
 }
 
-/// Build a per-file map of diagnostics from a flat list.
-///
-/// Groups `TestDiagnostic` entries by their `file` field. Useful for the LSP
-/// layer when building `publishDiagnostics` notifications.
 pub fn group_by_file(
     diagnostics: Vec<TestDiagnostic>,
 ) -> std::collections::HashMap<String, Vec<TestDiagnostic>> {

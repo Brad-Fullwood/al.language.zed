@@ -21,8 +21,6 @@ mod tests {
     use crate::queries::AlSymbolKind;
     use crate::workspace::Workspace;
 
-    // --- positive tests ---
-
     #[test]
     fn document_symbols_returns_top_level_object() {
         let ws = Workspace::new();
@@ -111,8 +109,6 @@ codeunit 50101 "Helper"
         );
     }
 
-    // --- negative / edge tests ---
-
     #[test]
     fn document_symbols_missing_uri_returns_none() {
         let ws = Workspace::new();
@@ -144,8 +140,6 @@ codeunit 50101 "Helper"
 
     #[test]
     fn document_symbols_non_object_content_returns_some_empty() {
-        // Free text with no object/namespace declaration parses but yields no
-        // top-level symbols.
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/garbage.al").expect("test");
         ws.documents

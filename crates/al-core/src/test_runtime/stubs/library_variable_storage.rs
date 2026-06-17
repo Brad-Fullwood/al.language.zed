@@ -42,7 +42,6 @@ use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
 /// Maximum items the queue can hold (mirrors `array[25] of Variant`).
 const MAX_QUEUE_SIZE: usize = 25;
 
-/// The thread-local queue state.
 struct LvsQueue {
     items: VecDeque<Value>,
 }
@@ -190,7 +189,6 @@ pub fn assert_peek_available(args: &[Value]) -> Eval {
     })
 }
 
-/// `Clear()` — remove all values from the queue.
 pub fn clear(_args: &[Value]) -> Eval {
     QUEUE.with(|q| {
         q.borrow_mut().clear();
@@ -198,7 +196,6 @@ pub fn clear(_args: &[Value]) -> Eval {
     })
 }
 
-/// `Enqueue(Variant: Variant)` — add a value to the back of the queue.
 pub fn enqueue(args: &[Value]) -> Eval {
     let value = match args {
         [v] => v.clone(),
@@ -238,12 +235,10 @@ pub fn peek(args: &[Value]) -> Eval {
     })
 }
 
-/// `Length(): Integer` — number of items currently in the queue.
 pub fn length(_args: &[Value]) -> Eval {
     QUEUE.with(|q| ok(Value::Integer(q.borrow().len() as i64)))
 }
 
-/// `MaxLength(): Integer` — maximum capacity of the queue.
 pub fn max_length(_args: &[Value]) -> Eval {
     ok(Value::Integer(MAX_QUEUE_SIZE as i64))
 }
@@ -256,7 +251,6 @@ pub fn dequeue_text(_args: &[Value]) -> Eval {
     })
 }
 
-/// `DequeueDecimal(): Decimal`.
 pub fn dequeue_decimal(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
         Ok(Value::Decimal(d)) => ok(Value::Decimal(d)),
@@ -269,7 +263,6 @@ pub fn dequeue_decimal(_args: &[Value]) -> Eval {
     })
 }
 
-/// `DequeueInteger(): Integer`.
 pub fn dequeue_integer(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
         Ok(Value::Integer(i)) => ok(Value::Integer(i)),
@@ -281,7 +274,6 @@ pub fn dequeue_integer(_args: &[Value]) -> Eval {
     })
 }
 
-/// `DequeueDate(): Date`.
 pub fn dequeue_date(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
         Ok(Value::Date(d)) => ok(Value::Date(d)),
@@ -293,7 +285,6 @@ pub fn dequeue_date(_args: &[Value]) -> Eval {
     })
 }
 
-/// `DequeueDateTime(): DateTime`.
 pub fn dequeue_date_time(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
         Ok(Value::DateTime(dt)) => ok(Value::DateTime(dt)),
@@ -305,7 +296,6 @@ pub fn dequeue_date_time(_args: &[Value]) -> Eval {
     })
 }
 
-/// `DequeueTime(): Time`.
 pub fn dequeue_time(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
         Ok(Value::Time(t)) => ok(Value::Time(t)),
@@ -317,7 +307,6 @@ pub fn dequeue_time(_args: &[Value]) -> Eval {
     })
 }
 
-/// `DequeueBoolean(): Boolean`.
 pub fn dequeue_boolean(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
         Ok(Value::Boolean(b)) => ok(Value::Boolean(b)),
@@ -329,7 +318,6 @@ pub fn dequeue_boolean(_args: &[Value]) -> Eval {
     })
 }
 
-/// `PeekText(Index: Integer): Text`.
 pub fn peek_text(args: &[Value]) -> Eval {
     let index = match args {
         [Value::Integer(i)] => *i as usize,
@@ -341,7 +329,6 @@ pub fn peek_text(args: &[Value]) -> Eval {
     })
 }
 
-/// `PeekDecimal(Index: Integer): Decimal`.
 pub fn peek_decimal(args: &[Value]) -> Eval {
     let index = match args {
         [Value::Integer(i)] => *i as usize,
@@ -358,7 +345,6 @@ pub fn peek_decimal(args: &[Value]) -> Eval {
     })
 }
 
-/// `PeekInteger(Index: Integer): Integer`.
 pub fn peek_integer(args: &[Value]) -> Eval {
     let index = match args {
         [Value::Integer(i)] => *i as usize,
@@ -374,7 +360,6 @@ pub fn peek_integer(args: &[Value]) -> Eval {
     })
 }
 
-/// `PeekDate(Index: Integer): Date`.
 pub fn peek_date(args: &[Value]) -> Eval {
     let index = match args {
         [Value::Integer(i)] => *i as usize,
@@ -390,7 +375,6 @@ pub fn peek_date(args: &[Value]) -> Eval {
     })
 }
 
-/// `PeekTime(Index: Integer): Time`.
 pub fn peek_time(args: &[Value]) -> Eval {
     let index = match args {
         [Value::Integer(i)] => *i as usize,
@@ -406,7 +390,6 @@ pub fn peek_time(args: &[Value]) -> Eval {
     })
 }
 
-/// `PeekBoolean(Index: Integer): Boolean`.
 pub fn peek_boolean(args: &[Value]) -> Eval {
     let index = match args {
         [Value::Integer(i)] => *i as usize,
@@ -440,9 +423,6 @@ fn format_value(v: &Value) -> String {
     }
 }
 
-/// Resolve a procedure name (case-insensitive) to its Rust implementation.
-///
-/// Returns `None` if the name is unknown to this catalog.
 pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
     match procedure.to_ascii_lowercase().as_str() {
         "assertempty" => Some(assert_empty),
@@ -477,7 +457,6 @@ pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
 mod tests {
     use super::*;
 
-    /// Ensure a clean queue before each test that needs one.
     fn setup() {
         reset_queue();
     }
@@ -509,8 +488,6 @@ mod tests {
         }
     }
 
-    // ── Basic Enqueue / Dequeue cycle ─────────────────────────────────────────
-
     #[test]
     fn enqueue_dequeue_single_integer() {
         setup();
@@ -522,7 +499,6 @@ mod tests {
     #[test]
     fn enqueue_dequeue_fifo_order() {
         setup();
-        // Enqueue three items; dequeue should return them in FIFO order.
         enqueue(&[Value::Integer(1)]);
         enqueue(&[Value::Integer(2)]);
         enqueue(&[Value::Integer(3)]);
@@ -548,15 +524,12 @@ mod tests {
         assert_eq!(assert_value(max_length(&[])), Value::Integer(25));
     }
 
-    // ── Peek ─────────────────────────────────────────────────────────────────
-
     #[test]
     fn peek_does_not_remove() {
         setup();
         enqueue(&[Value::Integer(99)]);
         let peeked = assert_value(peek(&[Value::Integer(1)]));
         assert_eq!(peeked, Value::Integer(99));
-        // Still in queue after peek.
         assert_eq!(assert_value(length(&[])), Value::Integer(1));
     }
 
@@ -570,8 +543,6 @@ mod tests {
         assert_eq!(assert_value(peek(&[Value::Integer(3)])), Value::Integer(30));
     }
 
-    // ── Clear ─────────────────────────────────────────────────────────────────
-
     #[test]
     fn clear_empties_queue() {
         setup();
@@ -581,8 +552,6 @@ mod tests {
         assert_eq!(assert_value(length(&[])), Value::Integer(0));
     }
 
-    // ── AssertEmpty ──────────────────────────────────────────────────────────
-
     #[test]
     fn assert_empty_passes_on_empty_queue() {
         setup();
@@ -591,7 +560,6 @@ mod tests {
 
     #[test]
     fn assert_empty_fails_and_clears_non_empty_queue() {
-        // Negative: non-empty queue produces Eval::Error and also clears the queue.
         setup();
         enqueue(&[Value::Integer(1)]);
         assert_fail_contains(assert_empty(&[]), "not empty");
@@ -599,27 +567,20 @@ mod tests {
         assert_eq!(assert_value(length(&[])), Value::Integer(0));
     }
 
-    // ── Overflow / Underflow ─────────────────────────────────────────────────
-
     #[test]
     fn dequeue_empty_is_underflow_error() {
-        // Negative: dequeuing from an empty queue returns Eval::Error.
         setup();
         assert_fail_contains(dequeue(&[]), "underflow");
     }
 
     #[test]
     fn enqueue_beyond_capacity_is_overflow_error() {
-        // Negative: filling beyond 25 items returns Eval::Error.
         setup();
         for i in 0..MAX_QUEUE_SIZE {
             assert_pass(enqueue(&[Value::Integer(i as i64)]));
         }
-        // The 26th enqueue should fail.
         assert_fail_contains(enqueue(&[Value::Integer(99)]), "overflow");
     }
-
-    // ── AssertNotOverflow / AssertNotUnderflow ────────────────────────────────
 
     #[test]
     fn assert_not_overflow_passes_when_space_available() {
@@ -629,7 +590,6 @@ mod tests {
 
     #[test]
     fn assert_not_overflow_fails_when_full() {
-        // Negative: full queue triggers overflow assertion.
         setup();
         for i in 0..MAX_QUEUE_SIZE {
             enqueue(&[Value::Integer(i as i64)]);
@@ -646,12 +606,9 @@ mod tests {
 
     #[test]
     fn assert_not_underflow_fails_when_empty() {
-        // Negative: empty queue triggers underflow assertion.
         setup();
         assert_fail_contains(assert_not_underflow(&[]), "underflow");
     }
-
-    // ── AssertFull ───────────────────────────────────────────────────────────
 
     #[test]
     fn assert_full_passes_when_at_capacity() {
@@ -664,12 +621,9 @@ mod tests {
 
     #[test]
     fn assert_full_fails_when_not_full() {
-        // Negative: less-than-full queue fails AssertFull.
         setup();
         assert_fail_contains(assert_full(&[]), "empty");
     }
-
-    // ── AssertPeekAvailable ──────────────────────────────────────────────────
 
     #[test]
     fn assert_peek_available_valid_index() {
@@ -682,15 +636,12 @@ mod tests {
 
     #[test]
     fn assert_peek_available_out_of_bounds() {
-        // Negative: index 0, negative, or beyond count are all out of bounds.
         setup();
         enqueue(&[Value::Integer(1)]);
         assert_fail_contains(assert_peek_available(&[Value::Integer(0)]), "bounds");
         assert_fail_contains(assert_peek_available(&[Value::Integer(2)]), "bounds");
         assert_fail_contains(assert_peek_available(&[Value::Integer(-1)]), "bounds");
     }
-
-    // ── Typed Dequeue helpers ────────────────────────────────────────────────
 
     #[test]
     fn dequeue_text_formats_integer() {
@@ -714,7 +665,6 @@ mod tests {
 
     #[test]
     fn dequeue_decimal_type_mismatch_is_error() {
-        // Negative: wrong type in queue → Eval::Error with type info.
         setup();
         enqueue(&[Value::Text("nope".into())]);
         assert_fail_contains(dequeue_decimal(&[]), "type mismatch");
@@ -729,7 +679,6 @@ mod tests {
 
     #[test]
     fn dequeue_integer_type_mismatch_is_error() {
-        // Negative: non-integer in queue.
         setup();
         enqueue(&[Value::Text("x".into())]);
         assert_fail_contains(dequeue_integer(&[]), "type mismatch");
@@ -744,7 +693,6 @@ mod tests {
 
     #[test]
     fn dequeue_boolean_type_mismatch_is_error() {
-        // Negative: non-boolean in queue.
         setup();
         enqueue(&[Value::Integer(1)]);
         assert_fail_contains(dequeue_boolean(&[]), "type mismatch");

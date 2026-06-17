@@ -14,16 +14,12 @@ use serde::Serialize;
 /// Project template type for scaffolding.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum ProjectTemplate {
-    /// Standard Business Central extension (default)
     #[default]
     Default,
-    /// Per-Tenant Extension
     PerTenantExtension,
-    /// AppSource app
     AppSourceApp,
     /// Library/dependency with no UI
     Library,
-    /// Test project
     TestApp,
     /// Copilot AI extension (chat participant + completions)
     Copilot,
@@ -54,7 +50,6 @@ impl FromStr for ProjectTemplate {
     }
 }
 
-/// Configuration for scaffolding a new AL project.
 #[derive(Debug, Clone)]
 pub struct ScaffoldConfig {
     pub name: String,
@@ -80,7 +75,6 @@ impl Default for ScaffoldConfig {
     }
 }
 
-/// Result of scaffolding operation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScaffoldResult {
@@ -88,12 +82,7 @@ pub struct ScaffoldResult {
     pub files_created: Vec<String>,
 }
 
-/// Create a new AL project at the given path.
-///
-/// Creates the directory if it doesn't exist, generates standard files.
-/// Returns error if the directory already contains an app.json.
 pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldResult, String> {
-    // Check for existing project
     if dir.join("app.json").exists() {
         return Err(format!(
             "Directory already contains an AL project: {}",
@@ -101,7 +90,6 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
         ));
     }
 
-    // Create directories
     std::fs::create_dir_all(dir.join("src"))
         .map_err(|e| format!("Failed to create project directory: {e}"))?;
     std::fs::create_dir_all(dir.join(".zed"))
@@ -114,7 +102,6 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
     atomic_write(&dir.join("app.json"), app_json.as_bytes(), "app.json")?;
     files.push("app.json".to_string());
 
-    // .gitignore
     let gitignore = generate_gitignore();
     atomic_write(&dir.join(".gitignore"), gitignore.as_bytes(), ".gitignore")?;
     files.push(".gitignore".to_string());
@@ -128,7 +115,6 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
     )?;
     files.push(".zed/debug.json".to_string());
 
-    // Template-specific source files
     let template_files = generate_template_files(dir, config)?;
     files.extend(template_files);
 
@@ -175,7 +161,6 @@ fn atomic_write(path: &Path, content: &[u8], label: &str) -> Result<(), String> 
     })
 }
 
-/// Generate template-specific source files, returning their relative paths.
 fn generate_template_files(dir: &Path, config: &ScaffoldConfig) -> Result<Vec<String>, String> {
     match &config.template {
         ProjectTemplate::Default | ProjectTemplate::PerTenantExtension => {
@@ -291,7 +276,6 @@ fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
         "codeAnalyzers": analyzers
     });
 
-    // Copilot/Agent need the Copilot capability declared
     if matches!(
         &config.template,
         ProjectTemplate::Copilot | ProjectTemplate::Agent
@@ -823,15 +807,12 @@ mod tests {
             !tmp.exists(),
             "tempfile {tmp:?} should have been renamed away"
         );
-        // And the content is exactly what we wrote.
         let read = std::fs::read(&target).unwrap();
         assert_eq!(read, b"hello");
     }
 
     #[test]
     fn atomic_write_overwrites_existing_file() {
-        // Positive: a second atomic_write to the same path replaces the
-        // first artefact (matches the previous `std::fs::write` semantics).
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("foo.al");
         atomic_write(&target, b"v1", "foo.al").unwrap();
@@ -841,9 +822,6 @@ mod tests {
 
     #[test]
     fn atomic_write_returns_err_on_missing_parent() {
-        // Negative: write target with no parent directory must fail
-        // cleanly (Err propagated up), not panic, and must not leave a
-        // tempfile behind.
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("no-such-subdir/foo.al");
         let result = atomic_write(&target, b"hello", "foo.al");
@@ -852,8 +830,6 @@ mod tests {
         let tmp = dir.path().join(format!("no-such-subdir/foo.al.{pid}.tmp"));
         assert!(!tmp.exists());
     }
-
-    // --- Round-trip parse: generated .al must actually parse (F-OPEN-035) ---
 
     /// Asserts that the given AL source parses through tree-sitter-al with
     /// no errors. Used to guard against generator templates that drift

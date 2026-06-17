@@ -8,14 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use super::format::{Sample, Snapshot};
 
-// ---------------------------------------------------------------------------
-// Divergence types
-// ---------------------------------------------------------------------------
-
-/// A single field-level difference found between two snapshots.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Divergence {
-    /// `(breakpoint_id, iteration)` pair that identifies the sample.
     pub breakpoint_id: u32,
     pub iteration: u32,
     /// JSON pointer path within the `variables` object (e.g. `"/x"` or `"/rec/Name"`).
@@ -25,10 +19,6 @@ pub struct Divergence {
     /// Value in the candidate snapshot (`b`), serialized as a JSON value.
     pub new_value: serde_json::Value,
 }
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
 
 /// Compare two snapshots and return all field-level differences.
 ///
@@ -44,7 +34,6 @@ pub struct Divergence {
 pub fn diff_snapshots(a: &Snapshot, b: &Snapshot) -> Vec<Divergence> {
     let mut out = Vec::new();
 
-    // Metadata divergences.
     if a.bc_version != b.bc_version {
         out.push(Divergence {
             breakpoint_id: 0,
@@ -64,7 +53,6 @@ pub fn diff_snapshots(a: &Snapshot, b: &Snapshot) -> Vec<Divergence> {
         });
     }
 
-    // Build index of b samples.
     use std::collections::HashMap;
     let b_index: HashMap<(u32, u32), &Sample> = b
         .samples
@@ -78,18 +66,15 @@ pub fn diff_snapshots(a: &Snapshot, b: &Snapshot) -> Vec<Divergence> {
         .map(|s| ((s.breakpoint_id, s.iteration), s))
         .collect();
 
-    // Samples in a — compare against b.
     let mut a_keys: Vec<(u32, u32)> = a_index.keys().copied().collect();
     a_keys.sort();
     for key in &a_keys {
         let sa = a_index[key];
         match b_index.get(key) {
             Some(sb) => {
-                // Both exist — deep diff variables.
                 diff_values(key.0, key.1, "", &sa.variables, &sb.variables, &mut out);
             }
             None => {
-                // Present in a, missing in b.
                 out.push(Divergence {
                     breakpoint_id: key.0,
                     iteration: key.1,
@@ -101,7 +86,6 @@ pub fn diff_snapshots(a: &Snapshot, b: &Snapshot) -> Vec<Divergence> {
         }
     }
 
-    // Samples in b that are not in a.
     let mut b_only_keys: Vec<(u32, u32)> = b_index
         .keys()
         .filter(|k| !a_index.contains_key(*k))
@@ -122,10 +106,6 @@ pub fn diff_snapshots(a: &Snapshot, b: &Snapshot) -> Vec<Divergence> {
     out
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 /// Recursively diff two JSON values, appending `Divergence` entries for every
 /// leaf that differs.  `path` is the current JSON pointer prefix (e.g. `""`
 /// for the root, `"/x"` for field `x`).
@@ -141,7 +121,6 @@ fn diff_values(
 
     match (a, b) {
         (Value::Object(ao), Value::Object(bo)) => {
-            // Keys in a.
             let mut keys: Vec<&str> = ao.keys().map(String::as_str).collect();
             keys.sort();
             for k in &keys {
@@ -158,7 +137,6 @@ fn diff_values(
                     }),
                 }
             }
-            // Keys only in b.
             let mut b_only: Vec<&str> = bo
                 .keys()
                 .filter(|k| !ao.contains_key(*k))
@@ -199,9 +177,7 @@ fn diff_values(
                 }
             }
         }
-        (av, bv) if av == bv => {
-            // Identical leaf — no divergence.
-        }
+        (av, bv) if av == bv => {}
         (av, bv) => {
             out.push(Divergence {
                 breakpoint_id: bp_id,
@@ -213,10 +189,6 @@ fn diff_values(
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -245,7 +217,6 @@ mod tests {
         }
     }
 
-    // Positive: identical snapshots → empty diff.
     #[test]
     fn test_diff_identical_snapshots_is_empty() {
         let s = base_snapshot(vec![sample(1, 0, serde_json::json!({"x": 1}))]);
@@ -253,7 +224,6 @@ mod tests {
         assert!(result.is_empty(), "expected empty diff, got: {result:?}");
     }
 
-    // Positive: one altered field is detected at the correct path.
     #[test]
     fn test_diff_detects_single_field_change() {
         let a = base_snapshot(vec![sample(1, 0, serde_json::json!({"x": 1, "y": "old"}))]);
@@ -265,7 +235,6 @@ mod tests {
         assert_eq!(result[0].new_value, serde_json::json!("new"));
     }
 
-    // Positive: nested field change.
     #[test]
     fn test_diff_detects_nested_field_change() {
         let a = base_snapshot(vec![sample(
@@ -283,7 +252,6 @@ mod tests {
         assert_eq!(result[0].field_path, "/rec/Name");
     }
 
-    // Positive: different bc_version → metadata divergence.
     #[test]
     fn test_diff_mismatched_bc_version_is_flagged() {
         let mut a = base_snapshot(vec![]);
@@ -299,7 +267,6 @@ mod tests {
         );
     }
 
-    // Positive: different source_hash → metadata divergence.
     #[test]
     fn test_diff_mismatched_source_hash_is_flagged() {
         let mut a = base_snapshot(vec![]);
@@ -315,7 +282,6 @@ mod tests {
         );
     }
 
-    // Negative: sample present in a but missing in b is reported.
     #[test]
     fn test_diff_missing_sample_in_b_reported() {
         let a = base_snapshot(vec![sample(1, 0, serde_json::json!({"x": 1}))]);
@@ -326,7 +292,6 @@ mod tests {
         assert!(result[0].new_value.is_null());
     }
 
-    // Negative: sample present in b but missing in a is reported.
     #[test]
     fn test_diff_extra_sample_in_b_reported() {
         let a = base_snapshot(vec![]);

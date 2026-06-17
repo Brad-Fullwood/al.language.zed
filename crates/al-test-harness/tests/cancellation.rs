@@ -36,8 +36,6 @@ async fn cancel_non_existent_id_is_silently_ignored() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/cancel_test.al", TEST_DOC).await;
 
-    // Cancel an id that has never been issued. The server must remain
-    // functional.
     client
         .cancel_request(99999)
         .await
