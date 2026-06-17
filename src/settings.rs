@@ -45,6 +45,18 @@ pub fn apply_al_settings_to_config(
         set_nested_value(&mut result, &parts, value);
     }
 
+    // `useOfficialLsp` / `useOfficialDap` are launch-mode switches consumed by
+    // the extension itself (`resolve_server_args` / `resolve_dap_backend_flag`)
+    // to pick the native vs Microsoft LSP/DAP binary. They are NOT al-lsp server
+    // config, so they must not ride along into the server's settings — otherwise
+    // the server reports them as "Unknown AL settings". Every input shape (flat,
+    // `al.`-dotted, nested `al: {…}`) lands as a top-level key in `result`, so a
+    // top-level remove covers all of them.
+    if let Some(obj) = result.as_object_mut() {
+        obj.remove("useOfficialLsp");
+        obj.remove("useOfficialDap");
+    }
+
     result
 }
 
