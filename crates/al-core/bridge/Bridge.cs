@@ -118,8 +118,15 @@ public static class Bridge
         }
         catch (Exception ex)
         {
+            // Unwrap reflection wrappers (TargetInvocationException) to the
+            // innermost exception so Rust logs the REAL failure (type + message)
+            // instead of the opaque "Exception has been thrown by the target of
+            // an invocation."
+            var root = ex;
+            while (root.InnerException != null) root = root.InnerException;
+            var message = ReferenceEquals(root, ex) ? ex.Message : $"{root.GetType().Name}: {root.Message}";
             responseBytes = JsonSerializer.SerializeToUtf8Bytes(
-                new { error = new { code = -1, message = ex.Message } }, JsonOpts);
+                new { error = new { code = -1, message } }, JsonOpts);
         }
 
         var ptr = (byte*)Marshal.AllocCoTaskMem(responseBytes.Length);
@@ -709,14 +716,38 @@ internal class CodeAnalysisBridge
     private List<object> ExtractDiagnostics(object src, string defaultFile)
     {
         var results = new List<object>();
-        var getDiag = src.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
-            .FirstOrDefault(m => m.Name == "GetDiagnostics");
-        if (getDiag == null) return results;
+        var overloads = src.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(m => m.Name == "GetDiagnostics").ToArray();
 
-        var dp = getDiag.GetParameters();
-        var diagObj = dp.Length == 0
-            ? getDiag.Invoke(src, null)
-            : getDiag.Invoke(src, dp.Select(p => p.HasDefaultValue ? p.DefaultValue : (object?)null).ToArray());
+        // Pick the overload whose parameters are ALL optional — on CodeAnalysis
+        // v17 that is `GetDiagnostics(CancellationToken = default)`, returning
+        // every syntactic diagnostic for the tree. The previous `FirstOrDefault`
+        // picked `GetDiagnostics(SyntaxNode node)` (a REQUIRED param) and invoked
+        // it with null, throwing ArgumentNullException on every file. Fallback:
+        // feed the compilation-unit root to a single-`SyntaxNode` overload.
+        var getDiag = overloads
+            .Where(m => m.GetParameters().All(p => p.HasDefaultValue))
+            .OrderBy(m => m.GetParameters().Length)
+            .FirstOrDefault();
+
+        object? diagObj;
+        if (getDiag != null)
+        {
+            var dp = getDiag.GetParameters();
+            diagObj = getDiag.Invoke(src, dp.Select(p => p.DefaultValue).ToArray());
+        }
+        else
+        {
+            var nodeDiag = overloads.FirstOrDefault(m =>
+                m.GetParameters().Length >= 1 && m.GetParameters()[0].ParameterType.Name == "SyntaxNode");
+            var root = _getCompilationUnitRootMethod?.Invoke(src, null);
+            if (nodeDiag == null || root == null) return results;
+            var dp = nodeDiag.GetParameters();
+            var args = new object?[dp.Length];
+            args[0] = root;
+            for (int i = 1; i < dp.Length; i++) args[i] = dp[i].HasDefaultValue ? dp[i].DefaultValue : null;
+            diagObj = nodeDiag.Invoke(src, args);
+        }
 
         if (diagObj is not System.Collections.IEnumerable en) return results;
         foreach (var d in en)
@@ -732,8 +763,22 @@ internal class CodeAnalysisBridge
     {
         var dt = d.GetType();
         var id = Prop<string>(d, dt, "Id") ?? "";
-        var msg = dt.GetMethod("GetMessage", BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
-            ?.Invoke(d, null)?.ToString() ?? Prop<string>(d, dt, "Message") ?? "";
+        // v17's Diagnostic exposes only GetMessage(IFormatProvider) — no
+        // parameterless overload — so the old Type.EmptyTypes lookup found
+        // nothing and every message came back empty. Invoke whatever GetMessage
+        // exists, feeding InvariantCulture to an IFormatProvider/Culture param.
+        var getMsg = dt.GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(m => m.Name == "GetMessage").OrderByDescending(m => m.GetParameters().Length).FirstOrDefault();
+        string msg = "";
+        if (getMsg != null)
+        {
+            var mp = getMsg.GetParameters();
+            var margs = mp.Select(p => p.ParameterType.Name.Contains("Format") || p.ParameterType.Name.Contains("Culture")
+                ? (object?)System.Globalization.CultureInfo.InvariantCulture
+                : (p.HasDefaultValue ? p.DefaultValue : null)).ToArray();
+            try { msg = getMsg.Invoke(d, margs)?.ToString() ?? ""; } catch { /* fall through to Message */ }
+        }
+        if (string.IsNullOrEmpty(msg)) msg = Prop<string>(d, dt, "Message") ?? "";
         var sev = Prop(d, dt, "Severity")?.ToString() ?? "Warning";
 
         uint line = 0, col = 0, eLine = 0, eCol = 0;
@@ -1028,8 +1073,15 @@ internal class CodeAnalysisBridge
 
     private MethodInfo? ResolveParseObjectText()
     {
-        return _syntaxTreeType?.GetMethods(BindingFlags.Static | BindingFlags.Public)
-            .Where(m => m.Name == "ParseObjectText").OrderBy(m => m.GetParameters().Length).FirstOrDefault();
+        var overloads = _syntaxTreeType?.GetMethods(BindingFlags.Static | BindingFlags.Public)
+            .Where(m => m.Name == "ParseObjectText").ToArray() ?? Array.Empty<MethodInfo>();
+        // Prefer the overload whose first parameter is SourceText so ParseSource
+        // feeds it the SourceText we built. The String-first overload has TWO
+        // string params (text, path); ParseSource's type-based arg filler can't
+        // tell them apart and assigns the file PATH to both — parsing the path as
+        // AL source and emitting phantom diagnostics at line 0.
+        return overloads.FirstOrDefault(m => m.GetParameters().Length >= 1 && m.GetParameters()[0].ParameterType == _sourceTextType)
+            ?? overloads.OrderBy(m => m.GetParameters().Length).FirstOrDefault();
     }
 
     private static int LineColToOffset(string s, int line, int col)

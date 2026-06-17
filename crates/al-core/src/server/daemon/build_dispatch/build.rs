@@ -376,35 +376,6 @@ pub(in crate::server::daemon) async fn dispatch_package(
     workspace: &Workspace,
     id: u64,
 ) -> Response {
-    let tc = match workspace.toolchain.try_read() {
-        // SILENT: avoid RwLock poison panic per CLAUDE.md
-        Ok(guard) => guard.clone(),
-        Err(_) => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: ERR_INITIALIZING.to_string(),
-                }),
-                ..Default::default()
-            };
-        }
-    };
-    let toolchain = match tc {
-        Some(tc) => tc,
-        None => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: "No toolchain available. Run 'al setup' first.".to_string(),
-                }),
-                ..Default::default()
-            };
-        }
-    };
     let project = match workspace.project.try_read() {
         // SILENT: avoid RwLock poison panic per CLAUDE.md
         Ok(guard) => guard.clone(),
@@ -429,6 +400,63 @@ pub(in crate::server::daemon) async fn dispatch_package(
                 error: Some(RpcError {
                     code: error_codes::INTERNAL_ERROR,
                     message: ERR_NO_PROJECT.to_string(),
+                }),
+                ..Default::default()
+            };
+        }
+    };
+
+    // Native-first packaging policy, mirroring `dispatch_compile`. The default
+    // builds the `.app` with the pure-Rust emitter — no `alc`, no C# bridge, no
+    // analyzers — so an unset `al.codeAnalyzers` never silently runs the full
+    // Microsoft analyzer set (e.g. AppSourceCop AS0016) and gates packaging.
+    // `al.useOfficialCompiler: true` opts into Microsoft's `dotnet alc`.
+    let use_official_compiler = workspace.config.read().await.use_official_compiler;
+    if !use_official_compiler {
+        let compile_result = crate::build::native_compile(&project_root);
+        return Response {
+            id,
+            result: Some(serde_json::json!({
+                "success": compile_result.success,
+                "diagnostics": [],
+                "appPath": compile_result.app_path.as_ref().map(|p| p.display().to_string()),
+                "output": compile_result.output,
+            })),
+            error: None,
+            ..Default::default()
+        };
+    }
+
+    // Opted into Microsoft's compiler subprocess (non-native). Warn so this is
+    // never mistaken for the native `.app` emitter.
+    tracing::warn!(
+        "al.useOfficialCompiler=true - packaging via the NON-NATIVE Microsoft \
+         `dotnet alc` subprocess instead of the native `.app` emitter"
+    );
+    let tc = match workspace.toolchain.try_read() {
+        // SILENT: avoid RwLock poison panic per CLAUDE.md
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: ERR_INITIALIZING.to_string(),
+                }),
+                ..Default::default()
+            };
+        }
+    };
+    let toolchain = match tc {
+        Some(tc) => tc,
+        None => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: "No toolchain available. Run 'al setup' first.".to_string(),
                 }),
                 ..Default::default()
             };
