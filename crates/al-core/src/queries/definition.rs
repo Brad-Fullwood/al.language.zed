@@ -66,7 +66,9 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
-    let looks_like_object_name = node.kind() == "quoted_identifier" || clean_name.contains(' ');
+    let looks_like_object_name = node.kind() == "quoted_identifier"
+        || clean_name.contains(' ')
+        || is_object_modifier_target(node);
     if looks_like_object_name {
         if let Some((obj_uri, range)) =
             resolution::resolve_workspace_object_definition(workspace, clean_name)
@@ -200,6 +202,24 @@ fn find_same_file_procedure_decl(
         }
     }
     None
+}
+
+/// True when `node` is the target of an `extends`/`implements` clause, e.g. the
+/// `Customer` in `tableextension … extends Customer`. That target is an object
+/// reference, so it must resolve to the object — not to a same-file identifier
+/// match such as the `Customer` segment of a `using …;` line.
+fn is_object_modifier_target(node: tree_sitter::Node) -> bool {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        match n.kind() {
+            "object_modifier" | "implements_clause" => return true,
+            // Reached the object body — we're past the header, so not a target.
+            "object_body" => return false,
+            _ => {}
+        }
+        cur = n.parent();
+    }
+    false
 }
 
 fn find_package_entry_for_type(
