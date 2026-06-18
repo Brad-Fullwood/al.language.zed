@@ -36,14 +36,21 @@ pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::R
     // circuited on AlreadyExists. Compare mtimes — if the .app post-dates
     // the cached file, drop the cached file (clearing its read-only bit
     // first so the remove succeeds on Windows + Unix).
-    if let Some(app) = app_path {
-        if let (Ok(app_meta), Ok(cache_meta)) = (fs::metadata(app), fs::metadata(&file_path)) {
-            if let (Ok(app_mtime), Ok(cache_mtime)) = (app_meta.modified(), cache_meta.modified()) {
-                if app_mtime > cache_mtime {
-                    let _ = clear_readonly(&file_path);
-                    let _ = fs::remove_file(&file_path);
-                }
-            }
+    // Invalidate the cached virtual file when EITHER the source `.app` OR the
+    // running al-lsp binary is newer than the cache. The binary check matters
+    // because a rebuilt / upgraded al-lsp may extract or render symbol source
+    // differently than the build that wrote the cache; without it, an older
+    // build's output (e.g. an outline where the current build produces real
+    // source) persists forever, since the `.app` mtime alone never changes
+    // across an al-lsp upgrade.
+    if let Ok(cache_mtime) = fs::metadata(&file_path).and_then(|m| m.modified()) {
+        let app_newer = app_path
+            .and_then(|app| fs::metadata(app).ok())
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|t| t > cache_mtime);
+        if app_newer || self_exe_mtime().is_some_and(|t| t > cache_mtime) {
+            let _ = clear_readonly(&file_path);
+            let _ = fs::remove_file(&file_path);
         }
     }
 
@@ -67,6 +74,20 @@ pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::R
 
     enforce_readonly(&file_path);
     Ok(file_path)
+}
+
+/// mtime of the running al-lsp executable, computed once. Cache entries older
+/// than the binary are regenerated so a rebuilt server's symbol-source output
+/// supersedes the previous build's (see `get_or_create`).
+fn self_exe_mtime() -> Option<std::time::SystemTime> {
+    use std::sync::OnceLock;
+    static MTIME: OnceLock<Option<std::time::SystemTime>> = OnceLock::new();
+    *MTIME.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok())
+    })
 }
 
 /// Drop the read-only attribute on a cached virtual file so `remove_file`
