@@ -338,6 +338,7 @@ pub(super) fn dispatch_search(
     for r in ws_results {
         value.push(workspace_object_to_json(&r.info));
     }
+    dedup_objects_by_identity(&mut value);
     Response {
         id,
         result: Some(serde_json::json!(value)),
@@ -439,6 +440,7 @@ pub(super) fn dispatch_object(
             matches.push(workspace_object_to_json(info));
         }
     }
+    dedup_objects_by_identity(&mut matches);
     if matches.is_empty() {
         Response {
             id,
@@ -457,6 +459,30 @@ pub(super) fn dispatch_object(
             ..Default::default()
         }
     }
+}
+
+/// Drop duplicate object entries that represent the SAME object surfaced by
+/// both the symbol index and the workspace file index.
+///
+/// Workspace objects are indexed in `workspace.symbols` (package `"workspace"`)
+/// AND in `file_index.object_info` (package `"(workspace)"`), so the naive
+/// merge in `dispatch_search`/`dispatch_object`/`dispatch_by_id` listed each
+/// workspace object twice (audit 2026-06-20). Object IDs are unique across an
+/// app plus its dependencies, so `(kind, id, name)` identifies an object
+/// regardless of which index produced it. The first occurrence — the richer
+/// symbol-index entry, which carries members — wins.
+fn dedup_objects_by_identity(objects: &mut Vec<serde_json::Value>) {
+    let mut seen = std::collections::HashSet::new();
+    objects.retain(|o| {
+        let kind = o.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let id = o.get("id").and_then(serde_json::Value::as_i64).unwrap_or(0);
+        let name = o
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        seen.insert((kind.to_string(), id, name))
+    });
 }
 
 /// Convert a workspace CachedObjectInfo to JSON matching SymbolEntry shape.
@@ -511,6 +537,7 @@ pub(super) fn dispatch_by_id(
             value.push(workspace_object_to_json(info));
         }
     }
+    dedup_objects_by_identity(&mut value);
     if value.is_empty() {
         Response {
             id,
@@ -740,6 +767,25 @@ pub(super) fn dispatch_deps(workspace: &Workspace, id: u64) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dedup_objects_by_identity_drops_same_object_from_two_indices() {
+        // Regression (audit 2026-06-20): workspace objects appear in both the
+        // symbol index (package "workspace") and the file index (package
+        // "(workspace)"), so the merged search/object/by-id result listed each
+        // one twice. (kind, id, name) identifies an object regardless of which
+        // index produced it.
+        let mut objects = vec![
+            serde_json::json!({"kind": "Table", "id": 50100, "name": "Customer", "package": "workspace"}),
+            serde_json::json!({"kind": "Table", "id": 50100, "name": "Customer", "package": "(workspace)"}),
+            serde_json::json!({"kind": "Codeunit", "id": 50100, "name": "Mgmt", "package": "workspace"}),
+        ];
+        dedup_objects_by_identity(&mut objects);
+        assert_eq!(objects.len(), 2, "duplicate table must collapse to one");
+        // The first (richer symbol-index) entry wins.
+        assert_eq!(objects[0]["package"], "workspace");
+        assert_eq!(objects[1]["name"], "Mgmt");
+    }
 
     #[test]
     fn ok_response_serializes_value() {

@@ -80,7 +80,16 @@ fn missing_cmd(id: u64, msg: &str) -> Response {
 /// caller must then either supply the metadata explicitly or surface an error.
 fn resolve_object_metadata(workspace: &Workspace, file: &str) -> Option<(i32, i32)> {
     use crate::dap::native_dap::kind_to_object_type;
-    let path = std::path::PathBuf::from(file);
+    // The CLI sends `file` as a `file://` URI (via `file_to_uri`); internal
+    // callers may pass a plain filesystem path. `file_index.object_info` is
+    // keyed by plain paths, so `PathBuf::from("file:///…")` never matched and
+    // every CLI breakpoint failed with "file is not indexed" (audit
+    // 2026-06-20). Accept both forms.
+    let path = url::Url::parse(file)
+        .ok()
+        .filter(|u| u.scheme() == "file")
+        .and_then(|u| u.to_file_path().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from(file));
     let entry = workspace.file_index.object_info.get(&path)?;
     let info = entry.value();
     // BC object IDs are i32; reject (return None) rather than silently wrap an

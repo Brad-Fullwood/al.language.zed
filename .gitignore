@@ -28,3 +28,6 @@ crates/*/bridge/bin/
 # cargo-mutants output
 /mutants.out/
 /mutants.out.old/
+
+# AL build artifacts (compiled .app packages)
+*.app

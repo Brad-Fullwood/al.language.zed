@@ -26,7 +26,15 @@ pub fn references(
     let mut locations = Vec::new();
 
     let source_bytes = text.as_bytes();
-    let refs = crate::syntax::find_variable_references(&tree, &text, clean_name);
+    // Identifier references plus event-subscriber string-literal references: an
+    // event's subscribers name it via a string literal inside
+    // `[EventSubscriber(...)]`, which the identifier walk cannot see (audit
+    // 2026-06-20). Both are collected so `references` on an event surfaces its
+    // subscribers, not just its declaration and raise sites.
+    let mut refs = crate::syntax::find_variable_references(&tree, &text, clean_name);
+    refs.extend(crate::syntax::find_event_subscriber_references(
+        &tree, &text, clean_name,
+    ));
     for r in &refs {
         let range: Range = crate::syntax::ts_range_to_syntax(r, source_bytes).into();
         if !include_declaration && range.start == position {
@@ -55,7 +63,10 @@ pub fn references(
         let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(&file_path) else {
             continue;
         };
-        let refs = crate::syntax::find_variable_references(&file_tree, &file_text, clean_name);
+        let mut refs = crate::syntax::find_variable_references(&file_tree, &file_text, clean_name);
+        refs.extend(crate::syntax::find_event_subscriber_references(
+            &file_tree, &file_text, clean_name,
+        ));
         let file_source_bytes = file_text.as_bytes();
         for r in &refs {
             if let Ok(file_uri) = Url::from_file_path(&file_path) {
@@ -134,6 +145,66 @@ mod tests {
         assert!(
             with_decl.len() >= without_decl.len(),
             "include_declaration=true should not return fewer results"
+        );
+    }
+
+    #[test]
+    fn references_to_event_include_subscriber_string_literal() {
+        // Cursor on the published event declaration must surface the subscriber
+        // that names the event via a string literal in `[EventSubscriber(...)]`.
+        let uri = Url::parse("file:///test/evt.al").expect("test");
+        let src = r#"codeunit 50100 "Evt Pub"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnFooEvent()
+    begin
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Evt Pub", 'OnFooEvent', '', false, false)]
+    local procedure HandleFoo()
+    begin
+    end;
+}"#;
+        let ws = ws_with_doc(&uri, src);
+        // Position on `OnFooEvent` in the `procedure OnFooEvent()` declaration.
+        let pos = Position {
+            line: 3,
+            character: 14,
+        };
+        let locs = references(&ws, &uri, pos, true);
+        // Find the subscriber reference: a location on the `[EventSubscriber...]`
+        // line (line index 7) that is not the declaration on line 3.
+        assert!(
+            locs.iter().any(|l| l.range.start.line == 7),
+            "subscriber string-literal reference on the EventSubscriber line must be found; got {:?}",
+            locs.iter().map(|l| l.range.start.line).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn references_do_not_match_unrelated_string_literals() {
+        // A string literal equal to the symbol name but NOT the event-name
+        // argument of an EventSubscriber attribute must not be reported.
+        let uri = Url::parse("file:///test/noevt.al").expect("test");
+        let src = r#"codeunit 50100 "No Evt"
+{
+    procedure OnFooEvent()
+    begin
+        Message('OnFooEvent');
+    end;
+}"#;
+        let ws = ws_with_doc(&uri, src);
+        let pos = Position {
+            line: 2,
+            character: 14,
+        };
+        let locs = references(&ws, &uri, pos, true);
+        // Only the declaration identifier matches; the Message('OnFooEvent')
+        // string literal on line 4 must be excluded.
+        assert!(
+            !locs.iter().any(|l| l.range.start.line == 4),
+            "plain string literal must not be treated as an event reference; got {:?}",
+            locs.iter().map(|l| l.range.start.line).collect::<Vec<_>>()
         );
     }
 

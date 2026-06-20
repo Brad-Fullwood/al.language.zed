@@ -22,8 +22,9 @@ pub use formatting::{
 };
 pub use lint::{lint, lint_rules, LintDiagnostic, LintRuleInfo, LintSeverity};
 pub use navigation::{
-    collect_call_site_names, find_call_references, find_node_at_position, find_object_declaration,
-    find_procedure_at, find_variable_references, ObjectInfo, ParameterInfo, ProcedureInfo,
+    collect_call_site_names, find_call_references, find_event_subscriber_references,
+    find_node_at_position, find_object_declaration, find_procedure_at, find_variable_references,
+    ObjectInfo, ParameterInfo, ProcedureInfo,
 };
 pub use parser::{AlParser, ParseResult, SyntaxError};
 pub use sort::sort_members;
