@@ -1043,3 +1043,106 @@ pub async fn run_lsp() {
     let (service, socket) = LspService::new(AlServer::new);
     Server::new(stdin, stdout, socket).serve(service).await;
 }
+
+#[cfg(test)]
+mod document_symbol_capability_tests {
+    //! `document_symbol` must honour the client's
+    //! `hierarchicalDocumentSymbolSupport` capability: nested `DocumentSymbol[]`
+    //! when advertised, flat `SymbolInformation[]` otherwise. These drive the
+    //! real handler in-process (no transport) through `initialize`, so they
+    //! cover both the capability capture and the response-shape branch.
+
+    use super::*;
+
+    const SRC: &str =
+        "codeunit 50100 \"Outline CU\"\n{\n    procedure DoWork()\n    begin\n    end;\n}\n";
+
+    /// Build an in-process server with the document open and `await_ready`
+    /// short-circuited, then run `initialize` with the given client capabilities.
+    async fn server_after_initialize(caps: ClientCapabilities) -> (LspService<AlServer>, Url) {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        // Skip the 30s workspace-init wait in `await_ready`.
+        server.workspace_ready.store(true, Ordering::Relaxed);
+        let uri = Url::parse("file:///proj/Outline.al").expect("valid uri");
+        server
+            .workspace
+            .documents
+            .open(uri.clone(), SRC.to_string());
+        server
+            .initialize(InitializeParams {
+                capabilities: caps,
+                ..Default::default()
+            })
+            .await
+            .expect("initialize succeeds");
+        (service, uri)
+    }
+
+    fn ds_params(uri: &Url) -> DocumentSymbolParams {
+        DocumentSymbolParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_when_client_advertises_hierarchical_support() {
+        let caps = ClientCapabilities {
+            text_document: Some(TextDocumentClientCapabilities {
+                document_symbol: Some(DocumentSymbolClientCapabilities {
+                    hierarchical_document_symbol_support: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (service, uri) = server_after_initialize(caps).await;
+
+        match service.inner().document_symbol(ds_params(&uri)).await {
+            Ok(Some(DocumentSymbolResponse::Nested(syms))) => {
+                let object = &syms[0];
+                let children = object
+                    .children
+                    .as_ref()
+                    .expect("object with a procedure has nested children");
+                assert!(
+                    children.iter().any(|c| c.name.contains("DoWork")),
+                    "nested child procedure should be present, got {children:?}"
+                );
+            }
+            other => panic!("expected Nested response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn flat_when_client_omits_hierarchical_support() {
+        // Empty `documentSymbol` capability == no hierarchical support advertised.
+        let caps = ClientCapabilities {
+            text_document: Some(TextDocumentClientCapabilities {
+                document_symbol: Some(DocumentSymbolClientCapabilities::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (service, uri) = server_after_initialize(caps).await;
+
+        match service.inner().document_symbol(ds_params(&uri)).await {
+            Ok(Some(DocumentSymbolResponse::Flat(infos))) => {
+                // The procedure is flattened out with its object as container.
+                let proc = infos
+                    .iter()
+                    .find(|s| s.name.contains("DoWork"))
+                    .expect("procedure present in flat list");
+                assert_eq!(
+                    proc.container_name.as_deref(),
+                    Some("Outline CU"),
+                    "flattened child records its parent object as container_name"
+                );
+            }
+            other => panic!("expected Flat response, got {other:?}"),
+        }
+    }
+}
