@@ -71,7 +71,9 @@ jobs:
           AL_TEST_PROJECT_PATH: ""
 
       - name: Clippy
-        run: cargo clippy --workspace --exclude zed-al -- -D warnings
+        # --all-targets so lints in test/example/bench code are caught too, not
+        # just the default lib/bin targets.
+        run: cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
 
       - name: Formatting check
         run: cargo fmt --all -- --check

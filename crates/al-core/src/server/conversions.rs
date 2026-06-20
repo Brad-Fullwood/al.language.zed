@@ -167,6 +167,54 @@ impl From<AlDocumentSymbol> for tower_lsp::lsp_types::DocumentSymbol {
     }
 }
 
+/// Flatten a hierarchical `AlDocumentSymbol` tree into the legacy
+/// `SymbolInformation[]` shape, for clients that did **not** advertise
+/// `textDocument.documentSymbol.hierarchicalDocumentSymbolSupport`.
+///
+/// The LSP spec only permits the nested `DocumentSymbol[]` response when the
+/// client opts in via that capability; otherwise the server must return the
+/// flat form. Each emitted symbol carries its parent symbol's name as
+/// `container_name`, and the parent's `range` as its `location` range (there is
+/// no per-child URI in the flat form, so every symbol points at `uri`).
+pub(crate) fn flatten_document_symbols(
+    symbols: Vec<AlDocumentSymbol>,
+    uri: &tower_lsp::lsp_types::Url,
+) -> Vec<tower_lsp::lsp_types::SymbolInformation> {
+    fn walk(
+        sym: AlDocumentSymbol,
+        container: Option<&str>,
+        uri: &tower_lsp::lsp_types::Url,
+        out: &mut Vec<tower_lsp::lsp_types::SymbolInformation>,
+    ) {
+        let name = sym.name.clone();
+        // `SymbolInformation::deprecated` is itself a deprecated field, but the
+        // struct has no `..Default` constructor, so we must name it.
+        #[allow(deprecated)]
+        out.push(tower_lsp::lsp_types::SymbolInformation {
+            name: sym.name,
+            kind: sym.kind.into(),
+            tags: None,
+            deprecated: None,
+            location: tower_lsp::lsp_types::Location {
+                uri: uri.clone(),
+                range: sym.range.into(),
+            },
+            container_name: container.map(str::to_owned),
+        });
+        if let Some(children) = sym.children {
+            for child in children {
+                walk(child, Some(&name), uri, out);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for sym in symbols {
+        walk(sym, None, uri, &mut out);
+    }
+    out
+}
+
 impl From<crate::syntax::types::SyntaxDocumentSymbol> for AlDocumentSymbol {
     fn from(s: crate::syntax::types::SyntaxDocumentSymbol) -> Self {
         Self {
@@ -287,6 +335,37 @@ impl From<tower_lsp::lsp_types::InlayHint> for AlInlayHint {
 #[cfg(test)]
 mod tests {
     use crate::queries::*;
+
+    #[test]
+    fn flatten_document_symbols_emits_parent_and_children_with_containers() {
+        let tree = vec![AlDocumentSymbol {
+            name: "MyCodeunit".to_string(),
+            detail: None,
+            kind: AlSymbolKind::Class,
+            range: Range::default(),
+            selection_range: Range::default(),
+            children: Some(vec![AlDocumentSymbol {
+                name: "DoWork".to_string(),
+                detail: None,
+                kind: AlSymbolKind::Method,
+                range: Range::default(),
+                selection_range: Range::default(),
+                children: None,
+            }]),
+        }];
+        let uri = tower_lsp::lsp_types::Url::parse("file:///x.al").unwrap();
+        let flat = super::flatten_document_symbols(tree, &uri);
+
+        // Hierarchy is flattened depth-first: parent, then each child.
+        assert_eq!(flat.len(), 2);
+        assert_eq!(flat[0].name, "MyCodeunit");
+        assert_eq!(flat[0].container_name, None);
+        assert_eq!(flat[1].name, "DoWork");
+        // The child records its parent's name as its container.
+        assert_eq!(flat[1].container_name.as_deref(), Some("MyCodeunit"));
+        // Every flat symbol points at the requested document URI.
+        assert_eq!(flat[1].location.uri, uri);
+    }
 
     #[test]
     fn position_roundtrips_through_lsp() {
