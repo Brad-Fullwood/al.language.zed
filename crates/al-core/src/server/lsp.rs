@@ -49,6 +49,11 @@ pub struct AlServer {
     /// (`Timeout` / `Poisoned`) to the user, so subsequent file opens with
     /// the same broken bridge don't spam `window/showMessage(WARNING)`.
     pub(crate) semantic_failure_reported: AtomicBool,
+    /// Whether the client advertised `textDocument.definition.linkSupport`.
+    /// The LSP spec only permits a `LocationLink[]` go-to-definition response
+    /// when this is set; otherwise the server must return a plain `Location[]`.
+    /// Captured from the `initialize` capabilities.
+    pub(crate) definition_link_support: AtomicBool,
 }
 
 impl AlServer {
@@ -79,6 +84,7 @@ impl AlServer {
             workspace_ready: Arc::new(AtomicBool::new(false)),
             init_notify: Arc::new(Notify::new()),
             semantic_failure_reported: AtomicBool::new(false),
+            definition_link_support: AtomicBool::new(false),
         }
     }
 
@@ -283,6 +289,19 @@ impl LanguageServer for AlServer {
         tracing::info!(root_uri = ?root_uri, "initialize: storing root URI");
 
         *self.root_uri.write().await = root_uri;
+
+        // Only emit `LocationLink[]` from go-to-definition when the client opted
+        // in via `textDocument.definition.linkSupport`; otherwise the LSP spec
+        // requires a plain `Location[]`.
+        let link_support = params
+            .capabilities
+            .text_document
+            .as_ref()
+            .and_then(|td| td.definition.as_ref())
+            .and_then(|d| d.link_support)
+            .unwrap_or(false);
+        self.definition_link_support
+            .store(link_support, Ordering::Relaxed);
 
         if let Some(init_opts) = params.initialization_options {
             let al_settings = extract_al_settings(init_opts);
