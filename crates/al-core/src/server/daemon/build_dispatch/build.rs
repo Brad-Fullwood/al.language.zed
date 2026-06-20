@@ -1678,7 +1678,18 @@ mod tests {
 
     #[tokio::test]
     async fn package_without_toolchain_reports_setup_hint() {
+        // The `al setup` hint is specific to the official-compiler packaging
+        // path; native packaging (the default) needs no toolchain. Opt into the
+        // official path and load a project so the toolchain guard — not the
+        // project guard — is what fires.
         let ws = empty_ws();
+        ws.config.write().await.use_official_compiler = true;
+        let proj = tempfile::TempDir::new().unwrap();
+        {
+            let mut g = ws.project.write().await;
+            *g = Some(make_project(proj.path()));
+        }
+        // toolchain stays None.
         let resp = dispatch_package(&ws, 1).await;
         let err = resp.error.expect("missing toolchain must error");
         assert_eq!(err.code, error_codes::INTERNAL_ERROR);
@@ -1725,12 +1736,13 @@ mod tests {
 
     #[tokio::test]
     async fn package_missing_app_json_propagates_build_error() {
-        // Toolchain + project both present, but the project root has no
-        // app.json. `compile_project_with_analyzers` rejects this BEFORE
-        // spawning the compiler, and the dispatcher must propagate that error
-        // verbatim as an INTERNAL_ERROR (exercising the real build wiring +
-        // empty analyzer-filter branch, with no subprocess).
+        // Official-compiler path: toolchain + project both present, but the
+        // project root has no app.json. `compile_project_with_analyzers`
+        // rejects this BEFORE spawning the compiler, and the dispatcher must
+        // propagate that error verbatim as an INTERNAL_ERROR (exercising the
+        // real build wiring + empty analyzer-filter branch, with no subprocess).
         let ws = empty_ws();
+        ws.config.write().await.use_official_compiler = true;
         let tc_dir = tempfile::TempDir::new().unwrap();
         write_fixture_toolchain(tc_dir.path());
         let tc = {
