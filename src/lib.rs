@@ -143,6 +143,7 @@ impl AlExtension {
     /// 2. Locally installed binary (extension work dir, previously downloaded)
     /// 3. PATH lookup (dev builds, `cargo install`, system installs)
     /// 4. GitHub release download → cache in work dir
+    ///
     /// `status_id` is the language-server id used to surface download progress
     /// in Zed's status UI. The DAP path passes `None` (there is no way to
     /// construct a `LanguageServerId` for it on the released API), which only

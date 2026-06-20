@@ -50,18 +50,7 @@ fn find_record_type_recursive(
     while let Some(node) = stack.pop() {
         let kind = node.kind();
 
-        if kind == "regular_variable_declaration" {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                if let Ok(name_text) = name_node.utf8_text(source) {
-                    let name_clean = name_text.trim_matches('"').trim();
-                    if name_clean.to_lowercase() == *var_lower {
-                        if let Some(type_node) = node.child_by_field_name("type") {
-                            return extract_record_subtype(type_node, source);
-                        }
-                    }
-                }
-            }
-        } else if kind == "parameter" {
+        if kind == "regular_variable_declaration" || kind == "parameter" {
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name_text) = name_node.utf8_text(source) {
                     let name_clean = name_text.trim_matches('"').trim();

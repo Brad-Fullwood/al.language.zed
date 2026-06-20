@@ -223,7 +223,7 @@ fn find_stub_insertion_line(obj_node: tree_sitter::Node) -> u32 {
 mod tests {
     use super::*;
     use crate::queries::code_actions::source_actions;
-    use crate::symbols::{MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry};
+    use crate::symbols::{ObjectKind, SymbolEntry};
     use crate::workspace::Workspace;
     use url::Url;
 

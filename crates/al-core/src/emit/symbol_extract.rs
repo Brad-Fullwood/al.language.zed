@@ -1065,16 +1065,6 @@ fn unquote_prop_value(s: &str) -> String {
     t.to_string()
 }
 
-#[allow(dead_code)]
-fn strip_string_quotes(s: &str) -> String {
-    let t = s.trim();
-    if t.len() >= 2 && t.starts_with('\'') && t.ends_with('\'') {
-        t[1..t.len() - 1].to_string()
-    } else {
-        t.to_string()
-    }
-}
-
 fn child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     // Index-based to avoid the cursor-lifetime trap when returning the Node.
     for i in 0..node.child_count() {
