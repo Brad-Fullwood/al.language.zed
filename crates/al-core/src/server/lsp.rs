@@ -54,6 +54,12 @@ pub struct AlServer {
     /// when this is set; otherwise the server must return a plain `Location[]`.
     /// Captured from the `initialize` capabilities.
     pub(crate) definition_link_support: AtomicBool,
+    /// Whether the client advertised
+    /// `textDocument.documentSymbol.hierarchicalDocumentSymbolSupport`. The LSP
+    /// spec only permits the nested `DocumentSymbol[]` response when this is set;
+    /// otherwise the server must return a flat `SymbolInformation[]`. Captured
+    /// from the `initialize` capabilities.
+    pub(crate) document_symbol_hierarchical: AtomicBool,
 }
 
 impl AlServer {
@@ -85,6 +91,7 @@ impl AlServer {
             init_notify: Arc::new(Notify::new()),
             semantic_failure_reported: AtomicBool::new(false),
             definition_link_support: AtomicBool::new(false),
+            document_symbol_hierarchical: AtomicBool::new(false),
         }
     }
 
@@ -302,6 +309,19 @@ impl LanguageServer for AlServer {
             .unwrap_or(false);
         self.definition_link_support
             .store(link_support, Ordering::Relaxed);
+
+        // Only emit the nested `DocumentSymbol[]` outline when the client opted
+        // in via `textDocument.documentSymbol.hierarchicalDocumentSymbolSupport`;
+        // otherwise the LSP spec requires the flat `SymbolInformation[]` form.
+        let hierarchical_symbols = params
+            .capabilities
+            .text_document
+            .as_ref()
+            .and_then(|td| td.document_symbol.as_ref())
+            .and_then(|ds| ds.hierarchical_document_symbol_support)
+            .unwrap_or(false);
+        self.document_symbol_hierarchical
+            .store(hierarchical_symbols, Ordering::Relaxed);
 
         if let Some(init_opts) = params.initialization_options {
             let al_settings = extract_al_settings(init_opts);
@@ -696,10 +716,16 @@ impl LanguageServer for AlServer {
         // T028: spawn_blocking for cancel-friendliness on large files.
         let workspace = Arc::clone(&self.workspace);
         let uri_for_log = uri.clone();
-        #[allow(deprecated)]
+        let hierarchical = self.document_symbol_hierarchical.load(Ordering::Relaxed);
         let result = tokio::task::spawn_blocking(move || {
             crate::queries::symbols::document_symbols(&workspace, &uri).map(|symbols| {
-                DocumentSymbolResponse::Nested(symbols.into_iter().map(Into::into).collect())
+                if hierarchical {
+                    DocumentSymbolResponse::Nested(symbols.into_iter().map(Into::into).collect())
+                } else {
+                    DocumentSymbolResponse::Flat(
+                        crate::server::conversions::flatten_document_symbols(symbols, &uri),
+                    )
+                }
             })
         })
         .await

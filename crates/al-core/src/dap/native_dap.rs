@@ -2082,15 +2082,19 @@ mod handler_tests {
 
     type TokenFut = std::future::Ready<std::result::Result<String, String>>;
 
+    /// The concrete `NativeDapState` specialization used across these tests:
+    /// plain `fn` pointers for the token / object / path hooks.
+    type TestState = NativeDapState<
+        fn(String) -> TokenFut,
+        fn(&str) -> Option<ResolvedObject>,
+        fn(i32, i32) -> Option<PathBuf>,
+    >;
+
     fn no_token(_tenant: String) -> TokenFut {
         std::future::ready(Err("no auth in tests".to_string()))
     }
 
-    fn test_state() -> NativeDapState<
-        fn(String) -> TokenFut,
-        fn(&str) -> Option<ResolvedObject>,
-        fn(i32, i32) -> Option<PathBuf>,
-    > {
+    fn test_state() -> TestState {
         let (cancel_tx, cancel_rx) = watch::channel(0u64);
         let (dap_event_tx, _dap_event_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
         // Keep the receiver alive for the state's lifetime in tests that

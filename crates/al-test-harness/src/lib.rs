@@ -210,7 +210,7 @@ impl LspClient {
                     "completion": { "completionItem": { "snippetSupport": false } },
                     "definition": {},
                     "references": {},
-                    "documentSymbol": {},
+                    "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
                     "formatting": {},
                     "semanticTokens": {
                         "requests": { "full": true },
