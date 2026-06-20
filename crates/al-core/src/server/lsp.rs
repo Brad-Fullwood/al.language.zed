@@ -1062,8 +1062,10 @@ mod document_symbol_capability_tests {
     async fn server_after_initialize(caps: ClientCapabilities) -> (LspService<AlServer>, Url) {
         let (service, _socket) = LspService::new(AlServer::new);
         let server = service.inner();
-        // Skip the 30s workspace-init wait in `await_ready`.
-        server.workspace_ready.store(true, Ordering::Relaxed);
+        // Skip the 30s workspace-init wait in `await_ready`. `Release` matches
+        // the production store and the flag's documented happens-before contract
+        // (paired with the `Acquire` load in `await_ready`).
+        server.workspace_ready.store(true, Ordering::Release);
         let uri = Url::parse("file:///proj/Outline.al").expect("valid uri");
         server
             .workspace
@@ -1164,7 +1166,9 @@ mod definition_link_support_tests {
     async fn server_after_initialize(caps: ClientCapabilities) -> (LspService<AlServer>, Url) {
         let (service, _socket) = LspService::new(AlServer::new);
         let server = service.inner();
-        server.workspace_ready.store(true, Ordering::Relaxed);
+        // `Release` pairs with the `Acquire` load in `await_ready`, matching the
+        // production store and the flag's documented happens-before contract.
+        server.workspace_ready.store(true, Ordering::Release);
         let uri = Url::parse("file:///proj/Def.al").expect("valid uri");
         server
             .workspace
