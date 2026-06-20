@@ -223,6 +223,16 @@ pub fn cmd_impact(symbol: &str, table: bool, json: bool) -> ExitCode {
                     }
                     eprintln!("\n{} consumers", impacted.len());
                 }
+                // Be explicit about coverage. Call-site consumers (who calls /
+                // reads / writes this symbol) are derived from workspace AL
+                // source bodies; structural relations (extends, table relations,
+                // event subscriptions) include loaded symbol packages. Microsoft
+                // `.app` symbol files carry no method bodies, so call-sites that
+                // live inside dependency code cannot be enumerated.
+                eprintln!(
+                    "Note: call-site consumers come from workspace source; consumers inside \
+                     referenced .app packages aren't listed (symbol files carry no method bodies)."
+                );
             }
             ExitCode::SUCCESS
         }
