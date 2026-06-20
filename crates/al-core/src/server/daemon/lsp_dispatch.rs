@@ -350,6 +350,10 @@ pub(super) fn dispatch_search(
 /// non-synthetic kind matches; returns an actionable error response
 /// otherwise. Shared by `object` and `composed` when the caller (an
 /// editor task with only the symbol under the cursor) omits the kind.
+// Err is a ready-to-send JSON-RPC `Response` by design (callers just return it
+// on a cold error path); boxing it would scatter `*` derefs across every
+// dispatcher for no real benefit.
+#[allow(clippy::result_large_err)]
 fn resolve_unique_kind_by_name(
     workspace: &Workspace,
     id: u64,

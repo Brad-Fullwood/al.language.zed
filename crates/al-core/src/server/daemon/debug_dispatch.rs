@@ -36,6 +36,9 @@ fn state_response<T: Serialize>(id: u64, state: &T, cmd: &str) -> Response {
 /// `INTERNAL_ERROR` `Response` (as `Err`) if any element fails. This surfaces
 /// serialization failures instead of silently dropping items
 /// (`filter_map(...ok())`) or emitting empty objects (`unwrap_or_default()`).
+// Err is a ready-to-send JSON-RPC `Response` (cold path); boxing it would only
+// scatter `*` derefs across callers.
+#[allow(clippy::result_large_err)]
 fn serialize_each<T: Serialize>(
     id: u64,
     items: impl IntoIterator<Item = T>,
