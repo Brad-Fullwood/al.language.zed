@@ -152,12 +152,7 @@ fn scan_procedures_for_obsolete(
             "procedure_declaration" | "event_procedure_declaration"
         ) {
             if let Some(obs) = extract_obsolete_from_preceding_attr(node, source) {
-                let name = node
-                    .child_by_field_name("name")
-                    .and_then(|n| n.utf8_text(source).ok())
-                    .unwrap_or("(unknown)")
-                    .trim_matches('"')
-                    .to_string();
+                let name = crate::syntax::node_name_or(node, source, "(unknown)");
 
                 let line = node.start_position().row as u32 + 1;
                 let caller_count = count_references_in_files(all_files, &name);

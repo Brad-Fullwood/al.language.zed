@@ -148,11 +148,7 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
 }
 
 fn extract_namespace_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
-    let name = node
-        .child_by_field_name("name")
-        .and_then(|n| n.utf8_text(source).ok())
-        .unwrap_or("(unknown)")
-        .to_string();
+    let name = super::node_name_or(node, source, "(unknown)");
 
     let keyword = node
         .child_by_field_name("keyword")
@@ -222,12 +218,7 @@ fn extract_named_symbol(
     kind: SymbolKind,
     detail: Option<String>,
 ) -> Option<DocumentSymbol> {
-    let name = node
-        .child_by_field_name("name")
-        .and_then(|n| n.utf8_text(source).ok())
-        .unwrap_or("(unnamed)")
-        .trim_matches('"')
-        .to_string();
+    let name = super::node_name_or(node, source, "(unnamed)");
 
     let range = ts_range_to_lsp(&node.range(), source);
     let selection_range = node
@@ -791,12 +782,7 @@ fn extract_control_name(paren: Node, source: &[u8]) -> String {
 }
 
 fn extract_enum_value_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
-    let name = node
-        .child_by_field_name("name")
-        .and_then(|n| n.utf8_text(source).ok())
-        .unwrap_or("(unnamed)")
-        .trim_matches('"')
-        .to_string();
+    let name = super::node_name_or(node, source, "(unnamed)");
 
     let id = node
         .child_by_field_name("id")
@@ -820,12 +806,7 @@ fn extract_enum_value_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol
 }
 
 fn extract_key_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
-    let name = node
-        .child_by_field_name("name")
-        .and_then(|n| n.utf8_text(source).ok())
-        .unwrap_or("(unnamed)")
-        .trim_matches('"')
-        .to_string();
+    let name = super::node_name_or(node, source, "(unnamed)");
 
     let fields = node
         .child_by_field_name("fields")

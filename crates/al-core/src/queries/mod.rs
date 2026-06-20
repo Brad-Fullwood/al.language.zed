@@ -40,6 +40,12 @@ pub mod upgrade;
 use crate::symbols::SymbolEntry;
 use url::Url;
 
+/// Strip an AL `field(` prefix, tolerating the optional space in `field (`.
+/// Returns the remainder after the opening paren, or `None` if absent.
+pub(crate) fn strip_field_prefix(s: &str) -> Option<&str> {
+    s.strip_prefix("field(").or_else(|| s.strip_prefix("field ("))
+}
+
 /// Extract the clean (unquoted) name from a tree-sitter node.
 ///
 /// Returns `None` when the node's text is invalid UTF-8 or empty after stripping
