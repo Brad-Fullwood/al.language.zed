@@ -100,21 +100,27 @@ pub(in crate::server::daemon) fn dispatch_new_project(
     // verbatim; previously this field was dropped, so every `al new` produced
     // the Default extension scaffold regardless of the flag and an invalid
     // template was silently accepted (audit 2026-06-20).
-    let template = match params.get("template").and_then(|v| v.as_str()) {
-        Some(t) => match t.parse::<crate::scaffold::ProjectTemplate>() {
-            Ok(tpl) => tpl,
-            Err(msg) => {
-                return Response {
-                    id,
-                    result: None,
-                    error: Some(RpcError {
-                        code: error_codes::INVALID_PARAMS,
-                        message: msg,
-                    }),
-                    ..Default::default()
-                };
+    let template = match params.get("template") {
+        // Present but not a string is a malformed request, not an absent
+        // field — reject it rather than silently falling back to the default.
+        Some(v) => {
+            let invalid = |message: String| Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INVALID_PARAMS,
+                    message,
+                }),
+                ..Default::default()
+            };
+            let Some(t) = v.as_str() else {
+                return invalid("'template' must be a string".to_string());
+            };
+            match t.parse::<crate::scaffold::ProjectTemplate>() {
+                Ok(tpl) => tpl,
+                Err(msg) => return invalid(msg),
             }
-        },
+        }
         None => crate::scaffold::ProjectTemplate::default(),
     };
 
@@ -426,6 +432,21 @@ mod tests {
             .expect("invalid template must error, not default silently");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("nope"), "msg: {}", err.message);
+
+        // Present-but-non-string `template` is a malformed request, not an
+        // absent field: it must be rejected, not silently defaulted.
+        let wrong_type = dispatch_new_project(
+            3,
+            &serde_json::json!({
+                "dir": tmp.path().join("proj3").to_str().unwrap(),
+                "name": "Baz",
+                "template": 42,
+            }),
+        );
+        let err = wrong_type
+            .error
+            .expect("non-string template must error, not default silently");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
     }
 
     #[test]
