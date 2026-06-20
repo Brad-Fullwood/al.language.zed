@@ -68,7 +68,6 @@ pub fn dotnet_command_async(alc: &Path) -> tokio::process::Command {
     cmd
 }
 
-
 #[derive(Debug, Clone)]
 pub struct AlToolchain {
     pub alc: PathBuf,
@@ -91,7 +90,6 @@ pub struct AnalyzerPaths {
     pub custom: Vec<PathBuf>,
 }
 
-
 const ALC_DLL: &str = "alc.dll";
 const ALDOC_DLL: &str = "aldoc.dll";
 const CODE_ANALYSIS_DLL: &str = "Microsoft.Dynamics.Nav.CodeAnalysis.dll";
@@ -111,7 +109,6 @@ const DOTNET_TOOL_PACKAGE_PREFIX: &str = "microsoft.dynamics.businesscentral.dev
 
 const INSTALL_CMD: &str =
     "dotnet tool install --global Microsoft.Dynamics.BusinessCentral.Development.Tools";
-
 
 /// Discover the AL toolchain (ALTool installation).
 ///
@@ -366,7 +363,6 @@ fn search_path_for(cmd_name: &str) -> Option<AlToolchain> {
     search_dir_recursive(dir)
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolchainValidation {
@@ -422,7 +418,6 @@ pub fn validate_toolchain(tc: &AlToolchain) -> ToolchainValidation {
         issues,
     }
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

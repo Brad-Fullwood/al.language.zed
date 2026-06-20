@@ -18,7 +18,10 @@ fn external_subtype_emits_module_id_and_id() {
     let mut external = ExternalSymbols::default();
     external.resolver.insert(
         "customer".to_string(),
-        ObjectRef { id: 18, module_id: Some("437dbf0e-84ff-417a-965d-ed2bb9650972".to_string()) },
+        ObjectRef {
+            id: 18,
+            module_id: Some("437dbf0e-84ff-417a-965d-ed2bb9650972".to_string()),
+        },
     );
     let src = "codeunit 50100 \"CU\" { procedure DoIt(var Cust: Record Customer): Boolean \
                begin exit(true); end; }";
@@ -53,11 +56,20 @@ fn control_addin_public_key_token_is_sha256_of_app_name() {
         "src/Lib.al",
     );
     let doc = build_symbol_reference(&objects, &min_app_meta(), &Default::default());
-    let addins = doc.get("ControlAddIns").and_then(|v| v.as_array()).expect("ControlAddIns");
-    let token = addins[0].get("PublicKeyToken").and_then(|v| v.as_str()).unwrap();
+    let addins = doc
+        .get("ControlAddIns")
+        .and_then(|v| v.as_array())
+        .expect("ControlAddIns");
+    let token = addins[0]
+        .get("PublicKeyToken")
+        .and_then(|v| v.as_str())
+        .unwrap();
     // SHA256("Min App")[..8] — independent of the add-in's own name.
     assert_eq!(token, "223c864cfb3cf5d7");
-    let meta_name = addins[0].get("MetadataName").and_then(|v| v.as_str()).unwrap();
+    let meta_name = addins[0]
+        .get("MetadataName")
+        .and_then(|v| v.as_str())
+        .unwrap();
     assert_eq!(meta_name, "Spike_Addin");
 }
 
@@ -94,20 +106,27 @@ fn external_base_table_field_type_resolves_in_page_extension() {
     let mut external = ExternalSymbols::default();
     external.resolver.insert(
         "customer card".to_string(),
-        ObjectRef { id: 21, module_id: Some("437dbf0e-84ff-417a-965d-ed2bb9650972".to_string()) },
+        ObjectRef {
+            id: 21,
+            module_id: Some("437dbf0e-84ff-417a-965d-ed2bb9650972".to_string()),
+        },
     );
     external
         .page_source_tables
         .insert("customer card".to_string(), "Customer".to_string());
-    external
-        .field_types
-        .insert(("customer".to_string(), "balance (lcy)".to_string()), "Decimal".to_string());
+    external.field_types.insert(
+        ("customer".to_string(), "balance (lcy)".to_string()),
+        "Decimal".to_string(),
+    );
     let src = "pageextension 50100 \"Ext\" extends \"Customer Card\" { layout { \
                addlast(General) { field(MyAmt; Rec.\"Balance (LCY)\") { ApplicationArea = All; } } } }";
     let objects = extract_objects(src, "src/Lib.al");
     let doc = build_symbol_reference(&objects, &min_app_meta(), &external);
     let field = &doc["PageExtensions"][0]["ControlChanges"][0]["Controls"][0];
-    assert_eq!(field["TypeDefinition"], serde_json::json!({ "Name": "Decimal" }));
+    assert_eq!(
+        field["TypeDefinition"],
+        serde_json::json!({ "Name": "Decimal" })
+    );
 }
 
 /// `IncludedPermissionSets` keeps each referenced name quoted only when it needs
@@ -162,7 +181,10 @@ fn report_rendering_layout_serializes() {
         }])
     );
     // Even with no `requestpage`, alc emits the default request page.
-    assert_eq!(report["RequestPage"], serde_json::json!({ "Id": 0, "Name": "RequestOptionsPage" }));
+    assert_eq!(
+        report["RequestPage"],
+        serde_json::json!({ "Id": 0, "Name": "RequestOptionsPage" })
+    );
 }
 
 #[test]

@@ -309,5 +309,4 @@ mod tests {
             "external caller in another file must suppress (F-043)"
         );
     }
-
 }

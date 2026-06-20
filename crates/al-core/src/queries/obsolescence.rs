@@ -169,7 +169,7 @@ fn scan_procedures_for_obsolete(
                     caller_count,
                 });
             }
-                continue;
+            continue;
         }
 
         let mut cursor = node.walk();

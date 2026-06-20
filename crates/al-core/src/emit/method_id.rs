@@ -141,7 +141,11 @@ mod tests {
     }
 
     fn p(kind: &str, is_var: bool) -> ParamSig {
-        ParamSig { kind: k(kind), is_var, subtype_hash: 1 }
+        ParamSig {
+            kind: k(kind),
+            is_var,
+            subtype_hash: 1,
+        }
     }
 
     /// Vectors captured from real `alc` 17.0.34 output (a user codeunit, id

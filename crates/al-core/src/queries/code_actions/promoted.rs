@@ -593,7 +593,6 @@ fn find_rendering_insert_line(text: &str) -> u32 {
     lines.len() as u32
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

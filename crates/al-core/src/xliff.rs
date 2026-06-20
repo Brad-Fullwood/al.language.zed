@@ -36,7 +36,6 @@ pub fn xlf_exceeds_cap(path: &Path) -> Option<bool> {
     Some(meta.len() > MAX_XLF_FILE_BYTES)
 }
 
-
 /// A single translatable text unit extracted from AL source.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TranslationUnit {
@@ -86,7 +85,6 @@ impl TranslationState {
         }
     }
 }
-
 
 /// Extract all translatable text units from the workspace AL files.
 ///
@@ -381,7 +379,6 @@ fn make_label_id(
     format!("{} {} {} - Label {}", obj_type, obj_id, obj_name, index)
 }
 
-
 /// Generate a `.g.xlf` XLIFF 1.2 file from translation units.
 ///
 /// Returns the XML string. Write this to `Translations/<AppName>.g.xlf`.
@@ -448,7 +445,6 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
-
 
 /// Parse an XLIFF 1.2 file into a map of `id → TranslationUnit`.
 ///
@@ -617,7 +613,6 @@ fn xml_unescape(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
-
 /// Result of refreshing a language XLIFF against the generated XLIFF.
 #[derive(Debug, Default, Serialize)]
 pub struct RefreshResult {
@@ -685,7 +680,6 @@ pub fn refresh_xliff(
     (result_units, refresh)
 }
 
-
 /// Find all translation units that have no target translation.
 ///
 /// Returns units where `target` is `None` or empty, sorted by object type and ID.
@@ -701,7 +695,6 @@ pub fn find_untranslated(units: &[TranslationUnit]) -> Vec<&TranslationUnit> {
         .filter(|u| u.state != TranslationState::Final)
         .collect()
 }
-
 
 /// A translation suggestion from the base app symbol data.
 #[derive(Debug, Clone, Serialize)]
@@ -776,7 +769,6 @@ pub fn suggest_translations(
     suggestions
 }
 
-
 /// Generate the `.g.xlf` file for a workspace and write it to the Translations directory.
 ///
 /// Creates `<project_root>/Translations/<AppName>.g.xlf`.
@@ -814,7 +806,6 @@ fn read_app_name(project_root: &Path) -> Option<String> {
         .as_str()
         .map(|s| s.replace([' ', '"', '\''], ""))
 }
-
 
 #[cfg(test)]
 mod tests {

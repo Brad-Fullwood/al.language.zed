@@ -250,8 +250,11 @@ where
             // compile step; the emitter itself does not need `alc`.
             if self.alc_path.is_some() {
                 let cr = crate::build::native_compile(std::path::Path::new(&self.project_root));
-                let compile_outcome: std::result::Result<String, String> =
-                    if cr.success { Ok(cr.output) } else { Err(cr.output) };
+                let compile_outcome: std::result::Result<String, String> = if cr.success {
+                    Ok(cr.output)
+                } else {
+                    Err(cr.output)
+                };
                 match compile_outcome {
                     Ok(output) => {
                         if !output.is_empty() {

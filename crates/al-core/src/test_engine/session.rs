@@ -44,7 +44,9 @@ pub struct RunOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum TestEvent {
-    CaseStarted { id: TestId },
+    CaseStarted {
+        id: TestId,
+    },
     CaseResult {
         id: TestId,
         result: TestMethodResult,
@@ -61,7 +63,9 @@ pub enum TestEvent {
     },
     /// An unrecoverable error occurred mid-run (the session may continue
     /// with reduced scope, or terminate — backend's choice).
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 /// Trait for running AL test sessions.

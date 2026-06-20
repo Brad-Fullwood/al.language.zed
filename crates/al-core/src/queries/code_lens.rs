@@ -26,12 +26,8 @@ pub enum CodeLensKind {
 pub enum TestLensStatus {
     NotRun,
     Running,
-    Pass {
-        duration_ms: u64,
-    },
-    Fail {
-        error: Option<String>,
-    },
+    Pass { duration_ms: u64 },
+    Fail { error: Option<String> },
     Skip,
 }
 

@@ -95,7 +95,9 @@ fn parse_external_symbols(project_dir: &Path) -> ExternalSymbols {
                     module_id: Some(pkg.app_id.clone()),
                 });
             if obj.kind == ObjectKind::Table {
-                table_id_to_name.entry(obj.id).or_insert_with(|| obj.name.clone());
+                table_id_to_name
+                    .entry(obj.id)
+                    .or_insert_with(|| obj.name.clone());
                 for f in &obj.fields {
                     ext.field_types
                         .entry((obj.name.to_lowercase(), f.name.to_lowercase()))
@@ -144,11 +146,11 @@ pub fn build_app_from_project(
     build_timestamp: &str,
 ) -> Result<BuiltApp, EmitError> {
     let app_json_path = project_dir.join("app.json");
-    let app_json: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&app_json_path)
-            .map_err(|e| EmitError::Project(format!("reading {}: {e}", app_json_path.display())))?,
-    )
-    .map_err(|e| EmitError::Project(format!("parsing app.json: {e}")))?;
+    let app_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&app_json_path).map_err(|e| {
+            EmitError::Project(format!("reading {}: {e}", app_json_path.display()))
+        })?)
+        .map_err(|e| EmitError::Project(format!("parsing app.json: {e}")))?;
 
     let s = |k: &str| {
         app_json
@@ -276,7 +278,8 @@ mod tests {
         )
         .unwrap();
 
-        let built = build_app_from_project(dir.path(), "17.0.34.45391", "2026-06-16T00:00:00Z").unwrap();
+        let built =
+            build_app_from_project(dir.path(), "17.0.34.45391", "2026-06-16T00:00:00Z").unwrap();
         assert_eq!(built.file_name, "Spike_Min App_1.0.0.0.app");
 
         // Reads back through our unpacker with the expected entry set + a real
@@ -293,6 +296,9 @@ mod tests {
     #[test]
     fn timestamp_is_iso8601_shaped() {
         let ts = now_timestamp();
-        assert!(ts.len() == 20 && ts.ends_with('Z') && ts.contains('T'), "got {ts}");
+        assert!(
+            ts.len() == 20 && ts.ends_with('Z') && ts.contains('T'),
+            "got {ts}"
+        );
     }
 }

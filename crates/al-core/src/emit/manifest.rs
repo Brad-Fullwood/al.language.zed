@@ -67,8 +67,17 @@ pub struct AppManifest {
 impl AppManifest {
     /// Build from a parsed `app.json` value, filling alc's defaults for fields
     /// `app.json` does not carry.
-    pub fn from_app_json(app: &serde_json::Value, compiler_version: &str, build_timestamp: &str) -> Self {
-        let s = |k: &str| app.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    pub fn from_app_json(
+        app: &serde_json::Value,
+        compiler_version: &str,
+        build_timestamp: &str,
+    ) -> Self {
+        let s = |k: &str| {
+            app.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
         let id_ranges = app
             .get("idRanges")
             .and_then(|v| v.as_array())
@@ -88,8 +97,16 @@ impl AppManifest {
             .map(|arr| {
                 arr.iter()
                     .map(|d| Dependency {
-                        id: d.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        name: d.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        id: d
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        name: d
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
                         publisher: d
                             .get("publisher")
                             .and_then(|v| v.as_str())
@@ -127,7 +144,10 @@ impl AppManifest {
             } else {
                 "Cloud".to_string()
             },
-            show_my_code: app.get("showMyCode").and_then(|v| v.as_bool()).unwrap_or(false),
+            show_my_code: app
+                .get("showMyCode")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             id_ranges,
             dependencies,
             resource_exposure_policy: ResourceExposurePolicy {

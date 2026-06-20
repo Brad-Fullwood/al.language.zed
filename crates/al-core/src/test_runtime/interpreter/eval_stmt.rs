@@ -592,19 +592,15 @@ fn eval_asserterror(
     };
 
     match eval_stmt(body_node, source, stack, ctx) {
-        Eval::Error(_) => {
-            Eval::Normal(Value::Empty)
-        }
+        Eval::Error(_) => Eval::Normal(Value::Empty),
         // Exit unwinds the procedure; asserterror does NOT swallow it. AL
         // semantics treat Exit as control flow that bypasses the assertion.
         exit @ Eval::Exit(_) => exit,
-        Eval::Normal(_) => {
-            Eval::Error(ErrorInfo {
-                message: "asserterror: expected an error to be raised, but none was".to_string(),
-                error_type: Some("AssertError".to_string()),
-                source: None,
-            })
-        }
+        Eval::Normal(_) => Eval::Error(ErrorInfo {
+            message: "asserterror: expected an error to be raised, but none was".to_string(),
+            error_type: Some("AssertError".to_string()),
+            source: None,
+        }),
     }
 }
 

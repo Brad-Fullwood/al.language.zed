@@ -10,13 +10,21 @@ use al_core::emit::{
 };
 
 fn main() {
-    let dir = std::env::args().nth(1).expect("usage: emit_symref <project_dir>");
+    let dir = std::env::args()
+        .nth(1)
+        .expect("usage: emit_symref <project_dir>");
     let dir = Path::new(&dir);
 
     let app_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("app.json")).expect("app.json"))
             .expect("parse app.json");
-    let s = |k: &str| app_json.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let s = |k: &str| {
+        app_json
+            .get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
 
     let mut objects: Vec<EmitObject> = Vec::new();
     let src_dir = dir.join("src");
@@ -24,7 +32,11 @@ fn main() {
     files.sort();
     for f in files {
         let content = std::fs::read_to_string(&f).expect("read .al");
-        let rel = f.strip_prefix(dir).unwrap_or(&f).to_string_lossy().replace('\\', "/");
+        let rel = f
+            .strip_prefix(dir)
+            .unwrap_or(&f)
+            .to_string_lossy()
+            .replace('\\', "/");
         objects.extend(extract_objects(&content, &rel));
     }
 

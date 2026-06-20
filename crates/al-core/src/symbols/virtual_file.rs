@@ -136,7 +136,11 @@ pub fn find_member_range(path: &Path, member_name: &str, kind: MemberKind) -> Op
 pub fn find_object_range(path: &Path, entry: &SymbolEntry) -> Option<MemberRange> {
     let content = fs::read_to_string(path).ok()?;
     // Declaration line shape (both outline and alc source): `{kw} {id} {name}`.
-    let prefix = format!("{} {} ", entry.kind.al_keyword().to_ascii_lowercase(), entry.id);
+    let prefix = format!(
+        "{} {} ",
+        entry.kind.al_keyword().to_ascii_lowercase(),
+        entry.id
+    );
     for (line_idx, line) in content.lines().enumerate() {
         let lead = line.len() - line.trim_start().len();
         if !line[lead..].to_ascii_lowercase().starts_with(&prefix) {

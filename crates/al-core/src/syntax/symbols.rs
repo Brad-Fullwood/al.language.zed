@@ -77,9 +77,7 @@ fn object_kind_display(kind: &str) -> String {
         .iter()
         .find(|ot| ot.node_kind == kind)
         .map(|ot| ot.keyword.clone())
-        .unwrap_or_else(|| {
-            kind.strip_prefix("kw_").unwrap_or(kind).to_string()
-        })
+        .unwrap_or_else(|| kind.strip_prefix("kw_").unwrap_or(kind).to_string())
 }
 
 fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
@@ -873,8 +871,7 @@ fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> 
         let mut c = node.walk();
         for child in node.children(&mut c) {
             match child.kind() {
-                "keyword" | "metadata_keyword" | "control_keyword" => {
-                }
+                "keyword" | "metadata_keyword" | "control_keyword" => {}
                 "semicolon" => {
                     seen_semicolon = true;
                 }

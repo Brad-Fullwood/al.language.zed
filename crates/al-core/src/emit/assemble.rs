@@ -160,7 +160,10 @@ fn caption_value(props: &[crate::symbols::model::PropertyValue]) -> Option<&str>
 fn trans_unit(id: &str, source: &str, note: &str, object_target: Option<&str>) -> String {
     let src = super::manifest::xml_escape_text(source);
     let target_attr = match object_target {
-        Some(t) => format!(" al-object-target=\"{}\"", super::manifest::xml_escape_text(t)),
+        Some(t) => format!(
+            " al-object-target=\"{}\"",
+            super::manifest::xml_escape_text(t)
+        ),
         None => String::new(),
     };
     format!(
@@ -213,8 +216,10 @@ struct XliffItem {
 /// (base not in this project) keep the declaring object as the id-root.
 pub fn xliff_xml(objects: &[EmitObject], runtime_major: u32) -> Option<Vec<u8>> {
     let cap_hash = name_hash("Caption");
-    let present: std::collections::HashSet<String> =
-        objects.iter().map(|o| o.entry.name.to_lowercase()).collect();
+    let present: std::collections::HashSet<String> = objects
+        .iter()
+        .map(|o| o.entry.name.to_lowercase())
+        .collect();
     let mut items: Vec<XliffItem> = Vec::new();
     for o in objects {
         let kind = o.entry.kind;
@@ -232,13 +237,17 @@ pub fn xliff_xml(objects: &[EmitObject], runtime_major: u32) -> Option<Vec<u8>> 
         };
 
         let emit_object_caption = matches!(kind, ObjectKind::Table | ObjectKind::TableExtension)
-            || (matches!(kind, ObjectKind::Page | ObjectKind::PageExtension) && runtime_major >= 14)
+            || (matches!(kind, ObjectKind::Page | ObjectKind::PageExtension)
+                && runtime_major >= 14)
             || (matches!(kind, ObjectKind::Report | ObjectKind::ReportExtension)
                 && runtime_major >= 15);
         if emit_object_caption {
             if let Some(cap) = caption_value(&o.entry.properties) {
                 items.push(XliffItem {
-                    id: format!("{root_kind} {} - Property {cap_hash}", name_hash(&root_name)),
+                    id: format!(
+                        "{root_kind} {} - Property {cap_hash}",
+                        name_hash(&root_name)
+                    ),
                     source: cap.to_string(),
                     note: format!("{decl_kind} {} - Property Caption", o.entry.name),
                     object_target: object_target.clone(),
@@ -272,7 +281,12 @@ pub fn xliff_xml(objects: &[EmitObject], runtime_major: u32) -> Option<Vec<u8>> 
     items.sort_by_key(|it| it.id.to_ascii_uppercase());
     let mut units = String::new();
     for it in &items {
-        units.push_str(&trans_unit(&it.id, &it.source, &it.note, it.object_target.as_deref()));
+        units.push_str(&trans_unit(
+            &it.id,
+            &it.source,
+            &it.note,
+            it.object_target.as_deref(),
+        ));
     }
     let mut out = vec![0xEF, 0xBB, 0xBF];
     out.extend_from_slice(
@@ -301,7 +315,10 @@ pub fn xliff_xml(objects: &[EmitObject], runtime_major: u32) -> Option<Vec<u8>> 
 /// non-deterministic, so this part is functionally faithful but not byte-stable
 /// (like the NAVX package GUID). The delta path is deterministic. `app_name` is
 /// the action-group caption. Returns `None` when both sections are empty.
-pub fn navigation_xml(objects: &[EmitObject], app_name: &str) -> Result<Option<Vec<u8>>, EmitError> {
+pub fn navigation_xml(
+    objects: &[EmitObject],
+    app_name: &str,
+) -> Result<Option<Vec<u8>>, EmitError> {
     let ids: std::collections::HashMap<String, i32> = objects
         .iter()
         .map(|o| (o.entry.name.to_lowercase(), o.entry.id))
@@ -313,7 +330,10 @@ pub fn navigation_xml(objects: &[EmitObject], app_name: &str) -> Result<Option<V
 
     let mut new_entries = String::new();
     for o in objects {
-        if !matches!(o.entry.kind, ObjectKind::Page | ObjectKind::Report | ObjectKind::Query) {
+        if !matches!(
+            o.entry.kind,
+            ObjectKind::Page | ObjectKind::Report | ObjectKind::Query
+        ) {
             continue;
         }
         let usage = o
@@ -322,7 +342,9 @@ pub fn navigation_xml(objects: &[EmitObject], app_name: &str) -> Result<Option<V
             .iter()
             .find(|p| p.name.eq_ignore_ascii_case("UsageCategory"))
             .map(|p| p.value.clone());
-        let Some(usage) = usage.filter(|u| !u.eq_ignore_ascii_case("None")) else { continue };
+        let Some(usage) = usage.filter(|u| !u.eq_ignore_ascii_case("None")) else {
+            continue;
+        };
         let kind = o.entry.kind.to_string();
         // Run-object source table: a page's SourceTable, else a report/query's
         // first related dataitem table.
@@ -394,7 +416,9 @@ pub fn navigation_xml(objects: &[EmitObject], app_name: &str) -> Result<Option<V
         if o.entry.kind != ObjectKind::PageExtension {
             continue;
         }
-        let Some(tid) = o.entry.extends.as_deref().and_then(resolve) else { continue };
+        let Some(tid) = o.entry.extends.as_deref().and_then(resolve) else {
+            continue;
+        };
         let mut attrs = format!(" TargetID=\"{tid}\" TargetType=\"Page\"");
         if let Some(cap) = caption_value(&o.entry.properties) {
             attrs.push_str(&format!(" CaptionML=\"{}\"", e(cap)));
@@ -416,7 +440,9 @@ pub fn navigation_xml(objects: &[EmitObject], app_name: &str) -> Result<Option<V
         ));
     }
     if !changes.is_empty() {
-        body.push_str(&format!("  <NavigationChanges>\n{changes}  </NavigationChanges>\n"));
+        body.push_str(&format!(
+            "  <NavigationChanges>\n{changes}  </NavigationChanges>\n"
+        ));
     }
     let mut out = vec![0xEF, 0xBB, 0xBF];
     out.extend_from_slice(
@@ -559,7 +585,12 @@ fn control_addin_manifest_xml(
         }
     };
     push_url_list(&mut x, "ScriptUrls", "ScriptUrl", &res.script_urls);
-    push_url_list(&mut x, "StyleSheetUrls", "StyleSheetUrl", &res.stylesheet_urls);
+    push_url_list(
+        &mut x,
+        "StyleSheetUrls",
+        "StyleSheetUrl",
+        &res.stylesheet_urls,
+    );
     cdata(&mut x, "RefreshScript", &res.refresh_script);
     cdata(&mut x, "RecreateScript", &res.recreate_script);
 
@@ -575,8 +606,16 @@ fn control_addin_manifest_xml(
             x.push_str(&format!("  <{dim}>{v}</{dim}>\n"));
         }
     }
-    for b in ["VerticalShrink", "VerticalStretch", "HorizontalShrink", "HorizontalStretch"] {
-        if prop(b).map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false) {
+    for b in [
+        "VerticalShrink",
+        "VerticalStretch",
+        "HorizontalShrink",
+        "HorizontalStretch",
+    ] {
+        if prop(b)
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        {
             x.push_str(&format!("  <{b}>True</{b}>\n"));
         }
     }
@@ -626,7 +665,12 @@ fn control_addin_bundle(
         // images, in that order), then manifest.xml, then [Content_Types].xml
         // (whose Defaults cover every extension present).
         let mut inner_entries: Vec<(String, Vec<u8>)> = Vec::new();
-        for rel in res.local_scripts.iter().chain(&res.local_stylesheets).chain(&res.images) {
+        for rel in res
+            .local_scripts
+            .iter()
+            .chain(&res.local_stylesheets)
+            .chain(&res.images)
+        {
             let content = project_root
                 .and_then(|root| std::fs::read(root.join(rel)).ok())
                 .unwrap_or_default();
@@ -638,7 +682,10 @@ fn control_addin_bundle(
         ));
         let exts = distinct_extensions(&inner_entries);
         inner_entries.push(("[Content_Types].xml".to_string(), content_types_xml(&exts)));
-        out.push((format!("addin/{meta_name}.zip"), super::package::write_zip(&inner_entries)?));
+        out.push((
+            format!("addin/{meta_name}.zip"),
+            super::package::write_zip(&inner_entries)?,
+        ));
 
         let e = super::manifest::xml_escape_attr;
         docket.push_str(&format!(
@@ -668,7 +715,10 @@ fn report_layout_files(
     };
     let mut out = Vec::new();
     for o in objects {
-        if !matches!(o.entry.kind, ObjectKind::Report | ObjectKind::ReportExtension) {
+        if !matches!(
+            o.entry.kind,
+            ObjectKind::Report | ObjectKind::ReportExtension
+        ) {
             continue;
         }
         for layout in &o.report_layouts {
@@ -721,20 +771,31 @@ pub fn assemble_app(
         .unwrap_or(0);
 
     let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(sources.len() + 8);
-    entries.push(("NavxManifest.xml".to_string(), manifest.to_navx_xml().into_bytes()));
+    entries.push((
+        "NavxManifest.xml".to_string(),
+        manifest.to_navx_xml().into_bytes(),
+    ));
     for s in sources {
         entries.push((s.archive_path.clone(), s.content.clone().into_bytes()));
     }
     entries.push((
         "DocComments.xml".to_string(),
-        doc_comments_xml(&manifest.id, &manifest.name, &manifest.publisher, &manifest.version)
-            .into_bytes(),
+        doc_comments_xml(
+            &manifest.id,
+            &manifest.name,
+            &manifest.publisher,
+            &manifest.version,
+        )
+        .into_bytes(),
     ));
     if let Some(ent) = entitlement_xml(&manifest.id, objects) {
         entries.push((format!("entitlement/{}.xml", manifest.id), ent));
     }
     // alc prefixes the symbol JSON files with a UTF-8 BOM.
-    entries.push(("SymbolReference.json".to_string(), with_bom(symbol_reference_json)));
+    entries.push((
+        "SymbolReference.json".to_string(),
+        with_bom(symbol_reference_json),
+    ));
     // Per-profile symbol reference files follow the main one.
     let meta = super::symbol_reference::SymbolRefMeta {
         runtime_version: manifest.runtime.clone(),
@@ -770,7 +831,10 @@ pub fn assemble_app(
     }
     // `[Content_Types].xml` is last and lists every distinct extension present.
     let extensions = distinct_extensions(&entries);
-    entries.push(("[Content_Types].xml".to_string(), content_types_xml(&extensions)));
+    entries.push((
+        "[Content_Types].xml".to_string(),
+        content_types_xml(&extensions),
+    ));
     write_app_package(&entries, package_guid)
 }
 
@@ -844,7 +908,11 @@ mod tests {
         assert!(contents.has_source());
         assert!(!contents.has_compiled_code());
 
-        let mx = contents.entries.iter().find(|e| e.name == "NavxManifest.xml").unwrap();
+        let mx = contents
+            .entries
+            .iter()
+            .find(|e| e.name == "NavxManifest.xml")
+            .unwrap();
         assert_eq!(mx.kind, crate::symbols::app_inspect::AppEntryKind::Xml);
     }
 
@@ -853,7 +921,9 @@ mod tests {
         let src = "page 50100 \"Card\" { PageType = Card; }\n\
                    pageextension 50101 \"Card Ext\" extends \"Card\" { }";
         let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
-        let nav = navigation_xml(&objects, "App").unwrap().expect("navigation.xml expected");
+        let nav = navigation_xml(&objects, "App")
+            .unwrap()
+            .expect("navigation.xml expected");
         assert_eq!(&nav[..3], &[0xEF, 0xBB, 0xBF], "BOM");
         let s = String::from_utf8_lossy(&nav);
         assert!(s.contains("<NavigationChanges>"));
@@ -874,7 +944,9 @@ mod tests {
                    Caption = 'My List'; UsageCategory = Lists; ApplicationArea = All; \
                    AdditionalSearchTerms = 'foo,bar'; }";
         let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
-        let nav = navigation_xml(&objects, "Nav App").unwrap().expect("navigation.xml");
+        let nav = navigation_xml(&objects, "Nav App")
+            .unwrap()
+            .expect("navigation.xml");
         let s = String::from_utf8_lossy(&nav);
         assert!(s.contains("<ActionContainers ActionContainerType=\"Departments\">"));
         assert!(s.contains("xsi:type=\"ActionGroupDefinition\" Caption=\"Nav App\""));
@@ -897,7 +969,8 @@ mod tests {
 
     #[test]
     fn xliff_includes_page_and_field_captions_excludes_report_at_runtime_14() {
-        let src = "table 50100 \"T\" { fields { field(1; F; Integer) { Caption = 'Field Cap'; } } }\n\
+        let src =
+            "table 50100 \"T\" { fields { field(1; F; Integer) { Caption = 'Field Cap'; } } }\n\
                    page 50100 \"P\" { Caption = 'Page Cap'; }\n\
                    report 50100 \"R\" { Caption = 'Report Cap'; }\n\
                    enum 50100 \"E\" { value(0; V) { Caption = 'Enum Cap'; } }";
@@ -907,7 +980,10 @@ mod tests {
         assert!(s.contains("original=\"TextDataApp\""), "literal original");
         assert!(s.contains(">Page Cap<"), "page object caption included");
         assert!(s.contains(">Field Cap<"), "table field caption included");
-        assert!(!s.contains("Report Cap"), "report caption excluded at runtime 14");
+        assert!(
+            !s.contains("Report Cap"),
+            "report caption excluded at runtime 14"
+        );
         assert!(!s.contains("Enum Cap"), "enum value caption never included");
     }
 
@@ -920,7 +996,10 @@ mod tests {
         let x = xliff_xml(&objects, 14).expect("xliff expected");
         let s = String::from_utf8_lossy(&x);
         // id-root folds onto the base table; al-object-target names the base.
-        assert!(s.contains("al-object-target=\"Table "), "extension field carries al-object-target");
+        assert!(
+            s.contains("al-object-target=\"Table "),
+            "extension field carries al-object-target"
+        );
         // The developer note keeps the declaring TableExtension.
         assert!(s.contains("TableExtension Ext T - Field B - Property Caption"));
     }

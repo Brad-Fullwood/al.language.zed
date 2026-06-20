@@ -517,5 +517,4 @@ mod tests {
 
         assert!(with_actions.is_empty(), "Should NOT offer on non-with code");
     }
-
 }
