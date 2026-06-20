@@ -287,17 +287,14 @@ pub(in crate::server::daemon) async fn dispatch_compile(
             };
         }
     };
-    let Some(toolchain) = tc.clone() else {
-        return Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INTERNAL_ERROR,
-                message: "No toolchain loaded".to_string(),
-            }),
-            ..Default::default()
-        };
-    };
+    // The toolchain is only required for the opt-in Microsoft `dotnet alc`
+    // path; the default native `.app` emitter needs none. Defer the
+    // "no toolchain" check to the official-compiler branch below so a native
+    // compile — the documented default — succeeds without any Microsoft
+    // toolchain installed (audit 2026-06-20). Previously this early guard
+    // failed `compile` with "No toolchain loaded" even though the native
+    // emitter it was about to run never touches the toolchain.
+    let toolchain = tc.clone();
     let package_cache = project.as_ref().map(|p| p.packages_dir.clone());
     // Drop the read guards before acquiring async locks
     drop(tc);
@@ -329,8 +326,15 @@ pub(in crate::server::daemon) async fn dispatch_compile(
             "al.useOfficialCompiler=true - compiling via the NON-NATIVE Microsoft \
              `dotnet alc` subprocess instead of the native `.app` emitter"
         );
+        let Some(toolchain) = toolchain.as_ref() else {
+            return Err(
+                "al.useOfficialCompiler=true but no AL toolchain is installed. Install \
+                 ALTool, or unset al.useOfficialCompiler to use the native `.app` emitter."
+                    .to_string(),
+            );
+        };
         let compile_result =
-            crate::build::compile_project(&toolchain, &project_root, package_cache.as_deref())
+            crate::build::compile_project(toolchain, &project_root, package_cache.as_deref())
                 .await
                 .map_err(|e| format!("Compilation failed: {}", e))?;
         let app_path = compile_result
@@ -1592,24 +1596,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compile_project_without_toolchain_reports_no_toolchain() {
-        // A loaded project but no toolchain must surface the explicit
-        // "No toolchain loaded" error — proving the toolchain guard fires
-        // AFTER the project check and BEFORE any semantic-bridge work.
+    async fn compile_without_toolchain_uses_native_emitter() {
+        // Native-first is the documented default: a loaded project with NO
+        // toolchain must still compile via the pure-Rust `.app` emitter and
+        // succeed. Previously an early toolchain guard fired before the native
+        // branch and failed `compile` with "No toolchain loaded" even though
+        // the native path it was about to run needs no toolchain (audit
+        // 2026-06-20). The toolchain is required only for the opt-in
+        // `useOfficialCompiler` path (covered separately).
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("app.json"),
+            r#"{"id":"aaaaaaaa-1111-2222-3333-444444444444","name":"t","publisher":"p","version":"1.0.0.0","runtime":"14.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("src").join("Lib.al"),
+            "codeunit 50100 \"T\" { procedure P() begin end; }",
+        )
+        .unwrap();
         {
             let mut g = ws.project.write().await;
             *g = Some(make_project(tmp.path()));
         }
-        // toolchain stays None.
+        // toolchain stays None — the native emitter must not require it.
         let resp = dispatch_compile(&ws, 2).await;
-        let err = resp.error.expect("missing toolchain must error");
-        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
         assert!(
-            err.message.contains("No toolchain"),
-            "expected a toolchain error, got: {}",
-            err.message
+            resp.error.is_none(),
+            "native compile must not error without a toolchain: {:?}",
+            resp.error
+        );
+        let result = resp.result.expect("native compile must return a result");
+        assert_eq!(result["success"], true, "native compile should succeed");
+        assert!(
+            result["appPath"].is_string(),
+            "native compile should report an appPath, got: {result}"
         );
     }
 

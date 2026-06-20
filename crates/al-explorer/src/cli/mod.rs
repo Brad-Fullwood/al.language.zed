@@ -224,7 +224,10 @@ Examples:
         #[arg(long)]
         dry_run: bool,
     },
-    /// List all lint rules
+    /// List native lint rules. Semantic AL diagnostics (CodeCop, AppSourceCop,
+    /// UICop, PerTenantCop) are produced by the Microsoft analyzers via the
+    /// compiler bridge, not this native registry, so this list is empty unless
+    /// native rules are registered.
     Rules,
     /// List all compiler error codes from CodeAnalysis
     #[command(name = "error-codes")]
@@ -281,7 +284,10 @@ Examples:
         #[arg(long)]
         end_line: Option<u32>,
     },
-    /// Apply code fixes/quickfixes to an AL file
+    /// Report fixable diagnostics for an AL file. Automatic source edits for the
+    /// common annotations are applied by the dedicated `add-application-area`,
+    /// `add-tooltips` and `add-data-classification` commands; this command lists
+    /// diagnostics and applies any fixes the native analyzers register.
     Fix {
         /// File to fix
         file: Option<String>,
@@ -561,7 +567,9 @@ Examples:
         #[arg(short, long, default_value = "json")]
         format: String,
     },
-    /// Detect breaking API changes
+    /// Detect breaking API changes against a baseline. NOTE: a baseline
+    /// (previous published version) is not yet wired, so this currently compares
+    /// against an empty baseline and reports no changes.
     Breaking,
     /// Run architecture lint rules
     #[command(name = "arch-lint")]
@@ -575,7 +583,9 @@ Examples:
         #[arg(long, default_value = "0.8")]
         min_similarity: f32,
     },
-    /// Generate upgrade analysis report
+    /// Generate an upgrade analysis report against a baseline. NOTE: a baseline
+    /// (previous published version) is not yet wired, so this currently compares
+    /// against an empty baseline and reports no issues.
     Upgrade,
     /// Get profiler optimization hints
     ProfilerHints {
@@ -606,7 +616,9 @@ Examples:
 
 #[derive(Subcommand)]
 pub enum TestSnapshotCommands {
-    /// Record variable snapshots at breakpoints during a test run
+    /// Record variable snapshots at breakpoints during a test run. NOTE: the
+    /// live BC debug bridge is not yet wired, so this currently returns a
+    /// "not yet wired" error rather than capturing samples.
     Record {
         /// Codeunit object ID
         codeunit: i64,
@@ -617,7 +629,9 @@ pub enum TestSnapshotCommands {
         #[arg(long = "breakpoint", name = "BREAKPOINT")]
         breakpoints: Vec<String>,
     },
-    /// Replay a snapshot against current BC and show match/diverged result
+    /// Replay a snapshot and show match/diverged result. NOTE: live-BC
+    /// observation is not yet wired, so replay currently validates and loads the
+    /// snapshot and reports a match without comparing against a running BC.
     Replay {
         /// Path to the .snap.json file
         path: String,

@@ -68,9 +68,21 @@ fn resolve_output_path_within_project(
             Ok(c) => break c,
             Err(_) => {
                 let file = existing.file_name()?;
-                let mut new_tail = PathBuf::from(file);
-                new_tail.push(&tail);
-                tail = new_tail;
+                // Build the tail by PREPENDING each not-yet-existing component.
+                // `PathBuf::from(file).push(&tail)` when `tail` is empty appends
+                // a trailing separator (`j.xml` -> `j.xml/`), so the resolved
+                // path ended in a separator and was later treated as a
+                // directory — `write_junit_to_path` then `create_dir_all`'d the
+                // file-as-directory and the report write failed silently while
+                // the command still reported success (audit 2026-06-20). Only
+                // push when there is an existing tail to append.
+                tail = if tail.as_os_str().is_empty() {
+                    PathBuf::from(file)
+                } else {
+                    let mut new_tail = PathBuf::from(file);
+                    new_tail.push(&tail);
+                    new_tail
+                };
                 existing = existing.parent()?;
             }
         }
@@ -995,6 +1007,33 @@ mod tests {
         assert!(
             resolved.is_some(),
             "relative path inside project must resolve"
+        );
+    }
+
+    #[test]
+    fn output_path_for_nonexistent_nested_file_has_no_trailing_separator() {
+        // Regression (audit 2026-06-20): the tail-reconstruction loop seeded
+        // `tail` with an empty `PathBuf` and `push`ed it, which appended a
+        // trailing separator (`junit.xml` -> `junit.xml/`). The resolved path
+        // was then treated as a directory, `create_dir_all`'d, and the JUnit /
+        // Cobertura write failed silently while the command reported success.
+        let project = tempfile::tempdir().unwrap();
+        let resolved = resolve_output_path_within_project(
+            // Neither `reports/` nor the file exist yet — exercises the loop.
+            std::path::Path::new("reports/junit.xml"),
+            project.path(),
+        )
+        .expect("nested path inside project must resolve");
+        assert_eq!(
+            resolved.file_name().and_then(|n| n.to_str()),
+            Some("junit.xml"),
+            "resolved path must end in the file name, got {resolved:?}"
+        );
+        assert!(
+            !resolved
+                .to_string_lossy()
+                .ends_with(std::path::MAIN_SEPARATOR),
+            "resolved path must not end with a separator, got {resolved:?}"
         );
     }
 

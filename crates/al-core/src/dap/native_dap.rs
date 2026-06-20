@@ -967,7 +967,7 @@ where
                 request_seq,
                 command,
                 true,
-                Some(serde_json::json!({"variables": variables})),
+                Some(serde_json::json!({"variables": bc_vars_to_dap(&variables)})),
                 None,
             ),
         )
@@ -1382,6 +1382,47 @@ fn extract_breakpoint_id(result: &serde_json::Value) -> Option<i64> {
         .or_else(|| result.get("id"))
         .and_then(|v| v.as_i64())
         .filter(|&id| id != 0)
+}
+
+/// Map BC `LocalNode[]` JSON into DAP `Variable` objects.
+///
+/// BC returns PascalCase keys (`Name`/`Value`/`TypeName`) on newer servers and
+/// camelCase on older ones; the DAP `variables` response requires lowercase
+/// `name`/`value` and a `variablesReference` (0 = not expandable). The native
+/// `variables` handler previously forwarded the raw BC JSON, so editors keying
+/// on `name`/`value` rendered an empty or broken Variables pane (audit
+/// 2026-06-20). Structured-value expansion is not yet wired, so
+/// `variablesReference` is always 0. A non-string `Value` (e.g. a JSON number)
+/// is stringified rather than dropped.
+fn bc_vars_to_dap(variables: &serde_json::Value) -> Vec<serde_json::Value> {
+    let Some(arr) = variables.as_array() else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|node| {
+            let name = node
+                .get("Name")
+                .or_else(|| node.get("name"))
+                .and_then(|v| v.as_str())?;
+            let value = match node.get("Value").or_else(|| node.get("value")) {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(serde_json::Value::Null) | None => String::new(),
+                Some(other) => other.to_string(),
+            };
+            let type_name = node
+                .get("TypeName")
+                .or_else(|| node.get("typeName"))
+                .or_else(|| node.get("Type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            Some(serde_json::json!({
+                "name": name,
+                "value": value,
+                "type": type_name,
+                "variablesReference": 0,
+            }))
+        })
+        .collect()
 }
 
 fn bc_stack_to_dap<P>(frames: serde_json::Value, resolve_path: &P) -> Vec<serde_json::Value>
@@ -1915,6 +1956,33 @@ mod tests {
     fn bc_stack_to_dap_empty_array_yields_empty_vec() {
         let result = bc_stack_to_dap(serde_json::json!([]), &|_: i32, _: i32| None::<PathBuf>);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn bc_vars_to_dap_maps_pascal_and_camel_case_to_dap_shape() {
+        // BC's PascalCase and camelCase LocalNode keys must both produce DAP
+        // `name`/`value`/`type` + `variablesReference`. A non-string value is
+        // stringified, not dropped. A node without a name is skipped.
+        let bc = serde_json::json!([
+            { "Name": "Customer", "Value": "10000", "TypeName": "Record" },
+            { "name": "i", "value": 5, "typeName": "Integer" },
+            { "Value": "orphan" }
+        ]);
+        let vars = bc_vars_to_dap(&bc);
+        assert_eq!(vars.len(), 2, "nameless node must be skipped");
+        assert_eq!(vars[0]["name"], "Customer");
+        assert_eq!(vars[0]["value"], "10000");
+        assert_eq!(vars[0]["type"], "Record");
+        assert_eq!(vars[0]["variablesReference"], 0);
+        assert_eq!(vars[1]["name"], "i");
+        assert_eq!(vars[1]["value"], "5", "numeric value stringified");
+        assert_eq!(vars[1]["type"], "Integer");
+    }
+
+    #[test]
+    fn bc_vars_to_dap_non_array_yields_empty() {
+        assert!(bc_vars_to_dap(&serde_json::json!(null)).is_empty());
+        assert!(bc_vars_to_dap(&serde_json::json!({ "Name": "x" })).is_empty());
     }
 
     #[test]

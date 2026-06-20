@@ -1217,6 +1217,14 @@ fn apply_workspace_edit(
 pub fn cmd_rules(json: bool) -> ExitCode {
     run_command("rules", None, json, None, |result| {
         let rules = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+        if rules.is_empty() {
+            eprintln!(
+                "No native lint rules are registered. Semantic AL diagnostics \
+                 (CodeCop, AppSourceCop, UICop, PerTenantCop) are produced by the \
+                 Microsoft analyzers via the compiler bridge, not this native registry."
+            );
+            return;
+        }
         println!("{:<10} {:<8} {:<25} DESCRIPTION", "CODE", "SEV", "NAME");
         println!("{}", "-".repeat(80));
         for r in rules {
@@ -1912,16 +1920,43 @@ pub fn cmd_tests_coverage(json: bool) -> ExitCode {
         json,
         None,
         |result| {
-            let covered = result
-                .get("coveredProcedures")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let total = result
-                .get("totalProcedures")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            // The daemon returns `{ coverage: [{ testProcedure, covers: [...] }],
+            // untested: [...] }`. The previous formatter read `coveredProcedures`/
+            // `totalProcedures`, which the daemon never emits, so it always printed
+            // "0/0 procedures (0%)" (audit 2026-06-20). Derive real counts here.
+            let coverage = result.get("coverage").and_then(|v| v.as_array());
+            let untested = result.get("untested").and_then(|v| v.as_array());
+            let test_count = coverage.map_or(0, Vec::len);
+            let mut covered_set = std::collections::HashSet::new();
+            if let Some(entries) = coverage {
+                for entry in entries {
+                    if let Some(covers) = entry.get("covers").and_then(|v| v.as_array()) {
+                        for c in covers {
+                            let object = c.get("object").and_then(|v| v.as_str()).unwrap_or("");
+                            let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                            covered_set.insert(format!("{object}::{name}"));
+                        }
+                    }
+                }
+            }
+            let covered = covered_set.len();
+            let untested_count = untested.map_or(0, Vec::len);
+            let total = covered + untested_count;
             let pct = (covered * 100).checked_div(total).unwrap_or(0);
-            println!("Test coverage: {covered}/{total} procedures ({pct}%)");
+            println!(
+                "Test coverage: {covered}/{total} procedures covered ({pct}%) \
+                 across {test_count} test procedure(s)"
+            );
+            if let Some(entries) = untested {
+                if !entries.is_empty() {
+                    println!("\nUntested procedures ({untested_count}):");
+                    for u in entries {
+                        let object = u.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                        let name = u.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("  {object}::{name}");
+                    }
+                }
+            }
         },
     )
 }
@@ -2497,9 +2532,20 @@ pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
+    // The daemon's `profiler_hints` resolver keys on a `procedure` field (and
+    // an optional `object` field to disambiguate same-named procedures), so
+    // emit those keys — a previous `{"name": …}` payload was silently ignored
+    // and every lookup returned zero hints (audit 2026-06-20). Accept the
+    // `Object.Procedure` shorthand used elsewhere (e.g. `impact`) by splitting
+    // on the last dot.
     let hotspot_values: Vec<serde_json::Value> = hotspots
         .iter()
-        .map(|h| serde_json::json!({ "name": h }))
+        .map(|h| match h.rsplit_once('.') {
+            Some((object, procedure)) if !object.is_empty() && !procedure.is_empty() => {
+                serde_json::json!({ "object": object, "procedure": procedure })
+            }
+            _ => serde_json::json!({ "procedure": h }),
+        })
         .collect();
     match client.request(
         "profiler.hints",
@@ -2695,22 +2741,32 @@ pub fn cmd_test_snapshot(subcmd: &super::super::TestSnapshotCommands, json: bool
                     if json {
                         print_json(&result);
                     } else {
-                        let verdict = result
-                            .get("verdict")
+                        // `verdict` is the serialized `ReplayVerdict` enum,
+                        // an object `{"kind":"match"}` or `{"kind":"diverged",
+                        // "divergences":[…]}` — not a bare string. The previous
+                        // `as_str() == "Match"` check never matched, so a
+                        // successful replay always printed "[FAIL]" (audit
+                        // 2026-06-20). Divergence fields are `field_path` /
+                        // `old_value` / `new_value`.
+                        let verdict = result.get("verdict");
+                        let kind = verdict
+                            .and_then(|v| v.get("kind"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("?");
-                        if verdict == "Match" {
+                        if kind == "match" {
                             println!("[PASS] Snapshot matches baseline.");
                         } else {
                             println!("[FAIL] Snapshot diverged from baseline:");
-                            if let Some(divs) = result.get("divergences").and_then(|v| v.as_array())
+                            if let Some(divs) = verdict
+                                .and_then(|v| v.get("divergences"))
+                                .and_then(|v| v.as_array())
                             {
                                 for d in divs {
                                     let field =
-                                        d.get("field").and_then(|v| v.as_str()).unwrap_or("?");
-                                    let expected = d.get("expected").cloned().unwrap_or_default();
-                                    let actual = d.get("actual").cloned().unwrap_or_default();
-                                    println!("  {field}: expected={expected}, actual={actual}");
+                                        d.get("field_path").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let old = d.get("old_value").cloned().unwrap_or_default();
+                                    let new = d.get("new_value").cloned().unwrap_or_default();
+                                    println!("  {field}: baseline={old}, replay={new}");
                                 }
                             }
                             return ExitCode::FAILURE;
@@ -2748,18 +2804,31 @@ pub fn cmd_test_snapshot(subcmd: &super::super::TestSnapshotCommands, json: bool
                     if json {
                         print_json(&result);
                     } else {
-                        let divs = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                        // The daemon returns `{ "divergences": [Divergence] }`,
+                        // not a bare array, and each Divergence carries
+                        // `breakpoint_id` / `iteration` / `field_path` /
+                        // `old_value` / `new_value`. The previous formatter read
+                        // a top-level array with `sampleIndex`/`field`/`expected`/
+                        // `actual`, so it always printed "Snapshots are
+                        // identical." even when they differed (audit 2026-06-20).
+                        let divs = result
+                            .get("divergences")
+                            .and_then(|v| v.as_array())
+                            .map(|v| &v[..])
+                            .unwrap_or(&[]);
                         if divs.is_empty() {
                             println!("Snapshots are identical.");
                         } else {
                             println!("{} divergence(s):", divs.len());
                             for d in divs {
-                                let idx =
-                                    d.get("sampleIndex").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let field = d.get("field").and_then(|v| v.as_str()).unwrap_or("?");
-                                let expected = d.get("expected").cloned().unwrap_or_default();
-                                let actual = d.get("actual").cloned().unwrap_or_default();
-                                println!("  [sample {idx}] {field}: {expected} -> {actual}");
+                                let bp =
+                                    d.get("breakpoint_id").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let iter = d.get("iteration").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let field =
+                                    d.get("field_path").and_then(|v| v.as_str()).unwrap_or("?");
+                                let old = d.get("old_value").cloned().unwrap_or_default();
+                                let new = d.get("new_value").cloned().unwrap_or_default();
+                                println!("  [bp {bp} iter {iter}] {field}: {old} -> {new}");
                             }
                             return ExitCode::FAILURE;
                         }
@@ -2831,14 +2900,23 @@ pub fn cmd_test_mutate(
                     println!("{:<8} {:<30} {:>5}  Change", "ID", "File", "Line");
                     println!("{}", "-".repeat(70));
                     for v in &survivors {
-                        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("?");
-                        let file = v.get("file").and_then(|x| x.as_str()).unwrap_or("?");
+                        // The mutation details (id/file/line/description) live in
+                        // the nested `variant` object; the top-level keys are
+                        // `killed`/`killingTest`/`error`. Reading them at the top
+                        // level printed "?  ?  0  ?" for every survivor row
+                        // (audit 2026-06-20).
+                        let variant = v.get("variant").unwrap_or(v);
+                        let id = variant.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                        let file = variant.get("file").and_then(|x| x.as_str()).unwrap_or("?");
                         let file_short = std::path::Path::new(file)
                             .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or(file);
-                        let line = v.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
-                        let desc = v.get("description").and_then(|x| x.as_str()).unwrap_or("?");
+                        let line = variant.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
+                        let desc = variant
+                            .get("description")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("?");
                         println!(
                             "{:<8} {:<30} {:>5}  {}",
                             &id[..id.len().min(8)],

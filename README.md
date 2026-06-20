@@ -144,7 +144,7 @@ The native engine enables workflows that are difficult to get from a generic edi
 - SQL scan: find patterns such as `FindFirst` in loops, `Get` in loops, `CalcFields` in loops, and unfiltered `FindSet`.
 - Architecture lint: validate project-specific dependency rules from `.alarch.json`.
 - Duplicate detection: find repeated AL code blocks.
-- Breaking-change and upgrade analysis: compare public surfaces, obsolete metadata, permissions, and upgrade risk.
+- Breaking-change and upgrade analysis: compare public surfaces, obsolete metadata, permissions, and upgrade risk. Note: the baseline (a previous published version to diff against) is not yet wired, so `breaking` and `upgrade` currently run against an empty baseline and report no changes.
 - Permission and data audits: inspect permission sets, table data classification, and missing metadata.
 - XLIFF tooling: generate, refresh, inspect untranslated entries, and suggest translations from workspace symbols.
 - Bulk fixes: add application areas, tooltips, data classification, organize files, and sort members.
@@ -219,7 +219,7 @@ Those CodeLens IDs are separate from the native execute-command dispatcher above
 
 The CLI command surface includes:
 
-- Project/setup: `setup`, `doctor`, `new`, `packages`, `deps`, `deps-graph`, `clear-cache`, `init-debug`.
+- Project/setup: `setup`, `doctor`, `diag`, `new`, `packages`, `deps`, `deps-graph`, `clear-cache`, `init-debug`.
 - Build/toolchain: `compile`, `pack-native`, `package`, `download-symbols`, `authenticate`.
 - LSP-style queries: `hover`, `definition`, `references`, `signature`, `completions`, `symbols`, `folding`, `tokens`, `parse`, `rename`, `hints`.
 - Symbols and objects: `search`, `object`, `by-id`, `composed`, `builtins`, `rules`, `error-codes`, `generate-completions`, `version`.

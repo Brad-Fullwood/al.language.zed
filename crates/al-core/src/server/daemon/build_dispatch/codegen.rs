@@ -96,6 +96,28 @@ pub(in crate::server::daemon) fn dispatch_new_project(
         };
     }
 
+    // Honor the requested project template. The CLI forwards `--template`
+    // verbatim; previously this field was dropped, so every `al new` produced
+    // the Default extension scaffold regardless of the flag and an invalid
+    // template was silently accepted (audit 2026-06-20).
+    let template = match params.get("template").and_then(|v| v.as_str()) {
+        Some(t) => match t.parse::<crate::scaffold::ProjectTemplate>() {
+            Ok(tpl) => tpl,
+            Err(msg) => {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INVALID_PARAMS,
+                        message: msg,
+                    }),
+                    ..Default::default()
+                };
+            }
+        },
+        None => crate::scaffold::ProjectTemplate::default(),
+    };
+
     let config = crate::scaffold::ScaffoldConfig {
         name: params
             .get("name")
@@ -107,6 +129,7 @@ pub(in crate::server::daemon) fn dispatch_new_project(
             .and_then(|v| v.as_str())
             .unwrap_or("Default Publisher")
             .to_string(),
+        template,
         ..crate::scaffold::ScaffoldConfig::default()
     };
 
@@ -363,6 +386,46 @@ mod tests {
 
     fn empty_ws() -> Workspace {
         Workspace::new()
+    }
+
+    #[test]
+    fn dispatch_new_project_honors_template_and_rejects_invalid() {
+        // Regression (audit 2026-06-20): the `template` param was dropped, so
+        // every `al new` produced the Default scaffold and invalid templates
+        // were silently accepted.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("proj");
+        let resp = dispatch_new_project(
+            1,
+            &serde_json::json!({
+                "dir": dir.to_str().unwrap(),
+                "name": "Foo",
+                "template": "test",
+            }),
+        );
+        assert!(
+            resp.error.is_none(),
+            "test template must succeed: {:?}",
+            resp.error
+        );
+        assert!(
+            dir.join("src").join("Test.Codeunit.al").exists(),
+            "the `test` template must scaffold a test codeunit (not the Default HelloWorld)"
+        );
+
+        let bad = dispatch_new_project(
+            2,
+            &serde_json::json!({
+                "dir": tmp.path().join("proj2").to_str().unwrap(),
+                "name": "Bar",
+                "template": "nope",
+            }),
+        );
+        let err = bad
+            .error
+            .expect("invalid template must error, not default silently");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("nope"), "msg: {}", err.message);
     }
 
     #[test]

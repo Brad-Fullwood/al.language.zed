@@ -181,6 +181,14 @@ pub fn find_variable_references(tree: &Tree, text: &str, name: &str) -> Vec<tree
     let source = text.as_bytes();
     let mut refs = Vec::new();
     find_refs_iterative(root, source, name, &mut refs);
+    // The AL grammar wraps some identifiers in a `name` node whose span is
+    // identical to the inner `identifier`/`quoted_identifier`. Both kinds match
+    // the predicate in `find_refs_iterative`, so the same source span was
+    // collected twice — double-counting every reference and inflating
+    // `rename`'s reported edit count to exactly 2× (audit 2026-06-20). A
+    // reference is unique by its byte span; drop exact-span duplicates.
+    let mut seen = std::collections::HashSet::new();
+    refs.retain(|r| seen.insert((r.start_byte, r.end_byte)));
     refs
 }
 
@@ -456,6 +464,40 @@ mod tests {
                 stack.push((child, depth + 1));
             }
         }
+    }
+
+    #[test]
+    fn find_variable_references_returns_each_span_once() {
+        // Regression (audit 2026-06-20): the AL grammar wraps some identifiers
+        // in a `name` node whose span equals the inner `identifier`, and both
+        // kinds matched the reference predicate, so every reference was
+        // collected twice — doubling `references` results and `rename` edit
+        // counts. Each source span must appear at most once.
+        let src = r#"codeunit 50100 "T"
+{
+    var GlobalCounter: Integer;
+    procedure A() begin GlobalCounter := GlobalCounter + 1; end;
+    procedure B() begin GlobalCounter := 0; end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let refs = find_variable_references(&result.tree, src, "GlobalCounter");
+        let mut spans: Vec<(usize, usize)> =
+            refs.iter().map(|r| (r.start_byte, r.end_byte)).collect();
+        let before = spans.len();
+        spans.sort_unstable();
+        spans.dedup();
+        assert_eq!(
+            before,
+            spans.len(),
+            "find_variable_references returned duplicate spans: {refs:?}"
+        );
+        // The declaration + three uses = four distinct spans.
+        assert_eq!(
+            spans.len(),
+            4,
+            "expected 4 distinct references, got {spans:?}"
+        );
     }
 
     #[test]
