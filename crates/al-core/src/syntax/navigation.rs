@@ -192,6 +192,67 @@ pub fn find_variable_references(tree: &Tree, text: &str, name: &str) -> Vec<tree
     refs
 }
 
+/// Find references to an event raised through `[EventSubscriber(...)]`
+/// attributes whose target event name equals `event_name`.
+///
+/// In AL a subscriber names its target event with a *string literal* — e.g.
+/// `[EventSubscriber(ObjectType::Codeunit, "Pub", 'OnFooEvent', '', false, false)]`
+/// — not an identifier. `find_variable_references` only matches
+/// `identifier`/`quoted_identifier`/`name` nodes, so `references` (and anything
+/// built on it) silently missed every subscriber of an event: asking for
+/// references to an event surfaced only its declaration and `Raise` call sites,
+/// never the subscribers that consume it (audit 2026-06-20).
+///
+/// Scope is deliberately narrow to avoid false positives: only the event-name
+/// argument (the 3rd positional argument, mirroring
+/// `insight::calls::parse_subscriber_target_from_attrs`) of an `EventSubscriber`
+/// attribute is matched, so unrelated string literals that happen to equal
+/// `event_name` are never reported.
+pub fn find_event_subscriber_references(
+    tree: &Tree,
+    text: &str,
+    event_name: &str,
+) -> Vec<tree_sitter::Range> {
+    let source = text.as_bytes();
+    let mut refs = Vec::new();
+    walk_tree(tree.root_node(), &mut |node| {
+        if node.kind() != "attribute" {
+            return;
+        }
+        let attr_name = node
+            .child_by_field_name("name")
+            .or_else(|| node.child(0))
+            .and_then(|n| n.utf8_text(source).ok())
+            .unwrap_or("");
+        if !attr_name.trim().eq_ignore_ascii_case("EventSubscriber") {
+            return;
+        }
+        let mut ac = node.walk();
+        let Some(arg_list) = node
+            .children(&mut ac)
+            .find(|n| n.kind() == "attribute_argument_list")
+        else {
+            return;
+        };
+        // The event name is the 3rd positional argument (index 2), matching
+        // `parse_subscriber_target_from_attrs` (ObjectType, Object, Event, …).
+        let mut lc = arg_list.walk();
+        let event_arg = arg_list
+            .children(&mut lc)
+            .filter(|n| n.kind() == "attribute_argument")
+            .nth(2);
+        if let Some(arg) = event_arg {
+            if let Ok(arg_text) = arg.utf8_text(source) {
+                if crate::insight::calls::clean_attr_arg(arg_text).eq_ignore_ascii_case(event_name)
+                {
+                    refs.push(arg.range());
+                }
+            }
+        }
+    });
+    refs
+}
+
 fn find_refs_iterative(
     root: Node,
     source: &[u8],
