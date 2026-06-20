@@ -250,8 +250,11 @@ where
             // compile step; the emitter itself does not need `alc`.
             if self.alc_path.is_some() {
                 let cr = crate::build::native_compile(std::path::Path::new(&self.project_root));
-                let compile_outcome: std::result::Result<String, String> =
-                    if cr.success { Ok(cr.output) } else { Err(cr.output) };
+                let compile_outcome: std::result::Result<String, String> = if cr.success {
+                    Ok(cr.output)
+                } else {
+                    Err(cr.output)
+                };
                 match compile_outcome {
                     Ok(output) => {
                         if !output.is_empty() {
@@ -1320,53 +1323,6 @@ async fn write_dap<W: tokio::io::AsyncWrite + Unpin>(
     write_dap_frame(writer, &body).await
 }
 
-/// Compile via `dotnet alc` and return raw output. Retained for the official
-/// (`al.useOfficialCompiler`) fallback and tests; the default debug-deploy path
-/// now builds the `.app` with the pure-Rust native emitter (no `alc`).
-#[allow(dead_code)]
-async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<String, DapError> {
-    let project_path = Path::new(project_root);
-    if !project_path.join("app.json").is_file() {
-        return Err(DapError::CompilationFailed(format!(
-            "No app.json found in {project_root}"
-        )));
-    }
-
-    // Roll net8.0 `alc.dll` forward onto a newer .NET major (DOTNET_ROLL_FORWARD).
-    let mut cmd = crate::toolchain::dotnet_command_async(alc);
-    cmd.arg(format!("/project:{project_root}"));
-
-    let packages_dir = project_path.join(".alpackages");
-    if packages_dir.is_dir() {
-        cmd.arg(format!("/packagecachepath:{}", packages_dir.display()));
-    }
-
-    // Shared cancel/timeout policy with the daemon build path (DUP-1/DUP-2).
-    let output = match crate::build::run_alc_with_timeout(cmd).await {
-        Ok(o) => o,
-        Err(crate::build::AlcRunError::Spawn(e)) => {
-            return Err(DapError::CompilationFailed(format!(
-                "Failed to run alc: {e}"
-            )))
-        }
-        Err(crate::build::AlcRunError::Timeout(secs)) => {
-            return Err(DapError::CompilationFailed(format!(
-                "alc compilation timed out after {secs}s"
-            )))
-        }
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{stdout}{stderr}");
-
-    if output.status.success() {
-        Ok(combined)
-    } else {
-        Err(DapError::CompilationFailed(combined))
-    }
-}
-
 async fn find_app_file(project_root: &str) -> Option<std::path::PathBuf> {
     // Reuse the build pipeline's selection logic so a sandbox deploy never grabs
     // a stale artifact. It prefers the manifest-derived
@@ -1983,31 +1939,6 @@ mod tests {
     // (run_alc_with_timeout), shared with the daemon build path. Their env-var
     // parsing is covered by build.rs's compile_timeout_* tests; the DAP
     // duplicates were removed to keep a single source of truth (DUP-1/DUP-2).
-
-    // -----------------------------------------------------------------------
-    // compile_project — the no-app.json guard is reachable without a real
-    // toolchain (it returns before spawning alc).
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn compile_project_errors_when_no_app_json() {
-        let dir = tempfile::tempdir().unwrap();
-        let err = compile_project(
-            Path::new("/nonexistent/alc.dll"),
-            dir.path().to_str().unwrap(),
-        )
-        .await
-        .expect_err("missing app.json must be an error");
-        match err {
-            DapError::CompilationFailed(msg) => {
-                assert!(
-                    msg.contains("No app.json found"),
-                    "error must name the missing app.json: {msg}"
-                );
-            }
-            other => panic!("expected CompilationFailed, got {other:?}"),
-        }
-    }
 
     // -----------------------------------------------------------------------
     // find_app_file — directory scan for a .app artifact.

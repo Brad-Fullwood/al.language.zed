@@ -32,12 +32,7 @@ fn collect_procedure_complexity(node: Node, source: &[u8], results: &mut Vec<Pro
             current.kind(),
             "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
         ) {
-            let name = current
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source).ok())
-                .unwrap_or("(unknown)")
-                .trim_matches('"')
-                .to_string();
+            let name = crate::syntax::node_name_or(current, source, "(unknown)");
 
             let line = current.start_position().row as u32 + 1;
             let cyclomatic = compute_cyclomatic(current, source);

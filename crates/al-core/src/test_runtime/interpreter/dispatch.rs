@@ -576,9 +576,7 @@ fn builtin_indexof(args: &[Value]) -> Eval {
     }
     let result = s
         .find(needle)
-        .map(|i| {
-            s[..i].chars().count() as i64 + 1
-        })
+        .map(|i| s[..i].chars().count() as i64 + 1)
         .unwrap_or(0);
     Eval::Normal(Value::Integer(result))
 }

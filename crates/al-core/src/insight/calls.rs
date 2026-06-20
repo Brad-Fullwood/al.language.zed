@@ -56,8 +56,13 @@ impl RecordOp {
 
 #[derive(Debug, Clone)]
 pub enum CallSite {
-    BareCall { name: String },
-    MemberCall { object: String, method: String },
+    BareCall {
+        name: String,
+    },
+    MemberCall {
+        object: String,
+        method: String,
+    },
     RecordOp {
         variable: String,
         op: RecordOp,
@@ -534,12 +539,10 @@ fn extract_primary_expression_name(node: tree_sitter::Node, source: &[u8]) -> Op
             .utf8_text(source)
             .ok()
             .map(|t| t.trim_matches('"').to_string()),
-        _ => {
-            inner
-                .utf8_text(source)
-                .ok()
-                .map(|t| t.trim_matches('"').to_string())
-        }
+        _ => inner
+            .utf8_text(source)
+            .ok()
+            .map(|t| t.trim_matches('"').to_string()),
     }
 }
 

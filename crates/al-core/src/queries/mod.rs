@@ -40,6 +40,13 @@ pub mod upgrade;
 use crate::symbols::SymbolEntry;
 use url::Url;
 
+/// Strip an AL `field(` prefix, tolerating the optional space in `field (`.
+/// Returns the remainder after the opening paren, or `None` if absent.
+pub(crate) fn strip_field_prefix(s: &str) -> Option<&str> {
+    s.strip_prefix("field(")
+        .or_else(|| s.strip_prefix("field ("))
+}
+
 /// Extract the clean (unquoted) name from a tree-sitter node.
 ///
 /// Returns `None` when the node's text is invalid UTF-8 or empty after stripping
@@ -133,9 +140,9 @@ pub fn get_or_create_virtual_file(
     match crate::symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
         Ok(path) => {
             let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
-            // Prefer the member range; fall back to the object's own declaration
-            // (so object navigation lands on the object, not file-start `(0,0)`),
-            // then to a default range if neither can be located.
+                                                        // Prefer the member range; fall back to the object's own declaration
+                                                        // (so object navigation lands on the object, not file-start `(0,0)`),
+                                                        // then to a default range if neither can be located.
             let member_range = member_name.and_then(|name| {
                 crate::symbols::virtual_file::find_member_range(
                     &path,

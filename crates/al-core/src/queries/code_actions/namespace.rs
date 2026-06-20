@@ -681,5 +681,4 @@ codeunit 50100 "My Codeunit"
             "Should extract 'Sales Header' when cursor is on closing quote"
         );
     }
-
 }

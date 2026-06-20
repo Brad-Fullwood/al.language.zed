@@ -136,7 +136,7 @@ async fn run_one_codeunit(
                     });
                 }
                 Err(_elapsed) => {
-                        let skip_result = TestMethodResult {
+                    let skip_result = TestMethodResult {
                         name: method_display,
                         status: TestStatus::Skip,
                         error: Some(format!("timeout after {} ms", timeout_dur.as_millis())),

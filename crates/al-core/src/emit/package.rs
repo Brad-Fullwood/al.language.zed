@@ -107,7 +107,10 @@ mod tests {
     fn writes_navx_header_then_zip() {
         let entries = vec![
             ("NavxManifest.xml".to_string(), b"<Package/>".to_vec()),
-            ("src/src/Hello.al".to_string(), b"codeunit 50100 X {}".to_vec()),
+            (
+                "src/src/Hello.al".to_string(),
+                b"codeunit 50100 X {}".to_vec(),
+            ),
         ];
         let guid = [7u8; 16];
         let app = write_app_package(&entries, guid).unwrap();
@@ -126,19 +129,39 @@ mod tests {
         // The package we write must be readable by our own `.app` inspector,
         // with the same entries and classifications.
         let entries = vec![
-            ("NavxManifest.xml".to_string(), b"<?xml version=\"1.0\"?><Package/>".to_vec()),
-            ("src/src/Hello.al".to_string(), b"codeunit 50100 X {}".to_vec()),
-            ("SymbolReference.json".to_string(), b"{\"Codeunits\":[]}".to_vec()),
+            (
+                "NavxManifest.xml".to_string(),
+                b"<?xml version=\"1.0\"?><Package/>".to_vec(),
+            ),
+            (
+                "src/src/Hello.al".to_string(),
+                b"codeunit 50100 X {}".to_vec(),
+            ),
+            (
+                "SymbolReference.json".to_string(),
+                b"{\"Codeunits\":[]}".to_vec(),
+            ),
         ];
         let app = write_app_package(&entries, random_package_guid().unwrap()).unwrap();
 
         let contents = list_app_entries(&app).unwrap();
         assert_eq!(contents.navx_header_len, 40);
         let names: Vec<&str> = contents.entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["NavxManifest.xml", "src/src/Hello.al", "SymbolReference.json"]);
+        assert_eq!(
+            names,
+            [
+                "NavxManifest.xml",
+                "src/src/Hello.al",
+                "SymbolReference.json"
+            ]
+        );
         assert!(contents.has_source());
         assert!(!contents.has_compiled_code());
-        let al = contents.entries.iter().find(|e| e.name.ends_with(".al")).unwrap();
+        let al = contents
+            .entries
+            .iter()
+            .find(|e| e.name.ends_with(".al"))
+            .unwrap();
         assert_eq!(al.kind, AppEntryKind::AlSource);
     }
 }

@@ -517,7 +517,7 @@ fn collect_mutation_files(
         let cached = workspace.file_index.get_cached_parse(path);
 
         if opts.affected_only {
-                let Some((text, tree)) = cached.as_ref() else {
+            let Some((text, tree)) = cached.as_ref() else {
                 continue;
             };
             let root = tree.root_node();
@@ -559,7 +559,7 @@ async fn run_single_variant(
         match text_opt {
             Some(t) => t,
             None => {
-                    if let Ok(uri) = url::Url::from_file_path(path) {
+                if let Ok(uri) = url::Url::from_file_path(path) {
                     if let Some(t) = workspace.documents.get_text(&uri) {
                         t
                     } else {

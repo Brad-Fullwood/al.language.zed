@@ -884,7 +884,6 @@ mod tests {
             }));
         }
 
-
         for i in 0..20 {
             let s = Arc::clone(&store);
             handles.push(thread::spawn(move || {

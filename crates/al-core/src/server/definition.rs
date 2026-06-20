@@ -11,6 +11,20 @@ pub(crate) fn handle_definition(
 ) -> Option<GotoDefinitionResponse> {
     let core_pos = position.into();
     let locations = crate::queries::definition::definition(&server.workspace, uri, core_pos)?;
+
+    // A `LocationLink[]` response is only valid when the client advertised
+    // `textDocument.definition.linkSupport`; otherwise the LSP spec requires a
+    // plain `Location[]`. Clients that don't (e.g. ones initialised with empty
+    // `definition` capabilities) would otherwise be handed a shape they can't
+    // parse, breaking go-to-definition entirely.
+    if !server
+        .definition_link_support
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        let locs: Vec<Location> = locations.into_iter().map(Into::into).collect();
+        return Some(GotoDefinitionResponse::Array(locs));
+    }
+
     // Return `LocationLink`s carrying an `originSelectionRange` — the full
     // identifier under the cursor. With it, Zed highlights the whole symbol on
     // Ctrl-hover (including multi-word quoted names like "Sales Shipment

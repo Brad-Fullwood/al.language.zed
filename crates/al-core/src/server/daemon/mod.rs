@@ -737,6 +737,10 @@ pub(crate) fn rpc_error(id: u64, code: i32, message: &str) -> Response {
     }
 }
 
+// Err is a ready-to-send JSON-RPC `Response` by design (callers just return it
+// on a cold error path); boxing it would scatter `*` derefs across every
+// dispatcher for no real benefit.
+#[allow(clippy::result_large_err)]
 pub(crate) fn require_project_root(workspace: &Workspace, id: u64) -> Result<PathBuf, Response> {
     workspace
         .project
@@ -746,6 +750,8 @@ pub(crate) fn require_project_root(workspace: &Workspace, id: u64) -> Result<Pat
         .ok_or_else(|| rpc_error(id, error_codes::INTERNAL_ERROR, "No project loaded"))
 }
 
+// Err is a ready-to-send JSON-RPC `Response` (cold path); see require_project_root.
+#[allow(clippy::result_large_err)]
 pub(crate) fn parse_object_kind(
     id: u64,
     kind_str: &str,
@@ -760,6 +766,8 @@ pub(crate) fn parse_object_kind(
 }
 
 /// Get document text, loading from disk if needed. Returns the text or a file-not-found Response.
+// Err is a ready-to-send JSON-RPC `Response` (cold path); see require_project_root.
+#[allow(clippy::result_large_err)]
 pub(crate) fn require_document_text(
     workspace: &Workspace,
     uri: &url::Url,

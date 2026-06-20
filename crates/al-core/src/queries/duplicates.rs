@@ -120,12 +120,7 @@ fn collect_procs_recursive(
         if !did_visit {
             let node = cursor.node();
             if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
-                let name = node
-                    .child_by_field_name("name")
-                    .and_then(|n| n.utf8_text(source).ok())
-                    .unwrap_or("(unknown)")
-                    .trim_matches('"')
-                    .to_string();
+                let name = crate::syntax::node_name_or(node, source, "(unknown)");
 
                 let line = node.start_position().row as u32 + 1;
 

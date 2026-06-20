@@ -60,7 +60,10 @@ fn merged_resolver(objects: &[EmitObject], external: &Resolver) -> Resolver {
     for o in objects {
         resolver.insert(
             o.entry.name.to_lowercase(),
-            ObjectRef { id: o.entry.id, module_id: None },
+            ObjectRef {
+                id: o.entry.id,
+                module_id: None,
+            },
         );
     }
     resolver
@@ -139,20 +142,32 @@ pub fn build_symbol_reference(
         ("Codeunits", Some(ObjectKind::Codeunit), true),
         ("Pages", Some(ObjectKind::Page), false),
         ("PageExtensions", Some(ObjectKind::PageExtension), false),
-        ("PageCustomizations", Some(ObjectKind::PageCustomization), false),
+        (
+            "PageCustomizations",
+            Some(ObjectKind::PageCustomization),
+            false,
+        ),
         ("TableExtensions", Some(ObjectKind::TableExtension), false),
         ("Reports", Some(ObjectKind::Report), true),
         ("XmlPorts", Some(ObjectKind::XmlPort), true),
         ("Queries", Some(ObjectKind::Query), true),
         ("Profiles", Some(ObjectKind::Profile), false),
-        ("ProfileExtensions", Some(ObjectKind::ProfileExtension), false),
+        (
+            "ProfileExtensions",
+            Some(ObjectKind::ProfileExtension),
+            false,
+        ),
         ("ControlAddIns", Some(ObjectKind::ControlAddIn), true),
         ("EnumTypes", Some(ObjectKind::Enum), true),
         ("EnumExtensionTypes", Some(ObjectKind::EnumExtension), false),
         ("DotNetPackages", None, true),
         ("Interfaces", Some(ObjectKind::Interface), true),
         ("PermissionSets", Some(ObjectKind::PermissionSet), true),
-        ("PermissionSetExtensions", Some(ObjectKind::PermissionSetExtension), true),
+        (
+            "PermissionSetExtensions",
+            Some(ObjectKind::PermissionSetExtension),
+            true,
+        ),
         ("ReportExtensions", Some(ObjectKind::ReportExtension), true),
     ];
 
@@ -235,7 +250,10 @@ pub fn build_profile_symbol_references(
         doc.insert(group.into(), json!([obj]));
         let mut bytes = vec![0xEF, 0xBB, 0xBF];
         bytes.extend_from_slice(&serde_json::to_vec(&Value::Object(doc)).unwrap_or_default());
-        let filename = format!("ProfileSymbolReferences/{}.json", metadata_name(&o.entry.name));
+        let filename = format!(
+            "ProfileSymbolReferences/{}.json",
+            metadata_name(&o.entry.name)
+        );
         out.push((filename, bytes));
     }
     out
@@ -256,7 +274,13 @@ pub(super) fn control_addin_public_key_token(app_name: &str) -> String {
 /// alc's `MetadataName` for a control add-in: non-identifier characters → `_`.
 pub(super) fn metadata_name(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -283,7 +307,9 @@ fn object_json(
         } else {
             "TargetObject"
         };
-        let value = match resolver.get(&target.to_lowercase()).and_then(|r| r.module_id.as_deref())
+        let value = match resolver
+            .get(&target.to_lowercase())
+            .and_then(|r| r.module_id.as_deref())
         {
             Some(module_id) => format!("#{}#{}", module_id.replace('-', ""), target),
             None => target.clone(),
@@ -310,7 +336,17 @@ fn object_json(
                 Value::Array(
                     obj.page_controls
                         .iter()
-                        .map(|c| control_json(c, e.id, &source_table, field_types, resolver, &locals, false))
+                        .map(|c| {
+                            control_json(
+                                c,
+                                e.id,
+                                &source_table,
+                                field_types,
+                                resolver,
+                                &locals,
+                                false,
+                            )
+                        })
                         .collect(),
                 ),
             );
@@ -318,15 +354,22 @@ fn object_json(
         if !obj.page_actions.is_empty() {
             m.insert(
                 "Actions".into(),
-                Value::Array(obj.page_actions.iter().map(|a| action_json(a, e.id)).collect()),
+                Value::Array(
+                    obj.page_actions
+                        .iter()
+                        .map(|a| action_json(a, e.id))
+                        .collect(),
+                ),
             );
         }
     }
 
     // Page extensions and page customizations record layout change operations
     // against the base page, resolving added-field types through its SourceTable.
-    if matches!(e.kind, ObjectKind::PageExtension | ObjectKind::PageCustomization)
-        && !obj.control_changes.is_empty()
+    if matches!(
+        e.kind,
+        ObjectKind::PageExtension | ObjectKind::PageCustomization
+    ) && !obj.control_changes.is_empty()
     {
         let base_table = e
             .extends
@@ -429,7 +472,10 @@ fn object_json(
                 .unwrap_or_default();
             for (name, source) in &dc.columns {
                 let ty = field_types
-                    .get(&(table.to_lowercase(), source.trim_matches('"').to_lowercase()))
+                    .get(&(
+                        table.to_lowercase(),
+                        source.trim_matches('"').to_lowercase(),
+                    ))
                     .cloned()
                     .unwrap_or_else(|| "None".to_string());
                 columns.push(json!({
@@ -476,10 +522,18 @@ fn object_json(
             Value::Array(obj.query_elements.iter().map(query_element_json).collect()),
         );
     }
-    if matches!(e.kind, ObjectKind::PermissionSet | ObjectKind::PermissionSetExtension) {
+    if matches!(
+        e.kind,
+        ObjectKind::PermissionSet | ObjectKind::PermissionSetExtension
+    ) {
         m.insert(
             "Permissions".into(),
-            Value::Array(obj.permissions.iter().map(|p| permission_json(p, resolver)).collect()),
+            Value::Array(
+                obj.permissions
+                    .iter()
+                    .map(|p| permission_json(p, resolver))
+                    .collect(),
+            ),
         );
     }
     if matches!(e.kind, ObjectKind::Enum | ObjectKind::EnumExtension) {
@@ -488,7 +542,11 @@ fn object_json(
             .iter()
             .enumerate()
             .map(|(i, v)| {
-                let props = obj.enum_value_properties.get(i).map(|p| p.as_slice()).unwrap_or(&[]);
+                let props = obj
+                    .enum_value_properties
+                    .get(i)
+                    .map(|p| p.as_slice())
+                    .unwrap_or(&[]);
                 enum_value_json(v, props)
             })
             .collect();
@@ -587,7 +645,9 @@ fn needs_quoting(name: &str) -> bool {
         None => true,
         Some(c) if c.is_ascii_digit() => true,
         Some(c) if !(c.is_ascii_alphanumeric() || c == '_') => true,
-        _ => name.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '_')),
+        _ => name
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '_')),
     }
 }
 
@@ -621,7 +681,11 @@ fn effective_return_type(mth: &MethodSymbol) -> Option<String> {
     if let Some(rt) = &mth.return_type {
         return Some(rt.clone());
     }
-    if mth.attributes.iter().any(|a| a.name.eq_ignore_ascii_case("TryFunction")) {
+    if mth
+        .attributes
+        .iter()
+        .any(|a| a.name.eq_ignore_ascii_case("TryFunction"))
+    {
         return Some("Boolean".to_string());
     }
     None
@@ -644,7 +708,12 @@ fn method_json(
     if !mth.parameters.is_empty() {
         m.insert(
             "Parameters".into(),
-            Value::Array(mth.parameters.iter().map(|p| param_json(p, resolver)).collect()),
+            Value::Array(
+                mth.parameters
+                    .iter()
+                    .map(|p| param_json(p, resolver))
+                    .collect(),
+            ),
         );
     }
     if !mth.attributes.is_empty() {
@@ -658,12 +727,11 @@ fn method_json(
     Value::Object(m)
 }
 
-fn method_id_for(
-    mth: &MethodSymbol,
-    object_id: i32,
-    resolver: &Resolver,
-) -> i32 {
-    let return_kind = effective_return_type(mth).as_deref().map(nav_kind).unwrap_or(0); // None = 0
+fn method_id_for(mth: &MethodSymbol, object_id: i32, resolver: &Resolver) -> i32 {
+    let return_kind = effective_return_type(mth)
+        .as_deref()
+        .map(nav_kind)
+        .unwrap_or(0); // None = 0
     let disambiguate = method_requires_disambiguation(mth);
     let params: Vec<ParamSig> = mth
         .parameters
@@ -674,7 +742,13 @@ fn method_id_for(
             subtype_hash: subtype_hash_for(&p.type_name, resolver),
         })
         .collect();
-    method_id(&mth.name, return_kind, &params, disambiguate, object_id as i64)
+    method_id(
+        &mth.name,
+        return_kind,
+        &params,
+        disambiguate,
+        object_id as i64,
+    )
 }
 
 /// alc's `RequiresRuntimeOverloadDisambiguation`: the method is overloadable
@@ -810,7 +884,10 @@ fn param_json(p: &ParameterSymbol, resolver: &Resolver) -> Value {
         m.insert("IsVar".into(), json!(true));
     }
     m.insert("Name".into(), json!(p.name));
-    m.insert("TypeDefinition".into(), type_def_json(&p.type_name, resolver));
+    m.insert(
+        "TypeDefinition".into(),
+        type_def_json(&p.type_name, resolver),
+    );
     Value::Object(m)
 }
 
@@ -836,7 +913,12 @@ fn field_json(f: &FieldSymbol, resolver: &Resolver) -> Value {
             if let Some(obj) = type_def.as_object_mut() {
                 obj.insert(
                     "OptionMembers".into(),
-                    Value::Array(option_members(&p.value).into_iter().map(Value::String).collect()),
+                    Value::Array(
+                        option_members(&p.value)
+                            .into_iter()
+                            .map(Value::String)
+                            .collect(),
+                    ),
                 );
             }
         }
@@ -991,7 +1073,10 @@ fn control_json(
     // the author set Editable explicitly. alc records it before SourceExpression.
     if inject_editable_false
         && c.keyword == "field"
-        && !c.properties.iter().any(|p| p.name.eq_ignore_ascii_case("Editable"))
+        && !c
+            .properties
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case("Editable"))
     {
         props.push(json!({ "Name": "Editable", "Value": "False" }));
     }
@@ -1067,7 +1152,12 @@ fn action_json(a: &PageControl, object_id: i32) -> Value {
     if !a.children.is_empty() {
         m.insert(
             "Actions".into(),
-            Value::Array(a.children.iter().map(|ch| action_json(ch, object_id)).collect()),
+            Value::Array(
+                a.children
+                    .iter()
+                    .map(|ch| action_json(ch, object_id))
+                    .collect(),
+            ),
         );
     }
     let props: Vec<Value> = a.properties.iter().map(control_property_json).collect();
@@ -1093,7 +1183,10 @@ fn permission_json(p: &PermissionDecl, resolver: &Resolver) -> Value {
     let id = if code == 10 {
         crate::syntax::language_data::system_object_id(name).unwrap_or(0)
     } else {
-        resolver.get(&name.to_lowercase()).map(|r| r.id).unwrap_or(0)
+        resolver
+            .get(&name.to_lowercase())
+            .map(|r| r.id)
+            .unwrap_or(0)
     };
     m.insert("Id".into(), json!(id));
     Value::Object(m)
@@ -1362,7 +1455,6 @@ fn split_type(type_str: &str) -> (String, Option<String>) {
         (type_str.to_string(), None)
     }
 }
-
 
 /// Boolean property values serialise as `"1"`/`"0"` in `SymbolReference.json`.
 fn normalize_property_value(v: &str) -> String {

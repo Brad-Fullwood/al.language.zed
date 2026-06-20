@@ -26,12 +26,8 @@ pub enum CodeLensKind {
 pub enum TestLensStatus {
     NotRun,
     Running,
-    Pass {
-        duration_ms: u64,
-    },
-    Fail {
-        error: Option<String>,
-    },
+    Pass { duration_ms: u64 },
+    Fail { error: Option<String> },
     Skip,
 }
 
@@ -228,10 +224,10 @@ fn build_test_lens_context(
     let source = text.as_bytes();
     let root = tree.root_node();
 
-    if !crate::queries::tests::has_test_subtype(root, source) {
-        if crate::queries::tests::collect_test_procedures(root, source).is_empty() {
-            return None;
-        }
+    if !crate::queries::tests::has_test_subtype(root, source)
+        && crate::queries::tests::collect_test_procedures(root, source).is_empty()
+    {
+        return None;
     }
 
     let obj_info = crate::syntax::find_object_declaration(tree, text)?;

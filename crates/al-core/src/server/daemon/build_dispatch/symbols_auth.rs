@@ -450,7 +450,6 @@ fn refresh_workspace_after_download(workspace: &Workspace, result: &[serde_json:
 mod tests {
     use super::*;
     use crate::workspace::Workspace;
-    use al_protocol::jsonrpc::error_codes;
 
     fn empty_ws() -> Workspace {
         Workspace::new()

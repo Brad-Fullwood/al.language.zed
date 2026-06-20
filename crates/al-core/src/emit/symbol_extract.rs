@@ -334,8 +334,16 @@ fn extract_object(node: Node, src: &[u8]) -> Option<ExtractedObject> {
 fn is_change_keyword(kw: &str) -> bool {
     matches!(
         kw,
-        "add" | "addfirst" | "addlast" | "addbefore" | "addafter" | "movefirst" | "movelast"
-            | "movebefore" | "moveafter" | "modify"
+        "add"
+            | "addfirst"
+            | "addlast"
+            | "addbefore"
+            | "addafter"
+            | "movefirst"
+            | "movelast"
+            | "movebefore"
+            | "moveafter"
+            | "modify"
     )
 }
 
@@ -372,8 +380,8 @@ fn extract_control_changes(layout_body: Node, src: &[u8]) -> Vec<ControlChange> 
 
 /// Extract `rendering { layout(Name) { props } }` entries from a report body.
 fn extract_report_layouts(body: Node, src: &[u8]) -> Vec<ReportLayout> {
-    let Some(rendering) = section_with_keyword(body, src, "rendering")
-        .and_then(|s| s.child_by_field_name("body"))
+    let Some(rendering) =
+        section_with_keyword(body, src, "rendering").and_then(|s| s.child_by_field_name("body"))
     else {
         return Vec::new();
     };
@@ -439,8 +447,10 @@ fn extract_dataset_changes(dataset_body: Node, src: &[u8]) -> Vec<DatasetChange>
                             .map(|p| paren_parts(p, src))
                             .unwrap_or_default();
                         let cname = p.first().map(|s| unquote(s)).unwrap_or_default();
-                        let source =
-                            p.get(1).map(|s| unquote(s)).unwrap_or_else(|| cname.clone());
+                        let source = p
+                            .get(1)
+                            .map(|s| unquote(s))
+                            .unwrap_or_else(|| cname.clone());
                         columns.push((cname, source));
                     }
                     "dataitem" => dataitems.push(extract_dataitem(sub, src)),
@@ -670,7 +680,10 @@ fn extract_dataitem(section: Node, src: &[u8]) -> QueryElement {
                         .map(|p| paren_parts(p, src))
                         .unwrap_or_default();
                     let cname = p.first().map(|s| unquote(s)).unwrap_or_default();
-                    let source = p.get(1).map(|s| unquote(s)).unwrap_or_else(|| cname.clone());
+                    let source = p
+                        .get(1)
+                        .map(|s| unquote(s))
+                        .unwrap_or_else(|| cname.clone());
                     columns.push((cname, source));
                 }
                 "dataitem" => children.push(extract_dataitem(child, src)),
@@ -705,7 +718,8 @@ fn extract_methods(body: Node, src: &[u8]) -> Vec<MethodSymbol> {
     let mut out = Vec::new();
     let mut c = body.walk();
     for child in body.children(&mut c) {
-        if child.kind() == "procedure_declaration" || child.kind() == "event_procedure_declaration" {
+        if child.kind() == "procedure_declaration" || child.kind() == "event_procedure_declaration"
+        {
             out.push(extract_procedure(child, src));
         }
     }
@@ -906,7 +920,10 @@ fn field_type_from_block(pblock: Node, src: &[u8]) -> String {
             suffix = text(child, src).to_string();
         } else if base.is_empty() && is_type_node(k) {
             base = text(child, src).to_string();
-        } else if matches!(k, "quoted_identifier" | "name_or_keyword" | "name" | "identifier") {
+        } else if matches!(
+            k,
+            "quoted_identifier" | "name_or_keyword" | "name" | "identifier"
+        ) {
             if base.is_empty() {
                 base = text(child, src).to_string();
             } else {
@@ -1063,16 +1080,6 @@ fn unquote_prop_value(s: &str) -> String {
         }
     }
     t.to_string()
-}
-
-#[allow(dead_code)]
-fn strip_string_quotes(s: &str) -> String {
-    let t = s.trim();
-    if t.len() >= 2 && t.starts_with('\'') && t.ends_with('\'') {
-        t[1..t.len() - 1].to_string()
-    } else {
-        t.to_string()
-    }
 }
 
 fn child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {

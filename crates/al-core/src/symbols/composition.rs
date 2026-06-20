@@ -36,9 +36,7 @@ pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option
     let extensions = index.get_extensions_of(name);
     let relevant_extensions: Vec<Arc<SymbolEntry>> = extensions
         .into_iter()
-        .filter(|ext| {
-            ext.kind.base_kind() == Some(kind)
-        })
+        .filter(|ext| ext.kind.base_kind() == Some(kind))
         .collect();
 
     Some(compose(base, relevant_extensions))

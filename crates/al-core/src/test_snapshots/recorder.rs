@@ -114,11 +114,7 @@ impl SnapshotRecorder {
 
             // Attribute this Break to the next expected breakpoint.
             let bp_id = if seq_index < bp_sequence.len() {
-                let id = bp_sequence[seq_index];
-                let iter = *iterations.get(&id).unwrap_or(&0);
-                if iter == 0 {
-                }
-                id
+                bp_sequence[seq_index]
             } else {
                 // More Break events than expected breakpoints — reuse the last.
                 *bp_sequence.last().unwrap_or(&0)

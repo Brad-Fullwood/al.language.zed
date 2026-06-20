@@ -88,6 +88,14 @@ pub fn node_text_or(node: tree_sitter::Node, source: &[u8], fallback: &str) -> S
     node_text_clean(node, source).unwrap_or_else(|| fallback.to_string())
 }
 
+/// Extract the `name` field's text (quotes/whitespace trimmed), or `fallback`
+/// if the field is missing or empty.
+pub fn node_name_or(node: tree_sitter::Node, source: &[u8], fallback: &str) -> String {
+    node.child_by_field_name("name")
+        .and_then(|n| node_text_clean(n, source))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 /// Extract the object name from an `object_declaration` node.
 ///
 /// The grammar does not assign a field name to the object name, so we scan

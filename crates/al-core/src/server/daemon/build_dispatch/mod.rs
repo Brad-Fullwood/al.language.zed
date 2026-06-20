@@ -218,8 +218,6 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::empty_ws;
     use super::*;
-    use crate::workspace::Workspace;
-    use al_protocol::jsonrpc::error_codes;
 
     #[test]
     fn clamp_min_tokens_defaults_when_absent() {

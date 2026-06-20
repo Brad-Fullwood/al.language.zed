@@ -136,10 +136,7 @@ fn scan_table_fields(
 
 fn extract_field_name_from_line(line: &str) -> String {
     // field(id; "Name"; ...) or field(id; Name; ...)
-    if let Some(rest) = line
-        .strip_prefix("field(")
-        .or_else(|| line.strip_prefix("field ("))
-    {
+    if let Some(rest) = crate::queries::strip_field_prefix(line) {
         if let Some(after_semi) = rest.find(';').map(|i| rest[i + 1..].trim()) {
             if let Some(stripped) = after_semi.strip_prefix('"') {
                 if let Some(end) = stripped.find('"') {

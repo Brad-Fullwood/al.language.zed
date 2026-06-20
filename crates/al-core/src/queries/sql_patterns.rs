@@ -74,12 +74,7 @@ fn scan_procedures(
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
-            let proc_name = node
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source).ok())
-                .unwrap_or("(unknown)")
-                .trim_matches('"')
-                .to_string();
+            let proc_name = crate::syntax::node_name_or(node, source, "(unknown)");
 
             if let Ok(proc_text) = node.utf8_text(source) {
                 let start_line = node.start_position().row as u32 + 1;

@@ -208,10 +208,16 @@ pub enum BcEvent {
         thread_id: i64,
         location: Option<BreakLocation>,
     },
-    Detached { terminate: bool },
-    FatalError { message: String },
+    Detached {
+        terminate: bool,
+    },
+    FatalError {
+        message: String,
+    },
     /// Other unrecognised server callback — target name preserved for logging.
-    Other { target: String },
+    Other {
+        target: String,
+    },
 }
 
 /// Top-frame source location extracted from a BC `Break` callback's
@@ -1375,13 +1381,11 @@ fn fatal_exception_message(arguments: &Option<Vec<serde_json::Value>>) -> String
 fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
     let target = msg.target.as_deref()?;
     match target {
-        "Break" => {
-            Some(BcEvent::Break {
-                reason: "breakpoint".to_string(),
-                thread_id: 1,
-                location: break_location_from_args(&msg.arguments),
-            })
-        }
+        "Break" => Some(BcEvent::Break {
+            reason: "breakpoint".to_string(),
+            thread_id: 1,
+            location: break_location_from_args(&msg.arguments),
+        }),
         "OnDetachedFromConnection" => {
             let terminate = msg
                 .arguments

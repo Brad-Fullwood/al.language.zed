@@ -531,30 +531,21 @@ fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
                 in_block_comment = false;
                 let tail = &after_initial[open + 2 + close_rel + 2..];
                 let trimmed = tail.trim();
-                if let Some(rest) = trimmed
-                    .strip_prefix("field(")
-                    .or_else(|| trimmed.strip_prefix("field ("))
-                {
+                if let Some(rest) = crate::queries::strip_field_prefix(trimmed) {
                     extract_field_name_from_args(rest, line_idx, fields);
                 }
                 continue;
             }
             let head = &after_initial[..open];
             let trimmed = head.trim();
-            if let Some(rest) = trimmed
-                .strip_prefix("field(")
-                .or_else(|| trimmed.strip_prefix("field ("))
-            {
+            if let Some(rest) = crate::queries::strip_field_prefix(trimmed) {
                 extract_field_name_from_args(rest, line_idx, fields);
             }
             continue;
         }
         let trimmed = after_initial.trim();
         // Match: field(id; "Name"; ...) or field(id; Name; ...)
-        if let Some(rest) = trimmed
-            .strip_prefix("field(")
-            .or_else(|| trimmed.strip_prefix("field ("))
-        {
+        if let Some(rest) = crate::queries::strip_field_prefix(trimmed) {
             extract_field_name_from_args(rest, line_idx, fields);
         }
     }
