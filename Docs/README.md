@@ -61,7 +61,7 @@ core crate.
 - Code references use `path:line` form (clickable in editors that support it). Line numbers are
   accurate as of the documented commit and may drift as the code evolves; the function/struct
   names are the durable anchors.
-- Status tags: ✅ shipped · 🟡 partial / phase-gated · ⛔ parsed-but-inert / not yet wired.
+- Status tags: ✅ shipped · 🟡 partial / phase-gated · ⛔ parsed-but-inert / not-yet-wired.
 
 ## Honesty contract
 
