@@ -22,6 +22,7 @@ core crate.
 | [02 — Zed Extension Integration](./02-zed-extension.md) | Extension manifest, binary resolution, settings, tasks, schemas |
 | [Microsoft Comparison](./microsoft-comparison.md) | Feature-by-feature comparison against the official AL extension |
 | [Consolidated Roadmap](./roadmap.md) | Per-feature roadmap, cross-referenced to source |
+| [Gaps, Misleading Surfaces & Future Work](./gaps-and-future-work.md) | Code-verified actionable audit: inert settings, empty baselines, incomplete features, nice-to-haves |
 
 ## Feature reference
 

@@ -99,7 +99,7 @@ errors as `{ "error": "…" }`). Run with no subcommand on Unix to open the TUI.
 | `upgrade` | — | Upgrade impact report |
 | `obsolete` | — | `[Obsolete]` timeline |
 | `audit-data` | — | Data-classification audit |
-| `permission-audit` | — | Permission-set audit (stub) |
+| `permission-audit` | — | Permission-set coverage audit |
 | `profiler-hints <file>` | — | Map `.alcpuprofile` hotspots to source |
 
 ## Debug & profiling

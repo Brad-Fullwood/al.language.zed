@@ -1,6 +1,6 @@
 # XLIFF & Translation
 
-**Module:** `crates/al-core/src/xliff.rs` · **Status:** ✅ shipped (suggest is a placeholder)
+**Module:** `crates/al-core/src/xliff.rs` · **Status:** ✅ shipped
 
 Business Central apps are translated via XLIFF 1.2 files. This toolchain extracts translatable text
 from AL source, generates and refreshes XLIFF files, tracks translation state, and lists untranslated
@@ -23,6 +23,9 @@ translation-memory tools stay compatible.
   existing translations/state, removing obsolete units, and marking changed source as
   `needs-review-translation`.
 - **Untranslated:** lists units with no target.
+- **Suggest** (`suggest_translations`): matches untranslated source text against workspace symbol
+  names and table-field names, returning suggestions ranked by confidence (1.0 exact object-name
+  match, 0.9 field-name match). This is symbol-name matching, not machine translation.
 - **State model:** `new` / `translated` / `needs-review-translation` / `final`.
 
 Defensive bound: `MAX_XLF_FILE_BYTES = 64 MiB`.
@@ -34,7 +37,7 @@ Defensive bound: `MAX_XLF_FILE_BYTES = 64 MiB`.
 | Generate `.g.xlf` | ✅ native | ✅ (via `alc`/extension; `GenerateCaptions` feature) |
 | Refresh/merge translations | ✅ native | partial (3rd-party tools commonly used) |
 | List untranslated | ✅ | ❌ (3rd-party) |
-| Suggest translations | 🟡 placeholder | ❌ |
+| Suggest translations | ✅ (symbol-name matching) | ❌ |
 | ID compatibility | ✅ matches MS scheme | reference |
 
 The generated `.g.xlf` and the ID scheme are deliberately Microsoft-compatible, so these workflows
@@ -53,7 +56,7 @@ one CLI command (and CI-automatable) without leaving the toolchain.
 al-explorer xlf generate [--project <dir>]      # write the .g.xlf base (Zed: AL: XLIFF Generate)
 al-explorer xlf refresh <lang.xlf> --generated <base.g.xlf>
 al-explorer xlf untranslated <lang.xlf>
-al-explorer xlf suggest <lang.xlf>              # placeholder today
+al-explorer xlf suggest <lang.xlf>              # symbol-name match suggestions
 ```
 
 These are CLI/daemon workflows. Zed currently exposes XLIFF **generation** as a task; MCP does not
@@ -61,7 +64,8 @@ expose XLIFF tools yet.
 
 ## Limitations & roadmap
 
-- 🟡 `suggest` is a placeholder for future AI/MT-backed suggestions.
+- 🟡 `suggest` does workspace symbol-name/field matching only; machine-translation / translation-
+  memory backends are a future enhancement.
 - Zed exposes generation only; refresh/untranslated/suggest are CLI/daemon.
 - `ROADMAP.md` lists XLIFF refresh/untranslated/suggest as Zed-task and MCP-tool candidates, and
   workspace-symbol-backed translation suggestion as a future capability.

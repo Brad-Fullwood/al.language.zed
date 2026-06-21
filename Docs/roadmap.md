@@ -63,7 +63,8 @@ drift checks.
 
 ### Analysis & insight → [analysis-and-insight](./features/analysis-and-insight.md)
 - 🟡 Wire baselines for `breaking`/`upgrade` (currently empty baseline → no changes reported).
-- ⛔ Implement the permission-audit (stub today).
+- 🟡 Extend permission-audit from coverage (covered/uncovered by set) toward flagging over-broad
+  permissions vs. actual object usage.
 - 🟡 Move profiler self-time from hit-count approximation toward `timeDeltas` aggregation.
 
 ### AI & MCP → [ai-mcp](./features/ai-mcp.md)

@@ -45,7 +45,7 @@ determinism.
 | **Upgrade report** | `queries/upgrade.rs` | Breaking changes + data-migration hints + obsolete-symbol warnings, with guidance. |
 | **Obsolescence** | `queries/obsolescence.rs` | Inventory of `[Obsolete]` symbols with state/reason/tag and caller counts. |
 | **Data-classification audit** | `queries/audit.rs` | GDPR posture: every table field's `DataClassification` and a risk level. |
-| **Permission audit** | `queries/audit.rs` | Permission sets vs actual object usage (stub — see limitations). |
+| **Permission audit** | `queries/audit.rs` | Permission-set coverage: which tables/pages/codeunits/reports are (un)covered by the workspace's permission sets, and by which set. |
 | **Dependency graph** | `queries/deps.rs` | Full transitive dependency tree from `app.json` + packages; version-conflict and missing-dependency detection; DOT export. |
 | **Duplicates** | (daemon `duplicates`) | Repeated AL code blocks (configurable min tokens/similarity, clamped to safe bounds). |
 | **Profiler hints** | `queries/profiler_hints.rs` | Map `.alcpuprofile` (Chrome DevTools) hotspots to AL procedure declaration lines. |
@@ -116,7 +116,8 @@ profiler views interactively (see [cli-and-tui](./cli-and-tui.md)).
 - 🟡 **Breaking-change/upgrade baseline is not wired** — `breaking`/`upgrade` run against an *empty*
   baseline today and therefore report no changes; the previous-version diff source still needs
   connecting.
-- 🟡 **Permission audit** is a stub.
+- 🟡 **Permission audit** reports coverage (covered/uncovered by set), not yet over-broad permissions
+  vs. actual usage.
 - Package-only call sites cannot be recovered (no source bodies in `.app` symbols).
 - `arch_lint` rule patterns are intentionally narrow (no regex) and `builtin_rules()` is currently
   empty/extensible.
