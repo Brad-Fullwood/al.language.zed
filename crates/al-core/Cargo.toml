@@ -4,7 +4,6 @@ version = "0.2.2"
 edition = "2021"
 license = "MIT"
 publish = false
-build = "build.rs"
 
 [[bin]]
 name = "al-lsp"
@@ -23,7 +22,7 @@ harness = false
 al-protocol = { path = "../al-protocol" }
 al-types = { path = "../al-types" }
 al-syntax = { path = "../al-syntax" }
-netcorehost = { version = "0.17", optional = true }
+al-semantic = { path = "../al-semantic" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -82,11 +81,8 @@ nuget = []
 bin = ["dep:tracing-subscriber"]
 # Enable in-process .NET hosting (requires libnethost from the .NET SDK).
 # Off by default so workspace commands work in environments without .NET.
-# Enable with --features semantic when building for deployment.
-semantic = ["dep:netcorehost"]
-
-[build-dependencies]
-cc = "1"
+# Passthrough to al-semantic, which owns the netcorehost dependency.
+semantic = ["al-semantic/semantic"]
 
 [dev-dependencies]
 tempfile = "3"

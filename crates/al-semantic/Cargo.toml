@@ -1,0 +1,27 @@
+[package]
+name = "al-semantic"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "AL (Business Central) semantic bridge to Microsoft's .NET CodeAnalysis, plus an in-memory builtin cache"
+repository = "https://github.com/Brad-Fullwood/al.language.zed"
+build = "build.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+dirs = "6"
+# In-process .NET hosting (libnethost). Off by default; the bridge is a no-op
+# stub without it. Enable with --features semantic for deployment.
+netcorehost = { version = "0.17", optional = true }
+
+[features]
+default = []
+semantic = ["dep:netcorehost"]
+
+[dev-dependencies]
+tempfile = "3"
+serial_test = "3"

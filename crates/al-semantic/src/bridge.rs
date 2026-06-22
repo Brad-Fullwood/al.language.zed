@@ -313,7 +313,7 @@ impl SemanticBridge {
     /// hung CLR call from the old bridge may still be in flight (its
     /// `spawn_blocking` thread keeps the old host's `Arc<Mutex>` alive). Losing
     /// the stamp would let the new bridge's first call bypass the cooldown gate.
-    pub(crate) fn last_timeout_secs(&self) -> u64 {
+    pub fn last_timeout_secs(&self) -> u64 {
         self.last_timeout_secs
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -321,7 +321,7 @@ impl SemanticBridge {
     /// Seed this bridge's timeout stamp from a prior bridge generation. Only
     /// advances the stamp (a non-zero prior value), never clears an existing
     /// one, so a restart cannot accidentally shorten an active cooldown.
-    pub(crate) fn seed_last_timeout_secs(&self, secs: u64) {
+    pub fn seed_last_timeout_secs(&self, secs: u64) {
         seed_timeout_stamp(&self.last_timeout_secs, secs);
     }
 

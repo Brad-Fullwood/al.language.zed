@@ -125,7 +125,7 @@ pub fn write_error_codes(version: &str, codes: &[ErrorCodeInfo]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semantic::BuiltinMethod;
+    use crate::BuiltinMethod;
 
     #[test]
     fn test_builtins_cache_roundtrip() {

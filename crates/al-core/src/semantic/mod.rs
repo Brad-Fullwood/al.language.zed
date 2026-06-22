@@ -1,30 +1,13 @@
-//! Semantic analysis subsystem — .NET CodeAnalysis bridge + lifecycle + cache.
+//! Facade over the `al-semantic` crate, plus the Workspace-bound bridge
+//! lifecycle glue.
 //!
-//! - `bridge` — `SemanticBridge`, request/response types, JSON-over-FFI calls
-//! - `host` — netcorehost wrapper that loads the .NET runtime + AlBridge.dll
-//! - `cache` — disk cache for builtins and error codes (keyed by toolchain version)
-//! - `lifecycle` — bridge initialisation, lazy startup, crash detection + restart,
-//!   `SemanticCache` (in-memory builtin index)
+//! The bridge, host, disk cache, `SemanticCache`, and all data types live in
+//! the standalone `al-semantic` crate and are re-exported here so existing
+//! `crate::semantic::…` paths keep resolving. The lifecycle functions that
+//! operate on the `Workspace` hub live in `glue` (they cannot sink into a
+//! tier-0 crate).
 
-pub mod bridge;
-pub mod cache;
-pub(crate) mod host;
-pub mod lifecycle;
+pub use al_semantic::*;
 
-pub use bridge::{
-    AnalyzeRequest, BuiltinMethod, BuiltinType, CompileResult, CompletionItem, DiagnosticEntry,
-    ErrorCodeInfo, MethodParameter, SemanticBridge, SemanticError, TypeInfo,
-};
-pub use lifecycle::{
-    get_or_init_bridge, restart_bridge, set_builtins, shutdown_bridge, SemanticCache,
-};
-
-/// Legacy bridge-compile error text retained for compatibility with older
-/// callers. The native `.app` emitter no longer depends on the CodeAnalysis
-/// bridge; this message now only describes semantic bridge availability.
-#[deprecated(note = "native `.app` compilation no longer depends on the CodeAnalysis bridge")]
-pub const NATIVE_COMPILER_UNAVAILABLE: &str =
-    "Semantic CodeAnalysis bridge unavailable: the in-process .NET bridge could not be initialized \
-     (binary built without the `semantic` feature, missing .NET runtime, or CLR init failed). \
-     Native `.app` emission does not require this bridge; set `al.useOfficialCompiler: true` only \
-     when you intentionally want Microsoft's `dotnet alc` subprocess.";
+mod glue;
+pub use glue::{get_or_init_bridge, restart_bridge, set_builtins, shutdown_bridge};

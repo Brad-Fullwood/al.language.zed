@@ -2,16 +2,13 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    // The AL parser is now compiled by the standalone `tree-sitter-al` binding
-    // crate (a normal `[dependencies]` entry), not here. This build script only
-    // builds the optional .NET semantic bridge.
     build_semantic_bridge();
 }
 
 /// Compile the C# semantic bridge DLL via `dotnet build`.
 ///
 /// The bridge DLL is placed in OUT_DIR/bridge/ and found at runtime by
-/// `semantic::host` via the baked-in OUT_DIR path. Skipped if dotnet or the
+/// `host` via the baked-in OUT_DIR path. Skipped if dotnet or the
 /// project file are absent (CI hosts without .NET).
 fn build_semantic_bridge() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
