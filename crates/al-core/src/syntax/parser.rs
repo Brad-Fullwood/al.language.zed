@@ -3,12 +3,9 @@
 use super::traversal::walk_tree;
 use tree_sitter::{Language, Parser, Tree};
 
-extern "C" {
-    fn tree_sitter_al() -> Language;
-}
-
+/// The AL grammar, from the canonical `tree-sitter-al` binding crate.
 pub fn language() -> Language {
-    unsafe { tree_sitter_al() }
+    tree_sitter_al::LANGUAGE.into()
 }
 
 pub struct AlParser {

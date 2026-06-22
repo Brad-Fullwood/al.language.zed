@@ -31,6 +31,8 @@ dashmap = { workspace = true }
 ropey = { workspace = true }
 tracing = { workspace = true }
 tree-sitter = "0.25"
+# AL grammar: canonical tree-sitter binding crate (compiles src/parser.c itself).
+tree-sitter-al = { path = "../../tree-sitter-al" }
 url = "2"
 urlencoding = "2"
 petgraph = { workspace = true }

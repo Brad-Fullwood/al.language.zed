@@ -1,6 +1,9 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["crates/.zed", "tree-sitter-al/generator"]
+# tree-sitter-al is a git submodule with its own release cadence (a standalone,
+# publishable `tree-sitter-al` crate); it is consumed as a path dependency, not
+# absorbed as a workspace member.
+exclude = ["crates/.zed", "tree-sitter-al", "tree-sitter-al/generator"]
 resolver = "2"
 
 # The root package is the Zed WASM extension

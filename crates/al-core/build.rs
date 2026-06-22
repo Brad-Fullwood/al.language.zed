@@ -2,25 +2,10 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    build_tree_sitter_parser();
+    // The AL parser is now compiled by the standalone `tree-sitter-al` binding
+    // crate (a normal `[dependencies]` entry), not here. This build script only
+    // builds the optional .NET semantic bridge.
     build_semantic_bridge();
-}
-
-fn build_tree_sitter_parser() {
-    let src_dir = std::path::Path::new("../../tree-sitter-al/src");
-
-    let mut build = cc::Build::new();
-    build.include(src_dir).file(src_dir.join("parser.c"));
-
-    let scanner = src_dir.join("scanner.c");
-    if scanner.exists() {
-        build.file(scanner);
-    }
-
-    // Silence warnings from tree-sitter's generated parser.c — we don't control its output.
-    build.warnings(false).flag_if_supported("-w");
-
-    build.compile("tree-sitter-al");
 }
 
 /// Compile the C# semantic bridge DLL via `dotnet build`.
