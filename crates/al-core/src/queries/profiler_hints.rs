@@ -33,29 +33,15 @@
 //! - Must not persist after clearing (clearing is handled by al-lsp, not here)
 //! - Hints on a procedure's signature line, not body line
 
-use serde::Serialize;
 use url::Url;
 
 use crate::queries::code_lens::CodeLensEntry;
 use crate::queries::Range;
 use crate::workspace::Workspace;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProfilerHint {
-    /// Procedure name (from profile callFrame.functionName).
-    pub procedure: String,
-    /// Object name (from profile callFrame.url or manually mapped).
-    pub object: String,
-    pub self_time_ms: f64,
-    pub total_time_ms: f64,
-    /// Number of samples / call count.
-    pub hit_count: u64,
-    /// Source file path (workspace-relative or absolute).  None if not mapped.
-    pub file: Option<String>,
-    /// 1-based line number of the procedure declaration.
-    pub line: Option<u32>,
-}
+// The profiler data model lives in the tier-0 `al-types` crate; the parsing
+// and hint-rendering logic below stays here.
+pub use al_types::{ProfilerHint, ProfilerSession};
 
 /// Parse a `.alcpuprofile` JSON document into a list of hotspot nodes.
 ///
@@ -425,33 +411,6 @@ pub fn load_profile_file(workspace: &Workspace, profile_path: &str) -> Result<us
 pub fn clear_profile(workspace: &Workspace) {
     if let Ok(mut guard) = workspace.profiler_session.write() {
         *guard = None;
-    }
-}
-
-/// The `.alcpuprofile` path associated with the current session.
-///
-/// Stored in the workspace so al-lsp can publish hints when the profile changes
-/// and clear them when explicitly requested.
-pub struct ProfilerSession {
-    /// The profile hints currently active (published as inlay hints).
-    pub hints: Vec<ProfilerHint>,
-    pub profile_path: String,
-}
-
-impl ProfilerSession {
-    pub fn new(profile_path: String, hints: Vec<ProfilerHint>) -> Self {
-        Self {
-            hints,
-            profile_path,
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.hints.clear();
-    }
-
-    pub fn is_active(&self) -> bool {
-        !self.hints.is_empty()
     }
 }
 

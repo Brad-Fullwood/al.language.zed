@@ -44,6 +44,7 @@ name = "al-core"
 version = "0.2.2"
 dependencies = [
  "al-protocol",
+ "al-types",
  "cc",
  "criterion",
  "dashmap 6.2.1",
@@ -114,6 +115,15 @@ dependencies = [
  "toml",
  "tracing",
  "vt100",
+]
+
+[[package]]
+name = "al-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

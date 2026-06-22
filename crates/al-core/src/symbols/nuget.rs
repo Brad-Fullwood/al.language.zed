@@ -53,15 +53,7 @@ impl Default for NuGetFeed {
     }
 }
 
-/// Fields use camelCase for JSON serialization to match the app.json format.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppDependency {
-    pub id: String,
-    pub name: String,
-    pub publisher: String,
-    pub version: String,
-}
+pub use al_types::AppDependency;
 
 /// Well-known BC core package GUIDs that use special naming on the MSSymbols feed.
 const APPLICATION_APP_ID: &str = "c1335042-3002-4257-bf8a-75c898ccb1b8";

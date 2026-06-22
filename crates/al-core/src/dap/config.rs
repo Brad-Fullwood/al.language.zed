@@ -41,19 +41,7 @@ pub struct DapLaunchConfig {
     pub authentication: AuthMethod,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum EnvironmentType {
-    OnPrem,
-    Sandbox,
-    Production,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum AuthMethod {
-    Windows,
-    UserPassword,
-    AAD,
-}
+pub use al_types::{AuthMethod, EnvironmentType};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

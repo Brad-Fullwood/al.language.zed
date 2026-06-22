@@ -17,12 +17,7 @@ use tracing::{debug, info, warn};
 use super::nuget::AppDependency;
 use super::oauth;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum AuthMethod {
-    Windows,
-    UserPassword,
-    AAD,
-}
+pub use al_types::AuthMethod;
 
 #[derive(Debug, Error)]
 pub enum BcServerError {

@@ -21,6 +21,7 @@ harness = false
 
 [dependencies]
 al-protocol = { path = "../al-protocol" }
+al-types = { path = "../al-types" }
 netcorehost = { version = "0.17", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

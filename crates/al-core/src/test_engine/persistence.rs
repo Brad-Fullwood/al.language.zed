@@ -27,40 +27,15 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
-use crate::test_engine::result::TestStatus;
 
 const MAX_PER_BUCKET: usize = 1000;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TestRunRecord {
-    /// Unix epoch seconds when the record was appended.
-    pub timestamp: u64,
-    pub codeunit_id: i32,
-    pub codeunit_name: String,
-    pub method_name: String,
-    pub status: TestStatus,
-    /// Test duration in milliseconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
-    /// Failure message, only present on Fail.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Error)]
-pub enum PersistenceError {
-    #[error("test results IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("test results JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-}
+// The persisted record + error types live in the tier-0 `al-types` crate.
+pub use al_types::{PersistenceError, TestRunRecord};
 
 pub struct TestResultStore {
     path: PathBuf,
