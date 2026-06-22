@@ -1,0 +1,14 @@
+[package]
+name = "al-syntax"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Tree-sitter-based AL (Business Central) syntax layer: parsing, AST navigation, formatting, folding, lint, complexity, semantic tokens"
+repository = "https://github.com/Brad-Fullwood/al.language.zed"
+
+[dependencies]
+tree-sitter = "0.25"
+tree-sitter-al = { path = "../../tree-sitter-al" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }

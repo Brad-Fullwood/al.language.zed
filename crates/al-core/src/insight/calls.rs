@@ -1328,8 +1328,14 @@ fn parse_subscriber_target_from_attrs(attrs: &[(String, String)]) -> (String, St
         // collection site — raw tree-sitter text preserves source case.
         if name.eq_ignore_ascii_case(super::attr_names::EVENT_SUBSCRIBER) {
             let args = extract_attribute_args(args_text);
-            let target_object = args.get(1).map(|s| clean_attr_arg(s)).unwrap_or_default();
-            let target_event = args.get(2).map(|s| clean_attr_arg(s)).unwrap_or_default();
+            let target_object = args
+                .get(1)
+                .map(|s| crate::syntax::clean_attr_arg(s))
+                .unwrap_or_default();
+            let target_event = args
+                .get(2)
+                .map(|s| crate::syntax::clean_attr_arg(s))
+                .unwrap_or_default();
             return (target_object, target_event);
         }
     }
@@ -1403,17 +1409,7 @@ pub(crate) fn extract_attribute_args(attr_text: &str) -> Vec<String> {
     args
 }
 
-pub(crate) fn clean_attr_arg(s: &str) -> String {
-    let s = s.trim();
-    let s = if let Some(pos) = s.find("::") {
-        &s[pos + 2..]
-    } else {
-        s
-    };
-    let s = s.trim_matches('"');
-    let s = s.trim_matches('\'');
-    s.trim().to_string()
-}
+// `clean_attr_arg` now lives in `al-syntax` (crate::syntax::clean_attr_arg).
 
 /// Populate call edges across all workspace files.
 ///
@@ -2227,9 +2223,9 @@ mod tests {
 
     #[test]
     fn clean_attr_arg_strips_prefix_and_quotes() {
-        assert_eq!(clean_attr_arg("Codeunit::\"Sales-Post\""), "Sales-Post");
-        assert_eq!(clean_attr_arg("'OnAfterPost'"), "OnAfterPost");
-        assert_eq!(clean_attr_arg("  \"My Object\"  "), "My Object");
+        assert_eq!(crate::syntax::clean_attr_arg("Codeunit::\"Sales-Post\""), "Sales-Post");
+        assert_eq!(crate::syntax::clean_attr_arg("'OnAfterPost'"), "OnAfterPost");
+        assert_eq!(crate::syntax::clean_attr_arg("  \"My Object\"  "), "My Object");
     }
 
     #[test]

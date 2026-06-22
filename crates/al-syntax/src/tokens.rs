@@ -631,7 +631,7 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::AlParser;
+    use crate::AlParser;
 
     fn decoded_tokens(tokens: &[SemanticToken]) -> Vec<(u32, u32, u32, u32)> {
         let mut decoded = Vec::with_capacity(tokens.len());

@@ -440,11 +440,11 @@ pub fn event_source(
     });
     let target_object = args
         .get(1)
-        .map(|s| crate::insight::calls::clean_attr_arg(s))
+        .map(|s| crate::syntax::clean_attr_arg(s))
         .unwrap_or_default();
     let target_event = args
         .get(2)
-        .map(|s| crate::insight::calls::clean_attr_arg(s))
+        .map(|s| crate::syntax::clean_attr_arg(s))
         .unwrap_or_default();
     if target_object.is_empty() || target_event.is_empty() {
         return Err(format!(

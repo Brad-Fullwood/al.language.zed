@@ -243,7 +243,7 @@ pub fn find_event_subscriber_references(
             .nth(2);
         if let Some(arg) = event_arg {
             if let Ok(arg_text) = arg.utf8_text(source) {
-                if crate::insight::calls::clean_attr_arg(arg_text).eq_ignore_ascii_case(event_name)
+                if crate::clean_attr_arg(arg_text).eq_ignore_ascii_case(event_name)
                 {
                     refs.push(arg.range());
                 }
@@ -483,7 +483,7 @@ fn check_is_local(node: Node, source: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::AlParser;
+    use crate::AlParser;
 
     #[test]
     fn test_debug_tree_structure() {

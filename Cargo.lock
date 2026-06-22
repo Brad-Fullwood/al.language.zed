@@ -44,6 +44,7 @@ name = "al-core"
 version = "0.2.2"
 dependencies = [
  "al-protocol",
+ "al-syntax",
  "al-types",
  "cc",
  "criterion",
@@ -103,6 +104,17 @@ version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "al-syntax"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-al",
 ]
 
 [[package]]

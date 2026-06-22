@@ -126,62 +126,46 @@ struct PageControlsFile {
 }
 
 static KEYWORDS: LazyLock<Keywords> = LazyLock::new(|| {
-    serde_json::from_str(include_str!(
-        "../../../../tree-sitter-al/data/keywords.json"
-    ))
+    serde_json::from_str(tree_sitter_al::data::KEYWORDS)
     .expect("keywords.json must be valid")
 });
 
 static BUILTIN_FUNCTIONS: LazyLock<Vec<BuiltinFunction>> = LazyLock::new(|| {
-    serde_json::from_str(include_str!(
-        "../../../../tree-sitter-al/data/builtin_functions.json"
-    ))
+    serde_json::from_str(tree_sitter_al::data::BUILTIN_FUNCTIONS)
     .expect("builtin_functions.json must be valid")
 });
 
 static OBJECT_TYPES: LazyLock<Vec<ObjectType>> = LazyLock::new(|| {
-    let file: ObjectTypesFile = serde_json::from_str(include_str!(
-        "../../../../tree-sitter-al/data/object_types.json"
-    ))
+    let file: ObjectTypesFile = serde_json::from_str(tree_sitter_al::data::OBJECT_TYPES)
     .expect("object_types.json must be valid");
     file.object_types
 });
 
 static IMPLICIT_VARIABLES: LazyLock<Vec<ImplicitVariable>> = LazyLock::new(|| {
-    serde_json::from_str(include_str!(
-        "../../../../tree-sitter-al/data/implicit_variables.json"
-    ))
+    serde_json::from_str(tree_sitter_al::data::IMPLICIT_VARIABLES)
     .expect("implicit_variables.json must be valid")
 });
 
 static PAGE_CONTROLS: LazyLock<Vec<PageControlEntry>> = LazyLock::new(|| {
-    let file: PageControlsFile = serde_json::from_str(include_str!(
-        "../../../../tree-sitter-al/data/page_controls.json"
-    ))
+    let file: PageControlsFile = serde_json::from_str(tree_sitter_al::data::PAGE_CONTROLS)
     .expect("page_controls.json must be valid");
     file.page_controls
 });
 
 static SINGLE_STMT_OPENERS: LazyLock<Vec<SingleStmtOpener>> = LazyLock::new(|| {
-    serde_json::from_str(include_str!(
-        "../../../../tree-sitter-al/data/single_stmt_openers.json"
-    ))
+    serde_json::from_str(tree_sitter_al::data::SINGLE_STMT_OPENERS)
     .expect("single_stmt_openers.json must be valid")
 });
 
 static RUNTIME_ENUMS: LazyLock<Vec<RuntimeEnum>> = LazyLock::new(|| {
-    serde_json::from_str(include_str!(
-        "../../../../tree-sitter-al/data/runtime_enums.json"
-    ))
+    serde_json::from_str(tree_sitter_al::data::RUNTIME_ENUMS)
     .expect("runtime_enums.json must be valid")
 });
 
 /// `NavTypeKind` name → id (Microsoft CodeAnalysis enum values). Generated from
 /// the toolchain DLL — see `tree-sitter-al/generator/tools/nav-type-kinds`.
 static NAV_TYPE_KINDS: LazyLock<HashMap<String, i32>> = LazyLock::new(|| {
-    serde_json::from_str(include_str!(
-        "../../../../tree-sitter-al/data/nav_type_kinds.json"
-    ))
+    serde_json::from_str(tree_sitter_al::data::NAV_TYPE_KINDS)
     .expect("nav_type_kinds.json must be valid")
 });
 
@@ -189,16 +173,12 @@ static NAV_TYPE_KINDS: LazyLock<HashMap<String, i32>> = LazyLock::new(|| {
 /// `Tools, Object Designer` → 5210. Used by the emitter to resolve `system`-type
 /// permissions, whose ids are platform built-ins absent from `.alpackages`.
 static SYSTEM_OBJECTS: LazyLock<HashMap<String, i32>> = LazyLock::new(|| {
-    serde_json::from_str(include_str!(
-        "../../../../tree-sitter-al/data/system_objects.json"
-    ))
+    serde_json::from_str(tree_sitter_al::data::SYSTEM_OBJECTS)
     .expect("system_objects.json must be valid")
 });
 
 static TOKEN_CLASSIFICATION: LazyLock<TokenClassification> = LazyLock::new(|| {
-    let raw: TokenClassificationRaw = serde_json::from_str(include_str!(
-        "../../../../tree-sitter-al/data/token_classification.json"
-    ))
+    let raw: TokenClassificationRaw = serde_json::from_str(tree_sitter_al::data::TOKEN_CLASSIFICATION)
     .expect("token_classification.json must be valid");
     TokenClassification {
         keyword_control: raw.keyword_control.into_iter().collect(),

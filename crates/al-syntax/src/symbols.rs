@@ -1191,7 +1191,7 @@ fn extract_field_name_from_paren(paren: Node, source: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::AlParser;
+    use crate::AlParser;
 
     #[test]
     fn test_extract_symbols_codeunit() {

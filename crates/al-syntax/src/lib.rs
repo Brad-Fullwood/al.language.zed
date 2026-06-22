@@ -37,6 +37,21 @@ pub use types::{
     SyntaxSymbolKind,
 };
 
+/// Clean an attribute argument: trim, strip a leading `Type::` prefix, and strip
+/// surrounding `"`/`'` quotes. A pure string helper shared by the navigation,
+/// insight and query layers.
+pub fn clean_attr_arg(s: &str) -> String {
+    let s = s.trim();
+    let s = if let Some(pos) = s.find("::") {
+        &s[pos + 2..]
+    } else {
+        s
+    };
+    let s = s.trim_matches('"');
+    let s = s.trim_matches('\'');
+    s.trim().to_string()
+}
+
 /// Convert a byte-offset column (as produced by tree-sitter) within a UTF-8 line to a
 /// UTF-16 code unit column (as required by the LSP specification).
 ///
