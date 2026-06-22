@@ -40,9 +40,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "al-bc"
+version = "0.1.0"
+dependencies = [
+ "al-types",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "urlencoding",
+ "wiremock",
+]
+
+[[package]]
 name = "al-core"
 version = "0.2.2"
 dependencies = [
+ "al-bc",
  "al-protocol",
  "al-semantic",
  "al-syntax",

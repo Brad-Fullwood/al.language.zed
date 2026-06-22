@@ -5,15 +5,15 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::dap::json_util::strip_json_comments;
+use al_types::strip_json_comments;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use crate::project::AppDependency;
+use al_types::AppDependency;
 
-pub use crate::dap::config::EnvironmentType;
+pub use al_types::EnvironmentType;
 
-pub use crate::dap::config::AuthMethod;
+pub use al_types::AuthMethod;
 
 #[derive(Debug, Clone)]
 pub struct DebugConfigFile {
@@ -214,7 +214,7 @@ const MAX_LAUNCH_FILE_BYTES: u64 = 1_048_576;
 /// that URL would be handed unchanged to the BC HTTP client. Restrict to
 /// http(s):// (the only two schemes the BC dev API uses) or bare hostnames
 /// (e.g. `localhost`, where the BC client default-prepends http://).
-pub(crate) fn is_safe_http_server(server: &str) -> bool {
+pub fn is_safe_http_server(server: &str) -> bool {
     let s = server.trim();
     if s.is_empty() {
         return false;

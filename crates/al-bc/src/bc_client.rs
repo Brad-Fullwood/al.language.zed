@@ -35,7 +35,7 @@ pub(crate) const ERROR_BODY_MAX: usize = 512;
 /// blank out the values of common credential-bearing headers if they
 /// happen to appear inline. Conservative — pattern-based, not parsing
 /// — but better than passing the body through verbatim.
-pub(crate) fn sanitize_error_body(body: &str) -> String {
+pub fn sanitize_error_body(body: &str) -> String {
     let mut out = if body.len() > ERROR_BODY_MAX {
         let mut cut = ERROR_BODY_MAX;
         while cut > 0 && !body.is_char_boundary(cut) {
@@ -137,7 +137,7 @@ pub(crate) const MAX_BC_JSON_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 /// the cap is enforceable without first buffering the whole body —
 /// responses without one are refused. Same hardening pattern as
 /// `NuGetClient::fetch_metadata_json` (F-OPEN-018).
-pub(crate) async fn read_json_body_capped<T: serde::de::DeserializeOwned>(
+pub async fn read_json_body_capped<T: serde::de::DeserializeOwned>(
     response: reqwest::Response,
 ) -> Result<T, BcClientError> {
     let content_length = response
@@ -189,7 +189,7 @@ pub(crate) const MAX_BC_BINARY_RESPONSE_BYTES: u64 = 500 * 1024 * 1024;
 /// lies about (or omits) `Content-Length` is still bounded by the post-read
 /// size re-check. Same defensive shape as `read_json_body_capped` and
 /// `bc_server::download_one`.
-pub(crate) async fn read_binary_body_capped(
+pub async fn read_binary_body_capped(
     response: reqwest::Response,
 ) -> Result<Vec<u8>, BcClientError> {
     let status = response.status().as_u16();
@@ -232,7 +232,7 @@ pub(crate) const MAX_ERROR_BODY_BYTES: u64 = 64 * 1024; // 64 KiB — far more t
 /// would otherwise pull the whole body into memory. A server that lies about a
 /// small `Content-Length` and then streams a huge body is still bounded by the
 /// post-read size re-check (F-OPEN-014).
-pub(crate) async fn read_error_body_capped(response: reqwest::Response) -> String {
+pub async fn read_error_body_capped(response: reqwest::Response) -> String {
     match response.content_length() {
         Some(len) if len <= MAX_ERROR_BODY_BYTES => {
             let bytes = match response.bytes().await {

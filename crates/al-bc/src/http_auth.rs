@@ -3,7 +3,7 @@
 /// Canonical, user-facing message warning that TLS verification is disabled.
 /// `context` names the surface (e.g. "BcClient", "DAP launch") so identical
 /// wording appears across every code path that honours `acceptInvalidCerts`.
-pub(crate) fn insecure_tls_message(context: &str) -> String {
+pub fn insecure_tls_message(context: &str) -> String {
     format!(
         "TLS certificate verification is DISABLED ({context}: acceptInvalidCerts=true). \
          Business Central traffic — including credentials and bearer tokens — is \
@@ -16,7 +16,7 @@ pub(crate) fn insecure_tls_message(context: &str) -> String {
 /// `RUST_LOG` filters out warn-level tracing (stderr reaches the editor's LSP/DAP
 /// log and the CLI terminal). DAP callers should ALSO emit it to the debug
 /// console (an `output` event), the surface the editing user actually watches.
-pub(crate) fn warn_insecure_tls(context: &str) {
+pub fn warn_insecure_tls(context: &str) {
     let msg = insecure_tls_message(context);
     tracing::warn!("{msg}");
     eprintln!("al-lsp: {msg}");

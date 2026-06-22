@@ -9,7 +9,10 @@
 //! `al-syntax` / `al-symbols` / `al-semantic` / `al-cli` / `al-dap-client`
 //! crate names are gone (consolidated April 2026).
 
-pub mod bc_client;
+// Business Central client layer is the standalone `al-bc` crate; re-export its
+// modules so existing crate::{bc_client,http_auth,launch,profiling,snapshot}::…
+// paths keep resolving.
+pub use al_bc::{bc_client, http_auth, launch, profiling, snapshot};
 pub mod build;
 pub mod config;
 pub mod dap;
@@ -18,13 +21,10 @@ pub mod emit;
 pub mod errors;
 pub mod file_index;
 pub mod generators;
-pub(crate) mod http_auth;
 pub mod insight;
-pub mod launch;
 pub mod native_debug;
 pub mod parsing;
 pub mod permissions;
-pub mod profiling;
 pub mod project;
 pub mod publish;
 pub mod queries;
@@ -32,7 +32,6 @@ pub(crate) mod resolution;
 pub mod scaffold;
 pub mod semantic;
 pub mod server;
-pub mod snapshot;
 pub mod symbols;
 // The syntax layer is now the standalone `al-syntax` crate; alias it as
 // `crate::syntax` so existing `crate::syntax::…` paths keep resolving.

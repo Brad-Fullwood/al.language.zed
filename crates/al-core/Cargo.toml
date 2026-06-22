@@ -23,6 +23,7 @@ al-protocol = { path = "../al-protocol" }
 al-types = { path = "../al-types" }
 al-syntax = { path = "../al-syntax" }
 al-semantic = { path = "../al-semantic" }
+al-bc = { path = "../al-bc" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
