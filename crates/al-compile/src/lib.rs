@@ -8,10 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::toolchain::AlToolchain;
+use al_project::toolchain::AlToolchain;
 use serde::Serialize;
 
-use crate::errors::AlError;
+use al_project::errors::AlError;
 
 /// Default cap on a single `alc` invocation. Sane AL projects compile in well
 /// under a minute; 10 minutes is well past the largest legitimate workload
@@ -192,7 +192,7 @@ pub async fn compile_project_with_analyzers(
 
     // `dotnet_command_async` sets DOTNET_ROLL_FORWARD=Major so Microsoft's
     // net8.0 `alc.dll` runs on a newer .NET major (e.g. 10) when 8 is absent.
-    let mut cmd = crate::toolchain::dotnet_command_async(&toolchain.alc);
+    let mut cmd = al_project::toolchain::dotnet_command_async(&toolchain.alc);
     cmd.arg(format!("/project:{}", project_root.display()));
     cmd.arg(format!("/out:{}", out_dir.display()));
 
@@ -498,7 +498,7 @@ fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
 /// here — type/semantic errors surface through the LSP (which runs continuously),
 /// not through this compile step.
 pub fn native_compile(project_root: &Path) -> CompileResult {
-    let timestamp = crate::emit::now_timestamp();
+    let timestamp = al_emit::now_timestamp();
     let version = concat!("native-emit/", env!("CARGO_PKG_VERSION"));
     let fail = |msg: String| CompileResult {
         success: false,
@@ -506,7 +506,7 @@ pub fn native_compile(project_root: &Path) -> CompileResult {
         diagnostics: Vec::new(),
         output: msg,
     };
-    match crate::emit::build_app_from_project(project_root, version, &timestamp) {
+    match al_emit::build_app_from_project(project_root, version, &timestamp) {
         Ok(built) => {
             let out = project_root.join(&built.file_name);
             match std::fs::write(&out, &built.bytes) {
@@ -676,13 +676,13 @@ Build failed.";
     #[tokio::test]
     async fn compile_no_app_json_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        let tc = crate::toolchain::AlToolchain {
+        let tc = al_project::toolchain::AlToolchain {
             version: "1.0.0".to_string(),
             dotnet_root: PathBuf::from("/nonexistent"),
             alc: PathBuf::from("/nonexistent/alc.dll"),
             aldoc: None,
             code_analysis: PathBuf::new(),
-            analyzers: crate::toolchain::AnalyzerPaths {
+            analyzers: al_project::toolchain::AnalyzerPaths {
                 code_cop: PathBuf::new(),
                 app_source_cop: PathBuf::new(),
                 ui_cop: PathBuf::new(),
@@ -820,13 +820,13 @@ Build failed.";
         )
         .unwrap();
 
-        let tc = std::sync::Arc::new(crate::toolchain::AlToolchain {
+        let tc = std::sync::Arc::new(al_project::toolchain::AlToolchain {
             version: "1.0.0".to_string(),
             dotnet_root: PathBuf::from("/nonexistent"),
             alc: PathBuf::from("/nonexistent/alc.dll"),
             aldoc: None,
             code_analysis: PathBuf::new(),
-            analyzers: crate::toolchain::AnalyzerPaths {
+            analyzers: al_project::toolchain::AnalyzerPaths {
                 code_cop: PathBuf::new(),
                 app_source_cop: PathBuf::new(),
                 ui_cop: PathBuf::new(),

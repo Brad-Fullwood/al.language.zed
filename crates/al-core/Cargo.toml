@@ -31,6 +31,7 @@ al-project = { path = "../al-project" }
 al-symbols = { path = "../al-symbols" }
 al-emit = { path = "../al-emit" }
 al-insight = { path = "../al-insight" }
+al-compile = { path = "../al-compile" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

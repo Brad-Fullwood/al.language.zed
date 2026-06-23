@@ -25,7 +25,7 @@ pub use al_dap::{dap, native_debug};
 // crate::dap::… , crate::native_debug::… and al_core::dap::… resolving)
 pub use al_source::{documents, file_index, parsing};
 pub use al_runtime as test_runtime;
-pub mod build;
+pub use al_compile as build;
 pub use al_emit as emit;
 pub mod generators;
 pub use al_insight as insight;

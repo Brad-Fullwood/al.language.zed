@@ -57,10 +57,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "al-compile"
+version = "0.1.0"
+dependencies = [
+ "al-emit",
+ "al-project",
+ "al-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "al-core"
 version = "0.2.2"
 dependencies = [
  "al-bc",
+ "al-compile",
  "al-dap",
  "al-emit",
  "al-insight",
