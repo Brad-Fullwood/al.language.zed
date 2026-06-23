@@ -5,6 +5,14 @@ edition = "2024"
 license = "MIT"
 publish = false
 
+[lib]
+name = "al_explorer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "al-explorer"
+path = "src/main.rs"
+
 [dependencies]
 al-protocol = { path = "../al-protocol" }
 # Native .app emission (pure Rust, no Microsoft alc) for `pack-native`.
