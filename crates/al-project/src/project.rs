@@ -15,7 +15,7 @@ pub struct AlProject {
     pub packages_dir: PathBuf,
     pub packages: Vec<PathBuf>,
     /// Server configs from launch.json for downloading symbols from a BC instance.
-    pub server_configs: Vec<crate::launch::BcServerConfig>,
+    pub server_configs: Vec<al_bc::launch::BcServerConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +38,7 @@ pub struct AppManifest {
 /// A dependency entry in app.json.
 ///
 /// Canonical type from crate::symbols — unified so no field-for-field conversion is needed.
-pub use crate::symbols::nuget::AppDependency;
+pub use al_types::AppDependency;
 
 #[derive(Debug, Clone)]
 pub struct NuGetFeed {
@@ -185,7 +185,7 @@ fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
 
     let packages_dir = dir.join(".alpackages");
     let packages = scan_packages(&packages_dir);
-    let server_configs = crate::launch::find_launch_config(dir)
+    let server_configs = al_bc::launch::find_launch_config(dir)
         .map(|lf| lf.configs)
         .unwrap_or_default();
 

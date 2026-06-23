@@ -14,19 +14,22 @@
 // paths keep resolving.
 pub use al_bc::{bc_client, http_auth, launch, profiling, snapshot};
 pub use al_symbols as symbols;
+// Project discovery, workspace config, and the error hierarchy now live in the
+// standalone `al-project` crate; re-export so crate::{project,config,errors}::…
+// keep resolving. (`toolchain` stays a thin al-core facade module — see
+// src/toolchain.rs — that re-exports al_project::toolchain::* and parks the
+// Workspace-coupled `doctor()`.)
+pub use al_project::{config, errors, project};
 pub mod build;
-pub mod config;
 pub mod dap;
 pub mod documents;
 pub mod emit;
-pub mod errors;
 pub mod file_index;
 pub mod generators;
 pub mod insight;
 pub mod native_debug;
 pub mod parsing;
 pub mod permissions;
-pub mod project;
 pub mod publish;
 pub mod queries;
 pub(crate) mod resolution;

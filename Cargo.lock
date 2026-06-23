@@ -61,6 +61,7 @@ name = "al-core"
 version = "0.2.2"
 dependencies = [
  "al-bc",
+ "al-project",
  "al-protocol",
  "al-semantic",
  "al-symbols",
@@ -114,6 +115,21 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
+]
+
+[[package]]
+name = "al-project"
+version = "0.1.0"
+dependencies = [
+ "al-bc",
+ "al-semantic",
+ "al-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
