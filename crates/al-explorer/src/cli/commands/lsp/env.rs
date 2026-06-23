@@ -281,7 +281,6 @@ pub fn cmd_download_symbols(
     }
 }
 
-
 #[cfg(test)]
 mod clear_cache_tests {
     use super::*;

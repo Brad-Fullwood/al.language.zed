@@ -1,17 +1,16 @@
 [package]
 name = "al-publish"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 description = "AL extension publish pipeline: compile the project (al-compile) then upload + install the .app to a Business Central Dev API endpoint (standard full upload or RAD incremental deploy)"
-repository = "https://github.com/Brad-Fullwood/al.language.zed"
-
+repository.workspace = true
 [dependencies]
-al-bc = { path = "../al-bc" }
-al-compile = { path = "../al-compile" }
-al-project = { path = "../al-project" }
-al-workspace = { path = "../al-workspace" }
-al-types = { path = "../al-types" }
+al-bc = { path = "../al-bc", version = "0.1.0" }
+al-compile = { path = "../al-compile", version = "0.1.0" }
+al-project = { path = "../al-project", version = "0.1.0" }
+al-workspace = { path = "../al-workspace", version = "0.1.0" }
+al-types = { path = "../al-types", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

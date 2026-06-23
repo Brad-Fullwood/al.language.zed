@@ -350,4 +350,3 @@ pub fn cmd_deps(json: bool) -> ExitCode {
         }
     })
 }
-

@@ -1,14 +1,13 @@
 [package]
 name = "al-snapshot"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 description = "Breakpoint-sampled BC debug state snapshot record/replay for cross-BC-version regression detection (DAP + tree-sitter source mapping)"
-repository = "https://github.com/Brad-Fullwood/al.language.zed"
-
+repository.workspace = true
 [dependencies]
-al-dap = { path = "../al-dap" }
-al-syntax = { path = "../al-syntax" }
+al-dap = { path = "../al-dap", version = "0.1.0" }
+al-syntax = { path = "../al-syntax", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

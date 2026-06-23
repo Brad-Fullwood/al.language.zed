@@ -385,4 +385,3 @@ pub fn cmd_test_run_all(
         Err(e) => report_error(&e, json),
     }
 }
-

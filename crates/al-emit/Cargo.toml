@@ -1,14 +1,13 @@
 [package]
 name = "al-emit"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 description = "Native AL .app (Business Central) package emitter — reproduces alc's SymbolReference.json method-id hashes and OPC/NAVX package layout byte-for-byte, with no Microsoft runtime dependency"
-repository = "https://github.com/Brad-Fullwood/al.language.zed"
-
+repository.workspace = true
 [dependencies]
-al-symbols = { path = "../al-symbols" }
-al-syntax = { path = "../al-syntax" }
+al-symbols = { path = "../al-symbols", version = "0.1.0" }
+al-syntax = { path = "../al-syntax", version = "0.1.0" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 zip = { workspace = true }

@@ -1,24 +1,23 @@
 [package]
 name = "al-analysis"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 description = "AL analysis & generation layer: the LSP/CLI query engine (completions, hover, definition, references, code lens, diagnostics, semantic tokens, inlay hints, plus dead-code / impact / audit / breaking-change / dependency analysis), type & member resolution, permission-set collection, object/page/report/test generators, project scaffolding, and XLIFF translation tooling. Built on the al-workspace state hub (tier 5)."
-repository = "https://github.com/Brad-Fullwood/al.language.zed"
-
+repository.workspace = true
 [dependencies]
-al-types = { path = "../al-types" }
-al-syntax = { path = "../al-syntax" }
+al-types = { path = "../al-types", version = "0.1.0" }
+al-syntax = { path = "../al-syntax", version = "0.1.0" }
 # default-features = false matches al-workspace / al-insight: the analysis layer
 # only consumes the always-available SymbolIndex APIs, so it does not pull al-bc
 # transitively through al-symbols/nuget. (Verified: no #[cfg(feature=\"nuget\")]
 # in any moved file.)
-al-symbols = { path = "../al-symbols", default-features = false }
-al-source = { path = "../al-source" }
-al-semantic = { path = "../al-semantic" }
-al-insight = { path = "../al-insight" }
-al-project = { path = "../al-project" }
-al-workspace = { path = "../al-workspace" }
+al-symbols = { path = "../al-symbols", version = "0.1.0", default-features = false }
+al-source = { path = "../al-source", version = "0.1.0" }
+al-semantic = { path = "../al-semantic", version = "0.1.0" }
+al-insight = { path = "../al-insight", version = "0.1.0" }
+al-project = { path = "../al-project", version = "0.1.0" }
+al-workspace = { path = "../al-workspace", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

@@ -1,22 +1,21 @@
 [package]
 name = "al-workspace"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 description = "AL workspace state hub: the central `Workspace` container owning documents, symbols, the semantic bridge, the file index, merged config, the cached insight/call graphs, the active profiler session and the per-project test-result store; plus the bridge lifecycle glue, the `doctor` health check, and core workspace initialization."
-repository = "https://github.com/Brad-Fullwood/al.language.zed"
-
+repository.workspace = true
 [dependencies]
-al-types = { path = "../al-types" }
-al-syntax = { path = "../al-syntax" }
-al-source = { path = "../al-source" }
+al-types = { path = "../al-types", version = "0.1.0" }
+al-syntax = { path = "../al-syntax", version = "0.1.0" }
+al-source = { path = "../al-source", version = "0.1.0" }
 # default-features = false avoids al-workspace pulling al-bc transitively through
 # al-symbols/nuget; the hub uses only the always-available SymbolIndex APIs.
-al-symbols = { path = "../al-symbols", default-features = false }
-al-semantic = { path = "../al-semantic" }
-al-project = { path = "../al-project" }
-al-insight = { path = "../al-insight" }
-al-dap = { path = "../al-dap" }
+al-symbols = { path = "../al-symbols", version = "0.1.0", default-features = false }
+al-semantic = { path = "../al-semantic", version = "0.1.0" }
+al-project = { path = "../al-project", version = "0.1.0" }
+al-insight = { path = "../al-insight", version = "0.1.0" }
+al-dap = { path = "../al-dap", version = "0.1.0" }
 dashmap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

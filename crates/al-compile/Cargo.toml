@@ -1,15 +1,14 @@
 [package]
 name = "al-compile"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 description = "AL project compilation orchestration: `dotnet alc` invocation under a shared cancel/timeout policy with structured diagnostics, plus the pure-Rust native `.app` emit path (native_compile)"
-repository = "https://github.com/Brad-Fullwood/al.language.zed"
-
+repository.workspace = true
 [dependencies]
-al-types = { path = "../al-types" }
-al-project = { path = "../al-project" }
-al-emit = { path = "../al-emit" }
+al-types = { path = "../al-types", version = "0.1.0" }
+al-project = { path = "../al-project", version = "0.1.0" }
+al-emit = { path = "../al-emit", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

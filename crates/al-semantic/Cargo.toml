@@ -1,10 +1,10 @@
 [package]
 name = "al-semantic"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 description = "AL (Business Central) semantic bridge to Microsoft's .NET CodeAnalysis, plus an in-memory builtin cache"
-repository = "https://github.com/Brad-Fullwood/al.language.zed"
+repository.workspace = true
 build = "build.rs"
 
 [dependencies]

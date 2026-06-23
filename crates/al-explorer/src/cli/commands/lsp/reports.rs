@@ -262,4 +262,3 @@ pub fn cmd_upgrade_report(json: bool) -> ExitCode {
         },
     )
 }
-

@@ -588,4 +588,3 @@ fn apply_workspace_edit(
 
     Ok(files_changed)
 }
-

@@ -1,11 +1,10 @@
 [package]
 name = "al-types"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 description = "Shared, dependency-free data types for the AL (Business Central) toolchain"
-repository = "https://github.com/Brad-Fullwood/al.language.zed"
-
+repository.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

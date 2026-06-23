@@ -1,13 +1,12 @@
 [package]
 name = "al-bc"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 description = "Business Central Dev API REST client (OAuth/Basic/NTLM), snapshot + profiler REST, and launch.json/.zed debug-config parsing"
-repository = "https://github.com/Brad-Fullwood/al.language.zed"
-
+repository.workspace = true
 [dependencies]
-al-types = { path = "../al-types" }
+al-types = { path = "../al-types", version = "0.1.0" }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

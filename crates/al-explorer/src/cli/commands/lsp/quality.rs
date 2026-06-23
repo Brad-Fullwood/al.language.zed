@@ -224,4 +224,3 @@ pub fn cmd_add_data_classification(value: &str, dry_run: bool, json: bool) -> Ex
         Err(e) => report_error(&e, json),
     }
 }
-

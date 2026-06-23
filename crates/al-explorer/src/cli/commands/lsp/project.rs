@@ -454,4 +454,3 @@ pub fn cmd_new(dir: &str, name: &str, publisher: &str, template: &str, json: boo
         Err(e) => report_error(&e, json),
     }
 }
-

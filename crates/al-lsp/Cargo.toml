@@ -1,8 +1,9 @@
 [package]
 name = "al-lsp"
 version = "0.2.2"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [[bin]]
@@ -13,24 +14,24 @@ required-features = ["bin"]
 
 
 [dependencies]
-al-protocol = { path = "../al-protocol" }
-al-types = { path = "../al-types" }
-al-syntax = { path = "../al-syntax" }
-al-semantic = { path = "../al-semantic" }
-al-bc = { path = "../al-bc" }
-al-snapshot = { path = "../al-snapshot" }
-al-test = { path = "../al-test" }
-al-runtime = { path = "../al-runtime" }
-al-source = { path = "../al-source" }
-al-dap = { path = "../al-dap" }
-al-project = { path = "../al-project" }
-al-symbols = { path = "../al-symbols" }
-al-emit = { path = "../al-emit" }
-al-insight = { path = "../al-insight" }
-al-compile = { path = "../al-compile" }
-al-workspace = { path = "../al-workspace" }
-al-publish = { path = "../al-publish" }
-al-analysis = { path = "../al-analysis", features = ["lsp"] }
+al-protocol = { path = "../al-protocol", version = "0.2.2" }
+al-types = { path = "../al-types", version = "0.1.0" }
+al-syntax = { path = "../al-syntax", version = "0.1.0" }
+al-semantic = { path = "../al-semantic", version = "0.1.0" }
+al-bc = { path = "../al-bc", version = "0.1.0" }
+al-snapshot = { path = "../al-snapshot", version = "0.1.0" }
+al-test = { path = "../al-test", version = "0.1.0" }
+al-runtime = { path = "../al-runtime", version = "0.1.0" }
+al-source = { path = "../al-source", version = "0.1.0" }
+al-dap = { path = "../al-dap", version = "0.1.0" }
+al-project = { path = "../al-project", version = "0.1.0" }
+al-symbols = { path = "../al-symbols", version = "0.1.0" }
+al-emit = { path = "../al-emit", version = "0.1.0" }
+al-insight = { path = "../al-insight", version = "0.1.0" }
+al-compile = { path = "../al-compile", version = "0.1.0" }
+al-workspace = { path = "../al-workspace", version = "0.1.0" }
+al-publish = { path = "../al-publish", version = "0.1.0" }
+al-analysis = { path = "../al-analysis", version = "0.1.0", features = ["lsp"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -41,7 +42,7 @@ ropey = { workspace = true }
 tracing = { workspace = true }
 tree-sitter = "0.25"
 # AL grammar: canonical tree-sitter binding crate (compiles src/parser.c itself).
-tree-sitter-al = { path = "../../tree-sitter-al" }
+tree-sitter-al = { path = "../../tree-sitter-al", version = "0.1.0" }
 url = "2"
 urlencoding = "2"
 petgraph = { workspace = true }

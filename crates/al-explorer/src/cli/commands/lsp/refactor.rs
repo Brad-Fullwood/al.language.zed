@@ -410,4 +410,3 @@ pub fn cmd_test_mutate(
         Err(e) => report_error(&e, json),
     }
 }
-

@@ -2,7 +2,8 @@
 name = "al-explorer"
 version = "0.2.2"
 edition = "2024"
-license = "MIT"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [lib]
@@ -14,9 +15,9 @@ name = "al-explorer"
 path = "src/main.rs"
 
 [dependencies]
-al-protocol = { path = "../al-protocol" }
+al-protocol = { path = "../al-protocol", version = "0.2.2" }
 # Native .app emission (pure Rust, no Microsoft alc) for `pack-native`.
-al-emit = { path = "../al-emit" }
+al-emit = { path = "../al-emit", version = "0.1.0" }
 crossterm = "0.29.0"
 ratatui = "0.30.0"
 serde = { workspace = true }

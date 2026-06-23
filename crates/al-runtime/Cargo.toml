@@ -1,13 +1,12 @@
 [package]
 name = "al-runtime"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 description = "Pure-Rust AL test runtime: tree-walking interpreter, mock BC runtime, and native stub libraries (no .NET CLR, no live BC server)."
-repository = "https://github.com/Brad-Fullwood/al.language.zed"
-
+repository.workspace = true
 [dependencies]
-al-types = { path = "../al-types" }
+al-types = { path = "../al-types", version = "0.1.0" }
 thiserror = { workspace = true }
 # Production parsing walks pre-parsed tree_sitter trees handed in via
 # ProcedureSource; only the tree_sitter types are needed (no grammar binding).
@@ -17,5 +16,5 @@ getrandom = { workspace = true }
 
 [dev-dependencies]
 # al-syntax is used ONLY in #[cfg(test)] (parsing fixtures + the test_support mock).
-al-syntax = { path = "../al-syntax" }
+al-syntax = { path = "../al-syntax", version = "0.1.0" }
 proptest = "1"
