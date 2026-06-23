@@ -20,14 +20,15 @@ pub use al_symbols as symbols;
 // src/toolchain.rs — that re-exports al_project::toolchain::* and parks the
 // Workspace-coupled `doctor()`.)
 pub use al_project::{config, errors, project};
+pub use al_dap::{dap, native_debug};
+// (place near the existing `pub use al_bc::{...}` re-export block; this keeps
+// crate::dap::… , crate::native_debug::… and al_core::dap::… resolving)
 pub mod build;
-pub mod dap;
 pub mod documents;
 pub mod emit;
 pub mod file_index;
 pub mod generators;
 pub mod insight;
-pub mod native_debug;
 pub mod parsing;
 pub mod permissions;
 pub mod publish;

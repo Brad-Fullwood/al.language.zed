@@ -87,7 +87,7 @@ pub struct ResolvedObject {
 /// uses stdout, tests use [`tokio::io::duplex`]. This is what makes the
 /// per-request handlers unit-testable: previously the only drivable surface
 /// was the entire stdio loop.
-pub(crate) struct NativeDapState<F, R, P> {
+pub(crate) struct NativeDapState<F, R, P, C, A> {
     /// Single monotonic sequence counter shared between handlers and the
     /// background event-forwarding task. DAP requires non-decreasing seq
     /// values across all messages sent to the client.
@@ -107,14 +107,23 @@ pub(crate) struct NativeDapState<F, R, P> {
     acquire_token: F,
     resolve_object: R,
     resolve_path: P,
+    /// Compile the project; `Ok(build log)` on success, `Err(log)` on failure.
+    /// Injected by the caller (al-lsp) so this crate never names the build /
+    /// emit pipeline (still parked in al-core).
+    compile: C,
+    /// Locate the deploy `.app` for a project root. Injected for the same
+    /// reason as `compile`.
+    find_app: A,
 }
 
-impl<F, Fut, R, P> NativeDapState<F, R, P>
+impl<F, Fut, R, P, C, A> NativeDapState<F, R, P, C, A>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
     R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    C: Fn(&Path) -> std::result::Result<String, String> + Send + Sync + 'static,
+    A: Fn(&Path) -> Option<PathBuf> + Send + Sync + 'static,
 {
     /// Dispatch one DAP request to its handler. Returns `Ok(true)` when the
     /// server loop should exit (disconnect/terminate).
@@ -249,12 +258,8 @@ where
             // emitter (no `alc`, no C# bridge). A configured toolchain gates the
             // compile step; the emitter itself does not need `alc`.
             if self.alc_path.is_some() {
-                let cr = crate::build::native_compile(std::path::Path::new(&self.project_root));
-                let compile_outcome: std::result::Result<String, String> = if cr.success {
-                    Ok(cr.output)
-                } else {
-                    Err(cr.output)
-                };
+                let compile_outcome: std::result::Result<String, String> =
+                    (self.compile)(std::path::Path::new(&self.project_root));
                 match compile_outcome {
                     Ok(output) => {
                         if !output.is_empty() {
@@ -362,7 +367,7 @@ where
             .await?;
 
             if config.accept_invalid_certs {
-                crate::http_auth::warn_insecure_tls("DAP launch");
+                al_bc::http_auth::warn_insecure_tls("DAP launch");
                 write_dap(
                     out,
                     &make_event(
@@ -372,7 +377,7 @@ where
                             "category": "important",
                             "output": format!(
                                 "{}\r\n",
-                                crate::http_auth::insecure_tls_message("DAP launch")
+                                al_bc::http_auth::insecure_tls_message("DAP launch")
                             ),
                         })),
                     ),
@@ -380,7 +385,7 @@ where
                 .await?;
             }
 
-            let app_path = find_app_file(&self.project_root).await;
+            let app_path = (self.find_app)(Path::new(&self.project_root));
             if let Some(app_path) = app_path {
                 let http = reqwest::Client::builder()
                     .danger_accept_invalid_certs(config.accept_invalid_certs)
@@ -1167,18 +1172,22 @@ where
     }
 }
 
-pub async fn run_native_dap<F, Fut, R, P>(
+pub async fn run_native_dap<F, Fut, R, P, C, A>(
     project_root: &str,
     alc_path: Option<&Path>,
     acquire_token: F,
     resolve_object: R,
     resolve_path: P,
+    compile: C,
+    find_app: A,
 ) -> Result<()>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
     R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    C: Fn(&Path) -> std::result::Result<String, String> + Send + Sync + 'static,
+    A: Fn(&Path) -> Option<PathBuf> + Send + Sync + 'static,
 {
     let (cancel_tx, cancel_rx) = watch::channel(0u64);
     let (dap_event_tx, mut dap_event_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
@@ -1196,6 +1205,8 @@ where
         acquire_token,
         resolve_object,
         resolve_path,
+        compile,
+        find_app,
     };
 
     let mut stdin = BufReader::new(io::stdin());
@@ -1323,15 +1334,9 @@ async fn write_dap<W: tokio::io::AsyncWrite + Unpin>(
     write_dap_frame(writer, &body).await
 }
 
-async fn find_app_file(project_root: &str) -> Option<std::path::PathBuf> {
-    // Reuse the build pipeline's selection logic so a sandbox deploy never grabs
-    // a stale artifact. It prefers the manifest-derived
-    // `{publisher}_{name}_{version}.app` and otherwise falls back to the
-    // most-recently-modified .app. This previously returned the first .app in
-    // readdir order, which deployed an arbitrary (often outdated) version when
-    // several builds were present in the project root.
-    crate::build::find_app_file(Path::new(project_root))
-}
+// The `find_app_file` wrapper was removed in the al-dap extraction: the .app
+// selection logic lives in al-core's build module and is now supplied through
+// the injected `find_app` callback on `NativeDapState`.
 
 fn open_browser(url: &str) -> bool {
     let ok = {
@@ -1670,7 +1675,7 @@ mod tests {
                 "{kw} should map to a known BC DAP object type"
             );
             assert!(
-                crate::syntax::language_data::object_type_by_keyword(kw).is_some(),
+                al_syntax::language_data::object_type_by_keyword(kw).is_some(),
                 "{kw} must be a real AL object keyword in language_data"
             );
         }
@@ -2009,67 +2014,6 @@ mod tests {
     // duplicates were removed to keep a single source of truth (DUP-1/DUP-2).
 
     // -----------------------------------------------------------------------
-    // find_app_file — directory scan for a .app artifact.
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn find_app_file_returns_app_when_present() {
-        let dir = tempfile::tempdir().unwrap();
-        // Decoy files that must be ignored.
-        std::fs::write(dir.path().join("app.json"), "{}").unwrap();
-        std::fs::write(dir.path().join("readme.txt"), "x").unwrap();
-        let app = dir.path().join("Publisher_App_1.0.0.0.app");
-        std::fs::write(&app, b"PK").unwrap();
-
-        let found = find_app_file(dir.path().to_str().unwrap()).await;
-        assert_eq!(
-            found.as_deref(),
-            Some(app.as_path()),
-            "the .app artifact must be located by extension"
-        );
-    }
-
-    #[tokio::test]
-    async fn find_app_file_picks_manifest_version_not_first_found() {
-        // Regression: deploy must pick the .app matching the manifest version,
-        // not whichever .app readdir happens to return first (which deployed a
-        // stale older build to the sandbox).
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("app.json"),
-            r#"{"publisher":"Pub","name":"App","version":"2.0.0.0"}"#,
-        )
-        .unwrap();
-        let old = dir.path().join("Pub_App_1.0.0.0.app");
-        let new = dir.path().join("Pub_App_2.0.0.0.app");
-        std::fs::write(&old, b"PK").unwrap();
-        std::fs::write(&new, b"PK").unwrap();
-
-        let found = find_app_file(dir.path().to_str().unwrap()).await;
-        assert_eq!(
-            found.as_deref(),
-            Some(new.as_path()),
-            "deploy must select the manifest version (2.0.0.0), never an older build"
-        );
-    }
-
-    #[tokio::test]
-    async fn find_app_file_returns_none_when_absent() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("app.json"), "{}").unwrap();
-        let found = find_app_file(dir.path().to_str().unwrap()).await;
-        assert!(found.is_none(), "no .app present must yield None");
-    }
-
-    #[tokio::test]
-    async fn find_app_file_returns_none_for_missing_dir() {
-        // read_dir fails on a nonexistent path; the helper swallows the error
-        // via `.ok()?` and returns None rather than propagating.
-        let found = find_app_file("/this/path/does/not/exist/anywhere").await;
-        assert!(found.is_none());
-    }
-
-    // -----------------------------------------------------------------------
     // write_dap — serialises a JSON value into a DAP frame with a valid
     // Content-Length header. Exercises the framing boundary without stdio.
     // -----------------------------------------------------------------------
@@ -2156,6 +2100,8 @@ mod handler_tests {
         fn(String) -> TokenFut,
         fn(&str) -> Option<ResolvedObject>,
         fn(i32, i32) -> Option<PathBuf>,
+        fn(&Path) -> std::result::Result<String, String>,
+        fn(&Path) -> Option<PathBuf>,
     >;
 
     fn no_token(_tenant: String) -> TokenFut {
@@ -2182,6 +2128,8 @@ mod handler_tests {
             acquire_token: no_token,
             resolve_object: |_| None,
             resolve_path: |_, _| None,
+            compile: |_| Err("no compile in handler tests".to_string()),
+            find_app: |_| None,
         }
     }
 

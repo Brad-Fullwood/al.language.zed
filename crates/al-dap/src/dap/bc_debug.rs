@@ -330,7 +330,7 @@ pub async fn publish_app(
         Ok(())
     } else {
         let status = resp.status();
-        let body = crate::bc_client::sanitize_error_body(
+        let body = al_bc::bc_client::sanitize_error_body(
             &resp
                 .text()
                 .await
@@ -366,7 +366,7 @@ pub async fn get_metadata(
             .map_err(|e| DapError::ConnectionFailed(format!("Bad metadata response: {e}")))
     } else {
         let status = resp.status();
-        let body = crate::bc_client::sanitize_error_body(
+        let body = al_bc::bc_client::sanitize_error_body(
             &resp
                 .text()
                 .await
@@ -466,7 +466,7 @@ impl BcDebugSession {
             // bc_client.rs:99 (T035). Without this the DAP path silently
             // disables TLS certificate validation when launch.json sets
             // accept_invalid_certs=true.
-            crate::http_auth::warn_insecure_tls("DAP SignalR debug");
+            al_bc::http_auth::warn_insecure_tls("DAP SignalR debug");
         }
         let hub_url = config.debug_hub_url();
 

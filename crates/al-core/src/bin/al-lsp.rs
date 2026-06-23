@@ -294,6 +294,15 @@ async fn main() {
                     })
                     .map(|entry| entry.key().clone())
             },
+            |project_root: &std::path::Path| {
+                let cr = al_core::build::native_compile(project_root);
+                if cr.success {
+                    Ok(cr.output)
+                } else {
+                    Err(cr.output)
+                }
+            },
+            |project_root: &std::path::Path| al_core::build::find_app_file(project_root),
         )
         .await
         {
