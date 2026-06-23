@@ -1,7 +1,7 @@
 //! AL extension publish to BC server.
 //!
 //! Implements the publish workflow:
-//! 1. Compile the AL project into a `.app` file (using `al-core::build`).
+//! 1. Compile the AL project into a `.app` file (using `al_compile`).
 //! 2. Upload + publish the `.app` to the BC Dev API endpoint.
 //! 3. Optionally use RAD (Rapid Application Development) for incremental deploys.
 //!
@@ -14,11 +14,11 @@ use serde::Serialize;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-use crate::bc_client::{BcClient, BcClientError};
-use crate::build::{CompileDiagnostic, CompileResult};
-use crate::launch::{find_launch_config, BcServerConfig};
-use crate::toolchain::AlToolchain;
-use crate::workspace::Workspace;
+use al_bc::bc_client::{BcClient, BcClientError};
+use al_compile::{CompileDiagnostic, CompileResult};
+use al_bc::launch::{find_launch_config, BcServerConfig};
+use al_project::toolchain::AlToolchain;
+use al_workspace::Workspace;
 
 #[derive(Debug, Clone)]
 pub struct PublishConfig {
@@ -143,7 +143,7 @@ pub async fn publish(
                 "{} compilation error(s)",
                 diagnostics
                     .iter()
-                    .filter(|d| matches!(d.severity, crate::build::DiagnosticSeverity::Error))
+                    .filter(|d| matches!(d.severity, al_compile::DiagnosticSeverity::Error))
                     .count()
             ))
         },
@@ -270,7 +270,7 @@ async fn run_compile(
     let use_official_compiler = workspace.config.read().await.use_official_compiler;
 
     if !use_official_compiler {
-        let result = crate::build::native_compile(project_root);
+        let result = al_compile::native_compile(project_root);
         if !result.success {
             return Err(PublishError::Build(result.output));
         }
@@ -286,7 +286,7 @@ async fn run_compile(
     drop(tc);
 
     warn!("al.useOfficialCompiler=true - publishing with the NON-NATIVE `dotnet alc` subprocess");
-    crate::build::compile_project(&toolchain, project_root, None)
+    al_compile::compile_project(&toolchain, project_root, None)
         .await
         .map_err(|e| PublishError::Build(e.to_string()))
 }
@@ -572,7 +572,7 @@ mod tests {
     /// publish endpoint is `{uri}/BC/dev/extensions`. Windows auth means no
     /// credentials are required (apply_auth only errors for UserPassword/AAD).
     fn mock_config(uri: &str) -> BcServerConfig {
-        use crate::launch::{AuthMethod, EnvironmentType};
+        use al_bc::launch::{AuthMethod, EnvironmentType};
         BcServerConfig {
             name: "mock".to_string(),
             environment_type: EnvironmentType::OnPrem,

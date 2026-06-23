@@ -1,0 +1,29 @@
+[package]
+name = "al-test"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "AL test-execution engine: runs [Test] procedures through the pure-Rust interpreter or a live Business Central server, statically routes each test to the right backend, drives mutation testing, and serialises results to JUnit / Cobertura XML."
+repository = "https://github.com/Brad-Fullwood/al.language.zed"
+
+[dependencies]
+al-types = { path = "../al-types" }
+al-syntax = { path = "../al-syntax" }
+al-bc = { path = "../al-bc" }
+al-runtime = { path = "../al-runtime" }
+al-workspace = { path = "../al-workspace" }
+al-analysis = { path = "../al-analysis" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+quick-xml = { workspace = true }
+reqwest = { workspace = true }
+tree-sitter = "0.25"
+url = "2"
+urlencoding = "2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+wiremock = "0.6"

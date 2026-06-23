@@ -30,15 +30,12 @@ pub use al_compile as build;
 pub use al_analysis::{generators, permissions, queries, resolution, scaffold, xliff};
 pub use al_emit as emit;
 pub use al_insight as insight;
-pub mod publish;
+pub use al_publish as publish;
 pub mod semantic;
 pub mod server;
 // The syntax layer is now the standalone `al-syntax` crate; alias it as
 // `crate::syntax` so existing `crate::syntax::…` paths keep resolving.
 pub use al_syntax as syntax;
-pub mod test_engine;
-pub mod test_runner;
-pub mod test_snapshots;
 pub mod toolchain;
 
 // Re-exports for al-lsp (thin transport layer should not depend on analysis libs)
@@ -61,3 +58,8 @@ pub mod syntax_lsp {
 pub mod ts {
     pub use tree_sitter::{Point, Range, Tree};
 }
+
+pub use al_test as test_engine;
+pub use al_test::test_runner;
+
+pub use al_snapshot as test_snapshots;

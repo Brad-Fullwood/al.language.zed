@@ -4,8 +4,8 @@
 //! The append-only `tokio::fs` store (`TestResultStore`) now lives in the
 //! `al-workspace` hub crate so the `Workspace` hub can own per-project test
 //! state without al-workspace depending on this tier-6 `al-test` crate. It is
-//! re-exported below so existing `crate::test_engine::TestResultStore` and
-//! `crate::test_engine::persistence::{TestRunRecord, now_secs}` paths keep
+//! re-exported below so existing `crate::TestResultStore` and
+//! `crate::persistence::{TestRunRecord, now_secs}` paths keep
 //! resolving unchanged.
 
 use std::time::{SystemTime, UNIX_EPOCH};

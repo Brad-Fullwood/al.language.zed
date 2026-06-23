@@ -218,7 +218,7 @@ fn find_next_expected_bp(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_snapshots::format::{Sample, Snapshot};
+    use crate::format::{Sample, Snapshot};
 
     fn base_snapshot(samples: Vec<Sample>) -> Snapshot {
         Snapshot {

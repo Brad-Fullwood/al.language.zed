@@ -22,14 +22,14 @@ use tokio::task::JoinSet;
 use tracing::warn;
 use tree_sitter::Node;
 
-use crate::queries::tests::{discover_tests, TestCodeunit};
-use crate::test_engine::error::TestRunnerError;
-use crate::test_engine::result::{TestCodeunitResult, TestMethodResult, TestStatus};
-use crate::test_engine::session::{RunOptions, TestEvent, TestId, TestSession};
-use crate::test_runtime::interpreter::dispatch::{DispatchCtx, DispatchMode};
-use crate::test_runtime::interpreter::eval_stmt::eval_stmt;
-use crate::test_runtime::interpreter::scope::{CallFrame, Eval, ScopeStack};
-use crate::workspace::Workspace;
+use al_analysis::queries::tests::{discover_tests, TestCodeunit};
+use crate::error::TestRunnerError;
+use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
+use crate::session::{RunOptions, TestEvent, TestId, TestSession};
+use al_runtime::interpreter::dispatch::{DispatchCtx, DispatchMode};
+use al_runtime::interpreter::eval_stmt::eval_stmt;
+use al_runtime::interpreter::scope::{CallFrame, Eval, ScopeStack};
+use al_workspace::Workspace;
 
 /// Interpreter backend: runs test procedures without a live BC server.
 ///
@@ -228,7 +228,7 @@ fn run_codeunit_interp(
         // Reset thread-local stub state so this test starts from a
         // clean LCG seed + empty LibraryVariableStorage queue, even if
         // the previous test on this thread mutated them. F-OPEN-032.
-        crate::test_runtime::stubs::reset_thread_local_state();
+        al_runtime::stubs::reset_thread_local_state();
 
         let start = Instant::now();
         let result = run_procedure_interp(workspace, cu, codeunit_name, proc_name, timeout_dur);
@@ -273,7 +273,7 @@ fn run_procedure_interp(
     let cu = match cu {
         Some(c) => c,
         None => {
-            return Eval::Error(crate::test_runtime::interpreter::value::ErrorInfo {
+            return Eval::Error(al_runtime::interpreter::value::ErrorInfo {
                 message: format!("codeunit '{codeunit_name}' not found in workspace"),
                 error_type: None,
                 source: None,
@@ -283,7 +283,7 @@ fn run_procedure_interp(
 
     let path = std::path::Path::new(&cu.file);
     let Some((text, tree)) = workspace.file_index.get_cached_parse(path) else {
-        return Eval::Error(crate::test_runtime::interpreter::value::ErrorInfo {
+        return Eval::Error(al_runtime::interpreter::value::ErrorInfo {
             message: format!("could not parse file for codeunit '{codeunit_name}'"),
             error_type: None,
             source: None,
@@ -296,7 +296,7 @@ fn run_procedure_interp(
     let body = match find_procedure_body(root, source, proc_name) {
         Some(b) => b,
         None => {
-            return Eval::Error(crate::test_runtime::interpreter::value::ErrorInfo {
+            return Eval::Error(al_runtime::interpreter::value::ErrorInfo {
                 message: format!("procedure '{proc_name}' not found in '{codeunit_name}'"),
                 error_type: None,
                 source: None,
@@ -383,7 +383,7 @@ async fn send_event(tx: &mpsc::Sender<TestEvent>, event: TestEvent) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_engine::session::RunOptions;
+    use crate::session::RunOptions;
     use tokio::sync::mpsc;
 
     fn make_session() -> InterpMode {

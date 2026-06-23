@@ -1,6 +1,6 @@
 //! Cobertura XML serializer for `CoverageReport`.
 //!
-//! Maps the static call-graph coverage at `crate::queries::test_coverage`
+//! Maps the static call-graph coverage at `al_analysis::queries::test_coverage`
 //! into the Cobertura XML schema understood by GitHub Actions, Azure DevOps,
 //! GitLab CI, etc.
 //!
@@ -23,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
 use quick_xml::Writer;
 
-use crate::queries::test_coverage::CoverageReport;
+use al_analysis::queries::test_coverage::CoverageReport;
 
 struct ProcLine {
     line: u32,
@@ -173,7 +173,7 @@ pub fn write_cobertura<W: Write>(report: &CoverageReport, out: W) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::queries::test_coverage::{
+    use al_analysis::queries::test_coverage::{
         CoverageReport, CoveredProcedure, TestCoverageEntry, UntestedProcedure,
     };
 

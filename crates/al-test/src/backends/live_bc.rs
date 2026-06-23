@@ -11,10 +11,10 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
-use crate::launch::BcServerConfig;
-use crate::test_engine::error::TestRunnerError;
-use crate::test_engine::result::{TestCodeunitResult, TestMethodResult, TestStatus};
-use crate::test_engine::session::{RunOptions, TestEvent, TestId, TestSession};
+use al_bc::launch::BcServerConfig;
+use crate::error::TestRunnerError;
+use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
+use crate::session::{RunOptions, TestEvent, TestId, TestSession};
 use crate::test_runner::TestRunnerClient;
 
 pub struct LiveBcMode {
@@ -372,11 +372,11 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
-    use crate::test_engine::backends::live_bc::LiveBcMode;
-    use crate::test_engine::error::TestRunnerError;
-    use crate::test_engine::result::TestStatus;
-    use crate::test_engine::session::{RunOptions, TestEvent, TestId, TestSession};
+    use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
+    use crate::backends::live_bc::LiveBcMode;
+    use crate::error::TestRunnerError;
+    use crate::result::TestStatus;
+    use crate::session::{RunOptions, TestEvent, TestId, TestSession};
 
     /// Build a `BcServerConfig` pointing at the given wiremock base URL.
     ///

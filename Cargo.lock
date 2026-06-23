@@ -105,11 +105,14 @@ dependencies = [
  "al-insight",
  "al-project",
  "al-protocol",
+ "al-publish",
  "al-runtime",
  "al-semantic",
+ "al-snapshot",
  "al-source",
  "al-symbols",
  "al-syntax",
+ "al-test",
  "al-types",
  "al-workspace",
  "criterion",
@@ -235,6 +238,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "al-publish"
+version = "0.1.0"
+dependencies = [
+ "al-bc",
+ "al-compile",
+ "al-project",
+ "al-types",
+ "al-workspace",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "al-runtime"
 version = "0.1.0"
 dependencies = [
@@ -255,6 +276,20 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "al-snapshot"
+version = "0.1.0"
+dependencies = [
+ "al-dap",
+ "al-syntax",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -313,6 +348,29 @@ dependencies = [
  "tracing",
  "tree-sitter",
  "tree-sitter-al",
+]
+
+[[package]]
+name = "al-test"
+version = "0.1.0"
+dependencies = [
+ "al-analysis",
+ "al-bc",
+ "al-runtime",
+ "al-syntax",
+ "al-types",
+ "al-workspace",
+ "quick-xml",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tree-sitter",
+ "url",
+ "urlencoding",
+ "wiremock",
 ]
 
 [[package]]

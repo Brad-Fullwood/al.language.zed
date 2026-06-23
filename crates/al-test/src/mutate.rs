@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use crate::workspace::Workspace;
+use al_workspace::Workspace;
 
 #[derive(Debug, Error)]
 pub enum MutationError {
@@ -402,7 +402,7 @@ pub(crate) fn generate_variants_for_file(
         let uri = url::Url::from_file_path(path).ok();
         if let Some(uri) = uri {
             if let Some(text) = workspace.documents.get_text(&uri) {
-                let result = crate::syntax::AlParser::parse_quick(&text);
+                let result = al_syntax::AlParser::parse_quick(&text);
                 return generate_variants(file_path, &text, &result.tree);
             }
         }
@@ -522,8 +522,8 @@ fn collect_mutation_files(
             };
             let root = tree.root_node();
             let bytes = text.as_bytes();
-            let has_tests = !crate::queries::tests::collect_test_procedures(root, bytes).is_empty();
-            let has_subtype = crate::queries::tests::has_test_subtype(root, bytes);
+            let has_tests = !al_analysis::queries::tests::collect_test_procedures(root, bytes).is_empty();
+            let has_subtype = al_analysis::queries::tests::has_test_subtype(root, bytes);
             if !has_tests && !has_subtype {
                 continue;
             }
@@ -607,12 +607,12 @@ async fn run_interp_tests_against_mutant(
     workspace: &std::sync::Arc<Workspace>,
     variant: &MutationVariant,
 ) -> VariantOutcome {
-    use crate::test_engine::backends::interp::InterpMode;
-    use crate::test_engine::router::RoutingDecision;
-    use crate::test_engine::session::{RunOptions, TestEvent, TestSession};
+    use crate::backends::interp::InterpMode;
+    use crate::router::RoutingDecision;
+    use crate::session::{RunOptions, TestEvent, TestSession};
 
-    let discovered = crate::queries::tests::discover_tests(workspace);
-    let classifications = crate::test_engine::router::classify_codeunits(workspace, &discovered);
+    let discovered = al_analysis::queries::tests::discover_tests(workspace);
+    let classifications = crate::router::classify_codeunits(workspace, &discovered);
     let mut all_interp: std::collections::HashMap<i32, bool> = std::collections::HashMap::new();
     for c in &classifications {
         let is_interp = matches!(c.decision, RoutingDecision::Interp);
@@ -625,10 +625,10 @@ async fn run_interp_tests_against_mutant(
         .iter()
         .map(|cu| (cu.id, cu.file.clone()))
         .collect();
-    let tests: Vec<crate::test_engine::session::TestId> = discovered
+    let tests: Vec<crate::session::TestId> = discovered
         .iter()
         .filter(|cu| all_interp.get(&cu.id).copied().unwrap_or(false))
-        .map(|cu| crate::test_engine::session::TestId {
+        .map(|cu| crate::session::TestId {
             codeunit_id: cu.id,
             codeunit_name: cu.name.clone(),
             method_name: None,
@@ -663,7 +663,7 @@ async fn run_interp_tests_against_mutant(
                 if let Some(m) = summary
                     .methods
                     .iter()
-                    .find(|m| matches!(m.status, crate::test_engine::TestStatus::Fail))
+                    .find(|m| matches!(m.status, crate::TestStatus::Fail))
                 {
                     killing_test = Some(TestId {
                         file: file_by_id
@@ -696,7 +696,7 @@ async fn run_interp_tests_against_mutant(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::AlParser;
+    use al_syntax::AlParser;
 
     /// A simple AL codeunit with diverse token types for mutation testing.
     const AL_FIXTURE: &str = r#"codeunit 50100 "Mutation Test Subject"
@@ -735,7 +735,7 @@ mod tests {
     /// arithmetic inside a covered [Test] procedure must be KILLED.
     #[tokio::test(flavor = "multi_thread")]
     async fn mutation_run_kills_mutants_via_interpreter() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let source = r#"codeunit 50110 "Pure Logic Test"
 {
     Subtype = Test;

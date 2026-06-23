@@ -163,7 +163,7 @@ impl SnapshotRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_snapshots::replayer::{DebuggerSession, ReplayerError};
+    use crate::replayer::{DebuggerSession, ReplayerError};
 
     use std::sync::{Arc, Mutex};
 

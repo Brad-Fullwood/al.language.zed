@@ -22,9 +22,9 @@ use std::sync::Arc;
 
 use tracing::debug;
 
-use crate::dap::bc_debug::{BcDebugConfig, BcDebugSession};
-use crate::dap::native_dap::kind_to_object_type;
-use crate::syntax::{find_object_declaration, AlParser};
+use al_dap::dap::bc_debug::{BcDebugConfig, BcDebugSession};
+use al_dap::dap::native_dap::kind_to_object_type;
+use al_syntax::{find_object_declaration, AlParser};
 
 use super::replayer::{DebuggerSession, ReplayerError};
 
@@ -133,7 +133,7 @@ mod tests {
         let bc_type = kind_to_object_type(&kind);
         assert_eq!(
             bc_type,
-            crate::dap::native_dap::bc_object_type::CODEUNIT,
+            al_dap::dap::native_dap::bc_object_type::CODEUNIT,
             "codeunit kind={kind} should map to BC CODEUNIT"
         );
         assert_eq!(id, 50100, "object id should be 50100");
@@ -151,7 +151,7 @@ mod tests {
         let bc_type = kind_to_object_type(&kind);
         assert_eq!(
             bc_type,
-            crate::dap::native_dap::bc_object_type::TABLE,
+            al_dap::dap::native_dap::bc_object_type::TABLE,
             "table kind={kind} should map to BC TABLE"
         );
         assert_eq!(id, 1234);

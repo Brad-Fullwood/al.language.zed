@@ -24,8 +24,8 @@
 //!
 //! Anything outside the safe-list routes to `LiveBc`.
 
-use crate::queries::tests::TestCodeunit;
-use crate::workspace::Workspace;
+use al_analysis::queries::tests::TestCodeunit;
+use al_workspace::Workspace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutingDecision {
@@ -269,7 +269,7 @@ fn classify_body(body_text: &str) -> (RoutingDecision, Vec<RoutingReason>) {
 /// Phase 3 enhancement (the conservative discipline means we err on the
 /// side of `LiveBc` until the deeper analysis lands).
 pub fn classify_all(workspace: &Workspace) -> Vec<ClassifyResult> {
-    let codeunits = crate::queries::tests::discover_tests(workspace);
+    let codeunits = al_analysis::queries::tests::discover_tests(workspace);
     classify_codeunits(workspace, &codeunits)
 }
 

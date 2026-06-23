@@ -21,9 +21,9 @@ use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
-use crate::test_engine::error::TestRunnerError;
-use crate::test_engine::result::{TestCodeunitResult, TestMethodResult, TestStatus};
+use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
+use crate::error::TestRunnerError;
+use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
 
 /// Response from `GET /dev/tests/{codeunit}` — list of test methods.
 #[derive(Debug, Deserialize)]
@@ -71,7 +71,7 @@ impl TestRunnerClient {
             // Parity with bc_server / bc_debug / native_dap / http_auth so
             // an operator watching daemon logs sees the same "TLS disabled"
             // warning regardless of which BC client path runs.
-            crate::http_auth::warn_insecure_tls("test runner");
+            al_bc::http_auth::warn_insecure_tls("test runner");
         }
         let client = Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)
@@ -125,7 +125,7 @@ impl TestRunnerClient {
         let status = response.status();
 
         if !status.is_success() {
-            let text = crate::bc_client::read_error_body_capped(response).await;
+            let text = al_bc::bc_client::read_error_body_capped(response).await;
             if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Err(TestRunnerError::AuthenticationFailed {
                     status: status.as_u16(),
@@ -140,7 +140,7 @@ impl TestRunnerClient {
 
         // Content-Length-capped read (F-OPEN-044). BC test-run responses
         // are typically a few KB; 16 MB is a defence-in-depth bound.
-        let raw: DevTestRunResponse = crate::bc_client::read_json_body_capped(response)
+        let raw: DevTestRunResponse = al_bc::bc_client::read_json_body_capped(response)
             .await
             .map_err(|e| TestRunnerError::ServerError {
                 status: 0,
@@ -175,7 +175,7 @@ impl TestRunnerClient {
         let status = response.status();
 
         if !status.is_success() {
-            let text = crate::bc_client::read_error_body_capped(response).await;
+            let text = al_bc::bc_client::read_error_body_capped(response).await;
             return Err(TestRunnerError::ServerError {
                 status: status.as_u16(),
                 message: text,
@@ -183,7 +183,7 @@ impl TestRunnerClient {
         }
 
         // Content-Length-capped read (F-OPEN-044).
-        let raw: DevTestListResponse = crate::bc_client::read_json_body_capped(response)
+        let raw: DevTestListResponse = al_bc::bc_client::read_json_body_capped(response)
             .await
             .map_err(|e| TestRunnerError::ServerError {
                 status: 0,
@@ -299,7 +299,7 @@ fn build_base_url(config: &BcServerConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
+    use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 
     fn on_prem_config() -> BcServerConfig {
         BcServerConfig {
@@ -422,7 +422,7 @@ mod tests {
 #[cfg(test)]
 mod adversarial_j_tests {
     use super::*;
-    use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
+    use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 
     /// Finding adversarial_j_1: build_base_url must include an http:// scheme even
     /// when config.server omits it.  Without a scheme, reqwest cannot parse the URL.

@@ -1,7 +1,7 @@
 //! Canonical error type for the test engine.
 //!
 //! Moved from `test_runner.rs`. `test_runner.rs` re-exports these via
-//! `pub use crate::test_engine::error::TestRunnerError` for back-compat.
+//! `pub use crate::error::TestRunnerError` for back-compat.
 
 use thiserror::Error;
 

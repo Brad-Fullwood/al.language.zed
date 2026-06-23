@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::test_engine::error::TestRunnerError;
-use crate::test_engine::result::{TestCodeunitResult, TestMethodResult};
+use crate::error::TestRunnerError;
+use crate::result::{TestCodeunitResult, TestMethodResult};
 
 /// Identifies a single test target: a codeunit, or a specific method within one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

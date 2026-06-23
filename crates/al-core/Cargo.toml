@@ -24,6 +24,8 @@ al-types = { path = "../al-types" }
 al-syntax = { path = "../al-syntax" }
 al-semantic = { path = "../al-semantic" }
 al-bc = { path = "../al-bc" }
+al-snapshot = { path = "../al-snapshot" }
+al-test = { path = "../al-test" }
 al-runtime = { path = "../al-runtime" }
 al-source = { path = "../al-source" }
 al-dap = { path = "../al-dap" }
@@ -33,6 +35,7 @@ al-emit = { path = "../al-emit" }
 al-insight = { path = "../al-insight" }
 al-compile = { path = "../al-compile" }
 al-workspace = { path = "../al-workspace" }
+al-publish = { path = "../al-publish" }
 al-analysis = { path = "../al-analysis" }
 serde = { workspace = true }
 serde_json = { workspace = true }

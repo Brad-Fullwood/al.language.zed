@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 
-use crate::test_engine::result::{TestCodeunitResult, TestStatus};
+use crate::result::{TestCodeunitResult, TestStatus};
 
 const MAX_FAILURE_BODY_BYTES: usize = 4096;
 const MAX_FAILURE_MSG_BYTES: usize = 256;
@@ -123,7 +123,7 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_engine::result::{TestMethodResult, TestStatus};
+    use crate::result::{TestMethodResult, TestStatus};
 
     fn pass_method(name: &str) -> TestMethodResult {
         TestMethodResult {
