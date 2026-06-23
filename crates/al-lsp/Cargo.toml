@@ -10,13 +10,7 @@ name = "al-lsp"
 path = "src/bin/al-lsp.rs"
 required-features = ["bin"]
 
-[[bench]]
-name = "interpreter"
-harness = false
 
-[[bench]]
-name = "parser"
-harness = false
 
 [dependencies]
 al-protocol = { path = "../al-protocol" }

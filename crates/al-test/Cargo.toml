@@ -25,5 +25,10 @@ url = "2"
 urlencoding = "2"
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 tokio = { workspace = true, features = ["full"] }
 wiremock = "0.6"
+
+[[bench]]
+name = "interpreter"
+harness = false

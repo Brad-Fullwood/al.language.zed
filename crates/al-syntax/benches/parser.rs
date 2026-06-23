@@ -14,8 +14,8 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-use al_lsp::syntax::formatting::{format_al, FormatOptions};
-use al_lsp::syntax::parser::AlParser;
+use al_syntax::formatting::{format_al, FormatOptions};
+use al_syntax::parser::AlParser;
 
 // A small AL codeunit — keystroke-typical workload (≈30 lines).
 const SMALL_AL: &str = r#"

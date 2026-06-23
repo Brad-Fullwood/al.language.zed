@@ -6,18 +6,18 @@ Criterion-based performance benchmarks for the AL test interpreter.
 
 ```sh
 # Full benchmark run (default warm-up 3s, measurement 5s per benchmark):
-cargo bench -p al-core
+cargo bench -p al-lsp
 
 # Quick smoke-run with reduced timing (useful for CI or development iteration):
-cargo bench -p al-core --bench interpreter -- --warm-up-time 1 --measurement-time 2
+cargo bench -p al-lsp --bench interpreter -- --warm-up-time 1 --measurement-time 2
 
 # Run a single benchmark group by name filter:
-cargo bench -p al-core --bench interpreter -- string_ops
-cargo bench -p al-core --bench interpreter -- record_crud
-cargo bench -p al-core --bench interpreter -- library_assert
+cargo bench -p al-lsp --bench interpreter -- string_ops
+cargo bench -p al-lsp --bench interpreter -- record_crud
+cargo bench -p al-lsp --bench interpreter -- library_assert
 
 # Compile but do not run (check the bench builds cleanly):
-cargo bench -p al-core --no-run
+cargo bench -p al-lsp --no-run
 ```
 
 HTML reports are written to `target/criterion/` after each run.

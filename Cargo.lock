@@ -344,6 +344,7 @@ dependencies = [
 name = "al-syntax"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "serde",
  "serde_json",
  "tracing",
@@ -361,6 +362,7 @@ dependencies = [
  "al-syntax",
  "al-types",
  "al-workspace",
+ "criterion",
  "quick-xml",
  "reqwest",
  "serde",
