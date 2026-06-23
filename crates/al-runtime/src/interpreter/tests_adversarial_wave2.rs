@@ -42,10 +42,10 @@
 mod tests {
     use std::sync::Arc;
 
-    use crate::test_runtime::interpreter::dispatch::DispatchCtx;
-    use crate::test_runtime::interpreter::scope::{CallFrame, Eval, ScopeStack};
-    use crate::test_runtime::interpreter::value::Value;
-    use crate::workspace::Workspace;
+    use crate::interpreter::dispatch::DispatchCtx;
+    use crate::interpreter::scope::{CallFrame, Eval, ScopeStack};
+    use crate::interpreter::value::Value;
+    use crate::test_support::MockSource as Workspace;
 
     fn ctx() -> DispatchCtx {
         DispatchCtx::new_pure(Arc::new(Workspace::new()))
@@ -55,7 +55,7 @@ mod tests {
         let wrapper = format!(
             "codeunit 50100 \"W2\"\n{{\n    procedure Test()\n    var\n        x: Integer;\n        s: Text;\n        b: Boolean;\n    begin\n        {source_snippet}\n    end;\n}}"
         );
-        let result = crate::syntax::parser::AlParser::parse_quick(&wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(&wrapper);
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
@@ -70,7 +70,7 @@ mod tests {
         stack.push(frame);
 
         let mut ctx = ctx();
-        let eval = crate::test_runtime::interpreter::eval_stmt::eval_stmt(
+        let eval = crate::interpreter::eval_stmt::eval_stmt(
             body, bytes, &mut stack, &mut ctx,
         );
         (eval, stack)
@@ -116,7 +116,7 @@ mod tests {
         d := 20240701D;
     end;
 }"#;
-        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
@@ -126,7 +126,7 @@ mod tests {
         frame.bind("d", Value::Date(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::test_runtime::interpreter::eval_stmt::eval_stmt(
+        let eval = crate::interpreter::eval_stmt::eval_stmt(
             body, bytes, &mut stack, &mut ctx,
         );
         assert!(
@@ -156,7 +156,7 @@ mod tests {
         t := 063030T;
     end;
 }"#;
-        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
@@ -166,7 +166,7 @@ mod tests {
         frame.bind("t", Value::Time(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::test_runtime::interpreter::eval_stmt::eval_stmt(
+        let eval = crate::interpreter::eval_stmt::eval_stmt(
             body, bytes, &mut stack, &mut ctx,
         );
         assert!(
@@ -262,7 +262,7 @@ mod tests {
         ISO88591 := 28591;
     end;
 }"#;
-        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
@@ -273,7 +273,7 @@ mod tests {
         // for this test we start the frame empty and rely on auto-bind.
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::test_runtime::interpreter::eval_stmt::eval_stmt(
+        let eval = crate::interpreter::eval_stmt::eval_stmt(
             body, bytes, &mut stack, &mut ctx,
         );
         assert!(
@@ -322,7 +322,7 @@ mod tests {
             // then hits the decrement
             i64::MIN
         );
-        let result = crate::syntax::parser::AlParser::parse_quick(&wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(&wrapper);
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
@@ -333,7 +333,7 @@ mod tests {
         frame.bind("x", Value::Integer(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::test_runtime::interpreter::eval_stmt::eval_stmt(
+        let eval = crate::interpreter::eval_stmt::eval_stmt(
             body, bytes, &mut stack, &mut ctx,
         );
         // Must NOT panic; should return an Error or Normal (empty loop).
@@ -378,7 +378,7 @@ mod tests {
         MyOption := "Shpfy Risk Level"::Low;
     end;
 }"#;
-        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
@@ -388,7 +388,7 @@ mod tests {
         frame.bind("myoption", Value::Integer(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::test_runtime::interpreter::eval_stmt::eval_stmt(
+        let eval = crate::interpreter::eval_stmt::eval_stmt(
             body, bytes, &mut stack, &mut ctx,
         );
         assert!(
@@ -428,7 +428,7 @@ mod tests {
         First := Labels.Get(1);
     end;
 }"#;
-        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
@@ -439,7 +439,7 @@ mod tests {
         frame.bind("first", Value::Text(String::new()));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::test_runtime::interpreter::eval_stmt::eval_stmt(
+        let eval = crate::interpreter::eval_stmt::eval_stmt(
             body, bytes, &mut stack, &mut ctx,
         );
         assert!(
@@ -514,7 +514,7 @@ mod tests {
             x := x + i;
     end;
 }"#;
-        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
@@ -525,7 +525,7 @@ mod tests {
         frame.bind("x", Value::Integer(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::test_runtime::interpreter::eval_stmt::eval_stmt(
+        let eval = crate::interpreter::eval_stmt::eval_stmt(
             body, bytes, &mut stack, &mut ctx,
         );
         assert!(
@@ -593,7 +593,7 @@ mod tests {
         dt := CreateDateTime(20240701D, 063030T);
     end;
 }"#;
-        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
@@ -603,7 +603,7 @@ mod tests {
         frame.bind("dt", Value::DateTime(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::test_runtime::interpreter::eval_stmt::eval_stmt(
+        let eval = crate::interpreter::eval_stmt::eval_stmt(
             body, bytes, &mut stack, &mut ctx,
         );
         assert!(
@@ -626,7 +626,7 @@ mod tests {
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
     fn w2_13_strsubstno_as_argument_pass() {
-        use crate::test_runtime::interpreter::dispatch::dispatch_call;
+        use crate::interpreter::dispatch::dispatch_call;
 
         let mut ctx = ctx();
         let strsubstno_result = dispatch_call(
@@ -668,7 +668,7 @@ mod tests {
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
     fn w2_14_format_integer_inline_argument_pass() {
-        use crate::test_runtime::interpreter::dispatch::dispatch_call;
+        use crate::interpreter::dispatch::dispatch_call;
 
         let mut ctx = ctx();
         let format_result = dispatch_call(None, "Format", vec![Value::Integer(7)], &mut ctx);
@@ -793,7 +793,7 @@ mod tests {
         end;
     end;
 }"#;
-        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
@@ -804,7 +804,7 @@ mod tests {
         frame.bind("s", Value::Text(String::new()));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::test_runtime::interpreter::eval_stmt::eval_stmt(
+        let eval = crate::interpreter::eval_stmt::eval_stmt(
             body, bytes, &mut stack, &mut ctx,
         );
         assert!(
@@ -870,7 +870,7 @@ mod tests {
         dt := CurrentDateTime();
     end;
 }"#;
-        let result2 = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result2 = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree2 = result2.tree;
         let root2 = tree2.root_node();
         let bytes2 = wrapper.as_bytes();
@@ -880,7 +880,7 @@ mod tests {
         frame2.bind("dt", Value::DateTime(0));
         stack2.push(frame2);
         let mut ctx2 = ctx();
-        let eval2 = crate::test_runtime::interpreter::eval_stmt::eval_stmt(
+        let eval2 = crate::interpreter::eval_stmt::eval_stmt(
             body2,
             bytes2,
             &mut stack2,
@@ -918,7 +918,7 @@ mod tests {
             "codeunit 50100 \"W2\"\n{{\n    procedure Test()\n    var\n        i: Integer;\n    begin\n        for i := {} to {} do x := 1;\n    end;\n}}",
             start_val, end_val
         );
-        let result = crate::syntax::parser::AlParser::parse_quick(&wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(&wrapper);
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
@@ -929,7 +929,7 @@ mod tests {
         frame.bind("x", Value::Integer(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::test_runtime::interpreter::eval_stmt::eval_stmt(
+        let eval = crate::interpreter::eval_stmt::eval_stmt(
             body, bytes, &mut stack, &mut ctx,
         );
         // Must NOT panic; should return an Error or Normal.

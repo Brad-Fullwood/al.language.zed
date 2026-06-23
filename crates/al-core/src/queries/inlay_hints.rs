@@ -36,6 +36,7 @@ pub fn inlay_hints(workspace: &Workspace, uri: &Url, range: Range) -> Option<Vec
         let doc_symbols: Vec<super::AlDocumentSymbol> = file_path
             .as_ref()
             .and_then(|p| workspace.file_index.get_cached_symbols(p))
+            .map(|syms| syms.into_iter().map(Into::into).collect())
             .unwrap_or_else(|| {
                 crate::syntax::extract_document_symbols(&tree, &text)
                     .into_iter()
@@ -473,6 +474,8 @@ fn lookup_via_receiver(
         if let Some(file_path) = workspace.file_index.objects.get(&obj_key) {
             let file_path = file_path.value().clone();
             if let Some(target_symbols) = workspace.file_index.get_cached_symbols(&file_path) {
+                let target_symbols: Vec<super::AlDocumentSymbol> =
+                    target_symbols.into_iter().map(Into::into).collect();
                 let candidates = overload_candidates_from_symbols(&target_symbols, func_name);
                 if let Some(best) = select_best_overload(&candidates, arg_types) {
                     return Some(best);

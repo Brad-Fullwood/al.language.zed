@@ -4,7 +4,7 @@
 //! statement evaluator encounters. Priority order:
 //!
 //! 1. **Stub catalogs** — Library Assert and any other native-Rust ports of
-//!    BC test libraries (via `crate::test_runtime::stubs`).
+//!    BC test libraries (via `crate::stubs`).
 //! 2. **Inline builtins** — core AL global procedures implemented here in Rust
 //!    (Error, Message, StrSubstNo, Format, StrLen, CopyStr, LowerCase,
 //!    UpperCase, IndexOf).
@@ -15,11 +15,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::test_runtime::interpreter::scope::{CallFrame, Eval, ScopeStack};
-use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
-use crate::test_runtime::mock::record::MockRecord;
-use crate::test_runtime::stubs;
-use crate::workspace::Workspace;
+use crate::interpreter::scope::{CallFrame, Eval, ScopeStack};
+use crate::interpreter::value::{ErrorInfo, Value};
+use crate::mock::record::MockRecord;
+use crate::stubs;
 
 const MAX_RECURSION_DEPTH: usize = 100;
 
@@ -48,7 +47,7 @@ pub enum DispatchMode {
 /// catalog for `InterpRecord` runs). Cheap to reborrow; pass `&mut DispatchCtx`
 /// everywhere.
 pub struct DispatchCtx {
-    pub workspace: Arc<Workspace>,
+    pub source: Arc<dyn al_types::ProcedureSource>,
     /// In-memory record store keyed by table ID. Only populated when
     /// `mode == WithRecords`. Phase 2 does not populate this.
     pub records: HashMap<i32, MockRecord>,
@@ -80,9 +79,9 @@ pub struct DispatchCtx {
 }
 
 impl DispatchCtx {
-    pub fn new_pure(workspace: Arc<Workspace>) -> Self {
+    pub fn new_pure(source: Arc<dyn al_types::ProcedureSource>) -> Self {
         Self {
-            workspace,
+            source,
             records: HashMap::new(),
             mode: DispatchMode::PureLogic,
             recursion_depth: 0,
@@ -92,9 +91,12 @@ impl DispatchCtx {
         }
     }
 
-    pub fn new_with_records(workspace: Arc<Workspace>, records: HashMap<i32, MockRecord>) -> Self {
+    pub fn new_with_records(
+        source: Arc<dyn al_types::ProcedureSource>,
+        records: HashMap<i32, MockRecord>,
+    ) -> Self {
         Self {
-            workspace,
+            source,
             records,
             mode: DispatchMode::WithRecords,
             recursion_depth: 0,
@@ -192,36 +194,25 @@ fn dispatch_workspace_procedure(
     }
 
     let candidate_paths: Vec<std::path::PathBuf> = if let Some(recv) = receiver {
-        match ctx.workspace.file_index.find_by_object_name(recv) {
+        match ctx.source.find_by_object_name(recv) {
             Some(path) => vec![path],
             None => {
                 return simple_error(format!("object '{}' not found in workspace", recv));
             }
         }
     } else {
-        ctx.workspace
-            .file_index
-            .files
-            .iter()
-            .map(|e| e.key().clone())
-            .collect()
+        ctx.source.iter_paths()
     };
 
     for path in &candidate_paths {
-        let Some((text, tree)) = ctx.workspace.file_index.get_cached_parse(path) else {
+        let Some((text, tree)) = ctx.source.get_cached_parse(path) else {
             continue;
         };
 
         let source = text.as_bytes();
         let root = tree.root_node();
 
-        let object_name = ctx
-            .workspace
-            .file_index
-            .object_info
-            .get(path)
-            .map(|info| info.name.clone())
-            .unwrap_or_default();
+        let object_name = ctx.source.object_name(path).unwrap_or_default();
 
         // Walk the tree to find a procedure_declaration with the matching name.
         // Iterative traversal (rule: no recursion).
@@ -299,7 +290,7 @@ fn dispatch_workspace_procedure(
         let mut scope = ScopeStack::new();
         scope.push(frame);
         let result =
-            crate::test_runtime::interpreter::eval_stmt::eval_stmt(body, source, &mut scope, ctx);
+            crate::interpreter::eval_stmt::eval_stmt(body, source, &mut scope, ctx);
         ctx.recursion_depth -= 1;
 
         // Unwrap Exit into Normal (exit only unwinds the current procedure).
@@ -617,7 +608,7 @@ fn substitute_placeholders(fmt: &str, args: &[Value]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
+    use crate::test_support::MockSource as Workspace;
     use std::sync::Arc;
 
     fn ctx() -> DispatchCtx {

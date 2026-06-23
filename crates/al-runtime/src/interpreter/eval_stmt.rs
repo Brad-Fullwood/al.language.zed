@@ -32,10 +32,10 @@
 
 use tree_sitter::Node;
 
-use crate::test_runtime::interpreter::dispatch::{dispatch_call, DispatchCtx, MAX_AST_DEPTH};
-use crate::test_runtime::interpreter::eval_expr::eval_expr;
-use crate::test_runtime::interpreter::scope::{Eval, ScopeStack};
-use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::dispatch::{dispatch_call, DispatchCtx, MAX_AST_DEPTH};
+use crate::interpreter::eval_expr::eval_expr;
+use crate::interpreter::scope::{Eval, ScopeStack};
+use crate::interpreter::value::{ErrorInfo, Value};
 
 /// Evaluate a single tree-sitter statement node.
 ///
@@ -941,9 +941,9 @@ fn values_equal_for_case(a: &Value, b: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_runtime::interpreter::scope::{CallFrame, ScopeStack};
-    use crate::test_runtime::interpreter::value::Value;
-    use crate::workspace::Workspace;
+    use crate::interpreter::scope::{CallFrame, ScopeStack};
+    use crate::interpreter::value::Value;
+    use crate::test_support::MockSource as Workspace;
     use std::sync::Arc;
 
     fn ctx() -> DispatchCtx {
@@ -957,7 +957,7 @@ mod tests {
         let wrapper = format!(
             "codeunit 50100 \"X\"\n{{\n    procedure Test()\n    var\n        x: Integer;\n        s: Text;\n    begin\n        {source_snippet}\n    end;\n}}"
         );
-        let result = crate::syntax::parser::AlParser::parse_quick(&wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(&wrapper);
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
@@ -1073,13 +1073,13 @@ mod tests {
         // the thread forever. We set a deadline 5 ms in the future and
         // expect the while-loop's per-iteration check to fire on the next
         // iteration after the deadline has passed.
-        use crate::test_runtime::interpreter::scope::{CallFrame, ScopeStack};
-        use crate::test_runtime::interpreter::value::Value;
-        use crate::workspace::Workspace;
+        use crate::interpreter::scope::{CallFrame, ScopeStack};
+        use crate::interpreter::value::Value;
+        use crate::test_support::MockSource as Workspace;
         use std::sync::Arc;
 
         let wrapper = "codeunit 50100 \"X\"\n{\n    procedure Test()\n    var\n        x: Integer;\n    begin\n        x := 0; while x >= 0 do x := x + 1;\n    end;\n}";
-        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree = result.tree;
         let bytes = wrapper.as_bytes();
         let body = find_proc_body(tree.root_node(), bytes).unwrap();
@@ -1109,14 +1109,14 @@ mod tests {
         // a running loop without waiting for the wall-clock deadline. Set the
         // cancel token from a different thread once the loop has started;
         // the loop's per-iteration check should fire on the next iteration.
-        use crate::test_runtime::interpreter::scope::{CallFrame, ScopeStack};
-        use crate::test_runtime::interpreter::value::Value;
-        use crate::workspace::Workspace;
+        use crate::interpreter::scope::{CallFrame, ScopeStack};
+        use crate::interpreter::value::Value;
+        use crate::test_support::MockSource as Workspace;
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
         let wrapper = "codeunit 50100 \"X\"\n{\n    procedure Test()\n    var\n        x: Integer;\n    begin\n        x := 0; while x >= 0 do x := x + 1;\n    end;\n}";
-        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree = result.tree;
         let bytes = wrapper.as_bytes();
         let body = find_proc_body(tree.root_node(), bytes).unwrap();
@@ -1156,14 +1156,14 @@ mod tests {
     fn cancel_token_can_be_attached_and_pre_signalled() {
         // Sanity: a pre-set cancel token aborts the loop on the very first
         // iteration check. No threading, fully deterministic.
-        use crate::test_runtime::interpreter::scope::{CallFrame, ScopeStack};
-        use crate::test_runtime::interpreter::value::Value;
-        use crate::workspace::Workspace;
+        use crate::interpreter::scope::{CallFrame, ScopeStack};
+        use crate::interpreter::value::Value;
+        use crate::test_support::MockSource as Workspace;
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
 
         let wrapper = "codeunit 50100 \"X\"\n{\n    procedure Test()\n    var\n        x: Integer;\n    begin\n        x := 0; while x >= 0 do x := x + 1;\n    end;\n}";
-        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree = result.tree;
         let bytes = wrapper.as_bytes();
         let body = find_proc_body(tree.root_node(), bytes).unwrap();
@@ -1439,13 +1439,13 @@ mod tests {
     fn repeat_deadline_trips_on_runaway() {
         // A repeat-until whose condition is never satisfied must trip the
         // deadline rather than spin forever.
-        use crate::test_runtime::interpreter::scope::{CallFrame, ScopeStack};
-        use crate::test_runtime::interpreter::value::Value;
-        use crate::workspace::Workspace;
+        use crate::interpreter::scope::{CallFrame, ScopeStack};
+        use crate::interpreter::value::Value;
+        use crate::test_support::MockSource as Workspace;
         use std::sync::Arc;
 
         let wrapper = "codeunit 50100 \"X\"\n{\n    procedure Test()\n    var\n        x: Integer;\n    begin\n        x := 0; repeat x := x + 1; until x < 0;\n    end;\n}";
-        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
         let tree = result.tree;
         let bytes = wrapper.as_bytes();
         let body = find_proc_body(tree.root_node(), bytes).unwrap();

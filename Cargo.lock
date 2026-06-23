@@ -64,7 +64,9 @@ dependencies = [
  "al-dap",
  "al-project",
  "al-protocol",
+ "al-runtime",
  "al-semantic",
+ "al-source",
  "al-symbols",
  "al-syntax",
  "al-types",
@@ -162,6 +164,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "al-runtime"
+version = "0.1.0"
+dependencies = [
+ "al-syntax",
+ "al-types",
+ "getrandom 0.2.17",
+ "proptest",
+ "thiserror 2.0.18",
+ "tree-sitter",
+]
+
+[[package]]
 name = "al-semantic"
 version = "0.1.0"
 dependencies = [
@@ -174,6 +188,20 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "al-source"
+version = "0.1.0"
+dependencies = [
+ "al-syntax",
+ "al-types",
+ "dashmap 6.2.1",
+ "ropey",
+ "tempfile",
+ "tracing",
+ "tree-sitter",
+ "url",
 ]
 
 [[package]]
@@ -235,6 +263,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tree-sitter",
 ]
 
 [[package]]

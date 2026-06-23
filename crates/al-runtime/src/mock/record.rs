@@ -10,8 +10,8 @@
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-use crate::test_runtime::interpreter::value::Value;
-use crate::test_runtime::mock::filter::{self, FilterExpr};
+use crate::interpreter::value::Value;
+use crate::mock::filter::{self, FilterExpr};
 
 /// A field number, matching BC's integer field-number convention.
 pub type FieldNo = i32;

@@ -158,6 +158,7 @@ pub fn signature_help(
     let doc_symbols: Vec<super::AlDocumentSymbol> = file_path
         .as_ref()
         .and_then(|p| workspace.file_index.get_cached_symbols(p))
+        .map(|syms| syms.into_iter().map(Into::into).collect())
         .unwrap_or_else(|| {
             crate::syntax::extract_document_symbols(&tree, &text)
                 .into_iter()
@@ -315,7 +316,7 @@ fn resolve_receiver_signature(
 
     let obj_key = subtype.to_lowercase();
     let file_path = workspace.file_index.objects.get(&obj_key)?.value().clone();
-    let doc_symbols = workspace.file_index.get_cached_symbols(&file_path)?;
+    let doc_symbols: Vec<super::AlDocumentSymbol> = workspace.file_index.get_cached_symbols(&file_path)?.into_iter().map(Into::into).collect();
     for sym in &doc_symbols {
         if let Some(children) = &sym.children {
             for child in children {

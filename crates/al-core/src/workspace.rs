@@ -62,7 +62,7 @@ pub struct Workspace {
     pub project: RwLock<Option<AlProject>>,
     /// .NET semantic bridge for CodeAnalysis features.
     pub semantic: RwLock<Option<crate::semantic::SemanticBridge>>,
-    pub file_index: FileIndex,
+    pub file_index: Arc<FileIndex>,
     /// Merged workspace configuration (settings from client + project defaults).
     pub config: RwLock<AlConfig>,
     /// Builtins loaded once at init, read-only afterward.
@@ -125,7 +125,7 @@ impl Workspace {
             toolchain: RwLock::new(None),
             project: RwLock::new(None),
             semantic: RwLock::new(None),
-            file_index: FileIndex::new(),
+            file_index: Arc::new(FileIndex::new()),
             config: RwLock::new(AlConfig::default()),
             builtins: std::sync::RwLock::new(Arc::new(Vec::new())),
             error_codes: DashMap::new(),

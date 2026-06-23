@@ -502,7 +502,7 @@ mod tests {
     fn parse_al(src: &str) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
         parser
-            .set_language(&crate::syntax::parser::language())
+            .set_language(&al_syntax::parser::language())
             .unwrap();
         parser.parse(src, None).unwrap()
     }
@@ -740,7 +740,7 @@ mod tests {
         store.open(uri.clone(), "content".to_string());
         let mut parser = tree_sitter::Parser::new();
         parser
-            .set_language(&crate::syntax::parser::language())
+            .set_language(&al_syntax::parser::language())
             .unwrap();
         let tree = parser.parse("content", None).unwrap();
         store.cache_tree(&uri, 0, tree);
@@ -942,7 +942,7 @@ mod tests {
 
         let mut parser = tree_sitter::Parser::new();
         parser
-            .set_language(&crate::syntax::parser::language())
+            .set_language(&al_syntax::parser::language())
             .unwrap();
         let tree_v0 = parser.parse("v0", None).unwrap();
         store.cache_tree(&uri, 0, tree_v0);

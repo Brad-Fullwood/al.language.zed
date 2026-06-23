@@ -308,13 +308,13 @@ fn run_procedure_interp(
     let frame = CallFrame::new(codeunit_name, proc_name);
     stack.push(frame);
 
-    let ws_arc = workspace_to_arc_workaround(workspace);
+    let proc_source: Arc<dyn al_types::ProcedureSource> = workspace.file_index.clone();
     // F-OPEN-015b: thread the timeout down to the interpreter so a runaway
     // `while true do …` test fails with a clear "deadline exceeded" error
     // instead of pinning the spawned blocking thread until the daemon
     // shuts down.
     let mut ctx = DispatchCtx {
-        workspace: ws_arc,
+        source: proc_source,
         records: HashMap::new(),
         mode: DispatchMode::PureLogic,
         recursion_depth: 0,
@@ -371,16 +371,6 @@ fn find_procedure_body<'a>(root: Node<'a>, source: &[u8], proc_name: &str) -> Op
         stack_nodes.extend(current.named_children(&mut cursor));
     }
     None
-}
-
-/// Workaround: the interpreter needs an `Arc<Workspace>` but we only have `&Workspace`.
-///
-/// We construct a *temporary* `Arc` that wraps a `Workspace::new()` placeholder
-/// rather than the real workspace — this is adequate for Phase 2's stub/builtin
-/// dispatch which does not actually call into the workspace. Phase 2b will pass
-/// a proper `Arc<Workspace>` through the call chain.
-fn workspace_to_arc_workaround(_workspace: &Workspace) -> Arc<Workspace> {
-    Arc::new(Workspace::new())
 }
 
 async fn send_event(tx: &mpsc::Sender<TestEvent>, event: TestEvent) -> Result<(), TestRunnerError> {

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::syntax::AlParser;
+use al_syntax::AlParser;
 use url::Url;
 
 use crate::documents::DocumentStore;

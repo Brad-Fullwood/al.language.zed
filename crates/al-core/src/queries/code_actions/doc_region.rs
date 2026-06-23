@@ -18,6 +18,7 @@ pub(super) fn source_action_add_doc_comment(
     let doc_symbols: Vec<super::AlDocumentSymbol> = file_path
         .as_ref()
         .and_then(|p| workspace.file_index.get_cached_symbols(p))
+        .map(|syms| syms.into_iter().map(Into::into).collect())
         .unwrap_or_else(|| {
             crate::syntax::extract_document_symbols(&tree, text)
                 .into_iter()

@@ -1,14 +1,14 @@
 //! Scopes, call frames, and the interpreter execution stack.
 //!
 //! The interpreter is a tree-walker over the existing tree-sitter parse
-//! tree (`crate::syntax::AlParser` output). Each procedure invocation
+//! tree (`al_syntax::AlParser` output). Each procedure invocation
 //! pushes a `CallFrame`; `ScopeStack` is the active list of frames.
 //! Variable lookup walks up from the innermost frame through enclosing
 //! procedure / object scopes.
 
 use std::collections::HashMap;
 
-use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::value::{ErrorInfo, Value};
 
 /// One activation record on the interpreter stack.
 #[derive(Debug, Clone)]

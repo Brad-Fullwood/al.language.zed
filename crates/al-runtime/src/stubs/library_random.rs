@@ -35,8 +35,8 @@
 
 use std::cell::Cell;
 
-use crate::test_runtime::interpreter::scope::Eval;
-use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::scope::Eval;
+use crate::interpreter::value::{ErrorInfo, Value};
 
 thread_local! {
     /// Current LCG state.  Initial value 1 matches BC's default when

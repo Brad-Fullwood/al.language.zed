@@ -84,14 +84,9 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
     // deterministic ordering.
     let mut parsed_files: Vec<(String, String, tree_sitter::Tree)> = workspace
         .file_index
-        .file_trees
-        .iter()
-        .filter_map(|entry| {
-            let path = entry.key();
-            let text = workspace.file_index.files.get(path)?.value().clone();
-            let tree = entry.value().clone();
-            Some((path.to_string_lossy().to_string(), text, tree))
-        })
+        .iter_parsed()
+        .into_iter()
+        .map(|(path, text, tree)| (path.to_string_lossy().to_string(), text, tree))
         .collect();
     parsed_files.sort_by(|a, b| a.0.cmp(&b.0));
 

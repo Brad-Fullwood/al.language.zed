@@ -10,8 +10,8 @@ pub mod library_assert;
 pub mod library_random;
 pub mod library_variable_storage;
 
-use crate::test_runtime::interpreter::scope::Eval;
-use crate::test_runtime::interpreter::value::Value;
+use crate::interpreter::scope::Eval;
+use crate::interpreter::value::Value;
 
 pub type StubFn = fn(&[Value]) -> Eval;
 pub type ResolveFn = fn(&str) -> Option<StubFn>;

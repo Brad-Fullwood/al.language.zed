@@ -1,0 +1,19 @@
+[package]
+name = "al-source"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "AL workspace source ingestion: rope-based open-document store, on-disk .al file index, and parse-tree caching"
+repository = "https://github.com/Brad-Fullwood/al.language.zed"
+
+[dependencies]
+al-syntax = { path = "../al-syntax" }
+al-types = { path = "../al-types" }
+dashmap = { workspace = true }
+ropey = { workspace = true }
+tree-sitter = "0.25"
+tracing = { workspace = true }
+url = "2"
+
+[dev-dependencies]
+tempfile = "3"

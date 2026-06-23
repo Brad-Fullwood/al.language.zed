@@ -36,8 +36,8 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
-use crate::test_runtime::interpreter::scope::Eval;
-use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::scope::Eval;
+use crate::interpreter::value::{ErrorInfo, Value};
 
 /// Maximum items the queue can hold (mirrors `array[25] of Variant`).
 const MAX_QUEUE_SIZE: usize = 25;

@@ -76,7 +76,7 @@ pub struct CachedObjectInfo {
 pub struct CachedProcedureInfo {
     pub file: PathBuf,
     /// Selection range of the procedure name (for go-to-definition).
-    pub selection_range: crate::queries::Range,
+    pub selection_range: al_syntax::types::SyntaxRange,
 }
 
 pub struct FileIndex {
@@ -85,7 +85,7 @@ pub struct FileIndex {
     pub files: DashMap<PathBuf, String>,
     /// Lowercase object name → file path. Internal: invariant-coupled to
     /// `path_to_object`; mutate only via the impl methods (T004).
-    pub(crate) objects: DashMap<String, PathBuf>,
+    pub objects: DashMap<String, PathBuf>,
     /// File path → lowercase object name (reverse index for O(1) cleanup).
     /// Internal: invariant-coupled to `objects` (T004).
     pub(crate) path_to_object: DashMap<PathBuf, String>,
@@ -99,9 +99,9 @@ pub struct FileIndex {
     /// Internal: invariant-coupled to `files` content; mutate only via impl methods (T004).
     pub(crate) file_trees: DashMap<PathBuf, tree_sitter::Tree>,
     /// File path → cached document symbols (avoids re-extracting for cross-file queries).
-    pub(crate) file_symbols: DashMap<PathBuf, Vec<crate::queries::AlDocumentSymbol>>,
+    pub(crate) file_symbols: DashMap<PathBuf, Vec<al_syntax::types::SyntaxDocumentSymbol>>,
     /// Lowercase procedure/event name → location (reverse index for O(1) go-to-definition).
-    pub(crate) procedures: DashMap<String, Vec<CachedProcedureInfo>>,
+    pub procedures: DashMap<String, Vec<CachedProcedureInfo>>,
     /// File path → list of procedure names (for cleanup on file remove/update).
     path_to_procedures: DashMap<PathBuf, Vec<String>>,
 }
@@ -166,16 +166,13 @@ impl FileIndex {
 
     /// Returns the symbols extracted at index time. Falls back to extracting
     /// from the cached parse tree if symbols were not cached (shouldn't happen).
-    pub fn get_cached_symbols(&self, path: &Path) -> Option<Vec<crate::queries::AlDocumentSymbol>> {
+    pub fn get_cached_symbols(&self, path: &Path) -> Option<Vec<al_syntax::types::SyntaxDocumentSymbol>> {
         if let Some(entry) = self.file_symbols.get(path) {
             return Some(entry.value().clone());
         }
         let (text, tree) = self.get_cached_parse(path)?;
-        let symbols: Vec<crate::queries::AlDocumentSymbol> =
-            crate::syntax::extract_document_symbols(&tree, &text)
-                .into_iter()
-                .map(Into::into)
-                .collect();
+        let symbols: Vec<al_syntax::types::SyntaxDocumentSymbol> =
+            al_syntax::extract_document_symbols(&tree, &text);
         self.file_symbols
             .insert(path.to_path_buf(), symbols.clone());
         Some(symbols)
@@ -315,7 +312,7 @@ impl FileIndex {
         }
         self.remove_procedures_for_file(&path);
 
-        let result = crate::syntax::AlParser::parse_quick(&content);
+        let result = al_syntax::AlParser::parse_quick(&content);
         self.index_from_result(path, content, &result.tree);
     }
 
@@ -364,7 +361,7 @@ impl FileIndex {
     fn index_from_result(&self, path: PathBuf, content: String, tree: &tree_sitter::Tree) {
         // Cache the tree unconditionally — all files benefit from it.
         self.file_trees.insert(path.clone(), tree.clone());
-        if let Some(obj_info) = crate::syntax::find_object_declaration(tree, &content) {
+        if let Some(obj_info) = al_syntax::find_object_declaration(tree, &content) {
             let obj_name = obj_info.name.to_lowercase();
             self.objects.insert(obj_name.clone(), path.clone());
             self.path_to_object.insert(path.clone(), obj_name);
@@ -385,22 +382,22 @@ impl FileIndex {
         // Inline the AlSymbolKind::Function/Event predicate here to avoid an
         // upward dependency from file_index (core infrastructure) into the
         // queries module (higher-level LSP feature code).
-        let doc_symbols = crate::syntax::extract_document_symbols(tree, &content);
+        let doc_symbols = al_syntax::extract_document_symbols(tree, &content);
         let mut proc_names = Vec::new();
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {
                 for child in children {
-                    let kind: crate::queries::AlSymbolKind = child.kind.into();
+                    let kind = child.kind;
                     let is_proc = matches!(
                         kind,
-                        crate::queries::AlSymbolKind::Function
-                            | crate::queries::AlSymbolKind::Event
+                        al_syntax::types::SyntaxSymbolKind::Function
+                            | al_syntax::types::SyntaxSymbolKind::Event
                     );
                     if is_proc {
                         let proc_key = child.name.to_lowercase();
                         let info = CachedProcedureInfo {
                             file: path.clone(),
-                            selection_range: child.selection_range.into(),
+                            selection_range: child.selection_range,
                         };
                         self.procedures
                             .entry(proc_key.clone())
@@ -415,9 +412,7 @@ impl FileIndex {
             self.path_to_procedures.insert(path.clone(), proc_names);
         }
 
-        let al_doc_symbols: Vec<crate::queries::AlDocumentSymbol> =
-            doc_symbols.into_iter().map(Into::into).collect();
-        self.file_symbols.insert(path.clone(), al_doc_symbols);
+        self.file_symbols.insert(path.clone(), doc_symbols);
 
         self.files.insert(path, content);
     }
@@ -1240,5 +1235,41 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
+    }
+}
+
+/// Production `ProcedureSource` for the AL interpreter (al-runtime).
+///
+/// The interpreter (tier 1) reaches procedures through this seam rather than
+/// naming the workspace hub. `al-runtime` defines the trait in `al-types`;
+/// this is its real implementation over the file index.
+impl al_types::ProcedureSource for FileIndex {
+    fn find_by_object_name(&self, name: &str) -> Option<std::path::PathBuf> {
+        FileIndex::find_by_object_name(self, name)
+    }
+    fn iter_paths(&self) -> Vec<std::path::PathBuf> {
+        self.files.iter().map(|e| e.key().clone()).collect()
+    }
+    fn get_cached_parse(&self, p: &std::path::Path) -> Option<(String, tree_sitter::Tree)> {
+        FileIndex::get_cached_parse(self, p)
+    }
+    fn object_name(&self, p: &std::path::Path) -> Option<String> {
+        self.object_info.get(p).map(|i| i.name.clone())
+    }
+}
+
+impl FileIndex {
+    /// All indexed files as (path, source text, parse tree) — for
+    /// whole-workspace passes such as dead-code analysis. Replaces direct
+    /// access to the private `file_trees`/`files` maps from other crates.
+    pub fn iter_parsed(&self) -> Vec<(std::path::PathBuf, String, tree_sitter::Tree)> {
+        self.file_trees
+            .iter()
+            .filter_map(|entry| {
+                let path = entry.key().clone();
+                let text = self.files.get(&path)?.value().clone();
+                Some((path, text, entry.value().clone()))
+            })
+            .collect()
     }
 }

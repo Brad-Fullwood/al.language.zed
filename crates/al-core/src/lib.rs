@@ -23,13 +23,12 @@ pub use al_project::{config, errors, project};
 pub use al_dap::{dap, native_debug};
 // (place near the existing `pub use al_bc::{...}` re-export block; this keeps
 // crate::dap::… , crate::native_debug::… and al_core::dap::… resolving)
+pub use al_source::{documents, file_index, parsing};
+pub use al_runtime as test_runtime;
 pub mod build;
-pub mod documents;
 pub mod emit;
-pub mod file_index;
 pub mod generators;
 pub mod insight;
-pub mod parsing;
 pub mod permissions;
 pub mod publish;
 pub mod queries;
@@ -42,7 +41,6 @@ pub mod server;
 pub use al_syntax as syntax;
 pub mod test_engine;
 pub mod test_runner;
-pub mod test_runtime;
 pub mod test_snapshots;
 pub mod toolchain;
 pub mod workspace;

@@ -31,8 +31,8 @@
 
 use std::cell::Cell;
 
-use crate::test_runtime::interpreter::scope::Eval;
-use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::scope::Eval;
+use crate::interpreter::value::{ErrorInfo, Value};
 
 // We import the same Cell type and use the same algorithm as library_random,
 // but we keep a *separate* thread-local here so the two stubs don't need to

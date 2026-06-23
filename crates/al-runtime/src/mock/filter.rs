@@ -7,7 +7,7 @@
 //! - [`parse`] — parse a filter expression string into a [`FilterExpr`] AST.
 //! - [`matches`] — test whether a [`Value`] satisfies a [`FilterExpr`].
 
-use crate::test_runtime::interpreter::value::Value;
+use crate::interpreter::value::Value;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]

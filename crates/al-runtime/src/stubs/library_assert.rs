@@ -13,8 +13,8 @@
 //! `asserterror` blocks (Phase 3 work) catch these; until then a failing
 //! assertion propagates as an `Eval::Error` and aborts the test method.
 
-use crate::test_runtime::interpreter::scope::Eval;
-use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::scope::Eval;
+use crate::interpreter::value::{ErrorInfo, Value};
 
 fn err(message: impl Into<String>) -> Eval {
     Eval::Error(ErrorInfo {

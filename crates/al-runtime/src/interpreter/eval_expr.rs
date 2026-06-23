@@ -11,8 +11,8 @@
 
 use tree_sitter::Node;
 
-use crate::test_runtime::interpreter::scope::{Eval, ScopeStack};
-use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::scope::{Eval, ScopeStack};
+use crate::interpreter::value::{ErrorInfo, Value};
 
 pub fn eval_expr(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
     // Stack-overflow guard (F-OPEN-265): expression evaluation recurses per
@@ -21,7 +21,7 @@ pub fn eval_expr(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval 
     if !stack.enter_expr() {
         return Eval::Error(simple_error(&format!(
             "expression nesting depth exceeded (max {} levels) — likely a pathological or generated test source",
-            crate::test_runtime::interpreter::scope::MAX_EXPR_DEPTH
+            crate::interpreter::scope::MAX_EXPR_DEPTH
         )));
     }
     let result = eval_expr_inner(node, source, stack);
@@ -429,7 +429,7 @@ fn values_cmp(a: &Value, b: &Value, predicate: impl Fn(std::cmp::Ordering) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_runtime::interpreter::scope::CallFrame;
+    use crate::interpreter::scope::CallFrame;
 
     fn ok(eval: Eval) -> Value {
         match eval {
@@ -456,7 +456,7 @@ mod tests {
         let source = format!(
             "codeunit 50100 X\n{{\n    procedure P()\n    var\n        I: Integer;\n    begin\n        I := {expr};\n    end;\n}}\n"
         );
-        let parsed = crate::syntax::AlParser::parse_quick(&source);
+        let parsed = al_syntax::AlParser::parse_quick(&source);
         let mut nodes = vec![parsed.tree.root_node()];
         let mut target = None;
         while let Some(n) = nodes.pop() {
@@ -625,7 +625,7 @@ mod tests {
         let wrapper = format!(
             "codeunit 50100 \"X\"\n{{\n    procedure Test(): Variant\n    begin\n        exit({source_str});\n    end;\n}}"
         );
-        let mut parser = crate::syntax::parser::AlParser::new();
+        let mut parser = al_syntax::parser::AlParser::new();
         let result = parser.parse(&wrapper);
         let tree = result.tree;
         let root = tree.root_node();

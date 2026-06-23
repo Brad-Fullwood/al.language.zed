@@ -35,9 +35,7 @@ fn bench_arithmetic(c: &mut Criterion) {
                     "format",
                     vec![black_box(acc.clone())],
                     // Pure-logic ctx without a workspace — Format never needs one.
-                    &mut DispatchCtx::new_pure(std::sync::Arc::new(
-                        al_core::workspace::Workspace::new(),
-                    )),
+                    &mut DispatchCtx::new_pure(al_core::workspace::Workspace::new().file_index),
                 );
                 if let Value::Integer(n) = &acc {
                     acc = Value::Integer(
@@ -94,9 +92,7 @@ fn bench_string_ops(c: &mut Criterion) {
                     )
                 },
                 |(fmt, a1, a2, a3)| {
-                    let mut ctx = DispatchCtx::new_pure(std::sync::Arc::new(
-                        al_core::workspace::Workspace::new(),
-                    ));
+                    let mut ctx = DispatchCtx::new_pure(al_core::workspace::Workspace::new().file_index);
                     black_box(dispatch_call(
                         None,
                         "StrSubstNo",
@@ -118,9 +114,7 @@ fn bench_string_ops(c: &mut Criterion) {
             b.iter_batched(
                 || Value::Text(s.clone()),
                 |val| {
-                    let mut ctx = DispatchCtx::new_pure(std::sync::Arc::new(
-                        al_core::workspace::Workspace::new(),
-                    ));
+                    let mut ctx = DispatchCtx::new_pure(al_core::workspace::Workspace::new().file_index);
                     black_box(dispatch_call(
                         None,
                         "CopyStr",
@@ -144,9 +138,7 @@ fn bench_string_ops(c: &mut Criterion) {
             b.iter_batched(
                 || (Value::Text(s.clone()), Value::Text(needle.clone())),
                 |(haystack, n)| {
-                    let mut ctx = DispatchCtx::new_pure(std::sync::Arc::new(
-                        al_core::workspace::Workspace::new(),
-                    ));
+                    let mut ctx = DispatchCtx::new_pure(al_core::workspace::Workspace::new().file_index);
                     black_box(dispatch_call(None, "IndexOf", vec![haystack, n], &mut ctx))
                 },
                 BatchSize::SmallInput,
@@ -159,9 +151,7 @@ fn bench_string_ops(c: &mut Criterion) {
             b.iter_batched(
                 || Value::Text(s.clone()),
                 |val| {
-                    let mut ctx = DispatchCtx::new_pure(std::sync::Arc::new(
-                        al_core::workspace::Workspace::new(),
-                    ));
+                    let mut ctx = DispatchCtx::new_pure(al_core::workspace::Workspace::new().file_index);
                     black_box(dispatch_call(None, "Format", vec![val], &mut ctx))
                 },
                 BatchSize::SmallInput,

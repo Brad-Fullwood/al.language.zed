@@ -24,6 +24,8 @@ al-types = { path = "../al-types" }
 al-syntax = { path = "../al-syntax" }
 al-semantic = { path = "../al-semantic" }
 al-bc = { path = "../al-bc" }
+al-runtime = { path = "../al-runtime" }
+al-source = { path = "../al-source" }
 al-dap = { path = "../al-dap" }
 al-project = { path = "../al-project" }
 al-symbols = { path = "../al-symbols" }

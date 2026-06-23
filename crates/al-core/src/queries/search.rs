@@ -96,10 +96,11 @@ pub fn workspace_search_children(
         let file_path = entry.key().clone();
         drop(entry); // release dashmap lock before accessing symbols
 
-        let doc_symbols = match workspace.file_index.get_cached_symbols(&file_path) {
-            Some(s) => s,
-            None => continue,
-        };
+        let doc_symbols: Vec<super::AlDocumentSymbol> =
+            match workspace.file_index.get_cached_symbols(&file_path) {
+                Some(s) => s.into_iter().map(Into::into).collect(),
+                None => continue,
+            };
         for sym in &doc_symbols {
             let container_name = sym.name.clone();
             if let Some(children) = &sym.children {
