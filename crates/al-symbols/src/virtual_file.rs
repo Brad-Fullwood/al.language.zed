@@ -160,8 +160,8 @@ pub fn find_object_range(path: &Path, entry: &SymbolEntry) -> Option<MemberRange
         }
         return Some(MemberRange {
             line: line_idx as u32,
-            col_start: crate::syntax::byte_col_to_utf16_col(line, name_start),
-            col_end: crate::syntax::byte_col_to_utf16_col(line, name_start + name.len()),
+            col_start: al_syntax::byte_col_to_utf16_col(line, name_start),
+            col_end: al_syntax::byte_col_to_utf16_col(line, name_start + name.len()),
         });
     }
     None
@@ -439,8 +439,8 @@ fn find_member_range_in_text(
             // (e.g. an accented field name) lands at the wrong column.
             return Some(MemberRange {
                 line: line_idx as u32,
-                col_start: crate::syntax::byte_col_to_utf16_col(line, col_start),
-                col_end: crate::syntax::byte_col_to_utf16_col(line, col_end),
+                col_start: al_syntax::byte_col_to_utf16_col(line, col_start),
+                col_end: al_syntax::byte_col_to_utf16_col(line, col_end),
             });
         }
     }
@@ -639,7 +639,7 @@ mod tests {
         // Everything before the name is ASCII, so col_start is unaffected.
         let name_byte_start = text.find("Tëst").unwrap();
         let prefix = &text[..name_byte_start];
-        let expected_start = crate::syntax::byte_col_to_utf16_col(text, name_byte_start);
+        let expected_start = al_syntax::byte_col_to_utf16_col(text, name_byte_start);
         assert_eq!(r.col_start, expected_start);
         assert_eq!(r.col_start, prefix.chars().count() as u32);
 
@@ -664,7 +664,7 @@ mod tests {
         assert_eq!(r.line, 1);
         let line1 = text.lines().nth(1).unwrap();
         let expected_start =
-            crate::syntax::byte_col_to_utf16_col(line1, line1.find("Foo").unwrap());
+            al_syntax::byte_col_to_utf16_col(line1, line1.find("Foo").unwrap());
         assert_eq!(r.col_start, expected_start);
         assert_eq!(r.col_end, r.col_start + 3);
     }

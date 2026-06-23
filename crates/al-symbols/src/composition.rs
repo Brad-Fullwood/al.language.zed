@@ -94,7 +94,7 @@ fn compose(base: Arc<SymbolEntry>, extensions: Vec<Arc<SymbolEntry>>) -> Compose
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::model::*;
+    use crate::model::*;
 
     fn make_table(
         id: i32,

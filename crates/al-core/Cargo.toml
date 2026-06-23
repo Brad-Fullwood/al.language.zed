@@ -24,6 +24,7 @@ al-types = { path = "../al-types" }
 al-syntax = { path = "../al-syntax" }
 al-semantic = { path = "../al-semantic" }
 al-bc = { path = "../al-bc" }
+al-symbols = { path = "../al-symbols" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -75,7 +76,7 @@ tracing-subscriber = { workspace = true, optional = true }
 
 [features]
 default = ["nuget", "bin"]
-nuget = []
+nuget = ["al-symbols/nuget"]
 # `bin` is on by default (so `cargo build --workspace` still produces al-lsp),
 # but library consumers can opt out with default-features = false to drop the
 # tracing-subscriber tree. T060.

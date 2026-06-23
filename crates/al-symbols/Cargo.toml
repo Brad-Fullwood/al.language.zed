@@ -1,0 +1,49 @@
+[package]
+name = "al-symbols"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "AL .app/NAVX symbol index: parses SymbolReference.json, builds a concurrent symbol index, renders virtual-file source/outlines, and (feature `nuget`) NuGet + BC symbol download with OAuth/keyring token persistence"
+repository = "https://github.com/Brad-Fullwood/al.language.zed"
+
+[dependencies]
+al-types = { path = "../al-types" }
+al-syntax = { path = "../al-syntax" }
+al-bc = { path = "../al-bc", optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+zip = { workspace = true }
+quick-xml = { workspace = true }
+memmap2 = { workspace = true }
+futures = { workspace = true }
+getrandom = { workspace = true }
+tokio = { workspace = true }
+dirs = "6"
+rayon = "1"
+sha2 = "0.10"
+reqwest = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+# OS secret store for OAuth token persistence; crypto-rust keeps the pure-Rust /
+# no-OpenSSL cross-compile posture. Custom feature set must be preserved.
+keyring = { version = "3", default-features = false, features = [
+    "apple-native",
+    "windows-native",
+    "async-secret-service",
+    "crypto-rust",
+    "tokio",
+], optional = true }
+
+[features]
+default = ["nuget"]
+# NuGet/BC symbol download + OAuth. Gates bc_server.rs/nuget.rs/oauth.rs and
+# their network/secret-store deps.
+nuget = ["dep:al-bc", "dep:keyring", "dep:zeroize", "dep:reqwest"]
+
+[dev-dependencies]
+tempfile = "3"
+serial_test = "3"
+wiremock = "0.6"
+tokio = { workspace = true, features = ["full"] }

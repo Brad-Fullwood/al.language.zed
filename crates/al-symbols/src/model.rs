@@ -111,7 +111,7 @@ impl FromStr for ObjectKind {
 impl ObjectKind {
     /// The primary (first-listed) extension kind for this base kind.
     pub fn extension_kind(&self) -> Option<ObjectKind> {
-        crate::symbols::language_data::object_type_by_keyword(self.al_keyword())?
+        crate::language_data::object_type_by_keyword(self.al_keyword())?
             .extensions
             .first()
             .and_then(|kw| kw.parse::<ObjectKind>().ok())
@@ -119,7 +119,7 @@ impl ObjectKind {
 
     pub fn base_kind(&self) -> Option<ObjectKind> {
         let kw = self.al_keyword();
-        crate::symbols::language_data::object_types()
+        crate::language_data::object_types()
             .iter()
             .find(|ot| ot.extensions.iter().any(|e| e.eq_ignore_ascii_case(kw)))
             .and_then(|ot| ot.keyword.parse::<ObjectKind>().ok())
@@ -889,7 +889,7 @@ mod tests {
     /// data files are the source of truth this enum must track).
     #[test]
     fn object_kind_covers_every_language_data_object_type() {
-        let types = crate::syntax::language_data::object_types();
+        let types = al_syntax::language_data::object_types();
         assert!(
             !types.is_empty(),
             "LanguageData object types must load (tree-sitter-al/data)"

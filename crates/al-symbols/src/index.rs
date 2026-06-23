@@ -532,7 +532,7 @@ impl SymbolIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::model::{FieldSymbol, MethodSymbol, ObjectKind, SymbolEntry};
+    use crate::model::{FieldSymbol, MethodSymbol, ObjectKind, SymbolEntry};
 
     fn make_entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {

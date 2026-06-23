@@ -85,7 +85,7 @@ impl BcServerClient {
         insecure_tls: bool,
     ) -> Result<Self, BcServerError> {
         if insecure_tls {
-            crate::http_auth::warn_insecure_tls("BC server connection");
+            al_bc::http_auth::warn_insecure_tls("BC server connection");
         }
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(insecure_tls)
@@ -185,7 +185,7 @@ impl BcServerClient {
                 // → interactive sign-in instead of re-presenting the same
                 // dead token. F-OPEN-012.
                 if let Some(t) = self.tenant.as_deref() {
-                    let _ = crate::symbols::oauth::invalidate_cached_token(t);
+                    let _ = crate::oauth::invalidate_cached_token(t);
                 }
                 // Also clear the session-level in-memory token so concurrent
                 // downloads in the same batch don't keep re-using the dead
@@ -316,7 +316,7 @@ impl BcServerClient {
 /// every BC client path (bc_server, profiling, snapshot, test_runner) enforces
 /// the same 64 KiB pre-read cap (F-OPEN-014).
 async fn read_error_body_capped(response: reqwest::Response) -> String {
-    crate::bc_client::read_error_body_capped(response).await
+    al_bc::bc_client::read_error_body_capped(response).await
 }
 
 /// Build a safe `.app` filename from a dependency's publisher and name.

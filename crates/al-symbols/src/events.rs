@@ -180,7 +180,7 @@ fn clean_quotes(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::model::*;
+    use crate::model::*;
 
     fn make_codeunit_with_events() -> Vec<SymbolEntry> {
         vec![

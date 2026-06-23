@@ -13,6 +13,7 @@
 // modules so existing crate::{bc_client,http_auth,launch,profiling,snapshot}::…
 // paths keep resolving.
 pub use al_bc::{bc_client, http_auth, launch, profiling, snapshot};
+pub use al_symbols as symbols;
 pub mod build;
 pub mod config;
 pub mod dap;
@@ -32,7 +33,6 @@ pub(crate) mod resolution;
 pub mod scaffold;
 pub mod semantic;
 pub mod server;
-pub mod symbols;
 // The syntax layer is now the standalone `al-syntax` crate; alias it as
 // `crate::syntax` so existing `crate::syntax::…` paths keep resolving.
 pub use al_syntax as syntax;

@@ -295,7 +295,7 @@ fn simple_hash(path: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::model::*;
+    use crate::model::*;
     use std::io::Write;
     use tempfile::TempDir;
 
