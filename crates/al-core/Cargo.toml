@@ -29,6 +29,7 @@ al-source = { path = "../al-source" }
 al-dap = { path = "../al-dap" }
 al-project = { path = "../al-project" }
 al-symbols = { path = "../al-symbols" }
+al-emit = { path = "../al-emit" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

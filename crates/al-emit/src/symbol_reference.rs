@@ -12,11 +12,11 @@ use super::method_id::{combine_hash, fnv1_hash, fnv1_hash_bytes, member_id, meth
 use super::symbol_extract::{
     ControlChange, EmitObject, PageControl, PermissionDecl, QueryElement, ReportLayout,
 };
-use crate::symbols::model::{
+use al_symbols::model::{
     AttributeSymbol, EnumValueSymbol, FieldSymbol, KeySymbol, MethodSymbol, ObjectKind,
     ParameterSymbol, PropertyValue, SymbolEntry, VariableSymbol,
 };
-use crate::syntax::language_data::nav_type_kind_id;
+use al_syntax::language_data::nav_type_kind_id;
 
 /// Package-level metadata for the `SymbolReference.json` header/footer.
 #[derive(Debug, Clone)]
@@ -1181,7 +1181,7 @@ fn permission_json(p: &PermissionDecl, resolver: &Resolver) -> Value {
     // generated system-object table; every other kind resolves against the
     // project + referenced-app objects.
     let id = if code == 10 {
-        crate::syntax::language_data::system_object_id(name).unwrap_or(0)
+        al_syntax::language_data::system_object_id(name).unwrap_or(0)
     } else {
         resolver
             .get(&name.to_lowercase())

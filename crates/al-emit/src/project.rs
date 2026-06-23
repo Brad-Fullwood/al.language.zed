@@ -9,7 +9,7 @@ use super::manifest::AppManifest;
 use super::package::{random_package_guid, EmitError};
 use super::symbol_extract::{extract_objects, EmitObject};
 use super::symbol_reference::{build_symbol_reference, ExternalSymbols, ObjectRef, SymbolRefMeta};
-use crate::symbols::model::ObjectKind;
+use al_symbols::model::ObjectKind;
 
 /// In-process cache of parsed `.alpackages` symbols, keyed on a fingerprint of
 /// the `.app` files (path + mtime + size). Parsing the referenced symbol packages
@@ -80,7 +80,7 @@ fn parse_external_symbols(project_dir: &Path) -> ExternalSymbols {
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("app"))
-        .filter_map(|p| crate::symbols::app_reader::read_app_file(&p).ok())
+        .filter_map(|p| al_symbols::app_reader::read_app_file(&p).ok())
         .collect();
 
     // Pass 1: resolver, table id → name, referenced field types.
@@ -258,7 +258,7 @@ pub fn now_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::app_inspect::list_app_entries;
+    use al_symbols::app_inspect::list_app_entries;
 
     #[test]
     fn builds_a_complete_app_from_a_project() {

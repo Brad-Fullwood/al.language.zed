@@ -137,7 +137,7 @@ mod tests {
 
     /// NavTypeKind id by name, from the generated data (no hardcoded values).
     fn k(name: &str) -> i32 {
-        crate::syntax::language_data::nav_type_kind_id(name).unwrap()
+        al_syntax::language_data::nav_type_kind_id(name).unwrap()
     }
 
     fn p(kind: &str, is_var: bool) -> ParamSig {

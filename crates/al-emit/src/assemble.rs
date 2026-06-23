@@ -11,7 +11,7 @@
 use super::manifest::AppManifest;
 use super::package::{write_app_package, EmitError};
 use super::symbol_extract::EmitObject;
-use crate::symbols::model::ObjectKind;
+use al_symbols::model::ObjectKind;
 
 /// A source file as it is stored in the `.app`. `archive_path` is the
 /// in-archive path; alc stores project sources under a `src/` prefix, so a
@@ -150,7 +150,7 @@ fn name_hash(s: &str) -> i64 {
     super::method_id::fnv1_hash(s) as i64 + 2_147_483_647
 }
 
-fn caption_value(props: &[crate::symbols::model::PropertyValue]) -> Option<&str> {
+fn caption_value(props: &[al_symbols::model::PropertyValue]) -> Option<&str> {
     props
         .iter()
         .find(|p| p.name.eq_ignore_ascii_case("Caption"))
@@ -473,7 +473,7 @@ struct AddinResources {
 }
 
 /// Split a list-valued property (`Scripts = 'a', 'b';`) into trimmed items.
-fn list_prop(props: &[crate::symbols::model::PropertyValue], name: &str) -> Vec<String> {
+fn list_prop(props: &[al_symbols::model::PropertyValue], name: &str) -> Vec<String> {
     props
         .iter()
         .find(|p| p.name.eq_ignore_ascii_case(name))
@@ -494,7 +494,7 @@ fn is_url(s: &str) -> bool {
 /// Resolve a control add-in's resources, reading local script/stylesheet/image
 /// and inline-script files relative to `project_root` (skipped when `None`).
 fn resolve_addin_resources(
-    props: &[crate::symbols::model::PropertyValue],
+    props: &[al_symbols::model::PropertyValue],
     project_root: Option<&std::path::Path>,
 ) -> AddinResources {
     let read = |rel: &str| -> Option<String> {
@@ -537,7 +537,7 @@ fn resolve_addin_resources(
 /// `Version`. alc renders this via `XDocument.ToString()`: 2-space indented, no
 /// XML prolog, no BOM.
 fn control_addin_manifest_xml(
-    props: &[crate::symbols::model::PropertyValue],
+    props: &[al_symbols::model::PropertyValue],
     res: &AddinResources,
 ) -> String {
     let e = super::manifest::xml_escape_text;
@@ -852,8 +852,8 @@ fn with_bom(data: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::app_inspect::list_app_entries;
-    use crate::symbols::manifest::parse_manifest;
+    use al_symbols::app_inspect::list_app_entries;
+    use al_symbols::manifest::parse_manifest;
 
     fn manifest() -> AppManifest {
         AppManifest::from_app_json(
@@ -913,7 +913,7 @@ mod tests {
             .iter()
             .find(|e| e.name == "NavxManifest.xml")
             .unwrap();
-        assert_eq!(mx.kind, crate::symbols::app_inspect::AppEntryKind::Xml);
+        assert_eq!(mx.kind, al_symbols::app_inspect::AppEntryKind::Xml);
     }
 
     #[test]
@@ -1070,7 +1070,7 @@ mod tests {
     fn embedded_manifest_parses() {
         let app = assemble_app(&manifest(), &[], &[], b"{}", [1u8; 16], None).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        crate::symbols::app_inspect::extract_app(&app, dir.path()).unwrap();
+        al_symbols::app_inspect::extract_app(&app, dir.path()).unwrap();
         let xml = std::fs::read(dir.path().join("NavxManifest.xml")).unwrap();
         let m = parse_manifest(&xml).unwrap();
         assert_eq!(m.name, "Min App");

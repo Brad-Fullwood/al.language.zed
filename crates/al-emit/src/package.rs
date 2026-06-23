@@ -1,4 +1,4 @@
-//! `.app` package writer — the inverse of [`crate::symbols::app_inspect`].
+//! `.app` package writer — the inverse of [`al_symbols::app_inspect`].
 //!
 //! A `.app` is a 40-byte `NAVX` header followed by a Deflated OPC/ZIP archive.
 //! The header layout (decoded from alc 17.0.34 output):
@@ -101,7 +101,7 @@ pub fn write_app_package(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::app_inspect::{list_app_entries, AppEntryKind};
+    use al_symbols::app_inspect::{list_app_entries, AppEntryKind};
 
     #[test]
     fn writes_navx_header_then_zip() {

@@ -8,12 +8,12 @@
 
 use tree_sitter::Node;
 
-use crate::symbols::model::{
+use al_symbols::model::{
     AttributeSymbol, EnumValueSymbol, FieldSymbol, KeySymbol, MethodSymbol, ObjectKind,
     ParameterSymbol, PropertyValue, SymbolEntry, VariableSymbol,
 };
-use crate::syntax::language_data::is_type_keyword_node;
-use crate::syntax::AlParser;
+use al_syntax::language_data::is_type_keyword_node;
+use al_syntax::AlParser;
 
 /// Whether a tree-sitter node kind denotes an AL type — data-driven via
 /// `language_data` (the generated `token_classification`), plus the
@@ -176,7 +176,7 @@ fn extract_object(node: Node, src: &[u8]) -> Option<ExtractedObject> {
         .child_by_field_name("id")
         .and_then(|n| text(n, src).parse::<i32>().ok())
         .unwrap_or(0);
-    let name = crate::syntax::extract_object_name(node, src).unwrap_or_default();
+    let name = al_syntax::extract_object_name(node, src).unwrap_or_default();
 
     let body = node.child_by_field_name("body");
 

@@ -287,7 +287,7 @@ pub(super) fn xml_escape_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::manifest::parse_manifest;
+    use al_symbols::manifest::parse_manifest;
 
     fn sample() -> AppManifest {
         AppManifest::from_app_json(

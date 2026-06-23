@@ -26,7 +26,7 @@ pub use al_dap::{dap, native_debug};
 pub use al_source::{documents, file_index, parsing};
 pub use al_runtime as test_runtime;
 pub mod build;
-pub mod emit;
+pub use al_emit as emit;
 pub mod generators;
 pub mod insight;
 pub mod permissions;
