@@ -36,7 +36,7 @@ al-insight = { path = "../al-insight" }
 al-compile = { path = "../al-compile" }
 al-workspace = { path = "../al-workspace" }
 al-publish = { path = "../al-publish" }
-al-analysis = { path = "../al-analysis" }
+al-analysis = { path = "../al-analysis", features = ["lsp"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

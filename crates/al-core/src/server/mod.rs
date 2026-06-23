@@ -10,7 +10,6 @@
 
 mod commands;
 mod completions;
-pub mod conversions;
 pub mod daemon;
 pub mod dap_mode;
 pub mod definition;

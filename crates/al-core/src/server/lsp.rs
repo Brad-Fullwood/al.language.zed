@@ -723,7 +723,7 @@ impl LanguageServer for AlServer {
                     DocumentSymbolResponse::Nested(symbols.into_iter().map(Into::into).collect())
                 } else {
                     DocumentSymbolResponse::Flat(
-                        crate::server::conversions::flatten_document_symbols(symbols, &uri),
+                        al_analysis::lsp::flatten_document_symbols(symbols, &uri),
                     )
                 }
             })

@@ -119,37 +119,6 @@ impl From<tower_lsp::lsp_types::SymbolKind> for AlSymbolKind {
     }
 }
 
-impl From<crate::syntax::types::SyntaxSymbolKind> for AlSymbolKind {
-    fn from(k: crate::syntax::types::SyntaxSymbolKind) -> Self {
-        use crate::syntax::types::SyntaxSymbolKind as S;
-        match k {
-            S::File => AlSymbolKind::File,
-            S::Module => AlSymbolKind::Module,
-            S::Namespace => AlSymbolKind::Namespace,
-            S::Class => AlSymbolKind::Class,
-            S::Method => AlSymbolKind::Method,
-            S::Property => AlSymbolKind::Property,
-            S::Field => AlSymbolKind::Field,
-            S::Constructor => AlSymbolKind::Constructor,
-            S::Enum => AlSymbolKind::Enum,
-            S::EnumMember => AlSymbolKind::EnumMember,
-            S::Interface => AlSymbolKind::Interface,
-            S::Function => AlSymbolKind::Function,
-            S::Variable => AlSymbolKind::Variable,
-            S::Constant => AlSymbolKind::Constant,
-            S::String => AlSymbolKind::String,
-            S::Number => AlSymbolKind::Number,
-            S::Boolean => AlSymbolKind::Boolean,
-            S::Array => AlSymbolKind::Array,
-            S::Object => AlSymbolKind::Object,
-            S::Struct => AlSymbolKind::Struct,
-            S::Event => AlSymbolKind::Event,
-            S::Operator => AlSymbolKind::Operator,
-            S::TypeParameter => AlSymbolKind::TypeParameter,
-            S::Key => AlSymbolKind::Struct,
-        }
-    }
-}
 
 #[allow(deprecated)]
 impl From<AlDocumentSymbol> for tower_lsp::lsp_types::DocumentSymbol {
@@ -176,7 +145,7 @@ impl From<AlDocumentSymbol> for tower_lsp::lsp_types::DocumentSymbol {
 /// flat form. Each emitted symbol carries its parent symbol's name as
 /// `container_name`, and the parent's `range` as its `location` range (there is
 /// no per-child URI in the flat form, so every symbol points at `uri`).
-pub(crate) fn flatten_document_symbols(
+pub fn flatten_document_symbols(
     symbols: Vec<AlDocumentSymbol>,
     uri: &tower_lsp::lsp_types::Url,
 ) -> Vec<tower_lsp::lsp_types::SymbolInformation> {
@@ -215,18 +184,6 @@ pub(crate) fn flatten_document_symbols(
     out
 }
 
-impl From<crate::syntax::types::SyntaxDocumentSymbol> for AlDocumentSymbol {
-    fn from(s: crate::syntax::types::SyntaxDocumentSymbol) -> Self {
-        Self {
-            name: s.name,
-            detail: s.detail,
-            kind: s.kind.into(),
-            range: s.range.into(),
-            selection_range: s.selection_range.into(),
-            children: s.children.map(|v| v.into_iter().map(Into::into).collect()),
-        }
-    }
-}
 
 impl From<AlFoldingRangeKind> for tower_lsp::lsp_types::FoldingRangeKind {
     fn from(k: AlFoldingRangeKind) -> Self {
@@ -251,28 +208,6 @@ impl From<AlFoldingRange> for tower_lsp::lsp_types::FoldingRange {
     }
 }
 
-impl From<crate::syntax::types::SyntaxFoldingRangeKind> for AlFoldingRangeKind {
-    fn from(k: crate::syntax::types::SyntaxFoldingRangeKind) -> Self {
-        use crate::syntax::types::SyntaxFoldingRangeKind as S;
-        match k {
-            S::Comment => AlFoldingRangeKind::Comment,
-            S::Imports => AlFoldingRangeKind::Imports,
-            S::Region => AlFoldingRangeKind::Region,
-        }
-    }
-}
-
-impl From<crate::syntax::types::SyntaxFoldingRange> for AlFoldingRange {
-    fn from(r: crate::syntax::types::SyntaxFoldingRange) -> Self {
-        Self {
-            start_line: r.start_line,
-            start_character: r.start_character,
-            end_line: r.end_line,
-            end_character: r.end_character,
-            kind: r.kind.map(Into::into),
-        }
-    }
-}
 
 impl From<AlInlayHintKind> for tower_lsp::lsp_types::InlayHintKind {
     fn from(k: AlInlayHintKind) -> Self {

@@ -25,6 +25,7 @@ tracing = { workspace = true }
 petgraph = { workspace = true }
 tree-sitter = "0.25"
 url = { version = "2", features = ["serde"] }
+tower-lsp = { workspace = true, optional = true }
 rayon = "1"
 
 [features]
@@ -33,6 +34,9 @@ rayon = "1"
 # feature unification already turns these on via al-core's direct al-semantic /
 # al-workspace edges, so the passthrough is belt-and-suspenders.
 semantic = ["al-semantic/semantic", "al-workspace/semantic"]
+# Opt-in tower_lsp wire conversions (the `lsp` module). Default-off keeps
+# al-analysis transport-agnostic; al-core's server / al-lsp enable it.
+lsp = ["dep:tower-lsp"]
 
 [dev-dependencies]
 # tempfile: scaffold / xliff / format / code_lens / bulk_fix test fixtures.
