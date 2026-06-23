@@ -120,7 +120,7 @@ jobs:
 
       # Post-consolidation crate names: al-lsp is now [[bin]] inside al-core,
       # and al-cli was folded into al-explorer (see CLAUDE.md architecture
-      # note). Build via -p al-core / -p al-explorer with explicit --bin.
+      # note). Build via -p al-lsp / -p al-explorer with explicit --bin.
       #
       # al-lsp is built on EVERY target (it is what Zed spawns). al-explorer is
       # built only on Unix targets — its daemon IPC client is AF_UNIX-only and
@@ -132,7 +132,7 @@ jobs:
       # runtime finds it at <exe-dir>/bridge/ on the user's machine.
       - name: Build al-lsp binary (native)
         if: "!matrix.cross"
-        run: cargo build -p al-core --bin al-lsp --release --features semantic --target ${{ matrix.target }}
+        run: cargo build -p al-lsp --bin al-lsp --release --features semantic --target ${{ matrix.target }}
 
       - name: Build al-explorer binary (native, Unix only)
         if: "!matrix.cross && !matrix.windows"
@@ -144,14 +144,14 @@ jobs:
       # AL_BRIDGE_PREBUILT so it skips the in-container `dotnet build`.
       - name: Pre-build semantic bridge on host (cross)
         if: matrix.cross
-        run: dotnet build crates/al-core/bridge/AlBridge.csproj -c Release --nologo -o "$GITHUB_WORKSPACE/prebuilt-bridge"
+        run: dotnet build crates/al-semantic/bridge/AlBridge.csproj -c Release --nologo -o "$GITHUB_WORKSPACE/prebuilt-bridge"
 
       - name: Build al-lsp binary (cross)
         if: matrix.cross
         env:
           AL_BRIDGE_PREBUILT: ${{ github.workspace }}/prebuilt-bridge
           CROSS_CONTAINER_OPTS: "-e AL_BRIDGE_PREBUILT=/project/prebuilt-bridge"
-        run: cross build -p al-core --bin al-lsp --release --features semantic --target ${{ matrix.target }}
+        run: cross build -p al-lsp --bin al-lsp --release --features semantic --target ${{ matrix.target }}
 
       - name: Build al-explorer binary (cross)
         if: matrix.cross

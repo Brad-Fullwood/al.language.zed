@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 al-protocol = { path = "../al-protocol" }
 # Native .app emission (pure Rust, no Microsoft alc) for `pack-native`.
-al-core = { path = "../al-core" }
+al-emit = { path = "../al-emit" }
 crossterm = "0.29.0"
 ratatui = "0.30.0"
 serde = { workspace = true }

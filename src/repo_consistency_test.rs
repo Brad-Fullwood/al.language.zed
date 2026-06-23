@@ -356,12 +356,12 @@ fn snake_to_camel(s: &str) -> String {
     out
 }
 
-/// The `camelCase` field names of `AlConfig`, parsed from al-core's `config.rs`
+/// The `camelCase` field names of `AlConfig`, parsed from al-project's `config.rs`
 /// source — the authoritative list of settings the server reads. Parsed from
 /// source (not imported) because this WASM extension crate does not depend on
 /// al-core.
 fn al_config_camel_fields() -> Vec<String> {
-    let src = include_str!("../crates/al-core/src/config.rs");
+    let src = include_str!("../crates/al-project/src/config.rs");
     let start = src
         .find("pub struct AlConfig {")
         .expect("al-core config.rs must define `pub struct AlConfig`");

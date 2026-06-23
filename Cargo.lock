@@ -95,7 +95,72 @@ dependencies = [
 ]
 
 [[package]]
-name = "al-core"
+name = "al-dap"
+version = "0.1.0"
+dependencies = [
+ "al-bc",
+ "al-syntax",
+ "al-types",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+ "wiremock",
+]
+
+[[package]]
+name = "al-emit"
+version = "0.1.0"
+dependencies = [
+ "al-symbols",
+ "al-syntax",
+ "getrandom 0.2.17",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tree-sitter",
+ "zip 2.4.2",
+]
+
+[[package]]
+name = "al-explorer"
+version = "0.2.2"
+dependencies = [
+ "al-emit",
+ "al-protocol",
+ "clap",
+ "clap_complete",
+ "crossterm",
+ "dirs",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "al-insight"
+version = "0.1.0"
+dependencies = [
+ "al-source",
+ "al-symbols",
+ "al-syntax",
+ "petgraph",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tree-sitter",
+]
+
+[[package]]
+name = "al-lsp"
 version = "0.2.2"
 dependencies = [
  "al-analysis",
@@ -148,71 +213,6 @@ dependencies = [
  "wiremock",
  "zeroize",
  "zip 2.4.2",
-]
-
-[[package]]
-name = "al-dap"
-version = "0.1.0"
-dependencies = [
- "al-bc",
- "al-syntax",
- "al-types",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "url",
- "wiremock",
-]
-
-[[package]]
-name = "al-emit"
-version = "0.1.0"
-dependencies = [
- "al-symbols",
- "al-syntax",
- "getrandom 0.2.17",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tree-sitter",
- "zip 2.4.2",
-]
-
-[[package]]
-name = "al-explorer"
-version = "0.2.2"
-dependencies = [
- "al-core",
- "al-protocol",
- "clap",
- "clap_complete",
- "crossterm",
- "dirs",
- "ratatui",
- "serde",
- "serde_json",
- "url",
-]
-
-[[package]]
-name = "al-insight"
-version = "0.1.0"
-dependencies = [
- "al-source",
- "al-symbols",
- "al-syntax",
- "petgraph",
- "serde",
- "serde_json",
- "tracing",
- "tree-sitter",
 ]
 
 [[package]]

@@ -196,7 +196,7 @@ async fn main() {
              Microsoft.Dynamics.BusinessCentral.Development.Tools` (plus the ASP.NET Core \
              runtime, e.g. `aspnet-runtime`), or remove the al.useOfficialLsp setting to \
              use the built-in server.";
-        let toolchain = match al_core::toolchain::find_toolchain() {
+        let toolchain = match al_lsp::toolchain::find_toolchain() {
             Ok(tc) => tc,
             Err(e) => {
                 tracing::error!(error = %e, "--official-lsp requires the AL toolchain");
@@ -204,7 +204,7 @@ async fn main() {
                 std::process::exit(1);
             }
         };
-        let Some(altool) = al_core::toolchain::find_altool(&toolchain) else {
+        let Some(altool) = al_lsp::toolchain::find_altool(&toolchain) else {
             tracing::error!(
                 "--official-lsp: altool.dll not found next to alc.dll (pre-v17 toolchain?)"
             );
@@ -224,7 +224,7 @@ async fn main() {
             altool = %altool.display(),
             "delegating LSP session to the official AL language server"
         );
-        let mut cmd = al_core::toolchain::official_lsp_command(&altool, &forward);
+        let mut cmd = al_lsp::toolchain::official_lsp_command(&altool, &forward);
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -249,9 +249,9 @@ async fn main() {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
 
-        let alc_path = al_core::toolchain::find_toolchain().ok().map(|tc| tc.alc);
+        let alc_path = al_lsp::toolchain::find_toolchain().ok().map(|tc| tc.alc);
 
-        let file_index = std::sync::Arc::new(al_core::file_index::FileIndex::new());
+        let file_index = std::sync::Arc::new(al_lsp::file_index::FileIndex::new());
         {
             let root = PathBuf::from(&project_root);
             if root.join("app.json").is_file() {
@@ -265,12 +265,12 @@ async fn main() {
         let fi = file_index.clone();
         let fi2 = file_index.clone();
 
-        if let Err(e) = al_core::dap::native_dap::run_native_dap(
+        if let Err(e) = al_lsp::dap::native_dap::run_native_dap(
             &project_root,
             alc_path.as_deref(),
             |tenant| async move {
                 let client = reqwest::Client::new();
-                al_core::symbols::oauth::acquire_token(&client, &tenant, |msg| {
+                al_lsp::symbols::oauth::acquire_token(&client, &tenant, |msg| {
                     tracing::info!("{msg}");
                 })
                 .await
@@ -280,8 +280,8 @@ async fn main() {
                 let path = PathBuf::from(file_path);
                 fi.object_info
                     .get(&path)
-                    .map(|info| al_core::dap::native_dap::ResolvedObject {
-                        object_type: al_core::dap::native_dap::kind_to_object_type(&info.kind),
+                    .map(|info| al_lsp::dap::native_dap::ResolvedObject {
+                        object_type: al_lsp::dap::native_dap::kind_to_object_type(&info.kind),
                         object_id: info.id.unwrap_or(-1) as i32,
                     })
             },
@@ -289,20 +289,20 @@ async fn main() {
                 fi2.object_info
                     .iter()
                     .find(|entry| {
-                        al_core::dap::native_dap::kind_to_object_type(&entry.kind) == object_type
+                        al_lsp::dap::native_dap::kind_to_object_type(&entry.kind) == object_type
                             && entry.id == Some(object_id as i64)
                     })
                     .map(|entry| entry.key().clone())
             },
             |project_root: &std::path::Path| {
-                let cr = al_core::build::native_compile(project_root);
+                let cr = al_lsp::build::native_compile(project_root);
                 if cr.success {
                     Ok(cr.output)
                 } else {
                     Err(cr.output)
                 }
             },
-            |project_root: &std::path::Path| al_core::build::find_app_file(project_root),
+            |project_root: &std::path::Path| al_lsp::build::find_app_file(project_root),
         )
         .await
         {
@@ -314,14 +314,14 @@ async fn main() {
             "Using LEGACY DAP (Microsoft EditorServices.Host proxy) - non-native fallback \
              enabled via al.useOfficialDap. The native BC debug adapter is the default."
         );
-        let toolchain = match al_core::toolchain::find_toolchain() {
+        let toolchain = match al_lsp::toolchain::find_toolchain() {
             Ok(tc) => tc,
             Err(e) => {
                 tracing::error!(error = %e, "Legacy DAP mode requires ALTool — toolchain not found");
                 std::process::exit(1);
             }
         };
-        if let Err(e) = al_core::server::dap_mode::run_dap_server(&toolchain).await {
+        if let Err(e) = al_lsp::server::dap_mode::run_dap_server(&toolchain).await {
             tracing::error!(error = %e, "DAP server exited with error");
             std::process::exit(1);
         }
@@ -343,7 +343,7 @@ async fn main() {
                 std::process::exit(1);
             }
         };
-        if let Err(e) = al_core::server::mcp::run_mcp(project_root).await {
+        if let Err(e) = al_lsp::server::mcp::run_mcp(project_root).await {
             tracing::error!(error = %e, "MCP server failed");
             std::process::exit(1);
         }
@@ -366,11 +366,11 @@ async fn main() {
             }
         };
         tracing::info!(project = %project_root.display(), "Starting daemon mode");
-        if let Err(e) = al_core::server::daemon::run_daemon(project_root).await {
+        if let Err(e) = al_lsp::server::daemon::run_daemon(project_root).await {
             tracing::error!(error = %e, "Daemon failed");
             std::process::exit(1);
         }
     } else {
-        al_core::server::run_lsp().await;
+        al_lsp::server::run_lsp().await;
     }
 }

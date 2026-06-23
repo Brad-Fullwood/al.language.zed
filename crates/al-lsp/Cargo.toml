@@ -1,5 +1,5 @@
 [package]
-name = "al-core"
+name = "al-lsp"
 version = "0.2.2"
 edition = "2021"
 license = "MIT"
