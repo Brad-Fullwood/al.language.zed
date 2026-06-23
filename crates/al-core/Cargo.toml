@@ -33,6 +33,7 @@ al-emit = { path = "../al-emit" }
 al-insight = { path = "../al-insight" }
 al-compile = { path = "../al-compile" }
 al-workspace = { path = "../al-workspace" }
+al-analysis = { path = "../al-analysis" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

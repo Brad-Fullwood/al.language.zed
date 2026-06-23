@@ -1,0 +1,43 @@
+[package]
+name = "al-analysis"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "AL analysis & generation layer: the LSP/CLI query engine (completions, hover, definition, references, code lens, diagnostics, semantic tokens, inlay hints, plus dead-code / impact / audit / breaking-change / dependency analysis), type & member resolution, permission-set collection, object/page/report/test generators, project scaffolding, and XLIFF translation tooling. Built on the al-workspace state hub (tier 5)."
+repository = "https://github.com/Brad-Fullwood/al.language.zed"
+
+[dependencies]
+al-types = { path = "../al-types" }
+al-syntax = { path = "../al-syntax" }
+# default-features = false matches al-workspace / al-insight: the analysis layer
+# only consumes the always-available SymbolIndex APIs, so it does not pull al-bc
+# transitively through al-symbols/nuget. (Verified: no #[cfg(feature=\"nuget\")]
+# in any moved file.)
+al-symbols = { path = "../al-symbols", default-features = false }
+al-source = { path = "../al-source" }
+al-semantic = { path = "../al-semantic" }
+al-insight = { path = "../al-insight" }
+al-project = { path = "../al-project" }
+al-workspace = { path = "../al-workspace" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+petgraph = { workspace = true }
+tree-sitter = "0.25"
+url = { version = "2", features = ["serde"] }
+rayon = "1"
+
+[features]
+# Passthrough so the in-process .NET bridge can be enabled when building/testing
+# al-analysis in isolation. In a full `al-core --features semantic` build, Cargo
+# feature unification already turns these on via al-core's direct al-semantic /
+# al-workspace edges, so the passthrough is belt-and-suspenders.
+semantic = ["al-semantic/semantic", "al-workspace/semantic"]
+
+[dev-dependencies]
+# tempfile: scaffold / xliff / format / code_lens / bulk_fix test fixtures.
+tempfile = "3"
+# tokio (test-only): #[tokio::test] in queries/hover.rs; tokio::runtime::Runtime
+# in the queries/code_lens.rs test helper. Library code is plain `async fn` +
+# `.await`, which does not require the tokio crate as a normal dependency.
+tokio = { workspace = true }

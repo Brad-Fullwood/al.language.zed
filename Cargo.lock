@@ -40,6 +40,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "al-analysis"
+version = "0.1.0"
+dependencies = [
+ "al-insight",
+ "al-project",
+ "al-semantic",
+ "al-source",
+ "al-symbols",
+ "al-syntax",
+ "al-types",
+ "al-workspace",
+ "petgraph",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tree-sitter",
+ "url",
+]
+
+[[package]]
 name = "al-bc"
 version = "0.1.0"
 dependencies = [
@@ -74,6 +97,7 @@ dependencies = [
 name = "al-core"
 version = "0.2.2"
 dependencies = [
+ "al-analysis",
  "al-bc",
  "al-compile",
  "al-dap",

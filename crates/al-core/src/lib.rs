@@ -27,14 +27,10 @@ pub use al_source::{documents, file_index, parsing};
 pub use al_runtime as test_runtime;
 pub use al_workspace as workspace;
 pub use al_compile as build;
+pub use al_analysis::{generators, permissions, queries, resolution, scaffold, xliff};
 pub use al_emit as emit;
-pub mod generators;
 pub use al_insight as insight;
-pub mod permissions;
 pub mod publish;
-pub mod queries;
-pub(crate) mod resolution;
-pub mod scaffold;
 pub mod semantic;
 pub mod server;
 // The syntax layer is now the standalone `al-syntax` crate; alias it as
@@ -44,7 +40,6 @@ pub mod test_engine;
 pub mod test_runner;
 pub mod test_snapshots;
 pub mod toolchain;
-pub mod xliff;
 
 // Re-exports for al-lsp (thin transport layer should not depend on analysis libs)
 
