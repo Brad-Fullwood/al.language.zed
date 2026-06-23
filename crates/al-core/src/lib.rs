@@ -25,6 +25,7 @@ pub use al_dap::{dap, native_debug};
 // crate::dap::… , crate::native_debug::… and al_core::dap::… resolving)
 pub use al_source::{documents, file_index, parsing};
 pub use al_runtime as test_runtime;
+pub use al_workspace as workspace;
 pub use al_compile as build;
 pub use al_emit as emit;
 pub mod generators;
@@ -43,7 +44,6 @@ pub mod test_engine;
 pub mod test_runner;
 pub mod test_snapshots;
 pub mod toolchain;
-pub mod workspace;
 pub mod xliff;
 
 // Re-exports for al-lsp (thin transport layer should not depend on analysis libs)

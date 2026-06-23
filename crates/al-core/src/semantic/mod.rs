@@ -9,5 +9,7 @@
 
 pub use al_semantic::*;
 
-mod glue;
-pub use glue::{get_or_init_bridge, restart_bridge, set_builtins, shutdown_bridge};
+// The lifecycle glue (set_builtins / get_or_init_bridge / restart_bridge /
+// shutdown_bridge) operates on the tier-4 `Workspace` hub, so it lives in the
+// al-workspace crate; re-export it here so `crate::semantic::…` paths resolve.
+pub use al_workspace::{get_or_init_bridge, restart_bridge, set_builtins, shutdown_bridge};

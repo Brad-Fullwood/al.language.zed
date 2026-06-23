@@ -1,0 +1,35 @@
+[package]
+name = "al-workspace"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "AL workspace state hub: the central `Workspace` container owning documents, symbols, the semantic bridge, the file index, merged config, the cached insight/call graphs, the active profiler session and the per-project test-result store; plus the bridge lifecycle glue, the `doctor` health check, and core workspace initialization."
+repository = "https://github.com/Brad-Fullwood/al.language.zed"
+
+[dependencies]
+al-types = { path = "../al-types" }
+al-syntax = { path = "../al-syntax" }
+al-source = { path = "../al-source" }
+# default-features = false avoids al-workspace pulling al-bc transitively through
+# al-symbols/nuget; the hub uses only the always-available SymbolIndex APIs.
+al-symbols = { path = "../al-symbols", default-features = false }
+al-semantic = { path = "../al-semantic" }
+al-project = { path = "../al-project" }
+al-insight = { path = "../al-insight" }
+al-dap = { path = "../al-dap" }
+dashmap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = "2"
+
+[features]
+# Passthrough so the in-process .NET bridge can be enabled when building/testing
+# al-workspace in isolation. In a full `al-core --features semantic` build,
+# Cargo feature unification already turns this on via al-core's direct
+# al-semantic dependency, so the passthrough is belt-and-suspenders.
+semantic = ["al-semantic/semantic"]
+
+[dev-dependencies]
+tempfile = "3"

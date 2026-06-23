@@ -2,18 +2,18 @@
 //!
 //! Owns the bridge initialization, lazy startup, crash detection + restart
 //! (max 3 attempts), and shutdown. The bridge is stored in `Workspace.semantic`.
-//! The bridge/cache *types* live in the `al-semantic` crate (re-exported as
-//! `crate::semantic`); this glue lives here because it operates on `Workspace`.
+//! The bridge/cache *types* live in the `al-semantic` crate; this lifecycle
+//! glue lives in the al-workspace hub crate because it operates on `Workspace`.
 //!
 //! All callers (LSP handlers, daemon dispatchers, DAP) go through these
 //! functions to get a single shared bridge instance.
 
 use std::sync::atomic::Ordering;
 
-use super::{BuiltinType, SemanticBridge, SemanticCache};
+use al_semantic::{BuiltinType, SemanticBridge, SemanticCache};
 use tokio::sync::RwLockReadGuard;
 
-use crate::workspace::Workspace;
+use crate::Workspace;
 
 /// Store builtins in the workspace and build the semantic cache.
 ///
@@ -55,9 +55,9 @@ pub const MAX_RESTARTS: u32 = 3;
 /// redundant inits.
 async fn init_bridge_inner(
     workspace: &Workspace,
-    toolchain: crate::toolchain::AlToolchain,
-) -> Result<(), crate::errors::AlError> {
-    use crate::errors::AlError;
+    toolchain: al_project::toolchain::AlToolchain,
+) -> Result<(), al_project::errors::AlError> {
+    use al_project::errors::AlError;
 
     let ca_path = toolchain.code_analysis.clone();
     let version = toolchain.version.clone();
@@ -142,8 +142,8 @@ pub async fn get_or_init_bridge(
 /// The counter is only incremented after all early-return checks pass,
 /// so `NoToolchain` errors and concurrent-restore early returns do not
 /// consume restart slots.
-pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::AlError> {
-    use crate::errors::AlError;
+pub async fn restart_bridge(workspace: &Workspace) -> Result<(), al_project::errors::AlError> {
+    use al_project::errors::AlError;
 
     // Capture the old bridge's timeout cooldown stamp BEFORE dropping it. A
     // hung CLR call from the old bridge may still be in flight on a
@@ -236,7 +236,7 @@ pub async fn shutdown_bridge(workspace: &Workspace) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semantic::MethodParameter;
+    use al_semantic::{BuiltinMethod, MethodParameter};
 
     fn sample_builtins() -> Vec<BuiltinType> {
         vec![
@@ -412,8 +412,8 @@ mod tests {
 
     #[tokio::test]
     async fn restart_limit_enforced() {
-        use crate::errors::AlError;
-        use crate::toolchain::AlToolchain;
+        use al_project::errors::AlError;
+        use al_project::toolchain::AlToolchain;
 
         let ws = Workspace::new();
 
@@ -423,7 +423,7 @@ mod tests {
             alc: "/dev/null".into(),
             aldoc: None,
             code_analysis: "/dev/null".into(),
-            analyzers: crate::toolchain::AnalyzerPaths {
+            analyzers: al_project::toolchain::AnalyzerPaths {
                 code_cop: "/dev/null".into(),
                 app_source_cop: "/dev/null".into(),
                 ui_cop: "/dev/null".into(),

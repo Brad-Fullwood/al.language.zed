@@ -87,6 +87,7 @@ dependencies = [
  "al-symbols",
  "al-syntax",
  "al-types",
+ "al-workspace",
  "criterion",
  "dashmap 6.2.1",
  "dirs",
@@ -310,6 +311,27 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tree-sitter",
+]
+
+[[package]]
+name = "al-workspace"
+version = "0.1.0"
+dependencies = [
+ "al-dap",
+ "al-insight",
+ "al-project",
+ "al-semantic",
+ "al-source",
+ "al-symbols",
+ "al-syntax",
+ "al-types",
+ "dashmap 6.2.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

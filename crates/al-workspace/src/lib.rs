@@ -6,20 +6,31 @@
 
 use std::sync::Arc;
 
-use crate::project::AlProject;
-use crate::semantic::BuiltinType;
-use crate::symbols::SymbolIndex;
-use crate::toolchain::AlToolchain;
+// Workspace-coupled glue parked in the hub crate. The lower-tier crates
+// (al-project, al-semantic) and the higher-tier al-test crate must never
+// reference `Workspace`, so the lifecycle glue, the doctor health check, and
+// the per-project test-result store live here alongside the hub they operate on.
+mod doctor;
+mod semantic_lifecycle;
+mod test_results;
+pub use doctor::{doctor, DoctorReport, ProjectInfo, ToolchainInfo};
+pub use semantic_lifecycle::{get_or_init_bridge, restart_bridge, set_builtins, shutdown_bridge};
+pub use test_results::TestResultStore;
+
+use al_project::project::AlProject;
+use al_semantic::BuiltinType;
+use al_symbols::SymbolIndex;
+use al_project::toolchain::AlToolchain;
 use dashmap::DashMap;
 use serde::Serialize;
 use tokio::sync::RwLock;
 
-use crate::config::AlConfig;
-use crate::documents::DocumentStore;
-use crate::file_index::FileIndex;
-use crate::insight::graph::InsightGraph;
-use crate::insight::index::CallGraph;
-use crate::semantic::SemanticCache;
+use al_project::config::AlConfig;
+use al_source::documents::DocumentStore;
+use al_source::file_index::FileIndex;
+use al_insight::graph::InsightGraph;
+use al_insight::index::CallGraph;
+use al_semantic::SemanticCache;
 
 /// Callback for surfacing bridge/toolchain notifications to the user.
 ///
@@ -61,7 +72,7 @@ pub struct Workspace {
     /// Discovered AL project (app.json manifest, packages).
     pub project: RwLock<Option<AlProject>>,
     /// .NET semantic bridge for CodeAnalysis features.
-    pub semantic: RwLock<Option<crate::semantic::SemanticBridge>>,
+    pub semantic: RwLock<Option<al_semantic::SemanticBridge>>,
     pub file_index: Arc<FileIndex>,
     /// Merged workspace configuration (settings from client + project defaults).
     pub config: RwLock<AlConfig>,
@@ -74,7 +85,7 @@ pub struct Workspace {
     pub package_info: std::sync::RwLock<Vec<PackageInfo>>,
     /// In-memory cache of builtin types indexed by name for O(1) lookups.
     pub semantic_cache: std::sync::RwLock<SemanticCache>,
-    pub debug_session: tokio::sync::Mutex<Option<crate::native_debug::NativeDebugSession>>,
+    pub debug_session: tokio::sync::Mutex<Option<al_dap::native_debug::NativeDebugSession>>,
     /// Optional callback for user-visible notifications (bridge failures, etc.).
     ///
     /// Set by al-lsp after workspace construction. In the LSP path the closure
@@ -99,16 +110,14 @@ pub struct Workspace {
     /// When a profile is loaded the hints are stored here so that `code_lens`
     /// can add timing/hit-count lenses alongside the reference-count lenses.
     /// `None` means no profile is active.
-    pub profiler_session:
-        std::sync::RwLock<Option<crate::queries::profiler_hints::ProfilerSession>>,
+    pub profiler_session: std::sync::RwLock<Option<al_types::ProfilerSession>>,
     /// Accumulated test results from the last (or current) test run.
     ///
     /// Uses `std::sync::RwLock` (not `tokio::sync::RwLock`) so sync query code
     /// can access it without `.await`. Wrapped in `Arc` so multiple async
     /// tasks (daemon dispatchers, code-lens queries) can share the underlying
     /// store cheaply without cloning records.
-    pub test_results:
-        std::sync::RwLock<Option<std::sync::Arc<crate::test_engine::TestResultStore>>>,
+    pub test_results: std::sync::RwLock<Option<std::sync::Arc<crate::TestResultStore>>>,
     /// Set of file paths that received `al-compiler` diagnostics in the
     /// most recent `al.compile` run. Used by the LSP `al.compile` handler
     /// to clear stale diagnostics: any file in this set absent from the
@@ -292,7 +301,7 @@ impl Workspace {
         let build = || {
             let mut graph = InsightGraph::new();
             graph.build_from_index(&self.symbols);
-            crate::insight::calls::register_workspace_nodes(
+            al_insight::calls::register_workspace_nodes(
                 &self.file_index,
                 &self.symbols,
                 &mut graph,
@@ -300,7 +309,7 @@ impl Workspace {
             let insight = Arc::new(graph);
 
             let mut cg = CallGraph::build_from_insight(&insight);
-            crate::insight::calls::populate_workspace_call_edges(
+            al_insight::calls::populate_workspace_call_edges(
                 &self.file_index,
                 &self.symbols,
                 &insight,
@@ -413,7 +422,7 @@ pub async fn initialize_core_workspace(
     // stat()/read_dir() calls a real BC workspace performs. block_in_place
     // is used because we hold a `&Workspace` borrow that cannot be moved into
     // spawn_blocking. The al-lsp runtime is multi-threaded.
-    let project_result = tokio::task::block_in_place(|| crate::project::find_project(project_root));
+    let project_result = tokio::task::block_in_place(|| al_project::project::find_project(project_root));
     match project_result {
         Ok(project) => {
             tracing::info!(
@@ -423,7 +432,7 @@ pub async fn initialize_core_workspace(
                 "workspace: project discovered"
             );
 
-            let cache = crate::symbols::cache::SymbolCache::default_location();
+            let cache = al_symbols::cache::SymbolCache::default_location();
             let loaded = workspace
                 .symbols
                 .load_packages_cached(&project.packages, &cache);
@@ -496,7 +505,7 @@ pub async fn initialize_core_workspace(
         }
     }
 
-    let has_toolchain = match crate::toolchain::find_toolchain() {
+    let has_toolchain = match al_project::toolchain::find_toolchain() {
         Ok(tc) => {
             tracing::info!(version = %tc.version, "workspace: toolchain found");
             *workspace.toolchain.write().await = Some(tc);
@@ -532,7 +541,7 @@ impl Default for Workspace {
 /// If `uri` is not a `file://` URI, the full composed symbol cache is invalidated
 /// as a safe fallback.
 pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
-    let result = crate::syntax::AlParser::parse_quick(text);
+    let result = al_syntax::AlParser::parse_quick(text);
 
     let version = workspace.documents.get_version(uri).unwrap_or(0);
     workspace
