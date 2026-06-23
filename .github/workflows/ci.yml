@@ -177,4 +177,4 @@ jobs:
             windows-al-lsp-cargo-
 
       - name: Build al-lsp (Windows, default features)
-        run: cargo build -p al-core --bin al-lsp
+        run: cargo build -p al-lsp --bin al-lsp

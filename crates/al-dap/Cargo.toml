@@ -1,0 +1,29 @@
+[package]
+name = "al-dap"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Native AL debug-adapter layer: headless Business Central debugging over REST + SignalR, plus the low-level DAP client for the EditorServices.Host proxy"
+repository.workspace = true
+[dependencies]
+al-types = { path = "../al-types", version = "0.1.0" }
+al-bc = { path = "../al-bc", version = "0.1.0" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+url = "2"
+# rustls-tls-native-roots keeps the SignalR websocket client off system-OpenSSL
+# (cross-compiles to aarch64); matches al-core's prior pin.
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+futures-util = "0.3"
+
+[dev-dependencies]
+# al-syntax is referenced only by a #[cfg(test)] assertion in native_dap.rs
+# (language_data::object_type_by_keyword); keep it out of the prod graph.
+al-syntax = { path = "../al-syntax", version = "0.1.0" }
+tempfile = "3"
+wiremock = "0.6"
+tokio = { workspace = true, features = ["full"] }

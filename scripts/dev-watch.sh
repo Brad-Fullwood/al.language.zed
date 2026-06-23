@@ -45,7 +45,7 @@ fi
 # "Bridge not initialized". The copy (not symlink) is what makes the install
 # immune to later feature-less `cargo build` invocations.
 NATIVE_BUILD="build --workspace --exclude zed-al $PROFILE_FLAG"
-SEMANTIC_BUILD="cargo build -p al-core --bin al-lsp --features semantic $PROFILE_FLAG && rm -f $INSTALL_DIR/al-lsp && cp -f target/$PROFILE_DIR/al-lsp $INSTALL_DIR/al-lsp"
+SEMANTIC_BUILD="cargo build -p al-lsp --bin al-lsp --features semantic $PROFILE_FLAG && rm -f $INSTALL_DIR/al-lsp && cp -f target/$PROFILE_DIR/al-lsp $INSTALL_DIR/al-lsp"
 WASM_BUILD="cargo build -p zed-al --target wasm32-wasip1 --release"
 BRIDGE_BUILD_ARGS=()
 if [ "$WATCH_BRIDGES" = "1" ]; then

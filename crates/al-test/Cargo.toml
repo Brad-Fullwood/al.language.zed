@@ -1,0 +1,33 @@
+[package]
+name = "al-test"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "AL test-execution engine: runs [Test] procedures through the pure-Rust interpreter or a live Business Central server, statically routes each test to the right backend, drives mutation testing, and serialises results to JUnit / Cobertura XML."
+repository.workspace = true
+[dependencies]
+al-types = { path = "../al-types", version = "0.1.0" }
+al-syntax = { path = "../al-syntax", version = "0.1.0" }
+al-bc = { path = "../al-bc", version = "0.1.0" }
+al-runtime = { path = "../al-runtime", version = "0.1.0" }
+al-workspace = { path = "../al-workspace", version = "0.1.0" }
+al-analysis = { path = "../al-analysis", version = "0.1.0" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+quick-xml = { workspace = true }
+reqwest = { workspace = true }
+tree-sitter = "0.25"
+url = "2"
+urlencoding = "2"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { workspace = true, features = ["full"] }
+wiremock = "0.6"
+
+[[bench]]
+name = "interpreter"
+harness = false

@@ -1,8 +1,9 @@
 [package]
 name = "al-protocol"
 version = "0.2.2"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [dependencies]

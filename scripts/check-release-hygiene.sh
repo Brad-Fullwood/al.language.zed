@@ -150,21 +150,21 @@ check_versions() {
     [ "${extension_version}" = "${root_version}" ] \
         || fail "extension.toml version (${extension_version}) != Cargo.toml version (${root_version})"
 
-    local tomls=(Cargo.toml crates/*/Cargo.toml)
-    local toml name version lock_version
-    for toml in "${tomls[@]}"; do
-        [ -f "${toml}" ] || continue
-        name="$(package_name "${toml}")"
-        version="$(package_version "${toml}")"
-        [ -n "${name}" ] || fail "could not parse package name from ${toml}"
-        [ -n "${version}" ] || fail "could not parse package version from ${toml}"
-        [ "${version}" = "${extension_version}" ] \
-            || fail "${toml} version (${version}) != extension.toml version (${extension_version})"
-        lock_version="$(lock_version_for "${name}")"
-        [ -n "${lock_version}" ] || fail "Cargo.lock has no package entry for ${name}"
-        [ "${lock_version}" = "${version}" ] \
-            || fail "Cargo.lock ${name} version (${lock_version}) != ${toml} version (${version})"
-    done
+    # The PRODUCT version lives on the root package (zed-al), extension.toml, and
+    # the al-lsp binary crate — these three must stay aligned. The library crates
+    # (al-types, al-syntax, al-bc, …) carry INDEPENDENT semver after the al-core
+    # split, so they are intentionally NOT held to the product version.
+    local product_toml="crates/al-lsp/Cargo.toml"
+    local product_version product_lock
+    [ -f "${product_toml}" ] || fail "missing ${product_toml} (al-lsp binary crate)"
+    product_version="$(package_version "${product_toml}")"
+    [ -n "${product_version}" ] || fail "could not parse version from ${product_toml}"
+    [ "${product_version}" = "${extension_version}" ] \
+        || fail "${product_toml} version (${product_version}) != extension.toml version (${extension_version})"
+    product_lock="$(lock_version_for al-lsp)"
+    [ -n "${product_lock}" ] || fail "Cargo.lock has no package entry for al-lsp"
+    [ "${product_lock}" = "${product_version}" ] \
+        || fail "Cargo.lock al-lsp version (${product_lock}) != ${product_toml} version (${product_version})"
 
     if [ -n "${TAG_NAME}" ]; then
         local tag="${TAG_NAME#refs/tags/}"

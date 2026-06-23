@@ -1,0 +1,20 @@
+[package]
+name = "al-syntax"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Tree-sitter-based AL (Business Central) syntax layer: parsing, AST navigation, formatting, folding, lint, complexity, semantic tokens"
+repository.workspace = true
+[dependencies]
+tree-sitter = "0.25"
+tree-sitter-al = { path = "../../tree-sitter-al", version = "0.1.0" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "parser"
+harness = false

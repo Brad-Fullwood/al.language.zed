@@ -100,9 +100,9 @@ pub fn cmd_pack_native(project_dir: Option<&str>, out: Option<&str>, json: bool)
     };
     // Our native compiler identifies itself in the manifest's <Build>.
     let compiler_version = concat!("al-explorer/", env!("CARGO_PKG_VERSION"));
-    let timestamp = al_core::emit::now_timestamp();
+    let timestamp = al_emit::now_timestamp();
 
-    let built = match al_core::emit::build_app_from_project(&dir, compiler_version, &timestamp) {
+    let built = match al_emit::build_app_from_project(&dir, compiler_version, &timestamp) {
         Ok(b) => b,
         Err(e) => return report_error(&format!("native pack failed: {e}"), json),
     };

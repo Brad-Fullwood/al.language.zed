@@ -19,7 +19,7 @@ INSTALL_DIR := $(HOME)/.local/bin
 ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
 
 # .NET bridge projects (quoted for paths with spaces)
-ALSEMANTIC_PROJ := "$(ROOT)/crates/al-core/bridge/AlBridge.csproj"
+ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
 WASM_BIN := $(ROOT)/target/wasm32-wasip1/release/zed_al.wasm
 
 .PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language clean
@@ -37,7 +37,7 @@ install: build
 	@# `rust`, whose last step produced the --features semantic binary.
 	@rm -f "$(INSTALL_DIR)/al-lsp"
 	@cp -f "$(LSP_BIN)" "$(INSTALL_DIR)/al-lsp"
-	@bdir=$$(ls -dt target/debug/build/al-core-*/out/bridge 2>/dev/null | head -1); \
+	@bdir=$$(ls -dt target/debug/build/al-semantic-*/out/bridge 2>/dev/null | head -1); \
 	 if [ -n "$$bdir" ]; then rm -rf "$(INSTALL_DIR)/bridge"; cp -r "$$bdir" "$(INSTALL_DIR)/bridge"; fi
 	@echo "Installed al-lsp (semantic, copied) -> $(INSTALL_DIR)/al-lsp"
 	@if [ ! -L "$(INSTALL_DIR)/al-explorer" ] && [ ! -f "$(INSTALL_DIR)/al-explorer" ]; then \
@@ -88,11 +88,11 @@ install: build
 # after `cargo clean`. Run this after editing al-core to refresh Zed's binary.
 install-lsp:
 	@echo "=== Rebuild + reinstall semantic al-lsp ==="
-	cargo build -p al-core --bin al-lsp --features semantic
+	cargo build -p al-lsp --bin al-lsp --features semantic
 	@mkdir -p $(INSTALL_DIR)
 	@rm -f "$(INSTALL_DIR)/al-lsp"
 	@cp -f "$(LSP_BIN)" "$(INSTALL_DIR)/al-lsp"
-	@bdir=$$(ls -dt target/debug/build/al-core-*/out/bridge 2>/dev/null | head -1); \
+	@bdir=$$(ls -dt target/debug/build/al-semantic-*/out/bridge 2>/dev/null | head -1); \
 	 if [ -n "$$bdir" ]; then rm -rf "$(INSTALL_DIR)/bridge"; cp -r "$$bdir" "$(INSTALL_DIR)/bridge"; echo "  bridge: $$bdir"; fi
 	@echo "Reinstalled semantic al-lsp -> $(INSTALL_DIR)/al-lsp"
 	@echo "Restart the AL language server in Zed (or reopen the .al file) to load it."
@@ -126,7 +126,7 @@ rust:
 	@echo "=== Building all Rust crates ==="
 	cargo build --workspace --exclude zed-al
 	@echo "=== Building al-lsp with semantic (.NET CLR) support ==="
-	cargo build -p al-core --bin al-lsp --features semantic
+	cargo build -p al-lsp --bin al-lsp --features semantic
 
 # ── Build WASM extension ─────────────────────────────────────────
 wasm:
