@@ -243,8 +243,7 @@ pub fn find_event_subscriber_references(
             .nth(2);
         if let Some(arg) = event_arg {
             if let Ok(arg_text) = arg.utf8_text(source) {
-                if crate::clean_attr_arg(arg_text).eq_ignore_ascii_case(event_name)
-                {
+                if crate::clean_attr_arg(arg_text).eq_ignore_ascii_case(event_name) {
                     refs.push(arg.range());
                 }
             }

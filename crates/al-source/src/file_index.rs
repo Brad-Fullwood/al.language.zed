@@ -166,7 +166,10 @@ impl FileIndex {
 
     /// Returns the symbols extracted at index time. Falls back to extracting
     /// from the cached parse tree if symbols were not cached (shouldn't happen).
-    pub fn get_cached_symbols(&self, path: &Path) -> Option<Vec<al_syntax::types::SyntaxDocumentSymbol>> {
+    pub fn get_cached_symbols(
+        &self,
+        path: &Path,
+    ) -> Option<Vec<al_syntax::types::SyntaxDocumentSymbol>> {
         if let Some(entry) = self.file_symbols.get(path) {
             return Some(entry.value().clone());
         }
@@ -572,6 +575,7 @@ fn al_file_exceeds_cap(path: &Path) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)] // ProcedureSource impl + iter_parsed follow (crate extraction)
 mod tests {
     use super::*;
     use std::fs;

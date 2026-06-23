@@ -619,8 +619,7 @@ fn add_parameter_hints(
         let row = child.start_position().row;
         let line_text = source_line(source, row);
         // tree-sitter column is a UTF-8 byte offset; LSP Position uses UTF-16 code units.
-        let character =
-            al_syntax::byte_col_to_utf16_col(line_text, child.start_position().column);
+        let character = al_syntax::byte_col_to_utf16_col(line_text, child.start_position().column);
         hints.push(AlInlayHint {
             position: Position {
                 line: row as u32,

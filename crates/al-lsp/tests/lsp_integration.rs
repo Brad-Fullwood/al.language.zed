@@ -6,11 +6,11 @@
 
 use std::path::PathBuf;
 
-use al_core::symbols::{
+use al_lsp::symbols::{
     EnumValueSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry,
     SymbolIndex,
 };
-use al_core::syntax::{
+use al_lsp::syntax::{
     AlParser, FormatOptions, SyntaxFoldingRange, SyntaxFoldingRangeKind, SyntaxSymbolKind,
 };
 use tower_lsp::lsp_types::*;
@@ -258,7 +258,7 @@ fn build_test_index() -> SymbolIndex {
 
 #[test]
 fn document_store_open_change_close_lifecycle() {
-    let store = al_core::documents::DocumentStore::new();
+    let store = al_lsp::documents::DocumentStore::new();
     let uri = Url::parse("file:///test/lifecycle.al").unwrap();
 
     store.open(uri.clone(), SIMPLE_CODEUNIT.to_string());
@@ -274,8 +274,8 @@ fn document_store_open_change_close_lifecycle() {
 
     store.apply_changes(
         &uri,
-        &[al_core::documents::TextChange {
-            range: Some(al_core::documents::TextRange {
+        &[al_lsp::documents::TextChange {
+            range: Some(al_lsp::documents::TextRange {
                 start_line: line,
                 start_character: col as u32,
                 end_line: line,
@@ -355,7 +355,7 @@ fn syntax_error_to_lsp_diagnostic_conversion() {
     let diagnostics: Vec<Diagnostic> = result
         .errors
         .iter()
-        .map(|e| al_core::server::diagnostics::syntax_error_to_diagnostic(e, src_bytes))
+        .map(|e| al_lsp::server::diagnostics::syntax_error_to_diagnostic(e, src_bytes))
         .collect();
 
     assert!(!diagnostics.is_empty());
@@ -381,7 +381,7 @@ fn lint_diagnostics_convert_to_lsp() {
 
     let mut parser = make_parser();
     let result = parser.parse(code);
-    let lints = al_core::syntax::lint(&result.tree, code);
+    let lints = al_lsp::syntax::lint(&result.tree, code);
 
     assert!(
         lints.is_empty(),
@@ -393,7 +393,7 @@ fn lint_diagnostics_convert_to_lsp() {
     let src_bytes = code.as_bytes();
     let diagnostics: Vec<Diagnostic> = lints
         .iter()
-        .map(|l| al_core::server::diagnostics::lint_to_diagnostic(l, src_bytes))
+        .map(|l| al_lsp::server::diagnostics::lint_to_diagnostic(l, src_bytes))
         .collect();
     assert!(diagnostics.is_empty(), "no lint diagnostics expected");
 }
@@ -453,7 +453,7 @@ fn symbol_index_get_by_kind() {
 fn document_symbols_from_codeunit() {
     let mut parser = make_parser();
     let result = parser.parse(SIMPLE_CODEUNIT);
-    let symbols = al_core::syntax::extract_document_symbols(&result.tree, SIMPLE_CODEUNIT);
+    let symbols = al_lsp::syntax::extract_document_symbols(&result.tree, SIMPLE_CODEUNIT);
 
     assert_eq!(symbols.len(), 1, "Should have one top-level object");
 
@@ -483,7 +483,7 @@ fn document_symbols_from_codeunit() {
 fn document_symbols_from_page() {
     let mut parser = make_parser();
     let result = parser.parse(PAGE_AL);
-    let symbols = al_core::syntax::extract_document_symbols(&result.tree, PAGE_AL);
+    let symbols = al_lsp::syntax::extract_document_symbols(&result.tree, PAGE_AL);
 
     assert_eq!(symbols.len(), 1);
     let obj = &symbols[0];
@@ -495,7 +495,7 @@ fn document_symbols_from_page() {
 fn document_symbols_from_codeunit_with_events() {
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
-    let symbols = al_core::syntax::extract_document_symbols(&result.tree, CODEUNIT_AL);
+    let symbols = al_lsp::syntax::extract_document_symbols(&result.tree, CODEUNIT_AL);
 
     assert_eq!(symbols.len(), 1);
     let obj = &symbols[0];
@@ -515,20 +515,20 @@ fn document_symbols_from_codeunit_with_events() {
 fn semantic_tokens_cover_all_token_types() {
     let mut parser = make_parser();
     let result = parser.parse(SIMPLE_CODEUNIT);
-    let tokens = al_core::syntax::extract_semantic_tokens(&result.tree, SIMPLE_CODEUNIT);
+    let tokens = al_lsp::syntax::extract_semantic_tokens(&result.tree, SIMPLE_CODEUNIT);
 
     assert!(!tokens.is_empty(), "Should produce semantic tokens");
 
     // Keywords are now deferred to tree-sitter highlights.scm; no KEYWORD semantic tokens.
     let has_string = tokens
         .iter()
-        .any(|t| t.token_type == al_core::syntax::tokens::token_types::STRING);
+        .any(|t| t.token_type == al_lsp::syntax::tokens::token_types::STRING);
     let has_number = tokens
         .iter()
-        .any(|t| t.token_type == al_core::syntax::tokens::token_types::NUMBER);
+        .any(|t| t.token_type == al_lsp::syntax::tokens::token_types::NUMBER);
     let has_function = tokens
         .iter()
-        .any(|t| t.token_type == al_core::syntax::tokens::token_types::FUNCTION);
+        .any(|t| t.token_type == al_lsp::syntax::tokens::token_types::FUNCTION);
 
     assert!(
         has_string,
@@ -555,7 +555,7 @@ fn semantic_tokens_cover_all_token_types() {
 fn semantic_tokens_delta_encoding_is_valid() {
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
-    let tokens = al_core::syntax::extract_semantic_tokens(&result.tree, CODEUNIT_AL);
+    let tokens = al_lsp::syntax::extract_semantic_tokens(&result.tree, CODEUNIT_AL);
 
     let mut abs_line: u32 = 0;
     let mut abs_col: u32 = 0;
@@ -582,7 +582,7 @@ fn semantic_tokens_delta_encoding_is_valid() {
 fn folding_ranges_cover_structural_elements() {
     let mut parser = make_parser();
     let result = parser.parse(SIMPLE_CODEUNIT);
-    let ranges = al_core::syntax::extract_folding_ranges(&result.tree, SIMPLE_CODEUNIT);
+    let ranges = al_lsp::syntax::extract_folding_ranges(&result.tree, SIMPLE_CODEUNIT);
 
     assert!(
         !ranges.is_empty(),
@@ -615,7 +615,7 @@ codeunit 50100 Test
 
     let mut parser = make_parser();
     let result = parser.parse(code);
-    let ranges = al_core::syntax::extract_folding_ranges(&result.tree, code);
+    let ranges = al_lsp::syntax::extract_folding_ranges(&result.tree, code);
 
     let comment_ranges: Vec<&SyntaxFoldingRange> = ranges
         .iter()
@@ -631,9 +631,9 @@ codeunit 50100 Test
 #[test]
 fn formatting_idempotent() {
     let opts = FormatOptions::default();
-    let first = al_core::syntax::format_al(SIMPLE_CODEUNIT, &opts);
+    let first = al_lsp::syntax::format_al(SIMPLE_CODEUNIT, &opts);
 
-    let second = al_core::syntax::format_al(&first, &opts);
+    let second = al_lsp::syntax::format_al(&first, &opts);
 
     assert_eq!(
         first, second,
@@ -644,8 +644,8 @@ fn formatting_idempotent() {
 #[test]
 fn formatting_page_idempotent() {
     let opts = FormatOptions::default();
-    let first = al_core::syntax::format_al(PAGE_AL, &opts);
-    let second = al_core::syntax::format_al(&first, &opts);
+    let first = al_lsp::syntax::format_al(PAGE_AL, &opts);
+    let second = al_lsp::syntax::format_al(&first, &opts);
 
     assert_eq!(first, second, "Page formatting should be idempotent");
 }
@@ -653,8 +653,8 @@ fn formatting_page_idempotent() {
 #[test]
 fn formatting_codeunit_idempotent() {
     let opts = FormatOptions::default();
-    let first = al_core::syntax::format_al(CODEUNIT_AL, &opts);
-    let second = al_core::syntax::format_al(&first, &opts);
+    let first = al_lsp::syntax::format_al(CODEUNIT_AL, &opts);
+    let second = al_lsp::syntax::format_al(&first, &opts);
 
     assert_eq!(first, second, "Codeunit formatting should be idempotent");
 }
@@ -662,7 +662,7 @@ fn formatting_codeunit_idempotent() {
 #[test]
 fn formatting_produces_valid_parseable_output() {
     let opts = FormatOptions::default();
-    let formatted = al_core::syntax::format_al(SIMPLE_CODEUNIT, &opts);
+    let formatted = al_lsp::syntax::format_al(SIMPLE_CODEUNIT, &opts);
 
     let mut parser = make_parser();
     let result = parser.parse(&formatted);
@@ -679,7 +679,7 @@ fn lint_returns_empty_for_codeunit() {
     // Native lint rules have been removed — lint() always returns empty.
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
-    let lints = al_core::syntax::lint(&result.tree, CODEUNIT_AL);
+    let lints = al_lsp::syntax::lint(&result.tree, CODEUNIT_AL);
     assert!(
         lints.is_empty(),
         "lint() must return empty Vec (rules removed): {:?}",
@@ -700,7 +700,7 @@ fn lint_returns_empty_for_naming_violation() {
 
     let mut parser = make_parser();
     let result = parser.parse(code);
-    let lints = al_core::syntax::lint(&result.tree, code);
+    let lints = al_lsp::syntax::lint(&result.tree, code);
     assert!(
         lints.is_empty(),
         "lint() must return empty Vec (naming rule removed): {:?}",
@@ -727,7 +727,7 @@ fn lint_returns_empty_for_clean_code() {
 
     let mut parser = make_parser();
     let result = parser.parse(code);
-    let lints = al_core::syntax::lint(&result.tree, code);
+    let lints = al_lsp::syntax::lint(&result.tree, code);
     assert!(
         lints.is_empty(),
         "lint() must return empty Vec: {:?}",
@@ -739,7 +739,7 @@ fn lint_returns_empty_for_clean_code() {
 fn find_object_declaration_in_page() {
     let mut parser = make_parser();
     let result = parser.parse(PAGE_AL);
-    let obj = al_core::syntax::find_object_declaration(&result.tree, PAGE_AL);
+    let obj = al_lsp::syntax::find_object_declaration(&result.tree, PAGE_AL);
 
     assert!(obj.is_some(), "Should find object declaration in page");
     let obj = obj.unwrap();
@@ -752,7 +752,7 @@ fn find_object_declaration_in_page() {
 fn find_object_declaration_in_codeunit() {
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
-    let obj = al_core::syntax::find_object_declaration(&result.tree, CODEUNIT_AL);
+    let obj = al_lsp::syntax::find_object_declaration(&result.tree, CODEUNIT_AL);
 
     assert!(obj.is_some(), "Should find object declaration in codeunit");
     let obj = obj.unwrap();
@@ -766,14 +766,14 @@ fn find_variable_references_in_codeunit() {
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
 
-    let refs = al_core::syntax::find_variable_references(&result.tree, CODEUNIT_AL, "SalesHeader");
+    let refs = al_lsp::syntax::find_variable_references(&result.tree, CODEUNIT_AL, "SalesHeader");
     assert!(
         refs.len() >= 3,
         "SalesHeader should appear in multiple places (parameter + usage), got {}",
         refs.len()
     );
 
-    let refs = al_core::syntax::find_variable_references(&result.tree, CODEUNIT_AL, "TotalAmount");
+    let refs = al_lsp::syntax::find_variable_references(&result.tree, CODEUNIT_AL, "TotalAmount");
     assert!(
         refs.len() >= 2,
         "TotalAmount should appear in declaration + usage, got {}",
@@ -822,7 +822,7 @@ fn workspace_scans_al_files() {
     let result = parser.parse(&content);
     assert!(result.errors.is_empty(), "Test file should parse cleanly");
 
-    let obj = al_core::syntax::find_object_declaration(&result.tree, &content);
+    let obj = al_lsp::syntax::find_object_declaration(&result.tree, &content);
     assert!(obj.is_some());
     assert_eq!(obj.unwrap().name, "My Table");
 
@@ -841,7 +841,7 @@ end;
 }"#;
 
     let opts = FormatOptions::default();
-    let formatted = al_core::syntax::format_al(unformatted, &opts);
+    let formatted = al_lsp::syntax::format_al(unformatted, &opts);
     assert_ne!(formatted, unformatted, "Formatting should change the code");
 
     let mut parser = make_parser();
@@ -851,10 +851,10 @@ end;
         "Formatted code should parse without errors"
     );
 
-    let lints = al_core::syntax::lint(&result.tree, &formatted);
-    let errors: Vec<&al_core::syntax::LintDiagnostic> = lints
+    let lints = al_lsp::syntax::lint(&result.tree, &formatted);
+    let errors: Vec<&al_lsp::syntax::LintDiagnostic> = lints
         .iter()
-        .filter(|l| l.severity == al_core::syntax::LintSeverity::Error)
+        .filter(|l| l.severity == al_lsp::syntax::LintSeverity::Error)
         .collect();
     assert!(
         errors.is_empty(),
@@ -862,7 +862,7 @@ end;
         errors
     );
 
-    let symbols = al_core::syntax::extract_document_symbols(&result.tree, &formatted);
+    let symbols = al_lsp::syntax::extract_document_symbols(&result.tree, &formatted);
     assert_eq!(symbols.len(), 1);
     assert_eq!(symbols[0].name, "Test");
 }
@@ -899,7 +899,7 @@ fn fixture_test_al_parses_correctly() {
         result.errors
     );
 
-    let obj = al_core::syntax::find_object_declaration(&result.tree, &content);
+    let obj = al_lsp::syntax::find_object_declaration(&result.tree, &content);
     assert!(obj.is_some());
     let obj = obj.unwrap();
     assert_eq!(obj.kind, "codeunit");
@@ -917,7 +917,7 @@ fn fixture_test_al_parses_correctly() {
 
 /// Helper: simulate the lint JSON serialization performed by `lint_diag_to_json`
 /// in `al-lsp/src/daemon/mod.rs`.
-fn lint_diag_to_json_test(d: &al_core::syntax::LintDiagnostic) -> serde_json::Value {
+fn lint_diag_to_json_test(d: &al_lsp::syntax::LintDiagnostic) -> serde_json::Value {
     serde_json::json!({
         "code": d.code,
         "message": d.message,
@@ -929,7 +929,7 @@ fn lint_diag_to_json_test(d: &al_core::syntax::LintDiagnostic) -> serde_json::Va
     })
 }
 
-fn hover_result_to_json(r: &al_core::queries::hover::HoverResult) -> serde_json::Value {
+fn hover_result_to_json(r: &al_lsp::queries::hover::HoverResult) -> serde_json::Value {
     serde_json::json!({
         "contents": r.contents,
         "range": r.range.map(|rng| serde_json::json!({
@@ -939,7 +939,7 @@ fn hover_result_to_json(r: &al_core::queries::hover::HoverResult) -> serde_json:
     })
 }
 
-fn locations_to_json(locations: &[al_core::queries::Location]) -> serde_json::Value {
+fn locations_to_json(locations: &[al_lsp::queries::Location]) -> serde_json::Value {
     serde_json::json!(locations
         .iter()
         .map(|l| serde_json::json!({
@@ -957,7 +957,7 @@ fn json_schema_format_output_has_required_fields() {
     // dispatch_format returns {"formatted": string, "changed": bool}
     let content = "codeunit 50100 Test\n{\nprocedure Foo()\nbegin\nend;\n}\n";
     let opts = FormatOptions::default();
-    let formatted = al_core::syntax::format_al(content, &opts);
+    let formatted = al_lsp::syntax::format_al(content, &opts);
     let changed = formatted != content;
 
     let json = serde_json::json!({
@@ -985,7 +985,7 @@ fn json_schema_format_check_output_shape() {
     // dispatch_format with check=true returns {"changed": bool} only
     let content = "codeunit 50100 Test\n{\nprocedure Foo()\nbegin\nend;\n}\n";
     let opts = FormatOptions::default();
-    let formatted = al_core::syntax::format_al(content, &opts);
+    let formatted = al_lsp::syntax::format_al(content, &opts);
     let changed = formatted != content;
 
     let json = serde_json::json!({ "changed": changed });
@@ -1001,7 +1001,7 @@ fn json_schema_format_check_output_shape() {
 fn json_schema_format_changed_is_false_for_already_formatted_input() {
     let formatted_content = "codeunit 50100 Test\n{\n    procedure Foo()\n    begin\n    end;\n}\n";
     let opts = FormatOptions::default();
-    let formatted = al_core::syntax::format_al(formatted_content, &opts);
+    let formatted = al_lsp::syntax::format_al(formatted_content, &opts);
     let changed = formatted != formatted_content;
 
     let json = serde_json::json!({ "formatted": formatted, "changed": changed });
@@ -1015,8 +1015,8 @@ fn json_schema_format_changed_is_false_for_already_formatted_input() {
 fn json_schema_lint_output_is_array() {
     // dispatch_lint returns a JSON array of diagnostic objects
     let content = "codeunit 50100 Test\n{\n    procedure Foo()\n    begin\n    end;\n}\n";
-    let result = al_core::syntax::AlParser::parse_quick(content);
-    let diagnostics = al_core::syntax::lint(&result.tree, content);
+    let result = al_lsp::syntax::AlParser::parse_quick(content);
+    let diagnostics = al_lsp::syntax::lint(&result.tree, content);
     let json_diags: Vec<serde_json::Value> =
         diagnostics.iter().map(lint_diag_to_json_test).collect();
     let json = serde_json::json!(json_diags);
@@ -1028,8 +1028,8 @@ fn json_schema_lint_output_is_array() {
 fn json_schema_lint_diagnostic_has_required_fields() {
     // Each diagnostic must have code, message, severity, line, column, endLine, endColumn
     let content = "codeunit 50100 Test\n{\nprocedure Foo()\nbegin\nend;\n}\n";
-    let result = al_core::syntax::AlParser::parse_quick(content);
-    let diagnostics = al_core::syntax::lint(&result.tree, content);
+    let result = al_lsp::syntax::AlParser::parse_quick(content);
+    let diagnostics = al_lsp::syntax::lint(&result.tree, content);
 
     for d in &diagnostics {
         let json = lint_diag_to_json_test(d);
@@ -1067,8 +1067,8 @@ fn json_schema_lint_diagnostic_has_required_fields() {
 fn json_schema_lint_line_numbers_are_one_based() {
     // The schema mandates 1-based line/column numbers
     let content = "codeunit 50100 Test\n{\n    procedure Foo()\n    begin\n    end;\n}\n";
-    let result = al_core::syntax::AlParser::parse_quick(content);
-    let diagnostics = al_core::syntax::lint(&result.tree, content);
+    let result = al_lsp::syntax::AlParser::parse_quick(content);
+    let diagnostics = al_lsp::syntax::lint(&result.tree, content);
 
     for d in &diagnostics {
         let json = lint_diag_to_json_test(d);
@@ -1127,7 +1127,7 @@ fn json_schema_search_empty_query_returns_all() {
 #[test]
 fn json_schema_hover_result_has_contents_and_range() {
     // dispatch_hover serializes HoverResult to {"contents": string, "range": object|null}
-    use al_core::workspace::Workspace;
+    use al_lsp::workspace::Workspace;
     use url::Url;
 
     let ws = Workspace::new();
@@ -1135,11 +1135,11 @@ fn json_schema_hover_result_has_contents_and_range() {
     ws.documents.open(uri.clone(), SIMPLE_CODEUNIT.to_string());
 
     // Hover at (0, 0) — on "codeunit" keyword. May return None.
-    let pos = al_core::queries::Position {
+    let pos = al_lsp::queries::Position {
         line: 0,
         character: 0,
     };
-    let result = al_core::queries::hover::hover(&ws, &uri, pos);
+    let result = al_lsp::queries::hover::hover(&ws, &uri, pos);
 
     if let Some(r) = result {
         let json = hover_result_to_json(&r);
@@ -1163,8 +1163,8 @@ fn json_schema_hover_result_has_contents_and_range() {
 
 #[test]
 fn json_schema_hover_result_serializes_to_object() {
-    use al_core::queries::hover::HoverResult;
-    use al_core::queries::{Position, Range};
+    use al_lsp::queries::hover::HoverResult;
+    use al_lsp::queries::{Position, Range};
 
     let result = HoverResult {
         contents: "```al\nprocedure HelloWorld()\n```".to_string(),
@@ -1193,7 +1193,7 @@ fn json_schema_hover_result_serializes_to_object() {
 #[test]
 fn json_schema_definition_output_is_array() {
     // dispatch_definition returns an array of location objects (or null)
-    use al_core::queries::{Location, Position, Range};
+    use al_lsp::queries::{Location, Position, Range};
     use url::Url;
 
     let locations = vec![
@@ -1252,7 +1252,7 @@ fn json_schema_definition_output_is_array() {
 
 #[test]
 fn json_schema_definition_location_line_numbers_match() {
-    use al_core::queries::{Location, Position, Range};
+    use al_lsp::queries::{Location, Position, Range};
     use url::Url;
 
     let locations = vec![Location {
@@ -1281,7 +1281,7 @@ fn json_schema_definition_location_line_numbers_match() {
 
 #[test]
 fn json_schema_definition_empty_locations_serializes_to_empty_array() {
-    let locations: Vec<al_core::queries::Location> = vec![];
+    let locations: Vec<al_lsp::queries::Location> = vec![];
     let json = locations_to_json(&locations);
     assert!(json.is_array(), "empty locations must be a JSON array");
     assert_eq!(json.as_array().unwrap().len(), 0, "should be empty array");
@@ -1289,16 +1289,16 @@ fn json_schema_definition_empty_locations_serializes_to_empty_array() {
 
 #[test]
 fn suggest_event_integration_procedure_query() {
-    let ws = al_core::workspace::Workspace::new();
+    let ws = al_lsp::workspace::Workspace::new();
 
-    ws.symbols.add_entries(&[al_core::symbols::SymbolEntry {
-        kind: al_core::symbols::ObjectKind::Codeunit,
+    ws.symbols.add_entries(&[al_lsp::symbols::SymbolEntry {
+        kind: al_lsp::symbols::ObjectKind::Codeunit,
         id: 80,
         name: "Sales-Post".to_string(),
         methods: vec![
-            al_core::symbols::MethodSymbol {
+            al_lsp::symbols::MethodSymbol {
                 name: "PostSalesDoc".to_string(),
-                parameters: vec![al_core::symbols::ParameterSymbol {
+                parameters: vec![al_lsp::symbols::ParameterSymbol {
                     name: "SalesHeader".to_string(),
                     type_name: "Record \"Sales Header\"".to_string(),
                     is_var: true,
@@ -1307,15 +1307,15 @@ fn suggest_event_integration_procedure_query() {
                 attributes: vec![],
                 is_local: false,
             },
-            al_core::symbols::MethodSymbol {
+            al_lsp::symbols::MethodSymbol {
                 name: "OnAfterPostSalesDoc".to_string(),
-                parameters: vec![al_core::symbols::ParameterSymbol {
+                parameters: vec![al_lsp::symbols::ParameterSymbol {
                     name: "SalesHeader".to_string(),
                     type_name: "Record \"Sales Header\"".to_string(),
                     is_var: true,
                 }],
                 return_type: None,
-                attributes: vec![al_core::symbols::AttributeSymbol {
+                attributes: vec![al_lsp::symbols::AttributeSymbol {
                     name: "IntegrationEvent".to_string(),
                     arguments: vec!["false".into(), "false".into()],
                 }],
@@ -1325,7 +1325,7 @@ fn suggest_event_integration_procedure_query() {
         ..Default::default()
     }]);
 
-    use al_core::queries::suggest_event::*;
+    use al_lsp::queries::suggest_event::*;
 
     let result = suggest_event(
         &ws,
@@ -1403,7 +1403,7 @@ fn suggest_event_integration_procedure_query() {
 ///   WithReturn(), WithParams(), MultiReturn().
 #[test]
 fn suggest_event_real_workspace_files() {
-    use al_core::queries::suggest_event::*;
+    use al_lsp::queries::suggest_event::*;
 
     let test_project =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../al-test-harness/data/test_al_project");
@@ -1413,7 +1413,7 @@ fn suggest_event_real_workspace_files() {
         test_project.display()
     );
 
-    let ws = al_core::workspace::Workspace::new();
+    let ws = al_lsp::workspace::Workspace::new();
 
     let file_count = ws.file_index.scan(&test_project);
     assert!(file_count > 0, "Should find .al files in test project");
@@ -1557,14 +1557,14 @@ fn suggest_event_real_workspace_files() {
     );
     assert!(cg.node_count() > 0, "CallGraph should have nodes");
 
-    use al_core::insight::graph::NodeKey;
+    use al_lsp::insight::graph::NodeKey;
     let calls_others_key = NodeKey::Procedure(
         ObjectKind::Codeunit,
         "multi procedure".to_string(),
         "callsothers".to_string(),
     );
     if let Some(calls_others_id) =
-        al_core::insight::index::CallGraph::node_id_for(&insight, &calls_others_key)
+        al_lsp::insight::index::CallGraph::node_id_for(&insight, &calls_others_key)
     {
         let callees = cg.callees_of(calls_others_id);
         println!("CallsOthers has {} outgoing edges:", callees.len());

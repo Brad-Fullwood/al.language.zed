@@ -6,7 +6,7 @@
 
 use std::io::{Cursor, Write};
 
-use al_core::symbols::{
+use al_lsp::symbols::{
     get_composed, get_events, read_app_bytes, read_app_file, EventType, ObjectKind, SymbolIndex,
 };
 use zip::write::SimpleFileOptions;

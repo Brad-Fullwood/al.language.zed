@@ -418,8 +418,6 @@ pub fn validate_toolchain(tc: &AlToolchain) -> ToolchainValidation {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,8 +562,6 @@ mod tests {
         assert_eq!(result.analyzers_found, 0);
         assert_eq!(result.issues.len(), 2); // alc + code_analysis
     }
-
-
 
     /// Build a minimal tools/net8.0/any layout under the given store with
     /// the Microsoft package prefix; returns the leaf tools dir.

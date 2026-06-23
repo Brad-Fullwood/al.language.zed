@@ -11,8 +11,11 @@ use std::fs;
 /// core data structures" rule from CLAUDE.md.
 #[test]
 fn test_cached_procedure_info_does_not_embed_tower_lsp_range() {
-    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/file_index.rs"))
-        .expect("failed to read file_index.rs");
+    let source = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../al-source/src/file_index.rs"
+    ))
+    .expect("failed to read file_index.rs");
 
     // Find the CachedProcedureInfo struct block.
     // We look for the pattern `tower_lsp::lsp_types::Range` appearing as a field
@@ -25,7 +28,7 @@ fn test_cached_procedure_info_does_not_embed_tower_lsp_range() {
         "CachedProcedureInfo in file_index.rs still has a field typed \
          `tower_lsp::lsp_types::Range`. al-core data structures must not \
          embed tower_lsp types. Replace with a crate-local range type \
-         (e.g., `al_core::queries::Range` or a plain `[u32; 4]`)."
+         (e.g., `al_lsp::queries::Range` or a plain `[u32; 4]`)."
     );
 }
 
@@ -33,10 +36,13 @@ fn test_cached_procedure_info_does_not_embed_tower_lsp_range() {
 /// (detects mis-configured CARGO_MANIFEST_DIR or missing file).
 #[test]
 fn test_file_index_source_is_readable() {
-    let result = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/file_index.rs"));
+    let result = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../al-source/src/file_index.rs"
+    ));
     assert!(
         result.is_ok(),
-        "Could not read crates/al-core/src/file_index.rs — path assumption is wrong"
+        "Could not read crates/al-source/src/file_index.rs — path assumption is wrong"
     );
 }
 
@@ -45,8 +51,11 @@ fn test_file_index_source_is_readable() {
 /// violating the dependency-direction rule (al-core must not embed LSP wire types).
 #[test]
 fn test_file_index_does_not_embed_tower_lsp_document_symbol() {
-    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/file_index.rs"))
-        .expect("failed to read file_index.rs");
+    let source = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../al-source/src/file_index.rs"
+    ))
+    .expect("failed to read file_index.rs");
 
     // Check the file_symbols field declaration line specifically.
     // We scan line by line so we only flag the field declaration, not comments.
@@ -82,8 +91,11 @@ fn test_file_index_does_not_embed_tower_lsp_document_symbol() {
 /// the next 10 lines for the return type.  This handles multi-line signatures.
 #[test]
 fn test_resolution_helpers_do_not_return_tower_lsp_completion_item() {
-    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/resolution.rs"))
-        .expect("failed to read resolution.rs");
+    let source = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../al-analysis/src/resolution.rs"
+    ))
+    .expect("failed to read resolution.rs");
 
     let helpers = [
         "completion_items_for_receiver",
@@ -121,10 +133,13 @@ fn test_resolution_helpers_do_not_return_tower_lsp_completion_item() {
 /// Negative guard: resolution.rs must be readable (detects path misconfiguration).
 #[test]
 fn test_resolution_source_is_readable() {
-    let result = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/resolution.rs"));
+    let result = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../al-analysis/src/resolution.rs"
+    ));
     assert!(
         result.is_ok(),
-        "Could not read crates/al-core/src/resolution.rs — path assumption is wrong"
+        "Could not read crates/al-analysis/src/resolution.rs — path assumption is wrong"
     );
 }
 
@@ -135,7 +150,7 @@ fn test_resolution_source_is_readable() {
 fn test_document_symbols_does_not_return_tower_lsp_response() {
     let source = fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/queries/symbols.rs"
+        "/../al-analysis/src/queries/symbols.rs"
     ))
     .expect("failed to read queries/symbols.rs");
     let fn_pos = source
@@ -157,7 +172,7 @@ fn test_document_symbols_does_not_return_tower_lsp_response() {
 fn test_folding_ranges_does_not_return_tower_lsp_folding_range() {
     let source = fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/queries/folding.rs"
+        "/../al-analysis/src/queries/folding.rs"
     ))
     .expect("failed to read queries/folding.rs");
     let fn_pos = source
@@ -179,7 +194,7 @@ fn test_folding_ranges_does_not_return_tower_lsp_folding_range() {
 fn test_inlay_hints_does_not_return_tower_lsp_inlay_hint() {
     let source = fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/queries/inlay_hints.rs"
+        "/../al-analysis/src/queries/inlay_hints.rs"
     ))
     .expect("failed to read queries/inlay_hints.rs");
     let fn_pos = source
@@ -202,7 +217,7 @@ fn test_inlay_hints_does_not_return_tower_lsp_inlay_hint() {
 fn test_workspace_child_search_result_does_not_embed_tower_lsp_types() {
     let source = fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/queries/search.rs"
+        "/../al-analysis/src/queries/search.rs"
     ))
     .expect("failed to read queries/search.rs");
     let struct_pos = source
@@ -235,8 +250,11 @@ fn test_workspace_child_search_result_does_not_embed_tower_lsp_types() {
 /// run the 50–200 ms build and discard all but one result.
 #[test]
 fn test_get_or_build_insight_graph_uses_double_checked_locking() {
-    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/workspace.rs"))
-        .expect("failed to read workspace.rs");
+    let source = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../al-workspace/src/lib.rs"
+    ))
+    .expect("failed to read workspace.rs");
 
     let fn_pos = source
         .find("fn get_or_build_insight_graph")
@@ -277,8 +295,11 @@ fn test_get_or_build_insight_graph_uses_double_checked_locking() {
 /// surface immediately.
 #[test]
 fn test_get_or_build_call_graph_uses_build_coordination_mutex() {
-    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/workspace.rs"))
-        .expect("failed to read workspace.rs");
+    let source = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../al-workspace/src/lib.rs"
+    ))
+    .expect("failed to read workspace.rs");
 
     // The dedicated build-coordination lock field must exist.
     assert!(
@@ -325,8 +346,11 @@ fn test_get_or_build_call_graph_uses_build_coordination_mutex() {
 /// as collect_call_sites_from_block: must be iterative.
 #[test]
 fn test_register_procedures_from_tree_is_iterative() {
-    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/insight/calls.rs"))
-        .expect("failed to read insight/calls.rs");
+    let source = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../al-insight/src/calls.rs"
+    ))
+    .expect("failed to read insight/calls.rs");
 
     let fn_pos = source
         .find("fn register_procedures_from_tree")
@@ -349,8 +373,11 @@ fn test_register_procedures_from_tree_is_iterative() {
 /// avoid stack overflow on deeply nested AL.
 #[test]
 fn test_collect_call_sites_from_block_is_iterative() {
-    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/insight/calls.rs"))
-        .expect("failed to read insight/calls.rs");
+    let source = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../al-insight/src/calls.rs"
+    ))
+    .expect("failed to read insight/calls.rs");
 
     let fn_pos = source
         .find("fn collect_call_sites_from_block")

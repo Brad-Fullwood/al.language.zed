@@ -21,9 +21,9 @@ use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 use crate::error::TestRunnerError;
 use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
+use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 
 /// Response from `GET /dev/tests/{codeunit}` — list of test methods.
 #[derive(Debug, Deserialize)]

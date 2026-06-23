@@ -316,7 +316,12 @@ fn resolve_receiver_signature(
 
     let obj_key = subtype.to_lowercase();
     let file_path = workspace.file_index.objects.get(&obj_key)?.value().clone();
-    let doc_symbols: Vec<super::AlDocumentSymbol> = workspace.file_index.get_cached_symbols(&file_path)?.into_iter().map(Into::into).collect();
+    let doc_symbols: Vec<super::AlDocumentSymbol> = workspace
+        .file_index
+        .get_cached_symbols(&file_path)?
+        .into_iter()
+        .map(Into::into)
+        .collect();
     for sym in &doc_symbols {
         if let Some(children) = &sym.children {
             for child in children {

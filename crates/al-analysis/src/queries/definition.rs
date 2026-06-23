@@ -93,8 +93,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 
     let resolver = al_syntax::TypeResolver::new(&tree, &text);
     if let Some(decl) = resolver.resolve_type(clean_name, position.into()) {
-        let def_range: Range =
-            al_syntax::ts_range_to_syntax(&decl.range, text.as_bytes()).into();
+        let def_range: Range = al_syntax::ts_range_to_syntax(&decl.range, text.as_bytes()).into();
         if def_range.start != position {
             return Some(vec![Location {
                 uri: uri.clone(),

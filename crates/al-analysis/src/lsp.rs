@@ -119,7 +119,6 @@ impl From<tower_lsp::lsp_types::SymbolKind> for AlSymbolKind {
     }
 }
 
-
 #[allow(deprecated)]
 impl From<AlDocumentSymbol> for tower_lsp::lsp_types::DocumentSymbol {
     fn from(s: AlDocumentSymbol) -> Self {
@@ -184,7 +183,6 @@ pub fn flatten_document_symbols(
     out
 }
 
-
 impl From<AlFoldingRangeKind> for tower_lsp::lsp_types::FoldingRangeKind {
     fn from(k: AlFoldingRangeKind) -> Self {
         match k {
@@ -207,7 +205,6 @@ impl From<AlFoldingRange> for tower_lsp::lsp_types::FoldingRange {
         }
     }
 }
-
 
 impl From<AlInlayHintKind> for tower_lsp::lsp_types::InlayHintKind {
     fn from(k: AlInlayHintKind) -> Self {

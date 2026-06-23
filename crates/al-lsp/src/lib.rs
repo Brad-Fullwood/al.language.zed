@@ -19,18 +19,18 @@ pub use al_symbols as symbols;
 // keep resolving. (`toolchain` stays a thin al-core facade module — see
 // src/toolchain.rs — that re-exports al_project::toolchain::* and parks the
 // Workspace-coupled `doctor()`.)
-pub use al_project::{config, errors, project};
 pub use al_dap::{dap, native_debug};
+pub use al_project::{config, errors, project};
 // (place near the existing `pub use al_bc::{...}` re-export block; this keeps
 // crate::dap::… , crate::native_debug::… and al_core::dap::… resolving)
-pub use al_source::{documents, file_index, parsing};
-pub use al_runtime as test_runtime;
-pub use al_workspace as workspace;
-pub use al_compile as build;
 pub use al_analysis::{generators, permissions, queries, resolution, scaffold, xliff};
+pub use al_compile as build;
 pub use al_emit as emit;
 pub use al_insight as insight;
 pub use al_publish as publish;
+pub use al_runtime as test_runtime;
+pub use al_source::{documents, file_index, parsing};
+pub use al_workspace as workspace;
 pub mod semantic;
 pub mod server;
 // The syntax layer is now the standalone `al-syntax` crate; alias it as
@@ -55,6 +55,7 @@ pub mod syntax_lsp {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)] // crate re-export facades follow (al-core->al-lsp rename)
 pub mod ts {
     pub use tree_sitter::{Point, Range, Tree};
 }

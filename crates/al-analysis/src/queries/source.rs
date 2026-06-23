@@ -418,8 +418,7 @@ pub fn event_source(
         )
     })?;
 
-    let attrs =
-        al_insight::calls::collect_procedure_attributes(proc_node, source_text.as_bytes());
+    let attrs = al_insight::calls::collect_procedure_attributes(proc_node, source_text.as_bytes());
     let sub_attr = attrs
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case("EventSubscriber"))

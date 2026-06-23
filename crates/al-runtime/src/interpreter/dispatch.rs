@@ -289,8 +289,7 @@ fn dispatch_workspace_procedure(
         ctx.recursion_depth += 1;
         let mut scope = ScopeStack::new();
         scope.push(frame);
-        let result =
-            crate::interpreter::eval_stmt::eval_stmt(body, source, &mut scope, ctx);
+        let result = crate::interpreter::eval_stmt::eval_stmt(body, source, &mut scope, ctx);
         ctx.recursion_depth -= 1;
 
         // Unwrap Exit into Normal (exit only unwinds the current procedure).

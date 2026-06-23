@@ -22,10 +22,10 @@ use tokio::task::JoinSet;
 use tracing::warn;
 use tree_sitter::Node;
 
-use al_analysis::queries::tests::{discover_tests, TestCodeunit};
 use crate::error::TestRunnerError;
 use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
 use crate::session::{RunOptions, TestEvent, TestId, TestSession};
+use al_analysis::queries::tests::{discover_tests, TestCodeunit};
 use al_runtime::interpreter::dispatch::{DispatchCtx, DispatchMode};
 use al_runtime::interpreter::eval_stmt::eval_stmt;
 use al_runtime::interpreter::scope::{CallFrame, Eval, ScopeStack};

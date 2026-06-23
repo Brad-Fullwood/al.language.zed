@@ -8,10 +8,10 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 
-use al_core::test_runtime::interpreter::dispatch::{dispatch_call, DispatchCtx};
-use al_core::test_runtime::interpreter::value::Value;
-use al_core::test_runtime::mock::record::MockRecord;
-use al_core::test_runtime::stubs;
+use al_lsp::test_runtime::interpreter::dispatch::{dispatch_call, DispatchCtx};
+use al_lsp::test_runtime::interpreter::value::Value;
+use al_lsp::test_runtime::mock::record::MockRecord;
+use al_lsp::test_runtime::stubs;
 
 // Tight loop of integer and decimal arithmetic via the dispatch layer's
 // inline builtins: repeated addition, subtraction, and modulo via
@@ -35,7 +35,7 @@ fn bench_arithmetic(c: &mut Criterion) {
                     "format",
                     vec![black_box(acc.clone())],
                     // Pure-logic ctx without a workspace — Format never needs one.
-                    &mut DispatchCtx::new_pure(al_core::workspace::Workspace::new().file_index),
+                    &mut DispatchCtx::new_pure(al_lsp::workspace::Workspace::new().file_index),
                 );
                 if let Value::Integer(n) = &acc {
                     acc = Value::Integer(
@@ -92,7 +92,8 @@ fn bench_string_ops(c: &mut Criterion) {
                     )
                 },
                 |(fmt, a1, a2, a3)| {
-                    let mut ctx = DispatchCtx::new_pure(al_core::workspace::Workspace::new().file_index);
+                    let mut ctx =
+                        DispatchCtx::new_pure(al_lsp::workspace::Workspace::new().file_index);
                     black_box(dispatch_call(
                         None,
                         "StrSubstNo",
@@ -114,7 +115,8 @@ fn bench_string_ops(c: &mut Criterion) {
             b.iter_batched(
                 || Value::Text(s.clone()),
                 |val| {
-                    let mut ctx = DispatchCtx::new_pure(al_core::workspace::Workspace::new().file_index);
+                    let mut ctx =
+                        DispatchCtx::new_pure(al_lsp::workspace::Workspace::new().file_index);
                     black_box(dispatch_call(
                         None,
                         "CopyStr",
@@ -138,7 +140,8 @@ fn bench_string_ops(c: &mut Criterion) {
             b.iter_batched(
                 || (Value::Text(s.clone()), Value::Text(needle.clone())),
                 |(haystack, n)| {
-                    let mut ctx = DispatchCtx::new_pure(al_core::workspace::Workspace::new().file_index);
+                    let mut ctx =
+                        DispatchCtx::new_pure(al_lsp::workspace::Workspace::new().file_index);
                     black_box(dispatch_call(None, "IndexOf", vec![haystack, n], &mut ctx))
                 },
                 BatchSize::SmallInput,
@@ -151,7 +154,8 @@ fn bench_string_ops(c: &mut Criterion) {
             b.iter_batched(
                 || Value::Text(s.clone()),
                 |val| {
-                    let mut ctx = DispatchCtx::new_pure(al_core::workspace::Workspace::new().file_index);
+                    let mut ctx =
+                        DispatchCtx::new_pure(al_lsp::workspace::Workspace::new().file_index);
                     black_box(dispatch_call(None, "Format", vec![val], &mut ctx))
                 },
                 BatchSize::SmallInput,
@@ -302,8 +306,8 @@ fn bench_library_assert_call(c: &mut Criterion) {
 // various signal patterns).  The workspace is built once; `classify_all`
 // is the hot path.
 fn bench_callgraph_walk(c: &mut Criterion) {
-    use al_core::test_engine::router::classify_all;
-    use al_core::workspace::Workspace;
+    use al_lsp::test_engine::router::classify_all;
+    use al_lsp::workspace::Workspace;
     use std::path::PathBuf;
     use std::sync::Arc;
 

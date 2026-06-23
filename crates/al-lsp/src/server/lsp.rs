@@ -722,9 +722,9 @@ impl LanguageServer for AlServer {
                 if hierarchical {
                     DocumentSymbolResponse::Nested(symbols.into_iter().map(Into::into).collect())
                 } else {
-                    DocumentSymbolResponse::Flat(
-                        al_analysis::lsp::flatten_document_symbols(symbols, &uri),
-                    )
+                    DocumentSymbolResponse::Flat(al_analysis::lsp::flatten_document_symbols(
+                        symbols, &uri,
+                    ))
                 }
             })
         })

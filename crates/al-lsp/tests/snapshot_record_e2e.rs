@@ -23,8 +23,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use al_core::test_snapshots::replayer::{DebuggerSession, ReplayerError};
-use al_core::test_snapshots::{
+use al_lsp::test_snapshots::replayer::{DebuggerSession, ReplayerError};
+use al_lsp::test_snapshots::{
     deserialize_snapshot, diff_snapshots, serialize_snapshot, ReplayVerdict, SnapshotRecorder,
     SnapshotReplayer,
 };
@@ -323,7 +323,7 @@ fn e2e_injected_divergence_detected() {
 
 #[test]
 fn e2e_diff_direct_field_change_detected() {
-    use al_core::test_snapshots::format::{Sample, Snapshot};
+    use al_lsp::test_snapshots::format::{Sample, Snapshot};
 
     let make_snap = |status: &str| Snapshot {
         run_id: "r".to_string(),
@@ -417,7 +417,7 @@ fn e2e_session_error_on_replay_propagates() {
         }
     }
 
-    use al_core::test_snapshots::format::{Sample, Snapshot};
+    use al_lsp::test_snapshots::format::{Sample, Snapshot};
 
     let snap = Snapshot {
         run_id: "r-err".to_string(),
@@ -453,7 +453,7 @@ fn e2e_deserialize_empty_bytes_returns_error() {
 
 #[test]
 fn e2e_diff_bc_version_change_detected() {
-    use al_core::test_snapshots::format::Snapshot;
+    use al_lsp::test_snapshots::format::Snapshot;
 
     let make_snap = |ver: &str| Snapshot {
         run_id: "r".to_string(),

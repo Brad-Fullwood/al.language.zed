@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use al_core::emit::{
+use al_lsp::emit::{
     build_symbol_reference, extract_objects, load_external_symbols, EmitObject, SymbolRefMeta,
 };
 

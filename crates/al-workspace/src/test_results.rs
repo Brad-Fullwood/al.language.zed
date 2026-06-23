@@ -35,7 +35,6 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
-
 const MAX_PER_BUCKET: usize = 1000;
 
 // The persisted record + error types live in the tier-0 `al-types` crate.

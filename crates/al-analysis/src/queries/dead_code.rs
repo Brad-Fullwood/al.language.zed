@@ -139,8 +139,7 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
         .par_iter()
         .map(|(file_path, file_text, file_tree)| {
             let mut local = Vec::new();
-            let Some(obj_info) = al_syntax::find_object_declaration(file_tree, file_text)
-            else {
+            let Some(obj_info) = al_syntax::find_object_declaration(file_tree, file_text) else {
                 return local;
             };
 

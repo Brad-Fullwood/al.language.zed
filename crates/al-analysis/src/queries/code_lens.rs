@@ -419,7 +419,8 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
         None
     }
 
-    if let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, current_uri) {
+    if let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, current_uri)
+    {
         let uri_str = current_uri.to_string();
         record_file(&uri_str, &text, &tree, &mut seen);
     }

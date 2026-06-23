@@ -18,19 +18,19 @@ pub use semantic_lifecycle::{get_or_init_bridge, restart_bridge, set_builtins, s
 pub use test_results::TestResultStore;
 
 use al_project::project::AlProject;
+use al_project::toolchain::AlToolchain;
 use al_semantic::BuiltinType;
 use al_symbols::SymbolIndex;
-use al_project::toolchain::AlToolchain;
 use dashmap::DashMap;
 use serde::Serialize;
 use tokio::sync::RwLock;
 
-use al_project::config::AlConfig;
-use al_source::documents::DocumentStore;
-use al_source::file_index::FileIndex;
 use al_insight::graph::InsightGraph;
 use al_insight::index::CallGraph;
+use al_project::config::AlConfig;
 use al_semantic::SemanticCache;
+use al_source::documents::DocumentStore;
+use al_source::file_index::FileIndex;
 
 /// Callback for surfacing bridge/toolchain notifications to the user.
 ///
@@ -422,7 +422,8 @@ pub async fn initialize_core_workspace(
     // stat()/read_dir() calls a real BC workspace performs. block_in_place
     // is used because we hold a `&Workspace` borrow that cannot be moved into
     // spawn_blocking. The al-lsp runtime is multi-threaded.
-    let project_result = tokio::task::block_in_place(|| al_project::project::find_project(project_root));
+    let project_result =
+        tokio::task::block_in_place(|| al_project::project::find_project(project_root));
     match project_result {
         Ok(project) => {
             tracing::info!(

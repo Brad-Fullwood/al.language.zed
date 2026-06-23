@@ -48,8 +48,7 @@ pub fn data_classification_audit(workspace: &Workspace) -> Vec<DataClassificatio
             continue;
         };
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &file_text)
-        else {
+        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &file_text) else {
             continue;
         };
 

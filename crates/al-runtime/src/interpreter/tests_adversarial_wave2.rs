@@ -70,9 +70,7 @@ mod tests {
         stack.push(frame);
 
         let mut ctx = ctx();
-        let eval = crate::interpreter::eval_stmt::eval_stmt(
-            body, bytes, &mut stack, &mut ctx,
-        );
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
         (eval, stack)
     }
 
@@ -126,9 +124,7 @@ mod tests {
         frame.bind("d", Value::Date(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::interpreter::eval_stmt::eval_stmt(
-            body, bytes, &mut stack, &mut ctx,
-        );
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
         assert!(
             matches!(eval, Eval::Normal(_)),
             "Expected Normal after assigning date literal, got: {:?}",
@@ -166,9 +162,7 @@ mod tests {
         frame.bind("t", Value::Time(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::interpreter::eval_stmt::eval_stmt(
-            body, bytes, &mut stack, &mut ctx,
-        );
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
         assert!(
             matches!(eval, Eval::Normal(_)),
             "Expected Normal after assigning time literal, got: {:?}",
@@ -273,9 +267,7 @@ mod tests {
         // for this test we start the frame empty and rely on auto-bind.
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::interpreter::eval_stmt::eval_stmt(
-            body, bytes, &mut stack, &mut ctx,
-        );
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
         assert!(
             matches!(eval, Eval::Normal(_)),
             "Expected Normal after multi-var assignment, got: {:?}",
@@ -333,9 +325,7 @@ mod tests {
         frame.bind("x", Value::Integer(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::interpreter::eval_stmt::eval_stmt(
-            body, bytes, &mut stack, &mut ctx,
-        );
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
         // Must NOT panic; should return an Error or Normal (empty loop).
         assert!(
             !matches!(eval, Eval::Exit(_)),
@@ -388,9 +378,7 @@ mod tests {
         frame.bind("myoption", Value::Integer(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::interpreter::eval_stmt::eval_stmt(
-            body, bytes, &mut stack, &mut ctx,
-        );
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
         assert!(
             matches!(eval, Eval::Normal(_)),
             "Expected Normal after enum assignment, got: {:?}",
@@ -439,9 +427,7 @@ mod tests {
         frame.bind("first", Value::Text(String::new()));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::interpreter::eval_stmt::eval_stmt(
-            body, bytes, &mut stack, &mut ctx,
-        );
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
         assert!(
             matches!(eval, Eval::Normal(_)),
             "Expected Normal after List operations, got: {:?}",
@@ -525,9 +511,7 @@ mod tests {
         frame.bind("x", Value::Integer(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::interpreter::eval_stmt::eval_stmt(
-            body, bytes, &mut stack, &mut ctx,
-        );
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
         assert!(
             matches!(eval, Eval::Normal(_)),
             "Expected Normal for FOR loop, got: {:?}",
@@ -603,9 +587,7 @@ mod tests {
         frame.bind("dt", Value::DateTime(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::interpreter::eval_stmt::eval_stmt(
-            body, bytes, &mut stack, &mut ctx,
-        );
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
         assert!(
             matches!(eval, Eval::Normal(_)),
             "Expected Normal after CreateDateTime, got: {:?}",
@@ -804,9 +786,7 @@ mod tests {
         frame.bind("s", Value::Text(String::new()));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::interpreter::eval_stmt::eval_stmt(
-            body, bytes, &mut stack, &mut ctx,
-        );
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
         assert!(
             matches!(eval, Eval::Normal(_)),
             "Expected Normal for CASE statement, got: {:?}",
@@ -880,12 +860,7 @@ mod tests {
         frame2.bind("dt", Value::DateTime(0));
         stack2.push(frame2);
         let mut ctx2 = ctx();
-        let eval2 = crate::interpreter::eval_stmt::eval_stmt(
-            body2,
-            bytes2,
-            &mut stack2,
-            &mut ctx2,
-        );
+        let eval2 = crate::interpreter::eval_stmt::eval_stmt(body2, bytes2, &mut stack2, &mut ctx2);
         assert!(
             matches!(eval2, Eval::Normal(_)),
             "Expected Normal after CurrentDateTime(), got: {:?}",
@@ -929,9 +904,7 @@ mod tests {
         frame.bind("x", Value::Integer(0));
         stack.push(frame);
         let mut ctx = ctx();
-        let eval = crate::interpreter::eval_stmt::eval_stmt(
-            body, bytes, &mut stack, &mut ctx,
-        );
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
         // Must NOT panic; should return an Error or Normal.
         assert!(
             !matches!(eval, Eval::Exit(_)),

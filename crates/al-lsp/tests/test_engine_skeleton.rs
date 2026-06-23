@@ -1,11 +1,11 @@
-// Reproduces: p1-1-test-engine-skeleton — al_core::test_engine module does not exist;
+// Reproduces: p1-1-test-engine-skeleton — al_lsp::test_engine module does not exist;
 // TestStatus / TestMethodResult / TestCodeunitResult / TestRunnerError are not yet at
 // crate::test_engine::result; Workspace::test_results field is absent.
 
-use al_core::test_engine::result::{
+use al_lsp::test_engine::result::{
     TestCodeunitResult, TestMethodResult, TestRunnerError, TestStatus,
 };
-use al_core::workspace::Workspace;
+use al_lsp::workspace::Workspace;
 
 #[test]
 fn test_types_only_at_canonical_path() {

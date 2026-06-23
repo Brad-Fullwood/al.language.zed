@@ -14,10 +14,10 @@
 //! `crate::test_engine`).
 
 pub mod generators;
-pub mod permissions;
-pub mod queries;
 #[cfg(feature = "lsp")]
 pub mod lsp;
+pub mod permissions;
+pub mod queries;
 // `resolution` was `pub(crate) mod` inside al-core; promoted to `pub` so it can
 // be re-exported from al-core (`pub use al_analysis::resolution;`) and so the
 // query layer keeps reaching its `pub(crate)` resolver helpers intra-crate.

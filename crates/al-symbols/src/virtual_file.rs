@@ -663,8 +663,7 @@ mod tests {
         // The procedure is on line index 1; the prefix on that line is ASCII.
         assert_eq!(r.line, 1);
         let line1 = text.lines().nth(1).unwrap();
-        let expected_start =
-            al_syntax::byte_col_to_utf16_col(line1, line1.find("Foo").unwrap());
+        let expected_start = al_syntax::byte_col_to_utf16_col(line1, line1.find("Foo").unwrap());
         assert_eq!(r.col_start, expected_start);
         assert_eq!(r.col_end, r.col_start + 3);
     }

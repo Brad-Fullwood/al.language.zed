@@ -352,6 +352,7 @@ impl From<Range> for al_syntax::types::SyntaxRange {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)] // From<Syntax*> impls follow (relocated in extraction)
 mod query_types_tests {
     use super::*;
 

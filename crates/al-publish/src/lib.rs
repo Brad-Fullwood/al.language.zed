@@ -15,8 +15,8 @@ use thiserror::Error;
 use tracing::{debug, info, warn};
 
 use al_bc::bc_client::{BcClient, BcClientError};
-use al_compile::{CompileDiagnostic, CompileResult};
 use al_bc::launch::{find_launch_config, BcServerConfig};
+use al_compile::{CompileDiagnostic, CompileResult};
 use al_project::toolchain::AlToolchain;
 use al_workspace::Workspace;
 

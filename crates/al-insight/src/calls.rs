@@ -789,10 +789,7 @@ pub fn register_workspace_nodes(
     // blocking concurrent did_change writers to that shard for the
     // duration of the build. Cloning the snapshot is cheap (kB-scale)
     // versus the cost of an N-file tree walk that follows.
-    let snapshot: Vec<(
-        std::path::PathBuf,
-        al_source::file_index::CachedObjectInfo,
-    )> = file_index
+    let snapshot: Vec<(std::path::PathBuf, al_source::file_index::CachedObjectInfo)> = file_index
         .object_info
         .iter()
         .map(|e| (e.key().clone(), e.value().clone()))
@@ -2223,7 +2220,10 @@ mod tests {
 
     #[test]
     fn clean_attr_arg_strips_prefix_and_quotes() {
-        assert_eq!(al_syntax::clean_attr_arg("Codeunit::\"Sales-Post\""), "Sales-Post");
+        assert_eq!(
+            al_syntax::clean_attr_arg("Codeunit::\"Sales-Post\""),
+            "Sales-Post"
+        );
         assert_eq!(al_syntax::clean_attr_arg("'OnAfterPost'"), "OnAfterPost");
         assert_eq!(al_syntax::clean_attr_arg("  \"My Object\"  "), "My Object");
     }

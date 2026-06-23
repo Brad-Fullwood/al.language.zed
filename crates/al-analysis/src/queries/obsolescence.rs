@@ -372,9 +372,7 @@ mod tests {
         // Build a SymbolEntry with an Obsolete-marked method and confirm
         // it surfaces, with reason and tag arguments correctly trimmed of
         // surrounding quotes.
-        use al_symbols::{
-            AttributeSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry,
-        };
+        use al_symbols::{AttributeSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry};
         let ws = Workspace::new();
         let entries = vec![SymbolEntry {
             synthetic: false,

@@ -79,7 +79,8 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
 
     match context {
         CompletionContext::MemberAccess => {
-            if let Some((file_text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri)
+            if let Some((file_text, tree)) =
+                al_source::parsing::get_or_parse(&workspace.documents, uri)
             {
                 if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, position)
                 {
@@ -99,7 +100,8 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
             }
         }
         CompletionContext::EnumAccess => {
-            if let Some((file_text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri)
+            if let Some((file_text, tree)) =
+                al_source::parsing::get_or_parse(&workspace.documents, uri)
             {
                 if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, position)
                 {

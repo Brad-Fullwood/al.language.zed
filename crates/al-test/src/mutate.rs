@@ -522,7 +522,8 @@ fn collect_mutation_files(
             };
             let root = tree.root_node();
             let bytes = text.as_bytes();
-            let has_tests = !al_analysis::queries::tests::collect_test_procedures(root, bytes).is_empty();
+            let has_tests =
+                !al_analysis::queries::tests::collect_test_procedures(root, bytes).is_empty();
             let has_subtype = al_analysis::queries::tests::has_test_subtype(root, bytes);
             if !has_tests && !has_subtype {
                 continue;

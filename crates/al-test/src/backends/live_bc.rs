@@ -11,11 +11,11 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
-use al_bc::launch::BcServerConfig;
 use crate::error::TestRunnerError;
 use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
 use crate::session::{RunOptions, TestEvent, TestId, TestSession};
 use crate::test_runner::TestRunnerClient;
+use al_bc::launch::BcServerConfig;
 
 pub struct LiveBcMode {
     config: BcServerConfig,
@@ -372,11 +372,11 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
     use crate::backends::live_bc::LiveBcMode;
     use crate::error::TestRunnerError;
     use crate::result::TestStatus;
     use crate::session::{RunOptions, TestEvent, TestId, TestSession};
+    use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 
     /// Build a `BcServerConfig` pointing at the given wiremock base URL.
     ///

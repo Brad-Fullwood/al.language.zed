@@ -16,9 +16,9 @@ pub mod profiler;
 pub mod test_result;
 
 pub use app::AppDependency;
-pub use procedure::ProcedureSource;
 pub use bc::{AuthMethod, EnvironmentType};
 pub use jsonc::{strip_json_comments, strip_trailing_commas};
+pub use procedure::ProcedureSource;
 pub use profiler::{ProfilerHint, ProfilerSession};
 pub use test_result::{
     PersistenceError, TestCodeunitResult, TestMethodResult, TestRunRecord, TestStatus,

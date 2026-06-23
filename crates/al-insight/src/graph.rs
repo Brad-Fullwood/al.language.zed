@@ -501,9 +501,7 @@ impl InsightGraph {
                         // naive quote-strip would yield a bogus table name. Reuse
                         // the canonical parser from `analysis`.
                         let related_table =
-                            match crate::analysis::extract_table_relation_table(
-                                &prop.value,
-                            ) {
+                            match crate::analysis::extract_table_relation_table(&prop.value) {
                                 Some(t) => t.to_string(),
                                 None => continue,
                             };

@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use al_core::symbols::{ObjectKind, SymbolIndex};
+use al_lsp::symbols::{ObjectKind, SymbolIndex};
 
 fn collect_app_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -369,7 +369,7 @@ fn perf_audit_index_build() {
     eprintln!("\n=== End Performance Audit ===\n");
 }
 
-fn count_controls(control: &al_core::symbols::ControlSymbol) -> usize {
+fn count_controls(control: &al_lsp::symbols::ControlSymbol) -> usize {
     1 + control.children.iter().map(count_controls).sum::<usize>()
 }
 
