@@ -1,0 +1,17 @@
+[package]
+name = "al-insight"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "AL insight engine: builds a petgraph object/procedure/event call graph from the symbol index and parsed sources, powering al trace / callgraph / subscribers / intercept / dead-code / impact analysis"
+repository = "https://github.com/Brad-Fullwood/al.language.zed"
+
+[dependencies]
+al-symbols = { path = "../al-symbols", default-features = false }
+al-source = { path = "../al-source" }
+al-syntax = { path = "../al-syntax" }
+petgraph = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tree-sitter = "0.25"

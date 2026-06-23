@@ -254,7 +254,7 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
+    use al_symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
 
     fn base_entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {

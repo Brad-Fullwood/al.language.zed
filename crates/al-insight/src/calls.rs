@@ -18,11 +18,11 @@
 
 use std::collections::HashMap;
 
-use crate::symbols::{ObjectKind, SymbolIndex};
+use al_symbols::{ObjectKind, SymbolIndex};
 
 use super::graph::{EventNodeType, InsightEdge, InsightGraph, InsightNode, NodeKey};
 use super::index::{CallGraph, EdgeResolutionState};
-use crate::file_index::FileIndex;
+use al_source::file_index::FileIndex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordOp {
@@ -779,7 +779,7 @@ pub fn register_workspace_nodes(
     symbols: &SymbolIndex,
     insight: &mut InsightGraph,
 ) {
-    let mut workspace_entries: Vec<crate::symbols::SymbolEntry> = Vec::new();
+    let mut workspace_entries: Vec<al_symbols::SymbolEntry> = Vec::new();
 
     // Snapshot the (path, info) pairs in one short-lived shard iteration
     // (T039 / 3c892bcd20cdd0a3): the body of this loop calls
@@ -791,7 +791,7 @@ pub fn register_workspace_nodes(
     // versus the cost of an N-file tree walk that follows.
     let snapshot: Vec<(
         std::path::PathBuf,
-        super::super::file_index::CachedObjectInfo,
+        al_source::file_index::CachedObjectInfo,
     )> = file_index
         .object_info
         .iter()
@@ -846,7 +846,7 @@ pub fn register_workspace_nodes(
             }
             _ => Vec::new(),
         };
-        workspace_entries.push(crate::symbols::SymbolEntry {
+        workspace_entries.push(al_symbols::SymbolEntry {
             kind: ok,
             id,
             name: info.name.clone(),
@@ -881,7 +881,7 @@ pub fn register_workspace_nodes(
 fn extract_fields_from_tree(
     root: tree_sitter::Node,
     source: &[u8],
-) -> Vec<crate::symbols::FieldSymbol> {
+) -> Vec<al_symbols::FieldSymbol> {
     let mut fields = Vec::new();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -952,7 +952,7 @@ fn info_extends_from_tree(root: tree_sitter::Node, source: &[u8]) -> Option<Stri
 fn field_symbol_from_section(
     node: tree_sitter::Node,
     source: &[u8],
-) -> Option<crate::symbols::FieldSymbol> {
+) -> Option<al_symbols::FieldSymbol> {
     let mut cursor = node.walk();
     let paren = node
         .children(&mut cursor)
@@ -966,7 +966,7 @@ fn field_symbol_from_section(
     if name.is_empty() {
         return None;
     }
-    Some(crate::symbols::FieldSymbol {
+    Some(al_symbols::FieldSymbol {
         id,
         name,
         type_name,
@@ -977,7 +977,7 @@ fn field_symbol_from_section(
 fn extract_methods_from_tree(
     root: tree_sitter::Node,
     source: &[u8],
-) -> Vec<crate::symbols::MethodSymbol> {
+) -> Vec<al_symbols::MethodSymbol> {
     let mut methods = Vec::new();
     collect_methods_recursive(root, source, &mut methods);
     methods
@@ -986,7 +986,7 @@ fn extract_methods_from_tree(
 fn collect_methods_recursive(
     root: tree_sitter::Node,
     source: &[u8],
-    methods: &mut Vec<crate::symbols::MethodSymbol>,
+    methods: &mut Vec<al_symbols::MethodSymbol>,
 ) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -1008,7 +1008,7 @@ fn collect_methods_recursive(
 fn extract_method_symbol(
     proc_node: tree_sitter::Node,
     source: &[u8],
-) -> Option<crate::symbols::MethodSymbol> {
+) -> Option<al_symbols::MethodSymbol> {
     let name_node = proc_node.child_by_field_name("name")?;
     let proc_name = name_node
         .utf8_text(source)
@@ -1022,11 +1022,11 @@ fn extract_method_symbol(
 
     let is_local = has_local_modifier(proc_node, source);
     let attributes = collect_procedure_attributes(proc_node, source);
-    let al_attrs: Vec<crate::symbols::AttributeSymbol> = attributes
+    let al_attrs: Vec<al_symbols::AttributeSymbol> = attributes
         .iter()
         .map(|(name, args_text)| {
             let arguments = parse_attr_args_from_text(args_text);
-            crate::symbols::AttributeSymbol {
+            al_symbols::AttributeSymbol {
                 name: name.clone(),
                 arguments,
             }
@@ -1037,7 +1037,7 @@ fn extract_method_symbol(
 
     let return_type = extract_return_type(proc_node, source);
 
-    Some(crate::symbols::MethodSymbol {
+    Some(al_symbols::MethodSymbol {
         name: proc_name,
         parameters,
         return_type,
@@ -1049,7 +1049,7 @@ fn extract_method_symbol(
 fn extract_parameters_from_proc(
     proc_node: tree_sitter::Node,
     source: &[u8],
-) -> Vec<crate::symbols::ParameterSymbol> {
+) -> Vec<al_symbols::ParameterSymbol> {
     let mut params = Vec::new();
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
@@ -1071,7 +1071,7 @@ fn extract_parameters_from_proc(
 fn extract_single_parameter(
     param_node: tree_sitter::Node,
     source: &[u8],
-) -> Option<crate::symbols::ParameterSymbol> {
+) -> Option<al_symbols::ParameterSymbol> {
     let mut name: Option<String> = None;
     let mut type_name = String::new();
     let mut is_var = false;
@@ -1091,7 +1091,7 @@ fn extract_single_parameter(
         }
     }
 
-    Some(crate::symbols::ParameterSymbol {
+    Some(al_symbols::ParameterSymbol {
         name: name?,
         type_name,
         is_var,
@@ -1281,7 +1281,7 @@ fn register_single_procedure(
     }
 }
 
-pub(crate) fn collect_procedure_attributes(
+pub fn collect_procedure_attributes(
     proc_node: tree_sitter::Node,
     source: &[u8],
 ) -> Vec<(String, String)> {
@@ -1330,11 +1330,11 @@ fn parse_subscriber_target_from_attrs(attrs: &[(String, String)]) -> (String, St
             let args = extract_attribute_args(args_text);
             let target_object = args
                 .get(1)
-                .map(|s| crate::syntax::clean_attr_arg(s))
+                .map(|s| al_syntax::clean_attr_arg(s))
                 .unwrap_or_default();
             let target_event = args
                 .get(2)
-                .map(|s| crate::syntax::clean_attr_arg(s))
+                .map(|s| al_syntax::clean_attr_arg(s))
                 .unwrap_or_default();
             return (target_object, target_event);
         }
@@ -1343,7 +1343,7 @@ fn parse_subscriber_target_from_attrs(attrs: &[(String, String)]) -> (String, St
 }
 
 /// Extract comma-separated arguments from an attribute text like `[Attr(a, b, c)]`.
-pub(crate) fn extract_attribute_args(attr_text: &str) -> Vec<String> {
+pub fn extract_attribute_args(attr_text: &str) -> Vec<String> {
     let start = match attr_text.find('(') {
         Some(i) => i + 1,
         None => return vec![],
@@ -1409,7 +1409,7 @@ pub(crate) fn extract_attribute_args(attr_text: &str) -> Vec<String> {
     args
 }
 
-// `clean_attr_arg` now lives in `al-syntax` (crate::syntax::clean_attr_arg).
+// `clean_attr_arg` now lives in `al-syntax` (al_syntax::clean_attr_arg).
 
 /// Populate call edges across all workspace files.
 ///
@@ -1430,7 +1430,7 @@ pub fn populate_workspace_call_edges(
         std::path::PathBuf,
         String,
         tree_sitter::Tree,
-        crate::file_index::CachedObjectInfo,
+        al_source::file_index::CachedObjectInfo,
         usize,
     )> = Vec::new();
 
@@ -1497,7 +1497,7 @@ fn tier1_threshold(
         std::path::PathBuf,
         String,
         tree_sitter::Tree,
-        crate::file_index::CachedObjectInfo,
+        al_source::file_index::CachedObjectInfo,
         usize,
     )],
 ) -> usize {
@@ -1556,7 +1556,7 @@ fn collect_procedure_names_from_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
+    use al_symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
 
     /// F-OPEN-268: in the current grammar `[IntegrationEvent(...)]` parses as a
     /// PRECEDING SIBLING of `procedure_declaration`, not a child. The method
@@ -1578,7 +1578,7 @@ mod tests {
     end;
 }
 "#;
-        let result = crate::syntax::AlParser::parse_quick(source);
+        let result = al_syntax::AlParser::parse_quick(source);
         let methods = extract_methods_from_tree(result.tree.root_node(), source.as_bytes());
 
         let publisher = methods
@@ -1628,7 +1628,7 @@ mod tests {
     }
 }
 "#;
-        let result = crate::syntax::AlParser::parse_quick(source);
+        let result = al_syntax::AlParser::parse_quick(source);
         let fields = extract_fields_from_tree(result.tree.root_node(), source.as_bytes());
         assert_eq!(fields.len(), 2, "both fields must be extracted: {fields:?}");
         assert_eq!(fields[0].id, 1);
@@ -1653,7 +1653,7 @@ mod tests {
     }
 }
 "#;
-        let result = crate::syntax::AlParser::parse_quick(source);
+        let result = al_syntax::AlParser::parse_quick(source);
         let target = info_extends_from_tree(result.tree.root_node(), source.as_bytes());
         assert_eq!(
             target.as_deref(),
@@ -1738,7 +1738,7 @@ mod tests {
     end;
 }
 "#;
-        let result = crate::syntax::AlParser::parse_quick(source);
+        let result = al_syntax::AlParser::parse_quick(source);
         let types = extract_procedure_var_types(&result.tree, source, "DoWork");
 
         assert!(types.contains_key("cust"), "Should find 'cust' variable");
@@ -1777,7 +1777,7 @@ mod tests {
     end;
 }
 "#;
-        let result = crate::syntax::AlParser::parse_quick(source);
+        let result = al_syntax::AlParser::parse_quick(source);
         let types = extract_procedure_object_var_types(&result.tree, source, "DoWork");
 
         assert_eq!(
@@ -1807,7 +1807,7 @@ mod tests {
     end;
 }
 "#;
-        let result = crate::syntax::AlParser::parse_quick(source);
+        let result = al_syntax::AlParser::parse_quick(source);
         let types = extract_procedure_object_var_types(&result.tree, source, "DoWork");
         assert_eq!(
             types.get("salespostparam").map(|s| s.as_str()),
@@ -1828,7 +1828,7 @@ mod tests {
     end;
 }
 "#;
-        let result = crate::syntax::AlParser::parse_quick(source);
+        let result = al_syntax::AlParser::parse_quick(source);
         let types = extract_procedure_var_types(&result.tree, source, "NonExistentProc");
         assert!(types.is_empty());
     }
@@ -1850,7 +1850,7 @@ mod tests {
     end;
 }
 "#;
-        let result = crate::syntax::AlParser::parse_quick(source);
+        let result = al_syntax::AlParser::parse_quick(source);
         let sites = extract_call_sites(&result.tree, source, "DoWork");
 
         assert!(!sites.is_empty(), "Should find call sites");
@@ -1944,7 +1944,7 @@ mod tests {
     end;
 }
 "#;
-        let result = crate::syntax::AlParser::parse_quick(source);
+        let result = al_syntax::AlParser::parse_quick(source);
 
         let index = SymbolIndex::new();
         index.add_entries(&[
@@ -2026,7 +2026,7 @@ mod tests {
     end;
 }
 "#;
-        let result = crate::syntax::AlParser::parse_quick(source);
+        let result = al_syntax::AlParser::parse_quick(source);
         let score = fanout_score(&result.tree);
         assert!(score >= 3, "Score should be at least 3 (found {score})");
     }
@@ -2034,7 +2034,7 @@ mod tests {
     #[test]
     fn fanout_score_empty_codeunit() {
         let source = r#"codeunit 50100 "Empty CU" { }"#;
-        let result = crate::syntax::AlParser::parse_quick(source);
+        let result = al_syntax::AlParser::parse_quick(source);
         let score = fanout_score(&result.tree);
         assert_eq!(score, 0, "Empty codeunit should have fanout score 0");
     }
@@ -2062,7 +2062,7 @@ mod tests {
     end;
 }
 "#;
-        let file_index = crate::file_index::FileIndex::new();
+        let file_index = al_source::file_index::FileIndex::new();
         file_index.add_file(
             std::path::PathBuf::from("/ws/Publisher.Codeunit.al"),
             publisher.to_string(),
@@ -2076,7 +2076,7 @@ mod tests {
         let mut insight = InsightGraph::new();
         register_workspace_nodes(&file_index, &symbols, &mut insight);
 
-        let steps = crate::insight::search::trace_event(&insight, "OnAfterDoThing", 10);
+        let steps = crate::search::trace_event(&insight, "OnAfterDoThing", 10);
         assert!(
             steps
                 .iter()
@@ -2113,7 +2113,7 @@ mod tests {
     end;
 }
 "#;
-        let file_index = crate::file_index::FileIndex::new();
+        let file_index = al_source::file_index::FileIndex::new();
         file_index.add_file(
             std::path::PathBuf::from("/ws/TraceTable.Table.al"),
             table.to_string(),
@@ -2127,7 +2127,7 @@ mod tests {
         let mut insight = InsightGraph::new();
         register_workspace_nodes(&file_index, &symbols, &mut insight);
 
-        let steps = crate::insight::search::trace_event(&insight, "OnAfterInsertEvent", 10);
+        let steps = crate::search::trace_event(&insight, "OnAfterInsertEvent", 10);
         assert!(
             steps
                 .iter()
@@ -2155,7 +2155,7 @@ mod tests {
     end;
 }
 "#;
-        let result = crate::syntax::AlParser::parse_quick(source);
+        let result = al_syntax::AlParser::parse_quick(source);
 
         let _index = SymbolIndex::new();
         let mut insight = InsightGraph::new();
@@ -2223,9 +2223,9 @@ mod tests {
 
     #[test]
     fn clean_attr_arg_strips_prefix_and_quotes() {
-        assert_eq!(crate::syntax::clean_attr_arg("Codeunit::\"Sales-Post\""), "Sales-Post");
-        assert_eq!(crate::syntax::clean_attr_arg("'OnAfterPost'"), "OnAfterPost");
-        assert_eq!(crate::syntax::clean_attr_arg("  \"My Object\"  "), "My Object");
+        assert_eq!(al_syntax::clean_attr_arg("Codeunit::\"Sales-Post\""), "Sales-Post");
+        assert_eq!(al_syntax::clean_attr_arg("'OnAfterPost'"), "OnAfterPost");
+        assert_eq!(al_syntax::clean_attr_arg("  \"My Object\"  "), "My Object");
     }
 
     #[test]
@@ -2271,15 +2271,15 @@ mod tests {
         std::path::PathBuf,
         String,
         tree_sitter::Tree,
-        crate::file_index::CachedObjectInfo,
+        al_source::file_index::CachedObjectInfo,
         usize,
     ) {
-        let result = crate::syntax::AlParser::parse_quick("");
+        let result = al_syntax::AlParser::parse_quick("");
         (
             std::path::PathBuf::from("x"),
             String::new(),
             result.tree,
-            crate::file_index::CachedObjectInfo {
+            al_source::file_index::CachedObjectInfo {
                 kind: "codeunit".to_string(),
                 id: Some(0),
                 name: "X".to_string(),

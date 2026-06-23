@@ -10,7 +10,7 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use serde::Serialize;
 
-use crate::symbols::{ObjectKind, SymbolEntry};
+use al_symbols::{ObjectKind, SymbolEntry};
 
 /// AL object kinds that can publish events. A subscriber's parsed attribute
 /// names the publisher object but not its kind, so event resolution searches
@@ -114,7 +114,7 @@ pub enum NodeKey {
 /// crates must go through the read-only accessors below. This stops downstream
 /// crates from building on a transient internal layout.
 pub struct InsightGraph {
-    pub(crate) graph: DiGraph<InsightNode, InsightEdge>,
+    pub graph: DiGraph<InsightNode, InsightEdge>,
     /// Lookup table: NodeKey -> Vec<NodeIndex>.
     ///
     /// Multiple packages can define objects with the same (kind, name), so each
@@ -122,7 +122,7 @@ pub struct InsightGraph {
     /// cross-package collisions in `ensure_node` while still letting
     /// `get_node` return the first (and usually only) match for callers that
     /// only care about name resolution.
-    pub(crate) index: HashMap<NodeKey, Vec<NodeIndex>>,
+    pub index: HashMap<NodeKey, Vec<NodeIndex>>,
     /// Inserted-edge set used by `add_edge` for O(1) dedup. Replaces the
     /// previous `edges_connecting(...).any(...)` scan which was O(degree)
     /// per insert — O(degree²) overall on hot Object nodes that accumulate
@@ -310,7 +310,7 @@ impl InsightGraph {
     /// can take 50–200 ms. The work is wrapped in a `tracing::info_span` and
     /// emits a one-shot log line with elapsed time and final node/edge
     /// counts so latency is observable from `RUST_LOG=al_core::insight=info`.
-    pub fn build_from_index(&mut self, symbols: &crate::symbols::SymbolIndex) {
+    pub fn build_from_index(&mut self, symbols: &al_symbols::SymbolIndex) {
         let span = tracing::info_span!("insight_graph.build", entries = symbols.len());
         let _enter = span.enter();
         let started = std::time::Instant::now();
@@ -426,7 +426,7 @@ impl InsightGraph {
     fn resolve_relationships(
         &mut self,
         entry: &Arc<SymbolEntry>,
-        _symbols: &crate::symbols::SymbolIndex,
+        _symbols: &al_symbols::SymbolIndex,
     ) {
         if let Some(ref extends_name) = entry.extends {
             if let Some(base_kind) = entry.kind.base_kind() {
@@ -501,7 +501,7 @@ impl InsightGraph {
                         // naive quote-strip would yield a bogus table name. Reuse
                         // the canonical parser from `analysis`.
                         let related_table =
-                            match crate::insight::analysis::extract_table_relation_table(
+                            match crate::analysis::extract_table_relation_table(
                                 &prop.value,
                             ) {
                                 Some(t) => t.to_string(),
@@ -536,7 +536,7 @@ impl Default for InsightGraph {
 /// Returns `(target_kind, target_object_name, target_event_name)` where `target_kind`
 /// is `None` when the object type cannot be determined from arg[0].
 fn parse_subscriber_target_full(
-    attributes: &[crate::symbols::AttributeSymbol],
+    attributes: &[al_symbols::AttributeSymbol],
 ) -> (Option<ObjectKind>, String, String) {
     for attr in attributes {
         if attr.name == super::attr_names::EVENT_SUBSCRIBER {
@@ -574,7 +574,7 @@ fn parse_subscriber_target_full(
     (None, String::new(), String::new())
 }
 
-fn parse_subscriber_target(attributes: &[crate::symbols::AttributeSymbol]) -> (String, String) {
+fn parse_subscriber_target(attributes: &[al_symbols::AttributeSymbol]) -> (String, String) {
     let (_, obj, evt) = parse_subscriber_target_full(attributes);
     (obj, evt)
 }
@@ -591,7 +591,7 @@ fn clean_quotes(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::*;
+    use al_symbols::*;
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
@@ -1036,7 +1036,7 @@ mod tests {
 
     #[test]
     fn table_relation_edges() {
-        use crate::symbols::{FieldSymbol, PropertyValue};
+        use al_symbols::{FieldSymbol, PropertyValue};
 
         let index = SymbolIndex::new();
 
@@ -1113,7 +1113,7 @@ mod tests {
         // Regression: real AL TableRelation values carry trailing WHERE/FIELD/IF
         // clauses and may be quoted. The edge target must be the bare table name
         // ("Item"), not the whole filter expression.
-        use crate::symbols::{FieldSymbol, PropertyValue};
+        use al_symbols::{FieldSymbol, PropertyValue};
 
         let index = SymbolIndex::new();
 

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use crate::symbols::{ObjectKind, SymbolIndex};
+use al_symbols::{ObjectKind, SymbolIndex};
 
 /// How an object interacts with a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -194,7 +194,7 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
 /// Returns `None` if the value is empty after stripping. Pre-allocates no
 /// `String` on the happy path; returns a borrowed `&str` of the table-name
 /// slice. Used by `table_impact` to detect cross-table relations.
-pub(crate) fn extract_table_relation_table(value: &str) -> Option<&str> {
+pub fn extract_table_relation_table(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
@@ -230,7 +230,7 @@ pub(crate) fn extract_table_relation_table(value: &str) -> Option<&str> {
 /// - `Record "Customer"`
 /// - `Record Customer`
 /// - `Record "Sales Header"`
-pub(crate) fn is_record_of(type_name: &str, table_name: &str) -> bool {
+pub fn is_record_of(type_name: &str, table_name: &str) -> bool {
     if table_name.is_empty() {
         return false;
     }
@@ -249,7 +249,7 @@ pub(crate) fn is_record_of(type_name: &str, table_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::{
+    use al_symbols::{
         AttributeSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, PropertyValue,
         SymbolEntry, SymbolIndex, VariableSymbol,
     };

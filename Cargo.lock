@@ -63,6 +63,7 @@ dependencies = [
  "al-bc",
  "al-dap",
  "al-emit",
+ "al-insight",
  "al-project",
  "al-protocol",
  "al-runtime",
@@ -154,6 +155,20 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
+]
+
+[[package]]
+name = "al-insight"
+version = "0.1.0"
+dependencies = [
+ "al-source",
+ "al-symbols",
+ "al-syntax",
+ "petgraph",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tree-sitter",
 ]
 
 [[package]]

@@ -11,7 +11,7 @@
 //!
 //! Because `.app` symbol files contain declarations only (no call-site
 //! information), `DirectCall` edges can only be added when the source AST is
-//! available (i.e., for workspace files parsed by crate::syntax).  The graph is
+//! available (i.e., for workspace files parsed by al_syntax).  The graph is
 //! therefore built *incrementally*: symbol-index data populates event edges
 //! immediately; direct-call edges are added as source files are indexed.
 //!
@@ -29,8 +29,8 @@ use super::graph::{InsightEdge, InsightGraph, InsightNode, NodeKey};
 /// Stable identifier for a node inside a `CallGraph`.
 ///
 /// **Lifetime warning:** `NodeId` is stable only within a single
-/// [`crate::workspace::Workspace`] graph build. After
-/// [`crate::workspace::Workspace::invalidate_insight_graph`] runs (e.g.
+/// `Workspace` graph build. After
+/// `Workspace::invalidate_insight_graph` runs (e.g.
 /// when packages reload or a file changes), the rebuilt graph creates new
 /// indices and old `NodeId`s no longer point at the same node — they may
 /// be out-of-bounds or refer to an unrelated node. Do not cache `NodeId`s
@@ -297,7 +297,7 @@ fn node_info(id: NodeId, node: &InsightNode) -> NodeInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
+    use al_symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {

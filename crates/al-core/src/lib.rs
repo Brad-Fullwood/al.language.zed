@@ -28,7 +28,7 @@ pub use al_runtime as test_runtime;
 pub mod build;
 pub use al_emit as emit;
 pub mod generators;
-pub mod insight;
+pub use al_insight as insight;
 pub mod permissions;
 pub mod publish;
 pub mod queries;
