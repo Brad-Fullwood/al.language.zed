@@ -213,11 +213,31 @@ The dev box has Microsoft's AL extension installed under Cursor
 - **B15** arch-lint: 4 always-on BC layering rules (regex deferred — no dep).
 - **B14** profiler: real `timeDeltas` aggregation (was hit-count proxy).
 - **B11** LSP `workspace/diagnostic` (syntax across all files + semantic on open).
-- **B7** call-graph affected-test routing · **B5/B6** interpreter dispatch+records
-  — (in flight at time of writing).
-- Verification: full workspace builds clean; **al-analysis 678, al-lsp 408,
-  al-runtime 363, al-workspace 49, al-bc 93** + the native harness (cli_smoke 12,
-  integration_full 95, e2e 17, real_world 32, zed_fidelity 25, …) all pass.
+- **B7** call-graph affected-test routing (al-insight `reachable_callers`).
+- **B5/B6** interpreter dispatch + records: cross-proc dispatch via real
+  workspace + `Codeunit <Subtype>` variables (`Value::Codeunit`), `MockRecord`
+  wired to `Value::Record` (Init/Insert/Get/SetRange/FindSet/… + field get/set),
+  List-of-T member calls (closes W2-08). FlowField/CalcFormula eval still TODO.
+  Its agent worktree was cut from a stale pre-B4 base and re-implemented B4
+  differently → hand-merged the interpreter core (kept dev's B4, grafted only the
+  additive B5/B6 pieces; unified `eval_postfix`; both `bind_local_vars` +
+  `bind_structured_locals` run). al-runtime 363→387, W2-08 un-ignored.
+- **Final verification:** full workspace `cargo test --workspace --exclude
+  zed-al` → **75 suites, 3327 passed, 0 failed**; workspace builds clean; native
+  harness green (cli_smoke 12, integration_full 95, e2e 17, real_world 32,
+  zed_fidelity 25, edit_lifecycle 22, …). Worktrees/branches cleaned.
+
+### Lesson (worktree base hazard)
+`isolation: worktree` agents were consistently cut from `c189e20` (the
+crate-split merge), not current `dev`. Self-contained additive B-items merged
+fine regardless, but B5/B6 overlapped B4 (also done from that base) and could not
+be auto-merged — required a careful hand-merge. For future overlapping work,
+integrate sequentially or reconcile against the real `dev` HEAD.
+
+### B-series status
+**Done/advanced:** B1 B3 B4 B5 B6 B7 B11 B12 B13 B14 B15 + the semantic-bridge
+CLI fix. **Deliberately deferred (architectural):** B2 (shared build-service
+unification), B16 (Windows IPC transport). C10 (live publish) awaits user OAuth.
 
 ### C10 — live CDX tenant (pending one user auth step)
 - Auth path mapped: `al authenticate --tenant <id>` (browser auth-code+PKCE,
