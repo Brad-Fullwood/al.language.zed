@@ -43,10 +43,46 @@ use al_workspace::Workspace;
 // and hint-rendering logic below stays here.
 pub use al_types::{ProfilerHint, ProfilerSession};
 
+/// Aggregate per-node self time (in **microseconds**) from the profile's
+/// `samples` + `timeDeltas` arrays.
+///
+/// Chrome / V8 CPU-profile association convention: the `i`-th recorded sample
+/// (`samples[i]`, a node id) is charged the `i`-th time delta (`timeDeltas[i]`,
+/// microseconds). Summing those deltas per node yields the time the node was
+/// actually on-CPU rather than a raw sample count.
+///
+/// Returns an empty map when either array is absent or empty (caller falls back
+/// to the legacy hit-count estimate). Mismatched lengths are tolerated by
+/// iterating over the common prefix (`min(len)`) so a malformed profile can't
+/// panic.
+fn aggregate_self_time_us(json: &serde_json::Value) -> std::collections::HashMap<u64, f64> {
+    let mut by_node: std::collections::HashMap<u64, f64> = std::collections::HashMap::new();
+
+    let (Some(samples), Some(deltas)) = (
+        json.get("samples").and_then(|v| v.as_array()),
+        json.get("timeDeltas").and_then(|v| v.as_array()),
+    ) else {
+        return by_node;
+    };
+
+    let n = samples.len().min(deltas.len());
+    for i in 0..n {
+        if let Some(node_id) = samples[i].as_u64() {
+            // timeDeltas are integer microseconds; read as f64 defensively.
+            *by_node.entry(node_id).or_insert(0.0) += deltas[i].as_f64().unwrap_or(0.0);
+        }
+    }
+
+    by_node
+}
+
 /// Parse a `.alcpuprofile` JSON document into a list of hotspot nodes.
 ///
-/// Only nodes with `hitCount > 0` are included.  Internal nodes
-/// (`(root)`, `(idle)`, `(garbage collector)`, `(program)`) are skipped.
+/// Self time is the sum of each node's sampled `timeDeltas` (see
+/// [`aggregate_self_time_us`]); profiles lacking `samples`/`timeDeltas` fall
+/// back to a 1 ms-per-hit estimate. Nodes with no self time and no hits are
+/// skipped, as are internal nodes (`(root)`, `(idle)`, `(garbage collector)`,
+/// `(program)`).
 pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
     let json: serde_json::Value =
         serde_json::from_str(profile_json).map_err(|e| format!("JSON parse error: {e}"))?;
@@ -62,7 +98,12 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
         .unwrap_or(0.0);
     let end_us = json.get("endTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let duration_ms = (end_us - start_us) / 1000.0;
-    let _ = duration_ms; // used for context; individual times are hit-count based
+    let _ = duration_ms; // total recording duration, kept for context only
+
+    // Accurate per-node self time (µs) from samples + timeDeltas. Empty when the
+    // profile omits those arrays, in which case we keep the hit-count estimate.
+    let self_time_by_node = aggregate_self_time_us(&json);
+    let have_time = !self_time_by_node.is_empty();
 
     let mut hints = Vec::new();
     for node_val in nodes {
@@ -70,7 +111,23 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
             .get("hitCount")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        if hit_count == 0 {
+        let node_id = node_val.get("id").and_then(|v| v.as_u64());
+
+        // Self time: aggregated sampled timeDeltas (µs -> ms), or the legacy
+        // 1 ms-per-hit estimate when the profile has no samples/timeDeltas.
+        let self_time_ms = if have_time {
+            node_id
+                .and_then(|id| self_time_by_node.get(&id).copied())
+                .unwrap_or(0.0)
+                / 1000.0
+        } else {
+            hit_count as f64
+        };
+
+        // Skip nodes that contributed neither time nor a hit. When the profile
+        // has no samples/timeDeltas this reduces to the legacy `hitCount == 0`
+        // skip (since self_time then mirrors hit_count).
+        if hit_count == 0 && self_time_ms == 0.0 {
             continue;
         }
         let cf = node_val.get("callFrame");
@@ -92,9 +149,6 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-
-        // Each sample ≈ 1ms for Chrome profiles; use hit_count as self-time estimate
-        let self_time_ms = hit_count as f64;
 
         hints.push(ProfilerHint {
             procedure: function_name,
@@ -598,6 +652,72 @@ mod tests {
         assert_eq!(hints[0].procedure, "HighHit");
         assert_eq!(hints[1].procedure, "MidHit");
         assert_eq!(hints[2].procedure, "LowHit");
+    }
+
+    #[test]
+    fn parse_profile_time_based_beats_hit_count() {
+        // B14: the node with FEWER hits but LARGER aggregated timeDeltas must
+        // rank as the bigger hotspot — proving time-based beats count-based.
+        //   ManyHits: hitCount 100, sampled once for 100µs  -> 0.1 ms
+        //   FewHits:  hitCount  10, sampled once for 5000µs -> 5.0 ms
+        let profile_json = r#"{
+            "nodes": [
+                {"id":2,"callFrame":{"functionName":"ManyHits","url":"a"},"hitCount":100},
+                {"id":3,"callFrame":{"functionName":"FewHits","url":"b"},"hitCount":10}
+            ],
+            "samples":[2,3],
+            "timeDeltas":[100,5000],
+            "startTime":0,"endTime":1000000
+        }"#;
+
+        let hints = parse_profile(profile_json).expect("should parse");
+        assert_eq!(hints.len(), 2);
+        // Time-based ranking flips the count-based order.
+        assert_eq!(hints[0].procedure, "FewHits");
+        assert_eq!(hints[0].hit_count, 10);
+        assert!(
+            (hints[0].self_time_ms - 5.0).abs() < 1e-9,
+            "FewHits self_time should be 5.0 ms, got {}",
+            hints[0].self_time_ms
+        );
+        assert_eq!(hints[1].procedure, "ManyHits");
+        assert_eq!(hints[1].hit_count, 100);
+        assert!(
+            (hints[1].self_time_ms - 0.1).abs() < 1e-9,
+            "ManyHits self_time should be 0.1 ms, got {}",
+            hints[1].self_time_ms
+        );
+    }
+
+    #[test]
+    fn parse_profile_mismatched_array_lengths_handled_gracefully() {
+        // B14: samples/timeDeltas of different lengths must not panic; only the
+        // common prefix is aggregated. samples[0]=node 2 charged 1000µs=1.0 ms;
+        // node 3 gets nothing.
+        let profile_json = r#"{
+            "nodes": [
+                {"id":2,"callFrame":{"functionName":"Charged","url":"a"},"hitCount":2},
+                {"id":3,"callFrame":{"functionName":"Uncharged","url":"b"},"hitCount":1}
+            ],
+            "samples":[2,2,3],
+            "timeDeltas":[1000],
+            "startTime":0,"endTime":1000000
+        }"#;
+
+        let hints = parse_profile(profile_json).expect("should parse");
+        assert_eq!(hints.len(), 2, "both nodes reported, no panic: {hints:?}");
+        assert_eq!(hints[0].procedure, "Charged");
+        assert!(
+            (hints[0].self_time_ms - 1.0).abs() < 1e-9,
+            "Charged self_time should be 1.0 ms, got {}",
+            hints[0].self_time_ms
+        );
+        assert_eq!(hints[1].procedure, "Uncharged");
+        assert!(
+            hints[1].self_time_ms.abs() < 1e-9,
+            "Uncharged self_time should be 0.0 ms, got {}",
+            hints[1].self_time_ms
+        );
     }
 
     #[test]
