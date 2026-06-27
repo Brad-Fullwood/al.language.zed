@@ -166,11 +166,22 @@ impl AppManifest {
         let e = xml_escape_attr;
         let mut x = String::new();
         x.push_str(&format!("<Package xmlns=\"{NAVX_NS}\">\n"));
+        // alc OMITS the Platform / Application attributes entirely when they are
+        // unset in app.json (unlike Brief/Description/etc., which alc emits as
+        // empty strings). Match that exactly so the manifest is byte-identical to
+        // alc's: emit each attribute only when non-empty.
+        let opt_attr = |name: &str, val: &str| {
+            if val.is_empty() {
+                String::new()
+            } else {
+                format!(" {name}=\"{}\"", e(val))
+            }
+        };
         x.push_str(&format!(
             "  <App Id=\"{}\" Name=\"{}\" Publisher=\"{}\" Brief=\"{}\" Description=\"{}\" \
              Version=\"{}\" CompatibilityId=\"0.0.0.0\" PrivacyStatement=\"{}\" EULA=\"{}\" \
-             Help=\"{}\" HelpBaseUrl=\"{}\" Url=\"{}\" Logo=\"{}\" Platform=\"{}\" \
-             Application=\"{}\" Runtime=\"{}\" Target=\"{}\" ShowMyCode=\"{}\" />\n",
+             Help=\"{}\" HelpBaseUrl=\"{}\" Url=\"{}\" Logo=\"{}\"{}{} \
+             Runtime=\"{}\" Target=\"{}\" ShowMyCode=\"{}\" />\n",
             e(&self.id),
             e(&self.name),
             e(&self.publisher),
@@ -183,8 +194,8 @@ impl AppManifest {
             e(&self.help_base_url),
             e(&self.url),
             e(&self.logo),
-            e(&self.platform),
-            e(&self.application),
+            opt_attr("Platform", &self.platform),
+            opt_attr("Application", &self.application),
             e(&self.runtime),
             e(&self.target),
             if self.show_my_code { "True" } else { "False" },
