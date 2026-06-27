@@ -133,7 +133,9 @@ dependencies = [
 name = "al-explorer"
 version = "0.2.2"
 dependencies = [
+ "al-compile",
  "al-emit",
+ "al-project",
  "al-protocol",
  "clap",
  "clap_complete",
@@ -142,6 +144,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "tokio",
  "url",
 ]
 

@@ -53,9 +53,11 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::Packages => lsp::cmd_packages(cli.json),
         Commands::Deps => lsp::cmd_deps(cli.json),
         Commands::Compile { project } => build::cmd_compile(project.as_deref(), cli.json),
-        Commands::PackNative { project, out } => {
-            build::cmd_pack_native(project.as_deref(), out.as_deref(), cli.json)
-        }
+        Commands::PackNative {
+            project,
+            out,
+            validate,
+        } => build::cmd_pack_native(project.as_deref(), out.as_deref(), validate, cli.json),
         Commands::Lint {
             file,
             all,

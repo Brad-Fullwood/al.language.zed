@@ -93,11 +93,27 @@ pub fn cmd_package(json: bool) -> ExitCode {
 /// Build a deployable `.app` natively (pure Rust, no Microsoft `alc`): extract
 /// symbols, emit `SymbolReference.json`, and package the NAVX/ZIP. Writes to
 /// `--out`, or `<project>/output/<publisher>_<name>_<version>.app`.
-pub fn cmd_pack_native(project_dir: Option<&str>, out: Option<&str>, json: bool) -> ExitCode {
+pub fn cmd_pack_native(
+    project_dir: Option<&str>,
+    out: Option<&str>,
+    validate: bool,
+    json: bool,
+) -> ExitCode {
     let dir = match project_dir {
         Some(d) => std::path::PathBuf::from(d),
         None => std::env::current_dir().unwrap_or_default(),
     };
+
+    // B1: optional semantic validation gate. The native emitter is structural
+    // only — a parseable-but-invalid program would otherwise be packed into an
+    // .app the BC server then rejects. With --validate, run the Microsoft AL
+    // compiler (alc) as the diagnostic oracle and refuse to emit on errors.
+    if validate {
+        if let Some(code) = validate_with_alc(&dir, json) {
+            return code;
+        }
+    }
+
     // Our native compiler identifies itself in the manifest's <Build>.
     let compiler_version = concat!("al-explorer/", env!("CARGO_PKG_VERSION"));
     let timestamp = al_emit::now_timestamp();
@@ -134,6 +150,136 @@ pub fn cmd_pack_native(project_dir: Option<&str>, out: Option<&str>, json: bool)
         );
     }
     ExitCode::SUCCESS
+}
+
+/// Recursively copy a directory tree (used to validate in a throwaway copy so
+/// alc's own `.app`/temp output never lands in the user's project).
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// B1 validation gate: compile `dir` with the Microsoft AL compiler (alc) and,
+/// if it reports errors (or no toolchain is available), return an exit code so
+/// the caller refuses to emit. Returns `None` when validation passes and the
+/// native emit should proceed. Runs in a temp copy of the project so alc's
+/// output never pollutes the user's tree.
+fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
+    let toolchain = match al_project::toolchain::find_toolchain() {
+        Ok(t) => t,
+        Err(e) => {
+            return Some(report_error(
+                &format!(
+                    "--validate requires the Microsoft AL toolchain (alc), which was not found: {e}. \
+                     Set AL_TOOL_PATH to an extension's bin/<platform> dir or install ALTool."
+                ),
+                json,
+            ));
+        }
+    };
+
+    let tmp = std::env::temp_dir().join(format!("al-pack-validate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    // Copy app.json + every source/.alpackages dir alc needs.
+    if let Err(e) = std::fs::create_dir_all(&tmp).and_then(|()| {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            // Skip prior build outputs to keep the copy lean.
+            if name == "output" || name.to_string_lossy().starts_with(".al-build-tmp") {
+                continue;
+            }
+            let from = entry.path();
+            let to = tmp.join(&name);
+            if entry.file_type()?.is_dir() {
+                copy_dir(&from, &to)?;
+            } else {
+                std::fs::copy(&from, &to)?;
+            }
+        }
+        Ok(())
+    }) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Some(report_error(&format!("preparing validation copy: {e}"), json));
+    }
+
+    let pkg_cache = tmp.join(".alpackages");
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Some(report_error(&format!("starting async runtime: {e}"), json));
+        }
+    };
+    let result = runtime.block_on(al_compile::compile_project(
+        &toolchain,
+        &tmp,
+        Some(&pkg_cache),
+    ));
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => return Some(report_error(&format!("alc validation failed to run: {e}"), json)),
+    };
+
+    let errors = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == al_compile::DiagnosticSeverity::Error)
+        .count();
+
+    if json {
+        // Map the temp paths back so the user sees their own filenames.
+        let diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "file": d.file, "line": d.line, "column": d.column,
+                    "severity": format!("{:?}", d.severity).to_lowercase(),
+                    "code": d.code, "message": d.message,
+                })
+            })
+            .collect();
+        print_json(&serde_json::json!({
+            "validated": true,
+            "success": result.success && errors == 0,
+            "errorCount": errors,
+            "diagnostics": diags,
+        }));
+    } else {
+        for d in &result.diagnostics {
+            let sev = format!("{:?}", d.severity).to_lowercase();
+            let file = std::path::Path::new(&d.file)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| d.file.clone());
+            eprintln!("{file}:{}:{}: {sev} {}: {}", d.line, d.column, d.code, d.message);
+        }
+    }
+
+    if result.success && errors == 0 {
+        if !json {
+            eprintln!("Validation passed (alc {}): no errors.", toolchain.version);
+        }
+        None
+    } else {
+        if !json {
+            eprintln!("Validation failed: {errors} error(s) — .app not written.");
+        }
+        Some(ExitCode::FAILURE)
+    }
 }
 
 pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {

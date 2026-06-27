@@ -111,6 +111,13 @@ Examples:
         /// Output .app path (default: <project>/output/<publisher>_<name>_<version>.app)
         #[arg(short, long)]
         out: Option<String>,
+        /// Semantically validate with the Microsoft AL compiler (alc) before
+        /// emitting, and refuse to write the .app if it has compile errors.
+        /// Requires a discovered toolchain (AL_TOOL_PATH or an installed ALTool).
+        /// Without it, pack-native is emit-only (a parseable-but-invalid program
+        /// would otherwise be packed into an .app the BC server then rejects).
+        #[arg(long)]
+        validate: bool,
     },
     /// Run native lint rules on AL file(s)
     #[command(after_help = "\

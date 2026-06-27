@@ -262,7 +262,12 @@ pub async fn compile_project_with_analyzers(
     // net8.0 `alc.dll` runs on a newer .NET major (e.g. 10) when 8 is absent.
     let mut cmd = al_project::toolchain::dotnet_command_async(&toolchain.alc);
     cmd.arg(format!("/project:{}", project_root.display()));
-    cmd.arg(format!("/out:{}", out_dir.display()));
+    // alc's `/out:` must be a FILE path, not a directory — passing the dir
+    // fails with `AL1012 … Access denied`. Use the canonical app filename so
+    // `find_app_file` locates it afterward and the produced name is correct.
+    let out_file_name =
+        manifest_app_filename(project_root).unwrap_or_else(|| "output.app".to_string());
+    cmd.arg(format!("/out:{}", out_dir.join(&out_file_name).display()));
 
     let pkg_dir = package_cache
         .map(PathBuf::from)
@@ -637,15 +642,24 @@ pub fn find_app_file(project_root: &Path) -> Option<PathBuf> {
 ///
 /// alc names the output `{publisher}_{name}_{version}.app` in the directory
 /// passed to `/out:` (the project root in our case).
-fn find_app_file_from_manifest(project_root: &Path) -> Option<PathBuf> {
-    let manifest_bytes = std::fs::read(project_root.join("app.json")).ok()?; // SILENT: missing manifest handled by caller
-    let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes).ok()?; // SILENT: malformed JSON handled by caller
-
+/// Compute the canonical `{publisher}_{name}_{version}.app` filename from a
+/// project's `app.json`, without requiring the file to exist yet.
+///
+/// alc needs `/out:` to be a *file* path (passing the output *directory* fails
+/// with `AL1012: Could not write to output file … Access denied`). We therefore
+/// pass alc this exact name inside the build dir so the produced artefact also
+/// matches what [`find_app_file_from_manifest`] expects afterwards.
+fn manifest_app_filename(project_root: &Path) -> Option<String> {
+    let manifest_bytes = std::fs::read(project_root.join("app.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes).ok()?;
     let publisher = manifest.get("publisher")?.as_str()?;
     let name = manifest.get("name")?.as_str()?;
     let version = manifest.get("version")?.as_str()?;
+    Some(format!("{publisher}_{name}_{version}.app"))
+}
 
-    let filename = format!("{publisher}_{name}_{version}.app");
+fn find_app_file_from_manifest(project_root: &Path) -> Option<PathBuf> {
+    let filename = manifest_app_filename(project_root)?;
     let path = project_root.join(&filename);
     // symlink_metadata() does NOT follow symlinks: an attacker could pre-plant a
     // symlink with the expected .app name pointing at e.g. /etc/passwd. The

@@ -18,6 +18,11 @@ path = "src/main.rs"
 al-protocol = { path = "../al-protocol", version = "0.2.2" }
 # Native .app emission (pure Rust, no Microsoft alc) for `pack-native`.
 al-emit = { path = "../al-emit", version = "0.1.0" }
+# `pack-native --validate`: discover the AL toolchain and run alc as a semantic
+# oracle before emitting (alc invocation shells out — no `semantic` feature).
+al-project = { path = "../al-project", version = "0.1.0" }
+al-compile = { path = "../al-compile", version = "0.1.0" }
+tokio = { workspace = true }
 crossterm = "0.29.0"
 ratatui = "0.30.0"
 serde = { workspace = true }
