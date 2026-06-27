@@ -99,17 +99,42 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
         json,
         None,
         |result| {
-            let entries = result.as_array().cloned().unwrap_or_default();
-            if entries.is_empty() {
+            let coverage = result
+                .get("coverage")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let over_broad = result
+                .get("overBroad")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            if coverage.is_empty() {
                 println!("All objects covered by permission sets.");
             } else {
-                for e in &entries {
+                for e in &coverage {
                     let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
                     let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                     let covered = e.get("covered").and_then(|v| v.as_bool()).unwrap_or(false);
                     let status = if covered { "covered" } else { "MISSING" };
                     println!("{kind} \"{name}\": {status}");
                 }
+            }
+
+            // B13: over-broad / unused grants (object-level; RIMDX not verified).
+            if over_broad.is_empty() {
+                println!("\nNo over-broad grants detected (object-level check).");
+            } else {
+                println!("\nOver-broad / unused grants (object-level; RIMDX rights not verified):");
+                for e in &over_broad {
+                    let set = e.get("permissionSet").and_then(|v| v.as_str()).unwrap_or("?");
+                    let ot = e.get("objectType").and_then(|v| v.as_str()).unwrap_or("?");
+                    let obj = e.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                    let rights = e.get("rights").and_then(|v| v.as_str()).unwrap_or("");
+                    println!("  {set}: {ot} \"{obj}\" = {rights} — unused (object not referenced in workspace)");
+                }
+                eprintln!("\n{} over-broad grant(s)", over_broad.len());
             }
         },
     )

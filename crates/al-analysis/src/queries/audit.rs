@@ -2,6 +2,15 @@
 //!
 //! T1702: DataClassification audit — find table fields with missing/incorrect classification.
 //! T1706: Permission Set audit — compare defined permission sets against actual object usage.
+//!
+//! B13: usage-vs-grant comparison — flag granted permissions that exceed what the
+//! workspace actually uses. Detection is **object-level** only: a grant is reported
+//! when its target object is never referenced by any workspace object. Per-right
+//! (RIMDX) over-grant analysis (e.g. a table granted Modify/Insert/Delete but only
+//! ever read) is **not** performed — see `OverBroadGrantEntry`.
+
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 use serde::Serialize;
 
@@ -192,10 +201,61 @@ pub struct PermissionCoverageEntry {
     pub covered_by: Vec<String>,
 }
 
-pub fn permission_set_audit(workspace: &Workspace) -> Vec<PermissionCoverageEntry> {
-    let mut results = Vec::new();
+/// A granted permission that exceeds what the workspace actually uses.
+///
+/// **Precision: object-level only.** An entry is produced when the granted
+/// object is never referenced by any workspace object (i.e. an entirely unused
+/// grant). The `rights` field reports the RIMDX letters as written in the
+/// permission set, but they are **not** verified against actual access patterns:
+/// a table granted `RIMD` that is only ever read (so `IMD` is over-broad) is
+/// *not* flagged as long as the table is referenced somewhere. Right-level
+/// (RIMDX) over-grant detection needs per-table record-access analysis that the
+/// workspace does not yet expose (B13).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverBroadGrantEntry {
+    /// Name of the permission set granting this permission.
+    pub permission_set: String,
+    /// Object type as written in the grant (`TableData`, `Table`, `Page`, `Codeunit`, `Report`).
+    pub object_type: String,
+    /// Granted object name.
+    pub object: String,
+    /// RIMDX rights as written in the grant (may be empty if none were specified).
+    pub rights: String,
+    /// Human-readable explanation of why the grant was flagged.
+    pub reason: String,
+}
 
-    let mut perm_sets: Vec<(String, Vec<String>)> = Vec::new();
+/// Full result of the permission-set audit: per-object coverage plus over-broad
+/// (unused) grants. B13 added the `over_broad` section; `coverage` is unchanged.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionAuditReport {
+    /// Which access objects are / are not covered by a permission set.
+    pub coverage: Vec<PermissionCoverageEntry>,
+    /// Grants whose object is never used by the workspace (object-level check).
+    pub over_broad: Vec<OverBroadGrantEntry>,
+}
+
+/// A single permission clause parsed from a permission set body.
+#[derive(Debug, Clone)]
+struct PermissionGrant {
+    /// Canonical object type keyword (`TableData`, `Table`, `Page`, ...).
+    object_type: String,
+    /// Object name (quotes stripped).
+    object: String,
+    /// RIMDX rights as written (uppercased; may be empty).
+    rights: String,
+}
+
+pub fn permission_set_audit(workspace: &Workspace) -> PermissionAuditReport {
+    let mut perm_sets: Vec<(String, Vec<PermissionGrant>)> = Vec::new();
+    // Files that *define* a permission set — excluded from the usage scan so a
+    // grant clause is never counted as "usage" of the object it grants.
+    let mut perm_set_paths: HashSet<PathBuf> = HashSet::new();
+    // Names of objects declared in the workspace (non-permissionset). Used as a
+    // reference baseline: an object's own declaration counts as one reference.
+    let mut declared_names: HashSet<String> = HashSet::new();
 
     for entry in workspace.file_index.files.iter() {
         let path = entry.key();
@@ -207,10 +267,27 @@ pub fn permission_set_audit(workspace: &Workspace) -> Vec<PermissionCoverageEntr
         };
 
         if obj_info.kind.to_lowercase() == "permissionset" {
-            let covered = extract_permission_objects(&text);
-            perm_sets.push((obj_info.name.clone(), covered));
+            perm_sets.push((obj_info.name.clone(), extract_permission_grants(&text)));
+            perm_set_paths.insert(path.clone());
+        } else {
+            declared_names.insert(obj_info.name.to_lowercase());
         }
     }
+
+    let coverage = compute_coverage(workspace, &perm_sets);
+    let over_broad = compute_over_broad(workspace, &perm_sets, &perm_set_paths, &declared_names);
+
+    PermissionAuditReport {
+        coverage,
+        over_broad,
+    }
+}
+
+fn compute_coverage(
+    workspace: &Workspace,
+    perm_sets: &[(String, Vec<PermissionGrant>)],
+) -> Vec<PermissionCoverageEntry> {
+    let mut results = Vec::new();
 
     for entry in workspace.file_index.files.iter() {
         let path = entry.key();
@@ -230,7 +307,7 @@ pub fn permission_set_audit(workspace: &Workspace) -> Vec<PermissionCoverageEntr
         let name_lower = obj_info.name.to_lowercase();
         let covered_by: Vec<String> = perm_sets
             .iter()
-            .filter(|(_, objects)| objects.iter().any(|o| o.to_lowercase() == name_lower))
+            .filter(|(_, grants)| grants.iter().any(|g| g.object.to_lowercase() == name_lower))
             .map(|(n, _)| n.clone())
             .collect();
 
@@ -247,10 +324,79 @@ pub fn permission_set_audit(workspace: &Workspace) -> Vec<PermissionCoverageEntr
     results
 }
 
-fn extract_permission_objects(text: &str) -> Vec<String> {
+/// Object-level over-broad / unused grant detection.
+///
+/// For each grant, count identifier references to the granted object across all
+/// workspace files *except* permission-set definitions. The object's own
+/// declaration (if it lives in the workspace) contributes exactly one reference,
+/// so the baseline for "used elsewhere" is 1 for declared objects and 0 for
+/// base-app objects the workspace merely references. A grant with no references
+/// above that baseline is flagged as unused.
+fn compute_over_broad(
+    workspace: &Workspace,
+    perm_sets: &[(String, Vec<PermissionGrant>)],
+    perm_set_paths: &HashSet<PathBuf>,
+    declared_names: &HashSet<String>,
+) -> Vec<OverBroadGrantEntry> {
+    // Snapshot non-permissionset parsed files once; the reference scan reuses
+    // them for every grant rather than re-reading the index per grant.
+    let scan_files: Vec<(String, tree_sitter::Tree)> = workspace
+        .file_index
+        .files
+        .iter()
+        .map(|e| e.key().clone())
+        .filter(|path| !perm_set_paths.contains(path))
+        .filter_map(|path| workspace.file_index.get_cached_parse(&path))
+        .collect();
+
+    let mut out = Vec::new();
+    for (set_name, grants) in perm_sets {
+        // Dedupe repeated grants of the same object within one set.
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        for grant in grants {
+            let key = (grant.object_type.to_lowercase(), grant.object.to_lowercase());
+            if !seen.insert(key) {
+                continue;
+            }
+
+            let total_refs: usize = scan_files
+                .iter()
+                .map(|(text, tree)| {
+                    al_syntax::find_variable_references(tree, text, &grant.object).len()
+                })
+                .sum();
+
+            let baseline = usize::from(declared_names.contains(&grant.object.to_lowercase()));
+            if total_refs <= baseline {
+                out.push(OverBroadGrantEntry {
+                    permission_set: set_name.clone(),
+                    object_type: grant.object_type.clone(),
+                    object: grant.object.clone(),
+                    rights: grant.rights.clone(),
+                    reason:
+                        "granted object is not referenced by any workspace object (object-level \
+                         check; RIMDX rights not verified)"
+                            .to_string(),
+                });
+            }
+        }
+    }
+
+    out
+}
+
+fn extract_permission_grants(text: &str) -> Vec<PermissionGrant> {
     // Look for patterns like: TableData "Sales Header" = RIMD
-    // or: Table "Sales Header" = R
-    let mut objects = Vec::new();
+    // or: Table "Sales Header" = R; or: Codeunit "My CU" = X
+    const PREFIXES: &[(&str, &str)] = &[
+        ("tabledata ", "TableData"),
+        ("table ", "Table"),
+        ("page ", "Page"),
+        ("codeunit ", "Codeunit"),
+        ("report ", "Report"),
+    ];
+
+    let mut grants = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("//") {
@@ -258,23 +404,43 @@ fn extract_permission_objects(text: &str) -> Vec<String> {
         }
 
         let lower = trimmed.to_lowercase();
-        for prefix in &["tabledata ", "table ", "page ", "codeunit ", "report "] {
-            if lower.starts_with(prefix) {
-                let rest = &trimmed[prefix.len()..];
-                let name = if let Some(stripped) = rest.strip_prefix('"') {
-                    stripped.find('"').map(|i| stripped[..i].to_string())
-                } else {
-                    rest.find(['=', ' ']).map(|i| rest[..i].trim().to_string())
-                };
-                if let Some(n) = name {
-                    if !n.is_empty() {
-                        objects.push(n);
-                    }
-                }
+        for (prefix, canon) in PREFIXES {
+            if !lower.starts_with(prefix) {
+                continue;
             }
+            let rest = &trimmed[prefix.len()..];
+            let (name, after_name) = if let Some(stripped) = rest.strip_prefix('"') {
+                match stripped.find('"') {
+                    Some(i) => (stripped[..i].to_string(), &stripped[i + 1..]),
+                    None => (String::new(), ""),
+                }
+            } else {
+                let end = rest.find(['=', ' ']).unwrap_or(rest.len());
+                (rest[..end].trim().to_string(), &rest[end..])
+            };
+            if name.is_empty() {
+                break;
+            }
+            // Rights are whatever follows `=`, restricted to RIMDX letters.
+            let rights = after_name
+                .split('=')
+                .nth(1)
+                .map(|r| {
+                    r.chars()
+                        .filter(|c| "rimdxRIMDX".contains(*c))
+                        .collect::<String>()
+                        .to_uppercase()
+                })
+                .unwrap_or_default();
+            grants.push(PermissionGrant {
+                object_type: (*canon).to_string(),
+                object: name,
+                rights,
+            });
+            break;
         }
     }
-    objects
+    grants
 }
 
 #[cfg(test)]
@@ -355,8 +521,8 @@ mod tests {
 }"#,
         )]);
 
-        let entries = permission_set_audit(&ws);
-        let my_table = entries.iter().find(|e| e.name == "My Table");
+        let report = permission_set_audit(&ws);
+        let my_table = report.coverage.iter().find(|e| e.name == "My Table");
         assert!(my_table.is_some(), "Should find My Table");
         assert!(!my_table.unwrap().covered, "My Table has no permission set");
     }
@@ -381,8 +547,8 @@ mod tests {
             ),
         ]);
 
-        let entries = permission_set_audit(&ws);
-        let my_table = entries.iter().find(|e| e.name == "My Table");
+        let report = permission_set_audit(&ws);
+        let my_table = report.coverage.iter().find(|e| e.name == "My Table");
         assert!(my_table.is_some(), "Should find My Table");
         assert!(my_table.unwrap().covered, "My Table should be covered");
     }
@@ -391,6 +557,121 @@ mod tests {
     fn empty_workspace_returns_empty() {
         let ws = Workspace::new();
         assert!(data_classification_audit(&ws).is_empty());
-        assert!(permission_set_audit(&ws).is_empty());
+        let report = permission_set_audit(&ws);
+        assert!(report.coverage.is_empty());
+        assert!(report.over_broad.is_empty());
+    }
+
+    /// A permission set grants an object that no workspace object ever uses →
+    /// flagged as an unused / over-broad grant.
+    #[test]
+    fn over_broad_flags_unused_grant() {
+        let ws = workspace_with(vec![
+            (
+                "/src/MyTable.al",
+                r#"table 50100 "My Table"
+{
+    fields { field(1; "No."; Code[20]) { } }
+}"#,
+            ),
+            (
+                "/src/MyPermSet.al",
+                r#"permissionset 50100 "My Perms"
+{
+    Permissions =
+        TableData "My Table" = RIMD,
+        TableData "Unused Table" = RIMD;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws);
+
+        // "My Table" is declared but never referenced elsewhere → unused.
+        let my_table = report
+            .over_broad
+            .iter()
+            .find(|e| e.object == "My Table");
+        assert!(
+            my_table.is_some(),
+            "My Table is declared but never used → should be flagged. Got: {:?}",
+            report.over_broad
+        );
+
+        // "Unused Table" is neither declared nor referenced → unused.
+        let unused = report.over_broad.iter().find(|e| e.object == "Unused Table");
+        assert!(unused.is_some(), "Unused Table should be flagged as unused");
+        assert_eq!(unused.unwrap().rights, "RIMD");
+        assert_eq!(unused.unwrap().object_type, "TableData");
+        assert_eq!(unused.unwrap().permission_set, "My Perms");
+    }
+
+    /// A grant whose object is actually referenced by another workspace object
+    /// is NOT flagged as over-broad.
+    #[test]
+    fn over_broad_ignores_used_grant() {
+        let ws = workspace_with(vec![
+            (
+                "/src/MyTable.al",
+                r#"table 50100 "My Table"
+{
+    fields { field(1; "No."; Code[20]) { } }
+}"#,
+            ),
+            (
+                "/src/Consumer.al",
+                r#"codeunit 50101 "Consumer"
+{
+    procedure Use()
+    var
+        Rec: Record "My Table";
+    begin
+        Rec.Insert();
+    end;
+}"#,
+            ),
+            (
+                "/src/MyPermSet.al",
+                r#"permissionset 50100 "My Perms"
+{
+    Permissions =
+        TableData "My Table" = RIMD;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws);
+        assert!(
+            report.over_broad.iter().all(|e| e.object != "My Table"),
+            "My Table is used by Consumer → must NOT be flagged. Got: {:?}",
+            report.over_broad
+        );
+        // And coverage still reports it as covered.
+        let cov = report.coverage.iter().find(|e| e.name == "My Table");
+        assert!(cov.is_some_and(|e| e.covered), "My Table should be covered");
+    }
+
+    /// Grant clauses inside the permission set itself must not be counted as
+    /// "usage" of the granted object.
+    #[test]
+    fn over_broad_does_not_count_grant_as_usage() {
+        let ws = workspace_with(vec![(
+            "/src/MyPermSet.al",
+            r#"permissionset 50100 "My Perms"
+{
+    Permissions =
+        Page "Some Page" = X;
+}"#,
+        )]);
+
+        let report = permission_set_audit(&ws);
+        let some_page = report.over_broad.iter().find(|e| e.object == "Some Page");
+        assert!(
+            some_page.is_some(),
+            "Grant referencing only itself must still be flagged as unused. Got: {:?}",
+            report.over_broad
+        );
+        assert_eq!(some_page.unwrap().object_type, "Page");
+        assert_eq!(some_page.unwrap().rights, "X");
     }
 }
