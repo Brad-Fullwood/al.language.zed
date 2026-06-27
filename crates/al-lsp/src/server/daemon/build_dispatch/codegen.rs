@@ -358,7 +358,47 @@ pub(in crate::server::daemon) fn dispatch_generate(
                 .and_then(|v| v.as_str())
                 .unwrap_or("NewTests")
                 .to_string();
-            let subject = table_entry.map(|e| (*e).clone());
+            // The test generator builds `[Test]` stubs from the SUBJECT
+            // codeunit's public methods. Resolve `subject` against the symbol
+            // index as a Codeunit. Previously the `subject` param was ignored
+            // entirely and the subject was mis-sourced from `table` (which is
+            // only ever matched against Tables), so `generate_test_stubs` was
+            // unreachable from `al-explorer generate test --subject` (B12).
+            // A subject is optional — with none we emit a placeholder test —
+            // but if one is named and not found we surface that rather than
+            // silently degrading to the placeholder.
+            let subject_name = params
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let subject = if subject_name.is_empty() {
+                None
+            } else {
+                // Workspace codeunits (with their methods) only enter the
+                // SymbolIndex via the call-graph enrichment pass, so build it
+                // first (mirrors the table lookup above).
+                let _ = workspace.get_or_build_call_graph();
+                match workspace
+                    .symbols
+                    .search(subject_name, 10)
+                    .into_iter()
+                    .find(|e| {
+                        e.kind == crate::symbols::ObjectKind::Codeunit
+                            && e.name.eq_ignore_ascii_case(subject_name)
+                    }) {
+                    Some(found) => Some((*found).clone()),
+                    None => {
+                        return rpc_error(
+                            id,
+                            error_codes::INVALID_PARAMS,
+                            &format!(
+                                "Subject codeunit '{}' not found in symbol index",
+                                subject_name
+                            ),
+                        );
+                    }
+                }
+            };
             let config = crate::generators::GenerateTestConfig {
                 object_id,
                 test_name,
@@ -715,6 +755,116 @@ mod tests {
         assert!(
             code.contains("No.") && code.contains("Name"),
             "page must scaffold the table's field controls: {code}"
+        );
+    }
+
+    /// B12: `generate test --subject <codeunit>` must reach the
+    /// subject-driven stub generator (`generate_test_stubs`) and emit a
+    /// `[Test]` procedure per public method of the named codeunit. Previously
+    /// the `subject` param was ignored, so this path was unreachable.
+    #[test]
+    fn generate_test_with_subject_codeunit_emits_test_stubs() {
+        let ws = empty_ws();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/src/SalesMgt.Codeunit.al"),
+            r#"codeunit 50100 "Sales Mgt"
+{
+    procedure PostSale()
+    begin
+    end;
+
+    local procedure InternalHelper()
+    begin
+    end;
+
+    procedure CancelSale()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+        let resp = dispatch_generate(
+            &ws,
+            10,
+            &serde_json::json!({
+                "kind": "test",
+                "name": "Sales Mgt Tests",
+                "subject": "Sales Mgt",
+                "id": 50200
+            }),
+        );
+        assert!(
+            resp.error.is_none(),
+            "subject codeunit must be found: {:?}",
+            resp.error
+        );
+        let code = resp.result.expect("result")["code"]
+            .as_str()
+            .expect("code string")
+            .to_string();
+        assert!(!code.trim().is_empty(), "generated test must be non-empty");
+        assert!(
+            code.contains("Subtype = Test;"),
+            "generated codeunit must be a Test subtype: {code}"
+        );
+        assert!(
+            code.contains("[Test]"),
+            "generated test must contain [Test] attributes from the subject's methods: {code}"
+        );
+        // Public methods become stubs; the local one must be filtered out.
+        assert!(
+            code.contains("TestPostSale") && code.contains("TestCancelSale"),
+            "each public subject method must get a stub: {code}"
+        );
+        assert!(
+            !code.contains("InternalHelper"),
+            "local subject methods must not produce stubs: {code}"
+        );
+    }
+
+    /// B12: a named-but-missing subject must surface an error rather than
+    /// silently degrading to the no-subject placeholder.
+    #[test]
+    fn generate_test_with_unknown_subject_is_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_generate(
+            &ws,
+            11,
+            &serde_json::json!({
+                "kind": "test",
+                "name": "T",
+                "subject": "No Such Codeunit",
+                "id": 50201
+            }),
+        );
+        let err = resp.error.expect("missing subject must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(
+            err.message.contains("No Such Codeunit"),
+            "error must name the missing subject: {}",
+            err.message
+        );
+    }
+
+    /// B12: with no subject the test generator still produces a valid
+    /// placeholder test codeunit (no error, contains `[Test]`).
+    #[test]
+    fn generate_test_without_subject_emits_placeholder() {
+        let ws = empty_ws();
+        let resp = dispatch_generate(
+            &ws,
+            12,
+            &serde_json::json!({ "kind": "test", "name": "Empty Tests", "id": 50202 }),
+        );
+        assert!(resp.error.is_none(), "no-subject test must succeed: {:?}", resp.error);
+        let code = resp.result.expect("result")["code"]
+            .as_str()
+            .expect("code string")
+            .to_string();
+        assert!(
+            code.contains("Subtype = Test;") && code.contains("[Test]"),
+            "placeholder test must still be a valid Test codeunit: {code}"
         );
     }
 
