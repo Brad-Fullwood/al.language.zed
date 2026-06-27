@@ -486,10 +486,14 @@ Examples:
         #[arg(num_args = 1..)]
         files: Vec<String>,
     },
-    /// Show the routing decision for every discovered test (p2)
+    /// Show the routing decision for every discovered test (p2). NOTE: only the
+    /// `interp` class runs locally; `interpRecord` is a classification that
+    /// still routes to live BC (the local mock record store is not wired yet).
     #[command(name = "test-classify")]
     TestClassify,
-    /// Record / replay / diff test execution snapshots (Phase 4)
+    /// Record / replay / diff test execution snapshots (Phase 4). NOTE:
+    /// file-based today — `replay`/`diff` work on .snap.json files on disk;
+    /// live-BC record/replay is not wired yet (see each subcommand's --help).
     #[command(name = "test-snapshot")]
     TestSnapshot {
         #[command(subcommand)]

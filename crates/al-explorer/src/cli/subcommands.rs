@@ -22,14 +22,18 @@ pub enum TestSnapshotCommands {
         #[arg(long = "breakpoint", name = "BREAKPOINT")]
         breakpoints: Vec<String>,
     },
-    /// Replay a snapshot and show match/diverged result. NOTE: live-BC
-    /// observation is not yet wired, so replay currently validates and loads the
-    /// snapshot and reports a match without comparing against a running BC.
+    /// Replay a snapshot FILE (file-only, not live BC). NOTE: this validates
+    /// snapshot LOADING — it parses the .snap.json off disk and reports a match.
+    /// It does NOT re-run the test against a live BC server and compare observed
+    /// values; the live-BC record/replay bridge is not wired yet (gap A10).
     Replay {
         /// Path to the .snap.json file
         path: String,
     },
-    /// Diff two snapshot files and show field-level divergences
+    /// Diff two snapshot FILES and show field-level divergences (file-vs-file,
+    /// not live BC). NOTE: this compares two .snap.json files already on disk; it
+    /// does NOT capture a fresh run from a live BC server. The live record/replay
+    /// bridge is not wired yet (gap A10).
     Diff {
         /// Path to baseline snapshot A
         a: String,

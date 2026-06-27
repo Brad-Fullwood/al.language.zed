@@ -29,9 +29,15 @@ use al_workspace::Workspace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutingDecision {
-    /// Pure-logic — runs on the Rust interpreter alone.
+    /// Pure-logic — runs on the Rust interpreter alone. This is the **only**
+    /// decision that actually executes locally today.
     Interp,
-    /// DB-only — interpreter plus the mock record store.
+    /// DB-touching test. The name describes the *intended* future backend
+    /// (interpreter + mock record store), but that backend is **not wired
+    /// yet** (Phase 3): the runner currently routes these tests to **live
+    /// BC** — it does NOT run them locally. See
+    /// [`RoutingDecision::execution_note`] and
+    /// [`RoutingDecision::runs_locally`]. (Gap A9.)
     InterpRecord,
     /// Anything risky / not yet supported — runs against live BC.
     LiveBc,
@@ -48,6 +54,32 @@ impl RoutingDecision {
             RoutingDecision::InterpRecord => "interpRecord",
             RoutingDecision::LiveBc => "liveBc",
             RoutingDecision::Snapshot => "snapshot",
+        }
+    }
+
+    /// Whether a test with this decision **actually executes locally** today
+    /// (pure Rust interpreter, no Business Central server contact).
+    ///
+    /// Only [`RoutingDecision::Interp`] runs locally. `InterpRecord` *names* a
+    /// future "interpreter + mock record store" backend that is not wired yet,
+    /// so it — like `LiveBc` and `Snapshot` — is sent to live BC by the runner.
+    /// This is the single source of truth for the A9 honesty note.
+    pub fn runs_locally(self) -> bool {
+        matches!(self, RoutingDecision::Interp)
+    }
+
+    /// One-line, user-facing description of where a test with this decision
+    /// *actually* runs today — not where the class name implies it will run
+    /// once the remaining backends land. Surfaced by `al-explorer
+    /// test-classify` so the routing surface stays honest (gap A9).
+    pub fn execution_note(self) -> &'static str {
+        match self {
+            RoutingDecision::Interp => "runs locally on the Rust interpreter",
+            RoutingDecision::InterpRecord => {
+                "routes to live BC (local mock record store not wired yet)"
+            }
+            RoutingDecision::Snapshot => "replays a captured snapshot, else routes to live BC",
+            RoutingDecision::LiveBc => "routes to live BC",
         }
     }
 }
@@ -490,5 +522,33 @@ mod tests {
         assert_eq!(RoutingDecision::InterpRecord.as_str(), "interpRecord");
         assert_eq!(RoutingDecision::LiveBc.as_str(), "liveBc");
         assert_eq!(RoutingDecision::Snapshot.as_str(), "snapshot");
+    }
+
+    #[test]
+    fn only_interp_runs_locally() {
+        // A9: the honesty guard. `InterpRecord` *sounds* local but isn't yet —
+        // it, like LiveBc/Snapshot, currently goes to live BC.
+        assert!(RoutingDecision::Interp.runs_locally());
+        assert!(!RoutingDecision::InterpRecord.runs_locally());
+        assert!(!RoutingDecision::LiveBc.runs_locally());
+        assert!(!RoutingDecision::Snapshot.runs_locally());
+    }
+
+    #[test]
+    fn interp_record_execution_note_says_live_bc() {
+        // A9: the InterpRecord note must make the live-BC routing explicit so
+        // the class name ("…Record" → "runs locally") cannot mislead.
+        let note = RoutingDecision::InterpRecord.execution_note();
+        assert!(
+            note.contains("live BC"),
+            "InterpRecord note must mention live BC, got: {note:?}"
+        );
+        assert!(
+            note.contains("not wired"),
+            "InterpRecord note must flag the missing local backend, got: {note:?}"
+        );
+        // Only the pure-interpreter class describes itself as local.
+        assert!(RoutingDecision::Interp.execution_note().contains("locally"));
+        assert!(RoutingDecision::LiveBc.execution_note().contains("live BC"));
     }
 }
