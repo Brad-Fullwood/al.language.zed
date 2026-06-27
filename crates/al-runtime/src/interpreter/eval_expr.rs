@@ -12,6 +12,7 @@
 use tree_sitter::Node;
 
 use crate::interpreter::dispatch::DispatchCtx;
+use crate::interpreter::records;
 use crate::interpreter::scope::{Eval, ScopeStack};
 use crate::interpreter::value::{self, ErrorInfo, Value};
 
@@ -75,10 +76,11 @@ fn eval_expr_inner(
         // When there are 3+ named children, it's a binary (or assignment) expression.
         // When there is 1 named child, it's a transparent wrapper.
         "expression" => eval_expression_node(node, source, stack, ctx),
-        // A postfix_expression is either a call (`Foo(args)`, `Recv.Proc(args)`),
-        // a scope-qualified enum access (`"Enum"::Member`), or a transparent
-        // wrapper around a primary_expression. Calls need dispatch (with ctx);
-        // scope access produces an Option value; everything else unwraps.
+        // A postfix_expression is a call (`Foo(args)`, `Recv.Proc(args)`), a
+        // scope-qualified enum access (`"Enum"::Member`), a record field read
+        // (`Rec."Field"`), or a transparent wrapper around a primary_expression.
+        // Calls and record reads need the dispatch context; scope access yields
+        // an Option value; everything else unwraps.
         "postfix_expression" => eval_postfix(node, source, stack, ctx),
         "parenthesized_expression" | "primary_expression" | "case_label_expression" => {
             match named_child(node, 0) {
@@ -229,6 +231,15 @@ fn eval_postfix(
     };
     if !scope_members.is_empty() {
         return eval_scope_access(node, &scope_members, source);
+    }
+
+    // Record field read: `Rec."Field"` (a `member_suffix`, not a call) where the
+    // receiver resolves to a bound `Value::Record` (B6).
+    if let Some((recv, field)) = records::record_field_access(node, source) {
+        if let Some(Value::Record(rv)) = stack.lookup(&recv) {
+            let table_name = rv.table_name.clone();
+            return records::field_get(&table_name, &field, ctx);
+        }
     }
 
     // Plain wrapper — evaluate the primary expression.
@@ -413,6 +424,12 @@ fn eval_expression_node(
             Eval::Normal(v) => v,
             other => return other,
         };
+
+        // Record field assignment: `Rec."Field" := value`. Handled before the
+        // plain-identifier path so the whole record isn't overwritten.
+        if let Some(result) = records::try_field_assign(lhs_node, source, &rhs_val, stack, ctx) {
+            return result;
+        }
 
         let lhs_name = extract_identifier_name(lhs_node, source)
             .or_else(|| {
