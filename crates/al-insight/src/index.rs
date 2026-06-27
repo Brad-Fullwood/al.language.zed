@@ -19,7 +19,7 @@
 //! Use [`CallGraph::callers_of`] which does an O(|edges|) scan in the worst
 //! case but is fast in practice because the graph is sparse.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use petgraph::graph::NodeIndex;
 use serde::Serialize;
@@ -193,6 +193,40 @@ impl CallGraph {
     /// Return all incoming edges into `node` — i.e., who calls `node`.
     pub fn callers_of(&self, node: NodeId) -> &[CallEdge] {
         self.incoming.get(&node).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Reverse reachability: every node that transitively *reaches* any node in
+    /// `seeds` by following incoming edges (callers/subscribers/triggerers),
+    /// plus the seeds themselves.
+    ///
+    /// This is the core primitive for call-graph-based affected-test detection
+    /// (gap B7): seed with the procedures/events of a changed object and the
+    /// returned set contains every procedure (test or otherwise) that
+    /// transitively depends on the change. A test is "affected" iff its
+    /// procedure node is in this set.
+    ///
+    /// Breadth-first over the reverse adjacency list; each reachable node is
+    /// expanded exactly once, so the cost is O(V + E) over the reachable
+    /// sub-graph regardless of how many seeds share ancestors.
+    pub fn reachable_callers<I>(&self, seeds: I) -> HashSet<NodeId>
+    where
+        I: IntoIterator<Item = NodeId>,
+    {
+        let mut visited: HashSet<NodeId> = HashSet::new();
+        let mut queue: VecDeque<NodeId> = VecDeque::new();
+        for seed in seeds {
+            if visited.insert(seed) {
+                queue.push_back(seed);
+            }
+        }
+        while let Some(node) = queue.pop_front() {
+            for edge in self.callers_of(node) {
+                if visited.insert(edge.from) {
+                    queue.push_back(edge.from);
+                }
+            }
+        }
+        visited
     }
 
     pub fn node_info(&self, id: NodeId) -> Option<&NodeInfo> {
@@ -706,5 +740,55 @@ mod tests {
         assert_eq!(cg.callees_of(a).len(), 0);
         assert_eq!(cg.callers_of(b).len(), 0);
         assert_eq!(cg.callers_of(c).len(), 1);
+    }
+
+    /// B7: reverse reachability must follow a transitive chain A → B → H and
+    /// must NOT pull in unrelated nodes. Seeding with H returns {H, B, A};
+    /// seeding with an unrelated node U returns only {U}.
+    #[test]
+    fn reachable_callers_transitive_chain() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[make_codeunit(
+            1,
+            "MyCU",
+            vec![
+                regular_method("A"),
+                regular_method("B"),
+                regular_method("H"),
+                regular_method("U"),
+            ],
+        )]);
+        let mut graph = InsightGraph::new();
+        graph.build_from_index(&index);
+        let mut cg = CallGraph::build_from_insight(&graph);
+
+        let id = |m: &str| {
+            CallGraph::node_id_for(
+                &graph,
+                &NodeKey::Procedure(ObjectKind::Codeunit, "mycu".into(), m.into()),
+            )
+            .unwrap()
+        };
+        let (a, b, h, u) = (id("a"), id("b"), id("h"), id("u"));
+
+        // A → B → H ; U stands alone.
+        cg.add_direct_call(a, b);
+        cg.add_direct_call(b, h);
+
+        let reach_h = cg.reachable_callers([h]);
+        assert!(reach_h.contains(&h), "seed itself is reachable");
+        assert!(reach_h.contains(&b), "direct caller B reaches H");
+        assert!(reach_h.contains(&a), "transitive caller A reaches H");
+        assert!(!reach_h.contains(&u), "unrelated U does not reach H");
+        assert_eq!(reach_h.len(), 3);
+
+        // Seeding an unrelated node returns only itself.
+        let reach_u = cg.reachable_callers([u]);
+        assert_eq!(reach_u.len(), 1);
+        assert!(reach_u.contains(&u));
+
+        // Multiple seeds union their ancestors without double-counting.
+        let reach_both = cg.reachable_callers([h, u]);
+        assert_eq!(reach_both.len(), 4);
     }
 }

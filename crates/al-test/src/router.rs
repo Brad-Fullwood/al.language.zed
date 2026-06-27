@@ -27,6 +27,21 @@
 use al_analysis::queries::tests::TestCodeunit;
 use al_workspace::Workspace;
 
+// --- Affected-test selection (gap B7) -------------------------------------
+//
+// "Which tests must I re-run after changing these files?" is answered by
+// **call-graph reachability**: a test is affected iff it transitively calls a
+// procedure/event of a changed object (not merely because its own file
+// changed). The implementation lives in `al_analysis::queries::tests` because
+// it needs the insight call graph; it is re-exported here so the test engine is
+// the single entry point for both *routing* (which backend) and *selection*
+// (which tests). [`affected_tests_detailed`] reports [`AffectedMode`] so output
+// stays honest about whether the graph path ran or it fell back to file-name
+// matching.
+pub use al_analysis::queries::tests::{
+    affected_tests, affected_tests_detailed, AffectedMode, AffectedTest, AffectedTestsResult,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutingDecision {
     /// Pure-logic — runs on the Rust interpreter alone. This is the **only**
@@ -550,5 +565,42 @@ mod tests {
         // Only the pure-interpreter class describes itself as local.
         assert!(RoutingDecision::Interp.execution_note().contains("locally"));
         assert!(RoutingDecision::LiveBc.execution_note().contains("live BC"));
+    }
+}
+
+/// B7 end-to-end through the test-engine entry point: changing a helper's file
+/// must select the test that calls it via call-graph reachability, and report
+/// `CallGraph` mode. (Exhaustive cases live in `al_analysis::queries::tests`.)
+#[cfg(test)]
+mod b7_affected_smoke {
+    use super::{affected_tests_detailed, AffectedMode};
+    use al_workspace::Workspace;
+    use std::path::PathBuf;
+
+    #[test]
+    fn affected_selection_uses_call_graph_reachability() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/ws/helper.al"),
+            "codeunit 50100 Helper\n{\n    procedure DoWork()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+        ws.file_index.add_file(
+            PathBuf::from("/ws/tests.al"),
+            concat!(
+                "codeunit 50101 MyTests\n{\n    Subtype = Test;\n\n",
+                "    [Test]\n    procedure TestCallsHelper()\n",
+                "    var\n        H: Codeunit Helper;\n",
+                "    begin\n        H.DoWork();\n    end;\n}\n"
+            )
+            .to_string(),
+        );
+
+        let changed = vec!["/ws/helper.al".to_string()];
+        let result = affected_tests_detailed(&ws, &changed);
+
+        assert_eq!(result.mode, AffectedMode::CallGraph);
+        assert_eq!(result.tests.len(), 1, "got {:?}", result.tests);
+        assert_eq!(result.tests[0].method_name, "TestCallsHelper");
     }
 }

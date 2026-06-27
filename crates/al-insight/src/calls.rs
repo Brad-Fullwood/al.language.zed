@@ -1486,6 +1486,63 @@ pub fn populate_workspace_call_edges(
     resolved
 }
 
+/// Resolve direct-call / trigger edges for **every** workspace procedure,
+/// ignoring the fanout tiering used by [`populate_workspace_call_edges`].
+///
+/// The tiered builder only resolves high-fanout ("Tier 1") files eagerly, so a
+/// procedure in a low-fanout file can have unresolved outgoing edges. That is
+/// fine for the daemon's interactive queries (which resolve on demand) but
+/// **not** for call-graph-based affected-test detection (gap B7): a missing
+/// edge there is a false negative — a test that depends on a changed procedure
+/// would be silently skipped. This function walks all files and resolves any
+/// procedure not already marked [`EdgeResolutionState::Resolved`], so the
+/// resulting graph is complete for a backward reachability walk.
+///
+/// Returns the number of procedures whose edges were resolved by this call.
+///
+/// # Panics
+/// Does not panic. Missing symbols or nodes are silently skipped.
+pub fn resolve_all_workspace_call_edges(
+    file_index: &FileIndex,
+    symbols: &SymbolIndex,
+    insight: &InsightGraph,
+    call_graph: &mut CallGraph,
+) -> usize {
+    let mut resolved = 0;
+
+    for entry in file_index.object_info.iter() {
+        let path = entry.key().clone();
+        let info = entry.value().clone();
+
+        let (source, tree) = match file_index.get_cached_parse(&path) {
+            Some(pair) => pair,
+            None => continue,
+        };
+
+        let ok: ObjectKind = match info.kind.parse() {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
+
+        let procedures = collect_procedure_names_from_tree(tree.root_node(), source.as_bytes());
+        for proc_name in procedures {
+            let proc_key =
+                NodeKey::Procedure(ok, info.name.to_lowercase(), proc_name.to_lowercase());
+            if let Some(proc_id) = CallGraph::node_id_for(insight, &proc_key) {
+                if call_graph.resolution_state(proc_id) != EdgeResolutionState::Resolved {
+                    populate_call_edges_for_procedure(
+                        &tree, &source, ok, &info.name, &proc_name, symbols, insight, call_graph,
+                    );
+                    call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolved);
+                    resolved += 1;
+                }
+            }
+        }
+    }
+
+    resolved
+}
+
 /// Compute the Tier 1 fanout threshold.
 ///
 /// A file is Tier 1 if its score >= 5 or its score is in the top 20%.
