@@ -131,5 +131,24 @@ Native lint (A1) stays out — it is test-enforced removed. Closed the rest.
 - `cargo test -p al-compile -p al-lsp -p al-syntax -p al-analysis --lib` →
   **1345 passed, 0 failed**.
 - `cargo test -p al-test-harness` → **284 passed, 0 failed** (no regression).
-- Adversarial review workflow (3 lenses → per-finding verification) run over the
-  diff; confirmed issues addressed before commit.
+- Adversarial review workflow (3 lenses → per-finding verification): 8 issues
+  raised, **1 confirmed real** (high) — `merge_same_line_braces` appended `{`
+  into a trailing `//` comment under braceStyle=SameLine, producing invalid AL.
+  Fixed (comment-aware, scans for `//` outside quotes) + dedicated test.
+- A parallel build agent's `git checkout` clobbered the formatter mid-write
+  (lost formatting.rs); re-implemented cleanly in a single isolated agent (19
+  tests, comment-aware fix baked in). Lesson: all parallel agents now run in
+  isolated worktrees and are forbidden destructive git.
+- **Committed 285dd98** (A2-A6 + A13), full suite **284/0**; **6ef827e** docs.
+- **A13 verified end-to-end**: `.alformat.json {sortProperties, maxLineLength:80,
+  braceStyle:SameLine}` on a permissionset → properties sorted, long Permissions
+  comma-wrapped, brace merged — valid AL (target/al-comparison/A13-format-showcase.txt).
+
+### More gaps, in parallel (isolated worktrees, commit-to-branch)
+- **A11 + A12** (al-test) — branch gap/a11-a12, **merged**: Cobertura now labeled
+  static call-graph coverage (comment + `coverage-mode` attr, still valid XML);
+  `test-mutate --parallel` does real isolated parallel execution (per-variant
+  throwaway Workspace, bounded by available_parallelism, stable-ordered). 73
+  al-test tests pass, clippy clean.
+- **A8** (CodeLens wiring) — running in an isolated worktree (branch gap/a8-codelens).
+- Gallery re-running with an added diagnostics stage (ErrorCases.al).
