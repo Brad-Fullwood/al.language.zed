@@ -121,7 +121,10 @@ impl MutationReport {
 pub struct MutationOptions {
     /// Restrict mutations to files that contain `[Test]` procedures.
     pub affected_only: bool,
-    /// Run variants in parallel (advisory — current implementation is sequential).
+    /// Run variants in parallel (A12). When set, each variant executes against
+    /// its own isolated workspace snapshot — concurrent mutants can never
+    /// contaminate one another's test run — and the outcomes are reassembled
+    /// into the exact same stable order a sequential run would produce.
     pub parallel: bool,
     /// Per-variant timeout in milliseconds (None = no limit).
     pub timeout_ms: Option<u64>,
@@ -429,37 +432,29 @@ pub async fn run_mutation_testing(
         return Err(MutationError::NoTestFiles);
     }
 
-    let mut outcomes: Vec<VariantOutcome> = Vec::new();
-
+    // Flatten every variant up front, in a deterministic order: files are
+    // already sorted by path (`collect_mutation_files`), and `generate_variants`
+    // walks each tree deterministically. This single ordered list is the stable
+    // spine both the sequential and parallel executors reassemble against, so
+    // `--parallel` results match a sequential run position-for-position (A12).
+    let mut variants: Vec<MutationVariant> = Vec::new();
     for (file_path, cached) in &files {
         // Reuse the parse cached by `collect_mutation_files` to avoid a
         // second `get_cached_parse` clone of (text, tree) per file
         // (F-OPEN-094). If the cache was invalidated between the two reads
         // (user edit mid-run), fall back to the legacy refetch path.
-        let variants = match cached {
+        let file_variants = match cached {
             Some((text, tree)) => generate_variants(file_path, text, tree),
             None => generate_variants_for_file(workspace, file_path),
         };
-
-        for variant in variants {
-            let variant_id = variant.id.clone();
-            let _ = tx
-                .send(MutationEvent::VariantStarted {
-                    variant_id: variant_id.clone(),
-                })
-                .await;
-
-            let outcome = run_single_variant(workspace, &variant, &opts).await;
-
-            let _ = tx
-                .send(MutationEvent::VariantFinished {
-                    outcome: outcome.clone(),
-                })
-                .await;
-
-            outcomes.push(outcome);
-        }
+        variants.extend(file_variants);
     }
+
+    let outcomes = if opts.parallel {
+        run_variants_parallel(workspace, &variants, &tx).await
+    } else {
+        run_variants_sequential(workspace, &variants, &opts, &tx).await
+    };
 
     let killed = outcomes.iter().filter(|o| o.killed).count();
     let errored = outcomes.iter().filter(|o| o.error.is_some()).count();
@@ -484,6 +479,172 @@ pub async fn run_mutation_testing(
         .await;
 
     Ok(report)
+}
+
+/// Execute `variants` one at a time against the shared workspace.
+///
+/// Each variant is swapped into the shared `file_index` and restored afterward
+/// (see `run_single_variant`), so the variants must not overlap in time — which
+/// is exactly why this path is sequential.
+async fn run_variants_sequential(
+    workspace: &std::sync::Arc<Workspace>,
+    variants: &[MutationVariant],
+    opts: &MutationOptions,
+    tx: &mpsc::Sender<MutationEvent>,
+) -> Vec<VariantOutcome> {
+    let mut outcomes: Vec<VariantOutcome> = Vec::with_capacity(variants.len());
+    for variant in variants {
+        let _ = tx
+            .send(MutationEvent::VariantStarted {
+                variant_id: variant.id.clone(),
+            })
+            .await;
+
+        let outcome = run_single_variant(workspace, variant, opts).await;
+
+        let _ = tx
+            .send(MutationEvent::VariantFinished {
+                outcome: outcome.clone(),
+            })
+            .await;
+
+        outcomes.push(outcome);
+    }
+    outcomes
+}
+
+/// Execute `variants` concurrently (A12).
+///
+/// The shared-workspace swap/restore dance used by the sequential path is
+/// fundamentally single-flight: it mutates one global `file_index` and would
+/// let concurrent mutants read each other's edits. Parallelism is therefore
+/// made safe by *isolation* rather than locking — we snapshot every workspace
+/// file once, then give each variant its own throwaway `Workspace` containing
+/// the originals plus that one mutant. No two variants ever touch shared
+/// mutable state, so results are independent of scheduling.
+///
+/// Determinism is preserved two ways: outcomes are collected by joining the
+/// spawn-ordered handles (so the returned `Vec` matches the sequential order
+/// position-for-position), and concurrency is merely a throughput detail that
+/// cannot change any individual variant's verdict.
+async fn run_variants_parallel(
+    workspace: &std::sync::Arc<Workspace>,
+    variants: &[MutationVariant],
+    tx: &mpsc::Sender<MutationEvent>,
+) -> Vec<VariantOutcome> {
+    // One immutable snapshot of the whole workspace, shared by every task.
+    let snapshot = std::sync::Arc::new(snapshot_workspace_files(workspace));
+
+    // Bound in-flight tasks so a workspace with thousands of variants doesn't
+    // spawn thousands of isolated interpreters (each holding a copy of every
+    // file) at once. The cap is a throughput knob only — it never affects the
+    // result set or its order.
+    let max_in_flight = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1);
+    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(max_in_flight));
+
+    let mut handles = Vec::with_capacity(variants.len());
+    for variant in variants {
+        let variant = variant.clone();
+        let snapshot = std::sync::Arc::clone(&snapshot);
+        let permits = std::sync::Arc::clone(&permits);
+        let tx = tx.clone();
+        handles.push(tokio::spawn(async move {
+            // Held for the whole variant run; dropped on task completion.
+            let _permit = permits
+                .acquire_owned()
+                .await
+                .expect("mutation semaphore is never closed");
+
+            let _ = tx
+                .send(MutationEvent::VariantStarted {
+                    variant_id: variant.id.clone(),
+                })
+                .await;
+
+            let isolated = build_isolated_workspace(&snapshot, &variant);
+            let outcome = run_interp_tests_against_mutant(&isolated, &variant).await;
+
+            let _ = tx
+                .send(MutationEvent::VariantFinished {
+                    outcome: outcome.clone(),
+                })
+                .await;
+
+            outcome
+        }));
+    }
+
+    // Join in spawn order → the outcome vector is in the same stable order a
+    // sequential run produces. A panicked task is surfaced as an errored
+    // outcome for its variant rather than dropping the slot (which would shift
+    // every later position and break the stable-order guarantee).
+    let mut outcomes: Vec<VariantOutcome> = Vec::with_capacity(handles.len());
+    for (idx, handle) in handles.into_iter().enumerate() {
+        match handle.await {
+            Ok(outcome) => outcomes.push(outcome),
+            Err(join_err) => outcomes.push(VariantOutcome {
+                variant: variants[idx].clone(),
+                killed: false,
+                killing_test: None,
+                error: Some(format!("variant task panicked: {join_err}")),
+            }),
+        }
+    }
+    outcomes
+}
+
+/// Snapshot the text of every file currently in the workspace `file_index`.
+///
+/// Used to seed per-variant isolated workspaces (A12). Mirrors the original-text
+/// resolution in `run_single_variant`: the cached parse is preferred, falling
+/// back to the document store when a file is indexed but not yet parsed. The
+/// result is sorted by path for deterministic workspace construction.
+fn snapshot_workspace_files(workspace: &Workspace) -> Vec<(std::path::PathBuf, String)> {
+    let mut files: Vec<(std::path::PathBuf, String)> = Vec::new();
+    for entry in workspace.file_index.files.iter() {
+        let path = entry.key().clone();
+        let text = workspace
+            .file_index
+            .get_cached_parse(&path)
+            .map(|(t, _)| t)
+            .or_else(|| {
+                url::Url::from_file_path(&path)
+                    .ok()
+                    .and_then(|uri| workspace.documents.get_text(&uri))
+            });
+        if let Some(text) = text {
+            files.push((path, text));
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files
+}
+
+/// Build a fresh, throwaway `Workspace` containing every snapshot file, with
+/// `variant`'s mutation applied to its single target file (A12).
+///
+/// The interpreter test path reads exclusively from `file_index`
+/// (`discover_tests`, `classify_codeunits`, `InterpMode`), so a workspace
+/// rebuilt from the file snapshot reproduces a real run faithfully while being
+/// completely isolated from every other variant.
+fn build_isolated_workspace(
+    snapshot: &[(std::path::PathBuf, String)],
+    variant: &MutationVariant,
+) -> std::sync::Arc<Workspace> {
+    let workspace = Workspace::new();
+    let target = std::path::Path::new(&variant.file);
+    for (path, text) in snapshot {
+        let content = if path.as_path() == target {
+            apply_variant(text, variant)
+        } else {
+            text.clone()
+        };
+        workspace.file_index.add_file(path.clone(), content);
+    }
+    std::sync::Arc::new(workspace)
 }
 
 /// Collect the set of file paths to mutate.
@@ -781,6 +942,86 @@ mod tests {
         assert_eq!(
             text, source,
             "original source must be restored after the run"
+        );
+    }
+
+    /// A12: `--parallel` must run variants concurrently yet produce the exact
+    /// same stable-ordered result set as a sequential run — same variants, same
+    /// kill/survive verdict, same order. Isolation (one throwaway workspace per
+    /// variant) is what makes the concurrency safe; this test pins that the two
+    /// execution paths are observationally identical.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn mutation_parallel_matches_sequential_stable_order() {
+        const SOURCE: &str = r#"codeunit 50120 "Parallel Mutate Subject"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestAddition()
+    var
+        Result: Integer;
+    begin
+        Result := 2 + 2;
+        if Result <> 4 then
+            Error('Expected 4, got %1', Result);
+    end;
+
+    procedure Uncovered(): Integer
+    begin
+        exit(7 * 6);
+    end;
+}
+"#;
+
+        // (id, killed, errored) is the comparable fingerprint of a run.
+        async fn run(parallel: bool) -> Vec<(String, bool, bool)> {
+            let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+            ws.file_index.add_file(
+                std::path::PathBuf::from("/proj/src/ParallelMutateSubject.Codeunit.al"),
+                SOURCE.to_string(),
+            );
+            let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+            // Drain events concurrently so a bounded channel can never stall
+            // the run regardless of how many variants are produced.
+            let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            let opts = MutationOptions {
+                parallel,
+                ..MutationOptions::default()
+            };
+            let report = run_mutation_testing(&ws, opts, tx)
+                .await
+                .expect("mutation run");
+            drain.await.expect("event drain");
+            report
+                .variants
+                .iter()
+                .map(|o| (o.variant.id.clone(), o.killed, o.error.is_some()))
+                .collect()
+        }
+
+        let sequential = run(false).await;
+        let parallel = run(true).await;
+
+        assert!(
+            !sequential.is_empty(),
+            "fixture must generate at least one variant"
+        );
+        assert_eq!(
+            sequential, parallel,
+            "parallel run must equal the sequential run, position-for-position\n\
+             sequential: {sequential:#?}\nparallel:   {parallel:#?}"
+        );
+        // The fixture is only a meaningful regression guard if it exercises
+        // both verdicts: covered-body mutants killed, uncovered-body survived.
+        assert!(
+            sequential.iter().any(|(_, killed, _)| *killed),
+            "expected some KILLED mutants in the covered [Test] body"
+        );
+        assert!(
+            sequential
+                .iter()
+                .any(|(_, killed, errored)| !*killed && !*errored),
+            "expected some SURVIVING mutants (e.g. in the uncovered procedure)"
         );
     }
 
