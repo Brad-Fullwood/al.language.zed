@@ -1,5 +1,6 @@
 {
   "description": "AL Language debug adapter configuration for Business Central. Schema extracted from Microsoft AL Language extension v18.",
+  "$comment": "A7 honesty pass: fields the native al-dap adapter does not consume were removed so the schema matches behaviour. Removed MCP-debug fields (useMcpServerForDebugging, mcpServicePort) — there is no native agent-MCP debug bridge; VS Code auth fields (useVsCodeAuthentication, vsCodeAuthenticationProvider) — the adapter acquires its own OAuth token; userId and primaryTenantDomain — native attach has no user filter and derives the tenant from `tenant`; and snapshot/profiling fields (snapshotFileName, snapshotVerbosity, executionContext, profilingType, profileSamplingInterval) — snapshot/profiling are not part of DAP launch here; use `al-explorer snapshot` / `al-explorer profile` instead. sessionId IS consumed by attach.",
   "type": "object",
   "required": [
     "adapter",
@@ -149,15 +150,6 @@
       ],
       "description": "Specifies which environment to use to connect to Business Central."
     },
-    "executionContext": {
-      "enum": [
-        "Debug",
-        "Profile",
-        "DebugAndProfile"
-      ],
-      "default": "DebugAndProfile",
-      "description": "Specifies how the snapshot technology will be applied on the Business Central server executing AL code"
-    },
     "forceUpgrade": {
       "type": "boolean",
       "default": false,
@@ -173,11 +165,6 @@
       "default": 500,
       "description": "Sets the number of milliseconds spent before a SQL statement is considered as long running in the debugger."
     },
-    "mcpServicePort": {
-      "type": "number",
-      "default": 7047,
-      "description": "The port to access the Business Central MCP server. This is only used if useMcpServerForDebugging is true and it should be the same as the Business Central API service port."
-    },
     "numberOfSqlStatements": {
       "type": "number",
       "default": 10,
@@ -187,28 +174,6 @@
       "type": "number",
       "default": 7049,
       "description": "The development service port."
-    },
-    "primaryTenantDomain": {
-      "type": "string",
-      "default": "",
-      "description": "Specifies the Tenant ID or Primary Domain associated with the Microsoft Entra tenant, for example: bf4ab6d6-cd93-424e-91fa-afe03fa286ac or mycustomer.onmicrosoft.com. This setting is used to enable Microsoft Entra ID authentication for on-premises installations."
-    },
-    "profileSamplingInterval": {
-      "enum": [
-        50,
-        100,
-        150
-      ],
-      "default": 100,
-      "description": "Specifies the sampling interval in milliseconds when \"Sampling\" profiling type is specified. Default is 100ms."
-    },
-    "profilingType": {
-      "enum": [
-        "Instrumentation",
-        "Sampling"
-      ],
-      "default": "Instrumentation",
-      "description": "Specifies the profiling type to be used."
     },
     "sandboxName": {
       "type": "string",
@@ -236,20 +201,7 @@
     "sessionId": {
       "type": "number",
       "default": -1,
-      "description": "The id of the session to be attached to."
-    },
-    "snapshotFileName": {
-      "type": "string",
-      "default": "",
-      "description": "The name of the snapshot file"
-    },
-    "snapshotVerbosity": {
-      "enum": [
-        "SnapPoint",
-        "Full"
-      ],
-      "default": "SnapPoint",
-      "description": "Specifies the verbosity level of snapshot data. If SnapPoint is specified then stacktraces and line information will only be gathered on snap points."
+      "description": "For attach requests, the id of the BC client session to attach to. Use -1 (the default) to attach via `breakOnNext` instead of a specific session."
     },
     "startupCompany": {
       "type": "string",
@@ -275,11 +227,6 @@
       "default": "default",
       "description": "The tenant to connect to.\nFor an on-premise server, this parameter must contain a tenant name, for example: MyTenant.\nFor a cloud server, this parameter must contain the Microsoft Entra tenant ID or Primary Domain associated with the Microsoft Entra tenant, for example: bf4ab6d6-cd93-424e-91fa-afe03fa286ac or mycustomer.onmicrosoft.com"
     },
-    "useMcpServerForDebugging": {
-      "type": "boolean",
-      "default": true,
-      "description": "Specifies whether to connect to the Business Central MCP server for debugging in agent mode."
-    },
     "usePublicURLFromServer": {
       "type": "boolean",
       "default": true,
@@ -290,29 +237,10 @@
       "default": false,
       "description": "Runs install and upgrade codeunits in a system session. This will prevent debugging install and upgrade codeunits."
     },
-    "useVsCodeAuthentication": {
-      "type": "boolean",
-      "default": false,
-      "description": "If true, authentication tokens are acquired through Visual Studio Code's built-in authentication instead of the extension's interactive or device code login."
-    },
-    "userId": {
-      "type": "string",
-      "default": "",
-      "description": "Specifies the end user id who will first connect to perform debugging session. It can be either a username or GUID."
-    },
     "validateServerCertificate": {
       "type": "boolean",
       "default": true,
       "description": "If the value is set to false, the server certificate will not be validated."
-    },
-    "vsCodeAuthenticationProvider": {
-      "type": "string",
-      "enum": [
-        "microsoft",
-        "microsoft-sovereign-cloud"
-      ],
-      "default": "microsoft",
-      "description": "Specifies which Visual Studio Code authentication provider to use when useVsCodeAuthentication is enabled."
     }
   }
 }

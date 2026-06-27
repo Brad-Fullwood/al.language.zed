@@ -65,6 +65,11 @@ pub struct BcDebugConfig {
     pub break_on_error: bool,
     pub break_on_record_write: bool,
     pub break_on_next: Option<String>,
+    /// `sessionId` — a specific BC client session to attach to. `None` (the
+    /// schema's `-1` sentinel) means "no specific session", in which case the
+    /// `break_on_next` selector decides which upcoming session to break into.
+    /// Only consumed by `attach`.
+    pub session_id: Option<i64>,
     pub startup_object_type: String,
     pub startup_object_id: i64,
     pub launch_browser: bool,
@@ -86,6 +91,7 @@ impl Default for BcDebugConfig {
             break_on_error: true,
             break_on_record_write: false,
             break_on_next: None,
+            session_id: None,
             startup_object_type: "Page".to_string(),
             startup_object_id: 22,
             launch_browser: true,
@@ -128,6 +134,12 @@ impl BcDebugConfig {
         }
         if let Some(s) = args.get("breakOnNext").and_then(|v| v.as_str()) {
             cfg.break_on_next = Some(s.to_string());
+        }
+        // `sessionId` selects one specific BC client session to attach to. The
+        // schema default is `-1` ("no specific session" → use breakOnNext), so
+        // map any negative value to None and only carry a real (>= 0) id.
+        if let Some(n) = args.get("sessionId").and_then(|v| v.as_i64()) {
+            cfg.session_id = (n >= 0).then_some(n);
         }
         if let Some(s) = args.get("startupObjectType").and_then(|v| v.as_str()) {
             cfg.startup_object_type = s.to_string();
@@ -908,10 +920,20 @@ impl BcDebugSession {
     }
 
     pub async fn attach(&self, config: &BcDebugConfig) -> Result<()> {
-        let args = serde_json::json!({
+        let mut args = serde_json::json!({
             "breakOnError": config.break_on_error,
             "breakOnRecordWrite": config.break_on_record_write,
         });
+        // Attach session selectors. `breakOnNext` breaks into the next client
+        // session of the given kind; `sessionId` attaches to one already-running
+        // session. Both are forwarded only when configured, so the default
+        // attach payload (and its existing wire contract) is unchanged.
+        if let Some(next) = config.break_on_next.as_deref() {
+            args["breakOnNext"] = serde_json::json!(next);
+        }
+        if let Some(session_id) = config.session_id {
+            args["sessionId"] = serde_json::json!(session_id);
+        }
         self.invoke("Attach", vec![args]).await?;
         info!("Attached to BC debug session");
         Ok(())
@@ -2293,6 +2315,33 @@ mod tests {
     }
 
     #[test]
+    fn from_dap_args_parses_session_id() {
+        // A real (>= 0) sessionId is carried through as Some.
+        let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({ "sessionId": 42 }));
+        assert_eq!(cfg.session_id, Some(42));
+        let zero = BcDebugConfig::from_dap_args(&serde_json::json!({ "sessionId": 0 }));
+        assert_eq!(zero.session_id, Some(0), "0 is a valid session id");
+
+        // Absent or the schema's -1 sentinel both mean "no specific session".
+        assert_eq!(
+            BcDebugConfig::from_dap_args(&serde_json::json!({})).session_id,
+            None,
+            "absent sessionId defaults to None"
+        );
+        assert_eq!(
+            BcDebugConfig::from_dap_args(&serde_json::json!({ "sessionId": -1 })).session_id,
+            None,
+            "-1 sentinel maps to None (attach via breakOnNext instead)"
+        );
+
+        // A non-integer value is ignored (stays None) rather than panicking.
+        assert_eq!(
+            BcDebugConfig::from_dap_args(&serde_json::json!({ "sessionId": "nope" })).session_id,
+            None
+        );
+    }
+
+    #[test]
     fn from_dap_args_break_flags_accept_bool_and_string() {
         let bool_args = serde_json::json!({
             "breakOnError": false,
@@ -2813,6 +2862,36 @@ mod tests {
         assert_eq!(frame["target"], "Attach");
         assert_eq!(frame["arguments"][0]["breakOnError"], true);
         assert_eq!(frame["arguments"][0]["breakOnRecordWrite"], false);
+        // With neither selector set, the payload carries no session keys —
+        // the default attach wire contract is unchanged.
+        assert!(
+            frame["arguments"][0].get("sessionId").is_none(),
+            "sessionId must be absent when unset"
+        );
+        assert!(
+            frame["arguments"][0].get("breakOnNext").is_none(),
+            "breakOnNext must be absent when unset"
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_forwards_session_id_and_break_on_next() {
+        let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+        event_tx
+            .send(completion("1", Some(serde_json::json!(null)), None))
+            .await
+            .unwrap();
+        let cfg = BcDebugConfig {
+            break_on_next: Some("Agent".to_string()),
+            session_id: Some(7),
+            ..BcDebugConfig::default()
+        };
+        session.attach(&cfg).await.expect("attach ok");
+        let frame = next_frame(&mut ws_rx);
+        assert_eq!(frame["target"], "Attach");
+        // Selectors are forwarded into the Attach payload when configured.
+        assert_eq!(frame["arguments"][0]["breakOnNext"], "Agent");
+        assert_eq!(frame["arguments"][0]["sessionId"], 7);
     }
 
     #[tokio::test]
