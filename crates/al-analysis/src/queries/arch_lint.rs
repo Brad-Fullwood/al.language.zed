@@ -66,8 +66,76 @@ impl ArchConfig {
         serde_json::from_str(json).map_err(|e| e.to_string())
     }
 
+    /// Opinionated, always-on AL architecture rules applied to every workspace
+    /// in addition to any `.alarch.json` config (see [`arch_lint`]).
+    ///
+    /// Each rule encodes a Business Central layering principle that the
+    /// substring-based [`ArchRuleKind::ForbiddenPattern`] model can express
+    /// *precisely* — the leading `.` and trailing `(` anchors keep the literal
+    /// match from firing on unrelated identifiers (e.g. a user procedure named
+    /// `Insert`). They are deliberately conservative: only data-layer (`table`)
+    /// and presentation-layer (`page`) coupling smells with low false-positive
+    /// risk are encoded, so the defaults stay quiet on idiomatic AL.
+    ///
+    /// Naming-relationship rules the gap doc lists as examples — e.g. "tables
+    /// must not reference `*Mgt` / `*Management` codeunits" or "area X must not
+    /// reach into area Y's internals" — need real pattern matching (word
+    /// boundaries / alternation) that a plain substring search cannot do
+    /// without noise. They are deferred until the linter grows regex support;
+    /// see the note on [`ArchRuleKind`].
     pub fn builtin_rules() -> Vec<ArchRule> {
-        vec![]
+        vec![
+            // Data layer must not drive the UI: opening a page from a table
+            // couples storage to presentation and breaks headless execution
+            // (background sessions, web services, upgrade codeunits).
+            ArchRule {
+                id: "BUILTIN-TABLE-NO-PAGE-RUN".to_string(),
+                description: "Tables must not open pages (keep the data layer UI-free)"
+                    .to_string(),
+                kind: ArchRuleKind::ForbiddenPattern,
+                pattern: "table".to_string(),
+                values: vec!["Page.Run".to_string(), "Page.RunModal".to_string()],
+            },
+            // Interactive dialogs raised from a table trigger surface during
+            // background / API / upgrade execution where no user can answer
+            // them, hanging or erroring the session.
+            ArchRule {
+                id: "BUILTIN-TABLE-NO-DIALOG".to_string(),
+                description: "Tables must not raise interactive UI dialogs".to_string(),
+                kind: ArchRuleKind::ForbiddenPattern,
+                pattern: "table".to_string(),
+                values: vec![
+                    "Message(".to_string(),
+                    "Confirm(".to_string(),
+                    "StrMenu(".to_string(),
+                ],
+            },
+            // An explicit Commit from a table trigger fragments the caller's
+            // transaction and can leave partially-applied writes after a
+            // rollback further up the call stack.
+            ArchRule {
+                id: "BUILTIN-TABLE-NO-COMMIT".to_string(),
+                description: "Tables must not issue an explicit Commit".to_string(),
+                kind: ArchRuleKind::ForbiddenPattern,
+                pattern: "table".to_string(),
+                values: vec!["Commit(".to_string()],
+            },
+            // Presentation layer must not own persistence: direct create /
+            // delete / bulk writes belong in a codeunit so the logic is
+            // reusable and testable without the UI.
+            ArchRule {
+                id: "BUILTIN-PAGE-NO-DB-WRITE".to_string(),
+                description: "Pages must not perform direct database writes".to_string(),
+                kind: ArchRuleKind::ForbiddenPattern,
+                pattern: "page".to_string(),
+                values: vec![
+                    ".Insert(".to_string(),
+                    ".Delete(".to_string(),
+                    ".ModifyAll(".to_string(),
+                    ".DeleteAll(".to_string(),
+                ],
+            },
+        ]
     }
 }
 
@@ -539,6 +607,166 @@ mod tests {
         assert!(
             v.is_empty(),
             "Simple procedure under default threshold 10 must not violate: {v:?}"
+        );
+    }
+
+    // ----- Built-in rules (ArchConfig::builtin_rules) -------------------------
+    //
+    // These run against `ArchConfig::default()` (an empty user config) so only
+    // the built-in set is exercised, and they use `table` / `page` objects so
+    // they never collide with the codeunit/interface fixtures above.
+
+    #[test]
+    fn builtin_rules_are_nonempty_with_unique_ids() {
+        let rules = ArchConfig::builtin_rules();
+        assert!(
+            rules.len() >= 3,
+            "builtin_rules() should ship a useful default set, got {}",
+            rules.len()
+        );
+        let mut ids: Vec<&str> = rules.iter().map(|r| r.id.as_str()).collect();
+        ids.sort_unstable();
+        let unique = {
+            let mut u = ids.clone();
+            u.dedup();
+            u.len()
+        };
+        assert_eq!(unique, ids.len(), "builtin rule IDs must be unique: {ids:?}");
+    }
+
+    #[test]
+    fn builtin_table_must_not_open_page() {
+        let ws = workspace_with(vec![(
+            "/src/Order.al",
+            r#"table 50100 "Order"
+{
+    fields { field(1; "No."; Code[20]) { } }
+    trigger OnInsert()
+    begin
+        Page.Run(Page::"Order List");
+    end;
+}"#,
+        )]);
+        let v = arch_lint(&ws, &ArchConfig::default());
+        assert!(
+            v.iter().any(|x| x.rule_id == "BUILTIN-TABLE-NO-PAGE-RUN"),
+            "Table running a page must be flagged: {v:?}"
+        );
+    }
+
+    #[test]
+    fn builtin_table_must_not_show_dialog() {
+        let ws = workspace_with(vec![(
+            "/src/Customer.al",
+            r#"table 50101 "Customer"
+{
+    fields { field(1; "No."; Code[20]) { } }
+    trigger OnInsert()
+    begin
+        Message('inserted');
+    end;
+}"#,
+        )]);
+        let v = arch_lint(&ws, &ArchConfig::default());
+        assert!(
+            v.iter().any(|x| x.rule_id == "BUILTIN-TABLE-NO-DIALOG"),
+            "Table raising a Message dialog must be flagged: {v:?}"
+        );
+    }
+
+    #[test]
+    fn builtin_table_must_not_commit() {
+        let ws = workspace_with(vec![(
+            "/src/Ledger.al",
+            r#"table 50102 "Ledger Entry"
+{
+    fields { field(1; "Entry No."; Integer) { } }
+    trigger OnInsert()
+    begin
+        Commit();
+    end;
+}"#,
+        )]);
+        let v = arch_lint(&ws, &ArchConfig::default());
+        assert!(
+            v.iter().any(|x| x.rule_id == "BUILTIN-TABLE-NO-COMMIT"),
+            "Table issuing an explicit Commit must be flagged: {v:?}"
+        );
+    }
+
+    #[test]
+    fn builtin_page_must_not_write_database() {
+        let ws = workspace_with(vec![(
+            "/src/OrderCard.al",
+            r#"page 50100 "Order Card"
+{
+    PageType = Card;
+    SourceTable = "Order";
+    actions
+    {
+        area(Processing)
+        {
+            action(Create)
+            {
+                trigger OnAction()
+                begin
+                    Rec.Insert();
+                end;
+            }
+        }
+    }
+}"#,
+        )]);
+        let v = arch_lint(&ws, &ArchConfig::default());
+        assert!(
+            v.iter().any(|x| x.rule_id == "BUILTIN-PAGE-NO-DB-WRITE"),
+            "Page performing a direct Insert must be flagged: {v:?}"
+        );
+    }
+
+    #[test]
+    fn builtin_rules_quiet_on_clean_objects() {
+        // A well-layered table (no UI / no Commit) and a read-only page (no
+        // direct writes) must not trip any built-in rule when no user config
+        // is present. A clean codeunit is included for good measure.
+        let ws = workspace_with(vec![
+            (
+                "/src/CleanTable.al",
+                r#"table 50103 "Clean Table"
+{
+    fields { field(1; "No."; Code[20]) { } }
+}"#,
+            ),
+            (
+                "/src/CleanPage.al",
+                r#"page 50101 "Clean List"
+{
+    PageType = List;
+    SourceTable = "Clean Table";
+    layout
+    {
+        area(Content)
+        {
+            field("No."; Rec."No.") { }
+        }
+    }
+}"#,
+            ),
+            (
+                "/src/CleanCodeunit.al",
+                r#"codeunit 50104 "Clean Codeunit"
+{
+    procedure DoWork()
+    begin
+        Message('ok');
+    end;
+}"#,
+            ),
+        ]);
+        let v = arch_lint(&ws, &ArchConfig::default());
+        assert!(
+            v.is_empty(),
+            "Clean, well-layered objects must not trip built-in rules: {v:?}"
         );
     }
 }
