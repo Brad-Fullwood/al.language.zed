@@ -21,6 +21,30 @@ use super::workspace;
 /// ISSUE-025 fix: prevents bridge calls (up to 5s) from blocking hover/completion.
 const DIAGNOSTICS_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// Every `al.*` command the server advertises in `executeCommandProvider` and
+/// handles in [`AlServer::execute_command`]. Single source of truth: the
+/// capability list and the dispatch both derive from this slice, and the
+/// CodeLens commands (`al.findReferences`, `al.showProfiler`, `al.runTest`)
+/// must all appear here so no clickable lens is a dead no-op (gap A8). The
+/// `code_lens` test asserts `LENS_COMMAND_IDS ⊆ SUPPORTED_COMMANDS`.
+pub(crate) const SUPPORTED_COMMANDS: &[&str] = &[
+    "al.downloadSymbols",
+    "al.downloadSymbolsServer",
+    "al.downloadSymbolsNuget",
+    "al.clearSymbolCache",
+    "al.formatFile",
+    "al.lintFile",
+    "al.getStatus",
+    "al.reindex",
+    "al.compile",
+    "al.applyRecommendedSettings",
+    // CodeLens-backed commands (A8): keep in sync with
+    // `al_analysis::queries::code_lens::LENS_COMMAND_IDS`.
+    "al.findReferences",
+    "al.showProfiler",
+    "al.runTest",
+];
+
 pub struct AlServer {
     pub(crate) client: Client,
     pub(crate) workspace: Arc<Workspace>,
@@ -409,18 +433,7 @@ impl LanguageServer for AlServer {
                     },
                 )),
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec![
-                        "al.downloadSymbols".to_string(),
-                        "al.downloadSymbolsServer".to_string(),
-                        "al.downloadSymbolsNuget".to_string(),
-                        "al.clearSymbolCache".to_string(),
-                        "al.formatFile".to_string(),
-                        "al.lintFile".to_string(),
-                        "al.getStatus".to_string(),
-                        "al.reindex".to_string(),
-                        "al.compile".to_string(),
-                        "al.applyRecommendedSettings".to_string(),
-                    ],
+                    commands: SUPPORTED_COMMANDS.iter().map(|s| s.to_string()).collect(),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -942,18 +955,18 @@ impl LanguageServer for AlServer {
         let lenses: Vec<CodeLens> = entries
             .into_iter()
             .map(|e| {
-                let command_id = match &e.kind {
-                    CodeLensKind::Reference(_) => "al.findReferences",
-                    CodeLensKind::Profiler(_) => "al.showProfiler",
-                    CodeLensKind::Test(_) => "al.runTest",
-                };
+                // The command id is owned by the lens kind (single source of
+                // truth shared with `SUPPORTED_COMMANDS`), so a lens can never
+                // emit an id the `execute_command` dispatch doesn't handle (A8).
+                let command_id = e.kind.command_id();
                 // `data` carries the lens kind + payload so clients can
-                // distinguish test lenses; `arguments` makes al.runTest
-                // actionable (which codeunit/method to run). Both were
-                // previously dropped at this boundary (F-OPEN-270). The
-                // payload shape is deliberate — the internal enums are
-                // both internally tagged with "kind" and would collide if
-                // serialized directly.
+                // distinguish test lenses; `arguments` makes every lens
+                // actionable. Reference/profiler lenses pass `{uri, position}`
+                // so the handler can locate the symbol; test lenses pass the
+                // codeunit/method to run. Both were previously dropped at this
+                // boundary (F-OPEN-270). The payload shape is deliberate — the
+                // internal enums are both internally tagged with "kind" and
+                // would collide if serialized directly.
                 let data = match &e.kind {
                     CodeLensKind::Reference(count) => {
                         serde_json::json!({ "kind": "reference", "count": count })
@@ -965,13 +978,22 @@ impl LanguageServer for AlServer {
                         serde_json::json!({ "kind": "test", "status": status })
                     }
                 };
-                let arguments = e
-                    .test_target
-                    .as_ref()
-                    .and_then(|t| serde_json::to_value(t).ok())
-                    .map(|v| vec![v]);
+                let lsp_range: Range = e.range.into();
+                let arguments = match &e.kind {
+                    // Position the handler at the lens's symbol so it can run
+                    // the reference search / resolve the profiled procedure.
+                    CodeLensKind::Reference(_) | CodeLensKind::Profiler(_) => Some(vec![
+                        serde_json::json!({ "uri": uri, "position": lsp_range.start }),
+                    ]),
+                    // `al.runTest` needs the codeunit/method, not a position.
+                    CodeLensKind::Test(_) => e
+                        .test_target
+                        .as_ref()
+                        .and_then(|t| serde_json::to_value(t).ok())
+                        .map(|v| vec![v]),
+                };
                 CodeLens {
-                    range: e.range.into(),
+                    range: lsp_range,
                     command: Some(Command {
                         title: e.title,
                         command: command_id.to_string(),
@@ -1025,6 +1047,11 @@ impl LanguageServer for AlServer {
                 commands::apply_recommended_settings(self).await;
                 Ok(None)
             }
+            // CodeLens-backed commands (A8). Each returns `Some(..)` so a click
+            // performs the action instead of silently hitting the catch-all.
+            "al.findReferences" => Ok(Some(commands::find_references(self, &params.arguments))),
+            "al.showProfiler" => Ok(Some(commands::show_profiler(self, &params.arguments))),
+            "al.runTest" => Ok(Some(commands::run_test(self, &params.arguments).await)),
             _ => {
                 tracing::warn!(command = %params.command, "Unknown command");
                 Ok(None)
@@ -1239,5 +1266,238 @@ mod definition_link_support_tests {
             }
             other => panic!("expected Array response, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod code_lens_command_wiring_tests {
+    //! Gap A8: every CodeLens the server emits must resolve to an
+    //! `executeCommand` handler — a clicked lens must perform its action, never
+    //! a silent no-op. These tests drive the real `code_lens` + `execute_command`
+    //! handlers in-process (no transport) and assert both the structural
+    //! invariant (`LENS_COMMAND_IDS ⊆ SUPPORTED_COMMANDS`) and end-to-end that
+    //! each emitted lens is dispatched (returns `Some`, not the catch-all's
+    //! `None`).
+
+    use super::*;
+    use crate::queries::code_lens::LENS_COMMAND_IDS;
+    use crate::queries::profiler_hints::{ProfilerHint, ProfilerSession};
+
+    // A test codeunit exercising all three lens kinds: TestBeta is called once
+    // (reference lens), both methods are `[Test]` (test lenses), and a profiler
+    // session below adds a profiler lens for TestAlpha.
+    const SRC: &str = "codeunit 50200 \"My Tests\"\n{\n    Subtype = Test;\n\n    [Test]\n    procedure TestAlpha()\n    begin\n        TestBeta();\n    end;\n\n    [Test]\n    procedure TestBeta()\n    begin\n    end;\n}\n";
+
+    fn build_server() -> (LspService<AlServer>, Url) {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        // Skip the workspace-init wait in `await_ready`.
+        server.workspace_ready.store(true, Ordering::Release);
+        let uri = Url::parse("file:///proj/MyTests.al").expect("valid uri");
+        server
+            .workspace
+            .documents
+            .open(uri.clone(), SRC.to_string());
+        (service, uri)
+    }
+
+    fn add_profiler_session(server: &AlServer, uri: &Url, procedure: &str) {
+        let file_path = uri.to_file_path().unwrap().to_string_lossy().to_string();
+        let hint = ProfilerHint {
+            procedure: procedure.to_string(),
+            object: "My Tests".to_string(),
+            self_time_ms: 42.0,
+            total_time_ms: 42.0,
+            hit_count: 3,
+            file: Some(file_path.clone()),
+            line: None,
+        };
+        *server
+            .workspace
+            .profiler_session
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(ProfilerSession::new(file_path, vec![hint]));
+    }
+
+    fn lens_params(uri: &Url) -> CodeLensParams {
+        CodeLensParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        }
+    }
+
+    fn exec_params(cmd: &Command) -> ExecuteCommandParams {
+        ExecuteCommandParams {
+            command: cmd.command.clone(),
+            arguments: cmd.arguments.clone().unwrap_or_default(),
+            work_done_progress_params: Default::default(),
+        }
+    }
+
+    #[test]
+    fn lens_command_ids_are_all_supported() {
+        for id in LENS_COMMAND_IDS {
+            assert!(
+                SUPPORTED_COMMANDS.contains(id),
+                "lens command id {id:?} is not advertised/handled in SUPPORTED_COMMANDS — dead lens (A8)"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_emitted_lens_is_dispatched() {
+        let (service, uri) = build_server();
+        let server = service.inner();
+        add_profiler_session(server, &uri, "TestAlpha");
+
+        let lenses = server
+            .code_lens(lens_params(&uri))
+            .await
+            .expect("code_lens ok")
+            .expect("expected lenses");
+        assert!(!lenses.is_empty(), "fixture should emit lenses");
+
+        // All three lens kinds must be represented so this exercises every arm.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for lens in &lenses {
+            let cmd = lens.command.as_ref().expect("lens carries a command");
+            assert!(
+                SUPPORTED_COMMANDS.contains(&cmd.command.as_str()),
+                "emitted lens command {:?} is not handled — dead lens (A8)",
+                cmd.command
+            );
+            seen.insert(match cmd.command.as_str() {
+                "al.findReferences" => "ref",
+                "al.showProfiler" => "prof",
+                "al.runTest" => "test",
+                other => panic!("unexpected lens command {other}"),
+            });
+            // The dispatcher must return Some(..) for every emitted lens; the
+            // unknown-command catch-all returns None.
+            let result = server
+                .execute_command(exec_params(cmd))
+                .await
+                .expect("execute_command ok");
+            assert!(
+                result.is_some(),
+                "command {:?} fell through to the no-op catch-all (dead lens, A8)",
+                cmd.command
+            );
+        }
+        assert!(seen.contains("ref"), "expected a reference lens");
+        assert!(seen.contains("prof"), "expected a profiler lens");
+        assert!(seen.contains("test"), "expected a test lens");
+    }
+
+    #[tokio::test]
+    async fn find_references_command_returns_locations() {
+        let (service, uri) = build_server();
+        let server = service.inner();
+
+        // Grab the reference lens for TestBeta (called once) and run its command.
+        let lenses = server
+            .code_lens(lens_params(&uri))
+            .await
+            .expect("ok")
+            .expect("lenses");
+        let ref_cmd = lenses
+            .iter()
+            .filter_map(|l| l.command.as_ref())
+            .find(|c| c.command == "al.findReferences" && c.title.contains("1 reference"))
+            .expect("a '1 reference' lens for TestBeta");
+
+        let result = server
+            .execute_command(exec_params(ref_cmd))
+            .await
+            .expect("ok")
+            .expect("findReferences returns a value");
+        let arr = result.as_array().expect("locations array");
+        assert!(
+            !arr.is_empty(),
+            "expected at least one reference location, got {result:?}"
+        );
+        // Each entry must be a real LSP Location (has uri + range).
+        assert!(arr[0].get("uri").is_some() && arr[0].get("range").is_some());
+    }
+
+    #[tokio::test]
+    async fn show_profiler_command_returns_active_session() {
+        let (service, uri) = build_server();
+        let server = service.inner();
+        add_profiler_session(server, &uri, "TestAlpha");
+
+        let params = ExecuteCommandParams {
+            command: "al.showProfiler".to_string(),
+            arguments: vec![serde_json::json!({ "uri": uri })],
+            work_done_progress_params: Default::default(),
+        };
+        let result = server
+            .execute_command(params)
+            .await
+            .expect("ok")
+            .expect("showProfiler returns a value");
+        assert_eq!(result["active"], serde_json::json!(true));
+        let hints = result["hints"].as_array().expect("hints array");
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0]["procedure"], serde_json::json!("TestAlpha"));
+    }
+
+    #[tokio::test]
+    async fn run_test_without_server_reports_no_server() {
+        let (service, _uri) = build_server();
+        let server = service.inner();
+        // No project / launch config loaded → routing must report `noServer`
+        // (not a silent no-op) and never attempt a BC round-trip.
+        let params = ExecuteCommandParams {
+            command: "al.runTest".to_string(),
+            arguments: vec![serde_json::json!({
+                "codeunitId": 50200,
+                "methodName": "TestAlpha",
+            })],
+            work_done_progress_params: Default::default(),
+        };
+        let result = server
+            .execute_command(params)
+            .await
+            .expect("ok")
+            .expect("runTest returns a value");
+        assert_eq!(result["status"], serde_json::json!("noServer"));
+        assert_eq!(
+            result["target"]["methodName"],
+            serde_json::json!("TestAlpha")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_test_with_no_target_reports_invalid_args() {
+        let (service, _uri) = build_server();
+        let server = service.inner();
+        let params = ExecuteCommandParams {
+            command: "al.runTest".to_string(),
+            arguments: vec![],
+            work_done_progress_params: Default::default(),
+        };
+        let result = server
+            .execute_command(params)
+            .await
+            .expect("ok")
+            .expect("runTest returns a value");
+        assert_eq!(result["status"], serde_json::json!("invalidArgs"));
+    }
+
+    #[tokio::test]
+    async fn unknown_command_falls_through_to_none() {
+        // Confirms the `Some(..)` assertions above are meaningful: a genuinely
+        // unhandled command still hits the catch-all and returns None.
+        let (service, _uri) = build_server();
+        let server = service.inner();
+        let params = ExecuteCommandParams {
+            command: "al.thisDoesNotExist".to_string(),
+            arguments: vec![],
+            work_done_progress_params: Default::default(),
+        };
+        let result = server.execute_command(params).await.expect("ok");
+        assert!(result.is_none(), "unknown command must return None");
     }
 }
