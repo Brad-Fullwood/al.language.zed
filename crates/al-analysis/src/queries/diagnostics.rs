@@ -67,6 +67,37 @@ pub fn syntax_diagnostics(
     collect_diagnostics_from_tree(&tree, &text, config)
 }
 
+/// Compute syntax/lint diagnostics for every indexed workspace file.
+///
+/// Walks the [`FileIndex`](al_source::file_index::FileIndex) cached parse trees
+/// (`iter_parsed`) and runs the **same** `collect_diagnostics_from_tree` pass
+/// used for a single document, so a file's workspace-scope diagnostics match its
+/// per-document diagnostics exactly. Crucially this reuses each file's already
+/// cached tree — no file is re-parsed — which keeps the project-wide pass cheap
+/// even on large workspaces.
+///
+/// Background (never-opened) files and open documents both appear here because
+/// `on_document_change` mirrors every open/edited buffer into the file index.
+/// Callers that also want bridge/semantic diagnostics for open documents should
+/// layer those on top (see the LSP `workspace/diagnostic` handler).
+///
+/// Returns `(path, diagnostics)` for every indexed file, including files with no
+/// diagnostics — the caller decides whether to drop empty entries.
+pub fn workspace_syntax_diagnostics(
+    workspace: &Workspace,
+    config: &AlConfig,
+) -> Vec<(std::path::PathBuf, Vec<SyntaxDiagnostic>)> {
+    workspace
+        .file_index
+        .iter_parsed()
+        .into_iter()
+        .map(|(path, text, tree)| {
+            let diags = collect_diagnostics_from_tree(&tree, &text, config);
+            (path, diags)
+        })
+        .collect()
+}
+
 fn collect_diagnostics_from_tree(
     tree: &tree_sitter::Tree,
     text: &str,
@@ -206,6 +237,51 @@ mod tests {
         let config = AlConfig::default();
         let diags = syntax_diagnostics(&ws, &uri, &config);
         let _ = diags;
+    }
+
+    #[test]
+    fn test_workspace_syntax_diagnostics_reports_indexed_file() {
+        // A file present only in the FileIndex (never opened as a document) with
+        // a syntax error must surface via the workspace-scope pass.
+        let ws = Workspace::new();
+        let bad = "codeunit 50100 Test\n{\n    procedure Broken(\n    begin\n    end;\n}\n";
+        let path = std::path::PathBuf::from("/proj/Bad.al");
+        let tree = al_syntax::AlParser::parse_quick(bad).tree;
+        ws.file_index
+            .add_file_with_tree(path.clone(), bad.to_string(), tree);
+
+        let config = AlConfig::default();
+        let results = workspace_syntax_diagnostics(&ws, &config);
+        let entry = results
+            .iter()
+            .find(|(p, _)| p == &path)
+            .expect("indexed file should appear in workspace diagnostics");
+        assert!(
+            !entry.1.is_empty(),
+            "expected syntax diagnostics for the indexed bad file, got none"
+        );
+    }
+
+    #[test]
+    fn test_workspace_syntax_diagnostics_clean_file_reports_empty() {
+        let ws = Workspace::new();
+        let good = "codeunit 50100 MyCodeunit\n{\n    trigger OnRun()\n    begin\n    end;\n}\n";
+        let path = std::path::PathBuf::from("/proj/Good.al");
+        let tree = al_syntax::AlParser::parse_quick(good).tree;
+        ws.file_index
+            .add_file_with_tree(path.clone(), good.to_string(), tree);
+
+        let config = AlConfig::default();
+        let results = workspace_syntax_diagnostics(&ws, &config);
+        let entry = results
+            .iter()
+            .find(|(p, _)| p == &path)
+            .expect("indexed file should appear in workspace diagnostics");
+        assert!(
+            entry.1.is_empty(),
+            "expected no diagnostics for a clean file, got: {:?}",
+            entry.1.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]

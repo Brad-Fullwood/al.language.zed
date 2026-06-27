@@ -66,6 +66,69 @@ pub(crate) async fn compute_diagnostics(
     diagnostics
 }
 
+/// Compute project-scope diagnostics keyed by file (B11 — `workspace/diagnostic`).
+///
+/// Aggregates the diagnostics the project already produces per file:
+///
+/// * **Open documents** get the full per-document treatment (syntax + bridge)
+///   via [`compute_diagnostics`], so they match the single-document pull handler
+///   exactly. The DocumentStore text is authoritative — it carries unsaved edits.
+/// * **Every other indexed workspace file** gets syntax/parse diagnostics from
+///   its cached parse tree (no re-parse). Bridge/semantic analysis is *not* run
+///   across unopened files: each is a multi-second CLR round-trip and is only
+///   meaningful for files the user has open. Workspace scope therefore means
+///   "parse errors everywhere, semantic errors for open files" — see B11.
+///
+/// Files with no diagnostics are dropped, so a clean workspace yields an empty
+/// `Vec`. Returns `(uri, document_version, diagnostics)`; `version` is `Some`
+/// only for open documents.
+pub(crate) async fn compute_workspace_diagnostics(
+    server: &AlServer,
+) -> Vec<(Url, Option<i64>, Vec<Diagnostic>)> {
+    let mut reports: Vec<(Url, Option<i64>, Vec<Diagnostic>)> = Vec::new();
+    let mut covered: std::collections::HashSet<Url> = std::collections::HashSet::new();
+
+    // Phase 1 — open documents (syntax + bridge), reusing the canonical path.
+    for uri in server.workspace.documents.open_uris() {
+        if is_cache_path(&uri) {
+            continue;
+        }
+        let Some(text) = server.workspace.documents.get_text_arc(&uri) else {
+            continue;
+        };
+        let diags = compute_diagnostics(server, &uri, &text).await;
+        let version = server
+            .workspace
+            .documents
+            .get_version(&uri)
+            .map(|v| v as i64);
+        covered.insert(uri.clone());
+        if !diags.is_empty() {
+            reports.push((uri, version, diags));
+        }
+    }
+
+    // Phase 2 — remaining indexed files (syntax only, from cached trees).
+    let config = server.workspace.config.read().await.clone();
+    for (path, diags) in
+        crate::queries::diagnostics::workspace_syntax_diagnostics(&server.workspace, &config)
+    {
+        if diags.is_empty() {
+            continue;
+        }
+        let Ok(uri) = Url::from_file_path(&path) else {
+            continue;
+        };
+        if covered.contains(&uri) || is_cache_path(&uri) {
+            continue;
+        }
+        let lsp: Vec<Diagnostic> = diags.iter().map(syntax_diag_to_lsp).collect();
+        reports.push((uri, None, lsp));
+    }
+
+    reports
+}
+
 pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str) {
     // ISSUE-072: skip diagnostics for virtual symbol cache files — they are not
     // workspace files and Zed logs a warning for every publishDiagnostics on them.
