@@ -14,6 +14,24 @@ the more recently verified.
 
 ---
 
+## ✅ Closed (gap-closure pass)
+
+- **A2/A3/A4** — `compilationOptions`, `incrementalBuild`, `enableExternalRulesets`/
+  `ruleSetPath`/`assemblyProbingPaths`/`outputAnalyzerStatistics` are now wired
+  through to the `alc` invocation (`al-compile` `to_alc_args()` + daemon
+  `package`/official-`compile`). Unit-tested; live `alc` e2e needs ALTool.
+- **A5/A6** — `breaking`/`upgrade` now build the baseline from
+  `params.baselineSymbols` instead of an empty Vec, so removals/changes are
+  reported. Unit-tested against a synthetic baseline.
+- **A13** — the `.alformat.json` options `sortProperties`, `maxLineLength`,
+  `braceStyle`, `blankLinesBetweenProcedures` are implemented (opt-in,
+  default-noop, idempotent) — no longer parsed-and-ignored. 24 tests.
+- **A1** stays open *by design* — native lint was deliberately removed (the
+  CodeAnalysis bridge owns diagnostics) and is guarded by regression tests; not
+  reinstated.
+
+---
+
 ## A. Misleading surfaces — "implies one thing, does another"
 
 These are the highest-priority items because they can erode trust: a setting, schema field, command,

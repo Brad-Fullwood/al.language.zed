@@ -29,7 +29,7 @@ Legend: ✅ native here · 🟡 partial · 🔷 Microsoft-authoritative (delegat
 | 5 | Diagnostics | ✅ syntax native · 🔷 CodeAnalysis bridge | 🔷 CodeAnalysis | MS authoritative for full semantic set | VS Code badges in gallery; `LspClient::drain_diagnostics` |
 | 6 | Navigation (definition/refs) | ✅ native | ✅ | Parity | `LspClient::definition` / `references` |
 | 7 | Refactor (rename, code actions, **bulk** fixes) | ✅ native + project-wide bulk (`add-application-area`, `add-tooltips`, `add-data-classification`, `sort-members`, `organize-files`) | ✅ per-file code fixes | **Zed**: project-wide bulk ops | `LspClient::rename` / `code_actions`; CLI bulk cmds |
-| 8 | Formatting | ✅ native (partial option coverage) | ✅ (more complete) | MS slightly ahead on options | `cli_smoke::format_check` |
+| 8 | Formatting | ✅ native + configurable `.alformat.json`: `sortProperties`, `maxLineLength` (comma-wrap), `braceStyle`, `blankLinesBetweenProcedures` | ✅ (fixed style, none of those knobs) | **Zed**: more formatter options that actually apply | `cli_smoke::format_check`; `A13-format-showcase.txt`; 19 al-syntax + 5 al-analysis tests |
 | 9 | Build → `.app` | ✅ pure-Rust emitter, 10–12× faster cold / 60–465× warm, byte-identical `SymbolReference.json` | 🔷 `alc` | **Zed faster**; MS authoritative for semantic validation | `BENCHMARKS.md` |
 | 10 | Analysis & insight | ✅ dead-code, SQL scan, event-chain trace, impact, arch-lint, obsolescence, data-class audit, dependency graph, duplicates | ❌ (compiler diags + find-refs only) | **Zed, decisively** | `ZED-DIFFERENTIATORS.md` |
 | 11 | Testing | ✅ static discovery + **pure-logic interpreter without a BC server** | ❌ (all tests need BC) | **Zed** for fast inner loop | `cli_smoke::tests_discovery`; `test-classify` |
@@ -49,8 +49,12 @@ Observed directly or from the project's own [`gaps-and-future-work.md`](./gaps-a
   Diagnostics are produced by the .NET CodeAnalysis bridge by design. (VS Code's
   CodeCop/AppSourceCop cover this lane; gap A1's "implement a starter set" is a
   maintainer decision, not pursued here.)
-- **Formatter option coverage** — partial vs Microsoft's (gap A13).
 - **Compile-time semantic validation** — not done natively (delegated).
+
+(Gap A13 — formatter options — is now **closed**: `sortProperties`,
+`maxLineLength`, `braceStyle`, `blankLinesBetweenProcedures` are implemented and
+tested; see stage 8. Gaps A2–A6 — build-settings passthrough + breaking/upgrade
+baseline — are also wired and unit-tested.)
 
 These are tracked, not hidden — which is the point of shipping the audit.
 
