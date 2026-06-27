@@ -23,6 +23,34 @@ pub type AlTime = i64;
 /// AL `DateTime` carrier: milliseconds since the AL epoch (0001-01-01).
 pub type AlDateTime = i64;
 
+/// Milliseconds in one day — the conversion factor between the `Date` (day)
+/// and `DateTime` (millisecond) carriers.
+pub const MS_PER_DAY: i64 = 86_400_000;
+
+/// Days from the AL epoch (0001-01-01) to the Unix epoch (1970-01-01).
+/// Used to bridge the system clock (Unix-based) and the AL `Date`/`DateTime`
+/// carriers (0001-01-01-based). The value is the standard proleptic-Gregorian
+/// offset (`days_from_civil(1,1,1) == -719162`).
+pub const AL_EPOCH_TO_UNIX_DAYS: i64 = 719_162;
+
+/// Days since the Unix epoch (1970-01-01) for a proleptic-Gregorian
+/// year/month/day. Howard Hinnant's `days_from_civil` algorithm — exact for
+/// all `i64` years, no leap-year edge cases. `month` is 1..=12, `day` 1..=31.
+pub fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe - 719_468
+}
+
+/// Days since the AL epoch (0001-01-01) for a year/month/day. `0001-01-01`
+/// maps to day 0; `1970-01-01` maps to [`AL_EPOCH_TO_UNIX_DAYS`].
+pub fn al_days_from_ymd(year: i64, month: i64, day: i64) -> i64 {
+    days_from_civil(year, month, day) + AL_EPOCH_TO_UNIX_DAYS
+}
+
 /// One AL runtime value.
 ///
 /// `PartialEq` is implemented manually (below) to mirror the `Ord` total
@@ -593,6 +621,40 @@ mod tests {
             }))
             .type_name(),
             "ErrorInfo"
+        );
+    }
+
+    #[test]
+    fn al_date_math_known_anchors() {
+        // Ground truth, independent of the interpreter: the AL epoch is day 0,
+        // and the Unix epoch is the standard 719162-day offset.
+        assert_eq!(al_days_from_ymd(1, 1, 1), 0);
+        assert_eq!(al_days_from_ymd(1970, 1, 1), AL_EPOCH_TO_UNIX_DAYS);
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(1, 1, 1), -AL_EPOCH_TO_UNIX_DAYS);
+    }
+
+    #[test]
+    fn al_date_math_month_lengths_and_leap_years() {
+        // June has 30 days.
+        assert_eq!(
+            al_days_from_ymd(2024, 7, 1) - al_days_from_ymd(2024, 6, 1),
+            30
+        );
+        // 2024 is a leap year → February has 29 days.
+        assert_eq!(
+            al_days_from_ymd(2024, 3, 1) - al_days_from_ymd(2024, 2, 1),
+            29
+        );
+        // 2023 is not a leap year → February has 28 days.
+        assert_eq!(
+            al_days_from_ymd(2023, 3, 1) - al_days_from_ymd(2023, 2, 1),
+            28
+        );
+        // One ordinary year (2023, non-leap) is 365 days.
+        assert_eq!(
+            al_days_from_ymd(2024, 1, 1) - al_days_from_ymd(2023, 1, 1),
+            365
         );
     }
 

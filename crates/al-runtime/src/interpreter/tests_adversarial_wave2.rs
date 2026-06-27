@@ -103,7 +103,6 @@ mod tests {
     // Observed: Eval::Error("unsupported expression kind in Phase 2a: date_literal")
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-01 UNIMPLEMENTED: date_literal not handled in eval_expr (Phase 2 gap)"]
     fn w2_01_date_literal_unimplemented() {
         let wrapper = r#"codeunit 50100 "W2"
 {
@@ -141,7 +140,6 @@ mod tests {
     // Observed: Eval::Error("unsupported expression kind in Phase 2a: time_literal")
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-02 UNIMPLEMENTED: time_literal not handled in eval_expr (Phase 2 gap)"]
     fn w2_02_time_literal_unimplemented() {
         let wrapper = r#"codeunit 50100 "W2"
 {
@@ -186,7 +184,6 @@ mod tests {
     // Observed: Eval::Error("binary operator `+=` not supported on (Integer, Integer)")
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-03 TYPE_ERROR: compound '+=' not implemented in eval_expression_node"]
     fn w2_03_compound_plus_equals_not_implemented() {
         let (eval, stack) = run_stmt("x += 1;");
         assert!(
@@ -212,7 +209,6 @@ mod tests {
     // Observed: Eval::Error("binary operator `-=` not supported on …")
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-04 TYPE_ERROR: compound '-=' not implemented in eval_expression_node"]
     fn w2_04_compound_minus_equals_not_implemented() {
         let (eval, stack) = run_stmt("x -= 1;");
         assert!(
@@ -357,7 +353,6 @@ mod tests {
     //           Eval::Error("procedure not found: …::Low")
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-07 UNIMPLEMENTED: Enum:: scope-qualified enum members not evaluated"]
     fn w2_07_enum_scope_qualifier_not_implemented() {
         let wrapper = r#"codeunit 50100 "W2"
 {
@@ -538,7 +533,10 @@ mod tests {
     // Observed: Eval::Error("procedure not found: MaxStrLen")
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-11 UNIMPLEMENTED: MaxStrLen() builtin not in dispatch inline list"]
+    #[ignore = "W2-11 NOW IMPLEMENTED but repro assertion is wrong: MaxStrLen() is dispatched \
+                (see b4_maxstrlen_* tests below), but this repro asserts the *statement* evaluates \
+                to Normal(Integer). An assignment statement evaluates to Normal(Empty) — the integer \
+                lands in `x`, not in the Eval. Kept ignored rather than rewrite an existing assertion."]
     fn w2_11_maxstrlen_not_implemented() {
         let (eval, _) = run_stmt("x := MaxStrLen(s);");
         assert!(
@@ -561,7 +559,6 @@ mod tests {
     // Observed: Eval::Error("procedure not found: CreateDateTime")
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-12 UNIMPLEMENTED: CreateDateTime() builtin not in dispatch inline list"]
     fn w2_12_createdatetime_not_implemented() {
         let (_eval, _) = run_stmt("x := 1;"); // placeholder — real test needs Date vars
                                               // The real failing pattern from BCApps:
@@ -690,7 +687,6 @@ mod tests {
     // Observed: Eval::Error("binary operator `+=` not supported on (Text, Text)")
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-15 TYPE_ERROR: compound '+=' on Text not implemented"]
     fn w2_15_compound_plus_equals_text_not_implemented() {
         // s starts as ''; after `s += 'hello'` it should be 'hello'.
         let (eval, stack) = run_stmt("s += 'hello';");
@@ -836,7 +832,6 @@ mod tests {
     // Observed: Eval::Error("procedure not found: CurrentDateTime")
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-19 UNIMPLEMENTED: CurrentDateTime() global builtin not in dispatch inline list"]
     fn w2_19_currentdatetime_not_implemented() {
         let (_eval, _) = run_stmt("x := 1;"); // placeholder
                                               // The real failing pattern:
@@ -910,6 +905,226 @@ mod tests {
             !matches!(eval, Eval::Exit(_)),
             "FOR i64::MAX must not silently exit; got: {:?}",
             eval
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // B4 slice — focused tests for the newly-implemented interpreter features.
+    // These assert on the *resulting values* (not just Eval::Normal), which the
+    // wave-2 repro tests above mostly do not.
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /// Compound `*=` multiplies in place.
+    #[test]
+    fn b4_compound_times_equals() {
+        let (eval, stack) = run_stmt("x := 6; x *= 7;");
+        assert!(matches!(eval, Eval::Normal(_)), "got: {:?}", eval);
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(42)));
+    }
+
+    /// Compound `/=` is `x := x / rhs`; integer `/` promotes to Decimal, exactly
+    /// as the expanded form would. (Consistent with the interpreter's `:=`.)
+    #[test]
+    fn b4_compound_divide_equals_promotes_to_decimal() {
+        let (eval, stack) = run_stmt("x := 10; x /= 4;");
+        assert!(matches!(eval, Eval::Normal(_)), "got: {:?}", eval);
+        assert_eq!(stack.lookup("x"), Some(&Value::Decimal(2.5)));
+    }
+
+    /// A multi-name local `var` line binds every name to its type default, so an
+    /// unassigned variable reads as 0 rather than erroring "unbound".
+    #[test]
+    fn b4_multivar_local_defaults_bound_via_dispatch() {
+        use crate::interpreter::dispatch::{dispatch_call, DispatchCtx};
+        let ws = Arc::new(Workspace::new());
+        let source = r#"codeunit 50123 "MV"
+{
+    procedure Sum(): Integer
+    var
+        A, B, C : Integer;
+    begin
+        A := 5;
+        exit(A + B + C);
+    end;
+}
+"#;
+        ws.file_index
+            .add_file(std::path::PathBuf::from("/test/MV.al"), source.to_string());
+        let mut ctx = DispatchCtx::new_pure(ws);
+        let result = dispatch_call(Some("MV"), "Sum", vec![], &mut ctx);
+        assert!(
+            matches!(result, Eval::Normal(Value::Integer(5))),
+            "B and C must default to 0 so A+B+C == 5; got: {:?}",
+            result
+        );
+    }
+
+    /// `"Enum Type"::Member` evaluates to a `Value::Option` carrying the type and
+    /// member names (ordinal unresolved → 0, the interpreter is BC-free).
+    #[test]
+    fn b4_enum_scope_simple_produces_option() {
+        let (eval, stack) = run_stmt("x := \"Risk Level\"::High;");
+        assert!(matches!(eval, Eval::Normal(_)), "got: {:?}", eval);
+        assert_eq!(
+            stack.lookup("x"),
+            Some(&Value::Option {
+                type_name: "Risk Level".into(),
+                member: "High".into(),
+                ordinal: 0,
+            })
+        );
+    }
+
+    /// `Enum::"Type"::"Value"` — the `Enum` keyword prefix form. The first scope
+    /// member is the type, the last is the value.
+    #[test]
+    fn b4_enum_scope_enum_prefix_form() {
+        let (eval, stack) = run_stmt("x := Enum::\"Risk Level\"::\"App Name\";");
+        assert!(matches!(eval, Eval::Normal(_)), "got: {:?}", eval);
+        assert_eq!(
+            stack.lookup("x"),
+            Some(&Value::Option {
+                type_name: "Risk Level".into(),
+                member: "App Name".into(),
+                ordinal: 0,
+            })
+        );
+    }
+
+    /// `MaxStrLen` is dispatched as an inline builtin and lands in the LHS.
+    /// (See the W2-11 note: this asserts the *stored value*, the correct thing.)
+    #[test]
+    fn b4_maxstrlen_dispatched_into_variable() {
+        let wrapper = r#"codeunit 50100 "W2"
+{
+    procedure Test()
+    var
+        s: Text;
+        x: Integer;
+    begin
+        s := 'hello';
+        x := MaxStrLen(s);
+    end;
+}"#;
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
+        let tree = result.tree;
+        let bytes = wrapper.as_bytes();
+        let body = find_proc_body(tree.root_node(), bytes).expect("body");
+        let mut stack = ScopeStack::new();
+        let mut frame = CallFrame::new("W2", "Test");
+        frame.bind("s", Value::Text(String::new()));
+        frame.bind("x", Value::Integer(0));
+        stack.push(frame);
+        let mut ctx = ctx();
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
+        assert!(matches!(eval, Eval::Normal(_)), "got: {:?}", eval);
+        // s == "hello" → 5 (current-content length; see builtin_maxstrlen note).
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(5)));
+    }
+
+    /// Date literal evaluates to the correct day carrier.
+    #[test]
+    fn b4_date_literal_value_correct() {
+        let wrapper = r#"codeunit 50100 "W2"
+{
+    procedure Test()
+    var
+        d: Date;
+    begin
+        d := 20240701D;
+    end;
+}"#;
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
+        let tree = result.tree;
+        let bytes = wrapper.as_bytes();
+        let body = find_proc_body(tree.root_node(), bytes).expect("body");
+        let mut stack = ScopeStack::new();
+        let mut frame = CallFrame::new("W2", "Test");
+        frame.bind("d", Value::Date(0));
+        stack.push(frame);
+        let mut ctx = ctx();
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
+        assert!(matches!(eval, Eval::Normal(_)), "got: {:?}", eval);
+        let expected = crate::interpreter::value::al_days_from_ymd(2024, 7, 1);
+        assert_eq!(stack.lookup("d"), Some(&Value::Date(expected)));
+    }
+
+    /// Time literal `063030T` → 06:30:30 in ms since midnight.
+    #[test]
+    fn b4_time_literal_value_correct() {
+        let wrapper = r#"codeunit 50100 "W2"
+{
+    procedure Test()
+    var
+        t: Time;
+    begin
+        t := 063030T;
+    end;
+}"#;
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
+        let tree = result.tree;
+        let bytes = wrapper.as_bytes();
+        let body = find_proc_body(tree.root_node(), bytes).expect("body");
+        let mut stack = ScopeStack::new();
+        let mut frame = CallFrame::new("W2", "Test");
+        frame.bind("t", Value::Time(0));
+        stack.push(frame);
+        let mut ctx = ctx();
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
+        assert!(matches!(eval, Eval::Normal(_)), "got: {:?}", eval);
+        // ((6*60 + 30)*60 + 30) * 1000
+        assert_eq!(stack.lookup("t"), Some(&Value::Time(23_430_000)));
+    }
+
+    /// `CreateDateTime(date, time)` combines the day and ms carriers exactly.
+    #[test]
+    fn b4_createdatetime_value_correct() {
+        let wrapper = r#"codeunit 50100 "W2"
+{
+    procedure Test()
+    var
+        dt: DateTime;
+    begin
+        dt := CreateDateTime(20240701D, 063030T);
+    end;
+}"#;
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
+        let tree = result.tree;
+        let bytes = wrapper.as_bytes();
+        let body = find_proc_body(tree.root_node(), bytes).expect("body");
+        let mut stack = ScopeStack::new();
+        let mut frame = CallFrame::new("W2", "Test");
+        frame.bind("dt", Value::DateTime(0));
+        stack.push(frame);
+        let mut ctx = ctx();
+        let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
+        assert!(matches!(eval, Eval::Normal(_)), "got: {:?}", eval);
+        let expected = crate::interpreter::value::al_days_from_ymd(2024, 7, 1)
+            * crate::interpreter::value::MS_PER_DAY
+            + 23_430_000;
+        assert_eq!(stack.lookup("dt"), Some(&Value::DateTime(expected)));
+    }
+
+    /// `Today`, `Time`, and `CurrentDateTime` dispatch to clock builtins and
+    /// return the right value kinds, all internally consistent.
+    #[test]
+    fn b4_clock_builtins_dispatch() {
+        use crate::interpreter::dispatch::dispatch_call;
+        let mut ctx = ctx();
+        let today = dispatch_call(None, "Today", vec![], &mut ctx);
+        let time = dispatch_call(None, "Time", vec![], &mut ctx);
+        let now = dispatch_call(None, "CurrentDateTime", vec![], &mut ctx);
+        assert!(matches!(today, Eval::Normal(Value::Date(_))), "got: {:?}", today);
+        match time {
+            Eval::Normal(Value::Time(ms)) => {
+                assert!((0..crate::interpreter::value::MS_PER_DAY).contains(&ms))
+            }
+            other => panic!("Time() should be a Time in [0, 1 day); got {:?}", other),
+        }
+        assert!(
+            matches!(now, Eval::Normal(Value::DateTime(_))),
+            "got: {:?}",
+            now
         );
     }
 }
