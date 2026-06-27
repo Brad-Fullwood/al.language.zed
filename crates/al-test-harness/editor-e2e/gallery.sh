@@ -25,6 +25,7 @@ DEFAULT_FILES=(
   src/Interface50100.al
   src/PageExtension50100.al
   src/CodeunitWithEvents.al
+  src/ErrorCases.al
 )
 FILES=("$@")
 [[ ${#FILES[@]} -eq 0 ]] && FILES=("${DEFAULT_FILES[@]}")
