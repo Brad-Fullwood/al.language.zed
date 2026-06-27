@@ -58,14 +58,13 @@ pub enum BraceStyle {
 
 /// Formatting options.
 ///
-/// **Wiring status:** the formatter currently honours `tab_size`,
-/// `insert_spaces`, and `keyword_casing`. The remaining fields
-/// (`blank_lines_between_procedures`, `max_line_length`, `brace_style`,
-/// `sort_properties`) are declared so the public type matches the user-
-/// facing `.alformat.json` schema and config-merge layer, but they are NOT
-/// applied during formatting yet. The unconsumed-field warning in
-/// `queries::format` (logged via `tracing::warn!`) surfaces them so users
-/// notice the gap.
+/// **Wiring status:** all fields are honoured by `format_al`. `tab_size`,
+/// `insert_spaces`, and `keyword_casing` are applied by the main
+/// indentation/casing pass; the four A13 fields
+/// (`sort_properties`, `blank_lines_between_procedures`, `max_line_length`,
+/// `brace_style`) are applied by dedicated post-processing passes that run
+/// after the main pass. Each A13 pass is a strict no-op at its default value
+/// and is idempotent.
 #[derive(Debug, Clone)]
 pub struct FormatOptions {
     pub tab_size: usize,
@@ -74,13 +73,18 @@ pub struct FormatOptions {
     /// `Upper` walk each non-comment, non-string token and case-fold it when
     /// the token matches a known AL keyword.
     pub keyword_casing: KeywordCasing,
-    /// Blank lines between procedures. **Currently a no-op.**
+    /// Blank lines between procedures. `Preserve` (default) is a no-op; `One`
+    /// / `Two` normalise the gap between a procedure's closing `end;` and the
+    /// next member (counting from a leading attribute block).
     pub blank_lines_between_procedures: BlankLinesBetweenProcedures,
-    /// Maximum line length (0 = no limit). **Currently a no-op.**
+    /// Maximum line length (0 = no limit, the default no-op). When set,
+    /// over-long single-line object properties are wrapped at top-level commas.
     pub max_line_length: usize,
-    /// Brace placement style. **Currently a no-op.**
+    /// Brace placement style. `NextLine` (default) is a no-op; `SameLine`
+    /// merges a stand-alone `{` onto the preceding opener line.
     pub brace_style: BraceStyle,
-    /// Sort object properties alphabetically. **Currently a no-op.**
+    /// Sort object-level properties alphabetically within each contiguous run.
+    /// `false` (default) is a no-op.
     pub sort_properties: bool,
 }
 
@@ -412,6 +416,27 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         result.push('\n');
     }
 
+    // ---- A13 post-processing passes ------------------------------------
+    //
+    // These run AFTER the indentation/casing state machine above, on the
+    // already-formatted text. Each pass is a STRICT no-op at its option's
+    // default value (returning the input `String` untouched), and each is
+    // INDIVIDUALLY IDEMPOTENT. Because the main pass re-runs first on a
+    // second `format_al` call, the composition is also idempotent: the main
+    // pass collapses inserted blanks / re-indents wrapped continuations to
+    // the exact shape these passes produce, so a second pass reproduces the
+    // first pass's output verbatim.
+    //
+    // Order: sort (reorders property runs) → blank lines (procedure gaps) →
+    // wrap (splits long single-line properties) → brace style (merges `{`).
+    // Wrapping after sort means a wrapped multi-line property is recognised
+    // as already-multi-line on re-entry and skipped; brace merging runs last
+    // so the earlier passes always see `{` on its own line.
+    let result = sort_object_properties(result, options);
+    let result = normalize_blank_lines_between_procedures(result, options);
+    let result = wrap_long_property_lines(result, options);
+    let result = apply_brace_style(result, options);
+
     result
 }
 
@@ -638,6 +663,492 @@ fn is_single_statement_opener(trimmed_lower: &str) -> bool {
     super::language_data::single_stmt_openers().iter().any(|o| {
         trimmed_lower.starts_with(o.prefix.as_str()) && trimmed_lower.ends_with(o.suffix.as_str())
     })
+}
+
+// ======================================================================
+// A13 post-processing passes and their shared helpers.
+//
+// All four passes operate on the fully-formatted text emitted by the main
+// `format_al` state machine (lines already trimmed-and-reindented, output
+// terminated by a single `\n`). They take the buffer by value and return it
+// by value so the caller can chain them without cloning.
+// ======================================================================
+
+/// The single indentation unit the main pass uses (spaces or one tab).
+fn indent_unit(options: &FormatOptions) -> String {
+    if options.insert_spaces {
+        " ".repeat(options.tab_size)
+    } else {
+        "\t".to_string()
+    }
+}
+
+/// Leading whitespace of `line` (everything before the first non-space char).
+fn leading_ws(line: &str) -> &str {
+    &line[..line.len() - line.trim_start().len()]
+}
+
+/// Re-join post-pass output lines into a buffer terminated by a single `\n`.
+///
+/// `text.lines()` followed by `lines.join("\n")` plus a trailing `\n`
+/// round-trips any buffer the main pass produces (which always ends in `\n`),
+/// so a pass that does not modify its `lines` reproduces its input verbatim.
+fn join_lines(lines: Vec<String>) -> String {
+    let mut result = lines.join("\n");
+    result.push('\n');
+    result
+}
+
+/// Byte offset of the first occurrence of `target` at the statement's top
+/// level — i.e. outside single/double-quoted spans, outside `()`/`[]`, and
+/// before any `//` line comment. `None` if no such occurrence exists.
+fn first_top_level(s: &str, target: u8) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_single {
+            if b == b'\'' {
+                // AL escapes a single quote inside a literal by doubling it.
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' => in_single = true,
+            b'"' => in_double = true,
+            b'(' => paren += 1,
+            b')' => paren -= 1,
+            b'[' => bracket += 1,
+            b']' => bracket -= 1,
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => return None,
+            c if c == target && paren == 0 && bracket == 0 => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Byte offset of the property-assignment `=` (the first top-level `=` that is
+/// not part of `:=`, `<=`, `>=`, `<>`, `!=`, or `==`). `None` if absent.
+fn property_eq_pos(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_single {
+            if b == b'\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' => in_single = true,
+            b'"' => in_double = true,
+            b'(' => paren += 1,
+            b')' => paren -= 1,
+            b'[' => bracket += 1,
+            b']' => bracket -= 1,
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => return None,
+            b'=' if paren == 0 && bracket == 0 => {
+                let prev = if i > 0 { bytes[i - 1] } else { 0 };
+                let next = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+                if !matches!(prev, b':' | b'<' | b'>' | b'!' | b'=') && next != b'=' {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// A property name is a single ASCII identifier (`Caption`, `TableRelation`,
+/// `Permissions`, …): non-empty, only alphanumerics and underscores.
+fn is_property_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// True if `trimmed` (an already-trimmed line) opens a property statement —
+/// `Name = value …`. Rejects comments, attributes, sub-block openers (`fields`
+/// + `{`), and executable assignments (`x := …`) via the name/`=` checks.
+fn is_property_opener(trimmed: &str) -> bool {
+    if trimmed.is_empty()
+        || trimmed.starts_with("//")
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with('*')
+        || trimmed.starts_with('[')
+        || trimmed.ends_with('{')
+    {
+        return false;
+    }
+    match property_eq_pos(trimmed) {
+        Some(pos) => is_property_name(trimmed[..pos].trim()),
+        None => false,
+    }
+}
+
+/// Case-insensitive sort key for a property statement: its name (the text
+/// before the top-level `=`), lower-cased.
+fn property_sort_key(first_line: &str) -> String {
+    let t = first_line.trim();
+    match property_eq_pos(t) {
+        Some(pos) => t[..pos].trim().to_ascii_lowercase(),
+        None => t.to_ascii_lowercase(),
+    }
+}
+
+/// True if `s` contains a `//` line comment that is OUTSIDE any single- or
+/// double-quoted span. Used by the brace-merge pass to avoid commenting out a
+/// `{` that would be merged onto a line ending in a trailing comment.
+fn has_line_comment_outside_strings(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_single {
+            if b == b'\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' => in_single = true,
+            b'"' => in_double = true,
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// PASS 1 — `sort_properties`. Within each object body, sort every contiguous
+/// run of object-level (brace depth 1) property statements case-insensitively
+/// by property name. Multi-line property values move as a single unit; nothing
+/// below depth 1 (fields/keys/layout/actions/triggers/procedures) is touched.
+fn sort_object_properties(text: String, options: &FormatOptions) -> String {
+    if !options.sort_properties {
+        return text;
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    // Each pending run element is the full set of physical lines of one
+    // property statement.
+    let mut run: Vec<Vec<String>> = Vec::new();
+    let mut depth: i32 = 0; // brace depth BEFORE the current line
+    let mut i = 0;
+
+    fn flush(run: &mut Vec<Vec<String>>, out: &mut Vec<String>) {
+        if run.is_empty() {
+            return;
+        }
+        // Stable sort keeps equal-named properties in source order.
+        run.sort_by(|a, b| property_sort_key(&a[0]).cmp(&property_sort_key(&b[0])));
+        for prop in run.drain(..) {
+            out.extend(prop);
+        }
+    }
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+
+        if depth == 1 && is_property_opener(trimmed) {
+            // Collect this property's lines: from the opener until the line
+            // that carries the statement-terminating top-level `;`.
+            let mut j = i;
+            let mut prop = vec![line.to_string()];
+            while first_top_level(lines[j], b';').is_none() && j + 1 < lines.len() {
+                j += 1;
+                prop.push(lines[j].to_string());
+            }
+            // Properties carry no braces, so depth is unchanged; account for
+            // any stray braces defensively.
+            for l in &prop {
+                depth += super::count_net_delimiters(l, '{', '}');
+            }
+            depth = depth.max(0);
+            run.push(prop);
+            i = j + 1;
+            continue;
+        }
+
+        // Any non-property line ends the current run.
+        flush(&mut run, &mut out);
+        depth += super::count_net_delimiters(line, '{', '}');
+        depth = depth.max(0);
+        out.push(line.to_string());
+        i += 1;
+    }
+    flush(&mut run, &mut out);
+    join_lines(out)
+}
+
+/// Member-start lines that the blank-line pass treats as "the next procedure":
+/// an attribute block, or a procedure/trigger header.
+fn is_procedure_member_start(trimmed: &str) -> bool {
+    if trimmed.starts_with('[') {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("procedure ")
+        || lower.starts_with("local procedure ")
+        || lower.starts_with("internal procedure ")
+        || lower.starts_with("protected procedure ")
+        || lower.starts_with("trigger ")
+}
+
+/// PASS 2 — `blank_lines_between_procedures`. Normalise the blank-line gap
+/// between a member-level `end;` and the following procedure/trigger member
+/// (or its leading attribute block) to the configured count. Inserts blanks
+/// when none exist; leaves everything else alone.
+fn normalize_blank_lines_between_procedures(text: String, options: &FormatOptions) -> String {
+    let desired = match options.blank_lines_between_procedures {
+        BlankLinesBetweenProcedures::Preserve => return text,
+        BlankLinesBetweenProcedures::One => 1,
+        BlankLinesBetweenProcedures::Two => 2,
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        out.push(line.to_string());
+
+        // A member-closing `end;` is `<indent>end;` (procedure/trigger bodies
+        // sit one indent inside their object; nested `end;` is deeper, so the
+        // sibling-indent check below filters those out anyway).
+        if line.trim().eq_ignore_ascii_case("end;") {
+            let end_indent = leading_ws(line);
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim().is_empty() {
+                j += 1;
+            }
+            if j < lines.len() {
+                let next = lines[j];
+                if leading_ws(next) == end_indent && is_procedure_member_start(next.trim()) {
+                    for _ in 0..desired {
+                        out.push(String::new());
+                    }
+                    i = j; // skip the original blank gap; emit `next` next loop
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    join_lines(out)
+}
+
+/// PASS 3 — `max_line_length`. Wrap over-long single-line property statements
+/// by splitting at top-level commas (never inside `()`, `[]`, or a string).
+/// Continuation lines are indented one unit past the opener — matching how the
+/// main pass indents an already-multi-line property — so re-formatting is a
+/// no-op. A property with no top-level comma (one long token) is left intact.
+fn wrap_long_property_lines(text: String, options: &FormatOptions) -> String {
+    let max = options.max_line_length;
+    if max == 0 {
+        return text;
+    }
+    let unit = indent_unit(options);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut in_continuation = false;
+    for line in lines {
+        let trimmed = line.trim();
+        let is_comment =
+            trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*');
+
+        let wrappable = !in_continuation
+            && trimmed.ends_with(';')
+            && is_property_opener(trimmed)
+            && line.chars().count() > max;
+        if wrappable {
+            out.extend(wrap_property_line(line, &unit));
+        } else {
+            out.push(line.to_string());
+        }
+
+        // Mirror the main pass's property-continuation tracking so a wrapped
+        // (now multi-line) property is not re-examined as a fresh opener.
+        if in_continuation && trimmed.ends_with(';') {
+            in_continuation = false;
+        } else if !in_continuation && !is_comment && trimmed.ends_with(',') {
+            in_continuation = true;
+        }
+    }
+    join_lines(out)
+}
+
+/// Split one over-long property line at top-level commas. Returns the original
+/// line unchanged (as a single element) when there is nothing to split.
+fn wrap_property_line(line: &str, unit: &str) -> Vec<String> {
+    let opener_indent = leading_ws(line);
+    let content = line.trim();
+
+    // Collect top-level comma positions (paren/bracket/string aware).
+    let bytes = content.as_bytes();
+    let mut cuts: Vec<usize> = Vec::new();
+    let mut i = 0;
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_single {
+            if b == b'\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' => in_single = true,
+            b'"' => in_double = true,
+            b'(' => paren += 1,
+            b')' => paren -= 1,
+            b'[' => bracket += 1,
+            b']' => bracket -= 1,
+            b',' if paren == 0 && bracket == 0 => cuts.push(i),
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if cuts.is_empty() {
+        return vec![line.to_string()];
+    }
+
+    let cont_indent = format!("{opener_indent}{unit}");
+    let mut out = Vec::with_capacity(cuts.len() + 1);
+    let mut seg_start = 0;
+    for (idx, &cut) in cuts.iter().enumerate() {
+        // Include the comma at the end of this segment.
+        let seg = content[seg_start..=cut].trim();
+        let indent = if idx == 0 { opener_indent } else { &cont_indent };
+        out.push(format!("{indent}{seg}"));
+        seg_start = cut + 1;
+    }
+    // Final segment (carries the terminating `;`).
+    let seg = content[seg_start..].trim();
+    out.push(format!("{cont_indent}{seg}"));
+    out
+}
+
+/// True if a stand-alone `{` may be merged onto `prev`. Rejects block keywords
+/// (`begin`/`end`), closers (`}`), comment lines, lines already ending in `{`,
+/// and — critically — any line carrying a trailing `//` comment (merging there
+/// would comment the brace out and produce invalid AL).
+fn is_mergeable_brace_target(prev: &str) -> bool {
+    let t = prev.trim();
+    if t.is_empty()
+        || t == "}"
+        || t.ends_with('{')
+        || t.starts_with("//")
+        || t.starts_with("/*")
+        || t.starts_with('*')
+    {
+        return false;
+    }
+    let lower = t.to_ascii_lowercase();
+    if lower == "begin"
+        || lower.ends_with(" begin")
+        || lower == "end"
+        || lower == "end;"
+        || lower.starts_with("end ")
+        || lower.starts_with("end;")
+    {
+        return false;
+    }
+    // CRITICAL: never merge onto a line with a trailing line comment.
+    !has_line_comment_outside_strings(t)
+}
+
+/// PASS 4 — `brace_style`. For `SameLine`, merge a stand-alone `{` line onto
+/// the preceding mergeable opener line. `NextLine` (default) is a no-op; this
+/// pass never moves `begin`/`end` or a closing `}`.
+fn apply_brace_style(text: String, options: &FormatOptions) -> String {
+    if !matches!(options.brace_style, BraceStyle::SameLine) {
+        return text;
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    for line in lines {
+        if line.trim() == "{" {
+            let do_merge = out
+                .last()
+                .map(|p| is_mergeable_brace_target(p))
+                .unwrap_or(false);
+            if do_merge {
+                let prev = out.last().unwrap().trim_end().to_string();
+                *out.last_mut().unwrap() = format!("{prev} {{");
+                continue;
+            }
+        }
+        out.push(line.to_string());
+    }
+    join_lines(out)
 }
 
 #[cfg(test)]
@@ -1290,5 +1801,427 @@ codeunit 50100 Test
         // Idempotent: formatting the formatted output changes nothing.
         let pass2 = format_al(&pass1, &opts);
         assert_eq!(pass1, pass2, "format must be idempotent");
+    }
+
+    // ===================================================================
+    // A13 options: sort_properties
+    // ===================================================================
+
+    const SORT_INPUT: &str = "\
+table 50100 Test
+{
+    DataPerCompany = true;
+    Caption = 'Test';
+    DataClassification = ToBeClassified;
+
+    fields
+    {
+        field(1; \"No.\"; Code[20])
+        {
+            Zzz = 1;
+            Aaa = 2;
+        }
+    }
+}
+";
+
+    #[test]
+    fn sort_properties_orders_object_level_run() {
+        let opts = FormatOptions {
+            sort_properties: true,
+            ..Default::default()
+        };
+        let out = format_al(SORT_INPUT, &opts);
+        // Object-level run is sorted case-insensitively: Caption, Data..., Data...
+        let cap = out.find("Caption").unwrap();
+        let dcl = out.find("DataClassification").unwrap();
+        let dpc = out.find("DataPerCompany").unwrap();
+        assert!(cap < dcl && dcl < dpc, "object props not sorted:\n{out}");
+        // Field-level (depth 3) properties must NOT be reordered.
+        assert!(
+            out.find("Zzz = 1;").unwrap() < out.find("Aaa = 2;").unwrap(),
+            "depth-3 field properties must be left untouched:\n{out}"
+        );
+    }
+
+    #[test]
+    fn sort_properties_default_is_noop() {
+        let opts = FormatOptions::default();
+        let out = format_al(SORT_INPUT, &opts);
+        // Default preserves source order.
+        assert!(
+            out.find("DataPerCompany").unwrap() < out.find("Caption").unwrap(),
+            "default must preserve property source order:\n{out}"
+        );
+    }
+
+    #[test]
+    fn sort_properties_is_idempotent() {
+        let opts = FormatOptions {
+            sort_properties: true,
+            ..Default::default()
+        };
+        let pass1 = format_al(SORT_INPUT, &opts);
+        let pass2 = format_al(&pass1, &opts);
+        assert_eq!(pass1, pass2, "sort_properties must be idempotent");
+    }
+
+    #[test]
+    fn sort_properties_keeps_multiline_value_intact() {
+        // A multi-line property must move as one unit, keeping its
+        // continuation line attached.
+        let input = "\
+codeunit 50100 T
+{
+    Zulu = 1;
+    Permissions = tabledata A = rm,
+        tabledata B = r;
+    Alpha = 2;
+}
+";
+        let opts = FormatOptions {
+            sort_properties: true,
+            ..Default::default()
+        };
+        let out = format_al(input, &opts);
+        // Order: Alpha, Permissions, Zulu — and the Permissions continuation
+        // stays directly under its opener.
+        assert!(out.find("Alpha").unwrap() < out.find("Permissions").unwrap());
+        assert!(out.find("Permissions").unwrap() < out.find("Zulu").unwrap());
+        assert!(
+            out.contains("Permissions = tabledata A = rm,\n        tabledata B = r;"),
+            "multi-line value must stay intact:\n{out}"
+        );
+        let pass2 = format_al(&out, &opts);
+        assert_eq!(out, pass2, "must remain idempotent with multi-line values");
+    }
+
+    // ===================================================================
+    // A13 options: blank_lines_between_procedures
+    // ===================================================================
+
+    const PROC_NO_GAP: &str = "\
+codeunit 50100 T
+{
+    procedure A()
+    begin
+    end;
+    procedure B()
+    begin
+    end;
+}
+";
+
+    #[test]
+    fn blank_lines_two_inserts_two() {
+        let opts = FormatOptions {
+            blank_lines_between_procedures: BlankLinesBetweenProcedures::Two,
+            ..Default::default()
+        };
+        let out = format_al(PROC_NO_GAP, &opts);
+        assert!(
+            out.contains("    end;\n\n\n    procedure B()"),
+            "expected two blank lines between procedures:\n{out}"
+        );
+    }
+
+    #[test]
+    fn blank_lines_one_normalizes_existing_gap() {
+        // Three existing blanks (collapsed to one by the main pass) become one.
+        let input = "\
+codeunit 50100 T
+{
+    procedure A()
+    begin
+    end;
+
+
+
+    procedure B()
+    begin
+    end;
+}
+";
+        let opts = FormatOptions {
+            blank_lines_between_procedures: BlankLinesBetweenProcedures::One,
+            ..Default::default()
+        };
+        let out = format_al(input, &opts);
+        assert!(
+            out.contains("    end;\n\n    procedure B()"),
+            "expected exactly one blank line:\n{out}"
+        );
+        assert!(
+            !out.contains("    end;\n\n\n    procedure B()"),
+            "must not leave two blanks:\n{out}"
+        );
+    }
+
+    #[test]
+    fn blank_lines_counts_from_attribute_block() {
+        // The gap is measured to the leading attribute, not the procedure.
+        let input = "\
+codeunit 50100 T
+{
+    procedure A()
+    begin
+    end;
+    [IntegrationEvent(false, false)]
+    procedure B()
+    begin
+    end;
+}
+";
+        let opts = FormatOptions {
+            blank_lines_between_procedures: BlankLinesBetweenProcedures::Two,
+            ..Default::default()
+        };
+        let out = format_al(input, &opts);
+        assert!(
+            out.contains("    end;\n\n\n    [IntegrationEvent(false, false)]"),
+            "blanks must be inserted before the attribute block:\n{out}"
+        );
+    }
+
+    #[test]
+    fn blank_lines_default_is_noop() {
+        let opts = FormatOptions::default();
+        let out = format_al(PROC_NO_GAP, &opts);
+        // Preserve: no blank inserted between A's end; and procedure B.
+        assert!(
+            out.contains("    end;\n    procedure B()"),
+            "default must preserve the (absent) gap:\n{out}"
+        );
+    }
+
+    #[test]
+    fn blank_lines_is_idempotent() {
+        let opts = FormatOptions {
+            blank_lines_between_procedures: BlankLinesBetweenProcedures::Two,
+            ..Default::default()
+        };
+        let pass1 = format_al(PROC_NO_GAP, &opts);
+        let pass2 = format_al(&pass1, &opts);
+        assert_eq!(pass1, pass2, "blank_lines must be idempotent");
+    }
+
+    // ===================================================================
+    // A13 options: max_line_length
+    // ===================================================================
+
+    const LONG_PROP: &str = "\
+codeunit 50100 T
+{
+    Permissions = tabledata Aaaaaaaaaaaaaaaaaaaaaaaaa = rm, tabledata Bbbbbbbbbbbbbbbbbbbbbb = r;
+}
+";
+
+    #[test]
+    fn max_line_length_wraps_at_top_level_comma() {
+        let opts = FormatOptions {
+            max_line_length: 60,
+            ..Default::default()
+        };
+        let out = format_al(LONG_PROP, &opts);
+        assert!(
+            out.contains("= rm,\n        tabledata Bbbbbbbbbbbbbbbbbbbbbb = r;"),
+            "long property must wrap at the top-level comma:\n{out}"
+        );
+    }
+
+    #[test]
+    fn max_line_length_does_not_split_inside_string() {
+        // The only comma is inside a string literal — leave the line intact
+        // even though it exceeds the limit.
+        let input = "\
+codeunit 50100 T
+{
+    Caption = 'Hello, World this is a very long caption indeed yes';
+}
+";
+        let opts = FormatOptions {
+            max_line_length: 20,
+            ..Default::default()
+        };
+        let out = format_al(input, &opts);
+        assert!(
+            out.contains("    Caption = 'Hello, World this is a very long caption indeed yes';"),
+            "must not split inside a string literal:\n{out}"
+        );
+    }
+
+    #[test]
+    fn max_line_length_default_is_noop() {
+        let opts = FormatOptions::default(); // max_line_length = 0
+        let out = format_al(LONG_PROP, &opts);
+        assert!(
+            out.contains(
+                "    Permissions = tabledata Aaaaaaaaaaaaaaaaaaaaaaaaa = rm, tabledata Bbbbbbbbbbbbbbbbbbbbbb = r;"
+            ),
+            "max_line_length=0 must leave long lines intact:\n{out}"
+        );
+    }
+
+    #[test]
+    fn max_line_length_is_idempotent() {
+        let opts = FormatOptions {
+            max_line_length: 60,
+            ..Default::default()
+        };
+        let pass1 = format_al(LONG_PROP, &opts);
+        let pass2 = format_al(&pass1, &opts);
+        assert_eq!(pass1, pass2, "max_line_length must be idempotent");
+    }
+
+    // ===================================================================
+    // A13 options: brace_style
+    // ===================================================================
+
+    const BRACE_INPUT: &str = "\
+table 50100 Test
+{
+    fields
+    {
+        field(1; \"No.\"; Code[20])
+        {
+        }
+    }
+}
+";
+
+    #[test]
+    fn brace_style_same_line_merges_openers() {
+        let opts = FormatOptions {
+            brace_style: BraceStyle::SameLine,
+            ..Default::default()
+        };
+        let out = format_al(BRACE_INPUT, &opts);
+        assert!(out.contains("table 50100 Test {"), "object brace:\n{out}");
+        assert!(out.contains("    fields {"), "sub-block brace:\n{out}");
+        assert!(
+            out.contains("        field(1; \"No.\"; Code[20]) {"),
+            "field brace:\n{out}"
+        );
+    }
+
+    #[test]
+    fn brace_style_default_is_noop() {
+        let opts = FormatOptions::default(); // NextLine
+        let out = format_al(BRACE_INPUT, &opts);
+        assert!(
+            out.contains("table 50100 Test\n{"),
+            "NextLine default must leave braces on their own line:\n{out}"
+        );
+    }
+
+    #[test]
+    fn brace_style_is_idempotent() {
+        let opts = FormatOptions {
+            brace_style: BraceStyle::SameLine,
+            ..Default::default()
+        };
+        let pass1 = format_al(BRACE_INPUT, &opts);
+        let pass2 = format_al(&pass1, &opts);
+        assert_eq!(pass1, pass2, "brace_style must be idempotent");
+    }
+
+    #[test]
+    fn brace_style_leaves_begin_end_untouched() {
+        let input = "\
+codeunit 50100 T
+{
+    procedure A()
+    begin
+    end;
+}
+";
+        let opts = FormatOptions {
+            brace_style: BraceStyle::SameLine,
+            ..Default::default()
+        };
+        let out = format_al(input, &opts);
+        // `begin` keeps its own line; only the object `{` merged onto header.
+        assert!(out.contains("codeunit 50100 T {"), "header merge:\n{out}");
+        assert!(out.contains("    begin\n"), "begin untouched:\n{out}");
+        assert!(out.contains("    end;\n"), "end; untouched:\n{out}");
+    }
+
+    #[test]
+    fn brace_style_same_line_does_not_comment_out_brace() {
+        // CRITICAL: a `{` after a line that ends in a `//` comment must stay on
+        // its own line, otherwise the brace gets commented out -> invalid AL.
+        let input = "\
+table 50100 Test
+{
+    fields
+    {
+        field(1; \"No.\"; Code[20]) // pk
+        {
+        }
+    }
+}
+";
+        let opts = FormatOptions {
+            brace_style: BraceStyle::SameLine,
+            ..Default::default()
+        };
+        let out = format_al(input, &opts);
+        // The brace must NOT be appended after the comment.
+        assert!(
+            !out.contains("// pk {"),
+            "must not comment out the brace:\n{out}"
+        );
+        // The comment line is intact and the brace remains on its own line.
+        assert!(
+            out.contains("field(1; \"No.\"; Code[20]) // pk\n"),
+            "comment line must be preserved:\n{out}"
+        );
+        assert!(
+            out.contains("// pk\n        {"),
+            "brace must remain on its own line:\n{out}"
+        );
+        // Other (comment-free) braces still merge.
+        assert!(out.contains("table 50100 Test {"));
+        assert!(out.contains("    fields {"));
+        // And the whole thing is still idempotent.
+        let pass2 = format_al(&out, &opts);
+        assert_eq!(out, pass2, "comment-before-brace case must be idempotent");
+    }
+
+    #[test]
+    fn a13_all_options_together_are_idempotent() {
+        // Combined run exercises pass ordering and cross-pass idempotency.
+        let input = "\
+table 50100 Test
+{
+    Zulu = 1;
+    Permissions = tabledata Aaaaaaaaaaaaaaaaaaaaaa = rm, tabledata Bbbbbbbbbbbbbbb = r;
+    Alpha = 2;
+
+    fields
+    {
+        field(1; \"No.\"; Code[20])
+        {
+        }
+    }
+
+    procedure A()
+    begin
+    end;
+    procedure B()
+    begin
+    end;
+}
+";
+        let opts = FormatOptions {
+            sort_properties: true,
+            blank_lines_between_procedures: BlankLinesBetweenProcedures::Two,
+            max_line_length: 60,
+            brace_style: BraceStyle::SameLine,
+            ..Default::default()
+        };
+        let pass1 = format_al(input, &opts);
+        let pass2 = format_al(&pass1, &opts);
+        assert_eq!(pass1, pass2, "combined A13 passes must be idempotent");
     }
 }

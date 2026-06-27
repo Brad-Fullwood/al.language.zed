@@ -333,10 +333,31 @@ pub(in crate::server::daemon) async fn dispatch_compile(
                     .to_string(),
             );
         };
-        let compile_result =
-            crate::build::compile_project(toolchain, &project_root, package_cache.as_deref())
-                .await
-                .map_err(|e| format!("Compilation failed: {}", e))?;
+        // A2–A4: honour the configured compilation options on the official
+        // `al.compile` path too (not just packaging). Falls back to defaults
+        // (no extra flags) if the config lock is momentarily contended.
+        let config_options = workspace
+            .config
+            .try_read()
+            .ok()
+            .map(|cfg| crate::build::CompilationConfigOptions {
+                compilation_options: cfg.compilation_options.clone(),
+                incremental_build: cfg.incremental_build,
+                enable_external_rulesets: cfg.enable_external_rulesets,
+                rule_set_path: cfg.rule_set_path.clone(),
+                assembly_probing_paths: cfg.assembly_probing_paths.clone(),
+                output_analyzer_statistics: cfg.output_analyzer_statistics,
+            })
+            .unwrap_or_default();
+        let compile_result = crate::build::compile_project_with_analyzers(
+            toolchain,
+            &project_root,
+            package_cache.as_deref(),
+            None,
+            &config_options,
+        )
+        .await
+        .map_err(|e| format!("Compilation failed: {}", e))?;
         let app_path = compile_result
             .app_path
             .as_ref()
@@ -467,12 +488,29 @@ pub(in crate::server::daemon) async fn dispatch_package(
         }
     };
 
-    // Read code_analyzers from config (non-async try_read; falls back to empty = all MS analyzers).
-    let code_analyzers = workspace
+    // Read code_analyzers + compilation settings from config (non-async
+    // try_read; falls back to empty = all MS analyzers, no extra flags).
+    // A2–A4: compilationOptions / incrementalBuild / enableExternalRulesets /
+    // ruleSetPath / assemblyProbingPaths / outputAnalyzerStatistics were parsed
+    // into AlConfig but never read — extract them here and thread them into the
+    // alc invocation via CompilationConfigOptions.
+    let (code_analyzers, config_options) = workspace
         .config
         .try_read()
         .ok()
-        .map(|cfg| cfg.code_analyzers.clone())
+        .map(|cfg| {
+            (
+                cfg.code_analyzers.clone(),
+                crate::build::CompilationConfigOptions {
+                    compilation_options: cfg.compilation_options.clone(),
+                    incremental_build: cfg.incremental_build,
+                    enable_external_rulesets: cfg.enable_external_rulesets,
+                    rule_set_path: cfg.rule_set_path.clone(),
+                    assembly_probing_paths: cfg.assembly_probing_paths.clone(),
+                    output_analyzer_statistics: cfg.output_analyzer_statistics,
+                },
+            )
+        })
         .unwrap_or_default();
     let analyzer_filter: Option<Vec<String>> = if code_analyzers.is_empty() {
         None
@@ -485,6 +523,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
         &project_root,
         None,
         analyzer_filter.as_deref(),
+        &config_options,
     )
     .await
     {

@@ -71,6 +71,66 @@ pub(crate) async fn run_alc_with_timeout(
     }
 }
 
+/// Settings from `AlConfig` that map directly onto extra `alc` command-line
+/// flags. Constructed by the daemon build dispatchers from the workspace
+/// config and passed into [`compile_project_with_analyzers`] so they reach
+/// the real compiler instead of being parsed-and-ignored (gaps A2–A4).
+///
+/// Defaults to "no extra flags" so [`compile_project`] and the publish path
+/// keep their prior behaviour.
+#[derive(Debug, Clone, Default)]
+pub struct CompilationConfigOptions {
+    /// `al.compilationOptions` — raw extra args appended verbatim to `alc`
+    /// (e.g. `/nowarn:AL0432`, `/target:Cloud`). Passed through unmodified so
+    /// users can reach any alc switch we don't model explicitly.
+    pub compilation_options: Vec<String>,
+    /// `al.incrementalBuild` — emits `/incrementalbuild`.
+    pub incremental_build: bool,
+    /// `al.enableExternalRulesets` — master gate for [`Self::rule_set_path`].
+    /// The ruleset is only forwarded to `alc` when this is `true`, mirroring
+    /// the Microsoft AL toggle that must be on for an external ruleset to be
+    /// honoured. With it `false`, a configured `rule_set_path` is ignored.
+    pub enable_external_rulesets: bool,
+    /// `al.ruleSetPath` — emits `/ruleset:<path>` (requires
+    /// [`Self::enable_external_rulesets`]).
+    pub rule_set_path: Option<PathBuf>,
+    /// `al.assemblyProbingPaths` — emits one `/assemblyprobingpaths:<path>`
+    /// per entry.
+    pub assembly_probing_paths: Vec<PathBuf>,
+    /// `al.outputAnalyzerStatistics` — emits `/outputanalyzerstatistics`.
+    pub output_analyzer_statistics: bool,
+}
+
+impl CompilationConfigOptions {
+    /// Build the extra `alc` argument vector for these settings, in a stable
+    /// order (raw options, then incremental, ruleset, assembly probing paths,
+    /// analyzer statistics). Pure — no I/O — so it can be unit-tested without
+    /// invoking `alc` (which is absent in dev/CI).
+    pub fn to_alc_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        // Raw, user-supplied options pass through verbatim.
+        for opt in &self.compilation_options {
+            args.push(opt.clone());
+        }
+        if self.incremental_build {
+            args.push("/incrementalbuild".to_string());
+        }
+        // ruleSetPath only takes effect when external rulesets are enabled.
+        if self.enable_external_rulesets {
+            if let Some(path) = &self.rule_set_path {
+                args.push(format!("/ruleset:{}", path.display()));
+            }
+        }
+        for path in &self.assembly_probing_paths {
+            args.push(format!("/assemblyprobingpaths:{}", path.display()));
+        }
+        if self.output_analyzer_statistics {
+            args.push("/outputanalyzerstatistics".to_string());
+        }
+        args
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompileResult {
@@ -117,7 +177,14 @@ pub async fn compile_project(
     project_root: &Path,
     package_cache: Option<&Path>,
 ) -> Result<CompileResult, AlError> {
-    compile_project_with_analyzers(toolchain, project_root, package_cache, None).await
+    compile_project_with_analyzers(
+        toolchain,
+        project_root,
+        package_cache,
+        None,
+        &CompilationConfigOptions::default(),
+    )
+    .await
 }
 
 pub async fn compile_project_with_analyzers(
@@ -125,6 +192,7 @@ pub async fn compile_project_with_analyzers(
     project_root: &Path,
     package_cache: Option<&Path>,
     analyzer_filter: Option<&[String]>,
+    config_options: &CompilationConfigOptions,
 ) -> Result<CompileResult, AlError> {
     if !project_root.join("app.json").is_file() {
         return Err(AlError::DocumentNotOpen(format!(
@@ -277,6 +345,14 @@ pub async fn compile_project_with_analyzers(
         if !safe_paths.is_empty() {
             cmd.arg(format!("/analyzer:{}", safe_paths.join(",")));
         }
+    }
+
+    // A2–A4: thread the configured compilation options (compilationOptions,
+    // incrementalBuild, ruleSetPath/enableExternalRulesets, assemblyProbingPaths,
+    // outputAnalyzerStatistics) into the alc invocation. Previously parsed into
+    // AlConfig and never read; now built into a stable arg vector and appended.
+    for arg in config_options.to_alc_args() {
+        cmd.arg(arg);
     }
 
     // Shared cancel/timeout policy (kill_on_drop + AL_COMPILE_TIMEOUT_SECS) lives
@@ -929,5 +1005,121 @@ Build failed.";
     fn build_timeout_error_displays_seconds() {
         let err = AlError::BuildTimeout(42);
         assert_eq!(err.to_string(), "alc compile timed out after 42 seconds");
+    }
+
+    // ---- A2–A4: CompilationConfigOptions -> alc args -----------------------
+    // needsAltoolForLiveE2e=false — pure arg-vector construction, no subprocess.
+
+    #[test]
+    fn config_options_default_produces_no_extra_flags() {
+        // A2–A4 regression: an unset config must not inject any alc flags, so
+        // the baseline `/project /out /analyzer` invocation is unchanged.
+        let opts = CompilationConfigOptions::default();
+        assert!(
+            opts.to_alc_args().is_empty(),
+            "default options must add no alc flags, got {:?}",
+            opts.to_alc_args()
+        );
+    }
+
+    #[test]
+    fn config_options_compilation_options_passed_verbatim() {
+        // A2: al.compilationOptions entries reach alc unmodified, in order.
+        let opts = CompilationConfigOptions {
+            compilation_options: vec!["/nowarn:AL0432".to_string(), "/target:Cloud".to_string()],
+            ..Default::default()
+        };
+        let args = opts.to_alc_args();
+        assert_eq!(args, vec!["/nowarn:AL0432", "/target:Cloud"]);
+    }
+
+    #[test]
+    fn config_options_incremental_build_flag() {
+        // A3: al.incrementalBuild emits /incrementalbuild only when enabled.
+        let on = CompilationConfigOptions {
+            incremental_build: true,
+            ..Default::default()
+        };
+        assert!(on.to_alc_args().iter().any(|a| a == "/incrementalbuild"));
+        let off = CompilationConfigOptions {
+            incremental_build: false,
+            ..Default::default()
+        };
+        assert!(!off.to_alc_args().iter().any(|a| a == "/incrementalbuild"));
+    }
+
+    #[test]
+    fn config_options_ruleset_requires_enable_flag() {
+        // A4: ruleSetPath emits /ruleset:<path> only when external rulesets
+        // are enabled; otherwise the path is ignored (the toggle takes effect).
+        let enabled = CompilationConfigOptions {
+            enable_external_rulesets: true,
+            rule_set_path: Some(PathBuf::from("/rules/custom.ruleset.json")),
+            ..Default::default()
+        };
+        assert!(enabled
+            .to_alc_args()
+            .iter()
+            .any(|a| a == "/ruleset:/rules/custom.ruleset.json"));
+
+        let disabled = CompilationConfigOptions {
+            enable_external_rulesets: false,
+            rule_set_path: Some(PathBuf::from("/rules/custom.ruleset.json")),
+            ..Default::default()
+        };
+        assert!(
+            !disabled.to_alc_args().iter().any(|a| a.starts_with("/ruleset:")),
+            "ruleset must be suppressed when enableExternalRulesets is false"
+        );
+    }
+
+    #[test]
+    fn config_options_assembly_probing_paths_one_arg_each() {
+        // A4: each assemblyProbingPaths entry becomes its own flag.
+        let opts = CompilationConfigOptions {
+            assembly_probing_paths: vec![PathBuf::from("/path1"), PathBuf::from("/path2")],
+            ..Default::default()
+        };
+        let args = opts.to_alc_args();
+        assert!(args.iter().any(|a| a == "/assemblyprobingpaths:/path1"));
+        assert!(args.iter().any(|a| a == "/assemblyprobingpaths:/path2"));
+    }
+
+    #[test]
+    fn config_options_output_analyzer_statistics_flag() {
+        // A4: al.outputAnalyzerStatistics emits /outputanalyzerstatistics.
+        let opts = CompilationConfigOptions {
+            output_analyzer_statistics: true,
+            ..Default::default()
+        };
+        assert!(opts
+            .to_alc_args()
+            .iter()
+            .any(|a| a == "/outputanalyzerstatistics"));
+    }
+
+    #[test]
+    fn config_options_combined_emit_in_stable_order() {
+        // All settings together: verify ordering is deterministic so the alc
+        // command line is reproducible (raw opts, incremental, ruleset,
+        // assembly paths, analyzer stats).
+        let opts = CompilationConfigOptions {
+            compilation_options: vec!["/nowarn:AL0001".to_string()],
+            incremental_build: true,
+            enable_external_rulesets: true,
+            rule_set_path: Some(PathBuf::from("/r.json")),
+            assembly_probing_paths: vec![PathBuf::from("/a")],
+            output_analyzer_statistics: true,
+        };
+        assert_eq!(
+            opts.to_alc_args(),
+            vec![
+                "/nowarn:AL0001".to_string(),
+                "/incrementalbuild".to_string(),
+                "/ruleset:/r.json".to_string(),
+                "/assemblyprobingpaths:/a".to_string(),
+                "/outputanalyzerstatistics".to_string(),
+            ]
+        );
     }
 }

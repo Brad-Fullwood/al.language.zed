@@ -96,3 +96,40 @@ Each entry: what was done, how it was verified, and the evidence artifact.
   this as a design choice, not an unfilled gap.
 - Lesson reinforced: stay in the owned layer (harness/fixtures/tests/docs); do
   not reverse the maintainer's product decisions autonomously.
+
+---
+
+## Gap closure (ultracode multi-agent) — we own the whole codebase
+
+Direction corrected: we own the entire codebase; implement the gap-audit items.
+Native lint (A1) stays out — it is test-enforced removed. Closed the rest.
+
+### A13 — formatter options now applied (was parsed-and-ignored)
+- `crates/al-syntax/src/formatting.rs` (+~817): four post-passes implemented as
+  opt-in, default-noop, idempotent: `sortProperties`, `blankLinesBetweenProcedures`,
+  `maxLineLength` (property-line comma wrapping), `braceStyle` (SameLine merge).
+  `crates/al-analysis/src/queries/format.rs`: removed the stale `warn!`s; options
+  now mapped straight through.
+- **33 unit tests** added; **verified end-to-end**: `.alformat.json
+  {"sortProperties":true}` + `al-explorer format` reorders object properties
+  alphabetically through the full daemon→formatter pipeline.
+
+### A2–A6 — build settings wired + breaking/upgrade baseline
+- `crates/al-compile/src/lib.rs`: `CompilationConfigOptions::to_alc_args()` emits
+  `compilationOptions` (A2), `/incrementalbuild` (A3), `/ruleset:` (gated on
+  `enableExternalRulesets`), `/assemblyprobingpaths:`, `/outputanalyzerstatistics`
+  (A4); threaded through `compile_project_with_analyzers`.
+- `build_dispatch/{build,mod}.rs`: daemon `package`/official-`compile` now pass
+  the six config fields to alc; `baseline_symbols_from_params()` populates the
+  breaking (A5) / upgrade (A6) baseline from `params.baselineSymbols` instead of
+  the hardcoded empty Vec.
+- **15 unit tests** (alc arg construction; breaking-diff against a synthetic
+  baseline proving removals are reported; empty/identical baseline reports none).
+  Live alc/CodeAnalysis e2e needs ALTool (absent here) — wiring + logic unit-tested.
+
+### Verified (tested automatically)
+- `cargo test -p al-compile -p al-lsp -p al-syntax -p al-analysis --lib` →
+  **1345 passed, 0 failed**.
+- `cargo test -p al-test-harness` → **284 passed, 0 failed** (no regression).
+- Adversarial review workflow (3 lenses → per-finding verification) run over the
+  diff; confirmed issues addressed before commit.

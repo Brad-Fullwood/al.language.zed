@@ -6,20 +6,22 @@
 //!
 //! ## Current implementation status
 //!
-//! Only `tabSize` and `insertSpaces` are honoured by the formatter today.
-//! The other fields (`keywordCasing`, `blankLinesBetweenProcedures`,
-//! `maxLineLength`, `braceStyle`, `sortProperties`) are accepted for
-//! forward compatibility but the line-by-line state machine in
-//! `al_syntax::formatting::format_al` doesn't consult them yet.
-//! `to_format_options` logs a `tracing::warn!` when a non-default value
-//! for an unimplemented field is encountered so users don't quietly
-//! think their config is in effect when it isn't (F-OPEN-024).
+//! All config fields are honoured by `al_syntax::formatting::format_al`:
+//! `tabSize`, `insertSpaces`, and `keywordCasing` in its main pass, and
+//! `blankLinesBetweenProcedures`, `maxLineLength`, `braceStyle`, and
+//! `sortProperties` as post-processing passes (A13). `to_format_options`
+//! simply maps the parsed JSON onto `FormatOptions`.
 //!
 //! ## Config file (.alformat.json)
 //! ```json
 //! {
 //!   "tabSize": 4,
-//!   "insertSpaces": true
+//!   "insertSpaces": true,
+//!   "keywordCasing": "lower",
+//!   "blankLinesBetweenProcedures": "one",
+//!   "maxLineLength": 120,
+//!   "braceStyle": "sameLine",
+//!   "sortProperties": true
 //! }
 //! ```
 
@@ -62,12 +64,9 @@ impl AlFormatConfig {
         Some(Self::from_json(&text))
     }
 
-    /// **Honesty note** (F-OPEN-024): only `tabSize` and `insertSpaces` are
-    /// currently honoured by the formatter implementation. The other fields
-    /// are parsed and stored on `FormatOptions` but the line-by-line state
-    /// machine in `format_al` doesn't consult them yet. We log a one-time
-    /// warning per field per workspace so users don't quietly think their
-    /// `.alformat.json` is in effect when it isn't.
+    /// Map the parsed `.alformat.json` onto [`FormatOptions`]. Every field is
+    /// applied by `format_al` (A13), so this is a straight mapping — unknown
+    /// enum strings fall back to the corresponding default.
     pub fn to_format_options(&self) -> FormatOptions {
         let mut opts = FormatOptions::default();
 
@@ -80,13 +79,6 @@ impl AlFormatConfig {
             opts.insert_spaces = spaces;
         }
         if let Some(casing) = &self.keyword_casing {
-            if !casing.eq_ignore_ascii_case("preserve") {
-                tracing::warn!(
-                    setting = "keywordCasing",
-                    value = %casing,
-                    "`.alformat.json` setting is not yet implemented — formatter will preserve existing casing"
-                );
-            }
             opts.keyword_casing = match casing.to_lowercase().as_str() {
                 "lower" => KeywordCasing::Lower,
                 "upper" => KeywordCasing::Upper,
@@ -94,13 +86,6 @@ impl AlFormatConfig {
             };
         }
         if let Some(blank_lines) = &self.blank_lines_between_procedures {
-            if !blank_lines.eq_ignore_ascii_case("preserve") {
-                tracing::warn!(
-                    setting = "blankLinesBetweenProcedures",
-                    value = %blank_lines,
-                    "`.alformat.json` setting is not yet implemented — formatter will collapse double blanks only"
-                );
-            }
             opts.blank_lines_between_procedures = match blank_lines.to_lowercase().as_str() {
                 "one" => BlankLinesBetweenProcedures::One,
                 "two" => BlankLinesBetweenProcedures::Two,
@@ -108,35 +93,15 @@ impl AlFormatConfig {
             };
         }
         if let Some(max_len) = self.max_line_length {
-            if max_len > 0 {
-                tracing::warn!(
-                    setting = "maxLineLength",
-                    value = max_len,
-                    "`.alformat.json` setting is not yet implemented — formatter does not wrap long lines"
-                );
-            }
             opts.max_line_length = max_len;
         }
         if let Some(brace) = &self.brace_style {
-            if !brace.eq_ignore_ascii_case("nextLine") && !brace.eq_ignore_ascii_case("next_line") {
-                tracing::warn!(
-                    setting = "braceStyle",
-                    value = %brace,
-                    "`.alformat.json` setting is not yet implemented — formatter always emits next-line braces"
-                );
-            }
             opts.brace_style = match brace.to_lowercase().as_str() {
                 "sameline" | "same_line" => BraceStyle::SameLine,
                 _ => BraceStyle::NextLine,
             };
         }
         if let Some(sort) = self.sort_properties {
-            if sort {
-                tracing::warn!(
-                    setting = "sortProperties",
-                    "`.alformat.json` setting is not yet implemented — properties stay in source order"
-                );
-            }
             opts.sort_properties = sort;
         }
 
@@ -306,5 +271,69 @@ end;
         // Must contain at least the object keyword lowercased
         assert!(formatted.contains("codeunit") || formatted.contains("CODEUNIT"));
         assert!(!formatted.is_empty());
+    }
+
+    // ===== A13: config-driven options actually affect output =====
+
+    #[test]
+    fn config_blank_lines_two_applies() {
+        let cfg = AlFormatConfig::from_json(r#"{"blankLinesBetweenProcedures": "two"}"#).unwrap();
+        let opts = cfg.to_format_options();
+        let al = "codeunit 50100 T\n{\n    procedure A()\n    begin\n    end;\n    procedure B()\n    begin\n    end;\n}\n";
+        let out = al_syntax::format_al(al, &opts);
+        assert!(
+            out.contains("    end;\n\n\n    procedure B()"),
+            "two blank lines expected between procedures:\n{out}"
+        );
+    }
+
+    #[test]
+    fn config_brace_style_same_line_applies() {
+        let cfg = AlFormatConfig::from_json(r#"{"braceStyle": "sameLine"}"#).unwrap();
+        let opts = cfg.to_format_options();
+        let al = "codeunit 50100 T\n{\n    procedure A()\n    begin\n    end;\n}\n";
+        let out = al_syntax::format_al(al, &opts);
+        assert!(
+            out.contains("codeunit 50100 T {\n"),
+            "object brace must be merged onto the header:\n{out}"
+        );
+    }
+
+    #[test]
+    fn config_sort_properties_applies() {
+        let cfg = AlFormatConfig::from_json(r#"{"sortProperties": true}"#).unwrap();
+        let opts = cfg.to_format_options();
+        let al = "table 50100 T\n{\n    Zebra = 1;\n    Apple = 2;\n}\n";
+        let out = al_syntax::format_al(al, &opts);
+        assert!(
+            out.find("Apple").unwrap() < out.find("Zebra").unwrap(),
+            "properties must be sorted alphabetically:\n{out}"
+        );
+    }
+
+    #[test]
+    fn config_max_line_length_wraps() {
+        let cfg = AlFormatConfig::from_json(r#"{"maxLineLength": 60}"#).unwrap();
+        let opts = cfg.to_format_options();
+        let al = "codeunit 50100 T\n{\n    Permissions = tabledata Aaaaaaaaaaaaaaaaaaaaaaaaa = rm, tabledata Bbbbbbbbbbbbbbbbbbbbbb = r;\n}\n";
+        let out = al_syntax::format_al(al, &opts);
+        assert!(
+            out.contains("= rm,\n        tabledata Bbbbbbbbbbbbbbbbbbbbbb = r;"),
+            "long property must wrap at the comma:\n{out}"
+        );
+    }
+
+    #[test]
+    fn config_default_is_a13_noop() {
+        // Identical-baseline check: an empty config leaves all four A13 passes
+        // off, so formatting only normalises indentation.
+        let cfg = AlFormatConfig::from_json("{}").unwrap();
+        let opts = cfg.to_format_options();
+        let al = "table 50100 T\n{\n    Zebra = 1;\n    Apple = 2;\n}\n";
+        let out = al_syntax::format_al(al, &opts);
+        assert!(
+            out.find("Zebra").unwrap() < out.find("Apple").unwrap(),
+            "default config must preserve property source order:\n{out}"
+        );
     }
 }
