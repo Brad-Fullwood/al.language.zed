@@ -247,6 +247,25 @@ fn print_history_row(r: &serde_json::Value) {
     }
 }
 
+/// Human-readable note clarifying where a test with the given routing decision
+/// **actually executes today** — not where the class name implies.
+///
+/// A9 honesty fix: `interpRecord` reads like "records run locally", but the
+/// local mock-record backend is not wired yet, so those tests are routed to
+/// live BC by the runner. Keep this wording in lockstep with
+/// `al_test::router::RoutingDecision::execution_note` (al-explorer talks to the
+/// daemon over JSON-RPC and only sees the decision string, so it cannot call
+/// that method directly).
+fn classify_execution_note(decision: &str) -> &'static str {
+    match decision {
+        "interp" => "runs locally on the Rust interpreter",
+        "interpRecord" => "routes to live BC (local mock record store not wired yet)",
+        "snapshot" => "replays a captured snapshot, else routes to live BC",
+        "liveBc" => "routes to live BC",
+        _ => "",
+    }
+}
+
 /// `al-explorer test-classify` — show the routing decision for every test.
 pub fn cmd_test_classify(json: bool) -> ExitCode {
     run_command(
@@ -264,6 +283,11 @@ pub fn cmd_test_classify(json: bool) -> ExitCode {
                 eprintln!("No test codeunits discovered");
                 return;
             }
+            eprintln!(
+                "Routing class -> where the test actually runs today \
+                 (only `interp` executes locally; `interpRecord` is a \
+                 classification that still routes to live BC):\n"
+            );
             for c in &classifications {
                 let cu = c
                     .get("codeunitName")
@@ -281,15 +305,49 @@ pub fn cmd_test_classify(json: bool) -> ExitCode {
                             .join(", ")
                     })
                     .unwrap_or_default();
-                if reasons.is_empty() {
-                    println!("  [{decision:>12}] {cu} :: {method}");
+                let note = classify_execution_note(decision);
+                let suffix = if reasons.is_empty() {
+                    String::new()
                 } else {
-                    println!("  [{decision:>12}] {cu} :: {method} -- {reasons}");
+                    format!(" -- {reasons}")
+                };
+                if note.is_empty() {
+                    println!("  [{decision:>12}] {cu} :: {method}{suffix}");
+                } else {
+                    println!("  [{decision:>12}] {cu} :: {method}  ({note}){suffix}");
                 }
             }
             eprintln!("\n{} test(s) classified", classifications.len());
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_execution_note;
+
+    #[test]
+    fn interp_record_note_says_live_bc_not_local() {
+        // A9: the surface must not let the `interpRecord` name imply local
+        // execution — the note has to state it routes to live BC.
+        let note = classify_execution_note("interpRecord");
+        assert!(note.contains("live BC"), "got: {note:?}");
+        assert!(note.contains("not wired"), "got: {note:?}");
+        assert!(!note.contains("locally"), "must not claim local run: {note:?}");
+    }
+
+    #[test]
+    fn interp_note_is_the_only_local_one() {
+        assert!(classify_execution_note("interp").contains("locally"));
+        assert!(!classify_execution_note("interpRecord").contains("locally"));
+        assert!(!classify_execution_note("liveBc").contains("locally"));
+        assert!(!classify_execution_note("snapshot").contains("locally"));
+    }
+
+    #[test]
+    fn unknown_decision_has_no_note() {
+        assert_eq!(classify_execution_note("???"), "");
+    }
 }
 
 /// `al test-run-all [--parallel] [--junit-out X] [--cobertura-out Y] [--filter PATTERN] [--timeout-ms N]`
