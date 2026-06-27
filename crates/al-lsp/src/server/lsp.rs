@@ -422,13 +422,14 @@ impl LanguageServer for AlServer {
                 workspace_symbol_provider: Some(OneOf::Left(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 // Pull diagnostics: Zed fetches fresh diagnostics on demand (tab switch, save).
-                // workspace_diagnostics is false because we only support per-document pull;
-                // a workspace/diagnostic handler is not yet implemented.
+                // workspace_diagnostics is true (B11): the `workspace_diagnostic` handler
+                // reports parse/syntax errors across every indexed workspace file, plus
+                // bridge/semantic diagnostics for open documents.
                 diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
                     DiagnosticOptions {
                         identifier: Some("al-lsp".to_string()),
                         inter_file_dependencies: true,
-                        workspace_diagnostics: false,
+                        workspace_diagnostics: true,
                         work_done_progress_options: WorkDoneProgressOptions::default(),
                     },
                 )),
@@ -886,6 +887,40 @@ impl LanguageServer for AlServer {
         tracing::debug!(uri = %uri, count = diags.len(), elapsed_us = elapsed.as_micros() as u64, "diagnostic (pull)");
 
         Ok(diagnostics::full_diagnostic_report(diags))
+    }
+
+    async fn workspace_diagnostic(
+        &self,
+        _params: WorkspaceDiagnosticParams,
+    ) -> Result<WorkspaceDiagnosticReportResult> {
+        // B11: project-scope pull diagnostics. Aggregates parse/syntax errors
+        // across every indexed file plus bridge diagnostics for open documents.
+        self.await_ready().await;
+        let start = std::time::Instant::now();
+        let reports = diagnostics::compute_workspace_diagnostics(self).await;
+        let file_count = reports.len();
+        let items = reports
+            .into_iter()
+            .map(|(uri, version, items)| {
+                WorkspaceDocumentDiagnosticReport::Full(WorkspaceFullDocumentDiagnosticReport {
+                    uri,
+                    version,
+                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                        result_id: None,
+                        items,
+                    },
+                })
+            })
+            .collect();
+        let elapsed = start.elapsed();
+        tracing::debug!(
+            file_count,
+            elapsed_us = elapsed.as_micros() as u64,
+            "workspace_diagnostic (pull)"
+        );
+        Ok(WorkspaceDiagnosticReportResult::Report(
+            WorkspaceDiagnosticReport { items },
+        ))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -1499,5 +1534,145 @@ mod code_lens_command_wiring_tests {
         };
         let result = server.execute_command(params).await.expect("ok");
         assert!(result.is_none(), "unknown command must return None");
+    }
+}
+
+#[cfg(test)]
+mod workspace_diagnostic_tests {
+    //! `workspace/diagnostic` (B11) must report parse/syntax errors across the
+    //! whole workspace — both background (never-opened) files and open documents
+    //! — and report nothing for a clean workspace. Driven in-process against the
+    //! real `AlServer` handler (no transport, no toolchain ⇒ bridge is a no-op,
+    //! so these assert the syntax-pass aggregation).
+
+    use super::*;
+
+    const BAD_SRC: &str =
+        "codeunit 50100 Test\n{\n    procedure Broken(\n    begin\n    end;\n}\n";
+    const GOOD_SRC: &str =
+        "codeunit 50100 MyCodeunit\n{\n    trigger OnRun()\n    begin\n    end;\n}\n";
+
+    fn new_ready_server() -> LspService<AlServer> {
+        let (service, _socket) = LspService::new(AlServer::new);
+        // Skip the 30s workspace-init wait in `await_ready`.
+        service.inner().workspace_ready.store(true, Ordering::Release);
+        service
+    }
+
+    fn ws_diag_params() -> WorkspaceDiagnosticParams {
+        WorkspaceDiagnosticParams {
+            identifier: None,
+            previous_result_ids: vec![],
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        }
+    }
+
+    /// Pull the per-file reports out of a workspace diagnostic result.
+    fn reports(
+        result: WorkspaceDiagnosticReportResult,
+    ) -> Vec<WorkspaceFullDocumentDiagnosticReport> {
+        match result {
+            WorkspaceDiagnosticReportResult::Report(r) => r
+                .items
+                .into_iter()
+                .map(|item| match item {
+                    WorkspaceDocumentDiagnosticReport::Full(f) => f,
+                    WorkspaceDocumentDiagnosticReport::Unchanged(_) => {
+                        panic!("did not expect an Unchanged report")
+                    }
+                })
+                .collect(),
+            WorkspaceDiagnosticReportResult::Partial(_) => {
+                panic!("did not expect a Partial result")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn reports_background_file_syntax_error() {
+        // A file present only in the FileIndex (never opened) with a syntax error
+        // must be reported via the workspace-scope path.
+        let service = new_ready_server();
+        let server = service.inner();
+        let uri = Url::parse("file:///proj/Bad.al").expect("valid uri");
+        // Mirror an indexed-but-unopened file: on_document_change parses + indexes
+        // without inserting into the open-document set.
+        crate::workspace::on_document_change(&server.workspace, &uri, BAD_SRC);
+
+        let result = server
+            .workspace_diagnostic(ws_diag_params())
+            .await
+            .expect("workspace_diagnostic succeeds");
+        let files = reports(result);
+        let report = files
+            .iter()
+            .find(|f| f.uri == uri)
+            .expect("the bad background file should be reported");
+        assert!(
+            !report.full_document_diagnostic_report.items.is_empty(),
+            "expected at least one diagnostic for the bad file"
+        );
+        assert_eq!(
+            report.version, None,
+            "an unopened workspace file has no document version"
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_open_document_syntax_error() {
+        let service = new_ready_server();
+        let server = service.inner();
+        let uri = Url::parse("file:///proj/OpenBad.al").expect("valid uri");
+        server
+            .workspace
+            .documents
+            .open(uri.clone(), BAD_SRC.to_string());
+        crate::workspace::on_document_change(&server.workspace, &uri, BAD_SRC);
+
+        let result = server
+            .workspace_diagnostic(ws_diag_params())
+            .await
+            .expect("workspace_diagnostic succeeds");
+        let files = reports(result);
+        // The open document must appear exactly once (no double-report from the
+        // file-index pass).
+        let matches: Vec<_> = files.iter().filter(|f| f.uri == uri).collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "open document should be reported exactly once, got {}",
+            matches.len()
+        );
+        assert!(
+            !matches[0].full_document_diagnostic_report.items.is_empty(),
+            "expected diagnostics for the open bad document"
+        );
+    }
+
+    #[tokio::test]
+    async fn clean_workspace_reports_none() {
+        let service = new_ready_server();
+        let server = service.inner();
+        let open_uri = Url::parse("file:///proj/OpenGood.al").expect("valid uri");
+        server
+            .workspace
+            .documents
+            .open(open_uri.clone(), GOOD_SRC.to_string());
+        crate::workspace::on_document_change(&server.workspace, &open_uri, GOOD_SRC);
+        // A second clean file that is only indexed, never opened.
+        let bg_uri = Url::parse("file:///proj/BgGood.al").expect("valid uri");
+        crate::workspace::on_document_change(&server.workspace, &bg_uri, GOOD_SRC);
+
+        let result = server
+            .workspace_diagnostic(ws_diag_params())
+            .await
+            .expect("workspace_diagnostic succeeds");
+        let files = reports(result);
+        assert!(
+            files.is_empty(),
+            "clean workspace must report no files, got: {:?}",
+            files.iter().map(|f| f.uri.as_str()).collect::<Vec<_>>()
+        );
     }
 }

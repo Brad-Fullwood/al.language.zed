@@ -281,6 +281,16 @@ impl DocumentStore {
         self.docs.contains_key(uri)
     }
 
+    /// Snapshot of every currently-open document URI.
+    ///
+    /// Materialised into a `Vec` (DashMap has no stable iterator that can be
+    /// held across `.await`) so the LSP `workspace/diagnostic` handler can walk
+    /// the open set without pinning a shard lock while it runs per-file
+    /// diagnostics.
+    pub fn open_uris(&self) -> Vec<Url> {
+        self.docs.iter().map(|e| e.key().clone()).collect()
+    }
+
     pub fn apply_changes(&self, uri: &Url, changes: &[TextChange]) {
         let _ = self.apply_changes_and_get(uri, changes);
     }
