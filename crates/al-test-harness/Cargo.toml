@@ -19,3 +19,6 @@ toml = "0.8"
 # vt100 parser (the Rust replacement for the former tui.py).
 portable-pty = "0.8"
 vt100 = "0.15"
+# emit-differential test: read .app (NAVX header + zip) entries to compare the
+# native emitter's output against Microsoft's alc byte-for-byte.
+zip = { workspace = true }
