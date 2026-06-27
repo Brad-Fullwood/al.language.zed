@@ -80,6 +80,15 @@ pub enum Value {
     Blob(Vec<u8>),
     /// AL `ErrorInfo` — structured error captured by `asserterror` / `Error`.
     ErrorInfo(Box<ErrorInfo>),
+    /// AL `Codeunit <Subtype>` instance handle. The interpreter is BC-free, so
+    /// a codeunit variable carries only the declared subtype's object name; a
+    /// method call on it (`MyCu.DoStuff(...)`) is dispatched to that workspace
+    /// object's procedure. Added at the end of the enum to preserve the
+    /// variant-ordering stability contract documented above.
+    Codeunit {
+        /// The declared subtype object name (e.g. `"Library - Sales"`).
+        object_name: String,
+    },
 }
 
 /// In-memory record handle. Phase 2 uses an opaque key into a per-thread
@@ -140,6 +149,7 @@ impl Ord for Value {
                 Dict(_) => 19,
                 Blob(_) => 20,
                 ErrorInfo(_) => 21,
+                Codeunit { .. } => 22,
             }
         }
         let mine = variant_index(self);
@@ -180,6 +190,10 @@ impl Ord for Value {
                 .cmp(&b.iter().collect::<Vec<_>>()),
             (Blob(a), Blob(b)) => a.cmp(b),
             (ErrorInfo(a), ErrorInfo(b)) => a.message.cmp(&b.message),
+            (
+                Codeunit { object_name: a },
+                Codeunit { object_name: b },
+            ) => a.cmp(b),
             // Different variants handled by the index check above.
             _ => Ordering::Equal,
         }
@@ -254,6 +268,7 @@ impl Value {
             Value::Dict(_) => "Dict",
             Value::Blob(_) => "Blob",
             Value::ErrorInfo(_) => "ErrorInfo",
+            Value::Codeunit { .. } => "Codeunit",
         }
     }
 }

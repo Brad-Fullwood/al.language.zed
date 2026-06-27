@@ -15,9 +15,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::interpreter::records::{self, RecordStore};
 use crate::interpreter::scope::{CallFrame, Eval, ScopeStack};
 use crate::interpreter::value::{ErrorInfo, Value};
-use crate::mock::record::MockRecord;
 use crate::stubs;
 
 const MAX_RECURSION_DEPTH: usize = 100;
@@ -48,9 +48,13 @@ pub enum DispatchMode {
 /// everywhere.
 pub struct DispatchCtx {
     pub source: Arc<dyn al_types::ProcedureSource>,
-    /// In-memory record store keyed by table ID. Only populated when
-    /// `mode == WithRecords`. Phase 2 does not populate this.
-    pub records: HashMap<i32, MockRecord>,
+    /// In-memory record stores keyed by lowercased table name. Built lazily by
+    /// the record-op wiring (`interpreter::records`) the first time a record
+    /// variable of that table is touched. Keyed by table name (not id) because
+    /// the BC-free interpreter has no table-id symbol table; two record
+    /// variables of the same table share one backing store (shared physical
+    /// table semantics — see `records.rs`).
+    pub records: HashMap<String, RecordStore>,
     pub mode: DispatchMode,
     /// Current call depth — incremented on each workspace-procedure call and
     /// decremented on return. Capped at `MAX_RECURSION_DEPTH`.
@@ -93,7 +97,7 @@ impl DispatchCtx {
 
     pub fn new_with_records(
         source: Arc<dyn al_types::ProcedureSource>,
-        records: HashMap<i32, MockRecord>,
+        records: HashMap<String, RecordStore>,
     ) -> Self {
         Self {
             source,
@@ -285,6 +289,10 @@ fn dispatch_workspace_procedure(
             let val = args.get(i).cloned().unwrap_or(Value::Empty);
             frame.bind(&param.name, val);
         }
+        // Pre-bind structured local variables (`Record`/`Codeunit`/`List of [T]`)
+        // to their handle defaults so member calls / field access on them resolve
+        // (B5/B6). Scalar locals still auto-bind lazily on first assignment.
+        bind_structured_locals(proc_node, source, &mut frame);
 
         ctx.recursion_depth += 1;
         let mut scope = ScopeStack::new();
@@ -310,6 +318,82 @@ fn dispatch_workspace_procedure(
 struct ParamDecl {
     name: String,
     type_name: String,
+}
+
+/// Pre-bind a procedure's structured local variables. Scans the `var_section`
+/// for `regular_variable_declaration`s and, for each whose type is a
+/// `Record`/`Codeunit`/`List of [T]` (the kinds [`records::default_for_structured`]
+/// recognises), binds every declared name to the structured handle default.
+/// Scalar locals are intentionally left unbound (they auto-bind on first
+/// assignment), preserving the pre-existing behaviour.
+fn bind_structured_locals(proc_node: tree_sitter::Node<'_>, source: &[u8], frame: &mut CallFrame) {
+    let mut cursor = proc_node.walk();
+    let var_sections: Vec<tree_sitter::Node<'_>> = proc_node
+        .named_children(&mut cursor)
+        .filter(|n| n.kind() == "var_section")
+        .collect();
+
+    for section in var_sections {
+        let mut sc = section.walk();
+        for decl in section.named_children(&mut sc) {
+            if decl.kind() != "variable_declaration" {
+                continue;
+            }
+            let mut dc = decl.walk();
+            for reg in decl.named_children(&mut dc) {
+                if reg.kind() != "regular_variable_declaration" {
+                    continue;
+                }
+                bind_structured_var_decl(reg, source, frame);
+            }
+        }
+    }
+}
+
+/// Bind every name on one `regular_variable_declaration` whose type is a
+/// structured handle (`Record`/`Codeunit`/`List`).
+fn bind_structured_var_decl(
+    reg: tree_sitter::Node<'_>,
+    source: &[u8],
+    frame: &mut CallFrame,
+) {
+    let mut names: Vec<String> = Vec::new();
+    let mut type_text: Option<String> = None;
+
+    let mut rc = reg.walk();
+    if rc.goto_first_child() {
+        loop {
+            match rc.field_name() {
+                Some("name") => {
+                    if let Ok(t) = rc.node().utf8_text(source) {
+                        names.push(t.trim_matches('"').to_string());
+                    }
+                }
+                Some("type") => {
+                    if let Ok(t) = rc.node().utf8_text(source) {
+                        type_text = Some(t.to_string());
+                    }
+                }
+                _ => {}
+            }
+            if !rc.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+
+    let Some(type_text) = type_text else {
+        return;
+    };
+    let Some(default) = records::default_for_structured(&type_text) else {
+        return; // scalar / unknown type — leave for lazy auto-bind on assignment.
+    };
+
+    for name in names {
+        if frame.get(&name).is_none() {
+            frame.bind(&name, default.clone());
+        }
+    }
 }
 
 /// Extract parameter declarations from a `procedure_declaration` node.

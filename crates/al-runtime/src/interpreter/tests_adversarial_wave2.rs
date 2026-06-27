@@ -402,7 +402,6 @@ mod tests {
     // Observed: Eval::Error("object 'chartlabels' not found in workspace")
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-08 UNIMPLEMENTED: List of [T] member calls (.Add/.Get/.Count) not dispatched"]
     fn w2_08_list_member_calls_not_dispatched() {
         let wrapper = r#"codeunit 50100 "W2"
 {

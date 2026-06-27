@@ -11,10 +11,17 @@
 
 use tree_sitter::Node;
 
+use crate::interpreter::dispatch::DispatchCtx;
+use crate::interpreter::records;
 use crate::interpreter::scope::{Eval, ScopeStack};
 use crate::interpreter::value::{ErrorInfo, Value};
 
-pub fn eval_expr(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
+pub fn eval_expr(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
     // Stack-overflow guard (F-OPEN-265): expression evaluation recurses per
     // AST nesting level, and ~400 nested parens overflow a 2 MiB worker
     // thread stack — aborting the whole process. Mirror eval_stmt's guard.
@@ -24,12 +31,17 @@ pub fn eval_expr(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval 
             crate::interpreter::scope::MAX_EXPR_DEPTH
         )));
     }
-    let result = eval_expr_inner(node, source, stack);
+    let result = eval_expr_inner(node, source, stack, ctx);
     stack.exit_expr();
     result
 }
 
-fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
+fn eval_expr_inner(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
     match node.kind() {
         // Literal forms — the AL grammar uses `integer`, `decimal`, `string`
         // as the actual node kinds (not `integer_literal` etc.).
@@ -59,14 +71,17 @@ fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eva
         //   expression = unary_expression (binary_operator unary_expression)*
         // When there are 3+ named children, it's a binary (or assignment) expression.
         // When there is 1 named child, it's a transparent wrapper.
-        "expression" => eval_expression_node(node, source, stack),
-        "parenthesized_expression"
-        | "postfix_expression"
-        | "primary_expression"
-        | "case_label_expression" => match named_child(node, 0) {
-            Some(inner) => eval_expr(inner, source, stack),
-            None => Eval::Error(simple_error("empty expression wrapper")),
-        },
+        "expression" => eval_expression_node(node, source, stack, ctx),
+        // A `postfix_expression` may be a procedure/method call, a record field
+        // read (`Rec."Field"`), or a transparent wrapper. Calls and record reads
+        // need the dispatch context.
+        "postfix_expression" => eval_postfix(node, source, stack, ctx),
+        "parenthesized_expression" | "primary_expression" | "case_label_expression" => {
+            match named_child(node, 0) {
+                Some(inner) => eval_expr(inner, source, stack, ctx),
+                None => Eval::Error(simple_error("empty expression wrapper")),
+            }
+        }
         "identifier" | "variable_reference" | "name" => match utf8_text(node, source) {
             Some(name) => {
                 // Boolean keywords may appear as identifiers in some grammar versions.
@@ -82,7 +97,7 @@ fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eva
             }
             None => Eval::Error(simple_error("invalid identifier text")),
         },
-        "unary_expression" => eval_unary(node, source, stack),
+        "unary_expression" => eval_unary(node, source, stack, ctx),
         // Anything else: signal a clear error rather than silently
         // returning a default — failing loud is better than failing wrong.
         other => Eval::Error(simple_error(&format!(
@@ -135,14 +150,50 @@ fn eval_literal(node: Node<'_>, source: &[u8]) -> Eval {
     }
 }
 
-fn eval_unary(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
+/// Evaluate a `postfix_expression`: a call (`Foo(args)`, `Recv.Proc(args)`), a
+/// record field read (`Rec."Field"` via a `member_suffix` whose receiver is a
+/// bound `Value::Record`), or a transparent wrapper around the primary.
+fn eval_postfix(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    // A trailing call suffix means this is a procedure/method call — let the
+    // shared call machinery (which owns argument evaluation + dispatch) run it.
+    if crate::interpreter::eval_stmt::is_call_postfix(node) {
+        return crate::interpreter::eval_stmt::eval_call(node, source, stack, ctx);
+    }
+
+    // Record field read: `Rec."Field"` (a `member_suffix`, not a call) where the
+    // receiver resolves to a bound `Value::Record`.
+    if let Some((recv, field)) = records::record_field_access(node, source) {
+        if let Some(Value::Record(rv)) = stack.lookup(&recv) {
+            let table_name = rv.table_name.clone();
+            return records::field_get(&table_name, &field, ctx);
+        }
+    }
+
+    // Plain wrapper — evaluate the primary expression.
+    match named_child(node, 0) {
+        Some(inner) => eval_expr(inner, source, stack, ctx),
+        None => Eval::Error(simple_error("empty postfix expression")),
+    }
+}
+
+fn eval_unary(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
     // Grammar: unary_expression = (unary_operator unary_expression) | postfix_expression
     //   - 2 named children: [unary_operator, unary_expression]
     //   - 1 named child:    [postfix_expression] — transparent wrapper
     let named_count = node.named_child_count();
     if named_count <= 1 {
         return match named_child(node, 0) {
-            Some(inner) => eval_expr(inner, source, stack),
+            Some(inner) => eval_expr(inner, source, stack, ctx),
             None => Eval::Error(simple_error("unary expression: empty node")),
         };
     }
@@ -156,7 +207,7 @@ fn eval_unary(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
     };
     let operator_text = utf8_text(op_node, source).unwrap_or("").trim();
 
-    let value = match eval_expr(operand_node, source, stack) {
+    let value = match eval_expr(operand_node, source, stack, ctx) {
         Eval::Normal(v) => v,
         other => return other,
     };
@@ -183,7 +234,12 @@ fn eval_unary(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
 /// We collect all named children into a list, then find the `:=` operator
 /// (assignment, lowest precedence) and process accordingly. For pure
 /// computation, we evaluate left-to-right.
-fn eval_expression_node(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
+fn eval_expression_node(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
     let named_count = node.named_child_count();
 
     let children: Vec<Node<'_>> = (0..named_count)
@@ -195,7 +251,7 @@ fn eval_expression_node(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -
     }
     if children.len() == 1 {
         // Transparent wrapper.
-        return eval_expr(children[0], source, stack);
+        return eval_expr(children[0], source, stack, ctx);
     }
 
     // Operators are at odd indices: [operand, op, operand, op, operand, ...]
@@ -214,10 +270,16 @@ fn eval_expression_node(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -
         let lhs_node = children[op_idx - 1];
         let rhs_children = &children[(op_idx + 1)..];
 
-        let rhs_val = match eval_expr_chain(rhs_children, source, stack) {
+        let rhs_val = match eval_expr_chain(rhs_children, source, stack, ctx) {
             Eval::Normal(v) => v,
             other => return other,
         };
+
+        // Record field assignment: `Rec."Field" := value`. Handled before the
+        // plain-identifier path so the whole record isn't overwritten.
+        if let Some(result) = records::try_field_assign(lhs_node, source, &rhs_val, stack, ctx) {
+            return result;
+        }
 
         let lhs_name = extract_identifier_name(lhs_node, source)
             .or_else(|| {
@@ -241,20 +303,25 @@ fn eval_expression_node(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -
         return Eval::Normal(Value::Empty);
     }
 
-    eval_expr_chain(&children, source, stack)
+    eval_expr_chain(&children, source, stack, ctx)
 }
 
 /// Evaluate a flat alternating chain [operand, op, operand, op, operand, ...]
 /// left-to-right, returning the final computed value.
-fn eval_expr_chain(children: &[Node<'_>], source: &[u8], stack: &mut ScopeStack) -> Eval {
+fn eval_expr_chain(
+    children: &[Node<'_>],
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
     if children.is_empty() {
         return Eval::Error(simple_error("expression chain: empty"));
     }
     if children.len() == 1 {
-        return eval_expr(children[0], source, stack);
+        return eval_expr(children[0], source, stack, ctx);
     }
 
-    let mut acc = match eval_expr(children[0], source, stack) {
+    let mut acc = match eval_expr(children[0], source, stack, ctx) {
         Eval::Normal(v) => v,
         other => return other,
     };
@@ -265,7 +332,7 @@ fn eval_expr_chain(children: &[Node<'_>], source: &[u8], stack: &mut ScopeStack)
         let rhs_node = children[i + 1];
         let operator = utf8_text(op_node, source).unwrap_or("").trim().to_string();
 
-        let rhs = match eval_expr(rhs_node, source, stack) {
+        let rhs = match eval_expr(rhs_node, source, stack, ctx) {
             Eval::Normal(v) => v,
             other => return other,
         };
@@ -430,6 +497,12 @@ fn values_cmp(a: &Value, b: &Value, predicate: impl Fn(std::cmp::Ordering) -> bo
 mod tests {
     use super::*;
     use crate::interpreter::scope::CallFrame;
+    use crate::test_support::MockSource;
+    use std::sync::Arc;
+
+    fn test_ctx() -> DispatchCtx {
+        DispatchCtx::new_pure(Arc::new(MockSource::new()))
+    }
 
     fn ok(eval: Eval) -> Value {
         match eval {
@@ -469,7 +542,8 @@ mod tests {
         }
         let node = target.expect("parenthesized expression must parse");
         let mut scope = ScopeStack::new();
-        match eval_expr(node, source.as_bytes(), &mut scope) {
+        let mut ctx = test_ctx();
+        match eval_expr(node, source.as_bytes(), &mut scope, &mut ctx) {
             Eval::Error(e) => assert!(
                 e.message.to_lowercase().contains("depth"),
                 "error must mention the depth cap: {}",
@@ -657,7 +731,8 @@ mod tests {
 
         let mut stack = ScopeStack::new();
         stack.push(CallFrame::new("X", "Test"));
-        eval_expr(expr, bytes, &mut stack)
+        let mut ctx = test_ctx();
+        eval_expr(expr, bytes, &mut stack, &mut ctx)
     }
 
     #[test]
