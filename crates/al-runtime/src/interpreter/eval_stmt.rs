@@ -138,7 +138,7 @@ fn eval_if(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Disp
         },
     };
 
-    let cond = match eval_expr(condition_node, source, stack) {
+    let cond = match eval_expr(condition_node, source, stack, ctx) {
         Eval::Normal(v) => v,
         other => return other,
     };
@@ -193,7 +193,7 @@ fn eval_while(
         if ctx.deadline_exceeded() {
             return Eval::Error(simple_error("interpreter deadline exceeded in while loop"));
         }
-        let cond = match eval_expr(cond_node, source, stack) {
+        let cond = match eval_expr(cond_node, source, stack, ctx) {
             Eval::Normal(v) => v,
             other => return other,
         };
@@ -236,7 +236,7 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
     };
 
     let start_val = match start_node {
-        Some(n) => match eval_expr(n, source, stack) {
+        Some(n) => match eval_expr(n, source, stack, ctx) {
             Eval::Normal(v) => v,
             other => return other,
         },
@@ -244,7 +244,7 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
     };
 
     let end_val = match end_node {
-        Some(n) => match eval_expr(n, source, stack) {
+        Some(n) => match eval_expr(n, source, stack, ctx) {
             Eval::Normal(v) => v,
             other => return other,
         },
@@ -351,7 +351,7 @@ fn eval_foreach(
     };
 
     let list_val = match list_node {
-        Some(n) => match eval_expr(n, source, stack) {
+        Some(n) => match eval_expr(n, source, stack, ctx) {
             Eval::Normal(v) => v,
             other => return other,
         },
@@ -421,7 +421,7 @@ fn eval_repeat(
         }
 
         let cond = match cond_node {
-            Some(n) => match eval_expr(n, source, stack) {
+            Some(n) => match eval_expr(n, source, stack, ctx) {
                 Eval::Normal(v) => v,
                 other => return other,
             },
@@ -443,7 +443,7 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
         Some(n) => n,
         None => return Eval::Error(simple_error("case_statement: missing selector")),
     };
-    let selector = match eval_expr(selector_node, source, stack) {
+    let selector = match eval_expr(selector_node, source, stack, ctx) {
         Eval::Normal(v) => v,
         other => return other,
     };
@@ -480,7 +480,7 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
         if let Some(ll) = label_list {
             let mut lc = ll.walk();
             for lbl in ll.named_children(&mut lc) {
-                if let Eval::Normal(v) = eval_expr(lbl, source, stack) {
+                if let Eval::Normal(v) = eval_expr(lbl, source, stack, ctx) {
                     if values_equal_for_case(&selector, &v) {
                         matched = true;
                         break;
@@ -504,7 +504,7 @@ fn eval_assignment(
     node: Node<'_>,
     source: &[u8],
     stack: &mut ScopeStack,
-    _ctx: &mut DispatchCtx,
+    ctx: &mut DispatchCtx,
 ) -> Eval {
     let lhs_node = match node
         .child_by_field_name("target")
@@ -521,7 +521,7 @@ fn eval_assignment(
         None => return Eval::Error(simple_error("assignment: missing RHS")),
     };
 
-    let rhs_val = match eval_expr(rhs_node, source, stack) {
+    let rhs_val = match eval_expr(rhs_node, source, stack, ctx) {
         Eval::Normal(v) => v,
         other => return other,
     };
@@ -551,14 +551,14 @@ fn eval_exit(
     node: Node<'_>,
     source: &[u8],
     stack: &mut ScopeStack,
-    _ctx: &mut DispatchCtx,
+    ctx: &mut DispatchCtx,
 ) -> Eval {
     if let Some(expr) = named_stmt_child(node, 0) {
         // The AL grammar represents `exit(value)` as:
         //   exit_statement → argument_list → [expression_list →] expression
         // Unwrap containers to reach the actual expression.
         let inner = unwrap_exit_expr(expr);
-        match eval_expr(inner, source, stack) {
+        match eval_expr(inner, source, stack, ctx) {
             Eval::Normal(v) => Eval::Exit(v),
             other => other,
         }
@@ -624,10 +624,10 @@ fn eval_expression_stmt(
             if is_call_postfix(effective) {
                 eval_call(effective, source, stack, ctx)
             } else {
-                eval_expr(node, source, stack)
+                eval_expr(node, source, stack, ctx)
             }
         }
-        _ => eval_expr(node, source, stack),
+        _ => eval_expr(node, source, stack, ctx),
     }
 }
 
@@ -654,7 +654,7 @@ fn resolve_to_call_node(node: Node<'_>) -> Node<'_> {
 /// Return true if this postfix_expression ends with a call_suffix,
 /// member_call_suffix, or scope_call_suffix (i.e., it is a call, not just
 /// a field access).
-fn is_call_postfix(node: Node<'_>) -> bool {
+pub(crate) fn is_call_postfix(node: Node<'_>) -> bool {
     let count = node.child_count();
     if let Some(last) = (0..count).rev().find_map(|i| node.child(i)) {
         matches!(
@@ -666,7 +666,12 @@ fn is_call_postfix(node: Node<'_>) -> bool {
     }
 }
 
-fn eval_call(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Eval {
+pub(crate) fn eval_call(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
     // Determine receiver and procedure name from the call node.
     // tree-sitter AL grammar has several call shapes:
     //   - `identifier ( args )` → no receiver
@@ -676,7 +681,7 @@ fn eval_call(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
     let (receiver, proc_name, args_node) = extract_call_parts(node, source);
 
     let args = match args_node {
-        Some(an) => eval_args(an, source, stack),
+        Some(an) => eval_args(an, source, stack, ctx),
         None => Ok(vec![]),
     };
     let args = match args {
@@ -843,9 +848,10 @@ fn eval_args(
     args_node: Node<'_>,
     source: &[u8],
     stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
 ) -> Result<Vec<Value>, ArgsShort> {
     let mut out = Vec::new();
-    eval_args_into(args_node, source, stack, &mut out)?;
+    eval_args_into(args_node, source, stack, ctx, &mut out)?;
     Ok(out)
 }
 
@@ -853,6 +859,7 @@ fn eval_args_into(
     node: Node<'_>,
     source: &[u8],
     stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
     out: &mut Vec<Value>,
 ) -> Result<(), ArgsShort> {
     let mut cursor = node.walk();
@@ -862,10 +869,10 @@ fn eval_args_into(
         }
         // Unwrap expression_list — it is a named container for comma-separated args.
         if child.kind() == "expression_list" {
-            eval_args_into(child, source, stack, out)?;
+            eval_args_into(child, source, stack, ctx, out)?;
             continue;
         }
-        match eval_expr(child, source, stack) {
+        match eval_expr(child, source, stack, ctx) {
             Eval::Normal(v) => out.push(v),
             Eval::Error(e) => return Err(ArgsShort::Error(e)),
             Eval::Exit(v) => return Err(ArgsShort::Exit(v)),
@@ -895,7 +902,7 @@ fn is_punctuation(kind: &str) -> bool {
     // `kw_begin`, `kw_end`, `kw_then`, `kw_do`, etc.).
     matches!(
         kind,
-        "comment" | ";" | "," | "(" | ")" | "{" | "}" | "semicolon"
+        "comment" | ";" | "," | "(" | ")" | "{" | "}" | "semicolon" | "comma"
     ) || kind.starts_with("kw_")
 }
 

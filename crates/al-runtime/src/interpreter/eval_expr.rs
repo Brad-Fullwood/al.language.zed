@@ -11,10 +11,16 @@
 
 use tree_sitter::Node;
 
+use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::value::{self, ErrorInfo, Value};
 
-pub fn eval_expr(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
+pub fn eval_expr(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
     // Stack-overflow guard (F-OPEN-265): expression evaluation recurses per
     // AST nesting level, and ~400 nested parens overflow a 2 MiB worker
     // thread stack — aborting the whole process. Mirror eval_stmt's guard.
@@ -24,12 +30,17 @@ pub fn eval_expr(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval 
             crate::interpreter::scope::MAX_EXPR_DEPTH
         )));
     }
-    let result = eval_expr_inner(node, source, stack);
+    let result = eval_expr_inner(node, source, stack, ctx);
     stack.exit_expr();
     result
 }
 
-fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
+fn eval_expr_inner(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
     match node.kind() {
         // Literal forms — the AL grammar uses `integer`, `decimal`, `string`
         // as the actual node kinds (not `integer_literal` etc.).
@@ -49,6 +60,10 @@ fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eva
             }
         }
         "boolean_literal" => eval_literal(node, source),
+        // Date / Time / DateTime literals — `20240701D`, `063030T`. The
+        // lexer tokenises these; evaluation maps them onto the day/ms carriers.
+        "date_literal" => eval_date_literal(node, source),
+        "time_literal" => eval_time_literal(node, source),
         "string_literal" | "string" | "verbatim_string" => {
             let text = utf8_text(node, source).unwrap_or("");
             let trimmed = text.trim_start_matches('\'').trim_end_matches('\'');
@@ -59,14 +74,18 @@ fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eva
         //   expression = unary_expression (binary_operator unary_expression)*
         // When there are 3+ named children, it's a binary (or assignment) expression.
         // When there is 1 named child, it's a transparent wrapper.
-        "expression" => eval_expression_node(node, source, stack),
-        "parenthesized_expression"
-        | "postfix_expression"
-        | "primary_expression"
-        | "case_label_expression" => match named_child(node, 0) {
-            Some(inner) => eval_expr(inner, source, stack),
-            None => Eval::Error(simple_error("empty expression wrapper")),
-        },
+        "expression" => eval_expression_node(node, source, stack, ctx),
+        // A postfix_expression is either a call (`Foo(args)`, `Recv.Proc(args)`),
+        // a scope-qualified enum access (`"Enum"::Member`), or a transparent
+        // wrapper around a primary_expression. Calls need dispatch (with ctx);
+        // scope access produces an Option value; everything else unwraps.
+        "postfix_expression" => eval_postfix(node, source, stack, ctx),
+        "parenthesized_expression" | "primary_expression" | "case_label_expression" => {
+            match named_child(node, 0) {
+                Some(inner) => eval_expr(inner, source, stack, ctx),
+                None => Eval::Error(simple_error("empty expression wrapper")),
+            }
+        }
         "identifier" | "variable_reference" | "name" => match utf8_text(node, source) {
             Some(name) => {
                 // Boolean keywords may appear as identifiers in some grammar versions.
@@ -77,12 +96,18 @@ fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eva
                 }
                 match stack.lookup(name) {
                     Some(v) => Eval::Normal(v.clone()),
-                    None => Eval::Error(simple_error(&format!("unbound identifier: {name}"))),
+                    // Niladic clock builtins may appear without parentheses
+                    // (`dt := CurrentDateTime`). Only treated as builtins when
+                    // not shadowed by a bound variable of the same name.
+                    None => match niladic_clock_builtin(name) {
+                        Some(v) => Eval::Normal(v),
+                        None => Eval::Error(simple_error(&format!("unbound identifier: {name}"))),
+                    },
                 }
             }
             None => Eval::Error(simple_error("invalid identifier text")),
         },
-        "unary_expression" => eval_unary(node, source, stack),
+        "unary_expression" => eval_unary(node, source, stack, ctx),
         // Anything else: signal a clear error rather than silently
         // returning a default — failing loud is better than failing wrong.
         other => Eval::Error(simple_error(&format!(
@@ -135,14 +160,19 @@ fn eval_literal(node: Node<'_>, source: &[u8]) -> Eval {
     }
 }
 
-fn eval_unary(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
+fn eval_unary(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
     // Grammar: unary_expression = (unary_operator unary_expression) | postfix_expression
     //   - 2 named children: [unary_operator, unary_expression]
     //   - 1 named child:    [postfix_expression] — transparent wrapper
     let named_count = node.named_child_count();
     if named_count <= 1 {
         return match named_child(node, 0) {
-            Some(inner) => eval_expr(inner, source, stack),
+            Some(inner) => eval_expr(inner, source, stack, ctx),
             None => Eval::Error(simple_error("unary expression: empty node")),
         };
     }
@@ -156,7 +186,7 @@ fn eval_unary(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
     };
     let operator_text = utf8_text(op_node, source).unwrap_or("").trim();
 
-    let value = match eval_expr(operand_node, source, stack) {
+    let value = match eval_expr(operand_node, source, stack, ctx) {
         Eval::Normal(v) => v,
         other => return other,
     };
@@ -172,6 +202,163 @@ fn eval_unary(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
     }
 }
 
+/// Evaluate a `postfix_expression`: a primary expression followed by zero or
+/// more suffixes. Three shapes:
+///   * call suffix (`Foo(args)`, `Recv.Proc(args)`, `Cu::Run(args)`) →
+///     dispatched through `eval_stmt::eval_call` (needs `ctx`).
+///   * scope suffix (`"Enum"::Member`, `Enum::"T"::"V"`) → an Option value.
+///   * no suffix → transparent wrapper around the primary expression.
+fn eval_postfix(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    // A trailing call suffix means this is a procedure/method call — let the
+    // shared call machinery (which owns argument evaluation + dispatch) run it.
+    if crate::interpreter::eval_stmt::is_call_postfix(node) {
+        return crate::interpreter::eval_stmt::eval_call(node, source, stack, ctx);
+    }
+
+    // Scope suffix(es) (`::Member`) without a call → scope-qualified enum access.
+    let scope_members: Vec<Node<'_>> = {
+        let mut cursor = node.walk();
+        node.children(&mut cursor)
+            .filter(|c| c.kind() == "scope_suffix")
+            .collect()
+    };
+    if !scope_members.is_empty() {
+        return eval_scope_access(node, &scope_members, source);
+    }
+
+    // Plain wrapper — evaluate the primary expression.
+    match named_child(node, 0) {
+        Some(inner) => eval_expr(inner, source, stack, ctx),
+        None => Eval::Error(simple_error("empty postfix expression")),
+    }
+}
+
+/// Evaluate a scope-qualified enum/option member access into a `Value::Option`.
+///
+/// Two grammar shapes:
+///   * `"Enum Type"::Member`  → primary is the enum type, one scope suffix.
+///   * `Enum::"Type"::"Value"` → primary is the `Enum` keyword; the first
+///     scope suffix names the type, the last names the member.
+///
+/// The interpreter has no enum symbol table (it is BC-free), so the member
+/// **ordinal is not resolved** — it is recorded as `0`. The type and member
+/// names are preserved so the value formats and round-trips correctly.
+fn eval_scope_access(node: Node<'_>, scope_members: &[Node<'_>], source: &[u8]) -> Eval {
+    let member_name = |n: Node<'_>| -> Option<String> {
+        n.child_by_field_name("member")
+            .or_else(|| n.named_child(0))
+            .and_then(|m| m.utf8_text(source).ok())
+            .map(|t| t.trim_matches('"').to_string())
+    };
+
+    let primary_text = node
+        .named_child(0)
+        .and_then(|p| p.utf8_text(source).ok())
+        .map(|t| t.trim_matches('"').to_string())
+        .unwrap_or_default();
+
+    let (type_name, member) = if primary_text.eq_ignore_ascii_case("enum") {
+        // `Enum::"Type"::"Value"` — type is the first suffix, member the last.
+        let type_name = scope_members.first().and_then(|n| member_name(*n));
+        let member = scope_members.last().and_then(|n| member_name(*n));
+        match (type_name, member) {
+            (Some(t), Some(m)) if scope_members.len() >= 2 => (t, m),
+            // `Enum::Member` with a single suffix is malformed without a type;
+            // treat the suffix as the member with an unknown type.
+            (Some(t), _) => (String::new(), t),
+            _ => return Eval::Error(simple_error("scope access: missing enum member")),
+        }
+    } else {
+        // `"Type"::Member` — primary is the type, the suffix is the member.
+        let Some(member) = scope_members.last().and_then(|n| member_name(*n)) else {
+            return Eval::Error(simple_error("scope access: missing enum member"));
+        };
+        (primary_text, member)
+    };
+
+    Eval::Normal(Value::Option {
+        type_name,
+        member,
+        ordinal: 0,
+    })
+}
+
+/// Evaluate an AL date literal (`20240701D`, `0D`) into a `Value::Date`.
+fn eval_date_literal(node: Node<'_>, source: &[u8]) -> Eval {
+    let Some(text) = utf8_text(node, source) else {
+        return Eval::Error(simple_error("invalid date literal text"));
+    };
+    let digits = text.trim().trim_end_matches(['d', 'D']);
+    // `0D` is AL's undefined/zero date.
+    if digits == "0" {
+        return Eval::Normal(Value::Date(0));
+    }
+    if digits.len() != 8 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Eval::Error(simple_error(&format!("malformed date literal: {text}")));
+    }
+    let year: i64 = digits[0..4].parse().unwrap_or(0);
+    let month: i64 = digits[4..6].parse().unwrap_or(0);
+    let day: i64 = digits[6..8].parse().unwrap_or(0);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return Eval::Error(simple_error(&format!(
+            "date literal out of range: {text}"
+        )));
+    }
+    Eval::Normal(Value::Date(value::al_days_from_ymd(year, month, day)))
+}
+
+/// Evaluate an AL time literal (`063030T`, `063030500T`, `0T`) into a
+/// `Value::Time` (milliseconds since midnight). Digits are `HHMMSS` with an
+/// optional trailing thousandths group.
+fn eval_time_literal(node: Node<'_>, source: &[u8]) -> Eval {
+    let Some(text) = utf8_text(node, source) else {
+        return Eval::Error(simple_error("invalid time literal text"));
+    };
+    let digits = text.trim().trim_end_matches(['t', 'T']);
+    if digits == "0" {
+        return Eval::Normal(Value::Time(0));
+    }
+    if digits.len() < 6 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Eval::Error(simple_error(&format!("malformed time literal: {text}")));
+    }
+    let hours: i64 = digits[0..2].parse().unwrap_or(0);
+    let minutes: i64 = digits[2..4].parse().unwrap_or(0);
+    let seconds: i64 = digits[4..6].parse().unwrap_or(0);
+    // Optional thousandths: pad/truncate the trailing group to exactly 3 digits.
+    let millis: i64 = if digits.len() > 6 {
+        let frac = &digits[6..];
+        let frac3: String = frac.chars().chain(std::iter::repeat('0')).take(3).collect();
+        frac3.parse().unwrap_or(0)
+    } else {
+        0
+    };
+    if hours > 23 || minutes > 59 || seconds > 59 {
+        return Eval::Error(simple_error(&format!(
+            "time literal out of range: {text}"
+        )));
+    }
+    let ms = ((hours * 60 + minutes) * 60 + seconds) * 1000 + millis;
+    Eval::Normal(Value::Time(ms))
+}
+
+/// Resolve a niladic clock builtin used without parentheses (`Today`,
+/// `Time`, `CurrentDateTime`). Returns `None` for any other identifier.
+fn niladic_clock_builtin(name: &str) -> Option<Value> {
+    match name.to_ascii_lowercase().as_str() {
+        "today" => Some(Value::Date(crate::interpreter::dispatch::clock_today())),
+        "time" => Some(Value::Time(crate::interpreter::dispatch::clock_time())),
+        "currentdatetime" => Some(Value::DateTime(
+            crate::interpreter::dispatch::clock_current_datetime(),
+        )),
+        _ => None,
+    }
+}
+
 /// Handle the AL `expression` node.
 ///
 /// The grammar defines:
@@ -183,7 +370,12 @@ fn eval_unary(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
 /// We collect all named children into a list, then find the `:=` operator
 /// (assignment, lowest precedence) and process accordingly. For pure
 /// computation, we evaluate left-to-right.
-fn eval_expression_node(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
+fn eval_expression_node(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
     let named_count = node.named_child_count();
 
     let children: Vec<Node<'_>> = (0..named_count)
@@ -195,26 +387,29 @@ fn eval_expression_node(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -
     }
     if children.len() == 1 {
         // Transparent wrapper.
-        return eval_expr(children[0], source, stack);
+        return eval_expr(children[0], source, stack, ctx);
     }
 
     // Operators are at odd indices: [operand, op, operand, op, operand, ...]
-    let assign_idx = children
+    // Recognise the assignment operators — plain `:=` and the compound
+    // arithmetic forms `+=`, `-=`, `*=`, `/=`. Each binds the LHS variable
+    // and is the lowest-precedence operator in the chain.
+    let assign = children
         .iter()
         .enumerate()
-        .find(|(idx, c)| {
-            let node = *c;
-            *idx % 2 == 1
-                && node.kind() == "binary_operator"
-                && node.utf8_text(source).is_ok_and(|t| t.trim() == ":=")
-        })
-        .map(|(idx, _)| idx);
+        .find_map(|(idx, c)| {
+            if idx % 2 != 1 || c.kind() != "binary_operator" {
+                return None;
+            }
+            let text = c.utf8_text(source).ok()?.trim();
+            assignment_kind(text).map(|kind| (idx, kind))
+        });
 
-    if let Some(op_idx) = assign_idx {
+    if let Some((op_idx, kind)) = assign {
         let lhs_node = children[op_idx - 1];
         let rhs_children = &children[(op_idx + 1)..];
 
-        let rhs_val = match eval_expr_chain(rhs_children, source, stack) {
+        let rhs_val = match eval_expr_chain(rhs_children, source, stack, ctx) {
             Eval::Normal(v) => v,
             other => return other,
         };
@@ -229,32 +424,77 @@ fn eval_expression_node(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -
             .unwrap_or_default();
 
         if lhs_name.is_empty() {
-            return Eval::Error(simple_error("expression: cannot resolve LHS name for :="));
+            return Eval::Error(simple_error("expression: cannot resolve LHS name for assignment"));
         }
+
+        // Compound assignment (`x += rhs`) is `x := x <op> rhs`: load the
+        // current value, apply the base operator, then store. Behaviour is
+        // intentionally identical to writing the expanded form by hand.
+        let new_val = match kind {
+            AssignKind::Plain => rhs_val,
+            AssignKind::Compound(base_op) => {
+                let Some(current) = stack.lookup(&lhs_name).cloned() else {
+                    return Eval::Error(simple_error(&format!(
+                        "compound assignment to unbound identifier: {lhs_name}"
+                    )));
+                };
+                match apply_binary(base_op, current, rhs_val) {
+                    Eval::Normal(v) => v,
+                    other => return other,
+                }
+            }
+        };
+
         if let Some(slot) = stack.lookup_mut(&lhs_name) {
-            *slot = rhs_val;
+            *slot = new_val;
         } else if let Some(frame) = stack.top_mut() {
-            frame.bind(&lhs_name, rhs_val);
+            frame.bind(&lhs_name, new_val);
         } else {
-            return Eval::Error(simple_error("expression: no active scope for :="));
+            return Eval::Error(simple_error("expression: no active scope for assignment"));
         }
         return Eval::Normal(Value::Empty);
     }
 
-    eval_expr_chain(&children, source, stack)
+    eval_expr_chain(&children, source, stack, ctx)
+}
+
+/// The two flavours of AL assignment operator.
+enum AssignKind {
+    /// `:=` — store the RHS directly.
+    Plain,
+    /// `+=` / `-=` / `*=` / `/=` — apply the carried base operator to the
+    /// current LHS value and the RHS, then store.
+    Compound(&'static str),
+}
+
+/// Classify a binary-operator token as an assignment, if it is one.
+fn assignment_kind(text: &str) -> Option<AssignKind> {
+    match text {
+        ":=" => Some(AssignKind::Plain),
+        "+=" => Some(AssignKind::Compound("+")),
+        "-=" => Some(AssignKind::Compound("-")),
+        "*=" => Some(AssignKind::Compound("*")),
+        "/=" => Some(AssignKind::Compound("/")),
+        _ => None,
+    }
 }
 
 /// Evaluate a flat alternating chain [operand, op, operand, op, operand, ...]
 /// left-to-right, returning the final computed value.
-fn eval_expr_chain(children: &[Node<'_>], source: &[u8], stack: &mut ScopeStack) -> Eval {
+fn eval_expr_chain(
+    children: &[Node<'_>],
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
     if children.is_empty() {
         return Eval::Error(simple_error("expression chain: empty"));
     }
     if children.len() == 1 {
-        return eval_expr(children[0], source, stack);
+        return eval_expr(children[0], source, stack, ctx);
     }
 
-    let mut acc = match eval_expr(children[0], source, stack) {
+    let mut acc = match eval_expr(children[0], source, stack, ctx) {
         Eval::Normal(v) => v,
         other => return other,
     };
@@ -265,7 +505,7 @@ fn eval_expr_chain(children: &[Node<'_>], source: &[u8], stack: &mut ScopeStack)
         let rhs_node = children[i + 1];
         let operator = utf8_text(op_node, source).unwrap_or("").trim().to_string();
 
-        let rhs = match eval_expr(rhs_node, source, stack) {
+        let rhs = match eval_expr(rhs_node, source, stack, ctx) {
             Eval::Normal(v) => v,
             other => return other,
         };
@@ -430,6 +670,12 @@ fn values_cmp(a: &Value, b: &Value, predicate: impl Fn(std::cmp::Ordering) -> bo
 mod tests {
     use super::*;
     use crate::interpreter::scope::CallFrame;
+    use crate::test_support::MockSource;
+    use std::sync::Arc;
+
+    fn test_ctx() -> DispatchCtx {
+        DispatchCtx::new_pure(Arc::new(MockSource::new()))
+    }
 
     fn ok(eval: Eval) -> Value {
         match eval {
@@ -469,7 +715,8 @@ mod tests {
         }
         let node = target.expect("parenthesized expression must parse");
         let mut scope = ScopeStack::new();
-        match eval_expr(node, source.as_bytes(), &mut scope) {
+        let mut ctx = test_ctx();
+        match eval_expr(node, source.as_bytes(), &mut scope, &mut ctx) {
             Eval::Error(e) => assert!(
                 e.message.to_lowercase().contains("depth"),
                 "error must mention the depth cap: {}",
@@ -657,7 +904,8 @@ mod tests {
 
         let mut stack = ScopeStack::new();
         stack.push(CallFrame::new("X", "Test"));
-        eval_expr(expr, bytes, &mut stack)
+        let mut ctx = test_ctx();
+        eval_expr(expr, bytes, &mut stack, &mut ctx)
     }
 
     #[test]

@@ -162,6 +162,11 @@ pub fn dispatch_call(
         "lowercase" => return builtin_lowercase(&args),
         "uppercase" => return builtin_uppercase(&args),
         "indexof" => return builtin_indexof(&args),
+        "maxstrlen" => return builtin_maxstrlen(&args),
+        "createdatetime" => return builtin_createdatetime(&args),
+        "currentdatetime" => return Eval::Normal(Value::DateTime(clock_current_datetime())),
+        "today" => return Eval::Normal(Value::Date(clock_today())),
+        "time" => return Eval::Normal(Value::Time(clock_time())),
         _ => {}
     }
 
@@ -285,6 +290,11 @@ fn dispatch_workspace_procedure(
             let val = args.get(i).cloned().unwrap_or(Value::Empty);
             frame.bind(&param.name, val);
         }
+        // Bind the procedure's local `var` section to default values so a
+        // variable can be read before its first assignment. Handles
+        // multi-name declarations (`A, B, C : Integer;`) — every name on the
+        // line gets its own default-initialised slot.
+        bind_local_vars(proc_node, source, &mut frame);
 
         ctx.recursion_depth += 1;
         let mut scope = ScopeStack::new();
@@ -370,6 +380,89 @@ fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) -> Vec<ParamD
     }
 
     params
+}
+
+/// Bind a procedure's local `var` section into `frame`, default-initialising
+/// each declared variable. Supports multi-name declarations
+/// (`A, B, C : Integer;`): every `name:` field on a `regular_variable_declaration`
+/// gets its own slot with the type's default value.
+///
+/// Variables already bound (parameters) are left untouched. Types the
+/// interpreter cannot default (records, lists, etc.) are skipped — those still
+/// auto-bind lazily on first assignment, preserving prior behaviour.
+fn bind_local_vars(proc_node: tree_sitter::Node<'_>, source: &[u8], frame: &mut CallFrame) {
+    // Find the `var_section` directly under the procedure declaration.
+    let mut cursor = proc_node.walk();
+    let var_sections: Vec<tree_sitter::Node<'_>> = proc_node
+        .named_children(&mut cursor)
+        .filter(|n| n.kind() == "var_section")
+        .collect();
+
+    for section in var_sections {
+        let mut sc = section.walk();
+        for decl in section.named_children(&mut sc) {
+            if decl.kind() != "variable_declaration" {
+                continue;
+            }
+            // The concrete declaration shape is `regular_variable_declaration`
+            // (the only kind that carries `name:`/`type:` fields we default).
+            let mut dc = decl.walk();
+            for reg in decl.named_children(&mut dc) {
+                if reg.kind() != "regular_variable_declaration" {
+                    continue;
+                }
+                bind_regular_var_decl(reg, source, frame);
+            }
+        }
+    }
+}
+
+/// Bind every name on a single `regular_variable_declaration` to the default
+/// value of its declared type.
+fn bind_regular_var_decl(reg: tree_sitter::Node<'_>, source: &[u8], frame: &mut CallFrame) {
+    let mut names: Vec<String> = Vec::new();
+    let mut type_text: Option<String> = None;
+
+    let mut rc = reg.walk();
+    if rc.goto_first_child() {
+        loop {
+            match rc.field_name() {
+                Some("name") => {
+                    if let Ok(t) = rc.node().utf8_text(source) {
+                        names.push(t.trim_matches('"').to_string());
+                    }
+                }
+                Some("type") => {
+                    if let Ok(t) = rc.node().utf8_text(source) {
+                        type_text = Some(t.to_string());
+                    }
+                }
+                _ => {}
+            }
+            if !rc.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+
+    let Some(type_text) = type_text else {
+        return;
+    };
+    // Strip any length/subtype suffix (`Text[20]`, `Code[10]`) to the base name.
+    let base = type_text
+        .split(['[', ' '])
+        .next()
+        .unwrap_or(&type_text)
+        .trim();
+    let Some(default) = Value::default_for(base) else {
+        return; // complex/unknown type — leave for lazy auto-bind on assignment.
+    };
+
+    for name in names {
+        if frame.get(&name).is_none() {
+            frame.bind(&name, default.clone());
+        }
+    }
 }
 
 /// Check whether a `Value` matches the declared AL type name.
@@ -569,6 +662,77 @@ fn builtin_indexof(args: &[Value]) -> Eval {
         .map(|i| s[..i].chars().count() as i64 + 1)
         .unwrap_or(0);
     Eval::Normal(Value::Integer(result))
+}
+
+/// `MaxStrLen(var)` — the declared maximum length of a Text/Code variable.
+///
+/// **Limitation.** The interpreter's `Value::Text`/`Value::Code` do not carry
+/// the declared length cap (see `value.rs`: "length cap not enforced here"),
+/// so the *declared* maximum is unavailable at dispatch time. We return the
+/// length of the current content as a deterministic best-effort. This matches
+/// MaxStrLen only when the variable is full; callers relying on the declared
+/// cap (e.g. `CopyStr(x, 1, MaxStrLen(target))`) will see the current length.
+fn builtin_maxstrlen(args: &[Value]) -> Eval {
+    match args {
+        [Value::Text(s)] | [Value::Code(s)] => {
+            Eval::Normal(Value::Integer(s.chars().count() as i64))
+        }
+        [v] => simple_error(format!(
+            "MaxStrLen expects Text or Code, got {}",
+            v.type_name()
+        )),
+        _ => simple_error("MaxStrLen expects exactly 1 argument"),
+    }
+}
+
+/// `CreateDateTime(date, time)` — combine a Date and Time into a DateTime.
+///
+/// Carriers: `Date` is days since the AL epoch, `Time` is milliseconds since
+/// midnight, `DateTime` is milliseconds since the AL epoch — so the result is
+/// `days * MS_PER_DAY + time_ms`.
+fn builtin_createdatetime(args: &[Value]) -> Eval {
+    match args {
+        [Value::Date(d), Value::Time(t)] => {
+            match d.checked_mul(crate::interpreter::value::MS_PER_DAY)
+                .and_then(|ms| ms.checked_add(*t))
+            {
+                Some(dt) => Eval::Normal(Value::DateTime(dt)),
+                None => simple_error("CreateDateTime: datetime overflow"),
+            }
+        }
+        [a, b] => simple_error(format!(
+            "CreateDateTime expects (Date, Time), got ({}, {})",
+            a.type_name(),
+            b.type_name()
+        )),
+        _ => simple_error("CreateDateTime expects exactly 2 arguments"),
+    }
+}
+
+/// Milliseconds since the Unix epoch, from the system clock. Returns 0 if the
+/// clock is before 1970 (cannot happen in practice).
+fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Current date as days since the AL epoch (0001-01-01).
+pub(crate) fn clock_today() -> i64 {
+    unix_now_ms() / crate::interpreter::value::MS_PER_DAY
+        + crate::interpreter::value::AL_EPOCH_TO_UNIX_DAYS
+}
+
+/// Current wall-clock time as milliseconds since midnight UTC.
+pub(crate) fn clock_time() -> i64 {
+    unix_now_ms().rem_euclid(crate::interpreter::value::MS_PER_DAY)
+}
+
+/// Current date-time as milliseconds since the AL epoch (0001-01-01).
+pub(crate) fn clock_current_datetime() -> i64 {
+    unix_now_ms()
+        + crate::interpreter::value::AL_EPOCH_TO_UNIX_DAYS * crate::interpreter::value::MS_PER_DAY
 }
 
 /// Render a `Value` as AL would show it in StrSubstNo / Format.
