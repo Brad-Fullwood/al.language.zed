@@ -150,5 +150,23 @@ Native lint (A1) stays out — it is test-enforced removed. Closed the rest.
   `test-mutate --parallel` does real isolated parallel execution (per-variant
   throwaway Workspace, bounded by available_parallelism, stable-ordered). 73
   al-test tests pass, clippy clean.
-- **A8** (CodeLens wiring) — running in an isolated worktree (branch gap/a8-codelens).
-- Gallery re-running with an added diagnostics stage (ErrorCases.al).
+- **A8** (CodeLens wiring) — branch gap/a8-codelens, **merged**: `al.findReferences`,
+  `al.showProfiler`, `al.runTest` lenses were emitted but unhandled (silent
+  no-op); now each has a real executeCommand handler + arguments, advertised in
+  capabilities, with an e2e test asserting every emitted lens dispatches.
+  al-analysis 664 + al-lsp 397 pass.
+- **A7** (DAP schema honesty) — branch gap/a7-dap, **merged**: `sessionId` +
+  `breakOnNext` now forwarded to the BC attach payload; the ~9 unconsumed schema
+  fields removed (with a documenting `$comment`) and snippets cleaned. 270 al-dap
+  tests pass.
+- **A9/A10** (test-surface honesty) — branch gap/a9-a10, **merged**: InterpRecord
+  documented as routing to live BC (+ `runs_locally()`/`execution_note()` and
+  classify output); test-snapshot help clarified file-vs-live. al-test 72 +
+  al-explorer pass.
+- All six gap branches merged. Combined build + full-suite verification next;
+  worktrees to be cleaned up.
+- Follow-ups noted by agents (not blocking): scaffold.rs / debugging-dap.md still
+  reference the pruned DAP fields.
+
+A-section status: A2–A13 now closed or deliberate (A1). Gallery re-run includes
+a diagnostics stage (ErrorCases.al).
