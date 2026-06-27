@@ -327,7 +327,6 @@ fn generate_debug_json() -> Result<String, String> {
             "numberOfSqlStatements": 10,
             "tenant": "default",
             "usePublicURLFromServer": true,
-            "useMcpServerForDebugging": true,
             "build": {"command": "al", "args": ["compile"]}
         },
         {
@@ -344,7 +343,6 @@ fn generate_debug_json() -> Result<String, String> {
             "enableLongRunningSqlStatements": true,
             "longRunningSqlStatementsThreshold": 500,
             "numberOfSqlStatements": 10,
-            "useMcpServerForDebugging": true,
             "build": {"command": "al", "args": ["compile"]}
         },
         {
@@ -362,8 +360,7 @@ fn generate_debug_json() -> Result<String, String> {
             "longRunningSqlStatementsThreshold": 500,
             "numberOfSqlStatements": 10,
             "breakOnNext": "WebServiceClient",
-            "tenant": "default",
-            "useMcpServerForDebugging": true
+            "tenant": "default"
         },
         {
             "adapter": "al",
@@ -377,8 +374,7 @@ fn generate_debug_json() -> Result<String, String> {
             "enableLongRunningSqlStatements": true,
             "longRunningSqlStatementsThreshold": 500,
             "numberOfSqlStatements": 10,
-            "breakOnNext": "WebServiceClient",
-            "useMcpServerForDebugging": true
+            "breakOnNext": "WebServiceClient"
         }
     ]))
     .map_err(|e| format!("Failed to serialize debug.json: {e}"))

@@ -128,9 +128,10 @@ around it, not a reimplementation of it.
 - ❌ No pause, function breakpoints, set-variable, completions, restart, or step-back.
 - 🟡 Structured value expansion is shallow (`variablesReference` is 0; drilling into records isn't
   wired yet).
-- ⛔ Several schema fields are parsed but **not yet consumed**: `useMcpServerForDebugging`, `userId`,
-  `mcpServicePort`, `useVsCodeAuthentication`, `primaryTenantDomain`, `sessionId`, snapshot/profiling
-  config fields.
+- ✅ Schema reconciled (gap A7): `sessionId` and `breakOnNext` are now forwarded to the BC `Attach`
+  payload; the fields with no native behavior (`useMcpServerForDebugging`, `mcpServicePort`, `userId`,
+  `useVsCodeAuthentication`, `primaryTenantDomain`, snapshot/profiling config) were **removed** from
+  `debug_adapter_schemas/al.json` (with a `$comment` pointing to `al-explorer snapshot`/`profile`).
 - `ROADMAP.md` (Debugging): consume or remove unsupported fields, harden stack/scopes/variables/
   evaluate against current BC contracts, add explicit tests for the full launch→publish→attach→step→
   evaluate→disconnect flow, and bring DAP compile/deploy into the shared build service.
