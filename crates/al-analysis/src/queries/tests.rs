@@ -3,8 +3,13 @@
 //! Uses tree-sitter static analysis to find [Test] codeunits and [Test] procedures
 //! in AL source files. No runtime connection to BC required.
 
+use std::collections::HashSet;
+
 use serde::Serialize;
 
+use al_insight::graph::NodeKey;
+use al_insight::index::{CallGraph, NodeId};
+use al_symbols::ObjectKind;
 use al_workspace::Workspace;
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,18 +78,187 @@ pub struct AffectedTest {
     pub line: u32,
 }
 
-/// Return tests whose source file appears in `changed_paths`.
+/// How a set of [`AffectedTest`]s was selected. Surfaced so callers and any
+/// user-facing output stay honest about whether the precise call-graph path
+/// ran or we fell back to coarse file-name matching (gap B7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AffectedMode {
+    /// Tests selected by transitive call-graph reachability: a test is affected
+    /// iff it (or something it transitively calls) reaches a procedure/event of
+    /// a changed object.
+    CallGraph,
+    /// Coarse fallback used when no changed path resolves to a graph node
+    /// (e.g. the file isn't an indexed AL object): a test is affected iff its
+    /// own source file is in the changed list.
+    FileBased,
+}
+
+/// Result of [`affected_tests_detailed`]: the affected tests plus the mode that
+/// produced them.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AffectedTestsResult {
+    pub tests: Vec<AffectedTest>,
+    pub mode: AffectedMode,
+}
+
+/// Return the tests affected by a set of changed files.
 ///
-/// Phase 2 simplification: a test is "affected" iff its own file is
-/// in the changed list. Phase 3 will deepen this to walk the
-/// CallGraph backwards from each changed procedure to its test
-/// callers (`callers_of` is already cheap on the existing graph).
+/// Prefers **call-graph reachability** (gap B7): each changed file is mapped to
+/// its AL object, every member (procedure / event / subscriber) of that object
+/// seeds a backward walk of the call graph, and a test is affected iff its
+/// procedure node is reached. This catches tests whose *helpers* changed — not
+/// just tests whose own file changed — and ignores tests that only touch
+/// unrelated code.
+///
+/// Falls back to the legacy file-name match when no changed path resolves to a
+/// graph node (so the result is never worse than before). Use
+/// [`affected_tests_detailed`] when you need to know which mode ran.
 pub fn affected_tests(workspace: &Workspace, changed_paths: &[String]) -> Vec<AffectedTest> {
+    affected_tests_detailed(workspace, changed_paths).tests
+}
+
+/// Like [`affected_tests`] but also reports the [`AffectedMode`] used.
+pub fn affected_tests_detailed(
+    workspace: &Workspace,
+    changed_paths: &[String],
+) -> AffectedTestsResult {
     if changed_paths.is_empty() {
-        return Vec::new();
+        return AffectedTestsResult {
+            tests: Vec::new(),
+            mode: AffectedMode::CallGraph,
+        };
     }
+
+    if let Some(tests) = affected_via_call_graph(workspace, changed_paths) {
+        return AffectedTestsResult {
+            tests,
+            mode: AffectedMode::CallGraph,
+        };
+    }
+
+    AffectedTestsResult {
+        tests: affected_tests_file_based(workspace, changed_paths),
+        mode: AffectedMode::FileBased,
+    }
+}
+
+/// Call-graph affected-test detection.
+///
+/// Returns `None` (signalling the caller to fall back to file matching) when no
+/// changed path resolves to an indexed AL object, or when the changed objects
+/// have no members in the graph — i.e. when a call-graph answer would be
+/// vacuous rather than merely empty.
+fn affected_via_call_graph(
+    workspace: &Workspace,
+    changed_paths: &[String],
+) -> Option<Vec<AffectedTest>> {
+    // Map every changed file to the (kind, name) of the AL object it declares.
+    let want: HashSet<(ObjectKind, String)> = changed_paths
+        .iter()
+        .filter_map(|p| object_identity_for_path(workspace, p))
+        .collect();
+    if want.is_empty() {
+        return None;
+    }
+
+    // The cached workspace call graph only resolves high-fanout "Tier 1" files
+    // eagerly. For affected-test detection a missing edge is a false negative
+    // (a dependent test silently skipped), so build a fully-resolved graph over
+    // the node-complete cached insight graph. `get_or_build_call_graph` has
+    // already registered every workspace node and enriched the symbol index.
+    let insight = {
+        let (insight, _cg_guard) = workspace.get_or_build_call_graph();
+        insight
+    };
+    let mut cg = CallGraph::build_from_insight(&insight);
+    al_insight::calls::resolve_all_workspace_call_edges(
+        &workspace.file_index,
+        &workspace.symbols,
+        &insight,
+        &mut cg,
+    );
+
+    // Seeds: every procedure / event / subscriber node of a changed object.
+    let mut seeds: Vec<NodeId> = Vec::new();
+    for (key, indices) in insight.index.iter() {
+        let belongs = match key {
+            NodeKey::Procedure(kind, obj, _)
+            | NodeKey::Event(kind, obj, _)
+            | NodeKey::Subscriber(kind, obj, _) => want.contains(&(*kind, obj.clone())),
+            NodeKey::Object(..) => false,
+        };
+        if belongs {
+            seeds.extend(indices.iter().map(|idx| NodeId::from(*idx)));
+        }
+    }
+    if seeds.is_empty() {
+        // Changed object(s) exist but contribute no graph members (e.g. an
+        // empty table). Don't claim a precise empty answer — let the caller
+        // fall back to file matching.
+        return None;
+    }
+
+    let reachable = cg.reachable_callers(seeds);
+
+    let mut affected = Vec::new();
+    for cu in discover_tests(workspace) {
+        let kind = object_identity_for_path(workspace, &cu.file)
+            .map(|(k, _)| k)
+            .unwrap_or(ObjectKind::Codeunit);
+        let obj_lower = cu.name.to_lowercase();
+        for proc in &cu.tests {
+            let key = NodeKey::Procedure(kind, obj_lower.clone(), proc.name.to_lowercase());
+            let Some(node_id) = CallGraph::node_id_for(&insight, &key) else {
+                continue;
+            };
+            if reachable.contains(&node_id) {
+                affected.push(AffectedTest {
+                    codeunit_id: cu.id,
+                    codeunit_name: cu.name.clone(),
+                    method_name: proc.name.clone(),
+                    file: cu.file.clone(),
+                    line: proc.line,
+                });
+            }
+        }
+    }
+    Some(affected)
+}
+
+/// Resolve the `(ObjectKind, lowercased name)` of the AL object declared in
+/// `path`, using the file index's cached object info. Tries the path as given,
+/// then its canonical form (the daemon and the index may disagree on absolute
+/// vs symlinked paths).
+fn object_identity_for_path(workspace: &Workspace, path: &str) -> Option<(ObjectKind, String)> {
+    let from_info = |info: &al_source::file_index::CachedObjectInfo| {
+        info.kind
+            .parse::<ObjectKind>()
+            .ok()
+            .map(|k| (k, info.name.to_lowercase()))
+    };
+
+    let p = std::path::Path::new(path);
+    if let Some(info) = workspace.file_index.object_info.get(p) {
+        if let Some(id) = from_info(&info) {
+            return Some(id);
+        }
+    }
+    if let Ok(canon) = p.canonicalize() {
+        if let Some(info) = workspace.file_index.object_info.get(&canon) {
+            if let Some(id) = from_info(&info) {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+/// Legacy fallback: a test is affected iff its own file is in `changed_paths`.
+fn affected_tests_file_based(workspace: &Workspace, changed_paths: &[String]) -> Vec<AffectedTest> {
     // Normalise both sides to absolute path strings for comparison.
-    let normalised_changed: std::collections::HashSet<String> = changed_paths
+    let normalised_changed: HashSet<String> = changed_paths
         .iter()
         .map(|p| {
             std::path::Path::new(p)
@@ -435,5 +609,178 @@ mod adversarial_j_tests {
             !has_test_subtype(root, bytes),
             "Comment containing 'test' must NOT cause false-positive test subtype detection"
         );
+    }
+}
+
+/// B7: call-graph reachability for affected-test detection. A test is affected
+/// iff it transitively calls a procedure of a changed object — not merely
+/// because its own file changed (the old file-based heuristic).
+#[cfg(test)]
+mod affected_call_graph_b7 {
+    use super::*;
+    use std::path::PathBuf;
+
+    const HELPER: &str = r#"codeunit 50100 Helper
+{
+    procedure DoWork()
+    begin
+    end;
+}
+"#;
+
+    const UNRELATED: &str = r#"codeunit 50101 Unrelated
+{
+    procedure Other()
+    begin
+    end;
+}
+"#;
+
+    // MidCu.Middle calls Helper.DoWork — the middle hop of the chain.
+    const MIDCU: &str = r#"codeunit 50102 MidCu
+{
+    procedure Middle()
+    var
+        H: Codeunit Helper;
+    begin
+        H.DoWork();
+    end;
+}
+"#;
+
+    // TestDirect    → Helper.DoWork   (direct dependency)
+    // TestTransitive→ MidCu.Middle    (→ Helper.DoWork; transitive)
+    // TestUnrelated → Unrelated.Other (independent)
+    const TESTS: &str = r#"codeunit 50103 MyTests
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestDirect()
+    var
+        H: Codeunit Helper;
+    begin
+        H.DoWork();
+    end;
+
+    [Test]
+    procedure TestTransitive()
+    var
+        M: Codeunit MidCu;
+    begin
+        M.Middle();
+    end;
+
+    [Test]
+    procedure TestUnrelated()
+    var
+        U: Codeunit Unrelated;
+    begin
+        U.Other();
+    end;
+}
+"#;
+
+    fn build_ws() -> Workspace {
+        let ws = Workspace::new();
+        ws.file_index
+            .add_file(PathBuf::from("/ws/helper.al"), HELPER.to_string());
+        ws.file_index
+            .add_file(PathBuf::from("/ws/unrelated.al"), UNRELATED.to_string());
+        ws.file_index
+            .add_file(PathBuf::from("/ws/midcu.al"), MIDCU.to_string());
+        ws.file_index
+            .add_file(PathBuf::from("/ws/tests.al"), TESTS.to_string());
+        ws
+    }
+
+    fn affected_names(ws: &Workspace, changed: &[&str]) -> (AffectedMode, Vec<String>) {
+        let changed: Vec<String> = changed.iter().map(|s| s.to_string()).collect();
+        let result = affected_tests_detailed(ws, &changed);
+        let mut names: Vec<String> = result.tests.iter().map(|t| t.method_name.clone()).collect();
+        names.sort();
+        (result.mode, names)
+    }
+
+    #[test]
+    fn changing_helper_marks_direct_and_transitive_callers() {
+        let ws = build_ws();
+        let (mode, names) = affected_names(&ws, &["/ws/helper.al"]);
+        assert_eq!(mode, AffectedMode::CallGraph, "should use the call graph");
+        // TestDirect calls Helper directly; TestTransitive reaches it via MidCu.
+        assert!(
+            names.contains(&"TestDirect".to_string()),
+            "direct caller affected; got {names:?}"
+        );
+        assert!(
+            names.contains(&"TestTransitive".to_string()),
+            "transitive caller A->B->H affected; got {names:?}"
+        );
+        // The unrelated test must NOT be dragged in.
+        assert!(
+            !names.contains(&"TestUnrelated".to_string()),
+            "unrelated test must not be affected; got {names:?}"
+        );
+        assert_eq!(names.len(), 2, "exactly the two reachable tests: {names:?}");
+    }
+
+    #[test]
+    fn changing_unrelated_proc_does_not_mark_helper_callers() {
+        let ws = build_ws();
+        let (mode, names) = affected_names(&ws, &["/ws/unrelated.al"]);
+        assert_eq!(mode, AffectedMode::CallGraph);
+        assert_eq!(
+            names,
+            vec!["TestUnrelated".to_string()],
+            "only the test that calls Unrelated is affected; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn changing_intermediate_marks_only_transitive_caller() {
+        // Changing MidCu (the middle hop) affects the test that goes through it,
+        // but not the test that calls Helper directly nor the unrelated one.
+        let ws = build_ws();
+        let (mode, names) = affected_names(&ws, &["/ws/midcu.al"]);
+        assert_eq!(mode, AffectedMode::CallGraph);
+        assert_eq!(
+            names,
+            vec!["TestTransitive".to_string()],
+            "only TestTransitive reaches MidCu; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn changing_the_test_file_itself_marks_all_its_tests() {
+        // Superset guarantee: the old file-based behaviour (a changed test file
+        // marks all its tests) is preserved — each test proc is its own seed.
+        let ws = build_ws();
+        let (mode, names) = affected_names(&ws, &["/ws/tests.al"]);
+        assert_eq!(mode, AffectedMode::CallGraph);
+        assert_eq!(
+            names,
+            vec![
+                "TestDirect".to_string(),
+                "TestTransitive".to_string(),
+                "TestUnrelated".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn unindexed_changed_path_falls_back_to_file_based() {
+        // A changed path that isn't an indexed AL object can't be mapped to a
+        // graph node, so detection honestly reports the file-based fallback.
+        let ws = build_ws();
+        let (mode, names) = affected_names(&ws, &["/ws/does-not-exist.al"]);
+        assert_eq!(mode, AffectedMode::FileBased, "must report the fallback mode");
+        assert!(names.is_empty(), "no test file changed; got {names:?}");
+    }
+
+    #[test]
+    fn empty_changed_set_is_empty() {
+        let ws = build_ws();
+        let result = affected_tests_detailed(&ws, &[]);
+        assert!(result.tests.is_empty());
     }
 }
