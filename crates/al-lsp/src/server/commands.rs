@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use tower_lsp::lsp_types::{
-    Diagnostic, DiagnosticSeverity, FormattingOptions, MessageType, NumberOrString, Position,
-    Range, Url, WorkspaceEdit,
+    Diagnostic, DiagnosticSeverity, FormattingOptions, Location, MessageType, NumberOrString,
+    Position, Range, Url, WorkspaceEdit,
 };
 
 use super::lsp::AlServer;
@@ -365,6 +365,204 @@ pub(super) async fn apply_recommended_settings(server: &AlServer) {
                 .await;
         }
     }
+}
+
+/// `al.findReferences` — resolve the references for the symbol the CodeLens
+/// sits on and return them as LSP `Location[]` (gap A8).
+///
+/// The lens passes `{ "uri", "position" }`; we run the same workspace-wide
+/// reference search as `textDocument/references`. Always returns a JSON array
+/// (empty when nothing is found) so the client can present the results — and so
+/// the click is never the silent no-op the catch-all dispatch arm produced.
+pub(super) fn find_references(
+    server: &AlServer,
+    arguments: &[serde_json::Value],
+) -> serde_json::Value {
+    let arg = arguments.first();
+    // SILENT: malformed arguments from the client are not user-affecting; an
+    // empty result is the correct "nothing to show" response.
+    let uri = arg
+        .and_then(|v| v.get("uri"))
+        .and_then(|v| serde_json::from_value::<Url>(v.clone()).ok());
+    let position = arg
+        .and_then(|v| v.get("position"))
+        .and_then(|v| serde_json::from_value::<Position>(v.clone()).ok());
+    let (Some(uri), Some(position)) = (uri, position) else {
+        return serde_json::json!([]);
+    };
+    let locations =
+        crate::queries::references::references(&server.workspace, &uri, position.into(), false);
+    let lsp_locations: Vec<Location> = locations.into_iter().map(Into::into).collect();
+    serde_json::to_value(lsp_locations).unwrap_or_else(|_| serde_json::json!([]))
+}
+
+/// `al.showProfiler` — return the active `.alcpuprofile` session's hotspots so
+/// the client can surface them (gap A8). When no profile is loaded the result
+/// is `{ "active": false, "hints": [] }` rather than a silent no-op. The
+/// profiler lens is only emitted while a session is active, so the inactive
+/// branch is defensive.
+pub(super) fn show_profiler(
+    server: &AlServer,
+    _arguments: &[serde_json::Value],
+) -> serde_json::Value {
+    let guard = server
+        .workspace
+        .profiler_session
+        .read()
+        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from RwLock poison
+    match guard.as_ref() {
+        Some(session) if session.is_active() => serde_json::json!({
+            "active": true,
+            "profilePath": session.profile_path,
+            "hints": session.hints,
+        }),
+        _ => serde_json::json!({ "active": false, "hints": [] }),
+    }
+}
+
+/// `al.runTest` — run the `[Test]` procedure the lens targets against the
+/// configured BC server (gap A8).
+///
+/// The lens passes a [`crate::queries::code_lens::TestTarget`] (codeunit id +
+/// method). Running BC tests requires a launch configuration (`.zed/debug.json`
+/// or `.vscode/launch.json`); when one is present we kick off the run in the
+/// background (mirroring the daemon's `tests.run` flow) and report pass/fail via
+/// a client message, persisting the result so the lens refreshes. When no server
+/// is configured we tell the user how to set one up instead of doing nothing.
+///
+/// Returns a small status object so callers/automation can observe the routing:
+/// `{ "status": "started" | "noServer" | "invalidArgs", "target"?: {..} }`.
+pub(super) async fn run_test(
+    server: &AlServer,
+    arguments: &[serde_json::Value],
+) -> serde_json::Value {
+    use crate::queries::code_lens::TestTarget;
+
+    let Some(target) = arguments
+        .first()
+        .and_then(|v| serde_json::from_value::<TestTarget>(v.clone()).ok())
+    else {
+        server
+            .client
+            .show_message(MessageType::WARNING, "Run test: no test target supplied")
+            .await;
+        return serde_json::json!({ "status": "invalidArgs" });
+    };
+
+    let project_root = server
+        .workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|p| p.root.clone());
+    let config = project_root
+        .as_deref()
+        .and_then(crate::launch::find_launch_config)
+        .and_then(|df| df.configs.into_iter().next());
+
+    let Some(config) = config else {
+        server
+            .client
+            .show_message(
+                MessageType::WARNING,
+                format!(
+                    "Cannot run test '{}' (codeunit {}): no BC server configured in \
+                     .zed/debug.json or .vscode/launch.json.",
+                    target.method_name, target.codeunit_id
+                ),
+            )
+            .await;
+        return serde_json::json!({ "status": "noServer", "target": target });
+    };
+
+    server
+        .client
+        .show_message(
+            MessageType::INFO,
+            format!(
+                "Running test '{}' (codeunit {})…",
+                target.method_name, target.codeunit_id
+            ),
+        )
+        .await;
+
+    // Run off the request path: the BC round-trip can take several seconds.
+    let workspace = Arc::clone(&server.workspace);
+    let client = server.client.clone();
+    let target_for_task = target.clone();
+    tokio::spawn(async move {
+        run_test_background(workspace, client, config, target_for_task).await;
+    });
+
+    serde_json::json!({ "status": "started", "target": target })
+}
+
+/// Background worker for [`run_test`]: executes the codeunit/method against the
+/// BC dev test API, reports the outcome, and persists per-method records so the
+/// CodeLens status updates on the next refresh.
+async fn run_test_background(
+    workspace: Arc<crate::workspace::Workspace>,
+    client: tower_lsp::Client,
+    config: crate::launch::BcServerConfig,
+    target: crate::queries::code_lens::TestTarget,
+) {
+    let codeunit_name = format!("Codeunit {}", target.codeunit_id);
+    let runner = crate::test_runner::TestRunnerClient::new(&config);
+    let result = runner
+        .run_codeunit(
+            target.codeunit_id,
+            &codeunit_name,
+            Some(&target.method_name),
+        )
+        .await;
+
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => {
+            client
+                .show_message(
+                    MessageType::ERROR,
+                    format!("Test '{}' failed to run: {e}", target.method_name),
+                )
+                .await;
+            return;
+        }
+    };
+
+    // Persist so CodeLens / tests.last_results / the TUI agree, but only if a
+    // results store is already initialised — we don't create one here.
+    if let Some(store) = workspace.test_results.read().ok().and_then(|g| g.clone()) {
+        for m in &result.methods {
+            let rec = crate::test_engine::persistence::TestRunRecord {
+                timestamp: crate::test_engine::persistence::now_secs(),
+                codeunit_id: result.id,
+                codeunit_name: result.name.clone(),
+                method_name: m.name.clone(),
+                status: m.status.clone(),
+                duration_ms: m.duration_ms,
+                error: m.error.clone(),
+            };
+            if let Err(e) = store.append(rec).await {
+                tracing::warn!(error = %e, "failed to persist test result");
+            }
+        }
+    }
+
+    let level = if result.failed > 0 {
+        MessageType::ERROR
+    } else {
+        MessageType::INFO
+    };
+    client
+        .show_message(
+            level,
+            format!(
+                "Test run complete: {} passed, {} failed, {} skipped",
+                result.passed, result.failed, result.skipped
+            ),
+        )
+        .await;
 }
 
 #[cfg(test)]

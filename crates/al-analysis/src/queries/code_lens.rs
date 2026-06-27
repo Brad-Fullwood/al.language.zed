@@ -17,6 +17,27 @@ pub enum CodeLensKind {
     Test(TestLensStatus),
 }
 
+impl CodeLensKind {
+    /// The `workspace/executeCommand` command id a client invokes when this
+    /// lens is clicked.
+    ///
+    /// Single source of truth shared with the LSP server's command dispatch
+    /// (`al-lsp` `server::lsp::SUPPORTED_COMMANDS`) so a lens can never emit an
+    /// id the server doesn't handle — the dead-action bug tracked as gap A8.
+    #[must_use]
+    pub fn command_id(&self) -> &'static str {
+        match self {
+            CodeLensKind::Reference(_) => "al.findReferences",
+            CodeLensKind::Profiler(_) => "al.showProfiler",
+            CodeLensKind::Test(_) => "al.runTest",
+        }
+    }
+}
+
+/// Every command id any `CodeLensKind` can emit. The LSP server asserts each is
+/// backed by an `executeCommand` handler so no clickable lens is a no-op (A8).
+pub const LENS_COMMAND_IDS: &[&str] = &["al.findReferences", "al.showProfiler", "al.runTest"];
+
 /// Status of a single `[Test]` procedure as shown in a CodeLens.
 ///
 /// Wire format is frozen — do not reorder or rename variants without
@@ -452,6 +473,52 @@ mod tests {
         let ws = Workspace::new();
         ws.documents.open(uri.clone(), content.to_string());
         ws
+    }
+
+    #[test]
+    fn command_id_maps_each_kind_to_a_listed_lens_command() {
+        // Every kind's command id must be in LENS_COMMAND_IDS — this is the set
+        // the LSP server asserts it handles, so a drift here is a dead lens (A8).
+        let kinds = [
+            CodeLensKind::Reference(3),
+            CodeLensKind::Profiler("⏱ 1ms · 1 call".to_string()),
+            CodeLensKind::Test(TestLensStatus::NotRun),
+        ];
+        for kind in &kinds {
+            assert!(
+                LENS_COMMAND_IDS.contains(&kind.command_id()),
+                "command id {:?} for {:?} is not in LENS_COMMAND_IDS",
+                kind.command_id(),
+                kind
+            );
+        }
+        // Exact wire ids — these are part of the client contract.
+        assert_eq!(CodeLensKind::Reference(0).command_id(), "al.findReferences");
+        assert_eq!(
+            CodeLensKind::Profiler(String::new()).command_id(),
+            "al.showProfiler"
+        );
+        assert_eq!(
+            CodeLensKind::Test(TestLensStatus::NotRun).command_id(),
+            "al.runTest"
+        );
+    }
+
+    #[test]
+    fn lens_command_ids_are_unique_and_complete() {
+        let mut sorted = LENS_COMMAND_IDS.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            LENS_COMMAND_IDS.len(),
+            "LENS_COMMAND_IDS contains duplicates"
+        );
+        assert_eq!(
+            LENS_COMMAND_IDS.len(),
+            3,
+            "expected exactly 3 lens commands"
+        );
     }
 
     #[test]
