@@ -170,3 +170,58 @@ Native lint (A1) stays out — it is test-enforced removed. Closed the rest.
 
 A-section status: A2–A13 now closed or deliberate (A1). Gallery re-run includes
 a diagnostics stage (ErrorCases.al).
+
+---
+
+## B-series + real ALTool/alc (this session)
+
+The dev box has Microsoft's AL extension installed under Cursor
+(`~/.cursor/extensions/ms-dynamics-smb.al-17.0.2273547/bin/linux`) — real Linux
+`alc`/`altool` + the CodeAnalysis DLLs (run via `dotnet alc.dll`). Pointing
+`AL_TOOL_PATH` at that dir lights up the previously ALTool-gated work.
+
+### Semantic bridge proven + CLI wiring fixed (was "requires ALTool")
+- `--features semantic` builds the in-process .NET CodeAnalysis bridge; verified
+  it loads the real DLLs (**899 error codes, 250 builtins, ping OK**).
+- Fixed a real wiring bug: the `errorCodes`/`builtinTypes` daemon RPCs only read
+  a cache that *diagnostics* populated, so `al-explorer error-codes`/`builtins`
+  always said "requires ALTool" even with a toolchain. Now they lazily init the
+  bridge (`ensure_error_codes_loaded`/`ensure_builtins_loaded` in al-workspace).
+  CLI now returns 897 codes / 250 types. Env-gated harness test `semantic_bridge.rs`.
+
+### B3 — emitter fidelity differential-tested vs alc (was 🟠 → 🟡)
+- Discovered the native `.app` emitter is **byte-identical to alc 17.0** for a
+  10-object-kind self-contained corpus: `SymbolReference.json` semantically
+  identical (incl. FNV method-id hashes), `DocComments.xml`/entitlement/xliff
+  identical, `NavxManifest.xml` identical except the `<Build>` provenance line.
+- Fixed the one real divergence (native emitted `Platform=""`/`Application=""`;
+  alc omits empty attrs). Committed live, env-gated `tests/emit_differential.rs`.
+
+### B1 — native-compile validation gate (was 🟠 → 🟡) + alc bug fix
+- `al-explorer pack-native --validate` runs alc (in a throwaway copy) and refuses
+  to emit a `.app` with compile errors (fails closed without a toolchain). Proven:
+  an undeclared-variable program that *parses* is rejected (AL0118), no `.app`.
+- Found+fixed a latent bug: `compile_project_with_analyzers` passed `/out:<dir>`
+  but alc needs a file path → every real-alc compile failed `AL1012`. Never
+  caught because CI has no ALTool.
+
+### Parallel worktree agents (offline B-items) — all merged, full suite green
+- **B4** interpreter slice (compound assign, multi-var decls, enum scope, date/
+  time literals, builtins) — al-runtime 343→363, 8 ignored repros un-ignored.
+- **B12** generators reachable (`generate test --subject` was unreachable).
+- **B13** permission audit: object-level over-broad/unused grant detection.
+- **B15** arch-lint: 4 always-on BC layering rules (regex deferred — no dep).
+- **B14** profiler: real `timeDeltas` aggregation (was hit-count proxy).
+- **B11** LSP `workspace/diagnostic` (syntax across all files + semantic on open).
+- **B7** call-graph affected-test routing · **B5/B6** interpreter dispatch+records
+  — (in flight at time of writing).
+- Verification: full workspace builds clean; **al-analysis 678, al-lsp 408,
+  al-runtime 363, al-workspace 49, al-bc 93** + the native harness (cli_smoke 12,
+  integration_full 95, e2e 17, real_world 32, zed_fidelity 25, …) all pass.
+
+### C10 — live CDX tenant (pending one user auth step)
+- Auth path mapped: `al authenticate --tenant <id>` (browser auth-code+PKCE,
+  device-code fallback); `download-symbols --source server`; publish via DAP
+  `/dev/apps`. Demo project + `.vscode/launch.json` for the CDX Sandbox staged.
+  Blocked only on the user completing the browser login (their CDX tenant is
+  currently "not authenticated").
