@@ -45,6 +45,60 @@ pub fn set_builtins(workspace: &Workspace, builtins: Vec<BuiltinType>, version: 
     *cache_guard = cache;
 }
 
+/// Ensure the workspace's error-code catalog is populated from the semantic
+/// bridge (lazily initializing the bridge if a toolchain is present).
+///
+/// Idempotent and cheap on the hot path: returns immediately if the catalog is
+/// already loaded. Used by both the LSP server and the daemon dispatchers
+/// (`errorCodes` RPC) so the CLI surface reflects the bridge when ALTool is
+/// available instead of always reporting an empty list. Errors are logged, not
+/// surfaced — there is no LSP client on the daemon path.
+pub async fn ensure_error_codes_loaded(workspace: &Workspace) {
+    if !workspace.error_codes.is_empty() {
+        return;
+    }
+    if let Some(guard) = get_or_init_bridge(workspace).await {
+        if let Some(bridge) = guard.as_ref() {
+            match bridge.error_codes().await {
+                Ok(codes) => {
+                    tracing::info!(count = codes.len(), "Loaded error codes via bridge");
+                    for ec in codes {
+                        workspace.error_codes.insert(ec.code.clone(), ec.message.clone());
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "Failed to load error codes via bridge"),
+            }
+        }
+    }
+}
+
+/// Ensure the workspace's built-in type catalog is populated from the semantic
+/// bridge (lazily initializing the bridge if a toolchain is present).
+///
+/// Idempotent; see [`ensure_error_codes_loaded`]. Backs the `builtinTypes` RPC.
+pub async fn ensure_builtins_loaded(workspace: &Workspace) {
+    if !workspace
+        .builtins
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_empty()
+    {
+        return;
+    }
+    if let Some(guard) = get_or_init_bridge(workspace).await {
+        if let Some(bridge) = guard.as_ref() {
+            match bridge.builtin_types().await {
+                Ok(types) => {
+                    tracing::info!(count = types.len(), "Loaded built-in types via bridge");
+                    let version = bridge.version().to_string();
+                    set_builtins(workspace, types, &version);
+                }
+                Err(error) => tracing::warn!(%error, "Failed to load built-in types via bridge"),
+            }
+        }
+    }
+}
+
 pub const MAX_RESTARTS: u32 = 3;
 
 /// Shared CLR init logic: spawn_blocking SemanticBridge::new, re-acquire the write

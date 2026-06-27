@@ -14,7 +14,10 @@ mod doctor;
 mod semantic_lifecycle;
 mod test_results;
 pub use doctor::{doctor, DoctorReport, ProjectInfo, ToolchainInfo};
-pub use semantic_lifecycle::{get_or_init_bridge, restart_bridge, set_builtins, shutdown_bridge};
+pub use semantic_lifecycle::{
+    ensure_builtins_loaded, ensure_error_codes_loaded, get_or_init_bridge, restart_bridge,
+    set_builtins, shutdown_bridge,
+};
 pub use test_results::TestResultStore;
 
 use al_project::project::AlProject;

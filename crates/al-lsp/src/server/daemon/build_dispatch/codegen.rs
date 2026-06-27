@@ -158,7 +158,15 @@ pub(in crate::server::daemon) fn dispatch_new_project(
         },
     }
 }
-pub(in crate::server::daemon) fn dispatch_error_codes(workspace: &Workspace, id: u64) -> Response {
+pub(in crate::server::daemon) async fn dispatch_error_codes(
+    workspace: &Workspace,
+    id: u64,
+) -> Response {
+    // Lazily load the catalog from the semantic bridge when a toolchain is
+    // present, so the CLI/`errorCodes` RPC reflects ALTool instead of always
+    // reporting an empty list (the dedicated RPC previously never triggered
+    // bridge init — only diagnostics did).
+    crate::semantic::ensure_error_codes_loaded(workspace).await;
     let value: Vec<serde_json::Value> = workspace
         .error_codes
         .iter()
@@ -176,10 +184,11 @@ pub(in crate::server::daemon) fn dispatch_error_codes(workspace: &Workspace, id:
         ..Default::default()
     }
 }
-pub(in crate::server::daemon) fn dispatch_builtin_types(
+pub(in crate::server::daemon) async fn dispatch_builtin_types(
     workspace: &Workspace,
     id: u64,
 ) -> Response {
+    crate::semantic::ensure_builtins_loaded(workspace).await;
     let builtins = match workspace.builtins.read() {
         Ok(guard) => guard,
         Err(_) => {
