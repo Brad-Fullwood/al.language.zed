@@ -1,11 +1,21 @@
 [package]
 name = "al-test-harness"
 version = "0.2.2"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [dependencies]
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+# `gen-zed-index` bin: parse the extension's TOML manifest to emit Zed's
+# extensions/index.json on the host (replaces the container's gen_index.py).
+toml = "0.8"
+
+[dev-dependencies]
+# TUI smoke test: drive al-explorer in a PTY and render the screen with a
+# vt100 parser (the Rust replacement for the former tui.py).
+portable-pty = "0.8"
+vt100 = "0.15"

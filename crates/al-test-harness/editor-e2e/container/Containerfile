@@ -1,0 +1,67 @@
+# Headless "two editors in a box" for end-to-end testing the AL Zed extension
+# and comparing it side-by-side against VS Code + Microsoft's official AL
+# extension — all inside an isolated container that never touches the host
+# Wayland session. A wlroots kiosk compositor (cage) runs on a headless backend;
+# Zed renders via Mesa software Vulkan (lavapipe), VS Code/Electron via its
+# bundled SwiftShader. grim captures the output; ImageMagick stitches the
+# comparison.
+FROM docker.io/library/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      `# wlroots compositor + screenshot + input (wayland: wtype, xwayland: xdotool) + compositing` \
+      cage grim wlr-randr wtype xdotool imagemagick \
+      `# mesa software vulkan/GL (Zed)` \
+      libvulkan1 mesa-vulkan-drivers vulkan-tools \
+      libgl1-mesa-dri libegl1 libgles2 libglx-mesa0 libglvnd0 \
+      `# wayland / xcb` \
+      libwayland-client0 libwayland-cursor0 libwayland-egl1 libxkbcommon0 \
+      libxcb1 libxcb-shm0 libxcb-render0 libxcb-randr0 \
+      `# zed runtime` \
+      libasound2t64 libssl3 zlib1g libsqlite3-0 \
+      `# vscode / electron runtime` \
+      libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libgbm1 \
+      libgtk-3-0t64 libpango-1.0-0 libcairo2 libxcomposite1 libxdamage1 \
+      libxfixes3 libxrandr2 libxshmfence1 libdrm2 libxkbfile1 libsecret-1-0 \
+      libglib2.0-0t64 libdbus-1-3 libexpat1 \
+      `# fonts + tooling` \
+      fontconfig fonts-dejavu-core ca-certificates curl xz-utils tar gzip jq procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Zed (official stable Linux tarball).
+RUN curl -fsSL https://zed.dev/api/releases/stable/latest/zed-linux-x86_64.tar.gz -o /tmp/zed.tgz \
+    && mkdir -p /opt/zed && tar -xzf /tmp/zed.tgz -C /opt/zed --strip-components=1 && rm /tmp/zed.tgz \
+    && ( ln -sf /opt/zed/libexec/zed-editor /usr/local/bin/zed-editor 2>/dev/null || true ) \
+    && ( ln -sf /opt/zed/bin/zed /usr/local/bin/zed 2>/dev/null || true )
+
+# VS Code (Microsoft official build — needed for marketplace access to the AL
+# extension) + Microsoft's AL extension into a baked, read-only extensions dir.
+RUN curl -fsSL "https://update.code.visualstudio.com/latest/linux-x64/stable" -o /tmp/vscode.tgz \
+    && mkdir -p /opt/vscode && tar -xzf /tmp/vscode.tgz -C /opt/vscode --strip-components=1 && rm /tmp/vscode.tgz \
+    && ln -sf /opt/vscode/bin/code /usr/local/bin/code
+RUN ( /opt/vscode/bin/code --no-sandbox --user-data-dir=/opt/vsdata-build \
+        --extensions-dir=/opt/vscode-exts --install-extension ms-dynamics-smb.al \
+      && rm -rf /opt/vsdata-build ) \
+    || echo "WARN: AL extension install failed at build time; VS Code will still render (plain text)."
+
+# Bake the in-container driver scripts (no Python — index.json is generated on
+# the host by the gen-zed-index Rust bin and mounted in).
+COPY run-zed.sh run-vscode.sh compare.sh /opt/al/
+RUN chmod +x /opt/al/run-zed.sh /opt/al/run-vscode.sh /opt/al/compare.sh
+
+# Run as the pre-existing uid-1000 `ubuntu` user (writable HOME). Zed, VS Code
+# and wlroots all dislike running as root. Rootless podman maps uid 1000 to the
+# invoking host user, so files written to mounts stay owned by you.
+ENV HOME=/home/ubuntu
+WORKDIR /home/ubuntu
+USER ubuntu
+
+# Software-rendering defaults (overridable at run time). lavapipe = CPU Vulkan;
+# the ICD file on Ubuntu 24.04 is lvp_icd.json (no arch suffix).
+ENV WLR_BACKENDS=headless \
+    WLR_LIBINPUT_NO_DEVICES=1 \
+    WLR_RENDERER=pixman \
+    LIBGL_ALWAYS_SOFTWARE=1 \
+    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
+    XDG_RUNTIME_DIR=/tmp/xdg \
+    ZED_ALLOW_EMULATED_GPU=1

@@ -98,6 +98,36 @@ fn find_binary() -> PathBuf {
     PathBuf::from("al-lsp")
 }
 
+/// Locate a built workspace binary by name — `target/debug` then
+/// `target/release`, falling back to the bare name (PATH lookup). Used by the
+/// e2e smoke tests that spawn `al-lsp mcp` and `al-explorer` as subprocesses.
+pub fn workspace_binary(name: &str) -> PathBuf {
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    for profile in ["debug", "release"] {
+        let candidate = workspace_root.join(format!("target/{profile}/{name}"));
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from(name)
+}
+
+/// Path to the built `al-lsp` binary (honors the `AL_LSP_BIN` override used by
+/// coverage runs).
+pub fn al_lsp_binary() -> PathBuf {
+    find_binary()
+}
+
+/// Path to the built `al-explorer` CLI/TUI binary.
+pub fn al_explorer_binary() -> PathBuf {
+    workspace_binary("al-explorer")
+}
+
 /// Stdio mode owns a child process. (Previously also tracked a Daemon
 /// variant for Unix-socket transport — removed alongside `connect()` because
 /// al-lsp's daemon mode speaks a different protocol; see crate docs.)

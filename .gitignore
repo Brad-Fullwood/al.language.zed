@@ -12,8 +12,10 @@ crates/*/dotnet/**/bin/
 crates/*/bridge/obj/
 crates/*/bridge/bin/
 
-# Claude Code automation state (local)
-.claude/
+# Claude Code automation state (local) — but track shared skills
+.claude/*
+!.claude/skills/
+!.claude/skills/**
 .agentic/
 .mcp.json
 
