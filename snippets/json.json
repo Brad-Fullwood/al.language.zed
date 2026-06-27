@@ -19,8 +19,7 @@
             "\t\"longRunningSqlStatementsThreshold\": 500,",
             "\t\"numberOfSqlStatements\": 10,",
             "\t\"tenant\": \"default\",",
-            "\t\"usePublicURLFromServer\": true,",
-            "\t\"useMcpServerForDebugging\": true",
+            "\t\"usePublicURLFromServer\": true",
             "}"
         ],
         "description": "Publish the package to your own server"
@@ -41,8 +40,7 @@
             "\t\"enableSqlInformationDebugger\": true,",
             "\t\"enableLongRunningSqlStatements\": true,",
             "\t\"longRunningSqlStatementsThreshold\": 500,",
-            "\t\"numberOfSqlStatements\": 10,",
-            "\t\"useMcpServerForDebugging\": true",
+            "\t\"numberOfSqlStatements\": 10",
             "}"
         ],
         "description": "Publish the package to the Microsoft cloud sandbox"
@@ -65,8 +63,7 @@
             "\t\"longRunningSqlStatementsThreshold\": 500,",
             "\t\"numberOfSqlStatements\": 10,",
             "\t\"breakOnNext\": \"WebServiceClient\",",
-            "\t\"tenant\": \"default\",",
-            "\t\"useMcpServerForDebugging\": true",
+            "\t\"tenant\": \"default\"",
             "}"
         ],
         "description": "Attach to the client on your server"
@@ -86,8 +83,7 @@
             "\t\"enableLongRunningSqlStatements\": true,",
             "\t\"longRunningSqlStatementsThreshold\": 500,",
             "\t\"numberOfSqlStatements\": 10,",
-            "\t\"breakOnNext\": \"WebServiceClient\",",
-            "\t\"useMcpServerForDebugging\": true",
+            "\t\"breakOnNext\": \"WebServiceClient\"",
             "}"
         ],
         "description": "Attach to the client on the cloud sandbox"
@@ -107,9 +103,7 @@
             "\t\"enableLongRunningSqlStatements\": true,",
             "\t\"longRunningSqlStatementsThreshold\": 500,",
             "\t\"numberOfSqlStatements\": 10,",
-            "\t\"breakOnNext\": \"Agent\",",
-            "\t\"userId\": \"${1:<Agent User Security ID>}\",",
-            "\t\"useMcpServerForDebugging\": true",
+            "\t\"breakOnNext\": \"Agent\"",
             "}"
         ],
         "description": "Attach to an agent session on the cloud sandbox"
@@ -132,9 +126,7 @@
             "\t\"longRunningSqlStatementsThreshold\": 500,",
             "\t\"numberOfSqlStatements\": 10,",
             "\t\"breakOnNext\": \"Agent\",",
-            "\t\"tenant\": \"default\",",
-            "\t\"userId\": \"${5:<Agent User Security ID>}\",",
-            "\t\"useMcpServerForDebugging\": true",
+            "\t\"tenant\": \"default\"",
             "}"
         ],
         "description": "Attach to an agent session on your server"
