@@ -235,9 +235,45 @@ be auto-merged — required a careful hand-merge. For future overlapping work,
 integrate sequentially or reconcile against the real `dev` HEAD.
 
 ### B-series status
-**Done/advanced:** B1 B3 B4 B5 B6 B7 B11 B12 B13 B14 B15 + the semantic-bridge
-CLI fix. **Deliberately deferred (architectural):** B2 (shared build-service
-unification), B16 (Windows IPC transport). C10 (live publish) awaits user OAuth.
+**Done/advanced:** B1 B3 B4 B5 B6 B7 B11 B12 B13 B14 B15 B16 + the semantic-bridge
+CLI fix. **Deferred (architectural):** B2 (shared build-service unification).
+
+---
+
+## C-series sweep (parallel worktree agents)
+
+After a usage-limit interruption (agents re-run post-reset), closed most of the
+C-series + the live publish:
+- **C10 ✅ PROVEN** — pure-Rust `.app` published to the live CDX BC sandbox (see above).
+- **C11** custom `dotnet` path (`AL_DOTNET_PATH`). **C12** user-defined project
+  templates. **C13** XLIFF translation-memory (+ wired into `xlf.suggest`).
+  **C1+C2** broadened MCP tools (`al_suggestevent`/`al_testclassify`/
+  `al_testcoverage`/`al_depgraph`) + schema tests. **C4+C5** Zed task defs +
+  `extension_smoke` harness tests. **C6** 11 Criterion perf benches + memory proxy
+  + `Docs/benchmarks.md`. **C7** `appLocalFolderPaths` doc + package-symbol
+  body-limitation note. **C9** dynamic statement/branch coverage from the
+  interpreter (opt-in via `DispatchCtx`). **C14** `Docs/architecture.md` (Mermaid,
+  edges from real Cargo deps) + `Docs/testing-guide.md` + `make release-dryrun`.
+  **C15** indirect-dispatch (`EdgeKind::IndirectCall`: interface/`Codeunit.Run`/
+  events) wired into coverage. **B14-followup** al-explorer profiler unified on
+  timeDeltas. **B16** Windows graceful gating + platform-support docs.
+- Lesson held: additive-in-new-regions branches auto-merge cleanly even from the
+  stale `c189e20` worktree base (C9/C15 auto-merged); only same-function rewrites
+  conflict. Two agents stalled mid-build (committed nothing) and were salvaged by
+  committing their worktree, and the `--source server` arg fell back to nuget (bug
+  to fix). 
+
+### Final verification
+Full workspace `cargo test --workspace --exclude zed-al` → **76 suites, 3388
+passed, 0 failed**; clean build. Worktrees/branches cleaned.
+
+### Remaining audit backlog (honest — nearly exhausted)
+B2 (build-service unification, architectural/conflict-prone), C3 (MCP
+agent-diagnostics), C8 (native semantic diagnostics — a major multi-session
+effort that also touches the deliberate A1 "bridge owns diagnostics" decision),
+plus small refinements (FlowField/CalcFormula eval, `total_time_ms` call-tree
+roll-up, RIMDX-level over-grant, the `--source server` arg-fallback bug,
+dynamic-coverage over the daemon RPC + Cobertura).
 
 ### C10 — live CDX tenant ✅ PROVEN
 - User authenticated the CDX Sandbox tenant (browser auth-code+PKCE; token cached).
