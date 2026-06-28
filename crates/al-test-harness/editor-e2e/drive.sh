@@ -21,6 +21,7 @@ OPEN_FILE="src/HelloWorld.al"
 OUT=""
 BUILD_IMAGE=0
 KEYS=""
+PROJ=""   # repo-relative project subdir to open (default: the bundled fixture in run-zed.sh)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,6 +31,7 @@ while [[ $# -gt 0 ]]; do
     --out)         OUT="$2"; shift 2 ;;
     --build-image) BUILD_IMAGE=1; shift ;;
     --keys)        KEYS="$2"; shift 2 ;;
+    --proj)        PROJ="$2"; shift 2 ;;
     *) echo "unknown arg: $1"; exit 2 ;;
   esac
 done
@@ -80,7 +82,7 @@ fi
 echo "=== running headless $MODE (isolated container; your desktop is untouched) ==="
 podman run --rm --userns=keep-id \
   -v "$ROOT":/repo:ro -v "$OUTDIR":/out:rw \
-  -e OPEN_FILE="$OPEN_FILE" -e OUTD=/out "${INDEX_ENV[@]}" ${KEYS:+-e KEYS="$KEYS"} \
+  -e OPEN_FILE="$OPEN_FILE" -e OUTD=/out "${INDEX_ENV[@]}" ${KEYS:+-e KEYS="$KEYS"} ${PROJ:+-e PROJ_SUBDIR="$PROJ"} \
   "$IMG" "$SCRIPT" 2>&1 | tee "$LOG"
 
 # 3. Collect screenshot(s).

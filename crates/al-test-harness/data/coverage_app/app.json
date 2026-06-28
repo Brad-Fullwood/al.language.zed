@@ -1,0 +1,17 @@
+{
+    "id": "7b5cddfd-3114-4cdf-b7cd-f6609dc52841",
+    "name": "AL Coverage App",
+    "publisher": "AL Zed Coverage",
+    "version": "1.0.0.0",
+    "application": "26.5.0.0",
+    "platform": "26.0.0.0",
+    "runtime": "14.0",
+    "target": "Cloud",
+    "idRanges": [
+        {
+            "from": 50300,
+            "to": 50499
+        }
+    ],
+    "dependencies": []
+}
