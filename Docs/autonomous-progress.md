@@ -239,9 +239,17 @@ integrate sequentially or reconcile against the real `dev` HEAD.
 CLI fix. **Deliberately deferred (architectural):** B2 (shared build-service
 unification), B16 (Windows IPC transport). C10 (live publish) awaits user OAuth.
 
-### C10 — live CDX tenant (pending one user auth step)
-- Auth path mapped: `al authenticate --tenant <id>` (browser auth-code+PKCE,
-  device-code fallback); `download-symbols --source server`; publish via DAP
-  `/dev/apps`. Demo project + `.vscode/launch.json` for the CDX Sandbox staged.
-  Blocked only on the user completing the browser login (their CDX tenant is
-  currently "not authenticated").
+### C10 — live CDX tenant ✅ PROVEN
+- User authenticated the CDX Sandbox tenant (browser auth-code+PKCE; token cached).
+- Published a **pure-Rust `pack-native` `.app`** (zero Microsoft `alc`) to the live
+  cloud sandbox via POST `…/v2.0/<tenant>/Sandbox/dev/apps?SchemaUpdateMode=Synchronize`:
+  - **HTTP 200** on first publish.
+  - Re-POST → **422 "duplicate package ID … already exists in a published
+    extension"** (name 'Zed Native Emit Demo', publisher 'AL Zed', v1.0.0.0) —
+    confirms BC installed it.
+  - Corrupt-`.app` control → **422 "not an extension file"** — confirms BC validates.
+- Conclusion: **Business Central accepts the native emitter's output end-to-end** —
+  the strongest validation of the emit pipeline, beyond the alc differential (B3).
+- Note: `download-symbols --source server` returned 0 (demo has no declared deps;
+  it also fell back to `nuget` despite `--source server` — a real CLI arg bug to fix).
+  Remaining C10: base-app-dependent objects (needs symbol-download config) + more fixtures.
