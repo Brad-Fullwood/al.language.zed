@@ -236,6 +236,9 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
                 "status": "no dependencies",
                 "downloaded": 0,
                 "failed": 0,
+                // Echo the requested source so the CLI doesn't mis-report the
+                // default ("nuget") when there was simply nothing to download.
+                "source": source,
                 "results": [],
             })),
             error: None,
