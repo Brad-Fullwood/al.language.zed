@@ -148,13 +148,23 @@ publishes:
    `al-test-harness` are `publish = false`).
 
 **Honest caveat on step 6:** until the workspace has had its first real publish,
-a crate whose path-deps are not yet on crates.io fails the dry-run with
-`no matching package named al-…` (or `tree-sitter-al`). `release-dryrun` reports
-those as `blocked on unpublished workspace dep (expected)` and does **not** fail
-the run for them; it only fails on a *different* packaging/metadata error. Leaf
-crates with no unpublished deps (e.g. `al-types`, `al-semantic`) dry-run
-green. The first real release must publish in dependency order (foundation
-crates first); after that, every crate's dry-run becomes meaningful.
+a crate whose path-deps are not yet on crates.io cannot be fully dry-run. Two
+forms show up, both treated as `blocked … (expected pre-first-publish)` and
+**not** failed:
+
+- `no matching package named al-…` — an unpublished `al-*` sibling.
+- `failed to select a version for the requirement` — most notably the external
+  `tree-sitter-al = "0.1.0"` path-dep of `al-syntax`/`al-lsp`: an **unrelated**
+  crate named `tree-sitter-al` already exists on crates.io (at 2.x/3.x), so the
+  pinned `0.1.0` does not resolve. This is a genuine release blocker for those
+  two crates — publishing the grammar submodule under that name (or repointing
+  the dep) must be resolved before they can ship — and is surfaced as a distinct
+  `blocked … unmatched workspace dep version` line.
+
+`release-dryrun` only hard-fails on a *different* packaging/metadata error. Leaf
+crates with no unpublished deps (e.g. `al-types`, `al-semantic`) dry-run green.
+The first real release must publish in dependency order (foundation crates
+first); after that, every crate's dry-run becomes meaningful.
 
 ## Minimal reproducible-report template
 

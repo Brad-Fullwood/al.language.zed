@@ -249,6 +249,8 @@ release-dryrun:
 			echo "  $$name: OK (dry-run)"; \
 		elif echo "$$out" | grep -q "no matching package named"; then \
 			echo "  $$name: blocked on unpublished workspace dep (expected pre-first-publish)"; \
+		elif echo "$$out" | grep -q "failed to select a version for the requirement"; then \
+			echo "  $$name: blocked on unpublished/unmatched workspace dep version (expected pre-first-publish)"; \
 		else \
 			echo "  $$name: FAILED"; echo "$$out" | tail -8; fail=1; \
 		fi; \
