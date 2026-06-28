@@ -233,6 +233,7 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::DepsGraph { format } => lsp::cmd_deps_graph(&format, cli.json),
         Commands::Breaking => lsp::cmd_breaking_changes(cli.json),
         Commands::ArchLint => lsp::cmd_arch_lint(cli.json),
+        Commands::NativeCheck => lsp::cmd_native_check(cli.json),
         Commands::Duplicates {
             min_tokens,
             min_similarity,

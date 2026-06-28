@@ -131,6 +131,21 @@ pub(super) fn dispatch_dead_code(workspace: &Workspace, id: u64) -> Response {
     }
 }
 
+/// Native semantic workspace checks (gap C8): duplicate object ids, ids outside
+/// the declared `app.json` idRanges, and duplicate object names. Additive and
+/// entirely separate from the `diagnostics`/`lint` paths — emits `AL-NC*` codes.
+pub(super) fn dispatch_native_check(workspace: &Workspace, id: u64) -> Response {
+    let findings = crate::queries::native_check::native_semantic_checks(workspace);
+    // SILENT: serialization of valid Vec<NativeFinding> should not fail
+    let value = serde_json::to_value(&findings).unwrap_or(serde_json::Value::Null);
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+        ..Default::default()
+    }
+}
+
 pub(super) fn dispatch_impact(
     workspace: &Workspace,
     id: u64,
@@ -490,6 +505,42 @@ mod tests {
         assert!(
             value.is_array(),
             "expected a JSON array of dead-code entries"
+        );
+    }
+
+    #[test]
+    fn dispatch_native_check_returns_array_result() {
+        let ws = Workspace::new();
+        let resp = dispatch_native_check(&ws, 14);
+        assert!(resp.error.is_none());
+        let value = resp.result.expect("native_check must carry a result");
+        assert!(
+            value.is_array(),
+            "expected a JSON array of native-check findings"
+        );
+        // Empty workspace → no findings.
+        assert_eq!(value.as_array().map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn dispatch_native_check_reports_duplicate_id() {
+        use std::path::PathBuf;
+        let ws = Workspace::new();
+        // Two codeunits sharing id 50100 in the workspace file index.
+        ws.file_index.add_file(
+            PathBuf::from("/virtual/nc/Foo.al"),
+            "codeunit 50100 \"Foo\" { }".to_string(),
+        );
+        ws.file_index.add_file(
+            PathBuf::from("/virtual/nc/Bar.al"),
+            "codeunit 50100 \"Bar\" { }".to_string(),
+        );
+        let resp = dispatch_native_check(&ws, 15);
+        let value = resp.result.expect("result");
+        let text = value.to_string();
+        assert!(
+            text.contains("AL-NC001"),
+            "duplicate id must surface AL-NC001; got: {text}"
         );
     }
 

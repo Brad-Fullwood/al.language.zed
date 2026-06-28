@@ -577,6 +577,17 @@ Examples:
     /// Run architecture lint rules
     #[command(name = "arch-lint")]
     ArchLint,
+    /// Run native semantic workspace checks (no .NET bridge): duplicate object
+    /// IDs, IDs outside app.json idRanges, duplicate object names. Emits AL-NC*
+    /// codes — distinct from the Microsoft analyzers (CodeCop/AppSourceCop/etc.),
+    /// which still run via the compiler bridge.
+    #[command(
+        name = "native-check",
+        after_help = "\
+Examples:
+  al native-check
+  al native-check --json")]
+    NativeCheck,
     /// Find duplicate code blocks
     Duplicates {
         /// Minimum token count to consider a block

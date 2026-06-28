@@ -21,6 +21,7 @@ pub mod hover;
 pub mod impact;
 pub mod implementation;
 pub mod inlay_hints;
+pub mod native_check;
 pub mod obsolescence;
 pub mod profiler_hints;
 pub mod references;

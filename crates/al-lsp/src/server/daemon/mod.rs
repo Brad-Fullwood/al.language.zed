@@ -541,6 +541,7 @@ pub(crate) async fn dispatch_request(
         "graphExport" => insight_dispatch::dispatch_graph_export(workspace, id, &params),
         "insightStats" => insight_dispatch::dispatch_insight_stats(workspace, id),
         "deadCode" => insight_dispatch::dispatch_dead_code(workspace, id),
+        "nativeCheck" => insight_dispatch::dispatch_native_check(workspace, id),
         "impact" => insight_dispatch::dispatch_impact(workspace, id, &params),
         "tableImpact" => insight_dispatch::dispatch_table_impact(workspace, id, &params),
         "suggestEvent" => insight_dispatch::dispatch_suggest_event(workspace, id, &params),
