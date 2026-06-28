@@ -14,9 +14,14 @@
 //! not defined in the workspace (e.g. base-app `Customer`) cannot be modelled
 //! and produce a graceful error rather than a panic.
 //!
-//! **FlowField / `CalcFormula` evaluation is not implemented** — a FlowField is
-//! captured (so it is recognised) but reads return its buffer default and
-//! `CalcFields` is a no-op. This is the documented B6 remainder.
+//! **FlowField / `CalcFormula` evaluation** is implemented for the aggregating
+//! formula classes — `Sum`, `Average`, `Min`, `Max`, `Count`, `Exist` and
+//! `Lookup`. A field declared `FieldClass = FlowField` with a parseable
+//! `CalcFormula` is evaluated against the referenced table's in-memory store,
+//! applying the `WHERE` clause (`CONST` / `FIELD` / `FILTER`), both on
+//! `CalcFields(<field>)` and on a direct read of the field. `Linked` is not an
+//! aggregation and is not modelled (a read of such a field returns an error);
+//! a FlowField whose formula fails to parse falls back to its buffer value.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,7 +33,9 @@ use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::eval_stmt::arg_expr_nodes;
 use crate::interpreter::scope::{Eval, ScopeStack};
 use crate::interpreter::value::{ErrorInfo, RecordValue, Value};
-use crate::mock::record::{FieldNo, MockRecord};
+use crate::mock::calcformula_parser::{self, CalcFormula, FormulaType, WhereValue};
+use crate::mock::filter;
+use crate::mock::record::{FieldNo, FlowAgg, FlowFilter, MockRecord};
 
 /// A live record-table backing store: the `MockRecord` data plus the
 /// field-name→number map recovered from the workspace table definition.
@@ -37,9 +44,10 @@ pub struct RecordStore {
     pub record: MockRecord,
     /// Lowercased field name → field number, from the table's `fields` section.
     field_by_name: HashMap<String, FieldNo>,
-    /// Field numbers that are FlowFields (`FieldClass = FlowField`). Reads of
-    /// these are best-effort (buffer value); `CalcFields` is a no-op for now.
-    flowfields: std::collections::BTreeSet<FieldNo>,
+    /// FlowField field number → its parsed `CalcFormula`. Only fields with a
+    /// `FieldClass = FlowField` *and* a parseable formula appear here; reads and
+    /// `CalcFields` of these are computed from the referenced table's store.
+    flowfields: HashMap<FieldNo, CalcFormula>,
     /// Next synthetic field number for a field name that wasn't in the parsed
     /// schema (keeps get/set self-consistent for partially-known tables).
     next_synthetic: FieldNo,
@@ -65,7 +73,7 @@ struct TableMeta {
     table_id: i32,
     table_name: String,
     field_by_name: HashMap<String, FieldNo>,
-    flowfields: std::collections::BTreeSet<FieldNo>,
+    flowfields: HashMap<FieldNo, CalcFormula>,
     pk_fields: Vec<FieldNo>,
 }
 
@@ -138,15 +146,15 @@ fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Option<TableMe
     let body = obj.child_by_field_name("body")?;
 
     let mut field_by_name: HashMap<String, FieldNo> = HashMap::new();
-    let mut flowfields = std::collections::BTreeSet::new();
+    let mut flowfields: HashMap<FieldNo, CalcFormula> = HashMap::new();
     let mut pk_field_names: Vec<String> = Vec::new();
 
     if let Some(fields_body) = section_body(body, "fields", source) {
         for fdef in sections_with_keyword(fields_body, "field", source) {
-            if let Some((no, name, is_flow)) = parse_field_def(fdef, source) {
+            if let Some((no, name, calc)) = parse_field_def(fdef, source) {
                 field_by_name.insert(name.to_ascii_lowercase(), no);
-                if is_flow {
-                    flowfields.insert(no);
+                if let Some(formula) = calc {
+                    flowfields.insert(no, formula);
                 }
             }
         }
@@ -256,8 +264,10 @@ fn section_keyword(section: Node<'_>, source: &[u8]) -> Option<String> {
         .map(|t| t.trim().to_string())
 }
 
-/// Parse `field(N; Name; Type) { ... }` → (field_no, name, is_flowfield).
-fn parse_field_def(section: Node<'_>, source: &[u8]) -> Option<(FieldNo, String, bool)> {
+/// Parse `field(N; Name; Type) { ... }` → (field_no, name, flow_calc_formula).
+/// The third element is `Some(formula)` only when the field is a FlowField with
+/// a parseable `CalcFormula`.
+fn parse_field_def(section: Node<'_>, source: &[u8]) -> Option<(FieldNo, String, Option<CalcFormula>)> {
     let mut cursor = section.walk();
     let pblock = section
         .named_children(&mut cursor)
@@ -281,15 +291,18 @@ fn parse_field_def(section: Node<'_>, source: &[u8]) -> Option<(FieldNo, String,
         }
     }
 
-    let is_flow = field_is_flowfield(section, source);
-    Some((number?, name?, is_flow))
+    let calc = parse_field_calcformula(section, source);
+    Some((number?, name?, calc))
 }
 
-/// Detect `FieldClass = FlowField;` inside a field's body.
-fn field_is_flowfield(section: Node<'_>, source: &[u8]) -> bool {
-    let Some(body) = section.child_by_field_name("body") else {
-        return false;
-    };
+/// If a field's body declares `FieldClass = FlowField;` *and* a parseable
+/// `CalcFormula = …;`, return the parsed [`CalcFormula`]. Returns `None` for a
+/// non-FlowField, a FlowField without a formula, or an unparseable formula
+/// (which then falls back to a plain buffer read).
+fn parse_field_calcformula(section: Node<'_>, source: &[u8]) -> Option<CalcFormula> {
+    let body = section.child_by_field_name("body")?;
+    let mut is_flow = false;
+    let mut formula_text: Option<String> = None;
     let mut cursor = body.walk();
     for child in body.named_children(&mut cursor) {
         if child.kind() != "property_assignment" {
@@ -305,11 +318,31 @@ fn field_is_flowfield(section: Node<'_>, source: &[u8]) -> bool {
                 .and_then(|n| n.utf8_text(source).ok())
                 .unwrap_or("");
             if val.trim().eq_ignore_ascii_case("FlowField") {
-                return true;
+                is_flow = true;
             }
+        } else if name.eq_ignore_ascii_case("CalcFormula") {
+            formula_text = property_value_text(child, source);
         }
     }
-    false
+    if !is_flow {
+        return None;
+    }
+    calcformula_parser::parse(&formula_text?).ok()
+}
+
+/// Reconstruct the full text of a `property_assignment`'s value. The grammar
+/// models the value as `repeat1(choice(...))`, so a `CalcFormula` like
+/// `Sum("X".Amount WHERE (…))` spans several `value` children (`Sum` + a
+/// `parenthesized_block`). Slice the source from the first to the last to
+/// recover the verbatim formula string.
+fn property_value_text(prop: Node<'_>, source: &[u8]) -> Option<String> {
+    let mut cursor = prop.walk();
+    let vals: Vec<Node> = prop.children_by_field_name("value", &mut cursor).collect();
+    let start = vals.first()?.start_byte();
+    let end = vals.last()?.end_byte();
+    std::str::from_utf8(source.get(start..end)?)
+        .ok()
+        .map(|s| s.to_string())
 }
 
 /// Parse `key(Name; F1, F2, …)` → the field names (excluding the key name).
@@ -382,6 +415,14 @@ pub(crate) fn dispatch_record_method(
 ) -> Eval {
     let nodes: Vec<Node> = args_node.map(arg_expr_nodes).unwrap_or_default();
     let lower = method.to_ascii_lowercase();
+
+    // CalcFields takes field-name args (not value expressions): evaluate each
+    // named FlowField's CalcFormula and write the result into the buffer so a
+    // subsequent plain read sees it. Handled before the value-eval loop so the
+    // field-name nodes are never evaluated as variables.
+    if lower == "calcfields" {
+        return dispatch_calcfields(table_name, &nodes, source, ctx);
+    }
 
     // Field-reference methods: arg 0 is a field name (raw text), the rest values.
     let field_methods = matches!(lower.as_str(), "setrange" | "setfilter" | "setcurrentkey");
@@ -524,29 +565,157 @@ pub(crate) fn dispatch_record_method(
             }
             Eval::Normal(Value::Empty)
         }
-        "calcfields" => {
-            // FlowField evaluation is not implemented (documented B6 remainder):
-            // CalcFields is a no-op so a test that calls it still runs.
-            Eval::Normal(Value::Empty)
-        }
         other => err(format!("unsupported record method: {other}")),
     }
 }
 
 /// Read a record field by name: `x := Rec."Field"`.
+///
+/// A FlowField with a parseable `CalcFormula` is computed on read (auto-calc);
+/// any other field returns its buffer value.
 pub(crate) fn field_get(table_name: &str, field_name: &str, ctx: &mut DispatchCtx) -> Eval {
     let key = match ensure_store(ctx, table_name) {
         Ok(k) => k,
         Err(e) => return err(e),
     };
+    let (f, formula) = {
+        let store = ctx.records.get_mut(&key).expect("store just ensured");
+        let f = store.resolve_field(field_name);
+        (f, store.flowfields.get(&f).cloned())
+    };
+    if let Some(formula) = formula {
+        return eval_flowfield(ctx, &key, &formula);
+    }
     let store = ctx.records.get_mut(&key).expect("store just ensured");
-    let f = store.resolve_field(field_name);
-    // FlowFields are not computed; their buffer value (default) is returned.
-    let _ = &store.flowfields;
     match store.record.field_get(f) {
         Some(v) => Eval::Normal(v.clone()),
         None => Eval::Normal(Value::Empty),
     }
+}
+
+/// `Rec.CalcFields(F1, F2, …)` — evaluate each named FlowField and store the
+/// result into the current buffer. Non-FlowField (or unparseable) args are
+/// ignored, matching BC's tolerance of explicitly-listed normal fields.
+fn dispatch_calcfields(
+    table_name: &str,
+    nodes: &[Node<'_>],
+    source: &[u8],
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let key = match ensure_store(ctx, table_name) {
+        Ok(k) => k,
+        Err(e) => return err(e),
+    };
+    // Resolve each field name to its number + formula up front (one borrow).
+    let targets: Vec<(FieldNo, Option<CalcFormula>)> = {
+        let store = ctx.records.get_mut(&key).expect("store just ensured");
+        nodes
+            .iter()
+            .map(|n| {
+                let f = store.resolve_field(&node_text(*n, source));
+                (f, store.flowfields.get(&f).cloned())
+            })
+            .collect()
+    };
+    for (field_no, formula) in targets {
+        let Some(formula) = formula else { continue };
+        match eval_flowfield(ctx, &key, &formula) {
+            Eval::Normal(v) => {
+                let store = ctx.records.get_mut(&key).expect("store just ensured");
+                store.record.field_set(field_no, v);
+            }
+            other => return other,
+        }
+    }
+    Eval::Normal(Value::Empty)
+}
+
+/// Evaluate a FlowField `CalcFormula` for the record whose store is `current_key`.
+///
+/// Resolves the `WHERE` clause (`CONST`/`FIELD`/`FILTER`), then aggregates over
+/// the referenced table's store via [`MockRecord::calc_flow`]. `FIELD(...)`
+/// references read the *calculating* record's current buffer; the aggregation
+/// and the constrained fields are resolved against the *referenced* table.
+fn eval_flowfield(ctx: &mut DispatchCtx, current_key: &str, formula: &CalcFormula) -> Eval {
+    // 1. Resolve any FIELD(...) references against the calculating record's
+    //    buffer first, before borrowing the referenced store (they may be the
+    //    same store for a self-referencing FlowField).
+    let field_values: Vec<Option<Value>> = {
+        let store = ctx.records.get_mut(current_key).expect("store just ensured");
+        formula
+            .where_clause
+            .iter()
+            .map(|cond| match &cond.value {
+                WhereValue::Field(name) => {
+                    let f = store.resolve_field(name);
+                    Some(store.record.field_get(f).cloned().unwrap_or(Value::Empty))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    // 2. Ensure the referenced table's store exists.
+    let ref_key = match ensure_store(ctx, &formula.table_name) {
+        Ok(k) => k,
+        Err(e) => return err(e),
+    };
+
+    let agg = match formula.formula_type {
+        FormulaType::Sum => FlowAgg::Sum,
+        FormulaType::Average => FlowAgg::Average,
+        FormulaType::Min => FlowAgg::Min,
+        FormulaType::Max => FlowAgg::Max,
+        FormulaType::Count => FlowAgg::Count,
+        FormulaType::Exist => FlowAgg::Exist,
+        FormulaType::Lookup => FlowAgg::Lookup,
+        FormulaType::Linked => {
+            return err(
+                "FlowField CalcFormula 'Linked' is a record relationship, not an aggregation, \
+                 and is not modelled by the BC-free interpreter",
+            );
+        }
+    };
+
+    // 3. Resolve the target + condition fields against the referenced table and
+    //    build the resolved conditions.
+    let store = ctx.records.get_mut(&ref_key).expect("store just ensured");
+    let target = formula
+        .field_name
+        .as_deref()
+        .map(|n| store.resolve_field(n));
+
+    let mut conditions: Vec<(FieldNo, FlowFilter)> = Vec::new();
+    for (i, cond) in formula.where_clause.iter().enumerate() {
+        let field_no = store.resolve_field(&cond.field);
+        let filt = match &cond.value {
+            WhereValue::Const(s) => FlowFilter::Eq(parse_scalar(s)),
+            WhereValue::Field(_) => {
+                FlowFilter::Eq(field_values[i].clone().unwrap_or(Value::Empty))
+            }
+            WhereValue::Filter(expr) => match filter::parse(expr) {
+                Ok(parsed) => FlowFilter::Expr(parsed),
+                Err(e) => return err(format!("FlowField filter '{expr}': {e}")),
+            },
+        };
+        conditions.push((field_no, filt));
+    }
+
+    Eval::Normal(store.record.calc_flow(&conditions, target, agg))
+}
+
+/// Parse a `CONST(...)` literal into the most specific scalar `Value`. Matching
+/// is type-tolerant downstream (see `FlowFilter::Eq`), so `Text` is a safe
+/// fallback even when the referenced field is `Code`/`Option`.
+fn parse_scalar(s: &str) -> Value {
+    let t = s.trim();
+    if let Ok(n) = t.parse::<i64>() {
+        return Value::Integer(n);
+    }
+    if let Ok(d) = t.parse::<f64>() {
+        return Value::Decimal(d);
+    }
+    Value::Text(t.to_string())
 }
 
 /// If `lhs_node` is a record field access (`Rec."Field"`) whose receiver is a
