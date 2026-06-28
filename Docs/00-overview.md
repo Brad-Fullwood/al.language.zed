@@ -146,3 +146,10 @@ Two clarifications that the table can blur:
 
 Continue to [01 — Architecture](./01-architecture.md) for crates, binaries, and runtime modes, or
 jump to any feature page from the [documentation index](./README.md).
+
+- [architecture.md](./architecture.md) — Mermaid crate-dependency and request-flow
+  diagrams, with every edge derived from the real `Cargo.toml` path-dependencies.
+- [testing-guide.md](./testing-guide.md) — how to verify each layer (unit tests,
+  the native `al-test-harness`, the GUI e2e harness, the env-gated `alc`/semantic
+  tests, `make repro-artifacts`, and `make release-dryrun`) plus a minimal
+  reproducible-report template.
