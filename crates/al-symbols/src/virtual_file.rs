@@ -62,8 +62,15 @@ pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::R
         .open(&file_path)
     {
         Ok(mut f) => {
+            // When the package ships embedded `.al`, write the real source
+            // (bodies included). Otherwise fall back to the metadata outline,
+            // prefixed with OUTLINE_NOTE so the reader knows the file is
+            // reconstructed from package symbols and carries no implementation
+            // bodies (C7: package symbols = public declaration, not call-site
+            // bodies). The note rides the outline path only — real embedded
+            // source already has its bodies.
             let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
-            let source = extracted.unwrap_or_else(|| render_outline(entry));
+            let source = extracted.unwrap_or_else(|| render_outline_with_note(entry));
             f.write_all(source.as_bytes())?;
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -220,6 +227,43 @@ fn sanitize_filename(s: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Header prefixed to a rendered outline (the no-embedded-source path) so a
+/// reader of the virtual file knows it is reconstructed from package symbol
+/// metadata and is missing implementation bodies.
+///
+/// AL `.app` symbol packages carry the **public declaration** of every object —
+/// signatures, fields, keys, enum values, properties — but not the procedure
+/// bodies (those are compiled away). So this outline is the public API surface,
+/// not the call-site source: "who calls X" / the implementation cannot be
+/// recovered from package symbols alone (workspace source fills that in). C7 in
+/// `Docs/gaps-and-future-work.md`.
+///
+/// Written as AL line comments so the virtual file still parses. Worded to avoid
+/// the keywords `procedure`/`trigger`/`field`/`key`/`value` so the comment never
+/// shadows a real member when [`find_member_range`] scans the file for navigation.
+pub const OUTLINE_NOTE: &str = "\
+// ----------------------------------------------------------------------------\n\
+// Reconstructed from package symbols (SymbolReference.json): public API only.\n\
+// AL .app symbol packages do not ship implementation bodies, so the method\n\
+// bodies are unavailable here. Open the workspace source for the implementation.\n\
+// ----------------------------------------------------------------------------\n\n";
+
+/// Like [`render_outline`], but prefixed with [`OUTLINE_NOTE`] documenting that
+/// the outline is the package's public declaration with no implementation
+/// bodies. This is what [`get_or_create`] writes for packages without embedded
+/// source, so the limitation is explicit in the file the editor opens.
+///
+/// Kept separate from [`render_outline`] so callers that frame the signature in
+/// their own output (e.g. the `source` query's structured `note` field) get the
+/// bare outline without a duplicate inline note.
+pub fn render_outline_with_note(entry: &SymbolEntry) -> String {
+    let body = render_outline(entry);
+    let mut out = String::with_capacity(OUTLINE_NOTE.len() + body.len());
+    out.push_str(OUTLINE_NOTE);
+    out.push_str(&body);
+    out
 }
 
 /// Produces valid AL syntax with full procedure signatures (parameters + types + return type),
@@ -666,5 +710,110 @@ mod tests {
         let expected_start = al_syntax::byte_col_to_utf16_col(line1, line1.find("Foo").unwrap());
         assert_eq!(r.col_start, expected_start);
         assert_eq!(r.col_end, r.col_start + 3);
+    }
+
+    // ----- C7: package symbols = public declaration, not call-site bodies -----
+
+    use crate::model::{MethodSymbol, ObjectKind, ParameterSymbol};
+
+    /// A package-sourced codeunit with one public method, the way a `.app`
+    /// symbol entry looks: a signature but no body.
+    fn package_codeunit() -> SymbolEntry {
+        SymbolEntry {
+            kind: ObjectKind::Codeunit,
+            id: 80,
+            name: "Sales-Post".to_string(),
+            package: "Base Application".to_string(),
+            methods: vec![MethodSymbol {
+                name: "PostDocument".to_string(),
+                parameters: vec![ParameterSymbol {
+                    name: "Preview".to_string(),
+                    type_name: "Boolean".to_string(),
+                    is_var: false,
+                }],
+                return_type: Some("Boolean".to_string()),
+                attributes: Vec::new(),
+                is_local: false,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn render_outline_carries_no_implementation_body() {
+        // The core limitation: a package outline renders the *declaration* of a
+        // method (signature, terminated by `;`) but never an implementation —
+        // there is no `begin`/`end` body because `.app` packages don't ship one.
+        let outline = render_outline(&package_codeunit());
+        assert!(
+            outline.contains("procedure PostDocument(Preview: Boolean): Boolean;"),
+            "outline should render the public signature; got:\n{outline}"
+        );
+        assert!(
+            !outline.to_ascii_lowercase().contains("begin"),
+            "a package outline must not contain an implementation body; got:\n{outline}"
+        );
+    }
+
+    #[test]
+    fn render_outline_with_note_documents_the_limitation() {
+        let entry = package_codeunit();
+        let noted = render_outline_with_note(&entry);
+
+        // The note appears for a package-sourced symbol...
+        assert!(noted.starts_with(OUTLINE_NOTE));
+        assert!(noted.contains("public API only"));
+        assert!(noted.contains("do not ship implementation bodies"));
+        // ...and the declaration is still present below it.
+        assert!(noted.contains("codeunit 80 \"Sales-Post\""));
+        assert!(noted.contains("procedure PostDocument(Preview: Boolean): Boolean;"));
+
+        // The bare `render_outline` stays note-free so callers that frame the
+        // signature in their own output (e.g. the `source` query) don't get a
+        // duplicate inline note. (Pins render_outline byte-stability vs. the
+        // downstream al-analysis tests.)
+        assert!(!render_outline(&entry).contains("Reconstructed from package symbols"));
+    }
+
+    #[test]
+    fn outline_note_does_not_shadow_member_navigation() {
+        // The note is prepended to the file the editor opens. Navigation must
+        // still resolve a real member after the note (the note is worded to
+        // avoid the `procedure`/`field`/… keyword scanners).
+        let noted = render_outline_with_note(&package_codeunit());
+        let r = find_member_range_in_text(&noted, "PostDocument", MemberKind::Procedure)
+            .expect("member must still be locatable past the prepended note");
+        // It resolves to the declaration line, not a line inside the note block.
+        let line = noted.lines().nth(r.line as usize).unwrap();
+        assert!(line.contains("procedure PostDocument"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn get_or_create_writes_the_note_for_a_sourceless_package() {
+        // The real user-facing surface: with no embedded `.app` source, the
+        // virtual file the editor opens must carry the limitation note.
+        // Isolate the on-disk cache via XDG_CACHE_HOME so we don't touch the
+        // developer's real cache dir.
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("XDG_CACHE_HOME");
+        std::env::set_var("XDG_CACHE_HOME", tmp.path());
+
+        let entry = package_codeunit();
+        let path = get_or_create(&entry, None).expect("virtual file should be written");
+        let content = fs::read_to_string(&path).expect("virtual file should be readable");
+
+        // restore env before asserting so a failure can't leak the override
+        match prev {
+            Some(v) => std::env::set_var("XDG_CACHE_HOME", v),
+            None => std::env::remove_var("XDG_CACHE_HOME"),
+        }
+
+        assert!(
+            content.contains("do not ship implementation bodies"),
+            "virtual file must document the no-body limitation; got:\n{content}"
+        );
+        assert!(content.contains("codeunit 80 \"Sales-Post\""));
+        assert!(!content.to_ascii_lowercase().contains("begin"));
     }
 }
