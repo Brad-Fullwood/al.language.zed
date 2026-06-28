@@ -239,6 +239,90 @@ fn aggregate_self_time_us(json: &serde_json::Value) -> std::collections::HashMap
     by_node
 }
 
+/// Roll up per-node **total time** (self time + the total time of every
+/// descendant) in milliseconds, given each node's self time (ms,
+/// `self_ms_by_node`) and the `children` adjacency encoded in the profile's
+/// `nodes` array.
+///
+/// `total_time(node) = self_time(node) + Σ total_time(child)` over the subtree
+/// rooted at `node`. The parent→child tree is built from each node's
+/// `children:[childId, …]` list; an iterative post-order DFS visits every node —
+/// handling a **forest** of multiple roots — memoizing each node's total so a
+/// shared subtree is summed only once.
+///
+/// Robustness: a Chrome CPU profile is a proper tree, but a malformed profile
+/// may carry **cycles** or **dangling child ids**. Both are guarded — a child id
+/// already on the current DFS path (a back edge) or that names no real node is
+/// absent from the memo table and so contributes 0, meaning we can never loop
+/// forever or panic. The DFS stack lives on the heap, so a deeply nested call
+/// tree cannot overflow the native stack.
+fn aggregate_total_time_ms(
+    nodes: &[serde_json::Value],
+    self_ms_by_node: &std::collections::HashMap<u64, f64>,
+) -> std::collections::HashMap<u64, f64> {
+    use std::collections::{HashMap, HashSet};
+
+    // parent id -> child ids, taken from each node's `children` list.
+    let mut children: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut order: Vec<u64> = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let Some(id) = node.get("id").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        order.push(id);
+        let kids: Vec<u64> = node
+            .get("children")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|c| c.as_u64()).collect())
+            .unwrap_or_default();
+        children.entry(id).or_default().extend(kids);
+    }
+
+    let mut total: HashMap<u64, f64> = HashMap::new();
+
+    for &start in &order {
+        if total.contains_key(&start) {
+            continue; // already finished as a descendant of an earlier root
+        }
+        // Iterative post-order DFS. Each frame is (node_id, children_expanded).
+        let mut stack: Vec<(u64, bool)> = vec![(start, false)];
+        let mut on_path: HashSet<u64> = HashSet::new();
+        while let Some((id, expanded)) = stack.pop() {
+            if expanded {
+                // Children are all finished; sum their memoized totals.
+                on_path.remove(&id);
+                let mut sum = self_ms_by_node.get(&id).copied().unwrap_or(0.0);
+                if let Some(kids) = children.get(&id) {
+                    for k in kids {
+                        // Back edges (cycles) and dangling ids never entered the
+                        // memo table, so they add 0 — no loop, no panic.
+                        if let Some(t) = total.get(k) {
+                            sum += *t;
+                        }
+                    }
+                }
+                total.insert(id, sum);
+            } else {
+                if total.contains_key(&id) || on_path.contains(&id) {
+                    // Finished already, or a back edge into the active path.
+                    continue;
+                }
+                on_path.insert(id);
+                stack.push((id, true));
+                if let Some(kids) = children.get(&id) {
+                    for &k in kids {
+                        if !total.contains_key(&k) && !on_path.contains(&k) {
+                            stack.push((k, false));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    total
+}
+
 /// Parse a `.alcpuprofile` file and return the top hotspots.
 ///
 /// `.alcpuprofile` is a Chrome-style CPU profile JSON:
@@ -282,6 +366,25 @@ pub fn analyze_profile(
     let self_time_by_node = aggregate_self_time_us(&json);
     let have_time = !self_time_by_node.is_empty();
 
+    // Per-node self time (ms) for *every* node — the input to the call-tree
+    // total-time roll-up below. Mirrors the per-hotspot self-time rule used
+    // further down (aggregated timeDeltas when present, else 1 ms/hit).
+    let self_ms_by_node: std::collections::HashMap<u64, f64> = nodes
+        .iter()
+        .filter_map(|node| {
+            let id = node.get("id").and_then(|v| v.as_u64())?;
+            let self_ms = if have_time {
+                self_time_by_node.get(&id).copied().unwrap_or(0.0) / 1000.0
+            } else {
+                node.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0) as f64
+            };
+            Some((id, self_ms))
+        })
+        .collect();
+    // Total time = self + Σ descendants, rolled up over the call tree (B14
+    // follow-up). Keyed by node id; nodes outside the map fall back to self time.
+    let total_by_node = aggregate_total_time_ms(&nodes, &self_ms_by_node);
+
     let mut hotspots: Vec<Hotspot> = nodes
         .iter()
         .filter_map(|node| {
@@ -322,8 +425,12 @@ pub fn analyze_profile(
             } else {
                 hit_count as f64
             };
-            // Total time requires tree traversal; approximate as self_time for top-level analysis
-            let total_time_ms = self_time_ms;
+            // Total time: self + the total time of every descendant, rolled up
+            // over the call tree (see `aggregate_total_time_ms`). Falls back to
+            // self time for an id-less node that can't appear in the tree.
+            let total_time_ms = node_id
+                .and_then(|id| total_by_node.get(&id).copied())
+                .unwrap_or(self_time_ms);
 
             Some(Hotspot {
                 procedure: function_name,
@@ -509,6 +616,105 @@ mod tests {
             "Uncharged self_time should be 0.0 ms, got {}",
             result.hotspots[1].self_time_ms
         );
+    }
+
+    #[test]
+    fn total_time_rolls_up_the_call_tree() {
+        // B14 follow-up: total_time(node) = self + Σ total_time(descendants).
+        // A 3-node chain root -> child -> grandchild with distinct self times.
+        //   root(1):       sampled 1000µs -> 1.0 ms self
+        //   child(2):      sampled 2000µs -> 2.0 ms self
+        //   grandchild(3): sampled 4000µs -> 4.0 ms self
+        // => total(root) = 7.0, total(child) = 6.0, total(grandchild) = 4.0.
+        let profile = serde_json::json!({
+            "startTime": 0,
+            "endTime": 7000,
+            "nodes": [
+                { "id": 1, "callFrame": { "functionName": "Root",       "url": "a.al" }, "hitCount": 1, "children": [2] },
+                { "id": 2, "callFrame": { "functionName": "Child",      "url": "b.al" }, "hitCount": 1, "children": [3] },
+                { "id": 3, "callFrame": { "functionName": "Grandchild", "url": "c.al" }, "hitCount": 1, "children": [] }
+            ],
+            "samples":    [1, 2, 3],
+            "timeDeltas": [1000, 2000, 4000]
+        });
+
+        let bytes = serde_json::to_vec(&profile).unwrap();
+        let result = analyze_profile(&bytes, 10).unwrap();
+        assert_eq!(result.hotspots.len(), 3);
+
+        let find = |name: &str| {
+            result
+                .hotspots
+                .iter()
+                .find(|h| h.procedure == name)
+                .unwrap_or_else(|| panic!("missing hotspot {name}"))
+        };
+        let root = find("Root");
+        let child = find("Child");
+        let grandchild = find("Grandchild");
+
+        // Self times are unchanged by the roll-up.
+        assert!((root.self_time_ms - 1.0).abs() < 1e-9);
+        assert!((child.self_time_ms - 2.0).abs() < 1e-9);
+        assert!((grandchild.self_time_ms - 4.0).abs() < 1e-9);
+
+        // Total = self + every descendant's total.
+        assert!(
+            (root.total_time_ms - 7.0).abs() < 1e-9,
+            "root total should be 1+2+4 = 7.0, got {}",
+            root.total_time_ms
+        );
+        assert!(
+            (child.total_time_ms - 6.0).abs() < 1e-9,
+            "child total should be 2+4 = 6.0, got {}",
+            child.total_time_ms
+        );
+        // Leaf total equals its own self time.
+        assert!(
+            (grandchild.total_time_ms - grandchild.self_time_ms).abs() < 1e-9,
+            "leaf total should equal its self time, got {}",
+            grandchild.total_time_ms
+        );
+    }
+
+    #[test]
+    fn total_time_handles_cycle_and_dangling_child_without_hanging() {
+        // B14 follow-up: a malformed profile with a cycle (1 -> 2 -> 1) and a
+        // dangling child id (99, no such node) must not loop forever or panic.
+        //   A(1): sampled 3000µs -> 3.0 ms self, children [2, 99]
+        //   B(2): sampled 5000µs -> 5.0 ms self, children [1]   (back edge)
+        // total(B) = 5.0 (the back edge to A contributes 0).
+        // total(A) = 3.0 + total(B) + 0(dangling 99) = 8.0.
+        let profile = serde_json::json!({
+            "startTime": 0,
+            "endTime": 8000,
+            "nodes": [
+                { "id": 1, "callFrame": { "functionName": "A", "url": "a.al" }, "hitCount": 1, "children": [2, 99] },
+                { "id": 2, "callFrame": { "functionName": "B", "url": "b.al" }, "hitCount": 1, "children": [1] }
+            ],
+            "samples":    [1, 2],
+            "timeDeltas": [3000, 5000]
+        });
+
+        let bytes = serde_json::to_vec(&profile).unwrap();
+        let result = analyze_profile(&bytes, 10).unwrap();
+        assert_eq!(result.hotspots.len(), 2);
+
+        let a = result.hotspots.iter().find(|h| h.procedure == "A").unwrap();
+        let b = result.hotspots.iter().find(|h| h.procedure == "B").unwrap();
+
+        assert!(
+            (b.total_time_ms - 5.0).abs() < 1e-9,
+            "B total should be 5.0 (back edge adds 0), got {}",
+            b.total_time_ms
+        );
+        assert!(
+            (a.total_time_ms - 8.0).abs() < 1e-9,
+            "A total should be 3+5 = 8.0 (dangling id adds 0), got {}",
+            a.total_time_ms
+        );
+        // Totals must be finite — never NaN/inf from a cycle.
+        assert!(a.total_time_ms.is_finite() && b.total_time_ms.is_finite());
     }
 
     #[test]
