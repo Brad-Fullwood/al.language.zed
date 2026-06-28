@@ -63,6 +63,11 @@ pub fn eval_stmt(
             MAX_AST_DEPTH
         )));
     }
+    // Dynamic coverage (gap C9): record this statement's source line. A
+    // not-taken `if`/`case`/loop body is never passed to `eval_stmt`, so it is
+    // never recorded — that is what gives us statement coverage. Zero-cost when
+    // the collector is disabled (`ctx.coverage` is `None`).
+    ctx.cov_record_stmt(node);
     ctx.ast_depth += 1;
     let result = eval_stmt_inner(node, source, stack, ctx);
     ctx.ast_depth -= 1;
@@ -150,6 +155,11 @@ fn eval_if(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Disp
             cond.type_name()
         )));
     }
+
+    // Dynamic coverage (gap C9): record which side of this `if` decision was
+    // taken. THEN-taken == true, ELSE-taken (or absent-else fall-through) ==
+    // false. Zero-cost when coverage is disabled.
+    ctx.cov_record_decision(node, cond.is_truthy());
 
     if cond.is_truthy() {
         let then_node = node
@@ -491,10 +501,18 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
         }
 
         if matched {
+            // Dynamic coverage (gap C9): an arm matched — record this as the
+            // THEN side of the case decision. Per-arm path coverage is not
+            // tracked (see `coverage` module docs); the arm body's own lines
+            // are recorded by `eval_stmt` as it executes them.
+            ctx.cov_record_decision(node, true);
             return eval_stmt(arm_body, source, stack, ctx);
         }
     }
 
+    // No arm matched: record the ELSE side of the case decision (whether or
+    // not an explicit `else` clause exists).
+    ctx.cov_record_decision(node, false);
     match else_body {
         Some(body) => eval_stmt(body, source, stack, ctx),
         None => Eval::Normal(Value::Empty),
