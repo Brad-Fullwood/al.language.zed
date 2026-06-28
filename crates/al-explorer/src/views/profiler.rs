@@ -59,6 +59,68 @@ fn aggregate_self_time_us(json: &serde_json::Value) -> std::collections::HashMap
     by_node
 }
 
+/// Roll up `total_time_ms` over the call tree: `total(node) = self(node) + Σ
+/// total(child)` via an iterative post-order DFS (cycle/dangling-safe). Ported
+/// from `al_bc::profiling::aggregate_total_time_ms` (gap B14) — see that canonical
+/// copy; kept here to avoid pulling the heavy al-bc (reqwest/tokio) dep into this
+/// TUI crate. `self_ms_by_node` must be in milliseconds and cover every node.
+fn aggregate_total_time_ms(
+    nodes: &[serde_json::Value],
+    self_ms_by_node: &std::collections::HashMap<u64, f64>,
+) -> std::collections::HashMap<u64, f64> {
+    use std::collections::{HashMap, HashSet};
+    let mut children: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut order: Vec<u64> = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let Some(id) = node.get("id").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        order.push(id);
+        let kids: Vec<u64> = node
+            .get("children")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|c| c.as_u64()).collect())
+            .unwrap_or_default();
+        children.entry(id).or_default().extend(kids);
+    }
+    let mut total: HashMap<u64, f64> = HashMap::new();
+    for &start in &order {
+        if total.contains_key(&start) {
+            continue;
+        }
+        let mut stack: Vec<(u64, bool)> = vec![(start, false)];
+        let mut on_path: HashSet<u64> = HashSet::new();
+        while let Some((id, expanded)) = stack.pop() {
+            if expanded {
+                on_path.remove(&id);
+                let mut sum = self_ms_by_node.get(&id).copied().unwrap_or(0.0);
+                if let Some(kids) = children.get(&id) {
+                    for k in kids {
+                        if let Some(t) = total.get(k) {
+                            sum += *t;
+                        }
+                    }
+                }
+                total.insert(id, sum);
+            } else {
+                if total.contains_key(&id) || on_path.contains(&id) {
+                    continue;
+                }
+                on_path.insert(id);
+                stack.push((id, true));
+                if let Some(kids) = children.get(&id) {
+                    for &k in kids {
+                        if !total.contains_key(&k) && !on_path.contains(&k) {
+                            stack.push((k, false));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    total
+}
+
 #[derive(Debug, Clone)]
 struct HotspotRow {
     procedure: String,
@@ -154,6 +216,23 @@ impl ProfilerView {
         let self_time_by_node = aggregate_self_time_us(&json);
         let have_time = !self_time_by_node.is_empty();
 
+        // Per-node self-time in ms over ALL nodes (incl. root/idle/filtered and
+        // hitCount==0), so the call-tree roll-up for total_time_ms is correct
+        // even when a child is hidden from the displayed rows.
+        let self_ms_by_node: std::collections::HashMap<u64, f64> = nodes
+            .iter()
+            .filter_map(|n| {
+                let id = n.get("id").and_then(|v| v.as_u64())?;
+                let ms = if have_time {
+                    self_time_by_node.get(&id).copied().unwrap_or(0.0) / 1000.0
+                } else {
+                    n.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0) as f64
+                };
+                Some((id, ms))
+            })
+            .collect();
+        let total_ms_by_node = aggregate_total_time_ms(nodes, &self_ms_by_node);
+
         let mut rows: Vec<HotspotRow> = Vec::new();
         for node in nodes {
             let hit_count = node.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -198,7 +277,11 @@ impl ProfilerView {
                 procedure: function_name,
                 object: url,
                 self_time_ms,
-                total_time_ms: self_time_ms, // simplified: no call tree aggregation
+                // B14: total = self + Σ descendants (call-tree roll-up), falling
+                // back to self-time for id-less nodes not in the tree.
+                total_time_ms: node_id
+                    .and_then(|id| total_ms_by_node.get(&id).copied())
+                    .unwrap_or(self_time_ms),
                 hit_count,
             });
         }
@@ -526,5 +609,30 @@ mod tests {
         assert_eq!(view.hotspots.len(), 1);
         assert_eq!(view.hotspots[0].procedure, "Legacy");
         assert!((view.hotspots[0].self_time_ms - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn total_time_rolls_up_the_call_tree() {
+        // root(1) -> A(2) -> B(3). A self=1ms, B self=4ms.
+        // A.total = 1 + 4 = 5ms; B.total = 4ms (leaf). B outranks A by self-time.
+        let profile = serde_json::json!({
+            "startTime": 0.0,
+            "endTime": 1_000_000.0,
+            "nodes": [
+                { "id": 1, "hitCount": 0u64, "children": [2u64], "callFrame": { "functionName": "(root)", "url": "" } },
+                { "id": 2, "hitCount": 1u64, "children": [3u64], "callFrame": { "functionName": "A", "url": "Cod1.al" } },
+                { "id": 3, "hitCount": 1u64, "callFrame": { "functionName": "B", "url": "Cod2.al" } },
+            ],
+            "samples": [2u64, 3u64],
+            "timeDeltas": [1000u64, 4000u64],
+        });
+
+        let view = load_view(&profile);
+        let a = view.hotspots.iter().find(|h| h.procedure == "A").expect("A");
+        let b = view.hotspots.iter().find(|h| h.procedure == "B").expect("B");
+        assert!((a.self_time_ms - 1.0).abs() < 1e-9);
+        assert!((a.total_time_ms - 5.0).abs() < 1e-9, "A.total should roll up B: {}", a.total_time_ms);
+        assert!((b.self_time_ms - 4.0).abs() < 1e-9);
+        assert!((b.total_time_ms - 4.0).abs() < 1e-9, "B is a leaf: {}", b.total_time_ms);
     }
 }
