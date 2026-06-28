@@ -20,6 +20,34 @@ pub type PrimaryKey = Vec<Value>;
 
 pub type Row = BTreeMap<FieldNo, Value>;
 
+/// The aggregation a FlowField `CalcFormula` performs over the referenced
+/// table. `Linked` is intentionally absent — it is a record-relationship
+/// marker, not an aggregation, so the interpreter does not model it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowAgg {
+    Sum,
+    Average,
+    Min,
+    Max,
+    Count,
+    Exist,
+    Lookup,
+}
+
+/// One resolved `WHERE` condition for a FlowField calculation, already mapped
+/// to a field number in *this* (the referenced) table.
+#[derive(Debug, Clone)]
+pub enum FlowFilter {
+    /// Exact value match — a `CONST(...)` literal or a `FIELD(...)` reference
+    /// resolved to the calculating record's current value. Compared
+    /// type-tolerantly (numeric values numerically, `Text`/`Code`/`Option`
+    /// textually and case-insensitively) so cross-type schemas still match,
+    /// mirroring BC's value coercion inside FlowField filters.
+    Eq(Value),
+    /// A parsed BC filter expression from `FILTER(...)`.
+    Expr(FilterExpr),
+}
+
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum RecordError {
     #[error("record not found")]
@@ -355,6 +383,136 @@ impl MockRecord {
 
     pub fn x_rec_field(&self, field: FieldNo) -> Option<&Value> {
         self.x_rec.get(&field)
+    }
+
+    /// Evaluate a FlowField `CalcFormula` aggregation over this table's rows.
+    ///
+    /// This is a **pure read**: it does not touch the current buffer, the active
+    /// filters, the sort key or the iteration cursor, so it is safe to run
+    /// against a store that another record variable is mid-iteration on (stores
+    /// are shared per table name — see `interpreter::records`).
+    ///
+    /// `conditions` are `(field, filter)` pairs that **all** must match (AND
+    /// semantics). `target` is the field being aggregated and is ignored for
+    /// `Count`/`Exist`. Numeric aggregates (`Sum`/`Min`/`Max`) return `Integer`
+    /// when every contributing cell is an `Integer`, otherwise `Decimal`;
+    /// `Average` always returns `Decimal`. An empty match set yields
+    /// `Integer(0)` for `Sum`/`Min`/`Max`/`Count`, `Decimal(0)` for `Average`,
+    /// `Boolean(false)` for `Exist`, and `Empty` for `Lookup`.
+    pub fn calc_flow(
+        &self,
+        conditions: &[(FieldNo, FlowFilter)],
+        target: Option<FieldNo>,
+        agg: FlowAgg,
+    ) -> Value {
+        let matching: Vec<&Row> = self
+            .rows
+            .values()
+            .filter(|row| {
+                conditions.iter().all(|(field, filt)| {
+                    flow_filter_matches(filt, row.get(field).unwrap_or(&Value::Empty))
+                })
+            })
+            .collect();
+
+        // The cells of the aggregated field across the matching rows.
+        let target_cells = || matching.iter().filter_map(|row| target.and_then(|t| row.get(&t)));
+
+        match agg {
+            FlowAgg::Count => Value::Integer(matching.len() as i64),
+            FlowAgg::Exist => Value::Boolean(!matching.is_empty()),
+            FlowAgg::Sum => {
+                let mut int_sum: i64 = 0;
+                let mut dec_sum: f64 = 0.0;
+                let mut any_decimal = false;
+                for cell in target_cells() {
+                    match cell {
+                        Value::Integer(n) => {
+                            int_sum = int_sum.saturating_add(*n);
+                            dec_sum += *n as f64;
+                        }
+                        Value::Decimal(d) => {
+                            any_decimal = true;
+                            dec_sum += *d;
+                        }
+                        _ => {}
+                    }
+                }
+                if any_decimal {
+                    Value::Decimal(dec_sum)
+                } else {
+                    Value::Integer(int_sum)
+                }
+            }
+            FlowAgg::Average => {
+                let nums: Vec<f64> = target_cells().filter_map(as_number).collect();
+                if nums.is_empty() {
+                    Value::Decimal(0.0)
+                } else {
+                    Value::Decimal(nums.iter().sum::<f64>() / nums.len() as f64)
+                }
+            }
+            FlowAgg::Min | FlowAgg::Max => {
+                let mut best: Option<&Value> = None;
+                for cell in target_cells() {
+                    let Some(cur) = as_number(cell) else { continue };
+                    best = match best {
+                        None => Some(cell),
+                        Some(prev) => {
+                            let prev_n = as_number(prev).unwrap_or(cur);
+                            let take = match agg {
+                                FlowAgg::Min => cur < prev_n,
+                                _ => cur > prev_n,
+                            };
+                            if take { Some(cell) } else { Some(prev) }
+                        }
+                    };
+                }
+                best.cloned().unwrap_or(Value::Integer(0))
+            }
+            FlowAgg::Lookup => target_cells().next().cloned().unwrap_or(Value::Empty),
+        }
+    }
+}
+
+/// Numeric view of a value for FlowField aggregation (`Integer`/`Decimal`).
+fn as_number(v: &Value) -> Option<f64> {
+    match v {
+        Value::Integer(n) => Some(*n as f64),
+        Value::Decimal(d) => Some(*d),
+        _ => None,
+    }
+}
+
+/// Test one resolved FlowField condition against a row's cell value.
+fn flow_filter_matches(filt: &FlowFilter, cell: &Value) -> bool {
+    match filt {
+        FlowFilter::Eq(want) => flow_value_eq(want, cell),
+        FlowFilter::Expr(expr) => filter::matches(expr, cell),
+    }
+}
+
+/// Type-tolerant equality used by `FlowFilter::Eq`: exact `Value` equality,
+/// else numeric equality, else case-insensitive text equality.
+fn flow_value_eq(a: &Value, b: &Value) -> bool {
+    if a == b {
+        return true;
+    }
+    if let (Some(x), Some(y)) = (as_number(a), as_number(b)) {
+        return x == y;
+    }
+    match (flow_text(a), flow_text(b)) {
+        (Some(x), Some(y)) => x.eq_ignore_ascii_case(&y),
+        _ => false,
+    }
+}
+
+/// Textual view of a value for `flow_value_eq` (`Text`/`Code`/`Option` member).
+fn flow_text(v: &Value) -> Option<String> {
+    match v {
+        Value::Text(s) | Value::Code(s) | Value::Guid(s) => Some(s.clone()),
+        Value::Option { member, .. } => Some(member.clone()),
+        _ => None,
     }
 }
 
@@ -884,5 +1042,109 @@ mod tests {
             vec![Value::Integer(20), Value::Integer(30), Value::Integer(10)],
             "After SetCurrentKey, iter_set must be rebuilt in new sort order"
         );
+    }
+
+    // ───────────────────────── FlowField calc_flow (B6) ────────────────────
+
+    /// A "Detail" table: fields 1=Doc No.(Code), 2=Line No.(Integer),
+    /// 3=Amount, 4=Type, populated with three rows for ORD1 and one for ORD2.
+    fn detail_table() -> MockRecord {
+        let mut rec = MockRecord::new(50121, "Detail", vec![1, 2]);
+        let rows = [
+            ("ORD1", 1i64, 10i64, "Item"),
+            ("ORD1", 2, 20, "Service"),
+            ("ORD1", 3, 30, "Item"),
+            ("ORD2", 1, 999, "Item"),
+        ];
+        for (doc, line, amt, typ) in rows {
+            rec.field_set(1, Value::Code(doc.to_string()));
+            rec.field_set(2, Value::Integer(line));
+            rec.field_set(3, Value::Integer(amt));
+            rec.field_set(4, Value::Code(typ.to_string()));
+            rec.insert(false).unwrap();
+        }
+        rec
+    }
+
+    #[test]
+    fn calc_flow_sum_with_field_eq() {
+        let rec = detail_table();
+        // Sum(Amount WHERE Doc No. = "ORD1") = 10+20+30 = 60.
+        let conds = [(1, FlowFilter::Eq(Value::Code("ORD1".into())))];
+        assert_eq!(rec.calc_flow(&conds, Some(3), FlowAgg::Sum), Value::Integer(60));
+    }
+
+    #[test]
+    fn calc_flow_count_and_exist() {
+        let rec = detail_table();
+        let conds = [(1, FlowFilter::Eq(Value::Code("ORD1".into())))];
+        assert_eq!(rec.calc_flow(&conds, None, FlowAgg::Count), Value::Integer(3));
+        assert_eq!(rec.calc_flow(&conds, None, FlowAgg::Exist), Value::Boolean(true));
+        let none = [(1, FlowFilter::Eq(Value::Code("ZZZ".into())))];
+        assert_eq!(rec.calc_flow(&none, None, FlowAgg::Count), Value::Integer(0));
+        assert_eq!(rec.calc_flow(&none, None, FlowAgg::Exist), Value::Boolean(false));
+    }
+
+    #[test]
+    fn calc_flow_const_filter_and_filter_expr() {
+        let rec = detail_table();
+        // CONST(Item) modelled as an exact (type-tolerant) Eq on Type.
+        let const_conds = [
+            (1, FlowFilter::Eq(Value::Code("ORD1".into()))),
+            (4, FlowFilter::Eq(Value::Text("Item".into()))),
+        ];
+        // Item rows for ORD1: amounts 10 + 30 = 40.
+        assert_eq!(
+            rec.calc_flow(&const_conds, Some(3), FlowAgg::Sum),
+            Value::Integer(40)
+        );
+
+        // FILTER(>15) on Amount, reusing the BC filter engine.
+        let expr = filter::parse(">15").unwrap();
+        let filter_conds = [
+            (1, FlowFilter::Eq(Value::Code("ORD1".into()))),
+            (3, FlowFilter::Expr(expr)),
+        ];
+        // ORD1 amounts > 15: 20 + 30 = 50.
+        assert_eq!(
+            rec.calc_flow(&filter_conds, Some(3), FlowAgg::Sum),
+            Value::Integer(50)
+        );
+    }
+
+    #[test]
+    fn calc_flow_min_max_average() {
+        let rec = detail_table();
+        let conds = [(1, FlowFilter::Eq(Value::Code("ORD1".into())))];
+        assert_eq!(rec.calc_flow(&conds, Some(3), FlowAgg::Min), Value::Integer(10));
+        assert_eq!(rec.calc_flow(&conds, Some(3), FlowAgg::Max), Value::Integer(30));
+        assert_eq!(
+            rec.calc_flow(&conds, Some(3), FlowAgg::Average),
+            Value::Decimal(20.0)
+        );
+    }
+
+    #[test]
+    fn calc_flow_empty_defaults() {
+        let rec = detail_table();
+        let none = [(1, FlowFilter::Eq(Value::Code("ZZZ".into())))];
+        assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Sum), Value::Integer(0));
+        assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Min), Value::Integer(0));
+        assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Max), Value::Integer(0));
+        assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Average), Value::Decimal(0.0));
+        assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Lookup), Value::Empty);
+    }
+
+    #[test]
+    fn calc_flow_sum_decimal_promotes() {
+        // A mix containing a Decimal cell promotes the Sum result to Decimal.
+        let mut rec = MockRecord::new(1, "Dec", vec![1]);
+        rec.field_set(1, Value::Integer(1));
+        rec.field_set(2, Value::Integer(10));
+        rec.insert(false).unwrap();
+        rec.field_set(1, Value::Integer(2));
+        rec.field_set(2, Value::Decimal(2.5));
+        rec.insert(false).unwrap();
+        assert_eq!(rec.calc_flow(&[], Some(2), FlowAgg::Sum), Value::Decimal(12.5));
     }
 }

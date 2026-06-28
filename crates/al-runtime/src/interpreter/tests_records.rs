@@ -511,6 +511,242 @@ fn b6_two_record_vars_share_physical_table() {
     assert_eq!(ok(r), Value::Text("Shared".into()));
 }
 
+// ─────────────────────── B6 follow-up: FlowField / CalcFormula ─────────────
+
+/// A header table with several FlowFields over the detail table below, plus a
+/// detail table with a composite primary key.
+const SALES_DOC_TABLE: &str = r#"table 50120 "Sales Doc"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Balance; Decimal)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Sum("Sales Detail".Amount WHERE ("Doc No." = FIELD("No.")));
+        }
+        field(3; "Line Count"; Integer)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Count("Sales Detail" WHERE ("Doc No." = FIELD("No.")));
+        }
+        field(4; "Item Total"; Decimal)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Sum("Sales Detail".Amount WHERE ("Doc No." = FIELD("No."), Type = CONST(Item)));
+        }
+        field(5; "Big Total"; Decimal)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Sum("Sales Detail".Amount WHERE ("Doc No." = FIELD("No."), Amount = FILTER(>15)));
+        }
+        field(6; "Has Lines"; Boolean)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Exist("Sales Detail" WHERE ("Doc No." = FIELD("No.")));
+        }
+        field(7; "Max Amount"; Decimal)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Max("Sales Detail".Amount WHERE ("Doc No." = FIELD("No.")));
+        }
+        field(8; "Avg Amount"; Decimal)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Average("Sales Detail".Amount WHERE ("Doc No." = FIELD("No.")));
+        }
+    }
+    keys
+    {
+        key(PK; "No.") { Clustered = true; }
+    }
+}
+"#;
+
+const SALES_DETAIL_TABLE: &str = r#"table 50121 "Sales Detail"
+{
+    fields
+    {
+        field(1; "Doc No."; Code[20]) { }
+        field(2; "Line No."; Integer) { }
+        field(3; Amount; Decimal) { }
+        field(4; Type; Code[10]) { }
+    }
+    keys
+    {
+        key(PK; "Doc No.", "Line No.") { }
+    }
+}
+"#;
+
+/// Codeunit that seeds ORD1 (3 lines: 10/Item, 20/Service, 30/Item), an
+/// unrelated ORD2 line (999), and an empty document EMPTY, then exposes each
+/// FlowField read so a test can assert the computed value.
+const FLOW_TESTS: &str = r#"codeunit 50122 "Flow Tests"
+{
+    procedure Seed()
+    var
+        Hdr: Record "Sales Doc";
+        Det: Record "Sales Detail";
+    begin
+        Hdr.Init(); Hdr."No." := 'ORD1'; Hdr.Insert();
+        Hdr.Init(); Hdr."No." := 'EMPTY'; Hdr.Insert();
+
+        Det.Init(); Det."Doc No." := 'ORD1'; Det."Line No." := 1; Det.Amount := 10; Det.Type := 'Item'; Det.Insert();
+        Det.Init(); Det."Doc No." := 'ORD1'; Det."Line No." := 2; Det.Amount := 20; Det.Type := 'Service'; Det.Insert();
+        Det.Init(); Det."Doc No." := 'ORD1'; Det."Line No." := 3; Det.Amount := 30; Det.Type := 'Item'; Det.Insert();
+        Det.Init(); Det."Doc No." := 'ORD2'; Det."Line No." := 1; Det.Amount := 999; Det.Type := 'Item'; Det.Insert();
+    end;
+
+    procedure SumViaCalcFields(): Decimal
+    var
+        Hdr: Record "Sales Doc";
+    begin
+        Seed();
+        Hdr.Get('ORD1');
+        Hdr.CalcFields(Balance);
+        exit(Hdr.Balance);
+    end;
+
+    procedure CountOnRead(): Integer
+    var
+        Hdr: Record "Sales Doc";
+    begin
+        Seed();
+        Hdr.Get('ORD1');
+        exit(Hdr."Line Count");
+    end;
+
+    procedure FilteredConst(): Decimal
+    var
+        Hdr: Record "Sales Doc";
+    begin
+        Seed();
+        Hdr.Get('ORD1');
+        exit(Hdr."Item Total");
+    end;
+
+    procedure FilteredExpr(): Decimal
+    var
+        Hdr: Record "Sales Doc";
+    begin
+        Seed();
+        Hdr.Get('ORD1');
+        exit(Hdr."Big Total");
+    end;
+
+    procedure MaxOnRead(): Decimal
+    var
+        Hdr: Record "Sales Doc";
+    begin
+        Seed();
+        Hdr.Get('ORD1');
+        exit(Hdr."Max Amount");
+    end;
+
+    procedure AvgOnRead(): Decimal
+    var
+        Hdr: Record "Sales Doc";
+    begin
+        Seed();
+        Hdr.Get('ORD1');
+        exit(Hdr."Avg Amount");
+    end;
+
+    procedure ExistTrue(): Boolean
+    var
+        Hdr: Record "Sales Doc";
+    begin
+        Seed();
+        Hdr.Get('ORD1');
+        exit(Hdr."Has Lines");
+    end;
+
+    procedure EmptySum(): Decimal
+    var
+        Hdr: Record "Sales Doc";
+    begin
+        Seed();
+        Hdr.Get('EMPTY');
+        exit(Hdr.Balance);
+    end;
+
+    procedure EmptyExist(): Boolean
+    var
+        Hdr: Record "Sales Doc";
+    begin
+        Seed();
+        Hdr.Get('EMPTY');
+        exit(Hdr."Has Lines");
+    end;
+}
+"#;
+
+fn run_flow(proc: &str) -> Eval {
+    run(
+        &[
+            ("/ws/SalesDoc.al", SALES_DOC_TABLE),
+            ("/ws/SalesDetail.al", SALES_DETAIL_TABLE),
+            ("/ws/FlowTests.al", FLOW_TESTS),
+        ],
+        "Flow Tests",
+        proc,
+        vec![],
+    )
+}
+
+#[test]
+fn b6_flowfield_sum_via_calcfields() {
+    // ORD1 amounts 10+20+30 = 60; the ORD2 line (999) is excluded by the
+    // Doc No. = FIELD("No.") condition.
+    assert_eq!(ok(run_flow("SumViaCalcFields")), Value::Integer(60));
+}
+
+#[test]
+fn b6_flowfield_count_on_read() {
+    // Auto-calc on read of a Count FlowField — three ORD1 lines.
+    assert_eq!(ok(run_flow("CountOnRead")), Value::Integer(3));
+}
+
+#[test]
+fn b6_flowfield_filtered_const() {
+    // Sum WHERE Type = CONST(Item): ORD1 Item lines 10 + 30 = 40.
+    assert_eq!(ok(run_flow("FilteredConst")), Value::Integer(40));
+}
+
+#[test]
+fn b6_flowfield_filtered_expr() {
+    // Sum WHERE Amount = FILTER(>15): ORD1 amounts 20 + 30 = 50.
+    assert_eq!(ok(run_flow("FilteredExpr")), Value::Integer(50));
+}
+
+#[test]
+fn b6_flowfield_max() {
+    assert_eq!(ok(run_flow("MaxOnRead")), Value::Integer(30));
+}
+
+#[test]
+fn b6_flowfield_average() {
+    // Average always returns Decimal: (10+20+30)/3 = 20.0.
+    assert_eq!(ok(run_flow("AvgOnRead")), Value::Decimal(20.0));
+}
+
+#[test]
+fn b6_flowfield_exist_true() {
+    assert_eq!(ok(run_flow("ExistTrue")), Value::Boolean(true));
+}
+
+#[test]
+fn b6_flowfield_empty_sum_is_zero() {
+    // A document with no detail lines sums to 0.
+    assert_eq!(ok(run_flow("EmptySum")), Value::Integer(0));
+}
+
+#[test]
+fn b6_flowfield_empty_exist_is_false() {
+    assert_eq!(ok(run_flow("EmptyExist")), Value::Boolean(false));
+}
+
 // ──────────────────────────── B5: procedure dispatch ───────────────────────
 
 const MATH_LIB: &str = r#"codeunit 50200 "Math Lib"
