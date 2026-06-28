@@ -296,7 +296,12 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
     let units_map = crate::xliff::parse_xliff(&xlf_content);
     let all_units: Vec<crate::xliff::TranslationUnit> = units_map.into_values().collect();
     let untranslated = crate::xliff::find_untranslated(&all_units);
-    let suggestions = crate::xliff::suggest_translations(&untranslated, workspace);
+    // C13: mine this file's already-translated units as a translation memory so
+    // suggestions prefer existing project translations (tm-exact/tm-fuzzy) over
+    // bare symbol-name matching. `from_units` filters to trustworthy pairs.
+    let memory: Vec<&crate::xliff::TranslationUnit> = all_units.iter().collect();
+    let suggestions =
+        crate::xliff::suggest_translations_with_memory(&untranslated, &memory, workspace);
 
     Response {
         id,
