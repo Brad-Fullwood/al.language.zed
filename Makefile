@@ -9,6 +9,8 @@
 #   make grammar   — regenerate the tree-sitter-al parser sources (required before
 #                    `tree-sitter build` from a fresh clone — see F-006)
 #   make language  — regenerate only the Zed-facing languages/al package files
+#   make repro-artifacts — regenerate generated artifacts; fail on any diff (CI drift guard)
+#   make release-dryrun  — read-only release-readiness gate (never publishes)
 #   make clean     — clean all build artifacts
 
 SHELL := /bin/bash
@@ -22,7 +24,12 @@ ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
 WASM_BIN := $(ROOT)/target/wasm32-wasip1/release/zed_al.wasm
 
-.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language clean
+.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language repro-artifacts release-dryrun clean
+
+# Crates that are NOT published to crates.io (publish = false): the root wasm
+# extension plus the binary/harness crates. Everything else under crates/* is a
+# publishable library crate.
+PUBLISH_EXCLUDE := zed-al al-lsp al-explorer al-protocol al-test-harness
 
 # ── Default: rebuild everything ──────────────────────────────────
 build: rust wasm bridges
@@ -175,6 +182,80 @@ language:
 	@echo "=== Regenerating languages/al from al-gen ==="
 	cd tree-sitter-al/generator && cargo run --release --bin al-gen -- --zed-language-only
 	@echo "Zed language package regenerated."
+
+# ── Reproducible generated artifacts (CI drift guard) ────────────
+# Prove the committed generated outputs regenerate with NO diff. On success the
+# working tree stays clean (regeneration is byte-identical); on drift it exits
+# non-zero and leaves the regenerated files for inspection — run `make language`
+# and commit. gen-zed-index has no committed baseline in this repo (the
+# editor-e2e harness generates it on demand into target/), so the index is only
+# checked for determinism; the committed-artifact diff target is languages/al.
+repro-artifacts:
+	@echo "=== Reproducible-artifact check ==="
+	@echo "--- regenerate languages/al + diff (make language) ---"
+	@$(MAKE) --no-print-directory language
+	@if git diff --quiet -- languages/; then \
+		echo "  languages/al: reproducible (matches committed)"; \
+	else \
+		echo "DRIFT: languages/al differs from generator output — run 'make language' and commit:"; \
+		git --no-pager diff --stat -- languages/; \
+		exit 1; \
+	fi
+	@echo "--- gen-zed-index determinism ---"
+	@mkdir -p target
+	@cargo run -q -p al-test-harness --bin gen-zed-index -- "$(ROOT)" > target/zed-index.a.json
+	@cargo run -q -p al-test-harness --bin gen-zed-index -- "$(ROOT)" > target/zed-index.b.json
+	@if diff -q target/zed-index.a.json target/zed-index.b.json >/dev/null; then \
+		echo "  zed-index.json: deterministic"; \
+	else \
+		echo "NONDETERMINISTIC: gen-zed-index output varies between runs"; \
+		diff -u target/zed-index.a.json target/zed-index.b.json | head -40; \
+		exit 1; \
+	fi
+	@echo "Reproducible-artifact check passed."
+
+# ── Release readiness dry-run (READ-ONLY, never publishes) ────────
+# Runs the gates a release would, without uploading anything: repo-slug
+# consistency, version/metadata/grammar-rev alignment, generated-artifact
+# reproducibility, a full native build (incl. the real --features semantic
+# al-lsp), the test suite, and `cargo publish --dry-run` for every publishable
+# crate. zed-al is excluded from build/test (it is a wasm32-wasip1 cdylib; use
+# `make wasm`). See Docs/testing-guide.md §6 for the publish-dry-run caveat:
+# until the first real publish, crates with not-yet-published path-deps report
+# "blocked on unpublished workspace dep (expected)" and do NOT fail the run.
+release-dryrun:
+	@echo "=== Release dry-run (read-only; nothing is published) ==="
+	@echo "--- 1/6 repo-slug consistency ---"
+	@bash scripts/check-repo-consistency.sh
+	@echo "--- 2/6 release hygiene (versions / submodule / grammar rev / generated assets) ---"
+	@bash scripts/check-release-hygiene.sh
+	@echo "--- 3/6 reproducible generated artifacts ---"
+	@$(MAKE) --no-print-directory repro-artifacts
+	@echo "--- 4/6 build workspace (excl zed-al) + real semantic al-lsp ---"
+	cargo build --workspace --exclude zed-al
+	cargo build -p al-lsp --bin al-lsp --features semantic
+	@echo "--- 5/6 test workspace (excl zed-al) ---"
+	cargo test --workspace --exclude zed-al
+	@echo "--- 6/6 cargo publish --dry-run for publishable crates ---"
+	@fail=0; \
+	for dir in crates/*/; do \
+		f="$$dir/Cargo.toml"; \
+		[ -f "$$f" ] || continue; \
+		name=$$(awk -F'"' '/^name[[:space:]]*=/{print $$2; exit}' "$$f"); \
+		case " $(PUBLISH_EXCLUDE) " in *" $$name "*) continue;; esac; \
+		grep -Eq '^publish[[:space:]]*=[[:space:]]*false' "$$f" && continue; \
+		out=$$(cargo publish --dry-run --no-verify -p "$$name" 2>&1); \
+		if [ $$? -eq 0 ]; then \
+			echo "  $$name: OK (dry-run)"; \
+		elif echo "$$out" | grep -q "no matching package named"; then \
+			echo "  $$name: blocked on unpublished workspace dep (expected pre-first-publish)"; \
+		else \
+			echo "  $$name: FAILED"; echo "$$out" | tail -8; fail=1; \
+		fi; \
+	done; \
+	[ $$fail -eq 0 ] || { echo "release-dryrun: a crate failed publish dry-run for a non-dependency reason"; exit 1; }
+	@echo ""
+	@echo "Release dry-run complete (read-only — nothing published)."
 
 # ── Clean ────────────────────────────────────────────────────────
 clean:
