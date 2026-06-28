@@ -136,6 +136,91 @@ fn tools() -> &'static [ToolDef] {
                 )
             },
         },
+        ToolDef {
+            name: "al_suggestevent",
+            method: "suggestEvent",
+            description: "Suggest integration event publishers to subscribe to for a \
+                          given starting point, by tracing the call/event graph. \
+                          Args: query (object) with a `source` discriminated by `type`: \
+                          {type:'procedure', object, procedure?}, {type:'table', table}, \
+                          or {type:'event', object, event}; optional `filterTable` / \
+                          `filterField` restrict results to events exposing that table \
+                          (field) as a `var` parameter.",
+            schema: || {
+                obj_schema(
+                    serde_json::json!({
+                        "query": {
+                            "type": "object",
+                            "description": "Structured event-discovery query.",
+                            "properties": {
+                                "source": {
+                                    "type": "object",
+                                    "description": "Where to start tracing. One of \
+                                        {type:'procedure', object, procedure?}, \
+                                        {type:'table', table}, \
+                                        {type:'event', object, event}.",
+                                    "properties": {
+                                        "type": {
+                                            "type": "string",
+                                            "enum": ["procedure", "table", "event"]
+                                        },
+                                        "object": {"type": "string"},
+                                        "procedure": {"type": "string"},
+                                        "table": {"type": "string"},
+                                        "event": {"type": "string"}
+                                    },
+                                    "required": ["type"]
+                                },
+                                "filterTable": {"type": "string"},
+                                "filterField": {"type": "string"}
+                            },
+                            "required": ["source"]
+                        }
+                    }),
+                    &["query"],
+                )
+            },
+        },
+        ToolDef {
+            name: "al_testclassify",
+            method: "tests.classify",
+            description: "Classify every discovered AL test by WHERE it actually runs \
+                          today. Pure-logic tests run locally on the built-in Rust \
+                          interpreter (no Business Central server); tests that touch the \
+                          database, UI, HTTP or transactions route to live BC. Each entry \
+                          carries a routing `decision` (`interp` = runs locally; \
+                          `interpRecord`/`liveBc`/`snapshot` = needs BC) plus the reasons \
+                          that drove it — so an agent can see the local-vs-needs-BC split \
+                          before running anything.",
+            schema: || obj_schema(serde_json::json!({}), &[]),
+        },
+        ToolDef {
+            name: "al_testcoverage",
+            method: "tests.coverage",
+            description: "Report static test coverage across the workspace: which objects \
+                          and procedures are reached by the project's AL tests (via the \
+                          call graph) and which are uncovered. No live BC required.",
+            schema: || obj_schema(serde_json::json!({}), &[]),
+        },
+        ToolDef {
+            name: "al_depgraph",
+            method: "deps.graph",
+            description: "Build the project's dependency graph from app.json (this app plus \
+                          its declared dependencies). Args: format (string) — 'json' \
+                          (default, structured nodes/edges) or 'dot' (Graphviz source).",
+            schema: || {
+                obj_schema(
+                    serde_json::json!({
+                        "format": {
+                            "type": "string",
+                            "enum": ["json", "dot"],
+                            "description": "Output format; defaults to json."
+                        }
+                    }),
+                    &[],
+                )
+            },
+        },
     ]
 }
 
@@ -362,6 +447,72 @@ mod tests {
         .await
         .expect("response");
         assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    /// C2: every registered tool must advertise a well-formed JSON Schema and a
+    /// non-empty description, and every `required` field must actually be
+    /// declared in `properties` (otherwise an agent cannot satisfy it).
+    #[test]
+    fn every_tool_has_a_valid_schema_and_description() {
+        for t in tools() {
+            assert!(!t.name.trim().is_empty(), "tool name must be non-empty");
+            assert!(
+                !t.method.trim().is_empty(),
+                "{}: method must be non-empty",
+                t.name
+            );
+            assert!(
+                !t.description.trim().is_empty(),
+                "{}: description must be non-empty",
+                t.name
+            );
+
+            let schema = (t.schema)();
+            assert_eq!(
+                schema["type"], "object",
+                "{}: input schema must be an object",
+                t.name
+            );
+            let props = schema["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{}: schema must declare `properties`", t.name));
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{}: schema must declare `required` (array)", t.name));
+            for field in required {
+                let field = field
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{}: required entries must be strings", t.name));
+                assert!(
+                    props.contains_key(field),
+                    "{}: required field `{field}` is not declared in properties",
+                    t.name
+                );
+            }
+        }
+    }
+
+    /// C1: the broadened agent surface (suggest-event, test-classify,
+    /// test-coverage, dependency-graph) is registered and listed.
+    #[tokio::test]
+    async fn tools_list_includes_the_broadened_agent_surface() {
+        let resp = handle_mcp_message(
+            &ws(),
+            &Notify::new(),
+            serde_json::json!({"jsonrpc":"2.0","id":7,"method":"tools/list"}),
+        )
+        .await
+        .expect("response");
+        let list = resp["result"]["tools"].as_array().expect("tools array");
+        let names: Vec<&str> = list.iter().filter_map(|t| t["name"].as_str()).collect();
+        for expected in [
+            "al_suggestevent",
+            "al_testclassify",
+            "al_testcoverage",
+            "al_depgraph",
+        ] {
+            assert!(names.contains(&expected), "missing {expected}: {names:?}");
+        }
     }
 
     #[tokio::test]
