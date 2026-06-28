@@ -6,10 +6,13 @@
 //! - `.zed/debug.json` — debug/launch configuration
 //! - `src/` — source directory
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// Comma-separated list of the built-in template names, for error messages.
+const BUILTIN_TEMPLATE_NAMES: &str = "default, pte, appsource, library, test, copilot, agent, api";
 
 /// Project template type for scaffolding.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -27,6 +30,45 @@ pub enum ProjectTemplate {
     Agent,
     /// API-only extension (REST API pages)
     Api,
+    /// A user-defined template resolved from the templates directory
+    /// (`$AL_TEMPLATES_DIR` or `~/.config/al/templates/<name>/`). Carries the
+    /// resolved on-disk location + parsed descriptor so [`create_project`] can
+    /// materialize it without re-reading the descriptor.
+    Custom(CustomTemplate),
+}
+
+/// A resolved user-defined template: its name, the directory it lives in, and
+/// its parsed `template.json` descriptor. Produced by [`resolve_custom_template`]
+/// (and by [`ProjectTemplate::from_str`] when a name is not a built-in).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomTemplate {
+    /// The template name as requested (a single, validated path component).
+    pub name: String,
+    /// Absolute path to the template directory (`<templates_root>/<name>`).
+    pub dir: PathBuf,
+    /// Parsed `template.json` descriptor.
+    pub descriptor: TemplateDescriptor,
+}
+
+/// The `template.json` descriptor for a user-defined template.
+///
+/// All fields are optional. Schema (camelCase JSON):
+/// - `description`: free-text, informational only.
+/// - `generateId` (bool, default `false`): when `true`, the `{{id}}` placeholder
+///   is replaced with a freshly generated v4 GUID instead of the config id.
+/// - `idFrom` / `idTo` (u32): drive the `{{id_from}}` / `{{id_to}}` placeholders.
+///   `idFrom` defaults to 50100; `idTo` defaults to `idFrom + 49`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TemplateDescriptor {
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub generate_id: bool,
+    #[serde(default)]
+    pub id_from: Option<u32>,
+    #[serde(default)]
+    pub id_to: Option<u32>,
 }
 
 impl FromStr for ProjectTemplate {
@@ -42,10 +84,22 @@ impl FromStr for ProjectTemplate {
             "copilot" => Ok(Self::Copilot),
             "agent" => Ok(Self::Agent),
             "api" => Ok(Self::Api),
-            other => Err(format!(
-                "Unknown template '{}'. Valid: default, pte, appsource, library, test, copilot, agent, api",
-                other
-            )),
+            // Not a built-in: fall back to resolving a user-defined template of
+            // this name from the templates directory. A bad name (path
+            // traversal) or a malformed descriptor is a hard error; a name that
+            // simply has no matching directory is reported as "unknown".
+            _ => match resolve_custom_template(s)? {
+                Some(custom) => Ok(Self::Custom(custom)),
+                None => {
+                    let root = templates_root()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "<no templates directory>".to_string());
+                    Err(format!(
+                        "Unknown template '{s}'. Built-ins: {BUILTIN_TEMPLATE_NAMES}. \
+                         No custom template named '{s}' was found in {root}."
+                    ))
+                }
+            },
         }
     }
 }
@@ -88,6 +142,13 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
             "Directory already contains an AL project: {}",
             dir.display()
         ));
+    }
+
+    // User-defined templates own their entire file tree (including app.json),
+    // so they are materialized directly rather than going through the built-in
+    // app.json/.gitignore/debug.json/starter flow below.
+    if let ProjectTemplate::Custom(custom) = &config.template {
+        return materialize_custom_template(dir, custom, config);
     }
 
     std::fs::create_dir_all(dir.join("src"))
@@ -226,7 +287,351 @@ fn generate_template_files(dir: &Path, config: &ScaffoldConfig) -> Result<Vec<St
             atomic_write(&dir.join(name), api.as_bytes(), "API page")?;
             Ok(vec![name.to_string()])
         }
+        // Custom templates are intercepted in `create_project` and never reach
+        // here. This arm keeps the match exhaustive; reaching it would mean a
+        // future refactor routed a custom template through the built-in flow,
+        // which would silently drop its files — fail loudly instead.
+        ProjectTemplate::Custom(_) => Err(
+            "internal error: custom template reached generate_template_files".to_string(),
+        ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// User-defined (custom) templates — gap C12.
+//
+// A custom template lives at `<templates_root>/<name>/` and contains:
+//   - `template.json` — a [`TemplateDescriptor`].
+//   - `files/`        — the project tree, copied verbatim into the new project
+//                       with `{{placeholder}}` substitution in file contents
+//                       AND in file/directory names.
+//
+// `templates_root` is, in order of precedence:
+//   1. `$AL_TEMPLATES_DIR`
+//   2. `$XDG_CONFIG_HOME/al/templates`
+//   3. `$HOME/.config/al/templates`
+// ---------------------------------------------------------------------------
+
+/// Resolve the templates root directory from the environment, if any.
+fn templates_root() -> Option<PathBuf> {
+    let non_empty = |v: std::ffi::OsString| (!v.is_empty()).then_some(v);
+    if let Some(dir) = std::env::var_os("AL_TEMPLATES_DIR").and_then(non_empty) {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").and_then(non_empty) {
+        return Some(PathBuf::from(xdg).join("al").join("templates"));
+    }
+    if let Some(home) = std::env::var_os("HOME").and_then(non_empty) {
+        return Some(
+            PathBuf::from(home)
+                .join(".config")
+                .join("al")
+                .join("templates"),
+        );
+    }
+    None
+}
+
+/// A template name must be a single, normal path component — no `..`, no path
+/// separators, no absolute prefix. This is the first line of defence against
+/// path traversal via the requested template name (e.g. `../../etc`).
+fn valid_template_name(name: &str) -> bool {
+    if name.is_empty() || name.contains('\0') {
+        return false;
+    }
+    let path = Path::new(name);
+    let mut comps = path.components();
+    matches!(
+        (comps.next(), comps.next()),
+        (Some(Component::Normal(_)), None)
+    )
+}
+
+fn invalid_name_msg(name: &str) -> String {
+    format!(
+        "Invalid template name '{name}': a template name must be a single path \
+         component without '..' or path separators."
+    )
+}
+
+/// Resolve a user-defined template by name from the environment-configured
+/// templates root.
+///
+/// - `Ok(Some(_))` — a valid template directory with a parseable descriptor.
+/// - `Ok(None)`    — no templates root is configured, or no directory of this
+///                   name exists under it (reported upstream as "unknown").
+/// - `Err(_)`      — the name is unsafe, or the descriptor is missing/malformed.
+fn resolve_custom_template(name: &str) -> Result<Option<CustomTemplate>, String> {
+    if !valid_template_name(name) {
+        return Err(invalid_name_msg(name));
+    }
+    match templates_root() {
+        Some(root) => resolve_custom_template_in(&root, name),
+        None => Ok(None),
+    }
+}
+
+/// Resolve a custom template under an explicit `root` (testable without the
+/// process environment). Assumes `name` validity is the caller's concern but
+/// re-checks it defensively.
+fn resolve_custom_template_in(root: &Path, name: &str) -> Result<Option<CustomTemplate>, String> {
+    if !valid_template_name(name) {
+        return Err(invalid_name_msg(name));
+    }
+    let template_dir = root.join(name);
+    if !template_dir.is_dir() {
+        return Ok(None);
+    }
+    let descriptor_path = template_dir.join("template.json");
+    if !descriptor_path.is_file() {
+        return Err(format!(
+            "Custom template '{name}' at {} is missing template.json.",
+            template_dir.display()
+        ));
+    }
+    let raw = std::fs::read_to_string(&descriptor_path).map_err(|e| {
+        format!(
+            "Failed to read template descriptor {}: {e}",
+            descriptor_path.display()
+        )
+    })?;
+    let descriptor: TemplateDescriptor = serde_json::from_str(&raw)
+        .map_err(|e| format!("Invalid template.json for custom template '{name}': {e}"))?;
+    Ok(Some(CustomTemplate {
+        name: name.to_string(),
+        dir: template_dir,
+        descriptor,
+    }))
+}
+
+/// Materialize a resolved custom template into `dir`, applying placeholder
+/// substitution to file contents and to file/directory names.
+fn materialize_custom_template(
+    dir: &Path,
+    custom: &CustomTemplate,
+    config: &ScaffoldConfig,
+) -> Result<ScaffoldResult, String> {
+    let files_root = custom.dir.join("files");
+    if !files_root.is_dir() {
+        return Err(format!(
+            "Custom template '{}' has no 'files/' directory at {}.",
+            custom.name,
+            files_root.display()
+        ));
+    }
+
+    // Compute placeholder values once.
+    let app_id = if custom.descriptor.generate_id {
+        fresh_guid()
+    } else {
+        config.id.clone()
+    };
+    let id_from = custom.descriptor.id_from.unwrap_or(50100);
+    let id_to = custom
+        .descriptor
+        .id_to
+        .unwrap_or_else(|| id_from.saturating_add(49));
+    let substitutions: Vec<(String, String)> = vec![
+        ("{{name}}".to_string(), config.name.clone()),
+        ("{{publisher}}".to_string(), config.publisher.clone()),
+        ("{{version}}".to_string(), config.version.clone()),
+        ("{{runtime}}".to_string(), config.runtime.clone()),
+        ("{{target}}".to_string(), config.target.clone()),
+        ("{{id}}".to_string(), app_id),
+        ("{{id_from}}".to_string(), id_from.to_string()),
+        ("{{id_to}}".to_string(), id_to.to_string()),
+    ];
+    let substitute = |input: &str| -> String {
+        let mut out = input.to_string();
+        for (needle, value) in &substitutions {
+            if out.contains(needle.as_str()) {
+                out = out.replace(needle.as_str(), value);
+            }
+        }
+        out
+    };
+
+    // Gather the template's files (relative to `files/`), rejecting symlinks
+    // and any path that escapes the root.
+    let mut rel_files: Vec<PathBuf> = Vec::new();
+    collect_template_files(&files_root, &files_root, &mut rel_files)?;
+    rel_files.sort();
+
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("Failed to create project directory: {e}"))?;
+
+    let mut created = Vec::new();
+    for rel in &rel_files {
+        // Defence in depth: the source path must be a normal relative path.
+        guard_relative(rel)?;
+        // Substitute placeholders in path components, then re-check — a
+        // substituted value must not be able to inject `..` or an absolute
+        // escape into the destination path.
+        let dest_rel = substitute_path(rel, &substitute)?;
+        guard_relative(&dest_rel)?;
+
+        let src_path = files_root.join(rel);
+        let dest_path = dir.join(&dest_rel);
+        if let Some(parent) = dest_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!("Failed to create directory {}: {e}", parent.display())
+            })?;
+        }
+
+        // Substitute placeholders in UTF-8 contents; copy non-UTF-8 (binary)
+        // assets verbatim.
+        let bytes = std::fs::read(&src_path)
+            .map_err(|e| format!("Failed to read template file {}: {e}", src_path.display()))?;
+        let out_bytes = match String::from_utf8(bytes) {
+            Ok(text) => substitute(&text).into_bytes(),
+            Err(err) => err.into_bytes(),
+        };
+        let rel_display = dest_rel.to_string_lossy().replace('\\', "/");
+        atomic_write(&dest_path, &out_bytes, &rel_display)?;
+        created.push(rel_display);
+    }
+
+    if created.is_empty() {
+        return Err(format!(
+            "Custom template '{}' contains no files under {}.",
+            custom.name,
+            files_root.display()
+        ));
+    }
+    created.sort();
+
+    Ok(ScaffoldResult {
+        project_dir: dir.display().to_string(),
+        files_created: created,
+    })
+}
+
+/// Recursively collect regular files under `dir`, pushing their paths relative
+/// to `root`. Symlinks are rejected (a traversal vector); directory entries are
+/// recursed into. Uses `DirEntry::file_type`, which does not traverse symlinks.
+fn collect_template_files(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read template directory {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read template entry: {e}"))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Failed to stat {}: {e}", path.display()))?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "Refusing to materialize symlink in template (path traversal risk): {}",
+                path.display()
+            ));
+        }
+        if file_type.is_dir() {
+            collect_template_files(root, &path, out)?;
+        } else if file_type.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|_| format!("Template path escaped root: {}", path.display()))?;
+            out.push(rel.to_path_buf());
+        }
+    }
+    Ok(())
+}
+
+/// Reject any relative path that contains a `..` component or an absolute
+/// prefix/root. Mirrors the daemon's absolute-path guard for project dirs.
+fn guard_relative(rel: &Path) -> Result<(), String> {
+    if rel.as_os_str().is_empty() {
+        return Err("empty template file path".to_string());
+    }
+    for comp in rel.components() {
+        match comp {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(format!(
+                    "path traversal ('..') is not allowed in template path: {}",
+                    rel.display()
+                ));
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "absolute paths are not allowed in template path: {}",
+                    rel.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Apply placeholder substitution to each `Normal` component of a relative path.
+fn substitute_path(
+    rel: &Path,
+    substitute: &impl Fn(&str) -> String,
+) -> Result<PathBuf, String> {
+    let mut out = PathBuf::new();
+    for comp in rel.components() {
+        match comp {
+            Component::Normal(os) => {
+                let s = os.to_str().ok_or_else(|| {
+                    format!("non-UTF-8 path component in template: {}", rel.display())
+                })?;
+                out.push(substitute(s));
+            }
+            Component::CurDir => {}
+            _ => {
+                return Err(format!(
+                    "unexpected path component in template: {}",
+                    rel.display()
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Generate a fresh v4-shaped GUID (canonical lowercase, unbraced) for the
+/// `{{id}}` placeholder when a descriptor requests `generateId`.
+///
+/// al-analysis has no RNG dependency, so this seeds a SplitMix64 stream from the
+/// wall clock, the process id, and a monotonic counter. That is *not*
+/// cryptographic randomness, but a scaffold's app id only needs to be unique,
+/// which this comfortably provides (distinct calls advance the counter).
+fn fresh_guid() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let seed = nanos
+        ^ ((std::process::id() as u64) << 32)
+        ^ COUNTER.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+
+    let hi = splitmix64(seed);
+    let lo = splitmix64(seed ^ 0xD1B5_4A32_D192_ED03);
+    let mut b = [0u8; 16];
+    b[..8].copy_from_slice(&hi.to_le_bytes());
+    b[8..].copy_from_slice(&lo.to_le_bytes());
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // variant 1 (RFC 4122)
+
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14],
+        b[15]
+    )
+}
+
+fn splitmix64(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
@@ -912,5 +1317,230 @@ mod tests {
         // The header must end up as "My""App Library".
         assert!(src.contains(r#""My""App Library""#));
         assert_al_parses("library codeunit with escaped quote", &src);
+    }
+
+    // -- Custom (user-defined) templates — gap C12 ---------------------------
+
+    /// Write a custom template (`template.json` + `files/`) under `root`.
+    fn write_custom_template(root: &Path, name: &str, descriptor: &str, files: &[(&str, &str)]) {
+        let tdir = root.join(name);
+        std::fs::create_dir_all(tdir.join("files")).unwrap();
+        std::fs::write(tdir.join("template.json"), descriptor).unwrap();
+        for (rel, content) in files {
+            let p = tdir.join("files").join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(p, content).unwrap();
+        }
+    }
+
+    #[test]
+    fn custom_template_materializes_with_substitution() {
+        let store = tempfile::tempdir().unwrap();
+        write_custom_template(
+            store.path(),
+            "mytmpl",
+            r#"{ "description": "demo", "generateId": true, "idFrom": 60000 }"#,
+            &[
+                (
+                    "app.json",
+                    r#"{"id":"{{id}}","name":"{{name}}","publisher":"{{publisher}}","idRanges":[{"from":{{id_from}},"to":{{id_to}}}]}"#,
+                ),
+                (
+                    "src/Main.Codeunit.al",
+                    "// {{name}} by {{publisher}} starting at {{id_from}}\n",
+                ),
+            ],
+        );
+
+        let custom = resolve_custom_template_in(store.path(), "mytmpl")
+            .unwrap()
+            .unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        let target = proj.path().join("new");
+        let config = ScaffoldConfig {
+            name: "Acme App".to_string(),
+            publisher: "Acme".to_string(),
+            id: "00000000-0000-0000-0000-000000000000".to_string(),
+            template: ProjectTemplate::Custom(custom),
+            ..Default::default()
+        };
+
+        let result = create_project(&target, &config).unwrap();
+        assert!(result.files_created.iter().any(|f| f == "app.json"));
+        assert!(result
+            .files_created
+            .iter()
+            .any(|f| f == "src/Main.Codeunit.al"));
+        // No built-in scaffolding is imposed on a custom template.
+        assert!(!target.join(".gitignore").exists());
+        assert!(!target.join(".zed/debug.json").exists());
+
+        let app = std::fs::read_to_string(target.join("app.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&app).unwrap();
+        assert_eq!(parsed["name"], "Acme App");
+        assert_eq!(parsed["publisher"], "Acme");
+        assert_eq!(parsed["idRanges"][0]["from"], 60000);
+        assert_eq!(parsed["idRanges"][0]["to"], 60049);
+        // generateId -> a fresh GUID, not the all-zero config id.
+        let id = parsed["id"].as_str().unwrap();
+        assert_ne!(id, "00000000-0000-0000-0000-000000000000");
+        assert_eq!(id.len(), 36);
+
+        let main = std::fs::read_to_string(target.join("src/Main.Codeunit.al")).unwrap();
+        assert!(main.contains("Acme App by Acme starting at 60000"));
+    }
+
+    #[test]
+    fn custom_template_without_generate_id_uses_config_id() {
+        let store = tempfile::tempdir().unwrap();
+        write_custom_template(
+            store.path(),
+            "t",
+            r#"{}"#,
+            &[("app.json", r#"{"id":"{{id}}"}"#)],
+        );
+        let custom = resolve_custom_template_in(store.path(), "t").unwrap().unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            id: "11111111-2222-3333-4444-555555555555".to_string(),
+            template: ProjectTemplate::Custom(custom),
+            ..Default::default()
+        };
+        create_project(&proj.path().join("p"), &config).unwrap();
+        let app = std::fs::read_to_string(proj.path().join("p/app.json")).unwrap();
+        assert!(app.contains("11111111-2222-3333-4444-555555555555"));
+    }
+
+    #[test]
+    fn custom_template_substitutes_path_placeholders() {
+        let store = tempfile::tempdir().unwrap();
+        write_custom_template(
+            store.path(),
+            "t",
+            r#"{}"#,
+            &[("src/{{name}}.Codeunit.al", "ok")],
+        );
+        let custom = resolve_custom_template_in(store.path(), "t").unwrap().unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            name: "Widget".to_string(),
+            template: ProjectTemplate::Custom(custom),
+            ..Default::default()
+        };
+        let result = create_project(&proj.path().join("p"), &config).unwrap();
+        assert!(
+            result
+                .files_created
+                .iter()
+                .any(|f| f == "src/Widget.Codeunit.al"),
+            "files: {:?}",
+            result.files_created
+        );
+        assert!(proj.path().join("p/src/Widget.Codeunit.al").exists());
+    }
+
+    #[test]
+    fn resolve_custom_rejects_traversal_name() {
+        let store = tempfile::tempdir().unwrap();
+        let err = resolve_custom_template_in(store.path(), "../evil").unwrap_err();
+        assert!(err.contains("Invalid template name"), "{err}");
+        assert!(resolve_custom_template_in(store.path(), "a/b").is_err());
+        assert!(resolve_custom_template_in(store.path(), "..").is_err());
+        assert!(resolve_custom_template_in(store.path(), "").is_err());
+    }
+
+    #[test]
+    fn resolve_custom_unknown_returns_none() {
+        let store = tempfile::tempdir().unwrap();
+        assert!(resolve_custom_template_in(store.path(), "nope")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn resolve_custom_missing_descriptor_errors() {
+        let store = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(store.path().join("t/files")).unwrap();
+        let err = resolve_custom_template_in(store.path(), "t").unwrap_err();
+        assert!(err.contains("missing template.json"), "{err}");
+    }
+
+    #[test]
+    fn resolve_custom_parses_descriptor() {
+        let store = tempfile::tempdir().unwrap();
+        write_custom_template(
+            store.path(),
+            "t",
+            r#"{"generateId": true, "idFrom": 70000, "idTo": 70099, "description": "d"}"#,
+            &[("app.json", "{}")],
+        );
+        let custom = resolve_custom_template_in(store.path(), "t").unwrap().unwrap();
+        assert_eq!(custom.name, "t");
+        assert!(custom.descriptor.generate_id);
+        assert_eq!(custom.descriptor.id_from, Some(70000));
+        assert_eq!(custom.descriptor.id_to, Some(70099));
+    }
+
+    #[test]
+    fn resolve_custom_malformed_descriptor_errors() {
+        let store = tempfile::tempdir().unwrap();
+        write_custom_template(store.path(), "t", r#"{ not json"#, &[("app.json", "{}")]);
+        let err = resolve_custom_template_in(store.path(), "t").unwrap_err();
+        assert!(err.contains("Invalid template.json"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_template_rejects_symlink() {
+        let store = tempfile::tempdir().unwrap();
+        let tdir = store.path().join("t");
+        std::fs::create_dir_all(tdir.join("files")).unwrap();
+        std::fs::write(tdir.join("template.json"), "{}").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", tdir.join("files/leak.al")).unwrap();
+
+        let custom = resolve_custom_template_in(store.path(), "t").unwrap().unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            template: ProjectTemplate::Custom(custom),
+            ..Default::default()
+        };
+        let err = create_project(&proj.path().join("p"), &config).unwrap_err();
+        assert!(err.contains("symlink"), "{err}");
+    }
+
+    #[test]
+    fn from_str_unknown_template_has_clear_error() {
+        let err = "totally-bogus-template-xyz"
+            .parse::<ProjectTemplate>()
+            .unwrap_err();
+        assert!(err.contains("Unknown template"), "{err}");
+        assert!(err.contains("totally-bogus-template-xyz"), "{err}");
+    }
+
+    #[test]
+    fn guard_relative_blocks_parent_and_absolute() {
+        assert!(guard_relative(Path::new("a/b.al")).is_ok());
+        assert!(guard_relative(Path::new("../a")).is_err());
+        assert!(guard_relative(Path::new("a/../../b")).is_err());
+        assert!(guard_relative(Path::new("/abs")).is_err());
+    }
+
+    #[test]
+    fn fresh_guid_is_well_formed_and_distinct() {
+        let a = fresh_guid();
+        let b = fresh_guid();
+        assert_eq!(a.len(), 36);
+        assert_ne!(a, b);
+        for (i, &c) in a.as_bytes().iter().enumerate() {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                assert_eq!(c, b'-', "expected hyphen at {i}: {a}");
+            } else {
+                assert!(c.is_ascii_hexdigit(), "non-hex at {i}: {a}");
+            }
+        }
+        // version-4 nibble
+        assert_eq!(a.as_bytes()[14], b'4', "{a}");
     }
 }

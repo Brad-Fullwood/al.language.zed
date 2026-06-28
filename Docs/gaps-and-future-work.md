@@ -80,10 +80,38 @@ it** or **mark/rename it** so the surface matches reality.
 | C9 | 🟢 | Tests | Dynamic statement/branch coverage from interpreter execution; expand mutators; make survival causes explicit when no interpreter-runnable test covers a mutant | `ROADMAP.md` (Native Test Runtime) |
 | C10 | 🟢 | Emit | Validate natively-emitted `.app`s against a live BC tenant before broadening compatibility claims; expand fixtures (profiles, permissions, reports, translations, control add-ins) | `ROADMAP.md` (Native App Emission) |
 | C11 | 🟢 | Toolchain | Optional custom `dotnet` executable path for nonstandard environments | `ROADMAP.md` (Architecture Unification); README |
-| C12 | 🟢 | Scaffolding | Custom/user-defined project templates (today the template set is fixed) | `scaffold.rs` |
+| C12 | ✅ | Scaffolding | Custom/user-defined project templates — **implemented** (`al new --template <name>` falls back to a user template dir when `<name>` is not a built-in). See the note below for the dir location + `template.json` schema. | `scaffold.rs` |
 | C13 | 🟢 | XLIFF | Machine-translation / translation-memory backends for `suggest` (today symbol-name matching only) | `xliff.rs:729` |
 | C14 | 🟢 | Docs/process | Architecture diagrams; a tester guide with minimal reproducible report templates; a reproducible generated-artifact CI job + a release dry-run command | `ROADMAP.md` (Documentation Debt, Release Hygiene) |
 | C15 | 🟢 | Analysis | Graph-based affected-test detection; resolve indirect calls (events, interface dispatch) in coverage | `ROADMAP.md`; `queries/test_coverage.rs` |
+
+> **C12 — custom project templates (implemented).** When `al new --template <name>`
+> is given a name that is not a built-in (`default`, `pte`, `appsource`, `library`,
+> `test`, `copilot`, `agent`, `api`), `scaffold.rs` resolves a *user-defined*
+> template by that name from a templates directory.
+>
+> **Templates directory** (first match wins): `$AL_TEMPLATES_DIR`, else
+> `$XDG_CONFIG_HOME/al/templates`, else `~/.config/al/templates`. A template lives
+> at `<templates_root>/<name>/` and contains:
+> - `template.json` — the descriptor (see below).
+> - `files/` — the project tree, copied into the new project. `{{placeholder}}`
+>   tokens are substituted in **file contents and in file/directory names**.
+>
+> **Placeholders:** `{{name}}`, `{{publisher}}`, `{{version}}`, `{{runtime}}`,
+> `{{target}}`, `{{id}}`, `{{id_from}}`, `{{id_to}}`.
+>
+> **`template.json` schema** (all fields optional, camelCase):
+> | field | type | default | effect |
+> |---|---|---|---|
+> | `description` | string | `""` | informational only |
+> | `generateId` | bool | `false` | when `true`, `{{id}}` → a fresh v4 GUID (else the config id) |
+> | `idFrom` | number | `50100` | value of `{{id_from}}` |
+> | `idTo` | number | `idFrom + 49` | value of `{{id_to}}` |
+>
+> **Security:** template names must be a single path component (no `..`, no path
+> separators, no absolute paths); the materialized file paths are re-checked for
+> `..`/absolute escapes after substitution; symlinks inside `files/` are refused.
+> Unknown names (no built-in, no matching template dir) produce a clear error.
 
 ---
 
