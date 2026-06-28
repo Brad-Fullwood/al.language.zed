@@ -105,6 +105,43 @@ Where Microsoft is genuinely better — exact compile-time semantic validation, 
 and authoritative runtime semantics — this project keeps the Microsoft path one setting away
 (`al.useOfficialCompiler`, `al.useOfficialLsp`, `al.useOfficialDap`).
 
+## Platform support
+
+The toolchain targets **Linux, macOS, and Windows**, but not every surface is
+available on every platform. The split is structural: the long-lived **daemon**
+and its only client, **`al-explorer`**, communicate over a Unix-domain socket
+(`AF_UNIX`), which Zed/Business-Central toolchains have on Unix but which this
+project does **not** wire up on Windows. The `al-lsp` language server, the MCP
+server, the LSP/DAP transports, and the entire analysis engine are
+platform-independent and run everywhere.
+
+This is honest gating, not a Windows port: on Windows the daemon-backed surfaces
+are compiled out (`#[cfg(unix)]`) and replaced with stubs that print a clear,
+actionable message and exit non-zero, rather than panicking or failing
+cryptically. A native Windows transport (e.g. named pipes or loopback TCP) is
+tracked as future work — see gap **B16** in
+[gaps-and-future-work.md](./gaps-and-future-work.md).
+
+| Surface | Linux / macOS | Windows | Why |
+| --- | --- | --- | --- |
+| `al-lsp` language server (`--stdio`): parse, symbols, completions, hover, definitions, references, rename, **formatting**, **linting/diagnostics**, folding, semantic tokens, inlay hints, CodeLens, code actions | ✅ | ✅ | In-process; no socket. This is everything the Zed extension needs to edit AL. |
+| MCP context server (`al-lsp mcp`) | ✅ | ✅ | Runs in-process over **stdio** with its own `Workspace`; does **not** use the daemon. |
+| Native DAP debug adapter (`al-lsp --dap`) | ✅ | ✅\* | Portable transport; \*live debug still needs the Microsoft toolchain/BC runtime, which is orthogonal to the OS. |
+| `al-lsp daemon` (long-lived shared backend) | ✅ | ❌ | Binds an `AF_UNIX` socket; the stub returns a clear "use `--stdio`/`--dap` instead" error. |
+| `al-explorer` CLI + TUI (compile, package, download-symbols, analyses, test runner, profiler, object explorer, CLI `format`/`lint`, …) | ✅ | ❌ | Connects to the daemon over a Unix socket; on Windows `run()` prints the unsupported-platform message and exits non-zero. |
+| Zed tasks (`languages/al/tasks.json`) | ✅ | ❌ | Every task shells out to `al-explorer`, so they inherit its Unix-only status. |
+
+Two clarifications that the table can blur:
+
+- **Formatting and linting work on Windows in the editor.** They are LSP
+  features served directly by `al-lsp`, not by `al-explorer`. Only the
+  `al-explorer format` / `al-explorer lint` *task wrappers* (and other tasks)
+  are Unix-only; format-on-save and inline diagnostics come from the language
+  server and are available everywhere.
+- **MCP is portable.** Although AI-agent tooling is sometimes assumed to ride
+  the daemon, `al-lsp mcp` is a self-contained stdio server. It is available on
+  Windows wherever the `al-lsp` binary ships.
+
 ## Document map
 
 Continue to [01 — Architecture](./01-architecture.md) for crates, binaries, and runtime modes, or
