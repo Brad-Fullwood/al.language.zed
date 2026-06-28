@@ -80,18 +80,139 @@ async fn mcp_initialize_and_list_tools() {
     .await;
     let listed = read_until_id(&mut reader, 2).await;
 
-    let tools: Vec<String> = listed["result"]["tools"]
-        .as_array()
-        .expect("tools array")
+    let tool_objs = listed["result"]["tools"].as_array().expect("tools array");
+    let tools: Vec<String> = tool_objs
         .iter()
         .filter_map(|t| t["name"].as_str().map(str::to_string))
         .collect();
-    for expected in ["al_build", "al_symbolsearch", "al_deadcode"] {
+    // The official-surface staples plus this project's broadened agent tools
+    // (C1: suggest-event, test-classify, test-coverage, dependency-graph).
+    for expected in [
+        "al_build",
+        "al_symbolsearch",
+        "al_deadcode",
+        "al_suggestevent",
+        "al_testclassify",
+        "al_testcoverage",
+        "al_depgraph",
+    ] {
         assert!(
             tools.iter().any(|t| t == expected),
             "MCP tool `{expected}` missing; got {tools:?}"
         );
     }
+
+    // C2: every advertised tool must carry a non-empty description and a
+    // well-formed JSON Schema whose `required` fields are all declared in
+    // `properties` (else an agent cannot satisfy the contract).
+    for t in tool_objs {
+        let name = t["name"].as_str().expect("tool name");
+        assert!(
+            t["description"].as_str().is_some_and(|d| !d.trim().is_empty()),
+            "tool `{name}` has an empty description"
+        );
+        let schema = &t["inputSchema"];
+        assert_eq!(schema["type"], "object", "tool `{name}` schema not an object");
+        let props = schema["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("tool `{name}` schema missing `properties`"));
+        let required = schema["required"]
+            .as_array()
+            .unwrap_or_else(|| panic!("tool `{name}` schema missing `required` array"));
+        for field in required {
+            let field = field
+                .as_str()
+                .unwrap_or_else(|| panic!("tool `{name}` required entry not a string"));
+            assert!(
+                props.contains_key(field),
+                "tool `{name}` requires `{field}` but does not declare it in properties"
+            );
+        }
+    }
+
+    child.start_kill().ok();
+}
+
+/// Mirror of `al_test::router::RoutingDecision::runs_locally` for the wire form
+/// — only `interp` actually executes on the built-in interpreter today; the
+/// other decisions route to live Business Central. Kept in lock-step with the
+/// router (the harness crate does not depend on `al-test`).
+fn decision_runs_locally(decision: &str) -> bool {
+    decision == "interp"
+}
+
+/// C2 routing detail: the `al_testclassify` tool must surface, per discovered
+/// test, whether it runs locally vs needs BC. The bundled fixture ships a
+/// pure-logic test codeunit (`PureLogicTest.Codeunit.al`), so at least one
+/// method must classify as locally runnable.
+#[tokio::test]
+async fn mcp_testclassify_reports_local_vs_bc_routing() {
+    let mut child = Command::new(al_lsp_binary())
+        .arg("mcp")
+        .arg("--project")
+        .arg(test_project_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn `al-lsp mcp`");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "smoke", "version": "0"}}
+        }),
+    )
+    .await;
+    let _ = read_until_id(&mut reader, 1).await;
+    send(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .await;
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {"name": "al_testclassify", "arguments": {}}
+        }),
+    )
+    .await;
+    let resp = read_until_id(&mut reader, 5).await;
+    assert_eq!(resp["result"]["isError"], false, "classify errored: {resp}");
+
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("classify text content");
+    let payload: Value = serde_json::from_str(text).expect("classify output is JSON");
+    let classifications = payload["classifications"]
+        .as_array()
+        .expect("classifications array");
+    assert!(
+        !classifications.is_empty(),
+        "fixture ships a test codeunit, so classifications must be non-empty: {text}"
+    );
+
+    let known = ["interp", "interpRecord", "liveBc", "snapshot"];
+    let mut saw_local = false;
+    for c in classifications {
+        let decision = c["decision"].as_str().expect("each test has a decision");
+        assert!(
+            known.contains(&decision),
+            "unknown routing decision `{decision}`"
+        );
+        saw_local |= decision_runs_locally(decision);
+    }
+    assert!(
+        saw_local,
+        "the pure-logic fixture test must classify as locally runnable: {text}"
+    );
 
     child.start_kill().ok();
 }

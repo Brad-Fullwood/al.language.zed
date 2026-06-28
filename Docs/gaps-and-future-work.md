@@ -87,8 +87,8 @@ it** or **mark/rename it** so the surface matches reality.
 
 | # | Severity | Area | Item | Source |
 |---|---|---|---|---|
-| C1 | 🟢 | MCP | Add tools: `suggest-event`, `test-classify`, `test-coverage`, XLIFF, package/dependency inspection, code-action suggestions | `ROADMAP.md` (AI And MCP) |
-| C2 | 🟢 | MCP | Schema tests for every tool's input/output; include routing details in `al_runtests` output (which tests ran locally vs needed BC) | `ROADMAP.md` |
+| C1 | 🟡 | MCP | PARTIAL — broadened the MCP tool registry with four agent-useful tools mapped to existing daemon RPCs: `al_suggestevent`→`suggestEvent`, `al_testclassify`→`tests.classify`, `al_testcoverage`→`tests.coverage`, `al_depgraph`→`deps.graph` (each with a clear description + JSON-Schema input). **Remaining:** XLIFF and code-action suggestion tools. | `crates/al-lsp/src/server/mcp.rs`; `ROADMAP.md` (AI And MCP) |
+| C2 | 🟡 | MCP | PARTIAL — added schema tests (in-crate `mcp.rs` unit tests + `al-test-harness/tests/mcp_stdio.rs`) asserting every tool advertises a non-empty description and a well-formed input schema (object, `required` array whose fields are all declared in `properties`), and that `tools/list` returns the registry; `al_testclassify` output is exercised end-to-end and asserted to carry per-test local-vs-needs-BC routing (`decision`, mirroring the router's `runs_locally`/`execution_note`). **Remaining:** output-schema declarations for tools; routing detail in `al_runtests` output itself. | `crates/al-test-harness/tests/mcp_stdio.rs`; `crates/al-test/src/router.rs`; `ROADMAP.md` |
 | C3 | 🟢 | MCP | Agent-oriented diagnostics for missing symbols / BC config / semantic bridge / source-unavailable navigation | `ROADMAP.md` |
 | C4 | 🟢 | Zed UX | Tasks for affected tests, snapshot diff/replay, `deps-graph`, XLIFF refresh/untranslated/suggest, table impact | `ROADMAP.md` (Zed UX) |
 | C5 | 🟢 | Zed UX | Restore settings-schema registration on Stable once the 0.8 extension API ships to the registry; add smoke tests (binary download, LSP/DAP/MCP startup, task exec) | `ROADMAP.md`; `02-zed-extension.md` |
