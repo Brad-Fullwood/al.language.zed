@@ -806,4 +806,79 @@ mod tests {
         assert_eq!(results[0].fields.len(), 1);
         assert_eq!(results[0].methods.len(), 1);
     }
+
+    // ----- C7: `appLocalFolderPaths` — what is actually supported -----
+    //
+    // The `al.appLocalFolderPaths` setting is parsed into `AlConfig`
+    // (`al-project`) but is NOT yet wired into symbol loading — nothing reads
+    // that field to feed paths into the index. What IS supported, and what such
+    // wiring would ultimately call, is loading `.app` packages from an
+    // *arbitrary directory* via `SymbolIndex::load_packages`. This test pins
+    // that supported behavior: a package dropped in a non-`.alpackages` folder
+    // resolves, its objects become queryable, and the index records the folder
+    // the symbols came from.
+
+    /// Build a minimal NAVX `.app` (header + ZIP of NavxManifest.xml +
+    /// SymbolReference.json) so the loader has a real package to read.
+    fn build_app(name: &str, table_id: i32, table_name: &str) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let manifest = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Package><App Id="00000000-0000-0000-0000-000000000001" Name="{name}" Publisher="Contoso" Version="1.0.0.0" /></Package>"#
+        );
+        let symbols = format!(
+            r#"{{ "Tables": [ {{ "Id": {table_id}, "Name": "{table_name}", "Fields": [], "Methods": [] }} ] }}"#
+        );
+
+        let mut data = Vec::new();
+        data.extend_from_slice(b"NAVX");
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 32]);
+
+        let mut zip_buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut zip_buf));
+            let opts = SimpleFileOptions::default();
+            zip.start_file("NavxManifest.xml", opts).unwrap();
+            zip.write_all(manifest.as_bytes()).unwrap();
+            zip.start_file("SymbolReference.json", opts).unwrap();
+            zip.write_all(symbols.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        data.extend_from_slice(&zip_buf);
+        data
+    }
+
+    #[test]
+    fn load_packages_resolves_app_from_an_arbitrary_local_folder() {
+        // A folder that is deliberately NOT `.alpackages` — i.e. the kind of
+        // path a user would list in `appLocalFolderPaths`.
+        let dir = tempfile::tempdir().unwrap();
+        let local_folder = dir.path().join("local-apps");
+        std::fs::create_dir_all(&local_folder).unwrap();
+        let app_path = local_folder.join("Contoso_LocalLib.app");
+        std::fs::write(&app_path, build_app("Local Lib", 50123, "Local Widget")).unwrap();
+
+        let index = SymbolIndex::new();
+        let loaded = index.load_packages(&[app_path.clone()]);
+
+        // The package parsed and contributed its object...
+        assert_eq!(loaded.len(), 1, "the local-folder .app should load");
+        assert_eq!(loaded[0].name, "Local Lib");
+
+        // ...the object is queryable through the normal index...
+        let hits = index.get_by_name("Local Widget");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, 50123);
+        assert_eq!(hits[0].kind, ObjectKind::Table);
+
+        // ...and the index records the exact local folder the symbols came from
+        // (the resolution path that `appLocalFolderPaths` would drive).
+        assert_eq!(
+            index.app_path("Local Lib").as_deref(),
+            Some(app_path.as_path())
+        );
+    }
 }

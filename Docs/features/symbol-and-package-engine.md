@@ -124,12 +124,40 @@ definitions, event discovery, and impact analysis — so all of those are fast f
   `al.downloadSymbolsNuget`, `al.clearSymbolCache`.
 - **MCP:** `al_downloadsymbols`, `al_symbolsearch`.
 
+## Symbol sources & `appLocalFolderPaths`
+
+The index loads `.app` packages from three places:
+
+- the project's `.alpackages/` (the default, scanned automatically);
+- packages downloaded on demand via the NuGet / BC-server backends above;
+- any **arbitrary folder** passed to `SymbolIndex::load_packages` — the loader reads a `.app` from any
+  path, indexes its objects, and records the originating path (`app_path`) for navigation.
+
+The `al.appLocalFolderPaths` setting — the way the Microsoft AL extension points at extra local `.app`
+folders — is **parsed into `AlConfig`** (`al-project` `config.rs`) **but is not yet wired into symbol
+loading**: nothing reads that field to feed those folders into the index, so setting it today has no
+effect on which packages are resolved. The underlying capability it would drive (loading a `.app` from
+a non-`.alpackages` folder) already works and is regression-tested
+(`al-symbols` `index.rs::load_packages_resolves_app_from_an_arbitrary_local_folder`); only the
+config→loader plumbing is outstanding. Until it lands, place extra packages in `.alpackages/`.
+
 ## Limitations & roadmap
 
-- `.app` symbols expose **public API metadata, not call-site bodies**, so cross-package "who calls
-  this" cannot be recovered from package symbols alone (workspace source fills this in).
+- `.app` symbols expose the **public API declaration, not call-site bodies**. A package entry carries
+  an object's signatures, fields, keys, enum values and properties, but procedure *bodies* are
+  compiled away — they are never shipped in a symbol package. Consequences:
+  - When a package has no embedded source, navigation opens a **reconstructed outline** (see
+    `virtual_file::render_outline`): valid AL with full signatures but no `begin…end` bodies. That
+    virtual file is now prefixed with an explicit header (`virtual_file::OUTLINE_NOTE`) stating it is
+    the public API only, with bodies unavailable, so the reader is never misled into thinking an empty
+    body means an empty method.
+  - The `source` query (`al-explorer source` / daemon `source`) returns the same outline with a
+    structured `note` — *"Rendered from symbol metadata … no implementation bodies"*.
+  - Cross-package "who calls this" cannot be recovered from package symbols alone; workspace source
+    fills this in (affected-test selection treats `.app`-only declarations as having no call sites —
+    see gap B7).
 - 🟡 BC-server downloads don't yet use the NuGet path's explicit concurrency-limit/dedupe controls.
 - `ROADMAP.md` (Symbol And Package Engine): add benchmark-grade cold/warm load data, make the symbol
   perf audit CI-deterministic with fixtures, add byte-level memory accounting, distinguish embedded
-  source vs generated outline vs metadata-only in user output, and surface `appLocalFolderPaths` in
-  docs/tests.
+  source vs generated outline vs metadata-only in user output, and wire `appLocalFolderPaths` into the
+  loader (it is parsed today; see above).
