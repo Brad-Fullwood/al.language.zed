@@ -13,7 +13,7 @@
 //! per-test timeout, and channel-closed detection.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -26,6 +26,7 @@ use crate::error::TestRunnerError;
 use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
 use crate::session::{RunOptions, TestEvent, TestId, TestSession};
 use al_analysis::queries::tests::{discover_tests, TestCodeunit};
+use al_runtime::interpreter::coverage::{Coverage, DynamicCoverageReport};
 use al_runtime::interpreter::dispatch::{DispatchCtx, DispatchMode};
 use al_runtime::interpreter::eval_stmt::eval_stmt;
 use al_runtime::interpreter::scope::{CallFrame, Eval, ScopeStack};
@@ -36,13 +37,59 @@ use al_workspace::Workspace;
 /// Phase 2 scope: pure-logic tests only. Tests that touch records, HTTP,
 /// or any other DB-level feature should be routed to `LiveBcMode` by the
 /// router; `InterpMode` simply propagates the `Eval::Error` they produce.
+///
+/// ## Dynamic coverage (gap C9)
+///
+/// Construct with [`InterpMode::with_coverage`] to additionally collect
+/// *dynamic* statement/branch coverage while the tests run (the default
+/// [`InterpMode::new`] leaves it off — static call-graph coverage via
+/// `al-analysis` is unaffected either way). After a [`TestSession::run`] call,
+/// read the aggregated, per-file report via [`InterpMode::coverage_report`].
 pub struct InterpMode {
     pub workspace: Arc<Workspace>,
+    /// When `true`, each test runs with an interpreter coverage collector and
+    /// its hits are merged into `coverage`. Off by default (zero-cost).
+    collect_coverage: bool,
+    /// Aggregated dynamic coverage across every test in the run. Shared with
+    /// the per-codeunit worker tasks (which may run on blocking threads).
+    coverage: Arc<Mutex<Coverage>>,
 }
 
 impl InterpMode {
+    /// Construct a backend that runs tests without collecting dynamic coverage
+    /// (the historical behaviour). Static coverage is produced separately.
     pub fn new(workspace: Arc<Workspace>) -> Self {
-        Self { workspace }
+        Self {
+            workspace,
+            collect_coverage: false,
+            coverage: Arc::new(Mutex::new(Coverage::new())),
+        }
+    }
+
+    /// Construct a backend in "dynamic coverage" mode: runs tests *and* records
+    /// which source lines/branches each executes (gap C9). Read the result with
+    /// [`InterpMode::coverage_report`] after `run` completes.
+    pub fn with_coverage(workspace: Arc<Workspace>) -> Self {
+        Self {
+            workspace,
+            collect_coverage: true,
+            coverage: Arc::new(Mutex::new(Coverage::new())),
+        }
+    }
+
+    /// True when this backend is collecting dynamic coverage.
+    pub fn collects_coverage(&self) -> bool {
+        self.collect_coverage
+    }
+
+    /// The aggregated per-file dynamic-coverage report gathered during the last
+    /// `run`. Empty when coverage collection is disabled or `run` has not been
+    /// called.
+    pub fn coverage_report(&self) -> DynamicCoverageReport {
+        self.coverage
+            .lock()
+            .map(|c| c.report())
+            .unwrap_or_default()
     }
 }
 
@@ -114,6 +161,8 @@ impl TestSession for InterpMode {
             for (codeunit_id, codeunit_name, methods) in work {
                 let ws = Arc::clone(&self.workspace);
                 let codeunits_clone = codeunits.clone();
+                let collect_coverage = self.collect_coverage;
+                let coverage = Arc::clone(&self.coverage);
                 join_set.spawn_blocking(move || {
                     run_codeunit_interp(
                         &ws,
@@ -122,6 +171,8 @@ impl TestSession for InterpMode {
                         &codeunit_name,
                         &methods,
                         timeout_dur,
+                        collect_coverage,
+                        &coverage,
                     )
                 });
             }
@@ -143,6 +194,8 @@ impl TestSession for InterpMode {
                 let ws = Arc::clone(&self.workspace);
                 let codeunits_clone = codeunits.clone();
                 let name_clone = codeunit_name.clone();
+                let collect_coverage = self.collect_coverage;
+                let coverage = Arc::clone(&self.coverage);
                 let events = tokio::task::spawn_blocking(move || {
                     run_codeunit_interp(
                         &ws,
@@ -151,6 +204,8 @@ impl TestSession for InterpMode {
                         &name_clone,
                         &methods,
                         timeout_dur,
+                        collect_coverage,
+                        &coverage,
                     )
                 })
                 .await
@@ -184,6 +239,7 @@ impl TestSession for InterpMode {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_codeunit_interp(
     workspace: &Workspace,
     codeunits: &[TestCodeunit],
@@ -191,6 +247,8 @@ fn run_codeunit_interp(
     codeunit_name: &str,
     methods: &[Option<String>],
     timeout_dur: Duration,
+    collect_coverage: bool,
+    coverage: &Arc<Mutex<Coverage>>,
 ) -> Vec<TestEvent> {
     let mut events = Vec::new();
     let mut method_results: Vec<TestMethodResult> = Vec::new();
@@ -231,8 +289,23 @@ fn run_codeunit_interp(
         al_runtime::stubs::reset_thread_local_state();
 
         let start = Instant::now();
-        let result = run_procedure_interp(workspace, cu, codeunit_name, proc_name, timeout_dur);
+        let (result, test_coverage) = run_procedure_interp(
+            workspace,
+            cu,
+            codeunit_name,
+            proc_name,
+            timeout_dur,
+            collect_coverage,
+        );
         let duration_ms = start.elapsed().as_millis() as u64;
+
+        // Merge this test's dynamic coverage into the run-wide aggregate (gap
+        // C9). Only present when coverage collection is enabled.
+        if let Some(test_cov) = test_coverage {
+            if let Ok(mut agg) = coverage.lock() {
+                agg.merge(&test_cov);
+            }
+        }
 
         let method_result = TestMethodResult {
             name: proc_name.clone(),
@@ -263,31 +336,42 @@ fn run_codeunit_interp(
     events
 }
 
+/// Run one test procedure. Returns its `Eval` result plus, when
+/// `collect_coverage` is set, the dynamic statement/branch coverage it produced
+/// (gap C9). The coverage `Option` is `None` when collection is disabled —
+/// keeping the static-only path zero-cost and unchanged.
 fn run_procedure_interp(
     workspace: &Workspace,
     cu: Option<&TestCodeunit>,
     codeunit_name: &str,
     proc_name: &str,
     timeout_dur: Duration,
-) -> Eval {
+    collect_coverage: bool,
+) -> (Eval, Option<Coverage>) {
     let cu = match cu {
         Some(c) => c,
         None => {
-            return Eval::Error(al_runtime::interpreter::value::ErrorInfo {
-                message: format!("codeunit '{codeunit_name}' not found in workspace"),
-                error_type: None,
-                source: None,
-            })
+            return (
+                Eval::Error(al_runtime::interpreter::value::ErrorInfo {
+                    message: format!("codeunit '{codeunit_name}' not found in workspace"),
+                    error_type: None,
+                    source: None,
+                }),
+                None,
+            )
         }
     };
 
     let path = std::path::Path::new(&cu.file);
     let Some((text, tree)) = workspace.file_index.get_cached_parse(path) else {
-        return Eval::Error(al_runtime::interpreter::value::ErrorInfo {
-            message: format!("could not parse file for codeunit '{codeunit_name}'"),
-            error_type: None,
-            source: None,
-        });
+        return (
+            Eval::Error(al_runtime::interpreter::value::ErrorInfo {
+                message: format!("could not parse file for codeunit '{codeunit_name}'"),
+                error_type: None,
+                source: None,
+            }),
+            None,
+        );
     };
 
     let source = text.as_bytes();
@@ -296,11 +380,14 @@ fn run_procedure_interp(
     let body = match find_procedure_body(root, source, proc_name) {
         Some(b) => b,
         None => {
-            return Eval::Error(al_runtime::interpreter::value::ErrorInfo {
-                message: format!("procedure '{proc_name}' not found in '{codeunit_name}'"),
-                error_type: None,
-                source: None,
-            })
+            return (
+                Eval::Error(al_runtime::interpreter::value::ErrorInfo {
+                    message: format!("procedure '{proc_name}' not found in '{codeunit_name}'"),
+                    error_type: None,
+                    source: None,
+                }),
+                None,
+            )
         }
     };
 
@@ -321,9 +408,17 @@ fn run_procedure_interp(
         ast_depth: 0,
         deadline: Some(std::time::Instant::now() + timeout_dur),
         cancel: None,
+        // Dynamic coverage (gap C9): attach a collector only when requested,
+        // seeded with this codeunit's file so its statements attribute there.
+        coverage: collect_coverage.then(|| {
+            let mut cov = Coverage::new();
+            cov.set_current_file(&cu.file);
+            cov
+        }),
     };
 
-    eval_stmt(body, source, &mut stack, &mut ctx)
+    let result = eval_stmt(body, source, &mut stack, &mut ctx);
+    (result, ctx.coverage)
 }
 
 /// Locate the `begin_end_block` (body) of a named procedure.
@@ -405,6 +500,127 @@ mod tests {
             events.push(evt);
         }
         events
+    }
+
+    /// 1-based line number of the first source line containing `needle`.
+    fn line_of(src: &str, needle: &str) -> u32 {
+        src.lines()
+            .position(|l| l.contains(needle))
+            .map(|i| i as u32 + 1)
+            .unwrap_or_else(|| panic!("needle {needle:?} not found in source"))
+    }
+
+    #[tokio::test]
+    async fn dynamic_mode_reports_executed_lines_and_branches() {
+        // gap C9: running a test in dynamic-coverage mode produces a per-file
+        // report whose executed lines include the taken branch and exclude the
+        // not-taken one, with a recorded branch decision.
+        let source = r#"codeunit 50110 "Cov Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestBranch()
+    var
+        x: Integer;
+    begin
+        x := 1;
+        if x = 1 then
+            x := 100
+        else
+            x := 200;
+    end;
+}
+"#;
+        let workspace = Workspace::new();
+        let path = std::path::PathBuf::from("/tmp/CovTests.al");
+        workspace
+            .file_index
+            .add_file(path.clone(), source.to_string());
+
+        let session = InterpMode::with_coverage(Arc::new(workspace));
+        assert!(session.collects_coverage());
+
+        let tests = vec![TestId {
+            codeunit_id: 50110,
+            codeunit_name: "Cov Tests".to_string(),
+            method_name: Some("TestBranch".to_string()),
+        }];
+
+        let events = collect_events(&session, tests, RunOptions::default()).await;
+
+        // The test must actually have run and passed for coverage to be valid.
+        let passed = events.iter().any(|e| {
+            matches!(e, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
+        });
+        assert!(passed, "TestBranch should pass; events: {events:?}");
+
+        let report = session.coverage_report();
+        assert_eq!(report.files.len(), 1, "exactly one file should be reported");
+        let file = &report.files[0];
+
+        let taken = line_of(source, "x := 100");
+        let untaken = line_of(source, "x := 200");
+        let if_line = line_of(source, "if x = 1");
+
+        assert!(
+            file.executed_lines.contains(&taken),
+            "taken branch (x := 100) must be in the report; got {:?}",
+            file.executed_lines
+        );
+        assert!(
+            !file.executed_lines.contains(&untaken),
+            "not-taken branch (x := 200) must NOT be in the report; got {:?}",
+            file.executed_lines
+        );
+
+        let branch = file
+            .branches
+            .iter()
+            .find(|b| b.line == if_line)
+            .expect("if branch decision recorded");
+        assert_eq!(branch.then_taken, 1);
+        assert_eq!(branch.else_taken, 0);
+    }
+
+    #[tokio::test]
+    async fn static_mode_collects_no_dynamic_coverage() {
+        // The default (static) backend must not collect dynamic coverage — the
+        // report stays empty, proving coverage is opt-in and static is intact.
+        let source = r#"codeunit 50111 "Plain Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestPlain()
+    var
+        x: Integer;
+    begin
+        x := 1;
+    end;
+}
+"#;
+        let workspace = Workspace::new();
+        let path = std::path::PathBuf::from("/tmp/PlainTests.al");
+        workspace
+            .file_index
+            .add_file(path.clone(), source.to_string());
+
+        let session = make_session(); // InterpMode::new — static mode
+        assert!(!session.collects_coverage());
+
+        let tests = vec![TestId {
+            codeunit_id: 50111,
+            codeunit_name: "Plain Tests".to_string(),
+            method_name: Some("TestPlain".to_string()),
+        }];
+
+        let _events = collect_events(&session, tests, RunOptions::default()).await;
+
+        assert!(
+            session.coverage_report().is_empty(),
+            "static mode must not produce dynamic coverage"
+        );
     }
 
     #[tokio::test]

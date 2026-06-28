@@ -4,6 +4,7 @@
 //! directly, with no .NET runtime dependency. Phase 2a covers pure-logic
 //! tests (no DB / HTTP / UI ops); Phase 3 will add the mock BC runtime.
 
+pub mod coverage;
 pub mod dispatch;
 pub mod eval_expr;
 pub mod eval_stmt;
@@ -14,8 +15,11 @@ pub mod value;
 #[cfg(test)]
 mod tests_adversarial_wave2;
 #[cfg(test)]
+mod tests_coverage;
+#[cfg(test)]
 mod tests_records;
 
+pub use coverage::{Coverage, DynamicCoverageReport};
 pub use dispatch::{DispatchCtx, DispatchMode};
 pub use records::RecordStore;
 pub use scope::{CallFrame, Eval, ScopeStack};

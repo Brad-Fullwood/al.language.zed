@@ -80,6 +80,12 @@ pub struct DispatchCtx {
     /// across the call and signalled from a different task. `None` means
     /// "not cancellable" — unit-test path and CLI default.
     pub cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Optional dynamic-coverage collector (gap C9). `None` (the default) makes
+    /// coverage zero-cost: the `cov_*` helpers below become a single `Option`
+    /// check and do nothing. When `Some`, `eval_stmt` records each executed
+    /// statement's line and `eval_if`/`eval_case` record the branch decision.
+    /// See [`crate::interpreter::coverage`].
+    pub coverage: Option<crate::interpreter::coverage::Coverage>,
 }
 
 impl DispatchCtx {
@@ -92,6 +98,7 @@ impl DispatchCtx {
             ast_depth: 0,
             deadline: None,
             cancel: None,
+            coverage: None,
         }
     }
 
@@ -107,6 +114,7 @@ impl DispatchCtx {
             ast_depth: 0,
             deadline: None,
             cancel: None,
+            coverage: None,
         }
     }
 
@@ -126,6 +134,40 @@ impl DispatchCtx {
         match &self.cancel {
             Some(flag) => flag.load(std::sync::atomic::Ordering::Relaxed),
             None => false,
+        }
+    }
+
+    /// Coverage (gap C9): set the file that subsequent statement/branch records
+    /// attribute to, returning the previous file so a caller crossing a
+    /// procedure boundary can restore it via [`Self::cov_restore_file`]. A no-op
+    /// returning `None` when coverage is disabled.
+    pub fn cov_enter_file(&mut self, file: &str) -> Option<String> {
+        self.coverage.as_mut().map(|c| c.set_current_file(file))
+    }
+
+    /// Coverage (gap C9): restore the file previously returned by
+    /// [`Self::cov_enter_file`]. No-op when coverage is disabled or `prev` is
+    /// `None`.
+    pub fn cov_restore_file(&mut self, prev: Option<String>) {
+        if let (Some(c), Some(p)) = (self.coverage.as_mut(), prev) {
+            c.set_current_file(&p);
+        }
+    }
+
+    /// Coverage (gap C9): record that the statement at `node` executed. Reads
+    /// the node's 1-based start line. Zero-cost when coverage is disabled.
+    pub fn cov_record_stmt(&mut self, node: tree_sitter::Node<'_>) {
+        if let Some(c) = self.coverage.as_mut() {
+            c.record_statement(node.start_position().row as u32 + 1);
+        }
+    }
+
+    /// Coverage (gap C9): record a two-way branch decision taken at the `if`/
+    /// `case` head `node`. `taken == true` is THEN / arm-matched; `false` is
+    /// ELSE / no-arm. Zero-cost when coverage is disabled.
+    pub fn cov_record_decision(&mut self, node: tree_sitter::Node<'_>, taken: bool) {
+        if let Some(c) = self.coverage.as_mut() {
+            c.record_decision(node.start_position().row as u32 + 1, taken);
         }
     }
 }
@@ -308,7 +350,12 @@ fn dispatch_workspace_procedure(
         ctx.recursion_depth += 1;
         let mut scope = ScopeStack::new();
         scope.push(frame);
+        // Coverage (gap C9): attribute this procedure's statements to the file
+        // it is defined in (which may differ from the caller's file), then
+        // restore the caller's file when the call returns.
+        let cov_prev_file = ctx.cov_enter_file(&path.to_string_lossy());
         let result = crate::interpreter::eval_stmt::eval_stmt(body, source, &mut scope, ctx);
+        ctx.cov_restore_file(cov_prev_file);
         ctx.recursion_depth -= 1;
 
         // Unwrap Exit into Normal (exit only unwinds the current procedure).
