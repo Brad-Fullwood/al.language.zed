@@ -109,6 +109,11 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
+            let over_granted = result
+                .get("overGrantedRights")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
 
             if coverage.is_empty() {
                 println!("All objects covered by permission sets.");
@@ -135,6 +140,31 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
                     println!("  {set}: {ot} \"{obj}\" = {rights} — unused (object not referenced in workspace)");
                 }
                 eprintln!("\n{} over-broad grant(s)", over_broad.len());
+            }
+
+            // B13 follow-up: right-level (RIMDX) over-grant on referenced tables.
+            if over_granted.is_empty() {
+                println!("\nNo over-granted RIMDX rights detected (right-level check).");
+            } else {
+                println!(
+                    "\nOver-granted rights (right-level; table is read but I/M/D write site not \
+                     found — over-approximation, R never flagged):"
+                );
+                for e in &over_granted {
+                    let set = e.get("permissionSet").and_then(|v| v.as_str()).unwrap_or("?");
+                    let obj = e.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                    let granted = e.get("grantedRights").and_then(|v| v.as_str()).unwrap_or("");
+                    let over = e.get("overGranted").and_then(|v| v.as_str()).unwrap_or("");
+                    let observed = e
+                        .get("observedRights")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    println!(
+                        "  {set}: TableData \"{obj}\" = {granted} — only {observed} observed; \
+                         drop {over}"
+                    );
+                }
+                eprintln!("\n{} over-granted right(s)", over_granted.len());
             }
         },
     )

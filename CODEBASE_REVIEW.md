@@ -22,7 +22,7 @@ Commands run during this review:
 
 | Command | Result | Notes |
 | --- | --- | --- |
-| `git status --short` | Initially clean | Final worktree change from this review is this new report file only. |
+| `git status --short` | Initially clean | Local worktree state changed while this report was being expanded. Agents should run `git status --short` before editing and preserve unrelated user changes. |
 | `git submodule status --recursive` | PASS | `tree-sitter-al` is at `ecfc7f3fd4fa927c996f4fc7035efb0f46929c5a`, matching `extension.toml`. |
 | `cargo test -p zed-al` | PASS | 34 root extension tests passed. |
 | `cargo check --workspace --exclude zed-al` | PASS | Workspace crates compile outside the WASM extension crate. |
@@ -38,6 +38,85 @@ Test coverage caveats:
 - `crates/al-test-harness/tests/zed_simulation.rs` has 40 ignored tests because they require `AL_TEST_PROJECT_PATH`.
 - `crates/al-test-harness/tests/emit_differential.rs` skips unless `AL_TOOL_PATH` points at `alc.dll` and `dotnet` is available.
 - `crates/al-test-harness/tests/tui_smoke.rs:79` emits a Rust warning for an unused assignment to `screen`.
+
+## Agent Work Queue
+
+This section is written for follow-up AI agents. Each item is intended to be independently actionable. Before starting any item, run `git status --short` and do not overwrite unrelated local changes.
+
+### P0: Trust, Correctness, and False-Surface Fixes
+
+| ID | Type | Task | Evidence / files | Acceptance check |
+| --- | --- | --- | --- | --- |
+| A01 | Fix | Make the repository fmt/clippy clean. | `cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings` fails at `crates/al-syntax/src/formatting.rs:440`; `cargo fmt --all -- --check` fails. | `cargo fmt --all -- --check` and `cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings` both pass. |
+| A02 | Fix | Remove stale `al-core` architecture claims from docs and comments. | `Docs/01-architecture.md`, `README.md`, `crates/al-lsp/src/lib.rs`, `.github/workflows/release.yml`, `Makefile`, `extension.toml`, several crate comments. | `rg -n "al-core|crates/al-core" README.md Docs src crates .github Makefile extension.toml` only returns intentional historical notes, each clearly marked historical. |
+| A03 | Process | Add a doc freshness check for nonexistent repo paths. | Multiple docs point to deleted paths such as `crates/al-core/...`. | A script/test fails when Markdown or source comments reference a nonexistent repo path unless allowlisted. |
+| A04 | Fix | Resolve contradictions inside `Docs/gaps-and-future-work.md`. | Lines 17-31 say A2/A3/A4/A5/A6 are closed; the table below still lists A2-A6 as open/empty-baseline. | The gaps doc has one current truth per item; closed items are removed from the open table or marked closed with current evidence. |
+| A05 | Fix | Update stale config comments for compiler settings. | `crates/al-project/src/config.rs:40-45` says analyzer/build plumbing is not wired, but `CompilationConfigOptions` and daemon dispatch now read those fields. | Comments and settings docs accurately say which fields are wired to `alc`, which are native-only, and which remain inert. |
+| A06 | Fix | Make default compile output explicitly say "native emit, no compiler validation". | `crates/al-compile/src/lib.rs:574-580`; `crates/al-lsp/src/server/daemon/build_dispatch/build.rs:303-320`; Zed task label `AL: Compile`. | CLI/LSP/MCP/Zed output distinguishes native emit from official compiler validation when `al.useOfficialCompiler=false`. |
+| A07 | Add | Add baseline input to CLI for `breaking` and `upgrade`. | Daemon supports `params.baselineSymbols`; CLI sends `{}` in `crates/al-explorer/src/cli/commands/lsp/reports.rs:170-174` and `261-265`. | `al-explorer breaking --baseline-app old.app` or equivalent produces real changes against a fixture baseline. Same for `upgrade`. |
+| A08 | Fix | If no baseline is supplied, return "not evaluated" or warn loudly instead of "No breaking changes". | CLI currently prints clean no-change text when daemon receives an empty baseline. | Empty-baseline CLI/Zed output is impossible to mistake for a real compatibility result; JSON includes a `baselineProvided` or equivalent flag. |
+| A09 | Fix/Add | Decide native lint truth: implement starter native rules or rename the surface. | `crates/al-syntax/src/lint.rs` returns no rules; `crates/al-explorer/src/cli/args.rs:122` says "Run native lint rules". | Either `al-explorer rules` lists real native rules and `lint` can emit them, or help/settings say diagnostics are parser/semantic bridge diagnostics, not native lint. |
+| A10 | Fix | Verify and fix Zed task quoting for `$ZED_FILE` and `$ZED_SYMBOL`. | `languages/al/tasks.json` embeds escaped quotes in many args. CLI path canonicalization does not strip quotes. | A task-argv regression proves paths with spaces work and literal quote characters are not passed to the CLI. |
+| A11 | Fix | Make the MCP context server use the resolved binary and project root. | `src/lib.rs:417-430` hard-codes `al-lsp mcp`, ignores `_project`, and relies on PATH. `al-lsp mcp` uses `--project` or cwd. | Zed launches MCP with the same binary resolution as LSP/DAP and passes `--project <workspace-root>` if the API allows it. |
+| A12 | Fix | Remove stale "CodeLens commands not wired" docs. | CodeLens commands are now listed in `SUPPORTED_COMMANDS` and dispatched in `crates/al-lsp/src/server/lsp.rs`; docs still mention gap A8 as open. | README, `Docs/gaps-and-future-work.md`, `Docs/reference/lsp-commands.md`, and feature docs agree that CodeLens command handlers exist, with any remaining limits stated precisely. |
+| A13 | Fix | Make diagnostics settings descriptions match real scope. | `schemas/settings.json` says project diagnostics "lints all .al files" and "our lint is fast enough"; semantic diagnostics are open-file scoped and native lint is inert. | Settings schema and docs explain: syntax diagnostics can be workspace-wide; semantic bridge diagnostics are open-doc/toolchain dependent unless explicitly run. |
+| A14 | Fix | Mark Unix-only Zed task surfaces clearly or hide them where unsupported. | Docs say daemon/al-explorer tasks are Unix-only; `languages/al/tasks.json` exposes many `al-explorer` tasks without platform warnings. | Windows users see a clear unsupported message before invoking Unix-only daemon tasks, or the tasks are not advertised as cross-platform. |
+| A15 | Fix | Treat Rust test warnings as a gate or remove the warning. | `crates/al-test-harness/tests/tui_smoke.rs:79` warns about an unused assignment. | `cargo test --workspace --exclude zed-al` emits no Rust warnings, or CI sets and passes an intentional warnings policy. |
+
+### P1: Missing Features and Functional Gaps
+
+| ID | Type | Task | Evidence / files | Acceptance check |
+| --- | --- | --- | --- | --- |
+| B01 | Add/Fix | Finish the shared build-service abstraction across compile/package/publish/DAP. | A local diff currently adds `BuildBackend`, `BuildRequest`, and `build()` in `crates/al-compile/src/lib.rs` and routes daemon compile/package through it. Existing code still has other build paths. | One build service is used by daemon `compile`, daemon `package`, CLI package/compile where applicable, publish, and DAP launch; tests cover native and official compiler paths. |
+| B02 | Add | Expose official compiler validation from common user paths. | `pack-native --validate` exists; `compile`/Zed task flows still default to native emit unless config is changed. | Users can run a clearly named CLI/Zed task such as "Compile with Microsoft alc" without editing settings. |
+| B03 | Add | Wire `breaking`/`upgrade` baseline discovery from `.app` files. | Daemon wants `SymbolEntry` baseline arrays; CLI needs to extract symbols from prior `.app`. | Fixtures prove removed/changed symbols are reported from an old `.app` baseline. |
+| B04 | Add | Add a real-project Zed simulation CI job. | 40 `zed_simulation` tests are ignored without `AL_TEST_PROJECT_PATH`. | A scheduled or release job runs those tests against a pinned fixture project and reports skipped/not skipped counts. |
+| B05 | Add | Add official compiler differential testing to CI or release gates. | `emit_differential` skips without `AL_TOOL_PATH` and `dotnet`. | A scheduled/release job runs native emit vs `alc` on a fixture corpus and fails on semantic package divergence. |
+| B06 | Add | Implement Windows daemon transport for `al-explorer` and Zed task parity. | Current daemon IPC is AF_UNIX-only; Windows al-lsp builds but daemon/al-explorer are gated/stubbed. | Windows can run daemon-backed `al-explorer` commands through named pipes or loopback TCP with parity tests. |
+| B07 | Add | Wire `al.appLocalFolderPaths` into symbol loading. | Settings schema exposes it; `Docs/gaps-and-future-work.md` says parsed but not wired. | A fixture `.app` in a configured local folder is indexed without being copied to `.alpackages`. |
+| B08 | Add | Surface `AL_DOTNET_PATH` as an `al.dotnetPath` setting. | Toolchain supports env var; gaps doc says not surfaced as LSP setting. | Zed/settings config can choose a dotnet host without requiring external env setup; tests prove config becomes env/toolchain behavior. |
+| B09 | Add/Fix | Wire translation-memory XLIFF suggestions through daemon/CLI/MCP/Zed. | CLI has `xlf suggest`; `Docs/gaps-and-future-work.md` says memory backend exists but LSP dispatch may call the name-only shim. Zed tasks only expose `xlf generate`. | `xlf suggest` uses translation memory where available; Zed has generate/refresh/untranslated/suggest tasks or docs explain why not. |
+| B10 | Add | Add MCP tools for XLIFF and code-action suggestions. | `crates/al-lsp/src/server/mcp.rs` exposes build, symbols, diagnostics, tests, graph tools but no XLIFF/code-action tools. | `tools/list` includes XLIFF and code-action tools with useful input schemas and end-to-end tests. |
+| B11 | Add | Add MCP output schemas and more structured result payloads. | MCP tools advertise `inputSchema` only and wrap daemon JSON as text content. | Tool definitions include output-schema metadata where the MCP version supports it, or docs/tests explain structured text limitations. |
+| B12 | Fix/Add | Consume or remove unsupported DAP schema fields. | Gap doc lists fields in `debug_adapter_schemas/al.json` that native DAP does not consume. | Each schema field is either implemented, ignored with a documented reason, or removed from native schema/snippets. |
+| B13 | Add | Implement DAP variable expansion for structured values. | Gap doc says `variablesReference` is shallow/0 in native DAP. | Records/lists/objects can be expanded in a debug session with regression tests on DAP `variables` responses. |
+| B14 | Add | Implement DAP set-variable/restart/function breakpoint support where BC allows. | Gap doc marks pause as BC-limited but other capabilities open. | Native DAP capability flags match implemented handlers; unsupported features return explicit errors. |
+| B15 | Add | Bring BC-server symbol download controls to NuGet parity. | Gap doc says BC-server download lacks explicit concurrency limit and per-package dedupe. | Download tests prove dedupe, bounded concurrency, and user-facing progress/error behavior for BC-server source. |
+| B16 | Decide | Wire `al-publish` into a real surface or remove/park it. | `crates/al-publish/src/lib.rs` exists; hardened split doc says public `publish()` has no repo-wide callers. | Either a CLI/LSP command uses `al-publish`, or the crate is removed/clearly marked roadmap-only with tests adjusted. |
+| B17 | Add | Continue native semantic diagnostics to reduce dependence on the C# bridge. | `docs/csharp-bridge-retirement.md`; native compile has no semantic diagnostics. | A first native diagnostic set catches type/member errors without `alc` or the bridge and is surfaced honestly as partial. |
+| B18 | Add | Implement FlowField and `CalcFormula` evaluation in the interpreter. | Gap doc says FlowFields are recognized but reads return defaults and `CalcFields` is no-op. | Interpreter tests cover `CalcFields`, common `CalcFormula` filters, and FlowField reads. |
+| B19 | Add | Model AL `var` parameter aliasing in interpreter/test runtime. | Gap doc says records passed by `var` are not aliased back. | A test mutating a `var Record` or scalar inside a called procedure observes the mutation in the caller. |
+| B20 | Add | Model base-app tables in local test runtime via symbol cache. | Record runtime only models tables defined in workspace; base-app `Customer` etc. fail gracefully. | Local/interpreter-routed tests can use selected base-app table shapes from loaded symbols. |
+| B21 | Fix | Replace substring-based test backend routing with AST/call-graph classification. | Gap doc says backend routing is conservative substring-disqualifier based. | Classification uses parsed calls/types and has fixtures for false-positive strings in comments/literals. |
+| B22 | Add/Fix | Close affected-test reachability gaps. | Gap doc mentions non-literal `Codeunit.Run(Var)` and overloaded-name over-credit. | Affected-test tests cover interface dispatch, `Codeunit.Run` literal and variable cases, event publish/subscriber edges, and overloaded procedures. |
+| B23 | Fix/Add | Make Cobertura output dynamic or label it as static call-graph coverage everywhere. | Gap doc says Cobertura shape is static, not dynamic. | Cobertura XML metadata or docs cannot be mistaken for executed line coverage, or interpreter dynamic coverage is wired into it. |
+| B24 | Add/Fix | Implement or remove `test-mutate --parallel`. | CLI help says `--parallel`; gap doc says execution is sequential/advisory. | Parallel mutant execution is real and bounded, or the flag/help is removed. |
+| B25 | Add | Deepen permission audit to RIMDX-level usage. | Gap doc says object-level over-broad grants are detected but right-level over-grants are not. | Permission audit distinguishes read/insert/modify/delete/execute usage per table/object and flags over-granted rights. |
+| B26 | Add | Add native build validation gate to `al-explorer compile`, not only `pack-native`. | Gap doc says consider wiring `--validate` into compile. | `al-explorer compile --validate` or equivalent fails closed with `alc` diagnostics before native emit success is reported. |
+| B27 | Add | Add agent-oriented missing-symbol/config diagnostics. | Gap doc C3 calls for MCP diagnostics for missing symbols, BC config, semantic bridge, and source-unavailable navigation. | MCP/CLI diagnostics return actionable setup reasons and remediation for common missing project/toolchain/symbol states. |
+
+### P2: Simplification, Maintainability, and Process
+
+| ID | Type | Task | Evidence / files | Acceptance check |
+| --- | --- | --- | --- | --- |
+| C01 | Simplify | Split very large user-facing modules along real ownership boundaries. | Largest files include `al-dap/src/dap/bc_debug.rs`, `al-insight/src/calls.rs`, `al-analysis/src/resolution.rs`, `al-syntax/src/formatting.rs`, `build_dispatch/build.rs`. | One chosen module is split into focused modules without behavior changes; tests for that subsystem still pass. |
+| C02 | Simplify | Decide whether `al-lsp` is a facade or just the LSP crate. | `crates/al-lsp/src/lib.rs` re-exports many split crates while saying legacy names are gone. | Re-exports move to a clear compatibility module/crate or docs explain their supported compatibility status. |
+| C03 | Process | Remove tracked generated `bin/` and `obj/` artifacts from the `tree-sitter-al` submodule. | `git -C tree-sitter-al ls-files generator/tools/system-objects/{bin,obj}` returns .NET build outputs with absolute-path metadata. | Generated outputs are untracked/ignored or explicitly justified; no tracked file contains local absolute build paths. |
+| C04 | Fix | Update benchmark commands and measurement setup. | `crates/al-test/benches/interpreter.rs` still references `cargo bench -p al-core`; setup work occurs inside measured loops. | Bench docs use current package names and benchmarks separate setup from measured execution where claimed. |
+| C05 | Process | Add local prerequisite checks or install guidance for ShellCheck. | CI installs ShellCheck; local review could not run it because it was not installed. | `make check` or docs either install/check ShellCheck or clearly report it as an optional missing prerequisite. |
+| C06 | Process | Add a machine-check for stale gap/docs claims. | CodeLens and A2-A6 docs drifted after fixes. | A lightweight docs audit fails on known stale phrases such as "baseline not wired" when matching code paths exist, or a reviewed allowlist is required. |
+| C07 | Simplify | Centralize CLI path/symbol argument normalization. | Zed task quote handling and path-with-spaces workarounds are spread across CLI commands. | One helper handles quote stripping, path joining, canonicalization, and non-file symbols; commands use it consistently. |
+| C08 | Process | Add Zed task smoke tests that validate argv, not just command existence. | Existing task smoke coverage checks real subcommands; quote behavior still needs runtime argv validation. | Tests prove every task arg using `$ZED_FILE`, `$ZED_SYMBOL`, and `$ZED_ROW` maps to the intended CLI value. |
+| C09 | Simplify | Standardize JSON response envelopes for CLI/daemon/MCP build/report commands. | Some empty-baseline and native-emit paths return clean-looking arrays/results without metadata. | Responses include explicit metadata such as backend, validation status, baseline status, and limitations. |
+| C10 | Process | Add skipped-test accounting to CI output. | Important tests skip by env vars but normal `cargo test` still passes. | CI summary prints counts for ignored/skipped real-project and ALTool tests, with a link to the job that runs them. |
+| C11 | Fix | Update docs for XLIFF task coverage. | Zed tasks expose only `xlf generate`; gaps doc mentions refresh/untranslated/suggest task work in project-local `.zed/tasks.json`, not necessarily this extension task file. | Extension docs and tasks agree on which XLIFF workflows are available from Zed. |
+| C12 | Process | Keep generated settings docs/schema/code config in one source of truth. | `schemas/settings.json`, `crates/al-project/src/config.rs`, `docs/settings.md`, and `Docs/reference/settings.md` can drift. | A generator or test verifies every public setting has matching schema, config merge, docs, and truthfulness status. |
+| C13 | Simplify | Reduce duplicated build/result rendering in CLI and daemon. | `crates/al-explorer/src/cli/commands/build.rs`, daemon build dispatch, and MCP each format similar success/diagnostic output. | Shared DTO/render helper or clearly separated adapters prevent compile/package/native/alc wording drift. |
+| C14 | Process | Add release checklist item for "truthful feature names". | Repeated surfaces say "compile", "lint", "coverage", or "breaking" when behavior is narrower. | Release checklist requires reviewing labels/help/schema/docs for incomplete features before publishing. |
+| C15 | Add | Add focused tests for official-vs-native compile wording. | The important distinction exists in comments but can regress in user output. | Snapshot tests assert CLI/MCP/LSP output includes backend and validation status. |
+| C16 | Fix | Update old split-plan docs or mark them historical. | `Docs/redesign-crate-split-plan*.md` contain old crate-cycle and `al-core` context that may confuse agents. | Historical docs have a header saying they are archived, or current architecture docs supersede them with links. |
+| C17 | Simplify | Audit and reduce public command/task surface that is not production-ready. | `languages/al/tasks.json` exposes many commands, including incomplete baseline reports and broad fixups. | Tasks are grouped into stable/experimental or incomplete tasks require explicit warnings. |
+| C18 | Process | Add ownership labels for backlog areas. | The repo spans Zed extension, daemon/LSP, CLI, DAP, emit, runtime, docs, CI. | Each backlog item in docs maps to an area owner/module and recommended test command. |
 
 ## Findings
 
@@ -59,13 +138,13 @@ result
 
 Impact:
 
-CI or release checks that include fmt/clippy with warnings-as-errors will fail. Even if the project does not currently enforce those checks everywhere, contributors cannot trust a clean test run to mean the repo is ready.
+The committed CI workflow already runs fmt and clippy with warnings-as-errors, so the current state would fail that gate. Contributors also cannot trust a clean test run alone to mean the repo is ready.
 
 Recommendation:
 
 - Fix the clippy issue in `crates/al-syntax/src/formatting.rs`.
 - Run `cargo fmt --all`.
-- Add fmt and clippy to the same required path as the release hygiene and consistency scripts.
+- Keep local release/readiness commands aligned with CI so fmt and clippy failures are caught before push.
 
 ### 2. High: Architecture docs and source comments still describe a deleted `al-core` crate
 
@@ -235,7 +314,7 @@ Largest Rust files found:
 | File | Approx. lines |
 | --- | ---: |
 | `crates/al-dap/src/dap/bc_debug.rs` | 3371 |
-| `crates/al-insight/src/calls.rs` | 2379 before current local edit |
+| `crates/al-insight/src/calls.rs` | 2893 |
 | `crates/al-analysis/src/resolution.rs` | 2337 |
 | `crates/al-dap/src/dap/native_dap.rs` | 2302 |
 | `crates/al-syntax/src/symbols.rs` | 2278 |
@@ -322,7 +401,7 @@ Recommendation:
 2. Rename or implement native lint functionality.
 3. Verify and fix Zed task quoting.
 4. Pass project root and resolved binary path into the MCP context server launch if possible.
-5. Add fmt/clippy to required CI/release hygiene.
+5. Keep local release/readiness commands aligned with CI's fmt/clippy gates.
 
 ### Medium term
 
