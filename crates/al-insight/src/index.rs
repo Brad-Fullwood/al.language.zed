@@ -54,6 +54,25 @@ pub enum EdgeKind {
     TriggerInvocation,
     /// A record operation (Insert/Modify/Delete/Validate) triggers table events.
     RecordTrigger,
+    /// A *polymorphic / indirect* call that cannot be resolved to a single
+    /// concrete callee at the call site, so it is **over-approximated** to all
+    /// possible runtime targets (gap C15). Three patterns are modelled, all as
+    /// forward `caller → possible-target` edges:
+    ///
+    /// - **Interface dispatch** — an `Interface "IFoo"`-typed variable calling
+    ///   `.Bar()` produces an edge to `Bar` in *every* codeunit that
+    ///   `implements IFoo`.
+    /// - **`Codeunit.Run(Codeunit::"X")` / `RunModal`** with a literal target
+    ///   produces an edge to `X`'s `OnRun` trigger.
+    /// - **Event publish site → subscribers** — a procedure that invokes an
+    ///   event publisher produces an edge to each `[EventSubscriber]` handler.
+    ///
+    /// The over-approximation is **sound for reachability** (coverage and
+    /// affected-test analysis): it only ever *adds* edges, so it removes false
+    /// negatives at the cost of possible false positives. Kept distinct from
+    /// `DirectCall` so consumers can tell a resolved call from an
+    /// over-approximated one.
+    IndirectCall,
 }
 
 impl std::fmt::Display for EdgeKind {
@@ -63,6 +82,7 @@ impl std::fmt::Display for EdgeKind {
             EdgeKind::EventSubscription => write!(f, "event_subscription"),
             EdgeKind::TriggerInvocation => write!(f, "trigger_invocation"),
             EdgeKind::RecordTrigger => write!(f, "record_trigger"),
+            EdgeKind::IndirectCall => write!(f, "indirect_call"),
         }
     }
 }
@@ -167,6 +187,18 @@ impl CallGraph {
             from,
             to,
             kind: EdgeKind::RecordTrigger,
+        };
+        self.insert_edge(edge);
+    }
+
+    /// Add an over-approximated indirect-call edge (interface dispatch,
+    /// `Codeunit.Run` dispatch, or event publish→subscriber). See
+    /// [`EdgeKind::IndirectCall`]. Duplicate edges are silently ignored.
+    pub fn add_indirect_call(&mut self, from: NodeId, to: NodeId) {
+        let edge = CallEdge {
+            from,
+            to,
+            kind: EdgeKind::IndirectCall,
         };
         self.insert_edge(edge);
     }

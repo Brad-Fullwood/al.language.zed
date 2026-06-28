@@ -17,11 +17,12 @@
 //! - [`fanout_score`] — count call-suffix nodes in a tree (used for tier ranking).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use al_symbols::{ObjectKind, SymbolIndex};
+use al_symbols::{ObjectKind, SymbolEntry, SymbolIndex};
 
 use super::graph::{EventNodeType, InsightEdge, InsightGraph, InsightNode, NodeKey};
-use super::index::{CallGraph, EdgeResolutionState};
+use super::index::{CallGraph, EdgeResolutionState, NodeId};
 use al_source::file_index::FileIndex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +68,13 @@ pub enum CallSite {
         variable: String,
         op: RecordOp,
         run_trigger: bool,
+    },
+    /// `Codeunit.Run(Codeunit::"X")` / `Codeunit.RunModal(Codeunit::X)` with a
+    /// literal codeunit reference as the first argument (gap C15). The dispatch
+    /// target is `X`'s `OnRun` trigger. Only the *literal* form is captured;
+    /// `Codeunit.Run(SomeVariable)` is left unresolved (no sound static target).
+    CodeunitRun {
+        target: String,
     },
 }
 
@@ -492,6 +500,19 @@ fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -> Option<Ca
                     op,
                     run_trigger,
                 })
+            } else if is_codeunit_run_method(&method_name) {
+                // `Codeunit.Run(Codeunit::"X")` / `RunModal(...)` — resolve the
+                // literal codeunit reference (C15). Falls back to a plain
+                // member call when the argument is not a `Codeunit::<name>`
+                // literal (e.g. a variable), which keeps the dispatch sound.
+                if let Some(target) = extract_codeunit_run_target(*last, source) {
+                    Some(CallSite::CodeunitRun { target })
+                } else {
+                    Some(CallSite::MemberCall {
+                        object: object_name,
+                        method: method_name,
+                    })
+                }
             } else {
                 Some(CallSite::MemberCall {
                     object: object_name,
@@ -600,6 +621,48 @@ fn parse_run_trigger_arg(
     true // default: no args → RunTrigger=true
 }
 
+/// True for the BC built-ins that launch a codeunit by reference: `Run` and
+/// `RunModal`. These are the AL `Codeunit.Run`/`Codeunit.RunModal` system
+/// methods whose effect is to invoke the target codeunit's `OnRun` trigger.
+/// Stable ABI names (unchanged for 20+ years), locked in here for the same
+/// reason as [`RecordOp::from_method_name`].
+fn is_codeunit_run_method(method: &str) -> bool {
+    method.eq_ignore_ascii_case("Run") || method.eq_ignore_ascii_case("RunModal")
+}
+
+/// Extract the literal codeunit target of a `Codeunit.Run(Codeunit::"X")` /
+/// `RunModal(Codeunit::X)` call from its `member_call_suffix` node.
+///
+/// Returns the bare object name (`X`) only when the first argument is a
+/// `Codeunit::<name>` literal; returns `None` for any other first argument
+/// (e.g. a variable, an expression, or a missing argument), because guessing
+/// a target there would be unsound.
+fn extract_codeunit_run_target(member_call_suffix: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let arg_list = member_call_suffix.child_by_field_name("call")?;
+    let text = arg_list.utf8_text(source).ok()?;
+    let inner = text.trim().strip_prefix('(')?.strip_suffix(')')?.trim();
+    // First top-level argument (the codeunit reference). The literal form has
+    // no nested commas, so a plain split on ',' is sufficient here.
+    let first = inner.split(',').next()?.trim();
+    parse_codeunit_ref(first)
+}
+
+/// Parse a `Codeunit::<name>` reference into the bare object name.
+///
+/// `Codeunit::"Sales-Post"` → `Sales-Post`; `Codeunit::Worker` → `Worker`.
+/// Returns `None` when the text is not a `Codeunit::` reference.
+fn parse_codeunit_ref(text: &str) -> Option<String> {
+    if !text.trim().to_lowercase().starts_with("codeunit::") {
+        return None;
+    }
+    let cleaned = al_syntax::clean_attr_arg(text);
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
 /// Populate call graph edges for a single procedure.
 ///
 /// Extracts call sites from the procedure body, then:
@@ -657,6 +720,8 @@ pub fn populate_call_edges_for_procedure(
                     let event_key = NodeKey::Event(object_kind, obj_lower, name_lower);
                     if let Some(event_id) = CallGraph::node_id_for(insight, &event_key) {
                         call_graph.add_direct_call(caller_id, event_id);
+                        // C15: firing the event also runs every subscriber.
+                        link_event_subscribers(caller_id, event_id, call_graph);
                     }
                 }
             }
@@ -671,15 +736,47 @@ pub fn populate_call_edges_for_procedure(
                     .get(&object.to_lowercase())
                     .map(String::as_str)
                     .unwrap_or(object.as_str());
+                let method_lower = method.to_lowercase();
                 let entries = symbols.get_by_name(resolved_object);
+                let mut saw_interface = false;
                 for entry in &entries {
+                    if entry.kind == ObjectKind::Interface {
+                        saw_interface = true;
+                    }
                     let callee_key = NodeKey::Procedure(
                         entry.kind,
                         entry.name.to_lowercase(),
-                        method.to_lowercase(),
+                        method_lower.clone(),
                     );
                     if let Some(callee_id) = CallGraph::node_id_for(insight, &callee_key) {
                         call_graph.add_direct_call(caller_id, callee_id);
+                    }
+                    // C15: a member call may target an event publisher on
+                    // another object (e.g. `PublisherVar.OnSomeEvent()`).
+                    // Firing it reaches the event node and every subscriber.
+                    let event_key = NodeKey::Event(
+                        entry.kind,
+                        entry.name.to_lowercase(),
+                        method_lower.clone(),
+                    );
+                    if let Some(event_id) = CallGraph::node_id_for(insight, &event_key) {
+                        call_graph.add_direct_call(caller_id, event_id);
+                        link_event_subscribers(caller_id, event_id, call_graph);
+                    }
+                }
+                // C15: interface dispatch. When the receiver is `Interface "IFoo"`,
+                // the concrete callee is unknown statically, so over-approximate
+                // to `<method>` in every codeunit that `implements IFoo`.
+                if saw_interface {
+                    for impl_entry in find_interface_implementors(symbols, resolved_object) {
+                        let impl_key = NodeKey::Procedure(
+                            impl_entry.kind,
+                            impl_entry.name.to_lowercase(),
+                            method_lower.clone(),
+                        );
+                        if let Some(impl_id) = CallGraph::node_id_for(insight, &impl_key) {
+                            call_graph.add_indirect_call(caller_id, impl_id);
+                        }
                     }
                 }
             }
@@ -709,8 +806,54 @@ pub fn populate_call_edges_for_procedure(
             CallSite::RecordOp {
                 run_trigger: false, ..
             } => {}
+            CallSite::CodeunitRun { target } => {
+                // C15: `Codeunit.Run(Codeunit::"X")` dispatches to X.OnRun.
+                let onrun_key = NodeKey::Procedure(
+                    ObjectKind::Codeunit,
+                    target.to_lowercase(),
+                    "onrun".to_string(),
+                );
+                if let Some(onrun_id) = CallGraph::node_id_for(insight, &onrun_key) {
+                    call_graph.add_indirect_call(caller_id, onrun_id);
+                }
+            }
         }
     }
+}
+
+/// Add over-approximated `caller → subscriber` edges for an event publish site.
+///
+/// Firing an event runs every `[EventSubscriber]` bound to it, so for
+/// reachability the publishing procedure can reach each subscriber handler
+/// (gap C15). The subscriber → event `EventSubscription` edges are already in
+/// `call_graph` (added by [`CallGraph::build_from_insight`]); we read them via
+/// [`CallGraph::subscribers_of`] and add the forward indirect edges.
+fn link_event_subscribers(caller_id: NodeId, event_id: NodeId, call_graph: &mut CallGraph) {
+    let subscribers = call_graph.subscribers_of(event_id);
+    for sub_id in subscribers {
+        call_graph.add_indirect_call(caller_id, sub_id);
+    }
+}
+
+/// Find every codeunit whose `implements` clause names `interface_name`.
+///
+/// Used by interface-dispatch resolution (C15): a call through an
+/// `Interface "IFoo"`-typed variable can land in any implementor at runtime,
+/// so all of them are returned (the over-approximation). Interface names are
+/// compared case-insensitively after stripping the quotes that the symbol
+/// extractor preserves verbatim.
+fn find_interface_implementors(symbols: &SymbolIndex, interface_name: &str) -> Vec<Arc<SymbolEntry>> {
+    let target = interface_name.trim_matches('"');
+    symbols
+        .get_by_kind(ObjectKind::Codeunit)
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .implements
+                .iter()
+                .any(|iface| iface.trim_matches('"').eq_ignore_ascii_case(target))
+        })
+        .collect()
 }
 
 /// Return the event names for a record operation.
@@ -851,6 +994,11 @@ pub fn register_workspace_nodes(
             methods,
             fields,
             extends: info_extends_from_tree(tree.root_node(), source_bytes),
+            // C15: capture the `implements` clause so interface-dispatch
+            // resolution can find implementors. This pass is the authoritative
+            // source for workspace symbol entries (it clobbers the "workspace"
+            // package), so without it `implements` would always be empty.
+            implements: info_implements_from_tree(tree.root_node(), source_bytes, &info.name),
             ..Default::default()
         });
     }
@@ -943,6 +1091,126 @@ fn info_extends_from_tree(root: tree_sitter::Node, source: &[u8]) -> Option<Stri
         }
     }
     None
+}
+
+/// Extract the interface names from an object's `implements` clause (C15).
+///
+/// The grammar emits only the *first* interface inside `implements_clause`
+/// (`metadata_keyword` + `name`); any further comma-separated interfaces appear
+/// as sibling `identifier`/`quoted_identifier` tokens of the
+/// `object_declaration`. We collect both. Names are returned unquoted.
+///
+/// `object_name` selects the matching object when a file declares more than one
+/// (falls back to the first object). Mirrors [`info_extends_from_tree`]; kept
+/// separate because `extends` and `implements` share the `implements_clause`
+/// node but carry different keywords.
+fn info_implements_from_tree(
+    root: tree_sitter::Node,
+    source: &[u8],
+    object_name: &str,
+) -> Vec<String> {
+    let want = object_name.trim().trim_matches('"').to_lowercase();
+    let mut cursor = root.walk();
+    let objects: Vec<tree_sitter::Node> = root
+        .children(&mut cursor)
+        .filter(|c| c.kind() == "object_declaration")
+        .collect();
+
+    let chosen = objects
+        .iter()
+        .find(|o| {
+            object_decl_name(**o, source)
+                .map(|n| n.to_lowercase() == want)
+                .unwrap_or(false)
+        })
+        .or_else(|| objects.first());
+
+    match chosen {
+        Some(obj) => collect_implements_from_object(*obj, source),
+        None => Vec::new(),
+    }
+}
+
+/// Best-effort name of an `object_declaration` node (unquoted).
+fn object_decl_name(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    if let Some(n) = node.child_by_field_name("name") {
+        if let Ok(t) = n.utf8_text(source) {
+            return Some(t.trim().trim_matches('"').to_string());
+        }
+    }
+    // Fallback: first identifier-like child (the integer id is skipped — not
+    // identifier-like — so the first match is the object name).
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if matches!(
+            child.kind(),
+            "quoted_identifier" | "identifier" | "name_or_keyword" | "name"
+        ) {
+            if let Ok(t) = child.utf8_text(source) {
+                return Some(t.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
+
+fn collect_implements_from_object(node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut cursor = node.walk();
+    let children: Vec<tree_sitter::Node> = node.children(&mut cursor).collect();
+
+    let mut i = 0;
+    while i < children.len() {
+        let child = children[i];
+        if child.kind() == "implements_clause" {
+            let mut kc = child.walk();
+            let keyword = child
+                .children(&mut kc)
+                .find(|c| c.kind() == "metadata_keyword")
+                .and_then(|m| m.utf8_text(source).ok())
+                .unwrap_or("");
+            if keyword.trim().eq_ignore_ascii_case("implements") {
+                // The single name inside the clause...
+                let mut nc = child.walk();
+                if let Some(name_node) = child.children(&mut nc).find(|c| {
+                    matches!(
+                        c.kind(),
+                        "name" | "name_or_keyword" | "quoted_identifier" | "identifier"
+                    )
+                }) {
+                    if let Ok(t) = name_node.utf8_text(source) {
+                        push_interface(&mut result, t);
+                    }
+                }
+                // ...plus any trailing `, IBar` siblings the grammar leaves at
+                // the object_declaration level.
+                let mut j = i + 1;
+                while j < children.len() {
+                    match children[j].kind() {
+                        "comma" => j += 1,
+                        "identifier" | "quoted_identifier" | "name" | "name_or_keyword" => {
+                            if let Ok(t) = children[j].utf8_text(source) {
+                                push_interface(&mut result, t);
+                            }
+                            j += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    result
+}
+
+fn push_interface(result: &mut Vec<String>, raw: &str) {
+    let clean = raw.trim().trim_matches('"').to_string();
+    if !clean.is_empty() {
+        result.push(clean);
+    }
 }
 
 /// Parse one `field(ID; Name; Type)` section header into a `FieldSymbol`.
@@ -2375,5 +2643,251 @@ mod tests {
             .collect();
         // 80th percentile index is 8 (len * 8 / 10), value is 4. min(4, 5) = 4.
         assert_eq!(tier1_threshold(&files), 4);
+    }
+
+    // ---- C15: indirect / polymorphic dispatch resolution ----------------
+
+    /// Build a fully-resolved (node-complete, all-edges) workspace call graph
+    /// from in-memory AL files, exactly as the daemon's affected-test /
+    /// coverage paths do.
+    fn build_resolved_call_graph(files: &[(&str, &str)]) -> (InsightGraph, CallGraph) {
+        let file_index = al_source::file_index::FileIndex::new();
+        for (name, content) in files {
+            file_index.add_file(std::path::PathBuf::from(name), content.to_string());
+        }
+        let symbols = SymbolIndex::new();
+        let mut insight = InsightGraph::new();
+        register_workspace_nodes(&file_index, &symbols, &mut insight);
+        let mut cg = CallGraph::build_from_insight(&insight);
+        resolve_all_workspace_call_edges(&file_index, &symbols, &insight, &mut cg);
+        (insight, cg)
+    }
+
+    fn proc_node(insight: &InsightGraph, kind: ObjectKind, object: &str, method: &str) -> NodeId {
+        let key = NodeKey::Procedure(kind, object.to_lowercase(), method.to_lowercase());
+        CallGraph::node_id_for(insight, &key)
+            .unwrap_or_else(|| panic!("missing procedure node {object}.{method}"))
+    }
+
+    #[test]
+    fn c15_interface_call_reaches_all_implementors() {
+        let iface = r#"interface IFoo
+{
+    procedure Bar()
+}
+"#;
+        let impl_a = r#"codeunit 50101 "Impl A" implements "IFoo"
+{
+    procedure Bar()
+    begin
+    end;
+}
+"#;
+        let impl_b = r#"codeunit 50102 "Impl B" implements "IFoo"
+{
+    procedure Bar()
+    begin
+    end;
+}
+"#;
+        let caller = r#"codeunit 50100 "Caller CU"
+{
+    procedure Dispatch()
+    var
+        Foo: Interface "IFoo";
+    begin
+        Foo.Bar();
+    end;
+}
+"#;
+        let unrelated = r#"codeunit 50103 "Unrelated CU"
+{
+    procedure Untouched()
+    begin
+    end;
+}
+"#;
+        let (insight, cg) = build_resolved_call_graph(&[
+            ("/ws/IFoo.Interface.al", iface),
+            ("/ws/ImplA.Codeunit.al", impl_a),
+            ("/ws/ImplB.Codeunit.al", impl_b),
+            ("/ws/Caller.Codeunit.al", caller),
+            ("/ws/Unrelated.Codeunit.al", unrelated),
+        ]);
+
+        let dispatch = proc_node(&insight, ObjectKind::Codeunit, "Caller CU", "Dispatch");
+        let bar_a = proc_node(&insight, ObjectKind::Codeunit, "Impl A", "Bar");
+        let bar_b = proc_node(&insight, ObjectKind::Codeunit, "Impl B", "Bar");
+        let untouched = proc_node(&insight, ObjectKind::Codeunit, "Unrelated CU", "Untouched");
+
+        // Reverse reachability (affected-test semantics): both implementors'
+        // Bar are reached by the dispatching procedure.
+        assert!(
+            cg.reachable_callers([bar_a]).contains(&dispatch),
+            "interface call must reach Impl A.Bar"
+        );
+        assert!(
+            cg.reachable_callers([bar_b]).contains(&dispatch),
+            "interface call must reach Impl B.Bar (ALL implementors)"
+        );
+        // The unrelated codeunit must NOT be pulled in.
+        assert!(
+            !cg.reachable_callers([bar_a]).contains(&untouched),
+            "unrelated codeunit must not be reachable"
+        );
+
+        // Forward (coverage semantics): the dispatch site has indirect edges to
+        // both implementors and none to the unrelated procedure.
+        let callees: Vec<NodeId> = cg
+            .callees_of(dispatch)
+            .iter()
+            .filter(|e| e.kind == super::super::index::EdgeKind::IndirectCall)
+            .map(|e| e.to)
+            .collect();
+        assert!(callees.contains(&bar_a) && callees.contains(&bar_b));
+        assert!(!callees.contains(&untouched));
+    }
+
+    #[test]
+    fn c15_codeunit_run_reaches_onrun() {
+        let worker = r#"codeunit 50201 "Worker CU"
+{
+    trigger OnRun()
+    begin
+    end;
+}
+"#;
+        let runner = r#"codeunit 50200 "Runner CU"
+{
+    procedure Kick()
+    begin
+        Codeunit.Run(Codeunit::"Worker CU");
+    end;
+}
+"#;
+        let unrelated = r#"codeunit 50202 "Other CU"
+{
+    procedure Idle()
+    begin
+    end;
+}
+"#;
+        let (insight, cg) = build_resolved_call_graph(&[
+            ("/ws/Worker.Codeunit.al", worker),
+            ("/ws/Runner.Codeunit.al", runner),
+            ("/ws/Other.Codeunit.al", unrelated),
+        ]);
+
+        let kick = proc_node(&insight, ObjectKind::Codeunit, "Runner CU", "Kick");
+        let onrun = proc_node(&insight, ObjectKind::Codeunit, "Worker CU", "OnRun");
+        let idle = proc_node(&insight, ObjectKind::Codeunit, "Other CU", "Idle");
+
+        assert!(
+            cg.reachable_callers([onrun]).contains(&kick),
+            "Codeunit.Run(Codeunit::\"Worker CU\") must reach Worker CU.OnRun"
+        );
+        assert!(
+            !cg.reachable_callers([onrun]).contains(&idle),
+            "an unrelated codeunit must not be reachable from OnRun"
+        );
+    }
+
+    #[test]
+    fn c15_published_event_reaches_subscriber() {
+        let publisher = r#"codeunit 50300 "Publisher CU"
+{
+    procedure DoWork()
+    begin
+        OnAfterDoWork();
+    end;
+
+    [IntegrationEvent(false, false)]
+    local procedure OnAfterDoWork()
+    begin
+    end;
+}
+"#;
+        let subscriber = r#"codeunit 50301 "Subscriber CU"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Publisher CU", OnAfterDoWork, '', false, false)]
+    local procedure HandleAfterDoWork()
+    begin
+    end;
+}
+"#;
+        let unrelated = r#"codeunit 50302 "Bystander CU"
+{
+    procedure Watch()
+    begin
+    end;
+}
+"#;
+        let (insight, cg) = build_resolved_call_graph(&[
+            ("/ws/Publisher.Codeunit.al", publisher),
+            ("/ws/Subscriber.Codeunit.al", subscriber),
+            ("/ws/Bystander.Codeunit.al", unrelated),
+        ]);
+
+        let do_work = proc_node(&insight, ObjectKind::Codeunit, "Publisher CU", "DoWork");
+        let handler = CallGraph::node_id_for(
+            &insight,
+            &NodeKey::Subscriber(
+                ObjectKind::Codeunit,
+                "subscriber cu".to_string(),
+                "handleafterdowork".to_string(),
+            ),
+        )
+        .expect("subscriber node");
+        let watch = proc_node(&insight, ObjectKind::Codeunit, "Bystander CU", "Watch");
+
+        // Firing the event from DoWork reaches the subscriber handler.
+        assert!(
+            cg.reachable_callers([handler]).contains(&do_work),
+            "publishing the event must reach its [EventSubscriber] handler"
+        );
+        // The bystander is untouched.
+        assert!(
+            !cg.reachable_callers([handler]).contains(&watch),
+            "unrelated codeunit must not reach the subscriber"
+        );
+
+        // Forward: DoWork has an indirect edge to the subscriber handler.
+        let reaches_handler = cg
+            .callees_of(do_work)
+            .iter()
+            .any(|e| e.to == handler && e.kind == super::super::index::EdgeKind::IndirectCall);
+        assert!(reaches_handler, "DoWork → subscriber indirect edge expected");
+    }
+
+    #[test]
+    fn c15_implements_clause_extracted_from_header() {
+        let src = r#"codeunit 50100 "Impl A" implements "IFoo", IBar
+{
+    procedure Bar()
+    begin
+    end;
+}
+"#;
+        let result = al_syntax::AlParser::parse_quick(src);
+        let ifaces = info_implements_from_tree(result.tree.root_node(), src.as_bytes(), "Impl A");
+        assert!(
+            ifaces.iter().any(|i| i.eq_ignore_ascii_case("IFoo")),
+            "first interface must be captured: {ifaces:?}"
+        );
+        assert!(
+            ifaces.iter().any(|i| i.eq_ignore_ascii_case("IBar")),
+            "trailing comma-separated interface must be captured: {ifaces:?}"
+        );
+    }
+
+    #[test]
+    fn c15_codeunit_run_target_parsed() {
+        // Literal forms resolve; a variable argument does not.
+        assert_eq!(parse_codeunit_ref("Codeunit::\"Sales-Post\"").as_deref(), Some("Sales-Post"));
+        assert_eq!(parse_codeunit_ref("Codeunit::Worker").as_deref(), Some("Worker"));
+        assert_eq!(parse_codeunit_ref("SomeVariable"), None);
+        assert!(is_codeunit_run_method("Run"));
+        assert!(is_codeunit_run_method("runmodal"));
+        assert!(!is_codeunit_run_method("Post"));
     }
 }

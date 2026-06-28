@@ -1,13 +1,23 @@
 //! Test-to-code coverage mapping — `al test-coverage`.
 //!
 //! Static analysis that maps test procedures to the production procedures they
-//! call. Builds a call graph by walking procedure bodies looking for identifier
+//! call. The direct pass walks procedure bodies looking for identifier
 //! references that match known procedure names.
 //!
-//! Limitations (acknowledged in task):
-//! - Does not resolve indirect calls through events or interface dispatch.
-//! - Call resolution is name-based (not type-resolved). Overloaded names may
-//!   produce false positives.
+//! On top of the direct pass, an **indirect** pass (gap C15) consults the
+//! workspace call graph and credits coverage for polymorphic/indirect dispatch
+//! that name matching cannot see:
+//! - **interface dispatch** — `IFoo`-typed `.Bar()` covers `Bar` in every
+//!   implementor;
+//! - **`Codeunit.Run(Codeunit::"X")`** covers `X.OnRun`;
+//! - **event publish sites** cover the bound `[EventSubscriber]` handlers.
+//!
+//! The indirect edges are an over-approximation (sound for reachability): they
+//! can only *add* covered procedures, eliminating false negatives at the cost
+//! of possible false positives. The direct, name-based behaviour is unchanged.
+//!
+//! Remaining limitation: call resolution is name-based (not fully type-resolved);
+//! overloaded names may still produce false positives.
 //!
 //! Output: per-test-procedure list of called production procedures, plus a
 //! reverse map of untested public production procedures.
@@ -17,6 +27,8 @@ use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 
 use crate::queries::tests::{collect_test_procedures, has_test_subtype};
+use al_insight::graph::NodeKey;
+use al_insight::index::{CallGraph, EdgeKind, NodeId};
 use al_workspace::Workspace;
 
 /// A production procedure identified as being covered by tests.
@@ -123,6 +135,17 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
         );
     }
 
+    // C15: supplement the direct, name-based coverage with indirect-dispatch
+    // edges from the workspace call graph (interface dispatch, Codeunit.Run,
+    // event publish→subscriber). Runs before `untested` is computed so an
+    // indirectly-covered procedure is not reported as a false-negative.
+    augment_coverage_with_indirect_calls(
+        workspace,
+        &proc_lookup,
+        &mut coverage,
+        &mut covered_proc_names,
+    );
+
     let untested: Vec<UntestedProcedure> = all_procs
         .iter()
         .filter(|p| {
@@ -137,6 +160,94 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
         .collect();
 
     CoverageReport { coverage, untested }
+}
+
+/// Credit indirect-dispatch coverage (gap C15) on top of the direct pass.
+///
+/// For each test procedure already in `coverage`, look up its node in the
+/// workspace call graph and follow one hop of [`EdgeKind::IndirectCall`] edges
+/// — the over-approximated interface / `Codeunit.Run` / event-subscriber
+/// targets resolved by `al_insight`. Each newly-reached production procedure is
+/// appended to the entry's `covers` list (deduplicated by name) and recorded in
+/// `covered_names` so it is excluded from the untested report.
+///
+/// Purely additive: direct, name-based coverage is left untouched.
+fn augment_coverage_with_indirect_calls(
+    workspace: &Workspace,
+    proc_lookup: &HashMap<String, Vec<&ProcDef>>,
+    coverage: &mut [TestCoverageEntry],
+    covered_names: &mut HashSet<String>,
+) {
+    if coverage.is_empty() {
+        return;
+    }
+
+    // Build a fully-resolved call graph (same as the affected-test path). This
+    // resolves every workspace procedure's edges, including the C15 indirect
+    // ones, so a low-fanout test file is not silently skipped.
+    let (insight, _cg_guard) = workspace.get_or_build_call_graph();
+    let mut cg = CallGraph::build_from_insight(&insight);
+    al_insight::calls::resolve_all_workspace_call_edges(
+        &workspace.file_index,
+        &workspace.symbols,
+        &insight,
+        &mut cg,
+    );
+
+    for entry in coverage.iter_mut() {
+        let Some(test_node) = find_procedure_node(&insight, &entry.codeunit, &entry.test_procedure)
+        else {
+            continue;
+        };
+
+        let mut seen: HashSet<String> = entry.covers.iter().map(|c| c.name.to_lowercase()).collect();
+
+        for edge in cg.callees_of(test_node) {
+            if edge.kind != EdgeKind::IndirectCall {
+                continue;
+            }
+            let Some(info) = cg.node_info(edge.to) else {
+                continue;
+            };
+            let name_lower = info.name.to_lowercase();
+            covered_names.insert(name_lower.clone());
+            if !seen.insert(name_lower.clone()) {
+                continue;
+            }
+            // Prefer file/line from the production proc table; fall back to the
+            // call-graph node (e.g. `OnRun` triggers are not in `proc_lookup`).
+            let (file, line) = proc_lookup
+                .get(&name_lower)
+                .and_then(|defs| defs.iter().find(|d| !d.is_test))
+                .map(|d| (d.file.clone(), d.line))
+                .unwrap_or_default();
+            entry.covers.push(CoveredProcedure {
+                name: info.name.clone(),
+                object: info.object.clone(),
+                file,
+                line,
+            });
+        }
+    }
+}
+
+/// Resolve a `(codeunit, procedure)` name pair to its call-graph node,
+/// searching procedure nodes regardless of declaring object kind.
+fn find_procedure_node(
+    insight: &al_insight::graph::InsightGraph,
+    codeunit: &str,
+    procedure: &str,
+) -> Option<NodeId> {
+    let obj = codeunit.to_lowercase();
+    let method = procedure.to_lowercase();
+    for (key, indices) in insight.index.iter() {
+        if let NodeKey::Procedure(_, o, m) = key {
+            if *o == obj && *m == method {
+                return indices.first().map(|idx| NodeId::from(*idx));
+            }
+        }
+    }
+    None
 }
 
 fn collect_all_procedures(workspace: &Workspace) -> Vec<ProcDef> {
@@ -712,5 +823,100 @@ mod tests {
         }
         assert_eq!(public_is_local, Some(false), "plain procedure is not local");
         assert_eq!(private_is_local, Some(true), "local procedure is local");
+    }
+
+    // ---- C15: indirect-dispatch coverage --------------------------------
+
+    #[test]
+    fn coverage_credits_interface_dispatch_to_implementor() {
+        let iface = r#"interface IFoo
+{
+    procedure Bar()
+}"#;
+        let impl_a = r#"codeunit 50101 "Impl A" implements "IFoo"
+{
+    procedure Bar()
+    begin
+    end;
+}"#;
+        let test_cu = r#"codeunit 50100 "Dispatch Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestDispatch()
+    var
+        Foo: Interface "IFoo";
+    begin
+        Foo.Bar();
+    end;
+}"#;
+        let ws = workspace_with(&[
+            ("/ws/IFoo.Interface.al", iface),
+            ("/ws/ImplA.Codeunit.al", impl_a),
+            ("/ws/DispatchTest.Codeunit.al", test_cu),
+        ]);
+        let report = test_coverage(&ws);
+
+        let entry = report
+            .coverage
+            .iter()
+            .find(|e| e.test_procedure == "TestDispatch")
+            .expect("TestDispatch coverage entry");
+        assert!(
+            entry
+                .covers
+                .iter()
+                .any(|c| c.name.eq_ignore_ascii_case("Bar") && c.object == "Impl A"),
+            "interface dispatch must credit Impl A.Bar as covered, got {:?}",
+            entry.covers
+        );
+        // And the now-covered implementor must not appear as untested.
+        assert!(
+            !report
+                .untested
+                .iter()
+                .any(|u| u.name.eq_ignore_ascii_case("Bar")),
+            "indirectly-covered Bar must not be reported untested"
+        );
+    }
+
+    #[test]
+    fn coverage_credits_codeunit_run_to_onrun() {
+        let worker = r#"codeunit 50201 "Worker CU"
+{
+    trigger OnRun()
+    begin
+    end;
+}"#;
+        let test_cu = r#"codeunit 50200 "Run Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestRun()
+    begin
+        Codeunit.Run(Codeunit::"Worker CU");
+    end;
+}"#;
+        let ws = workspace_with(&[
+            ("/ws/Worker.Codeunit.al", worker),
+            ("/ws/RunTest.Codeunit.al", test_cu),
+        ]);
+        let report = test_coverage(&ws);
+
+        let entry = report
+            .coverage
+            .iter()
+            .find(|e| e.test_procedure == "TestRun")
+            .expect("TestRun coverage entry");
+        assert!(
+            entry
+                .covers
+                .iter()
+                .any(|c| c.name.eq_ignore_ascii_case("OnRun") && c.object == "Worker CU"),
+            "Codeunit.Run must credit Worker CU.OnRun, got {:?}",
+            entry.covers
+        );
     }
 }

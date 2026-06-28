@@ -374,6 +374,7 @@ fn recurse_subscriber(
             EdgeKind::TriggerInvocation => 1,
             EdgeKind::RecordTrigger => 2,
             EdgeKind::EventSubscription => 3,
+            EdgeKind::IndirectCall => 4,
         }
     }
     callees.sort_by(|a, b| {
