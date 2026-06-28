@@ -267,13 +267,28 @@ C-series + the live publish:
 Full workspace `cargo test --workspace --exclude zed-al` → **76 suites, 3388
 passed, 0 failed**; clean build. Worktrees/branches cleaned.
 
-### Remaining audit backlog (honest — nearly exhausted)
-B2 (build-service unification, architectural/conflict-prone), C3 (MCP
-agent-diagnostics), C8 (native semantic diagnostics — a major multi-session
-effort that also touches the deliberate A1 "bridge owns diagnostics" decision),
-plus small refinements (FlowField/CalcFormula eval, `total_time_ms` call-tree
-roll-up, RIMDX-level over-grant, the `--source server` arg-fallback bug,
-dynamic-coverage over the daemon RPC + Cobertura).
+### Final batch (B2 + refinements + C8 increment)
+On explicit "do all of it" direction, closed the remaining real items:
+- **B2 ✅ (core)** — shared **BuildService** in al-compile (`build(BuildRequest)
+  → Result<CompileResult, AlError>`, `BuildBackend::Native`/`Alc`); daemon
+  `dispatch_compile` + `dispatch_package` both route through it; infra failures
+  propagate as `Err`→RpcError, compile-with-diagnostics as `Ok(success:false)`.
+  Done by me on dev (conflict-prone for a stale-base agent). al-compile 31, al-lsp 415.
+- **B14-total-time ✅** — `total_time_ms` now rolls up the call tree (post-order
+  DFS, cycle/dangling-safe) in al-bc + al-analysis.
+- **B13 RIMDX ✅** — right-level over-grant: granted I/M/D with no observed write
+  site (via al-insight) is flagged; R never flagged; safe over-approximation.
+- **C8 ✅ (additive increment)** — bridge-free `native_check` module (AL-NC001
+  dup id / AL-NC002 out-of-idRange / AL-NC003 dup name) + `al-explorer
+  native-check` + `nativeCheck` RPC; distinct `AL-NC*` namespace, separate from
+  the LSP diagnostics/lint path — **A1 guard tests (completeness/e2e/edit_lifecycle)
+  still green**, so the deliberate native-lint-removal is intact. NOT bridge
+  replacement (bridge still owns CodeCop/AppSourceCop/etc.).
+- Pushed to `origin/dev`. The gap audit (A + B + C series) is now essentially
+  closed; what remains is genuinely large/optional (full native-diagnostics
+  bridge retirement = the rest of C8) or minor (FlowField eval, dynamic-coverage
+  over the daemon RPC, the `--source server` fall-back, al-explorer profiler
+  total-time port).
 
 ### C10 — live CDX tenant ✅ PROVEN
 - User authenticated the CDX Sandbox tenant (browser auth-code+PKCE; token cached).
