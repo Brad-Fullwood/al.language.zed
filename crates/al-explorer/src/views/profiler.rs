@@ -13,6 +13,52 @@ use crate::{
     App, MAX_INPUT_LEN, advance_list_selection, input_focused_style, truncate_with_ellipsis,
 };
 
+/// Aggregate per-node self time (in **microseconds**) from a profile's
+/// `samples` + `timeDeltas` arrays.
+///
+/// Canonical implementation: `al_bc::profiling::aggregate_self_time_us`
+/// (`crates/al-bc/src/profiling.rs`). This is a deliberate, behaviour-identical
+/// port — al-explorer is a pure TUI/CLI crate and pulling in `al-bc` would drag
+/// the whole reqwest + tokio networking stack in just to reuse one synchronous
+/// function, and al-bc's only public entry point (`analyze_profile`) would
+/// discard this view's TUI safeguards (node cap, BOM strip, GC filter). Keep the
+/// aggregation convention here in lock-step with al-bc (gap B14).
+///
+/// Convention: the `i`-th recorded sample (`samples[i]`, a node id) is charged
+/// the `i`-th time delta (`timeDeltas[i]`, microseconds); deltas are summed per
+/// sampled node id so self time reflects on-CPU time, not sample count. The two
+/// arrays are expected to be equal length; if a malformed profile gives them
+/// different lengths we iterate the common prefix (`min(len)`) so we can't panic.
+///
+/// Returns an empty map when either array is absent or empty, in which case the
+/// caller falls back to the legacy "1 ms per hit" estimate.
+fn aggregate_self_time_us(json: &serde_json::Value) -> std::collections::HashMap<u64, f64> {
+    let mut by_node: std::collections::HashMap<u64, f64> = std::collections::HashMap::new();
+
+    let (samples, deltas) = match (
+        json.get("samples").and_then(|v| v.as_array()),
+        json.get("timeDeltas").and_then(|v| v.as_array()),
+    ) {
+        (Some(s), Some(d)) if !s.is_empty() && !d.is_empty() => (s, d),
+        _ => return by_node,
+    };
+
+    // Mismatched lengths => malformed profile; aggregate over the common prefix
+    // so we never index out of bounds (matches al-bc, which logs a warning here;
+    // this view has no tracing subscriber so we degrade silently).
+    let n = samples.len().min(deltas.len());
+    for i in 0..n {
+        let Some(node_id) = samples[i].as_u64() else {
+            continue;
+        };
+        // timeDeltas are integer microseconds in practice; read as f64 defensively.
+        let delta_us = deltas[i].as_f64().unwrap_or(0.0);
+        *by_node.entry(node_id).or_insert(0.0) += delta_us;
+    }
+
+    by_node
+}
+
 #[derive(Debug, Clone)]
 struct HotspotRow {
     procedure: String,
@@ -101,12 +147,20 @@ impl ProfilerView {
             &nodes[..]
         };
 
+        // Accurate self time: sum each node's sampled `timeDeltas` (µs). Empty
+        // when the profile carries no `samples`/`timeDeltas`, in which case we
+        // fall back to the legacy 1 ms-per-hit estimate below. Same convention
+        // as al-bc (gap B14) — see `aggregate_self_time_us` above.
+        let self_time_by_node = aggregate_self_time_us(&json);
+        let have_time = !self_time_by_node.is_empty();
+
         let mut rows: Vec<HotspotRow> = Vec::new();
         for node in nodes {
             let hit_count = node.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0);
             if hit_count == 0 {
                 continue;
             }
+            let node_id = node.get("id").and_then(|v| v.as_u64());
             let call_frame = node.get("callFrame").unwrap_or(&serde_json::Value::Null);
             let function_name = call_frame
                 .get("functionName")
@@ -126,18 +180,20 @@ impl ProfilerView {
                 continue;
             }
 
-            // hitCount in Chrome's CPU profile format is the number of times
-            // the sampler observed this node at the top of the stack. It is
-            // NOT a millisecond duration — the actual durations live in the
-            // top-level `timeDeltas` array, which we don't aggregate yet.
-            //
-            // Treating hit_count as ms is a deliberately rough approximation
-            // that's only accurate when the sampling interval happens to be
-            // 1 ms (BC's default in the alcpuprofile producer). It's good
-            // enough for ranking hotspots — which is all this view shows —
-            // but mis-reports raw "self_time_ms" for any other interval.
-            // TODO(profiler): aggregate timeDeltas per node for true ms.
-            let self_time_ms = hit_count as f64;
+            // Self time: aggregate this node's sampled `timeDeltas` (µs -> ms),
+            // looked up by node id. hitCount alone is only the number of times
+            // the sampler caught this node on top of the stack — accurate as ms
+            // only when the sampling interval is exactly 1 ms. We fall back to
+            // that legacy estimate only when the profile carries no
+            // samples/timeDeltas to aggregate. (gap B14 — unified with al-bc.)
+            let self_time_ms = if have_time {
+                node_id
+                    .and_then(|id| self_time_by_node.get(&id).copied())
+                    .unwrap_or(0.0)
+                    / 1000.0
+            } else {
+                hit_count as f64
+            };
             rows.push(HotspotRow {
                 procedure: function_name,
                 object: url,
@@ -369,5 +425,106 @@ mod tests {
         assert_eq!(view.hotspots.len(), 1);
         assert_eq!(view.hotspots[0].procedure, "DoWork");
         assert!(!view.status.contains("truncated"));
+    }
+
+    /// Write `profile` to a unique temp `.alcpuprofile`, load it through the
+    /// real `load_profile` parse path, then clean up.
+    fn load_view(profile: &serde_json::Value) -> ProfilerView {
+        let path = std::env::temp_dir().join(format!(
+            "al-explorer-test-profile-{}-{}.alcpuprofile",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, serde_json::to_vec(profile).unwrap()).unwrap();
+        let mut view = ProfilerView::new();
+        view.file_path = path.to_string_lossy().into_owned();
+        view.load_profile();
+        std::fs::remove_file(&path).ok();
+        view
+    }
+
+    #[test]
+    fn time_based_self_time_outranks_hit_count() {
+        // "Fast" is sampled often (10 hits) but each sample is cheap (100 µs =>
+        // 1 ms total). "Slow" is sampled rarely (3 hits) but each sample is
+        // expensive (5000 µs => 15 ms total). A hit-count ranking would put
+        // Fast first; an accurate timeDeltas-based ranking must put Slow first.
+        let mut samples: Vec<u64> = Vec::new();
+        let mut time_deltas: Vec<u64> = Vec::new();
+        for _ in 0..10 {
+            samples.push(2);
+            time_deltas.push(100);
+        }
+        for _ in 0..3 {
+            samples.push(3);
+            time_deltas.push(5000);
+        }
+
+        let profile = serde_json::json!({
+            "startTime": 0.0,
+            "endTime": 1_000_000.0,
+            "nodes": [
+                { "id": 1, "hitCount": 0u64, "callFrame": { "functionName": "(root)", "url": "" } },
+                { "id": 2, "hitCount": 10u64, "callFrame": { "functionName": "Fast", "url": "Cod1.al" } },
+                { "id": 3, "hitCount": 3u64, "callFrame": { "functionName": "Slow", "url": "Cod2.al" } },
+            ],
+            "samples": samples,
+            "timeDeltas": time_deltas,
+        });
+
+        let view = load_view(&profile);
+
+        assert_eq!(view.hotspots.len(), 2);
+        // Time-based ranking: Slow (15 ms) beats Fast (1 ms) despite fewer hits.
+        assert_eq!(view.hotspots[0].procedure, "Slow");
+        assert!((view.hotspots[0].self_time_ms - 15.0).abs() < 1e-9);
+        assert_eq!(view.hotspots[0].hit_count, 3);
+        assert_eq!(view.hotspots[1].procedure, "Fast");
+        assert!((view.hotspots[1].self_time_ms - 1.0).abs() < 1e-9);
+        assert_eq!(view.hotspots[1].hit_count, 10);
+    }
+
+    #[test]
+    fn mismatched_samples_and_time_deltas_lengths_handled() {
+        // samples has 4 entries, timeDeltas only 2 — a malformed profile. The
+        // aggregation must iterate the common prefix (min len = 2) without
+        // panicking: node 2 is charged the two 3000 µs deltas => 6 ms.
+        let profile = serde_json::json!({
+            "startTime": 0.0,
+            "endTime": 1_000_000.0,
+            "nodes": [
+                { "id": 2, "hitCount": 4u64, "callFrame": { "functionName": "Maybe", "url": "Cod3.al" } },
+            ],
+            "samples": [2u64, 2u64, 2u64, 2u64],
+            "timeDeltas": [3000u64, 3000u64],
+        });
+
+        let view = load_view(&profile);
+
+        assert_eq!(view.hotspots.len(), 1);
+        assert_eq!(view.hotspots[0].procedure, "Maybe");
+        assert!((view.hotspots[0].self_time_ms - 6.0).abs() < 1e-9);
+        assert_eq!(view.hotspots[0].hit_count, 4);
+    }
+
+    #[test]
+    fn falls_back_to_hit_count_without_samples() {
+        // No samples/timeDeltas at all: self time falls back to 1 ms per hit.
+        let profile = serde_json::json!({
+            "startTime": 0.0,
+            "endTime": 1_000_000.0,
+            "nodes": [
+                { "id": 2, "hitCount": 7u64, "callFrame": { "functionName": "Legacy", "url": "Cod4.al" } },
+            ],
+        });
+
+        let view = load_view(&profile);
+
+        assert_eq!(view.hotspots.len(), 1);
+        assert_eq!(view.hotspots[0].procedure, "Legacy");
+        assert!((view.hotspots[0].self_time_ms - 7.0).abs() < 1e-9);
     }
 }
