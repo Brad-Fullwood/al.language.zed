@@ -4,12 +4,77 @@
 //! helpers (formerly in al-protocol). Also provides `validate_toolchain()` and
 //! `doctor()` for health-check operations.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 use crate::errors::DiscoveryError;
 use crate::project::home_dir;
+
+/// Environment variable that overrides the `dotnet` host executable used to run
+/// Microsoft's net8 AL tools (`alc.dll`, `aldoc.dll`, `altool.dll`).
+///
+/// By default the tools are launched via the bare `dotnet` program, which must
+/// be discoverable on `PATH`. On machines where `dotnet` is not on `PATH`, or
+/// where a specific SDK install must be pinned, set `AL_DOTNET_PATH` to the full
+/// path of the desired `dotnet` host executable. If the override is set but does
+/// not point at an existing, executable file, a warning is logged and discovery
+/// falls back to the bare `dotnet` program (it never hard-fails).
+///
+/// TODO(C11): also expose this as an `al.dotnetPath` LSP setting. al-lsp has no
+/// dedicated `config.rs`, and the `dotnet_command*` constructors below sit deep
+/// in the build/bridge hot paths, so threading a config value through directly
+/// would be large surgery. The intended wiring is for the server's settings
+/// handler (`crates/al-lsp/src/server/workspace.rs`) to export this env var from
+/// the parsed `al.dotnetPath` value, leaving this seam unchanged. That lives in
+/// another crate's hot path and is out of scope for this change.
+pub const DOTNET_PATH_ENV: &str = "AL_DOTNET_PATH";
+
+/// True if `path` is a regular file the current user can execute.
+///
+/// On Unix this checks both that the file exists and that any execute bit is
+/// set. On other platforms (Windows) execute permission isn't represented the
+/// same way, so it just checks the file exists.
+fn is_executable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// Resolve the `dotnet` host program to invoke for the AL tools.
+///
+/// Source order:
+/// 1. `$AL_DOTNET_PATH` — used only if it points at an existing executable file;
+///    otherwise a warning is logged and we fall through.
+/// 2. the bare `"dotnet"` program (resolved from `PATH` by the OS).
+///
+/// See [`DOTNET_PATH_ENV`] for the override rationale.
+fn dotnet_program() -> OsString {
+    if let Some(custom) = std::env::var_os(DOTNET_PATH_ENV) {
+        if !custom.is_empty() {
+            if is_executable_file(Path::new(&custom)) {
+                return custom;
+            }
+            tracing::warn!(
+                "{DOTNET_PATH_ENV}={} is not an executable file; falling back to `dotnet` on PATH",
+                Path::new(&custom).display()
+            );
+        }
+    }
+    OsString::from("dotnet")
+}
 
 /// Build a `dotnet <alc.dll> …` command for invoking the AL toolchain
 /// (compiler `alc.dll`, the native debugger, DAP editor services).
@@ -24,9 +89,11 @@ use crate::project::home_dir;
 /// but applied to Microsoft's binaries we cannot edit — via the environment.)
 ///
 /// `dotnet_command()` returns a `std::process::Command`; `dotnet_command_async`
-/// the tokio equivalent. Both seed the first arg with the `alc` dll path.
+/// the tokio equivalent. Both seed the first arg with the `alc` dll path. The
+/// `dotnet` host program is resolved via [`dotnet_program`] (overridable with
+/// `$AL_DOTNET_PATH`, see [`DOTNET_PATH_ENV`]).
 pub fn dotnet_command(alc: &Path) -> std::process::Command {
-    let mut cmd = std::process::Command::new("dotnet");
+    let mut cmd = std::process::Command::new(dotnet_program());
     cmd.arg(alc);
     cmd.env("DOTNET_ROLL_FORWARD", "Major");
     cmd
@@ -52,7 +119,7 @@ pub fn find_altool(toolchain: &AlToolchain) -> Option<std::path::PathBuf> {
 /// Microsoft.AspNetCore.App shared framework at runtime (the dotnet host
 /// reports a precise error if it's missing).
 pub fn official_lsp_command(altool: &Path, extra_args: &[String]) -> std::process::Command {
-    let mut cmd = std::process::Command::new("dotnet");
+    let mut cmd = std::process::Command::new(dotnet_program());
     cmd.env("DOTNET_ROLL_FORWARD", "Major");
     cmd.arg(altool);
     cmd.arg("launchlspserver");
@@ -61,7 +128,7 @@ pub fn official_lsp_command(altool: &Path, extra_args: &[String]) -> std::proces
 }
 
 pub fn dotnet_command_async(alc: &Path) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new("dotnet");
+    let mut cmd = tokio::process::Command::new(dotnet_program());
     cmd.arg(alc);
     cmd.env("DOTNET_ROLL_FORWARD", "Major");
     cmd
@@ -425,6 +492,9 @@ mod tests {
 
     #[test]
     fn dotnet_command_sets_roll_forward_and_alc_arg() {
+        // Pin AL_DOTNET_PATH unset so the program assertion is deterministic
+        // regardless of the developer's ambient environment.
+        let _g = DotnetEnvGuard::set(None);
         let alc = std::path::Path::new("/some/tools/net8.0/any/alc.dll");
         let cmd = dotnet_command(alc);
         assert_eq!(cmd.get_program(), "dotnet");
@@ -449,6 +519,7 @@ mod tests {
     /// with roll-forward (net8 assembly on newer majors), forwarding args.
     #[test]
     fn official_lsp_command_composes_launchlspserver_invocation() {
+        let _g = DotnetEnvGuard::set(None);
         let dir = tempfile::TempDir::new().unwrap();
         let tc = fake_toolchain(dir.path());
         // find_altool requires the sibling altool.dll (v17+); absent → None.
@@ -475,6 +546,7 @@ mod tests {
 
     #[test]
     fn dotnet_command_async_sets_roll_forward() {
+        let _g = DotnetEnvGuard::set(None);
         let alc = std::path::Path::new("/x/alc.dll");
         let cmd = dotnet_command_async(alc);
         let std_cmd = cmd.as_std();
@@ -645,8 +717,113 @@ mod tests {
         assert!(search_dir_recursive(tmp.path()).is_none());
     }
 
-    /// Serializes tests that mutate process-global env (`PATH`, `AL_TOOL_PATH`).
+    /// Serializes tests that mutate process-global env (`PATH`, `AL_TOOL_PATH`,
+    /// `AL_DOTNET_PATH`).
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard that serialises on `ENV_LOCK`, pins `AL_DOTNET_PATH` to a
+    /// chosen value (or unsets it) for the guard's lifetime, then restores the
+    /// previous value on drop. Keeps `dotnet_program()` resolution deterministic
+    /// across tests regardless of the developer's ambient environment.
+    struct DotnetEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prev: Option<OsString>,
+    }
+
+    impl DotnetEnvGuard {
+        fn set(value: Option<&std::ffi::OsStr>) -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = std::env::var_os(DOTNET_PATH_ENV);
+            // SAFETY: synchronised via ENV_LOCK held in `_lock`.
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(DOTNET_PATH_ENV, v),
+                    None => std::env::remove_var(DOTNET_PATH_ENV),
+                }
+            }
+            Self { _lock: lock, prev }
+        }
+    }
+
+    impl Drop for DotnetEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: synchronised via ENV_LOCK still held in `_lock`.
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(DOTNET_PATH_ENV, v),
+                    None => std::env::remove_var(DOTNET_PATH_ENV),
+                }
+            }
+        }
+    }
+
+    /// Create an executable file under `dir` named `name` and return its path.
+    /// On Unix the execute bit is set; elsewhere a plain file suffices because
+    /// `is_executable_file` only checks existence there.
+    fn write_executable(dir: &std::path::Path, name: &str) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    }
+
+    #[test]
+    fn dotnet_program_defaults_to_dotnet_when_unset() {
+        let _g = DotnetEnvGuard::set(None);
+        assert_eq!(dotnet_program(), OsString::from("dotnet"));
+    }
+
+    #[test]
+    fn dotnet_program_uses_custom_executable_when_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = write_executable(tmp.path(), "my-dotnet");
+        let _g = DotnetEnvGuard::set(Some(exe.as_os_str()));
+        assert_eq!(dotnet_program(), exe.clone().into_os_string());
+    }
+
+    #[test]
+    fn dotnet_program_falls_back_when_path_missing() {
+        let _g = DotnetEnvGuard::set(Some(std::ffi::OsStr::new(
+            "/no/such/dotnet-xyz-does-not-exist",
+        )));
+        assert_eq!(dotnet_program(), OsString::from("dotnet"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dotnet_program_falls_back_when_not_executable() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Plain file, no execute bit → must be rejected on Unix.
+        let f = tmp.path().join("plain-dotnet");
+        std::fs::write(&f, b"not executable\n").unwrap();
+        let _g = DotnetEnvGuard::set(Some(f.as_os_str()));
+        assert_eq!(dotnet_program(), OsString::from("dotnet"));
+    }
+
+    #[test]
+    fn dotnet_command_uses_custom_program_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = write_executable(tmp.path(), "custom-dotnet");
+        let _g = DotnetEnvGuard::set(Some(exe.as_os_str()));
+        let cmd = dotnet_command(std::path::Path::new("/x/alc.dll"));
+        assert_eq!(cmd.get_program(), exe.as_os_str());
+        // The override must not disturb the roll-forward env or the alc arg.
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args.first().map(String::as_str), Some("/x/alc.dll"));
+        let rf = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("DOTNET_ROLL_FORWARD"))
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned());
+        assert_eq!(rf.as_deref(), Some("Major"));
+    }
 
     fn write_minimal_toolchain(dir: &std::path::Path) {
         std::fs::create_dir_all(dir).unwrap();
