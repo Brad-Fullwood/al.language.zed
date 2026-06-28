@@ -291,6 +291,10 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
 /// - `junitOut`: str (path to write JUnit XML)
 /// - `coberturaOut`: str (path to write Cobertura XML)
 /// - `filter`: str (forwarded; currently logged only)
+/// - `coverage`: bool (gap C9; default false) — collect *dynamic* executed-line
+///   coverage on interp-routed tests. Adds a `coverage` object to the result
+///   (per-file executed lines + branch decisions) and, when `coberturaOut` is
+///   set, writes a dynamic-mode Cobertura doc instead of the static one.
 pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     workspace: &std::sync::Arc<Workspace>,
     id: u64,
@@ -405,6 +409,13 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
             .get("filter")
             .and_then(|v| v.as_str())
             .map(String::from),
+        // gap C9: opt-in dynamic (executed-line) coverage. When set, interp-routed
+        // tests run with a collector and we surface the per-file executed lines in
+        // the RPC result + emit a dynamic-mode Cobertura doc to `coberturaOut`.
+        coverage: params
+            .get("coverage")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
     };
 
     let discovered = crate::queries::tests::discover_tests(workspace);
@@ -448,12 +459,22 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
 
     let (tx, mut rx) = mpsc::channel::<TestEvent>(256);
     let mut run_handles = Vec::new();
+    // gap C9: when dynamic coverage is requested, hold a handle to the interp
+    // backend (behind Arc — `run` takes &self) so we can read its aggregated
+    // DynamicCoverageReport once the run completes.
+    let mut interp_mode_for_report: Option<std::sync::Arc<InterpMode>> = None;
     if !interp_tests.is_empty() {
-        let mode = InterpMode::new(std::sync::Arc::clone(workspace));
+        let mode = std::sync::Arc::new(if opts.coverage {
+            InterpMode::with_coverage(std::sync::Arc::clone(workspace))
+        } else {
+            InterpMode::new(std::sync::Arc::clone(workspace))
+        });
+        interp_mode_for_report = Some(std::sync::Arc::clone(&mode));
         let tx_interp = tx.clone();
         let opts_for_run = opts.clone();
+        let mode_for_run = std::sync::Arc::clone(&mode);
         run_handles.push(tokio::spawn(async move {
-            mode.run(interp_tests, opts_for_run, tx_interp).await
+            mode_for_run.run(interp_tests, opts_for_run, tx_interp).await
         }));
     }
     if !live_tests.is_empty() {
@@ -488,6 +509,20 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         }
     }
 
+    // gap C9: once every backend has finished, read the interpreter's aggregated
+    // dynamic (executed-line) coverage. `None` unless coverage was requested; an
+    // empty report when requested but no interp tests ran (e.g. all-live run).
+    let dynamic_coverage = if opts.coverage {
+        Some(
+            interp_mode_for_report
+                .as_ref()
+                .map(|m| m.coverage_report())
+                .unwrap_or_default(),
+        )
+    } else {
+        None
+    };
+
     if let Err(e) = ensure_result_store(workspace, &project_root).await {
         tracing::warn!(error = %e, "test_results store init failed; persistence skipped");
     } else if let Some(store_arc) = workspace.test_results.read().ok().and_then(|g| g.clone()) {
@@ -515,9 +550,18 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         }
     }
     if let Some(path) = &opts.cobertura_out {
-        let coverage = crate::queries::test_coverage::test_coverage(workspace);
-        if let Err(e) = write_cobertura_to_path(&coverage, path).await {
-            tracing::warn!(error = %e, path = %path.display(), "cobertura write failed");
+        // gap C9: emit DYNAMIC executed-line coverage when it was requested, else
+        // the historical STATIC call-graph report. The two are unambiguously
+        // distinguished in the emitted XML (coverage-mode attribute + comment).
+        if let Some(report) = &dynamic_coverage {
+            if let Err(e) = write_cobertura_dynamic_to_path(report, path).await {
+                tracing::warn!(error = %e, path = %path.display(), "dynamic cobertura write failed");
+            }
+        } else {
+            let coverage = crate::queries::test_coverage::test_coverage(workspace);
+            if let Err(e) = write_cobertura_to_path(&coverage, path).await {
+                tracing::warn!(error = %e, path = %path.display(), "cobertura write failed");
+            }
         }
     }
 
@@ -533,20 +577,77 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         cobertura::write_cobertura::<&mut Vec<u8>>,
     );
 
+    let mut result_obj = serde_json::json!({
+        "summaries": summaries_json,
+        "totals": {
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "skipped": skipped,
+        },
+    });
+    // gap C9: surface the interpreter's per-file executed-line + branch coverage
+    // when it was requested. Absent entirely when coverage was off (existing
+    // clients see exactly the prior shape).
+    if let Some(report) = &dynamic_coverage {
+        if let Some(map) = result_obj.as_object_mut() {
+            map.insert("coverage".to_string(), dynamic_coverage_to_json(report));
+        }
+    }
+
     Response {
         id,
-        result: Some(serde_json::json!({
-            "summaries": summaries_json,
-            "totals": {
-                "total": total,
-                "passed": passed,
-                "failed": failed,
-                "skipped": skipped,
-            },
-        })),
+        result: Some(result_obj),
         error: None,
         ..Default::default()
     }
+}
+
+/// Serialize a [`DynamicCoverageReport`] (gap C9) into the `tests.run_batch`
+/// result shape: `{ mode, files: [{ file, executedLines, branches: [{ line,
+/// thenTaken, elseTaken }] }] }`. Built here rather than via `Serialize` on the
+/// al-runtime type so the runtime crate stays free of a wire-format commitment.
+fn dynamic_coverage_to_json(
+    report: &al_runtime::interpreter::coverage::DynamicCoverageReport,
+) -> serde_json::Value {
+    let files: Vec<serde_json::Value> = report
+        .files
+        .iter()
+        .map(|f| {
+            let branches: Vec<serde_json::Value> = f
+                .branches
+                .iter()
+                .map(|b| {
+                    serde_json::json!({
+                        "line": b.line,
+                        "thenTaken": b.then_taken,
+                        "elseTaken": b.else_taken,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "file": f.file,
+                "executedLines": f.executed_lines,
+                "branches": branches,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "mode": "dynamic-executed-lines",
+        "files": files,
+    })
+}
+
+async fn write_cobertura_dynamic_to_path(
+    report: &al_runtime::interpreter::coverage::DynamicCoverageReport,
+    path: &std::path::Path,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut buf = Vec::new();
+    crate::test_engine::output::cobertura::write_cobertura_dynamic(report, &mut buf)?;
+    tokio::fs::write(path, buf).await
 }
 pub(in crate::server::daemon) async fn dispatch_tests_run_auto(
     workspace: &std::sync::Arc<Workspace>,
@@ -1232,6 +1333,154 @@ mod tests {
             totals["failed"].as_u64(),
             Some(1),
             "TestFails must fail: {result}"
+        );
+    }
+
+    /// Build a workspace rooted at `tmp` with no launch config (so interp tests
+    /// run locally) and a single pure-logic test codeunit containing a branch.
+    /// Returns the workspace plus the 1-based source lines of the taken and
+    /// not-taken branch bodies, for coverage assertions.
+    async fn ws_with_branch_codeunit(
+        tmp: &tempfile::TempDir,
+    ) -> (std::sync::Arc<Workspace>, u32, u32) {
+        let ws = std::sync::Arc::new(empty_ws());
+        {
+            let mut guard = ws.project.write().await;
+            *guard = Some(crate::project::AlProject {
+                root: tmp.path().to_path_buf(),
+                app_json: crate::project::AppManifest {
+                    id: String::new(),
+                    name: "test".into(),
+                    publisher: "test".into(),
+                    version: "1.0.0.0".into(),
+                    dependencies: Vec::new(),
+                    application: None,
+                    platform: None,
+                    runtime: None,
+                },
+                packages_dir: tmp.path().join(".alpackages"),
+                packages: Vec::new(),
+                server_configs: Vec::new(),
+            });
+        }
+        let src_path = tmp.path().join("CovBatch.Codeunit.al");
+        let source = r#"codeunit 50120 "Cov Batch Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestBranch()
+    var
+        x: Integer;
+    begin
+        x := 1;
+        if x = 1 then
+            x := 100
+        else
+            x := 200;
+    end;
+}
+"#;
+        std::fs::write(&src_path, source).unwrap();
+        ws.file_index.add_file(src_path, source.to_string());
+        let line_of = |needle: &str| -> u32 {
+            source
+                .lines()
+                .position(|l| l.contains(needle))
+                .map(|i| i as u32 + 1)
+                .unwrap()
+        };
+        (ws, line_of("x := 100"), line_of("x := 200"))
+    }
+
+    /// gap C9: with `coverage: true`, an interp-routed run must surface a
+    /// `coverage` object of per-file executed lines (taken branch present,
+    /// not-taken absent) AND write a DYNAMIC-mode Cobertura document.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_batch_with_coverage_surfaces_executed_lines_and_dynamic_cobertura() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (ws, taken, untaken) = ws_with_branch_codeunit(&tmp).await;
+
+        let resp = dispatch_tests_run_batch(
+            &ws,
+            70,
+            &serde_json::json!({
+                "codeunitIds": [50120],
+                "codeunitNames": ["Cov Batch Test"],
+                "coverage": true,
+                "coberturaOut": "cov.xml",
+            }),
+        )
+        .await;
+        assert!(resp.error.is_none(), "coverage run failed: {:?}", resp.error);
+        let result = resp.result.expect("result");
+
+        let coverage = result
+            .get("coverage")
+            .expect("coverage object must be present when requested");
+        assert_eq!(coverage["mode"], "dynamic-executed-lines");
+        let files = coverage["files"].as_array().expect("files array");
+        assert_eq!(files.len(), 1, "one covered file expected: {coverage}");
+        let exec: Vec<u64> = files[0]["executedLines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_u64())
+            .collect();
+        assert!(
+            exec.contains(&(taken as u64)),
+            "taken branch line {taken} must be executed; got {exec:?}"
+        );
+        assert!(
+            !exec.contains(&(untaken as u64)),
+            "not-taken branch line {untaken} must NOT be executed; got {exec:?}"
+        );
+
+        // The Cobertura file on disk must be the DYNAMIC variant, not static.
+        let cov_path = tmp.path().canonicalize().unwrap().join("cov.xml");
+        let xml = std::fs::read_to_string(&cov_path)
+            .unwrap_or_else(|e| panic!("cobertura file {cov_path:?} unreadable: {e}"));
+        assert!(
+            xml.contains(r#"coverage-mode="dynamic-executed-lines""#),
+            "dynamic cobertura expected, got:\n{xml}"
+        );
+        assert!(!xml.contains("static-call-graph"), "must not be static:\n{xml}");
+    }
+
+    /// gap C9 negative: with coverage OFF (the default), the result must carry NO
+    /// `coverage` key and `coberturaOut` must produce the STATIC document — proving
+    /// the existing behaviour is untouched.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_batch_without_coverage_is_unchanged_static() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (ws, _taken, _untaken) = ws_with_branch_codeunit(&tmp).await;
+
+        let resp = dispatch_tests_run_batch(
+            &ws,
+            71,
+            &serde_json::json!({
+                "codeunitIds": [50120],
+                "codeunitNames": ["Cov Batch Test"],
+                "coberturaOut": "cov.xml",
+            }),
+        )
+        .await;
+        assert!(resp.error.is_none(), "run failed: {:?}", resp.error);
+        let result = resp.result.expect("result");
+        assert!(
+            result.get("coverage").is_none(),
+            "coverage key must be absent when not requested: {result}"
+        );
+
+        let cov_path = tmp.path().canonicalize().unwrap().join("cov.xml");
+        let xml = std::fs::read_to_string(&cov_path).expect("cobertura file");
+        assert!(
+            xml.contains(r#"coverage-mode="static-call-graph""#),
+            "static cobertura expected by default, got:\n{xml}"
+        );
+        assert!(
+            !xml.contains("dynamic-executed-lines"),
+            "default run must not emit a dynamic doc:\n{xml}"
         );
     }
 

@@ -203,12 +203,14 @@ pub fn run(cli: Cli) -> ExitCode {
             junit_out,
             cobertura_out,
             filter,
+            coverage,
         } => lsp::cmd_test_run_all(
             parallel,
             timeout_ms,
             junit_out.as_deref(),
             cobertura_out.as_deref(),
             filter.as_deref(),
+            coverage,
             cli.json,
         ),
         Commands::Generate {

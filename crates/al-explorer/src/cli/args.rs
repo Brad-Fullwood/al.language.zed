@@ -534,6 +534,11 @@ Examples:
         /// Optional method-name filter (logged only in Phase 1)
         #[arg(long)]
         filter: Option<String>,
+        /// Collect dynamic (executed-line) coverage on interpreter-routed tests
+        /// (gap C9). Surfaces per-file executed lines in the result and, with
+        /// --cobertura-out, writes a dynamic-mode Cobertura doc instead of static.
+        #[arg(long)]
+        coverage: bool,
     },
     /// Generate an AL object scaffold (page, report, test)
     Generate {

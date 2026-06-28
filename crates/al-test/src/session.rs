@@ -35,6 +35,13 @@ pub struct RunOptions {
     /// If set, write a Cobertura XML coverage report to this path.
     pub cobertura_out: Option<PathBuf>,
     pub filter: Option<String>,
+    /// Opt-in dynamic coverage (gap C9). When `true`, interpreter-routed tests
+    /// run with a statement/branch collector attached (`InterpMode::with_coverage`)
+    /// so the caller can surface *executed-line* coverage — over the daemon RPC
+    /// result and as a dynamic-mode Cobertura document. Default `false` keeps the
+    /// historical zero-cost behaviour (static call-graph coverage only).
+    #[serde(default)]
+    pub coverage: bool,
 }
 
 /// Events emitted by a running test session.

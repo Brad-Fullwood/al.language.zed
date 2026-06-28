@@ -36,6 +36,7 @@ use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
 use quick_xml::Writer;
 
 use al_analysis::queries::test_coverage::CoverageReport;
+use al_runtime::interpreter::coverage::DynamicCoverageReport;
 
 struct ProcLine {
     line: u32,
@@ -183,6 +184,143 @@ pub fn write_cobertura<W: Write>(report: &CoverageReport, out: W) -> Result<(), 
             line_el.push_attribute(("number", line.line.to_string().as_str()));
             line_el.push_attribute(("hits", line.hits.to_string().as_str()));
             line_el.push_attribute(("branch", "false"));
+            writer.write_event(Event::Empty(line_el))?;
+        }
+        writer.write_event(Event::End(BytesEnd::new("lines")))?;
+
+        writer.write_event(Event::End(BytesEnd::new("class")))?;
+    }
+
+    writer.write_event(Event::End(BytesEnd::new("classes")))?;
+    writer.write_event(Event::End(BytesEnd::new("package")))?;
+    writer.write_event(Event::End(BytesEnd::new("packages")))?;
+    writer.write_event(Event::End(BytesEnd::new("coverage")))?;
+
+    Ok(())
+}
+
+/// Cobertura serializer for **dynamic** executed-line/branch coverage (gap C9).
+///
+/// Unlike [`write_cobertura`] above — which emits STATIC call-graph reachability
+/// (`hits=1` == reachable from a `[Test]`, `number` == declaration line) — this
+/// path consumes a [`DynamicCoverageReport`] produced by the tree-walking
+/// interpreter (`InterpMode::with_coverage`). Here `hits` reflects whether a
+/// source line was *actually executed* and `number` is the executed statement's
+/// 1-based source line — the conventional meaning of Cobertura coverage.
+///
+/// Only executed lines are present (the interpreter records hits, not misses),
+/// so `hits` is `>= 1` for every emitted `<line>`. To stop the two reports from
+/// being confused, the document self-documents via a leading XML comment plus a
+/// `coverage-mode="dynamic-executed-lines"` attribute on `<coverage>` (mirroring
+/// the static path's `coverage-mode="static-call-graph"`). Both are inert to
+/// standard Cobertura consumers, so the file stays valid.
+pub fn write_cobertura_dynamic<W: Write>(
+    report: &DynamicCoverageReport,
+    out: W,
+) -> Result<(), io::Error> {
+    // Totals: distinct executed lines (covered) and recorded branch decisions.
+    let lines_covered: usize = report.files.iter().map(|f| f.executed_lines.len()).sum();
+    // Every emitted line is a hit, so the line-rate of executed lines is 1.0
+    // when anything ran, 0.0 when the report is empty. (Cobertura's line-rate is
+    // covered/valid; we only know the lines we executed — there is no "valid but
+    // not executed" denominator in a hits-only dynamic report.)
+    let overall_rate = if lines_covered > 0 { "1.0" } else { "0.0" };
+
+    // Branch-rate: fraction of recorded decisions that exercised BOTH sides.
+    let mut branch_total = 0usize;
+    let mut branch_both = 0usize;
+    for f in &report.files {
+        for b in &f.branches {
+            branch_total += 1;
+            if b.then_taken > 0 && b.else_taken > 0 {
+                branch_both += 1;
+            }
+        }
+    }
+    let branch_rate = format_rate(branch_both, branch_total);
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .to_string();
+
+    let mut writer = Writer::new(out);
+    writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
+
+    // C9: make the nature of this report unambiguous. This is DYNAMIC
+    // executed-line/branch coverage from the interpreter — `hits` means the line
+    // actually ran, `number` is the executed statement line. (XML comments may
+    // not contain "--", so none appears here.)
+    writer.write_event(Event::Comment(quick_xml::events::BytesText::new(
+        " AL DYNAMIC executed-line coverage (al-test interpreter): hits = line was \
+         actually executed at runtime; number = executed statement line. Branch \
+         lines carry condition-coverage from if/case decisions. See \
+         coverage-mode=\"dynamic-executed-lines\" below. ",
+    )))?;
+
+    let mut coverage_start = BytesStart::new("coverage");
+    coverage_start.push_attribute(("line-rate", overall_rate));
+    coverage_start.push_attribute(("branch-rate", branch_rate.as_str()));
+    coverage_start.push_attribute(("version", "1.9"));
+    coverage_start.push_attribute(("timestamp", timestamp.as_str()));
+    coverage_start.push_attribute(("lines-covered", lines_covered.to_string().as_str()));
+    coverage_start.push_attribute(("lines-valid", lines_covered.to_string().as_str()));
+    // Non-standard but inert attribute that flags the coverage semantics (C9).
+    coverage_start.push_attribute(("coverage-mode", "dynamic-executed-lines"));
+    writer.write_event(Event::Start(coverage_start))?;
+
+    writer.write_event(Event::Start(BytesStart::new("sources")))?;
+    writer.write_event(Event::Start(BytesStart::new("source")))?;
+    writer.write_event(Event::Text(quick_xml::events::BytesText::new(".")))?;
+    writer.write_event(Event::End(BytesEnd::new("source")))?;
+    writer.write_event(Event::End(BytesEnd::new("sources")))?;
+
+    writer.write_event(Event::Start(BytesStart::new("packages")))?;
+
+    let mut package_start = BytesStart::new("package");
+    package_start.push_attribute(("name", "al"));
+    package_start.push_attribute(("line-rate", overall_rate));
+    package_start.push_attribute(("branch-rate", branch_rate.as_str()));
+    package_start.push_attribute(("complexity", "0"));
+    writer.write_event(Event::Start(package_start))?;
+
+    writer.write_event(Event::Start(BytesStart::new("classes")))?;
+
+    // One <class> per source file. Use the file path as both name and filename —
+    // the interpreter attributes coverage per file, not per AL object.
+    for file in &report.files {
+        let branch_lines: BTreeMap<u32, &al_runtime::interpreter::coverage::BranchCoverage> =
+            file.branches.iter().map(|b| (b.line, b)).collect();
+
+        let mut class_start = BytesStart::new("class");
+        class_start.push_attribute(("name", file.file.as_str()));
+        class_start.push_attribute(("filename", file.file.as_str()));
+        class_start.push_attribute(("line-rate", overall_rate));
+        class_start.push_attribute(("branch-rate", branch_rate.as_str()));
+        class_start.push_attribute(("complexity", "0"));
+        writer.write_event(Event::Start(class_start))?;
+
+        writer.write_event(Event::Empty(BytesStart::new("methods")))?;
+
+        writer.write_event(Event::Start(BytesStart::new("lines")))?;
+        for &line in &file.executed_lines {
+            let mut line_el = BytesStart::new("line");
+            line_el.push_attribute(("number", line.to_string().as_str()));
+            line_el.push_attribute(("hits", "1"));
+            if let Some(b) = branch_lines.get(&line) {
+                // A decision site: report two-way condition coverage.
+                let sides_taken =
+                    usize::from(b.then_taken > 0) + usize::from(b.else_taken > 0);
+                let pct = sides_taken * 50; // 0, 50 or 100 %
+                line_el.push_attribute(("branch", "true"));
+                line_el.push_attribute((
+                    "condition-coverage",
+                    format!("{pct}% ({sides_taken}/2)").as_str(),
+                ));
+            } else {
+                line_el.push_attribute(("branch", "false"));
+            }
             writer.write_event(Event::Empty(line_el))?;
         }
         writer.write_event(Event::End(BytesEnd::new("lines")))?;
@@ -387,5 +525,81 @@ mod tests {
             !xml.contains(r#"filename="src/AT&T"#),
             "Raw & in filename attribute is a markup error; must be escaped as &amp;"
         );
+    }
+
+    // ---- Dynamic (executed-line) Cobertura path (gap C9) ----
+
+    use al_runtime::interpreter::coverage::{BranchCoverage, FileCoverage};
+
+    fn run_cobertura_dynamic(report: &DynamicCoverageReport) -> String {
+        let mut buf = Vec::new();
+        write_cobertura_dynamic(report, &mut buf).expect("write_cobertura_dynamic must succeed");
+        String::from_utf8(buf).expect("output must be valid UTF-8")
+    }
+
+    #[test]
+    fn dynamic_cobertura_emits_executed_lines_and_dynamic_mode_label() {
+        // gap C9: a dynamic report must produce a well-formed Cobertura document
+        // whose lines are executed statements (hits=1) and whose mode is clearly
+        // labeled as dynamic executed-line coverage — distinct from the static
+        // call-graph path so the two can never be confused.
+        let report = DynamicCoverageReport {
+            files: vec![FileCoverage {
+                file: "src/MyCodeunit.al".to_string(),
+                executed_lines: vec![10, 11, 13],
+                branches: vec![BranchCoverage {
+                    line: 11,
+                    then_taken: 3,
+                    else_taken: 0,
+                }],
+            }],
+        };
+        let xml = run_cobertura_dynamic(&report);
+        assert_well_formed_xml(&xml);
+
+        // Machine-readable mode flag — and it must NOT be the static label.
+        assert!(
+            xml.contains(r#"coverage-mode="dynamic-executed-lines""#),
+            "expected dynamic mode attribute, got:\n{xml}"
+        );
+        assert!(
+            !xml.contains("static-call-graph"),
+            "dynamic doc must not carry the static-call-graph label, got:\n{xml}"
+        );
+        // Human-readable comment that spells out the semantics, before <coverage>.
+        let comment_pos = xml.find("<!--").expect("comment present");
+        let coverage_pos = xml.find("<coverage").expect("coverage element present");
+        assert!(comment_pos < coverage_pos, "comment must precede <coverage>");
+        assert!(
+            xml.contains("DYNAMIC executed-line coverage"),
+            "comment must label dynamic executed-line coverage, got:\n{xml}"
+        );
+
+        // Executed lines are present as hits=1 statements.
+        assert!(xml.contains(r#"number="10""#) && xml.contains(r#"hits="1""#));
+        assert!(xml.contains(r#"number="13""#));
+        // The if/case head line is flagged as a branch with condition coverage.
+        assert!(
+            xml.contains(r#"branch="true""#) && xml.contains("condition-coverage"),
+            "branch line must report condition coverage, got:\n{xml}"
+        );
+        assert!(xml.contains("src/MyCodeunit.al"));
+    }
+
+    #[test]
+    fn dynamic_cobertura_empty_report_is_valid_and_labeled() {
+        // An empty dynamic report must still be valid XML and labeled dynamic, so
+        // it is never mistaken for a static report or a 0% static run.
+        let report = DynamicCoverageReport::default();
+        let xml = run_cobertura_dynamic(&report);
+        assert_well_formed_xml(&xml);
+        assert!(xml.contains(r#"coverage-mode="dynamic-executed-lines""#));
+        assert!(xml.contains(r#"line-rate="0.0""#));
+        // Comment body must never contain the XML-illegal "--" sequence.
+        if let Some(start) = xml.find("<!--") {
+            let body = &xml[start + 4..];
+            let end = body.find("-->").expect("comment is closed");
+            assert!(!body[..end].contains("--"), "XML comment body must not contain '--'");
+        }
     }
 }

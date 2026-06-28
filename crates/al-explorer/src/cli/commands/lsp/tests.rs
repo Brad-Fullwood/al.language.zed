@@ -350,17 +350,22 @@ mod tests {
     }
 }
 
-/// `al test-run-all [--parallel] [--junit-out X] [--cobertura-out Y] [--filter PATTERN] [--timeout-ms N]`
+/// `al test-run-all [--parallel] [--junit-out X] [--cobertura-out Y] [--filter PATTERN] [--timeout-ms N] [--coverage]`
 ///
 /// Runs every discovered test codeunit through the daemon's `tests.run_auto`
 /// endpoint. Streams a per-codeunit summary then a final totals line; exits
 /// non-zero if any test failed.
+///
+/// `--coverage` (gap C9) collects *dynamic* executed-line coverage on
+/// interpreter-routed tests: the daemon returns a `coverage` object and, when
+/// `--cobertura-out` is also given, writes a dynamic-mode Cobertura document.
 pub fn cmd_test_run_all(
     parallel: bool,
     timeout_ms: Option<u64>,
     junit_out: Option<&str>,
     cobertura_out: Option<&str>,
     filter: Option<&str>,
+    coverage: bool,
     json: bool,
 ) -> ExitCode {
     let mut params = serde_json::json!({ "parallel": parallel });
@@ -375,6 +380,9 @@ pub fn cmd_test_run_all(
     }
     if let Some(p) = filter {
         params["filter"] = serde_json::Value::String(p.to_string());
+    }
+    if coverage {
+        params["coverage"] = serde_json::Value::Bool(true);
     }
 
     let mut client = match connect(None) {
