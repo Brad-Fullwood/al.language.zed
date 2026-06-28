@@ -243,6 +243,29 @@ pub fn cmd_arch_lint(json: bool) -> ExitCode {
     )
 }
 
+pub fn cmd_native_check(json: bool) -> ExitCode {
+    run_command("nativeCheck", Some(serde_json::json!({})), json, None, |result| {
+        let findings = result.as_array().cloned().unwrap_or_default();
+        if findings.is_empty() {
+            println!("No native semantic issues found.");
+        } else {
+            for f in &findings {
+                let code = f.get("code").and_then(|v| v.as_str()).unwrap_or("?");
+                let sev = f.get("severity").and_then(|v| v.as_str()).unwrap_or("?");
+                let otype = f.get("objectType").and_then(|v| v.as_str()).unwrap_or("?");
+                let name = f.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
+                let msg = f.get("message").and_then(|v| v.as_str()).unwrap_or("?");
+                let file = f.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                println!("[{code}] {sev} {otype} \"{name}\": {msg}");
+                if !file.is_empty() {
+                    println!("    {file}");
+                }
+            }
+            eprintln!("\n{} native semantic finding(s)", findings.len());
+        }
+    })
+}
+
 fn format_block_location(loc: Option<&serde_json::Value>) -> String {
     let Some(loc) = loc else {
         return "?".to_string();
