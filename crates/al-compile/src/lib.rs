@@ -608,6 +608,71 @@ pub fn native_compile(project_root: &Path) -> CompileResult {
     }
 }
 
+/// Which compiler backend a [`build`] request targets.
+///
+/// Gap B2: the daemon `compile`/`package` dispatchers, `al-explorer`, publish,
+/// and DAP launch each independently chose native-vs-alc and reimplemented the
+/// surrounding config/toolchain handling. [`BuildBackend`] + [`build`] centralize
+/// that selection behind one entry point returning the uniform [`CompileResult`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildBackend {
+    /// Pure-Rust `.app` emitter — the default; needs no toolchain, no `.NET`.
+    Native,
+    /// Microsoft `dotnet alc` subprocess (opt-in via `al.useOfficialCompiler`).
+    Alc,
+}
+
+impl BuildBackend {
+    /// Map the `al.useOfficialCompiler` flag to a backend (native-first policy).
+    pub fn from_use_official_compiler(use_official: bool) -> Self {
+        if use_official {
+            BuildBackend::Alc
+        } else {
+            BuildBackend::Native
+        }
+    }
+}
+
+/// A single, backend-agnostic build request (gap B2).
+pub struct BuildRequest<'a> {
+    pub project_root: &'a Path,
+    pub backend: BuildBackend,
+    /// Required for [`BuildBackend::Alc`]; ignored for `Native`.
+    pub toolchain: Option<&'a AlToolchain>,
+    pub package_cache: Option<&'a Path>,
+    pub analyzers: Option<&'a [String]>,
+    pub config: CompilationConfigOptions,
+}
+
+/// Unified build entry point (gap B2): one service the native emitter and the
+/// Microsoft `alc` path both go through, returning the uniform [`CompileResult`]
+/// (`success` / `app_path` / `diagnostics` / `output`). Callers select the
+/// backend and read one result shape instead of each branching and handling
+/// toolchain/config themselves.
+///
+/// Returns `Ok(CompileResult)` when the build *ran* — including a compile that
+/// produced error diagnostics (`success: false`). Returns `Err(AlError)` only
+/// for an **infrastructure** failure that stopped the build from running at all
+/// (no toolchain for the `Alc` backend, missing `app.json`, alc spawn failure),
+/// so callers can distinguish "compile reported errors" from "couldn't build"
+/// and surface them differently — preserving the pre-B2 contract.
+pub async fn build(req: BuildRequest<'_>) -> Result<CompileResult, AlError> {
+    match req.backend {
+        BuildBackend::Native => Ok(native_compile(req.project_root)),
+        BuildBackend::Alc => {
+            let toolchain = req.toolchain.ok_or(AlError::NoToolchain)?;
+            compile_project_with_analyzers(
+                toolchain,
+                req.project_root,
+                req.package_cache,
+                req.analyzers,
+                &req.config,
+            )
+            .await
+        }
+    }
+}
+
 pub fn find_app_file(project_root: &Path) -> Option<PathBuf> {
     if let Some(path) = find_app_file_from_manifest(project_root) {
         return Some(path);
@@ -1135,5 +1200,66 @@ Build failed.";
                 "/outputanalyzerstatistics".to_string(),
             ]
         );
+    }
+
+    // ── BuildService (gap B2) ────────────────────────────────────────────────
+    #[test]
+    fn build_backend_from_use_official_compiler() {
+        assert_eq!(
+            BuildBackend::from_use_official_compiler(false),
+            BuildBackend::Native
+        );
+        assert_eq!(
+            BuildBackend::from_use_official_compiler(true),
+            BuildBackend::Alc
+        );
+    }
+
+    #[tokio::test]
+    async fn build_alc_backend_without_toolchain_errors() {
+        // Alc backend with no toolchain is an infrastructure failure → Err
+        // (NoToolchain), distinct from a compile that ran and reported errors.
+        let dir = tempfile::tempdir().unwrap();
+        let result = build(BuildRequest {
+            project_root: dir.path(),
+            backend: BuildBackend::Alc,
+            toolchain: None,
+            package_cache: None,
+            analyzers: None,
+            config: CompilationConfigOptions::default(),
+        })
+        .await;
+        assert!(matches!(result, Err(AlError::NoToolchain)));
+    }
+
+    #[tokio::test]
+    async fn build_native_backend_emits_app_via_service() {
+        // The Native backend goes through the same `build()` entry and produces
+        // a real .app from a minimal self-contained project.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "Svc", "publisher": "T", "version": "1.0.0.0", "runtime": "14.0", "idRanges": [{"from":50100,"to":50149}], "dependencies": [] }"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/C.Codeunit.al"),
+            "codeunit 50100 C { procedure F(): Integer begin exit(1); end; }",
+        )
+        .unwrap();
+        let result = build(BuildRequest {
+            project_root: dir.path(),
+            backend: BuildBackend::Native,
+            toolchain: None,
+            package_cache: None,
+            analyzers: None,
+            config: CompilationConfigOptions::default(),
+        })
+        .await
+        .expect("native build never errors at the infra level");
+        assert!(result.success, "native build via service failed: {}", result.output);
+        assert!(result.app_path.is_some());
+        assert!(result.diagnostics.is_empty());
     }
 }

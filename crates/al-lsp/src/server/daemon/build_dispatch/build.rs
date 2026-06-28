@@ -311,7 +311,17 @@ pub(in crate::server::daemon) async fn dispatch_compile(
         // Microsoft `dotnet alc` subprocess. The native emitter does no semantic
         // analysis, so structured diagnostics come from the LSP, not this step.
         if !use_official_compiler {
-            let compile_result = crate::build::native_compile(&project_root);
+            // B2: route through the shared build service (native backend).
+            let compile_result = crate::build::build(crate::build::BuildRequest {
+                project_root: &project_root,
+                backend: crate::build::BuildBackend::Native,
+                toolchain: None,
+                package_cache: None,
+                analyzers: None,
+                config: crate::build::CompilationConfigOptions::default(),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
             return Ok(serde_json::json!({
                 "success": compile_result.success,
                 "diagnostics": [],
@@ -349,13 +359,18 @@ pub(in crate::server::daemon) async fn dispatch_compile(
                 output_analyzer_statistics: cfg.output_analyzer_statistics,
             })
             .unwrap_or_default();
-        let compile_result = crate::build::compile_project_with_analyzers(
-            toolchain,
-            &project_root,
-            package_cache.as_deref(),
-            None,
-            &config_options,
-        )
+        // B2: route through the shared build service (alc backend). Infra
+        // failures (no toolchain, missing app.json, alc spawn) propagate as Err
+        // → INTERNAL/CODE_ANALYSIS error; a compile that ran with error
+        // diagnostics comes back as Ok(success:false).
+        let compile_result = crate::build::build(crate::build::BuildRequest {
+            project_root: &project_root,
+            backend: crate::build::BuildBackend::Alc,
+            toolchain: Some(toolchain),
+            package_cache: package_cache.as_deref(),
+            analyzers: None,
+            config: config_options,
+        })
         .await
         .map_err(|e| format!("Compilation failed: {}", e))?;
         let app_path = compile_result
@@ -438,7 +453,30 @@ pub(in crate::server::daemon) async fn dispatch_package(
     // `al.useOfficialCompiler: true` opts into Microsoft's `dotnet alc`.
     let use_official_compiler = workspace.config.read().await.use_official_compiler;
     if !use_official_compiler {
-        let compile_result = crate::build::native_compile(&project_root);
+        // B2: route through the shared build service (native backend).
+        let compile_result = match crate::build::build(crate::build::BuildRequest {
+            project_root: &project_root,
+            backend: crate::build::BuildBackend::Native,
+            toolchain: None,
+            package_cache: None,
+            analyzers: None,
+            config: crate::build::CompilationConfigOptions::default(),
+        })
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: e.to_string(),
+                    }),
+                    ..Default::default()
+                };
+            }
+        };
         return Response {
             id,
             result: Some(serde_json::json!({
@@ -518,13 +556,17 @@ pub(in crate::server::daemon) async fn dispatch_package(
         Some(code_analyzers)
     };
 
-    match crate::build::compile_project_with_analyzers(
-        &toolchain,
-        &project_root,
-        None,
-        analyzer_filter.as_deref(),
-        &config_options,
-    )
+    // B2: route through the shared build service (alc backend). Infra failures
+    // propagate as Err → INTERNAL_ERROR; a compile that ran (even with error
+    // diagnostics) is an Ok(CompileResult) serialized verbatim.
+    match crate::build::build(crate::build::BuildRequest {
+        project_root: &project_root,
+        backend: crate::build::BuildBackend::Alc,
+        toolchain: Some(&toolchain),
+        package_cache: None,
+        analyzers: analyzer_filter.as_deref(),
+        config: config_options,
+    })
     .await
     {
         Ok(result) => Response {
