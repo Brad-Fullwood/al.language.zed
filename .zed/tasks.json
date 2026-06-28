@@ -33,5 +33,54 @@
     "command": "cargo",
     "args": ["build", "-p", "zed-al", "--target", "wasm32-wasip1", "--release"],
     "reveal": "always"
+  },
+  {
+    "label": "AL: Affected tests (current file)",
+    "command": "al-explorer",
+    "args": ["test-affected", "$ZED_FILE"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
+    "label": "AL: Dependency graph (JSON)",
+    "command": "al-explorer",
+    "args": ["deps-graph", "--format", "json"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
+    "label": "AL: XLIFF refresh language file (current .xlf)",
+    "command": "al-explorer",
+    "args": ["xlf", "refresh", "$ZED_FILE"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
+    "label": "AL: XLIFF list untranslated (current .xlf)",
+    "command": "al-explorer",
+    "args": ["xlf", "untranslated", "$ZED_FILE"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
+    "label": "AL: Test snapshot diff (baseline vs current)",
+    "command": "al-explorer",
+    "args": ["test-snapshot", "diff", "$ZED_WORKTREE_ROOT/test-snapshots/baseline.snap.json", "$ZED_FILE"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
+    "label": "AL: Test snapshot replay (current .snap.json)",
+    "command": "al-explorer",
+    "args": ["test-snapshot", "replay", "$ZED_FILE"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
+    "label": "AL: Table impact (symbol under cursor)",
+    "command": "al-explorer",
+    "args": ["impact", "$ZED_SYMBOL", "--table"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
   }
 ]
