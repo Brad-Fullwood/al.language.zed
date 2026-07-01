@@ -9,20 +9,30 @@ use super::{connect, print_json, project_root, report_error, run_command};
 /// Print a build/package result in human-readable form and return the exit code.
 ///
 /// Both `compile` and `package` return the same response shape:
-/// `{ success, appPath?, diagnostics?, output? }`.
+/// `{ success, appPath?, diagnostics?, output?, backend?, validated? }`.
+/// `backend`/`validated` distinguish the native emitter (parses + packages,
+/// no semantic analysis) from the Microsoft `alc` path (full compiler
+/// validation) — see `al.useOfficialCompiler` — so a successful native emit
+/// is never printed as if it were a validated compile.
 fn print_build_result(result: &Value, json: bool) -> ExitCode {
     let success = result
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let validated = result.get("validated").and_then(|v| v.as_bool());
     if json {
         print_json(result);
     } else {
         if success {
+            let label = match validated {
+                Some(true) => "Compilation succeeded (Microsoft alc, validated)",
+                Some(false) => "Native emit succeeded (no compiler validation)",
+                None => "Compilation succeeded",
+            };
             if let Some(path) = result.get("appPath").and_then(|v| v.as_str()) {
-                println!("Compilation succeeded: {path}");
+                println!("{label}: {path}");
             } else {
-                println!("Compilation succeeded");
+                println!("{label}");
             }
         } else {
             eprintln!("Compilation failed");

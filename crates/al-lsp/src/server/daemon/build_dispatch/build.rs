@@ -327,6 +327,13 @@ pub(in crate::server::daemon) async fn dispatch_compile(
                 "diagnostics": [],
                 "appPath": compile_result.app_path.as_ref().map(|p| p.display().to_string()),
                 "output": compile_result.output,
+                // Explicit, machine-readable markers so CLI/Zed/MCP output can
+                // never be mistaken for a compiler-validated build: the native
+                // emitter parses and packages but performs no semantic
+                // analysis (no type checks, no unknown-symbol/permission/event
+                // validation). Set al.useOfficialCompiler=true for that.
+                "backend": "native",
+                "validated": false,
             }));
         }
 
@@ -391,6 +398,8 @@ pub(in crate::server::daemon) async fn dispatch_compile(
                 "message": d.message,
             })).collect::<Vec<_>>(),
             "appPath": app_path,
+            "backend": "alc",
+            "validated": true,
         }))
     }
     .await;
