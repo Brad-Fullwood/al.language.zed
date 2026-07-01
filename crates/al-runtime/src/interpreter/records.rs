@@ -162,7 +162,10 @@ fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Option<TableMe
 
     if let Some(keys_body) = section_body(body, "keys", source) {
         // The first `key(...)` is the primary key.
-        if let Some(key_def) = sections_with_keyword(keys_body, "key", source).into_iter().next() {
+        if let Some(key_def) = sections_with_keyword(keys_body, "key", source)
+            .into_iter()
+            .next()
+        {
             pk_field_names = parse_key_fields(key_def, source);
         }
     }
@@ -267,7 +270,10 @@ fn section_keyword(section: Node<'_>, source: &[u8]) -> Option<String> {
 /// Parse `field(N; Name; Type) { ... }` → (field_no, name, flow_calc_formula).
 /// The third element is `Some(formula)` only when the field is a FlowField with
 /// a parseable `CalcFormula`.
-fn parse_field_def(section: Node<'_>, source: &[u8]) -> Option<(FieldNo, String, Option<CalcFormula>)> {
+fn parse_field_def(
+    section: Node<'_>,
+    source: &[u8],
+) -> Option<(FieldNo, String, Option<CalcFormula>)> {
     let mut cursor = section.walk();
     let pblock = section
         .named_children(&mut cursor)
@@ -279,7 +285,10 @@ fn parse_field_def(section: Node<'_>, source: &[u8]) -> Option<(FieldNo, String,
     for child in pblock.named_children(&mut bc) {
         match child.kind() {
             "integer" if number.is_none() => {
-                number = child.utf8_text(source).ok().and_then(|t| t.trim().parse().ok());
+                number = child
+                    .utf8_text(source)
+                    .ok()
+                    .and_then(|t| t.trim().parse().ok());
             }
             "identifier" | "quoted_identifier" if number.is_some() && name.is_none() => {
                 name = child
@@ -458,7 +467,10 @@ pub(crate) fn dispatch_record_method(
 
     // Resolve the field-name argument for field-reference methods.
     let field_no = if field_methods {
-        let fname = nodes.first().map(|n| node_text(*n, source)).unwrap_or_default();
+        let fname = nodes
+            .first()
+            .map(|n| node_text(*n, source))
+            .unwrap_or_default();
         if fname.is_empty() {
             return err(format!("{method}: missing field name argument"));
         }
@@ -479,15 +491,24 @@ pub(crate) fn dispatch_record_method(
             store.record.reset();
             Eval::Normal(Value::Empty)
         }
-        "insert" => match store.record.insert(values.first().map(truthy).unwrap_or(false)) {
+        "insert" => match store
+            .record
+            .insert(values.first().map(truthy).unwrap_or(false))
+        {
             Ok(()) => Eval::Normal(Value::Boolean(true)),
             Err(e) => err(format!("Insert: {e}")),
         },
-        "modify" => match store.record.modify(values.first().map(truthy).unwrap_or(false)) {
+        "modify" => match store
+            .record
+            .modify(values.first().map(truthy).unwrap_or(false))
+        {
             Ok(()) => Eval::Normal(Value::Boolean(true)),
             Err(e) => err(format!("Modify: {e}")),
         },
-        "delete" => match store.record.delete(values.first().map(truthy).unwrap_or(false)) {
+        "delete" => match store
+            .record
+            .delete(values.first().map(truthy).unwrap_or(false))
+        {
             Ok(()) => Eval::Normal(Value::Boolean(true)),
             Err(e) => err(format!("Delete: {e}")),
         },
@@ -505,11 +526,15 @@ pub(crate) fn dispatch_record_method(
             match values.len() {
                 0 => Eval::Normal(Value::Empty), // clear filter: best-effort no-op
                 1 => {
-                    store.record.set_range(f, values[0].clone(), values[0].clone());
+                    store
+                        .record
+                        .set_range(f, values[0].clone(), values[0].clone());
                     Eval::Normal(Value::Empty)
                 }
                 _ => {
-                    store.record.set_range(f, values[0].clone(), values[1].clone());
+                    store
+                        .record
+                        .set_range(f, values[0].clone(), values[1].clone());
                     Eval::Normal(Value::Empty)
                 }
             }
@@ -641,7 +666,10 @@ fn eval_flowfield(ctx: &mut DispatchCtx, current_key: &str, formula: &CalcFormul
     //    buffer first, before borrowing the referenced store (they may be the
     //    same store for a self-referencing FlowField).
     let field_values: Vec<Option<Value>> = {
-        let store = ctx.records.get_mut(current_key).expect("store just ensured");
+        let store = ctx
+            .records
+            .get_mut(current_key)
+            .expect("store just ensured");
         formula
             .where_clause
             .iter()
@@ -690,9 +718,7 @@ fn eval_flowfield(ctx: &mut DispatchCtx, current_key: &str, formula: &CalcFormul
         let field_no = store.resolve_field(&cond.field);
         let filt = match &cond.value {
             WhereValue::Const(s) => FlowFilter::Eq(parse_scalar(s)),
-            WhereValue::Field(_) => {
-                FlowFilter::Eq(field_values[i].clone().unwrap_or(Value::Empty))
-            }
+            WhereValue::Field(_) => FlowFilter::Eq(field_values[i].clone().unwrap_or(Value::Empty)),
             WhereValue::Filter(expr) => match filter::parse(expr) {
                 Ok(parsed) => FlowFilter::Expr(parsed),
                 Err(e) => return err(format!("FlowField filter '{expr}': {e}")),
@@ -805,7 +831,12 @@ pub(crate) fn is_list_method(method: &str) -> bool {
 }
 
 /// Execute a `List of [T]` method call on the list bound to `recv`.
-pub(crate) fn dispatch_list_method(recv: &str, method: &str, args: Vec<Value>, stack: &mut ScopeStack) -> Eval {
+pub(crate) fn dispatch_list_method(
+    recv: &str,
+    method: &str,
+    args: Vec<Value>,
+    stack: &mut ScopeStack,
+) -> Eval {
     let lower = method.to_ascii_lowercase();
     let Some(slot) = stack.lookup_mut(recv) else {
         return err(format!("list variable '{recv}' is not bound"));
@@ -827,7 +858,10 @@ pub(crate) fn dispatch_list_method(recv: &str, method: &str, args: Vec<Value>, s
                 Some(Value::Integer(i)) if *i >= 1 && (*i as usize) <= items.len() => {
                     Eval::Normal(items[(*i as usize) - 1].clone())
                 }
-                Some(Value::Integer(i)) => err(format!("List.Get: index {i} out of range 1..{}", items.len())),
+                Some(Value::Integer(i)) => err(format!(
+                    "List.Get: index {i} out of range 1..{}",
+                    items.len()
+                )),
                 _ => err("List.Get expects an Integer index"),
             }
         }

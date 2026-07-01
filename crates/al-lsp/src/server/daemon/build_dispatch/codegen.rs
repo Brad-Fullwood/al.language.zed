@@ -376,10 +376,7 @@ pub(in crate::server::daemon) fn dispatch_generate(
             // A subject is optional — with none we emit a placeholder test —
             // but if one is named and not found we surface that rather than
             // silently degrading to the placeholder.
-            let subject_name = params
-                .get("subject")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let subject_name = params.get("subject").and_then(|v| v.as_str()).unwrap_or("");
             let subject = if subject_name.is_empty() {
                 None
             } else {
@@ -866,7 +863,11 @@ mod tests {
             12,
             &serde_json::json!({ "kind": "test", "name": "Empty Tests", "id": 50202 }),
         );
-        assert!(resp.error.is_none(), "no-subject test must succeed: {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "no-subject test must succeed: {:?}",
+            resp.error
+        );
         let code = resp.result.expect("result")["code"]
             .as_str()
             .expect("code string")

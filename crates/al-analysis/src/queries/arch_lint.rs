@@ -90,8 +90,7 @@ impl ArchConfig {
             // (background sessions, web services, upgrade codeunits).
             ArchRule {
                 id: "BUILTIN-TABLE-NO-PAGE-RUN".to_string(),
-                description: "Tables must not open pages (keep the data layer UI-free)"
-                    .to_string(),
+                description: "Tables must not open pages (keep the data layer UI-free)".to_string(),
                 kind: ArchRuleKind::ForbiddenPattern,
                 pattern: "table".to_string(),
                 values: vec!["Page.Run".to_string(), "Page.RunModal".to_string()],
@@ -631,7 +630,11 @@ mod tests {
             u.dedup();
             u.len()
         };
-        assert_eq!(unique, ids.len(), "builtin rule IDs must be unique: {ids:?}");
+        assert_eq!(
+            unique,
+            ids.len(),
+            "builtin rule IDs must be unique: {ids:?}"
+        );
     }
 
     #[test]

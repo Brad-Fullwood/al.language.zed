@@ -111,7 +111,11 @@ fn write_project(root: &Path) {
 /// Read a single entry out of a `.app` (skip the 40-byte NAVX header, then unzip).
 fn read_app_entry(app: &Path, entry_name: &str) -> Vec<u8> {
     let bytes = std::fs::read(app).unwrap_or_else(|e| panic!("read {}: {e}", app.display()));
-    assert!(bytes.len() > 40 && &bytes[0..4] == b"NAVX", "not a NAVX .app: {}", app.display());
+    assert!(
+        bytes.len() > 40 && &bytes[0..4] == b"NAVX",
+        "not a NAVX .app: {}",
+        app.display()
+    );
     let zip_bytes = bytes[40..].to_vec();
     let reader = std::io::Cursor::new(zip_bytes);
     let mut zip = zip::ZipArchive::new(reader).expect("parse zip payload");
@@ -127,14 +131,18 @@ fn entry_names(app: &Path) -> Vec<String> {
     let bytes = std::fs::read(app).unwrap();
     let reader = std::io::Cursor::new(bytes[40..].to_vec());
     let mut zip = zip::ZipArchive::new(reader).unwrap();
-    let mut names: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().to_string()).collect();
+    let mut names: Vec<String> = (0..zip.len())
+        .map(|i| zip.by_index(i).unwrap().name().to_string())
+        .collect();
     names.sort();
     names
 }
 
 /// Parse a (possibly BOM-prefixed) JSON document into a normalized value.
 fn parse_json(bytes: &[u8]) -> serde_json::Value {
-    let s = std::str::from_utf8(bytes).unwrap().trim_start_matches('\u{feff}');
+    let s = std::str::from_utf8(bytes)
+        .unwrap()
+        .trim_start_matches('\u{feff}');
     serde_json::from_str(s).expect("valid JSON")
 }
 
@@ -165,7 +173,10 @@ fn native_emit_matches_alc() {
         .arg(&dll)
         .arg(format!("/project:{}", tmp.display()))
         .arg(format!("/out:{}", alc_app.display()))
-        .arg(format!("/packagecachepath:{}", tmp.join(".alpackages").display()))
+        .arg(format!(
+            "/packagecachepath:{}",
+            tmp.join(".alpackages").display()
+        ))
         .output()
         .expect("run alc");
     assert!(
@@ -193,7 +204,11 @@ fn native_emit_matches_alc() {
     );
 
     // 3a) Same entry set.
-    assert_eq!(entry_names(&alc_app), entry_names(&native_app), "zip entry sets differ");
+    assert_eq!(
+        entry_names(&alc_app),
+        entry_names(&native_app),
+        "zip entry sets differ"
+    );
 
     // 3b) SymbolReference.json semantically identical.
     let alc_sym = parse_json(&read_app_entry(&alc_app, "SymbolReference.json"));
@@ -206,8 +221,15 @@ fn native_emit_matches_alc() {
     // 3c) NavxManifest.xml identical except the <Build> provenance line.
     let alc_manifest = manifest_without_build(&read_app_entry(&alc_app, "NavxManifest.xml"));
     let native_manifest = manifest_without_build(&read_app_entry(&native_app, "NavxManifest.xml"));
-    assert_eq!(alc_manifest, native_manifest, "NavxManifest.xml differs (ignoring <Build>)");
+    assert_eq!(
+        alc_manifest, native_manifest,
+        "NavxManifest.xml differs (ignoring <Build>)"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp);
-    eprintln!("OK: native .app matches alc {} for {} object kinds", dll.display(), CORPUS.len());
+    eprintln!(
+        "OK: native .app matches alc {} for {} object kinds",
+        dll.display(),
+        CORPUS.len()
+    );
 }

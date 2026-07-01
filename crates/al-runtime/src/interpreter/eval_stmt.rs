@@ -572,12 +572,7 @@ fn eval_assignment(
     Eval::Normal(Value::Empty)
 }
 
-fn eval_exit(
-    node: Node<'_>,
-    source: &[u8],
-    stack: &mut ScopeStack,
-    ctx: &mut DispatchCtx,
-) -> Eval {
+fn eval_exit(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Eval {
     if let Some(expr) = named_stmt_child(node, 0) {
         // The AL grammar represents `exit(value)` as:
         //   exit_statement → argument_list → [expression_list →] expression
@@ -716,7 +711,12 @@ pub(crate) fn eval_call(
             Some(Value::Record(rv)) if records::is_record_method(&proc_name) => {
                 let table_name = rv.table_name.clone();
                 return records::dispatch_record_method(
-                    &table_name, &proc_name, args_node, source, stack, ctx,
+                    &table_name,
+                    &proc_name,
+                    args_node,
+                    source,
+                    stack,
+                    ctx,
                 );
             }
             Some(Value::List(_)) if records::is_list_method(&proc_name) => {

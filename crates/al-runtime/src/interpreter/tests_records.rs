@@ -471,7 +471,12 @@ fn b6_unknown_table_errors_gracefully() {
     end;
 }
 "#;
-    let r = run(&[("/ws/CustTests.al", cu)], "Cust Tests", "UseCustomer", vec![]);
+    let r = run(
+        &[("/ws/CustTests.al", cu)],
+        "Cust Tests",
+        "UseCustomer",
+        vec![],
+    );
     match r {
         Eval::Error(e) => assert!(
             e.message.to_lowercase().contains("not found in workspace"),

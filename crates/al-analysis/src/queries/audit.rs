@@ -411,7 +411,10 @@ fn compute_over_broad(
         // Dedupe repeated grants of the same object within one set.
         let mut seen: HashSet<(String, String)> = HashSet::new();
         for grant in grants {
-            let key = (grant.object_type.to_lowercase(), grant.object.to_lowercase());
+            let key = (
+                grant.object_type.to_lowercase(),
+                grant.object.to_lowercase(),
+            );
             if !seen.insert(key) {
                 continue;
             }
@@ -492,7 +495,10 @@ fn compute_over_granted_rights(
                 continue;
             }
 
-            let observed = observed_writes.get(&object_lower).cloned().unwrap_or_default();
+            let observed = observed_writes
+                .get(&object_lower)
+                .cloned()
+                .unwrap_or_default();
             let over: BTreeSet<char> = granted_imd.difference(&observed).copied().collect();
             if over.is_empty() {
                 continue;
@@ -840,10 +846,7 @@ mod tests {
         let report = permission_set_audit(&ws);
 
         // "My Table" is declared but never referenced elsewhere → unused.
-        let my_table = report
-            .over_broad
-            .iter()
-            .find(|e| e.object == "My Table");
+        let my_table = report.over_broad.iter().find(|e| e.object == "My Table");
         assert!(
             my_table.is_some(),
             "My Table is declared but never used → should be flagged. Got: {:?}",
@@ -851,7 +854,10 @@ mod tests {
         );
 
         // "Unused Table" is neither declared nor referenced → unused.
-        let unused = report.over_broad.iter().find(|e| e.object == "Unused Table");
+        let unused = report
+            .over_broad
+            .iter()
+            .find(|e| e.object == "Unused Table");
         assert!(unused.is_some(), "Unused Table should be flagged as unused");
         assert_eq!(unused.unwrap().rights, "RIMD");
         assert_eq!(unused.unwrap().object_type, "TableData");

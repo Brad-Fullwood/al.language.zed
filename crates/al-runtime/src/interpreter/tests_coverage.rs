@@ -89,15 +89,24 @@ fn if_else_records_taken_branch_excludes_untaken() {
 }
 "#;
     let (eval, cov) = run_with_coverage(src, "Test");
-    assert!(matches!(eval, Eval::Normal(_)), "run must succeed, got {eval:?}");
+    assert!(
+        matches!(eval, Eval::Normal(_)),
+        "run must succeed, got {eval:?}"
+    );
 
     let assign0 = line_of(src, "x := 0");
     let if_line = line_of(src, "if x = 0");
     let taken = line_of(src, "x := 1");
     let untaken = line_of(src, "x := 2");
 
-    assert!(cov.is_line_executed(COV_FILE, assign0), "x := 0 must be covered");
-    assert!(cov.is_line_executed(COV_FILE, if_line), "the if line must be covered");
+    assert!(
+        cov.is_line_executed(COV_FILE, assign0),
+        "x := 0 must be covered"
+    );
+    assert!(
+        cov.is_line_executed(COV_FILE, if_line),
+        "the if line must be covered"
+    );
     assert!(
         cov.is_line_executed(COV_FILE, taken),
         "taken THEN branch (x := 1) must be covered"
@@ -107,7 +116,9 @@ fn if_else_records_taken_branch_excludes_untaken() {
         "not-taken ELSE branch (x := 2) must NOT be covered"
     );
 
-    let tally = cov.branch(COV_FILE, if_line).expect("if branch decision recorded");
+    let tally = cov
+        .branch(COV_FILE, if_line)
+        .expect("if branch decision recorded");
     assert_eq!(tally.then_taken, 1, "THEN was taken exactly once");
     assert_eq!(tally.else_taken, 0, "ELSE was never taken");
 
@@ -151,7 +162,9 @@ fn else_branch_taken_when_condition_false() {
         cov.is_line_executed(COV_FILE, else_line),
         "taken ELSE branch must be covered"
     );
-    let tally = cov.branch(COV_FILE, if_line).expect("branch decision recorded");
+    let tally = cov
+        .branch(COV_FILE, if_line)
+        .expect("branch decision recorded");
     assert_eq!(tally.then_taken, 0);
     assert_eq!(tally.else_taken, 1);
 }
@@ -192,7 +205,9 @@ fn case_records_matched_arm_excludes_else() {
     );
 
     // An arm matched: recorded as the THEN side of the case decision.
-    let tally = cov.branch(COV_FILE, case_line).expect("case decision recorded");
+    let tally = cov
+        .branch(COV_FILE, case_line)
+        .expect("case decision recorded");
     assert_eq!(tally.then_taken, 1, "an arm matched");
     assert_eq!(tally.else_taken, 0, "else was not taken");
 }
@@ -230,7 +245,9 @@ fn case_else_taken_when_no_arm_matches() {
         cov.is_line_executed(COV_FILE, arm_else),
         "else arm (x := 99) must be covered"
     );
-    let tally = cov.branch(COV_FILE, case_line).expect("case decision recorded");
+    let tally = cov
+        .branch(COV_FILE, case_line)
+        .expect("case decision recorded");
     assert_eq!(tally.then_taken, 0, "no arm matched");
     assert_eq!(tally.else_taken, 1, "else was taken");
 }
@@ -268,7 +285,10 @@ fn disabled_coverage_records_nothing() {
     assert!(ctx.coverage.is_none(), "coverage must default to disabled");
 
     let eval = eval_stmt(body, bytes, &mut stack, &mut ctx);
-    assert!(matches!(eval, Eval::Normal(_)), "run must still succeed, got {eval:?}");
+    assert!(
+        matches!(eval, Eval::Normal(_)),
+        "run must still succeed, got {eval:?}"
+    );
 
     assert!(
         ctx.coverage.is_none(),

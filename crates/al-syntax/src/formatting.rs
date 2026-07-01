@@ -435,9 +435,8 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     let result = sort_object_properties(result, options);
     let result = normalize_blank_lines_between_procedures(result, options);
     let result = wrap_long_property_lines(result, options);
-    let result = apply_brace_style(result, options);
 
-    result
+    apply_brace_style(result, options)
 }
 
 /// Format a range of lines within AL source code.
@@ -1086,7 +1085,11 @@ fn wrap_property_line(line: &str, unit: &str) -> Vec<String> {
     for (idx, &cut) in cuts.iter().enumerate() {
         // Include the comma at the end of this segment.
         let seg = content[seg_start..=cut].trim();
-        let indent = if idx == 0 { opener_indent } else { &cont_indent };
+        let indent = if idx == 0 {
+            opener_indent
+        } else {
+            &cont_indent
+        };
         out.push(format!("{indent}{seg}"));
         seg_start = cut + 1;
     }

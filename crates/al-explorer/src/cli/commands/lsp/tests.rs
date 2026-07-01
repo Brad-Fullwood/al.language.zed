@@ -333,7 +333,10 @@ mod tests {
         let note = classify_execution_note("interpRecord");
         assert!(note.contains("live BC"), "got: {note:?}");
         assert!(note.contains("not wired"), "got: {note:?}");
-        assert!(!note.contains("locally"), "must not claim local run: {note:?}");
+        assert!(
+            !note.contains("locally"),
+            "must not claim local run: {note:?}"
+        );
     }
 
     #[test]

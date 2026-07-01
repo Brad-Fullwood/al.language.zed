@@ -1487,8 +1487,7 @@ mod tests {
         let ws = al_workspace::Workspace::new();
         let translated = translated_unit("Customer", "Kunde");
         let unit = make_test_unit("Customer");
-        let result =
-            suggest_translations_with_memory(&[&unit], &[&translated], &ws);
+        let result = suggest_translations_with_memory(&[&unit], &[&translated], &ws);
         assert_eq!(result.len(), 1, "exactly one TM suggestion expected");
         assert_eq!(result[0].suggested_translation, "Kunde");
         assert_eq!(result[0].origin, SuggestionOrigin::TmExact);
@@ -1501,8 +1500,7 @@ mod tests {
         let ws = al_workspace::Workspace::new();
         let translated = translated_unit("Customer", "Kunde");
         let unit = make_test_unit("  customer ");
-        let result =
-            suggest_translations_with_memory(&[&unit], &[&translated], &ws);
+        let result = suggest_translations_with_memory(&[&unit], &[&translated], &ws);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].suggested_translation, "Kunde");
         assert_eq!(result[0].origin, SuggestionOrigin::TmExact);
@@ -1515,8 +1513,7 @@ mod tests {
         let ws = al_workspace::Workspace::new();
         let translated = translated_unit("Post Sales Document", "Verkaufsbeleg buchen");
         let unit = make_test_unit("Post Sales Documents");
-        let result =
-            suggest_translations_with_memory(&[&unit], &[&translated], &ws);
+        let result = suggest_translations_with_memory(&[&unit], &[&translated], &ws);
         assert_eq!(result.len(), 1, "near-match should produce a fuzzy hit");
         assert_eq!(result[0].suggested_translation, "Verkaufsbeleg buchen");
         assert_eq!(result[0].origin, SuggestionOrigin::TmFuzzy);
@@ -1541,9 +1538,11 @@ mod tests {
         }]);
         let translated = translated_unit("Vendor Ledger Entry", "Kreditorenposten");
         let unit = make_test_unit("Customer");
-        let result =
-            suggest_translations_with_memory(&[&unit], &[&translated], &ws);
-        assert!(!result.is_empty(), "name fallback should produce a suggestion");
+        let result = suggest_translations_with_memory(&[&unit], &[&translated], &ws);
+        assert!(
+            !result.is_empty(),
+            "name fallback should produce a suggestion"
+        );
         assert_eq!(result[0].origin, SuggestionOrigin::Name);
         assert_eq!(result[0].suggested_translation, "Customer");
         assert_eq!(result[0].confidence, 1.0);
@@ -1556,9 +1555,11 @@ mod tests {
         let ws = al_workspace::Workspace::new();
         let translated = translated_unit("Customer", "Kunde");
         let unit = make_test_unit("Totally Unrelated Phrase");
-        let result =
-            suggest_translations_with_memory(&[&unit], &[&translated], &ws);
-        assert!(result.is_empty(), "no TM or name match should yield nothing");
+        let result = suggest_translations_with_memory(&[&unit], &[&translated], &ws);
+        assert!(
+            result.is_empty(),
+            "no TM or name match should yield nothing"
+        );
     }
 
     #[test]
@@ -1571,11 +1572,7 @@ mod tests {
         let mut empty_target = translated_unit("Customer", "Kunde");
         empty_target.target = Some("   ".to_string());
         let unit = make_test_unit("Customer");
-        let result = suggest_translations_with_memory(
-            &[&unit],
-            &[&not_done, &empty_target],
-            &ws,
-        );
+        let result = suggest_translations_with_memory(&[&unit], &[&not_done, &empty_target], &ws);
         assert!(
             result.is_empty(),
             "unfinished/empty translations must not seed the TM"

@@ -60,7 +60,10 @@ fn error_codes_and_builtins_reflect_live_toolchain() {
     let (ok, out) = al(&["error-codes"]);
     assert!(ok, "`al-explorer error-codes` failed:\n{out}");
     let code_lines = out.lines().filter(|l| l.starts_with("AL")).count();
-    assert!(code_lines > 100, "expected many AL error codes; {empty_hint}\n{out}");
+    assert!(
+        code_lines > 100,
+        "expected many AL error codes; {empty_hint}\n{out}"
+    );
 
     let (ok, out) = al(&["builtins"]);
     assert!(ok, "`al-explorer builtins` failed:\n{out}");

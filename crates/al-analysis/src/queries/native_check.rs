@@ -517,7 +517,9 @@ fn dangling_extension_findings(
         let Ok(kind) = o.object_type.parse::<ObjectKind>() else {
             continue;
         };
-        let Some(base) = kind.base_kind() else { continue };
+        let Some(base) = kind.base_kind() else {
+            continue;
+        };
         let key = (base.al_keyword().to_string(), target.to_lowercase());
         if !workspace_bases.contains(&key) && !package_targets.contains(&key) {
             out.push(NativeFinding {
@@ -784,7 +786,11 @@ mod tests {
         ];
         let findings = check_objects(&objects, &[(50000, 50199)]);
         let dup: Vec<_> = findings.iter().filter(|f| f.code == DUPLICATE_ID).collect();
-        assert_eq!(dup.len(), 2, "one finding per colliding object: {findings:?}");
+        assert_eq!(
+            dup.len(),
+            2,
+            "one finding per colliding object: {findings:?}"
+        );
         assert!(dup.iter().all(|f| f.object_id == Some(50100)));
         assert!(dup.iter().all(|f| f.severity == NativeSeverity::Error));
         // Each finding names the *other* object.
@@ -980,7 +986,11 @@ mod tests {
             .iter()
             .filter(|f| f.code == AFFIX_VIOLATION)
             .collect();
-        assert_eq!(af.len(), 1, "only the affix-less object is flagged: {findings:?}");
+        assert_eq!(
+            af.len(),
+            1,
+            "only the affix-less object is flagged: {findings:?}"
+        );
         assert_eq!(af[0].object_name, "Salesperson");
         assert_eq!(af[0].severity, NativeSeverity::Warning);
         assert!(af[0].message.contains("ABC"));
@@ -1088,7 +1098,10 @@ mod tests {
             "/p/Ext.al",
         )];
         let findings = dangling_extension_findings(&objects, &pkg(&[("table", "Customer")]));
-        assert!(!codes(&findings).contains(&DANGLING_EXTENSION), "{findings:?}");
+        assert!(
+            !codes(&findings).contains(&DANGLING_EXTENSION),
+            "{findings:?}"
+        );
     }
 
     /// A target resolved against a base object declared in the workspace itself
@@ -1097,11 +1110,20 @@ mod tests {
     fn extension_target_in_workspace_is_clean() {
         let objects = vec![
             obj("table", 50100, "My Table", "/p/Base.al"),
-            ext("tableextension", 50101, "My Table Ext", "My Table", "/p/Ext.al"),
+            ext(
+                "tableextension",
+                50101,
+                "My Table Ext",
+                "My Table",
+                "/p/Ext.al",
+            ),
         ];
         // Some unrelated package is loaded so the check is active.
         let findings = dangling_extension_findings(&objects, &pkg(&[("codeunit", "Foo")]));
-        assert!(!codes(&findings).contains(&DANGLING_EXTENSION), "{findings:?}");
+        assert!(
+            !codes(&findings).contains(&DANGLING_EXTENSION),
+            "{findings:?}"
+        );
     }
 
     /// Kind must match: a tableextension targeting a *page* of the same name is
@@ -1116,7 +1138,10 @@ mod tests {
             "/p/Ext.al",
         )];
         let findings = dangling_extension_findings(&objects, &pkg(&[("page", "Customer")]));
-        assert!(codes(&findings).contains(&DANGLING_EXTENSION), "{findings:?}");
+        assert!(
+            codes(&findings).contains(&DANGLING_EXTENSION),
+            "{findings:?}"
+        );
     }
 
     /// With no packages loaded the check no-ops (targets usually live in
@@ -1149,7 +1174,11 @@ mod tests {
             .iter()
             .filter(|f| f.code == DUPLICATE_MEMBER_ID)
             .collect();
-        assert_eq!(dm.len(), 1, "one finding for the one duplicated id: {findings:?}");
+        assert_eq!(
+            dm.len(),
+            1,
+            "one finding for the one duplicated id: {findings:?}"
+        );
         assert_eq!(dm[0].severity, NativeSeverity::Error);
         assert!(dm[0].message.contains("field id 1"));
         assert!(dm[0].message.contains("'No.'") && dm[0].message.contains("'Code'"));
@@ -1175,7 +1204,10 @@ mod tests {
             table_with_members("Table B", &[(1, "No.")], "/p/B.al"),
         ];
         let findings = duplicate_member_id_findings(&objects);
-        assert!(findings.is_empty(), "field ids are object-scoped: {findings:?}");
+        assert!(
+            findings.is_empty(),
+            "field ids are object-scoped: {findings:?}"
+        );
     }
 
     /// Enum value ordinals are labelled "value", not "field".
@@ -1213,7 +1245,10 @@ mod tests {
             .to_string(),
         );
         let objects = collect_objects(&fi);
-        let table = objects.iter().find(|o| o.name == "Dup Fields").expect("table");
+        let table = objects
+            .iter()
+            .find(|o| o.name == "Dup Fields")
+            .expect("table");
         assert!(
             table.member_ids.iter().filter(|(id, _)| *id == 1).count() == 2,
             "two fields with id 1 must be extracted: {:?}",
@@ -1240,7 +1275,10 @@ mod tests {
             .to_string(),
         );
         let objects = collect_objects(&fi);
-        let ext = objects.iter().find(|o| o.name == "Customer Ext").expect("ext");
+        let ext = objects
+            .iter()
+            .find(|o| o.name == "Customer Ext")
+            .expect("ext");
         assert_eq!(
             ext.extends.as_deref(),
             Some("Customer"),

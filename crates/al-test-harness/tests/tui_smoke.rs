@@ -91,7 +91,11 @@ fn tui_object_browser_lists_fixture_objects() {
     //    object-kind tab happens to be active (the list is kind-gated).
     screen = {
         let s = poll(&buf, "Package: workspace", 6);
-        if s.contains("Package: workspace") { s } else { render(&buf) }
+        if s.contains("Package: workspace") {
+            s
+        } else {
+            render(&buf)
+        }
     };
 
     // Quit cleanly: al-explorer treats Ctrl-C (0x03) as "quit" in raw mode.

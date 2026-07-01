@@ -773,7 +773,11 @@ mod affected_call_graph_b7 {
         // graph node, so detection honestly reports the file-based fallback.
         let ws = build_ws();
         let (mode, names) = affected_names(&ws, &["/ws/does-not-exist.al"]);
-        assert_eq!(mode, AffectedMode::FileBased, "must report the fallback mode");
+        assert_eq!(
+            mode,
+            AffectedMode::FileBased,
+            "must report the fallback mode"
+        );
         assert!(names.is_empty(), "no test file changed; got {names:?}");
     }
 

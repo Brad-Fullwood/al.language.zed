@@ -628,11 +628,27 @@ mod tests {
         });
 
         let view = load_view(&profile);
-        let a = view.hotspots.iter().find(|h| h.procedure == "A").expect("A");
-        let b = view.hotspots.iter().find(|h| h.procedure == "B").expect("B");
+        let a = view
+            .hotspots
+            .iter()
+            .find(|h| h.procedure == "A")
+            .expect("A");
+        let b = view
+            .hotspots
+            .iter()
+            .find(|h| h.procedure == "B")
+            .expect("B");
         assert!((a.self_time_ms - 1.0).abs() < 1e-9);
-        assert!((a.total_time_ms - 5.0).abs() < 1e-9, "A.total should roll up B: {}", a.total_time_ms);
+        assert!(
+            (a.total_time_ms - 5.0).abs() < 1e-9,
+            "A.total should roll up B: {}",
+            a.total_time_ms
+        );
         assert!((b.self_time_ms - 4.0).abs() < 1e-9);
-        assert!((b.total_time_ms - 4.0).abs() < 1e-9, "B is a leaf: {}", b.total_time_ms);
+        assert!(
+            (b.total_time_ms - 4.0).abs() < 1e-9,
+            "B is a leaf: {}",
+            b.total_time_ms
+        );
     }
 }
