@@ -1,6 +1,6 @@
 # XLIFF & Translation
 
-**Module:** `crates/al-core/src/xliff.rs` · **Status:** ✅ shipped
+**Module:** `crates/al-analysis/src/xliff.rs` · **Status:** ✅ shipped
 
 Business Central apps are translated via XLIFF 1.2 files. This toolchain extracts translatable text
 from AL source, generates and refreshes XLIFF files, tracks translation state, and lists untranslated

@@ -1,6 +1,6 @@
 # Daemon Protocol
 
-**Modules:** `crates/al-core/src/server/daemon/` + `crates/al-protocol/` · **Status:** ✅ shipped
+**Modules:** `crates/al-lsp/src/server/daemon/` + `crates/al-protocol/` · **Status:** ✅ shipped
 (Unix-only)
 
 `al-lsp daemon --project <path>` is the shared backend that the CLI, the MCP bridge, and Zed tasks all

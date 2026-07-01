@@ -1,6 +1,6 @@
 # Semantic Bridge (.NET CodeAnalysis)
 
-**Module:** `crates/al-core/src/semantic/` + `crates/al-core/bridge/Bridge.cs`, `AlBridge.csproj` ·
+**Module:** `crates/al-semantic/src/` + `crates/al-semantic/bridge/Bridge.cs`, `AlBridge.csproj` ·
 **Status:** ✅ shipped (feature-gated) · **being retired** in favor of native Rust
 
 The semantic bridge is the project's link to Microsoft's actual AL compiler semantics. When you want

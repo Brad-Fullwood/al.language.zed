@@ -1,6 +1,6 @@
 # Code Actions & Refactorings
 
-**Module:** `crates/al-core/src/queries/code_actions/` · **Status:** ✅ shipped
+**Module:** `crates/al-analysis/src/queries/code_actions/` · **Status:** ✅ shipped
 
 Code actions are the quick fixes and source-level refactorings offered in the editor (and via
 `al-explorer fix`). They are gated by `al.enableCodeActions` (default true; VS Code parity,

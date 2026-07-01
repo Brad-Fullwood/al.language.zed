@@ -42,7 +42,7 @@ pub mod toolchain;
 
 // Re-exports for al-lsp (thin transport layer should not depend on analysis libs)
 
-/// LSP-bridge helpers: kept outside `al_core::syntax` so the syntax module stays free of `tower_lsp` references.
+/// LSP-bridge helpers: kept outside `crate::syntax` so the syntax module stays free of `tower_lsp` references.
 pub mod syntax_lsp {
     pub fn ts_range_to_lsp(
         range: &tree_sitter::Range,
@@ -57,7 +57,7 @@ pub mod syntax_lsp {
 }
 
 #[cfg(test)]
-#[allow(clippy::items_after_test_module)] // crate re-export facades follow (al-core->al-lsp rename)
+#[allow(clippy::items_after_test_module)] // crate re-export facades follow (pre-split module names re-exported for compatibility)
 pub mod ts {
     pub use tree_sitter::{Point, Range, Tree};
 }

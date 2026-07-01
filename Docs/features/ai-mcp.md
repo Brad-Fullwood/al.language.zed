@@ -1,6 +1,6 @@
 # AI & MCP Server
 
-**Module:** `crates/al-core/src/server/mcp.rs` · **Status:** ✅ shipped
+**Module:** `crates/al-lsp/src/server/mcp.rs` · **Status:** ✅ shipped
 
 AI integration is a first-class surface, not an afterthought. The extension registers a Zed context
 server named **AL Tools** that launches `al-lsp mcp` from `PATH`. The MCP server speaks

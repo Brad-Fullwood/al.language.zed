@@ -1,6 +1,6 @@
 # Debugging (DAP) & Business Central Runtime
 
-**Modules:** `crates/al-core/src/dap/`, `native_debug.rs`, `bc_client.rs`, `http_auth.rs`,
+**Modules:** `crates/al-dap/src/dap/`, `native_debug.rs`, `bc_client.rs`, `http_auth.rs`,
 `profiling.rs`, `snapshot.rs` + `src/dap.rs` (Zed glue) + `debug_adapter_schemas/al.json` ·
 **Status:** ✅ shipped (core flow); some schema fields parsed-but-unused
 

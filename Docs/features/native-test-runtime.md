@@ -1,6 +1,6 @@
 # Native Test Runtime
 
-**Modules:** `crates/al-core/src/test_runtime/` (interpreter) + `test_engine/` (orchestration) +
+**Modules:** `crates/al-runtime/src/` (interpreter) + `test_engine/` (orchestration) +
 `test_runner.rs`, `test_snapshots/` · **Status:** 🟡 phase-gated (pure-logic interpreter shipped;
 records/mutation/snapshots are scaffolded forward)
 
