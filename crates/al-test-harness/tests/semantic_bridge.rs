@@ -12,6 +12,7 @@
 //!   1. `AL_TOOL_PATH` pointing at a dir with `Microsoft.Dynamics.Nav.CodeAnalysis.dll`
 //!      (e.g. an installed `ms-dynamics-smb.al` extension's `bin/linux`), and
 //!   2. an `al-lsp` built with `--features semantic` on disk at `target/debug`.
+//!
 //! When `AL_TOOL_PATH` is unset the test is skipped (the common CI case).
 //!
 //! Run it with:
