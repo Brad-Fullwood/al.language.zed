@@ -157,8 +157,20 @@ Produce a single structured report:
    recommendation → effort estimate.*
 3. **What the project got right** — be specific; don't flatter, but credit real
    strengths so priorities stay balanced.
-4. **Prioritized action list** — a concrete, ordered backlog: quick wins vs.
-   larger efforts, with rough sizing.
+4. **Actionable plan (agent-executable)** — the most important deliverable.
+   Turn your findings into an ordered, checkable plan that a coding agent can
+   work through top to bottom and *mark off* as it goes. Requirements:
+   - Render it as a Markdown task list with `- [ ]` checkboxes, grouped into
+     phases (e.g. Quick wins → Correctness/security fixes → Larger refactors),
+     ordered so earlier items unblock later ones.
+   - Each item must be self-contained and unambiguous: what to change, the
+     `file:line` (or glob) it touches, why, and a concrete **done-when**
+     acceptance check (the exact command to run or observable result), so the
+     agent knows when to tick the box.
+   - Size each item (S / M / L) and flag dependencies ("blocked by #3") and
+     anything requiring human decision or credentials.
+   - Keep items small enough to complete and verify independently — prefer many
+     narrow, checkable steps over a few broad ones.
 5. **Open questions / things you couldn't verify** — and exactly what you'd
    need (env, credentials, Microsoft `alc`) to close them.
 
