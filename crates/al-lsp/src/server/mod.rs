@@ -1,8 +1,7 @@
 //! LSP / daemon transport layer.
 //!
-//! Folded into al-core in stage 7 of the crate consolidation; previously the
-//! standalone `al-lsp` crate. The binary entry point lives at
-//! `crates/al-core/src/bin/al-lsp.rs`.
+//! Lives in the `al-lsp` crate, whose binary entry point is
+//! `crates/al-lsp/src/bin/al-lsp.rs`.
 //!
 //! `crate::queries::*` returns transport-agnostic types; this module is the
 //! only place in the crate that imports `tower_lsp::lsp_types::*` (the

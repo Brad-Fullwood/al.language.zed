@@ -143,6 +143,9 @@ jobs:
       - name: Check repository slug consistency
         run: ./scripts/check-repo-consistency.sh
 
+      - name: Check for stale crates/<name> doc references
+        run: ./scripts/check-doc-paths.sh
+
       - name: Check release hygiene invariants
         run: ./scripts/check-release-hygiene.sh
 
