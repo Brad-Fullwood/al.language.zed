@@ -118,9 +118,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-
 
-      # Post-consolidation crate names: al-lsp is now [[bin]] inside al-core,
-      # and al-cli was folded into al-explorer (see CLAUDE.md architecture
-      # note). Build via -p al-lsp / -p al-explorer with explicit --bin.
+      # al-lsp is its own crate (with the al-lsp binary); al-cli was folded
+      # into al-explorer (see CLAUDE.md / Docs/01-architecture.md for the
+      # current crate layout). Build via -p al-lsp / -p al-explorer with
+      # explicit --bin.
       #
       # al-lsp is built on EVERY target (it is what Zed spawns). al-explorer is
       # built only on Unix targets — its daemon IPC client is AF_UNIX-only and
