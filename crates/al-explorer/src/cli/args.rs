@@ -575,10 +575,14 @@ Examples:
         #[arg(short, long, default_value = "json")]
         format: String,
     },
-    /// Detect breaking API changes against a baseline. NOTE: a baseline
-    /// (previous published version) is not yet wired, so this currently compares
-    /// against an empty baseline and reports no changes.
-    Breaking,
+    /// Detect breaking API changes against a baseline. Without --baseline-app,
+    /// there is nothing to compare against and the result says so explicitly
+    /// rather than printing a misleadingly clean "no changes".
+    Breaking {
+        /// Previous published `.app` to diff the current workspace against.
+        #[arg(long)]
+        baseline_app: Option<String>,
+    },
     /// Run architecture lint rules
     #[command(name = "arch-lint")]
     ArchLint,
@@ -602,10 +606,15 @@ Examples:
         #[arg(long, default_value = "0.8")]
         min_similarity: f32,
     },
-    /// Generate an upgrade analysis report against a baseline. NOTE: a baseline
-    /// (previous published version) is not yet wired, so this currently compares
-    /// against an empty baseline and reports no issues.
-    Upgrade,
+    /// Generate an upgrade analysis report against a baseline. Without
+    /// --baseline-app, there is nothing to compare against and the result
+    /// says so explicitly rather than printing a misleadingly clean "no
+    /// issues".
+    Upgrade {
+        /// Previous published `.app` to diff the current workspace against.
+        #[arg(long)]
+        baseline_app: Option<String>,
+    },
     /// Get profiler optimization hints
     ProfilerHints {
         /// Hotspot procedure names

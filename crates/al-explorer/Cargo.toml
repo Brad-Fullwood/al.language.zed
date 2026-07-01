@@ -22,6 +22,9 @@ al-emit = { path = "../al-emit", version = "0.1.0" }
 # oracle before emitting (alc invocation shells out — no `semantic` feature).
 al-project = { path = "../al-project", version = "0.1.0" }
 al-compile = { path = "../al-compile", version = "0.1.0" }
+# Reads a previous `.app`'s symbols for `breaking --baseline-app` / `upgrade
+# --baseline-app`, without going through the daemon.
+al-symbols = { path = "../al-symbols", version = "0.1.0", default-features = false }
 tokio = { workspace = true }
 crossterm = "0.29.0"
 ratatui = "0.30.0"

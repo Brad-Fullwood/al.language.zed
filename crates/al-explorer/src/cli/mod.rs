@@ -233,14 +233,18 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::AuditData => lsp::cmd_audit_data_classification(cli.json),
         Commands::PermissionAudit => lsp::cmd_permission_audit(cli.json),
         Commands::DepsGraph { format } => lsp::cmd_deps_graph(&format, cli.json),
-        Commands::Breaking => lsp::cmd_breaking_changes(cli.json),
+        Commands::Breaking { baseline_app } => {
+            lsp::cmd_breaking_changes(baseline_app.as_deref(), cli.json)
+        }
         Commands::ArchLint => lsp::cmd_arch_lint(cli.json),
         Commands::NativeCheck => lsp::cmd_native_check(cli.json),
         Commands::Duplicates {
             min_tokens,
             min_similarity,
         } => lsp::cmd_duplicates(min_tokens, min_similarity, cli.json),
-        Commands::Upgrade => lsp::cmd_upgrade_report(cli.json),
+        Commands::Upgrade { baseline_app } => {
+            lsp::cmd_upgrade_report(baseline_app.as_deref(), cli.json)
+        }
         Commands::ProfilerHints { hotspots } => lsp::cmd_profiler_hints(&hotspots, cli.json),
         Commands::SortMembers { file, all, dry_run } => {
             lsp::cmd_sort_members(file.as_deref(), all, dry_run, cli.json)

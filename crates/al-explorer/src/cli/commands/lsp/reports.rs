@@ -197,27 +197,50 @@ pub fn cmd_deps_graph(format: &str, json: bool) -> ExitCode {
     }
 }
 
-pub fn cmd_breaking_changes(json: bool) -> ExitCode {
-    run_command(
-        "breaking",
-        Some(serde_json::json!({})),
-        json,
-        None,
-        |result| {
-            let changes = result.as_array().cloned().unwrap_or_default();
-            if changes.is_empty() {
-                println!("No breaking changes detected.");
-            } else {
-                for c in &changes {
-                    let kind = c.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                    let object = c.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                    let description = c.get("description").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("[{kind}] \"{object}\": {description}");
-                }
-                eprintln!("\n{} breaking change(s)", changes.len());
-            }
+/// Read a previous `.app`'s symbols into the `{"baselineSymbols": [...]}`
+/// shape the daemon's `breaking`/`upgrade` methods expect
+/// (`baseline_symbols_from_params` in `build_dispatch/mod.rs`).
+fn baseline_params_from_app(baseline_app: &str) -> Result<serde_json::Value, String> {
+    let pkg = al_symbols::app_reader::read_app_file(std::path::Path::new(baseline_app))
+        .map_err(|e| format!("reading baseline .app {baseline_app}: {e}"))?;
+    let baseline_symbols = serde_json::to_value(&pkg.objects)
+        .map_err(|e| format!("serializing baseline symbols: {e}"))?;
+    Ok(serde_json::json!({ "baselineSymbols": baseline_symbols }))
+}
+
+pub fn cmd_breaking_changes(baseline_app: Option<&str>, json: bool) -> ExitCode {
+    let params = match baseline_app {
+        Some(path) => match baseline_params_from_app(path) {
+            Ok(p) => p,
+            Err(e) => return report_error(&e, json),
         },
-    )
+        None => serde_json::json!({}),
+    };
+    let baseline_provided = baseline_app.is_some();
+    run_command("breaking", Some(params), json, None, |result| {
+        let changes = result.as_array().cloned().unwrap_or_default();
+        if !baseline_provided {
+            eprintln!(
+                "warning: no --baseline-app supplied — this result is NOT evaluated against \
+                 a previous version, it only reflects the current workspace in isolation."
+            );
+        }
+        if changes.is_empty() {
+            if baseline_provided {
+                println!("No breaking changes detected (against {}).", baseline_app.unwrap());
+            } else {
+                println!("Not evaluated: no baseline supplied, so no breaking changes could be detected.");
+            }
+        } else {
+            for c in &changes {
+                let kind = c.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                let object = c.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                let description = c.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("[{kind}] \"{object}\": {description}");
+            }
+            eprintln!("\n{} breaking change(s)", changes.len());
+        }
+    })
 }
 
 pub fn cmd_arch_lint(json: bool) -> ExitCode {
@@ -311,32 +334,44 @@ pub fn cmd_duplicates(min_tokens: usize, min_similarity: f32, json: bool) -> Exi
     }
 }
 
-pub fn cmd_upgrade_report(json: bool) -> ExitCode {
-    run_command(
-        "upgrade",
-        Some(serde_json::json!({})),
-        json,
-        None,
-        |result| {
-            let issues = result.as_array().cloned().unwrap_or_default();
-            if issues.is_empty() {
-                println!("No upgrade issues found.");
-            } else {
-                for i in &issues {
-                    let kind = i.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                    let object = i.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                    let description = i.get("description").and_then(|v| v.as_str()).unwrap_or("?");
-                    let hint = i
-                        .get("migrationHint")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    println!("[{kind}] \"{object}\": {description}");
-                    if !hint.is_empty() {
-                        println!("  Migration: {hint}");
-                    }
-                }
-                eprintln!("\n{} upgrade issue(s)", issues.len());
-            }
+pub fn cmd_upgrade_report(baseline_app: Option<&str>, json: bool) -> ExitCode {
+    let params = match baseline_app {
+        Some(path) => match baseline_params_from_app(path) {
+            Ok(p) => p,
+            Err(e) => return report_error(&e, json),
         },
-    )
+        None => serde_json::json!({}),
+    };
+    let baseline_provided = baseline_app.is_some();
+    run_command("upgrade", Some(params), json, None, |result| {
+        let issues = result.as_array().cloned().unwrap_or_default();
+        if !baseline_provided {
+            eprintln!(
+                "warning: no --baseline-app supplied — this result is NOT evaluated against \
+                 a previous version, it only reflects the current workspace in isolation."
+            );
+        }
+        if issues.is_empty() {
+            if baseline_provided {
+                println!("No upgrade issues found (against {}).", baseline_app.unwrap());
+            } else {
+                println!("Not evaluated: no baseline supplied, so no upgrade issues could be detected.");
+            }
+        } else {
+            for i in &issues {
+                let kind = i.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                let object = i.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                let description = i.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+                let hint = i
+                    .get("migrationHint")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                println!("[{kind}] \"{object}\": {description}");
+                if !hint.is_empty() {
+                    println!("  Migration: {hint}");
+                }
+            }
+            eprintln!("\n{} upgrade issue(s)", issues.len());
+        }
+    })
 }
