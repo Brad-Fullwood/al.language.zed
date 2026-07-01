@@ -28,7 +28,7 @@ delegate by design)
 
 | Capability | This project | Microsoft |
 | --- | --- | --- |
-| Produce `.app` | ✅ pure-Rust emitter, 10–12× faster cold / 60–465× warm, byte-identical `SymbolReference.json` on supported fixtures | 🔷 `alc` (parse→bind→type-check→emit) |
+| Produce `.app` | ✅ pure-Rust emitter, 10–12× faster cold / 60–465× warm, semantically-identical `SymbolReference.json` on supported fixtures | 🔷 `alc` (parse→bind→type-check→emit) |
 | Compile-time semantic validation | ❌ (delegated to LSP + BC server) | 🔷 `alc` (authoritative) |
 | `.app` reading / inspection | ✅ native NAVX/ZIP, cached, composed objects | internal |
 | Symbol download | ✅ NuGet + BC server, concurrent, deduped, no restart | ✅ download-symbols |

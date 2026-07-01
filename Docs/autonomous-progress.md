@@ -190,7 +190,7 @@ The dev box has Microsoft's AL extension installed under Cursor
   CLI now returns 897 codes / 250 types. Env-gated harness test `semantic_bridge.rs`.
 
 ### B3 — emitter fidelity differential-tested vs alc (was 🟠 → 🟡)
-- Discovered the native `.app` emitter is **byte-identical to alc 17.0** for a
+- Discovered the native `.app` emitter is **semantically identical to alc 17.0** for a
   10-object-kind self-contained corpus: `SymbolReference.json` semantically
   identical (incl. FNV method-id hashes), `DocComments.xml`/entitlement/xliff
   identical, `NavxManifest.xml` identical except the `<Build>` provenance line.

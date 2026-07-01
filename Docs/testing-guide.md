@@ -93,7 +93,7 @@ containing `alc.dll` / `Microsoft.Dynamics.Nav.CodeAnalysis.dll`), with `dotnet`
 on `PATH`:
 
 ```bash
-# Native .app emitter is byte-identical to alc (reads .app NAVX+zip entries).
+# Native .app emitter is semantically identical to alc (reads .app NAVX+zip entries).
 AL_TOOL_PATH=<ext>/bin/linux cargo test -p al-test-harness --test emit_differential
 
 # pack-native --validate refuses to emit a semantically-invalid .app (alc oracle).

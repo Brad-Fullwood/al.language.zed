@@ -87,7 +87,7 @@ The default `.app` build path is now native Rust. Microsoft `alc` remains availa
 - The Rust-managed `dotnet alc` fallback writes output to a per-invocation temporary directory and moves it into the project root when possible.
 - `.app` selection prefers the manifest-derived `{publisher}_{name}_{version}.app` rather than arbitrary directory order.
 - DAP deploy now reuses the same package-selection logic, so launch/deploy does not accidentally publish an older `.app` left in the project root.
-- The emit test suite compares native output against ALC-shaped fixtures, including byte-identical `SymbolReference.json` golden coverage for the supported project fixture.
+- The emit test suite compares native output against ALC-shaped fixtures, including semantically-identical `SymbolReference.json` golden coverage (matching JSON values and method-id hashes, not raw zip-entry byte equality — zip timestamps make that comparison meaningless) for the supported project fixture.
 
 The practical benefit is a safer and usually faster-feeling development loop: the editor and CLI keep using already-built indexes for most questions, and the compile path becomes a deterministic build step instead of the only way to understand the project.
 
