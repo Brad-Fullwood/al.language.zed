@@ -60,14 +60,15 @@ pub struct AlConfig {
 
     pub inlay_hints: InlayHintConfig,
 
-    /// Retained for future use — native lint rules are not yet implemented;
-    /// `crate::syntax::lint()` always returns an empty `Vec`. All AL diagnostics
-    /// currently come from the .NET CodeAnalysis bridge (`crate::semantic`), not
-    /// from this toggle. Setting it to `false` has no observable effect today.
+    /// Master toggle for native lint rules (`al_syntax::lint()`'s starter set:
+    /// AL-NL001 find-in-loop, AL-NL002 missing DataClassification). Most AL
+    /// diagnostics still come from the .NET CodeAnalysis bridge
+    /// (`crate::semantic`); native lint is a small, separate, additive set.
+    /// Setting this to `false` suppresses all native lint diagnostics.
     pub enable_native_lint: bool,
 
-    /// Per-rule enable/disable overrides. Key is rule code (e.g. "AL-L001").
-    /// Inert until native lint rules are implemented (see `enable_native_lint`).
+    /// Per-rule enable/disable overrides. Key is rule code (e.g. "AL-NL001").
+    /// Only takes effect when `enable_native_lint` is `true`.
     pub native_lint_rules: HashMap<String, bool>,
 
     /// Custom package cache path. If None, uses `<project>/.alpackages/`.

@@ -52,13 +52,15 @@ a repo test keeps it in lockstep with the keys the server actually reads.
 | `al.inlayHints.parameterNames` | boolean | `true` | Show parameter-name hints at call sites. |
 | `al.inlayHints.returnTypes` | boolean | `false` | Show return-type hints on procedure declarations. |
 
-### Native lint (reserved)
+### Native lint
 
-`al.enableNativeLint` (boolean, default `true`) and `al.nativeLintRules`
-(object of `code → boolean`, default `{}`) are **parsed for forward
-compatibility but currently inert** — native lint diagnostics are not yet
-implemented. All AL diagnostics today come from syntax parsing and the semantic
-CodeAnalysis bridge.
+`al.enableNativeLint` (boolean, default `true`) is the master toggle for
+native AL lint rules — currently a small starter set (`AL-NL001`
+FindFirst/FindLast in a loop, `AL-NL002` table field missing
+DataClassification). `al.nativeLintRules` (object of `code → boolean`,
+default `{}`) overrides individual rules. Most AL diagnostics still come
+from syntax parsing and the semantic CodeAnalysis bridge; native lint is a
+separate, additive set that runs regardless of toolchain availability.
 
 ### Symbols & packages
 

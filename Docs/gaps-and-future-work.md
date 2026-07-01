@@ -32,9 +32,14 @@ the more recently verified.
 - **A13** — the `.alformat.json` options `sortProperties`, `maxLineLength`,
   `braceStyle`, `blankLinesBetweenProcedures` are implemented (opt-in,
   default-noop, idempotent) — no longer parsed-and-ignored. 24 tests.
-- **A1** stays open *by design* — native lint was deliberately removed (the
-  CodeAnalysis bridge owns diagnostics) and is guarded by regression tests; not
-  reinstated.
+- **A1** — a starter native lint rule set now exists (`AL-NL001` FindFirst/FindLast
+  in a loop, `AL-NL002` table field missing DataClassification), under a fresh
+  `AL-NL*` namespace so it never collides with the retired `AL-L*` codes the
+  regression tests in `integration_full.rs`/`edit_lifecycle.rs` guard against.
+  Most AL diagnostics still come from the CodeAnalysis bridge; this is a small,
+  separate, additive set, not a bridge replacement. Remaining high-value rules
+  (`SetLoadFields`, `ApplicationArea`, tooltips, obsolete usage, architecture
+  violations) are tracked in `ROADMAP.md`.
 
 ---
 
@@ -46,7 +51,6 @@ it** or **mark/rename it** so the surface matches reality.
 
 | # | Severity | Surface | What it implies | What actually happens | Evidence | Suggested action |
 |---|---|---|---|---|---|---|
-| A1 | 🔴 | `al.enableNativeLint`, `al.nativeLintRules` settings | A configurable native lint engine | Parsed but **inert**; `lint()`/`lint_rules()` always return empty | `syntax/lint.rs:6,55`; `config.rs` | Implement a starter rule set, or rename/remove the settings until then. README/settings already disclaim this — keep them in lockstep. |
 | A2 | 🔴 | `al.compilationOptions` setting | Extra args passed to `alc` | Parsed into `config.compilation_options` but **never read** anywhere | `config.rs:89,423`; 0 consumers outside `config.rs` | Pass through to the `alc` invocation in `build.rs`, or mark parsed-only in `docs/settings.md`. |
 | A3 | 🔴 | `al.incrementalBuild` setting | Incremental compile | Parsed; **never read** | `config.rs:91,424`; 0 consumers | Wire into build, or mark parsed-only. |
 | A4 | 🔴 | `al.enableExternalRulesets`, `al.ruleSetPath`, `al.assemblyProbingPaths`, `al.outputAnalyzerStatistics` | Forwarded to the CodeAnalysis/`alc` path | Parsed; **not plumbed** into build/semantic paths (the code comment says so) | `config.rs:41–56` ("plumbing … is not wired"); 0 consumers | Plumb into the semantic bridge / `alc` args, or mark parsed-only. |
@@ -112,9 +116,10 @@ it** or **mark/rename it** so the surface matches reality.
 ## D. Suggested triage order
 
 1. **Fix the misleading surfaces (Section A) first** — they are cheap relative to their trust cost.
-   The clearest wins: wire or mark-as-reserved the six inert settings (A1–A4), populate the
-   breaking/upgrade baseline (A5–A6), and make `test-classify` / `xlf suggest` / Cobertura output
-   state their true behavior (A9–A11). Most are a few lines plus a doc note.
+   A1 (native lint) and A5–A6 (breaking/upgrade baseline) are now closed (see above). Remaining
+   clearest wins: wire or mark-as-reserved the still-inert settings (A2–A4), and make
+   `test-classify` / `xlf suggest` / Cobertura output state their true behavior (A9–A11). Most are
+   a few lines plus a doc note.
 2. **Then the high-leverage functional gaps:** native compile validation (B1) and the build-service
    unification (B2), since they unblock correctness and several other items.
 3. **Then test-runtime depth (B4–B7)** — each increment migrates more tests from "needs BC" to "runs

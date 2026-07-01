@@ -68,12 +68,15 @@ The native AL test runner is one of the project's most important differentiators
 
 ## Native Lint And Diagnostics
 
-The current native lint settings are parsed but inert. That is not aligned with the native-first goal.
+A starter native lint rule engine now exists (`al_syntax::lint()`): `AL-NL001` (unsafe `FindFirst`/`FindLast`
+in a loop) and `AL-NL002` (table field missing `DataClassification`). Remaining work to build out the rest
+of the originally-scoped rule set:
 
-- Either implement the native lint rule engine or remove/rename settings until implementation starts.
-- Build a small high-value rule set first: unsafe `FindFirst` in loops, missing `SetLoadFields`, missing `ApplicationArea`, missing `DataClassification`, missing tooltips, obsolete usage, and architecture-layer violations.
-- Keep semantic compiler diagnostics separate from native lint diagnostics in output so users know the source.
-- Add tests that prove disabled native lint rules stay disabled once rules exist.
+- Add the remaining high-value rules: missing `SetLoadFields`, missing `ApplicationArea`, missing tooltips,
+  obsolete usage, and architecture-layer violations.
+- Keep semantic compiler diagnostics separate from native lint diagnostics in output so users know the source
+  (already true today — they carry distinct `AL-NL*` codes vs. the bridge's own codes).
+- Add tests that prove disabled native lint rules (`al.nativeLintRules`) stay disabled.
 - Keep `schemas/settings.json`, `docs/settings.md`, and README wording in lockstep with actual diagnostics behavior.
 
 ## Symbol And Package Engine
