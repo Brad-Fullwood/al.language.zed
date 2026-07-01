@@ -17,10 +17,10 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 /// The path is canonicalized before hashing so that symlinks and relative
 /// paths resolve to the same socket. Format: `$XDG_RUNTIME_DIR/al-lsp/<hash>.sock`.
 ///
-/// On Linux, if `XDG_RUNTIME_DIR` is unset, we try `/run/user/<uid>` by reading
-/// the real UID from `/proc/self/status`. Returns `None` if no secure runtime
-/// directory can be determined (e.g. non-Linux, non-XDG environment without
-/// `/proc`).
+/// If `XDG_RUNTIME_DIR` is unset, falls back (in order) to `/run/user/<uid>`
+/// on Linux, `$TMPDIR` on macOS, and a per-user subdirectory of the system
+/// temp dir everywhere else. Returns `None` only if none of those can be
+/// determined at all (see `runtime_dir`).
 pub fn socket_path(project_root: &Path) -> Option<PathBuf> {
     socket_path_with_runtime_dir(project_root, runtime_dir()?)
 }
@@ -54,7 +54,9 @@ pub fn socket_path_with_runtime_dir(
 
 /// Resolve the runtime directory: prefer `XDG_RUNTIME_DIR`, fall back on Linux
 /// to `/run/user/<uid>` read from `/proc/self/status` (avoids calling `getuid()`
-/// via FFI). Returns `None` when neither source is available.
+/// via FFI), fall back on macOS to `$TMPDIR`, and fall back everywhere else to
+/// a per-user subdirectory of the system temp dir. Returns `None` only if none
+/// of these can be determined at all.
 fn runtime_dir() -> Option<String> {
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
         return Some(dir);
@@ -71,9 +73,37 @@ fn runtime_dir() -> Option<String> {
                 return Some(format!("/run/user/{uid}"));
             }
         }
+        return None;
     }
 
-    None
+    // macOS: the OS already provisions a private, per-user, per-session temp
+    // directory in `$TMPDIR` (e.g. `/var/folders/xx/yyyy/T/`) — the closest
+    // equivalent to Linux's `/run/user/<uid>`. `XDG_RUNTIME_DIR` is a
+    // Linux/freedesktop convention that's normally unset on macOS, so relying
+    // on it alone made the daemon (and everything routed through it —
+    // al-explorer, MCP, Zed daemon-backed tasks) fail outright on macOS.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(dir) = std::env::var("TMPDIR") {
+            let trimmed = dir.trim_end_matches('/');
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    // Last-resort fallback for any other Unix (or macOS without `$TMPDIR`
+    // set, which shouldn't normally happen): a per-user subdirectory of the
+    // system temp dir, so unrelated users on a shared host don't collide on
+    // the same path. `ensure_private_dir` (daemon/mod.rs) still re-asserts
+    // 0o700 on the final `al-lsp` directory and fails loudly if it's owned by
+    // someone else, so this doesn't weaken the single-owner guarantee even
+    // if the temp dir itself is world-writable.
+    let user = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).ok()?;
+    if user.is_empty() {
+        return None;
+    }
+    Some(format!("{}/{user}", std::env::temp_dir().display()))
 }
 
 #[cfg(test)]
@@ -84,6 +114,30 @@ mod tests {
     fn fnv1a64_stable_known_value() {
         assert_eq!(fnv1a64(b"hello"), 0xa430d84680aabd0b);
         assert_eq!(fnv1a64(b""), 0xcbf29ce484222325);
+    }
+
+    // Regression test for the "Cannot determine Unix socket path:
+    // XDG_RUNTIME_DIR is not set" failure seen on macOS CI, where
+    // XDG_RUNTIME_DIR is normally unset. Mutates process-global env vars, like
+    // the existing `socket_path_is_deterministic` test in
+    // al-lsp/server/daemon/mod.rs does; accepted here for the same reason.
+    #[test]
+    fn runtime_dir_falls_back_when_xdg_runtime_dir_unset() {
+        // Safety: test-only env mutation; no other test in this crate reads
+        // XDG_RUNTIME_DIR/TMPDIR, so there's nothing else in-process to race.
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        std::env::remove_var("XDG_RUNTIME_DIR");
+
+        let dir = runtime_dir();
+
+        if let Some(prev) = prev_xdg {
+            std::env::set_var("XDG_RUNTIME_DIR", prev);
+        }
+
+        assert!(
+            dir.is_some(),
+            "runtime_dir() must resolve a fallback when XDG_RUNTIME_DIR is unset"
+        );
     }
 
     #[test]
