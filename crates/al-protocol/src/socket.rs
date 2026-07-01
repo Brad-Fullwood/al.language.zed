@@ -99,7 +99,9 @@ fn runtime_dir() -> Option<String> {
     // 0o700 on the final `al-lsp` directory and fails loudly if it's owned by
     // someone else, so this doesn't weaken the single-owner guarantee even
     // if the temp dir itself is world-writable.
-    let user = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).ok()?;
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .ok()?;
     if user.is_empty() {
         return None;
     }
