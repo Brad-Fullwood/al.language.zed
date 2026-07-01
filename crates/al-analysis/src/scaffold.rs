@@ -358,9 +358,9 @@ fn invalid_name_msg(name: &str) -> String {
 /// templates root.
 ///
 /// - `Ok(Some(_))` — a valid template directory with a parseable descriptor.
-/// - `Ok(None)`    — no templates root is configured, or no directory of this
-///                   name exists under it (reported upstream as "unknown").
-/// - `Err(_)`      — the name is unsafe, or the descriptor is missing/malformed.
+/// - `Ok(None)` — no templates root is configured, or no directory of this
+///   name exists under it (reported upstream as "unknown").
+/// - `Err(_)` — the name is unsafe, or the descriptor is missing/malformed.
 fn resolve_custom_template(name: &str) -> Result<Option<CustomTemplate>, String> {
     if !valid_template_name(name) {
         return Err(invalid_name_msg(name));

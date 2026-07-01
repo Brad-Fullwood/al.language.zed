@@ -322,37 +322,6 @@ pub fn cmd_test_classify(json: bool) -> ExitCode {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::classify_execution_note;
-
-    #[test]
-    fn interp_record_note_says_live_bc_not_local() {
-        // A9: the surface must not let the `interpRecord` name imply local
-        // execution — the note has to state it routes to live BC.
-        let note = classify_execution_note("interpRecord");
-        assert!(note.contains("live BC"), "got: {note:?}");
-        assert!(note.contains("not wired"), "got: {note:?}");
-        assert!(
-            !note.contains("locally"),
-            "must not claim local run: {note:?}"
-        );
-    }
-
-    #[test]
-    fn interp_note_is_the_only_local_one() {
-        assert!(classify_execution_note("interp").contains("locally"));
-        assert!(!classify_execution_note("interpRecord").contains("locally"));
-        assert!(!classify_execution_note("liveBc").contains("locally"));
-        assert!(!classify_execution_note("snapshot").contains("locally"));
-    }
-
-    #[test]
-    fn unknown_decision_has_no_note() {
-        assert_eq!(classify_execution_note("???"), "");
-    }
-}
-
 /// `al test-run-all [--parallel] [--junit-out X] [--cobertura-out Y] [--filter PATTERN] [--timeout-ms N] [--coverage]`
 ///
 /// Runs every discovered test codeunit through the daemon's `tests.run_auto`
@@ -452,5 +421,36 @@ pub fn cmd_test_run_all(
             }
         }
         Err(e) => report_error(&e, json),
+    }
+}
+
+#[cfg(test)]
+mod classify_note_tests {
+    use super::classify_execution_note;
+
+    #[test]
+    fn interp_record_note_says_live_bc_not_local() {
+        // A9: the surface must not let the `interpRecord` name imply local
+        // execution — the note has to state it routes to live BC.
+        let note = classify_execution_note("interpRecord");
+        assert!(note.contains("live BC"), "got: {note:?}");
+        assert!(note.contains("not wired"), "got: {note:?}");
+        assert!(
+            !note.contains("locally"),
+            "must not claim local run: {note:?}"
+        );
+    }
+
+    #[test]
+    fn interp_note_is_the_only_local_one() {
+        assert!(classify_execution_note("interp").contains("locally"));
+        assert!(!classify_execution_note("interpRecord").contains("locally"));
+        assert!(!classify_execution_note("liveBc").contains("locally"));
+        assert!(!classify_execution_note("snapshot").contains("locally"));
+    }
+
+    #[test]
+    fn unknown_decision_has_no_note() {
+        assert_eq!(classify_execution_note("???"), "");
     }
 }
