@@ -463,15 +463,65 @@ harness test driving the adapter over pipes — set a breakpoint, emit a synthet
 the session mock, assert the `stopped` frame arrives on stdout *without* sending another
 client request first.
 
+### C18 (P1) — Rename is lexical, not symbol-aware, for anything non-local
+
+`al-analysis/src/queries/rename.rs:30-147`: for locals/parameters the F-038 fast path
+correctly restricts edits to the enclosing procedure — but for **everything else** (`rename`
+falls through to `find_variable_references` by *name* across the current file and then every
+indexed workspace file). Renaming a procedure called `Post` rewrites every identifier
+spelled `Post` in the workspace: unrelated procedures on other objects, same-named fields,
+locals in other files. The code comment admits "Until proper symbol-aware rename exists".
+An editing operation that silently corrupts unrelated code is worse than not offering
+rename. **Fix (ordered by effort):** (a) short term — restrict the non-local path to the
+current object's file plus call sites the references query can actually bind (it already
+exists), and document the residual risk; (b) proper — resolve the symbol at the cursor
+(object + member) and rename only bound references. **Verify:** fixture with two objects
+each declaring `procedure Post()`; renaming one must not touch the other.
+
+### C19 (P2) — Rename never validates the new name
+
+Neither `prepare_rename` nor `rename` (`rename.rs:8,30`) checks that `new_name` is a valid
+AL identifier. Renaming to `my var`, `2Start`, or a reserved keyword splices the raw string
+into every touched file — instant syntax errors workspace-wide (multiplied by C18's blast
+radius). `make_rename_text` (`:149`) only preserves *existing* quoting; it never adds quotes
+when the new name requires them. **Fix:** validate in `prepare_rename`/`rename` (identifier
+grammar or auto-quote when the target is quotable — field/object names can be quoted,
+variables cannot); return an LSP error for invalid names. **Verify:** unit tests for
+space-containing, keyword, and empty new names.
+
+### C20 (P2) — Record mock diverges from BC on `Init` and `Next`
+
+`al-runtime/src/mock/record.rs`:
+- `init()` (`:170-174`) clears the **entire** buffer. BC's `Init` explicitly preserves
+  primary-key fields and resets only non-key fields to defaults. The ubiquitous idiom
+  `Rec."No." := X; Rec.Init(); Rec.Insert();` keeps the key in BC but loses it here —
+  tests exercising standard insert patterns fail (or worse, insert under an empty key).
+- `next(steps)` (`:356-366`) is all-or-nothing: if the requested step overshoots, it stays
+  put and returns 0. BC moves as far as possible and returns the steps actually taken.
+  `until Next() = 0` loops match; batch `Next(N)` skips diverge.
+- `FieldFilter::Range` matching (`:76-81`) uses `Value`'s total order, which falls back to
+  type-tag ordering across types — fine for homogeneous fields, but combined with C2 (no
+  Code uppercasing) text range filters are case-sensitive where BC's are not.
+
+**Fix:** make `init` skip `primary_key_fields`; make `next` clamp-and-report; the filter
+casing falls out of C2. **Verify:** truth-table unit tests per method against documented BC
+behavior; an `al-test-harness` fixture running the `Init`-after-key idiom end-to-end.
+
 ### C16 (P2) — Finish the deep read with the same method
 
-Covered in this pass beyond the first wave: `workspace.rs` init flow, `build_dispatch/build.rs`
+Covered beyond the first wave: `workspace.rs` init flow, `build_dispatch/build.rs`
 dispatchers, `bc_debug.rs` config/event plumbing (the try-lock drain + dedicated break
 channel design is sound), `file_index.rs`, `formatting.rs` core loop, `al-bc` error-body
-sanitizer (correct, including the non-rescrubbing loop), TUI terminal-restore. Still not
-deep-read: `al-analysis/xliff.rs`, the remaining
-`al-insight` analyses, `al-analysis/queries/*` bodies, `al-test` engine internals,
-`oauth.rs` device-code/refresh flows, `al-publish`/`al-bc` HTTP paths. Sweep them with the
+sanitizer (correct, including the non-rescrubbing loop), TUI terminal-restore,
+`rename.rs` (→ C18/C19), the record mock + filter parser (→ C20), daemon `mod.rs`
+accept/framing (clean: semaphore cap, size-enforced-during-read lines, graceful drain),
+OAuth token cache (clean: keyring-first, 0o600 file fallback, Zeroizing reads), the
+`.app` package writer (clean, header layout verified), and an `xliff.rs` skim — note its
+extractor is line-heuristic like C14's formatter and shares that fragility class.
+Still not deep-read: the remaining `al-insight` analyses, `al-analysis/queries/*` bodies
+(completion/hover/semantic-tokens internals), `al-test` engine internals
+(`session.rs`/`router.rs`/`mutate.rs` bodies), `al-publish`/`al-bc` HTTP paths,
+`al-snapshot`. Sweep them with the
 same checklist: byte-vs-UTF-16 position math, lock scope across `.await`, blocking IO in
 async, unchecked indexing/`as` casts, protocol frames without bounds/deadlines, fs
 operations that can clobber existing files, and BC-semantics fidelity for anything
@@ -495,7 +545,7 @@ chased in `resolution.rs`/`calls.rs` all turned out guarded.
 | Phase | Items | Gate |
 | --- | --- | --- |
 | 0. CI resuscitation | F1 (socket fix → land #11, #12, #13 in order), F2 (triggers/branch protection), F3 (toolchain pin) | All 5 CI jobs green on `dev`; feature-branch CI proven. **Do this before any other code change** — nothing below is verifiable until CI works. |
-| 1. Correctness | C11 (data loss — do first), C17 (DAP breakpoint stall), C1, C2, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
+| 1. Correctness | C11 (data loss — do first), C17 (DAP breakpoint stall), C18/C19 (rename safety), C1, C2, C20, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
 | 2. Truth surfaces | F5 (stale comments/docs/contradictions), F6 + C15 (DAP schema — re-verify per field, CodeLens, MCP command, tasks.json), C3 documentation | Each item verified at the layer `CLAUDE.md` requires (harness / editor screenshot). |
 | 3. Robustness | F7 (unwrap ratchet in al-lsp/al-protocol), F8 (zed_simulation fixture in CI, al-emit tests), C5, C7, C8, C12, C13, C14, F11 | Garbage-frame harness test green; zed_simulation running in CI; formatter idempotency fuzz green. |
 | 4. Structure & docs | F9 (move-only splits), F10 (doc consolidation), F4 option 2/3 if option 1 was declined, C16 (finish the sweep) | Single tracker; no >2 000-line files; C16 sweep documented. |
