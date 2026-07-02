@@ -538,6 +538,23 @@ unknown, return all candidates. **Verify:** fixture with `table Customer` + `pag
 go-to-definition from `Record Customer` must land on the table regardless of index order,
 and deleting the page file must not break table resolution.
 
+### C23 (P2) — Interpreter builtin surface: 13 globals, and `Format` silently lies
+
+Quantifying gap B4 from direct inspection of `al-runtime/src/interpreter/dispatch.rs:201-216`:
+exactly 13 global builtins exist (Error, Message, StrSubstNo, Format, StrLen, CopyStr,
+LowerCase, UpperCase, IndexOf, MaxStrLen, CreateDateTime, CurrentDateTime, Today, Time).
+Missing: `Round`, `Evaluate`, `Abs`, `Power`, `StrPos`, `SelectStr`, `DelChr`, `ConvertStr`,
+`IncStr`, `PadStr`, `CalcDate`, `Date2DMY`/`DMY2Date`, `WorkDate` — i.e. the functions in
+virtually every posting routine. An unknown builtin falls through to workspace-procedure
+lookup and errors "object not found", which at least fails loudly. Worse is
+`builtin_format` (`:691-696`): it accepts any argument count but **ignores the length and
+format-string/number arguments** — `Format(Date, 0, 9)` (XML format, ubiquitous in
+integration code) silently returns the default rendering, so string assertions diverge from
+BC without any error. **Fix:** implement the high-frequency builtins (Round with BC's
+half-away-from-zero default and direction chars, Evaluate writing through the var parameter,
+StrPos, CalcDate at minimum); until then make extra `Format` arguments a hard error instead
+of silent misformatting. **Verify:** unit tests per builtin against BC-documented outputs.
+
 ### C16 (P2) — Finish the deep read with the same method
 
 Covered beyond the first wave: `workspace.rs` init flow, `build_dispatch/build.rs`
@@ -559,11 +576,16 @@ backend, with honest `AffectedMode` fallback reporting), `al-snapshot` (thin bri
 reviewed `bc_debug` session). Every crate has now been read at meaningful depth; the
 remaining unread lines are analysis-query bodies and `al-insight` scanners whose failure
 mode is a wrong report, not corruption — sweep them opportunistically when touching those
-features.rs`/`router.rs`/`mutate.rs` bodies), `al-snapshot`. Sweep them with the
-same checklist: byte-vs-UTF-16 position math, lock scope across `.await`, blocking IO in
-async, unchecked indexing/`as` casts, protocol frames without bounds/deadlines, fs
-operations that can clobber existing files, and BC-semantics fidelity for anything
-reimplementing runtime behavior.
+features, using the same checklist: byte-vs-UTF-16 position math, lock scope across
+`.await`, blocking IO in async, unchecked indexing/`as` casts, protocol frames without
+bounds/deadlines, fs operations that can clobber existing files, and BC-semantics fidelity
+for anything reimplementing runtime behavior.
+Wave 7 additionally audited clean: the Zed extension itself (`src/lib.rs` binary
+resolution — path-safe version validation, guarded version-dir cleanup, documented priority
+chain; `src/settings.rs` — recursion-capped nesting, wrapper shapes, launch-toggle
+stripping), `find_node_at_position` (the load-bearing UTF-16→byte conversion under
+hover/definition/rename — correct), and `signature_help`'s conversion loop including the
+end-of-line edge.
 
 ### What held up under scrutiny (no action)
 
