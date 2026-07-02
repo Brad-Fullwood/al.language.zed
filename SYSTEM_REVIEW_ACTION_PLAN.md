@@ -555,6 +555,35 @@ half-away-from-zero default and direction chars, Evaluate writing through the va
 StrPos, CalcDate at minimum); until then make extra `Format` arguments a hard error instead
 of silent misformatting. **Verify:** unit tests per builtin against BC-documented outputs.
 
+### C25 (P1) — Interpreter: `var` parameters are silently pass-by-value
+
+`al-runtime/src/interpreter/dispatch.rs:334-366`: arguments are bound into the callee's
+frame by **clone** (`frame.bind(&param.name, args.get(i).cloned())`), the internal
+`ParamDecl` struct (`:377-380`) doesn't even carry an `is_var` flag, `is_var` appears
+nowhere in the interpreter, and when the call returns the frame is dropped — there is no
+write-back. In AL, `var` parameters are by-reference: the callee's mutations must be visible
+to the caller. This is the single most common AL calling convention (out-parameter helpers,
+`GetXxx(var Rec)`, posting-routine state threading). Every such call in the BC-free engine
+silently computes with stale caller values — no error, just wrong results. **This is the
+highest-impact interpreter finding in this review.** **Fix:** parse `var` on parameters
+(al-syntax's `ParameterInfo.is_var` already exists), capture the caller's l-value for each
+`var` argument at the call site, and copy the callee's final binding back after `eval_stmt`
+returns (record handles may already share state via the store — verify per type).
+**Verify:** fixture `procedure Bump(var i: Integer) begin i += 1; end` — caller must observe
+the increment; plus a Record and a Text variant.
+
+### C24 (P2) — Interpreter: `break`/`continue` statements are unhandled
+
+`eval_stmt.rs:83-111`: the statement dispatch has no arm for a break/continue statement kind
+and no `Eval::Break`/`Continue` variants exist — such statements fall into the
+`eval_expression_stmt` catch-all, which treats `break` as an identifier/call lookup.
+AL supports `break` in `for`/`while`/`repeat` loops; any loop using it either errors
+("procedure not found: break") or mis-evaluates instead of terminating the loop. **Fix:**
+add `Eval::Break` (and `Continue` if the grammar has it), handle in the loop evaluators
+(`eval_while`/`eval_for`/`eval_foreach`/`eval_repeat` swallow it; `eval_block` propagates
+it), and error if it escapes a loop. **Verify:** loop fixtures with early `break` matching
+BC-observed iteration counts.
+
 ### C16 (P2) — Finish the deep read with the same method
 
 Covered beyond the first wave: `workspace.rs` init flow, `build_dispatch/build.rs`
@@ -586,6 +615,14 @@ chain; `src/settings.rs` — recursion-capped nesting, wrapper shapes, launch-to
 stripping), `find_node_at_position` (the load-bearing UTF-16→byte conversion under
 hover/definition/rename — correct), and `signature_help`'s conversion loop including the
 end-of-line edge.
+Wave 8: the NuGet symbol downloader is near-exemplary (HTTPS-only enforcement, ZIP-slip
+filename guards, 512 MB decompression cap, atomic temp-file writes, per-package download
+locks) with one hazard worth a small fix: when a requested version has no prefix match it
+silently falls back to the **latest** available version (`nuget.rs:322-331`, info-level log
+only) — symbols from a different BC major than the project requested; prefer a hard error or
+a user-visible warning. `al-project` `AlConfig::merge` audited clean (per-key parsing,
+unknown-key reporting). The MCP server exposes a curated 15-tool registry (no dynamic
+tool injection). Interpreter control flow reads led to C24/C25.
 
 ### What held up under scrutiny (no action)
 
@@ -605,7 +642,7 @@ chased in `resolution.rs`/`calls.rs` all turned out guarded.
 | Phase | Items | Gate |
 | --- | --- | --- |
 | 0. CI resuscitation | F1 (socket fix → land #11, #12, #13 in order), F2 (triggers/branch protection), F3 (toolchain pin) | All 5 CI jobs green on `dev`; feature-branch CI proven. **Do this before any other code change** — nothing below is verifiable until CI works. |
-| 1. Correctness | C11 (data loss — do first), C17 (DAP breakpoint stall), C18/C19 (rename safety), C22 (object-index collision), C1, C2, C20, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
+| 1. Correctness | C11 (data loss — do first), C25 (var params by value — the top interpreter fix), C17 (DAP breakpoint stall), C18/C19 (rename safety), C22 (object-index collision), C1, C2, C20, C24, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
 | 2. Truth surfaces | F5 (stale comments/docs/contradictions), F6 + C15 (DAP schema — re-verify per field, CodeLens, MCP command, tasks.json), C3 documentation | Each item verified at the layer `CLAUDE.md` requires (harness / editor screenshot). |
 | 3. Robustness | F7 (unwrap ratchet in al-lsp/al-protocol), F8 (zed_simulation fixture in CI, al-emit tests), C5, C7, C8, C12, C13, C14, F11 | Garbage-frame harness test green; zed_simulation running in CI; formatter idempotency fuzz green. |
 | 4. Structure & docs | F9 (move-only splits), F10 (doc consolidation), F4 option 2/3 if option 1 was declined, C16 (finish the sweep) | Single tracker; no >2 000-line files; C16 sweep documented. |
