@@ -507,6 +507,37 @@ space-containing, keyword, and empty new names.
 casing falls out of C2. **Verify:** truth-table unit tests per method against documented BC
 behavior; an `al-test-harness` fixture running the `Init`-after-key idiom end-to-end.
 
+### C21 (P3) — `references` misreads `includeDeclaration`, and counts are lexical
+
+`al-analysis/src/queries/references.rs:38-47`: with `includeDeclaration: false` the filter
+drops the reference whose **range starts at the request position** — i.e. (sometimes) the
+occurrence under the cursor, not the *declaration*, which is what the LSP flag means. The
+declaration is wherever the symbol is declared; it's only excluded if the user happened to
+invoke references from it, and the clicked usage is wrongly excluded when the cursor sits at
+its first character. Additionally, matching is lexical by name (same engine as C18), so the
+CodeLens "N references" counts include unrelated same-named symbols. **Fix:** resolve the
+declaration site (the definition query already can) and exclude that location; note the
+lexical over-count in C18's fix. **Verify:** unit test invoking references from a usage site
+with `includeDeclaration: false` — the declaration must be absent and the clicked usage
+present.
+
+### C22 (P1) — Object index collapses same-named objects of different types
+
+`al-source/src/file_index.rs:88,369`: `objects` maps **lowercase object name → one
+`PathBuf`**, last-write-wins. AL object names are unique **per object type** — `table
+Customer` and `page Customer` legally coexist and do in virtually every real BC codebase.
+Consequences: go-to-definition on an object name (`definition.rs:129`) and three resolution
+paths (`resolution.rs:418`, `:1080`, `:1206` — including enum-type resolution) land on
+whichever same-named object was indexed *last*, scan-order-dependent and kind-blind
+(`Record Customer` can jump to the page). Worse, `remove_file` of the winning file deletes
+the map entry outright, stranding the losing object unreachable while still indexed.
+**Fix:** key the map by `(kind_namespace, lowercase_name)` (BC namespaces: table/page/
+codeunit/report/query/xmlport/enum/interface each own one) and thread the expected kind from
+the resolution context (a `Record X` reference knows it wants a table); where the kind is
+unknown, return all candidates. **Verify:** fixture with `table Customer` + `page Customer`;
+go-to-definition from `Record Customer` must land on the table regardless of index order,
+and deleting the page file must not break table resolution.
+
 ### C16 (P2) — Finish the deep read with the same method
 
 Covered beyond the first wave: `workspace.rs` init flow, `build_dispatch/build.rs`
@@ -518,10 +549,12 @@ accept/framing (clean: semaphore cap, size-enforced-during-read lines, graceful 
 OAuth token cache (clean: keyring-first, 0o600 file fallback, Zeroizing reads), the
 `.app` package writer (clean, header layout verified), and an `xliff.rs` skim — note its
 extractor is line-heuristic like C14's formatter and shares that fragility class.
-Still not deep-read: the remaining `al-insight` analyses, `al-analysis/queries/*` bodies
-(completion/hover/semantic-tokens internals), `al-test` engine internals
-(`session.rs`/`router.rs`/`mutate.rs` bodies), `al-publish`/`al-bc` HTTP paths,
-`al-snapshot`. Sweep them with the
+Wave 5 additionally covered: `references.rs` (→ C21), `definition.rs` object lookup (→ C22),
+`tokens.rs` semantic-token extraction (clean — UTF-16-correct columns/lengths, safe delta
+encoding, CRLF handling documented and right), `al-publish` compile/upload flow (clean;
+minor: upload treats a missing status as success). Still not deep-read: `completions.rs`
+body, the remaining `al-insight` analyses, `al-test` engine internals
+(`session.rs`/`router.rs`/`mutate.rs` bodies), `al-snapshot`. Sweep them with the
 same checklist: byte-vs-UTF-16 position math, lock scope across `.await`, blocking IO in
 async, unchecked indexing/`as` casts, protocol frames without bounds/deadlines, fs
 operations that can clobber existing files, and BC-semantics fidelity for anything
@@ -545,7 +578,7 @@ chased in `resolution.rs`/`calls.rs` all turned out guarded.
 | Phase | Items | Gate |
 | --- | --- | --- |
 | 0. CI resuscitation | F1 (socket fix → land #11, #12, #13 in order), F2 (triggers/branch protection), F3 (toolchain pin) | All 5 CI jobs green on `dev`; feature-branch CI proven. **Do this before any other code change** — nothing below is verifiable until CI works. |
-| 1. Correctness | C11 (data loss — do first), C17 (DAP breakpoint stall), C18/C19 (rename safety), C1, C2, C20, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
+| 1. Correctness | C11 (data loss — do first), C17 (DAP breakpoint stall), C18/C19 (rename safety), C22 (object-index collision), C1, C2, C20, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
 | 2. Truth surfaces | F5 (stale comments/docs/contradictions), F6 + C15 (DAP schema — re-verify per field, CodeLens, MCP command, tasks.json), C3 documentation | Each item verified at the layer `CLAUDE.md` requires (harness / editor screenshot). |
 | 3. Robustness | F7 (unwrap ratchet in al-lsp/al-protocol), F8 (zed_simulation fixture in CI, al-emit tests), C5, C7, C8, C12, C13, C14, F11 | Garbage-frame harness test green; zed_simulation running in CI; formatter idempotency fuzz green. |
 | 4. Structure & docs | F9 (move-only splits), F10 (doc consolidation), F4 option 2/3 if option 1 was declined, C16 (finish the sweep) | Single tracker; no >2 000-line files; C16 sweep documented. |
