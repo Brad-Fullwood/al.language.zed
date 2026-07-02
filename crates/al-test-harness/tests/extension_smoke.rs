@@ -224,8 +224,8 @@ fn subcommand_chain(args: &[Value]) -> Vec<String> {
 #[test]
 fn zed_tasks_map_to_real_subcommands() {
     let path = zed_tasks_path();
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     // Must be STRICT JSON (serde_json rejects comments / trailing commas) so the
     // file round-trips through any tooling, not only Zed's lenient reader.
     let tasks: Vec<Value> = serde_json::from_str(&raw)

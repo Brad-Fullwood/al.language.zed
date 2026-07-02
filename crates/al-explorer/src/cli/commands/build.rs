@@ -210,11 +210,17 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
         Ok(())
     }) {
         let _ = std::fs::remove_dir_all(&tmp);
-        return Some(report_error(&format!("preparing validation copy: {e}"), json));
+        return Some(report_error(
+            &format!("preparing validation copy: {e}"),
+            json,
+        ));
     }
 
     let pkg_cache = tmp.join(".alpackages");
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(r) => r,
         Err(e) => {
             let _ = std::fs::remove_dir_all(&tmp);
@@ -230,7 +236,12 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
 
     let result = match result {
         Ok(r) => r,
-        Err(e) => return Some(report_error(&format!("alc validation failed to run: {e}"), json)),
+        Err(e) => {
+            return Some(report_error(
+                &format!("alc validation failed to run: {e}"),
+                json,
+            ));
+        }
     };
 
     let errors = result
@@ -265,7 +276,10 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| d.file.clone());
-            eprintln!("{file}:{}:{}: {sev} {}: {}", d.line, d.column, d.code, d.message);
+            eprintln!(
+                "{file}:{}:{}: {sev} {}: {}",
+                d.line, d.column, d.code, d.message
+            );
         }
     }
 

@@ -862,7 +862,7 @@ mod tests {
         std::fs::write(&app_path, build_app("Local Lib", 50123, "Local Widget")).unwrap();
 
         let index = SymbolIndex::new();
-        let loaded = index.load_packages(&[app_path.clone()]);
+        let loaded = index.load_packages(std::slice::from_ref(&app_path));
 
         // The package parsed and contributed its object...
         assert_eq!(loaded.len(), 1, "the local-folder .app should load");

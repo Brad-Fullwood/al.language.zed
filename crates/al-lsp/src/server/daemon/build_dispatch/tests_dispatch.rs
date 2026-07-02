@@ -474,7 +474,9 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         let opts_for_run = opts.clone();
         let mode_for_run = std::sync::Arc::clone(&mode);
         run_handles.push(tokio::spawn(async move {
-            mode_for_run.run(interp_tests, opts_for_run, tx_interp).await
+            mode_for_run
+                .run(interp_tests, opts_for_run, tx_interp)
+                .await
         }));
     }
     if !live_tests.is_empty() {
@@ -1412,7 +1414,11 @@ mod tests {
             }),
         )
         .await;
-        assert!(resp.error.is_none(), "coverage run failed: {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "coverage run failed: {:?}",
+            resp.error
+        );
         let result = resp.result.expect("result");
 
         let coverage = result
@@ -1444,7 +1450,10 @@ mod tests {
             xml.contains(r#"coverage-mode="dynamic-executed-lines""#),
             "dynamic cobertura expected, got:\n{xml}"
         );
-        assert!(!xml.contains("static-call-graph"), "must not be static:\n{xml}");
+        assert!(
+            !xml.contains("static-call-graph"),
+            "must not be static:\n{xml}"
+        );
     }
 
     /// gap C9 negative: with coverage OFF (the default), the result must carry NO

@@ -1547,15 +1547,17 @@ mod workspace_diagnostic_tests {
 
     use super::*;
 
-    const BAD_SRC: &str =
-        "codeunit 50100 Test\n{\n    procedure Broken(\n    begin\n    end;\n}\n";
+    const BAD_SRC: &str = "codeunit 50100 Test\n{\n    procedure Broken(\n    begin\n    end;\n}\n";
     const GOOD_SRC: &str =
         "codeunit 50100 MyCodeunit\n{\n    trigger OnRun()\n    begin\n    end;\n}\n";
 
     fn new_ready_server() -> LspService<AlServer> {
         let (service, _socket) = LspService::new(AlServer::new);
         // Skip the 30s workspace-init wait in `await_ready`.
-        service.inner().workspace_ready.store(true, Ordering::Release);
+        service
+            .inner()
+            .workspace_ready
+            .store(true, Ordering::Release);
         service
     }
 

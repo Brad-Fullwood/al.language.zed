@@ -291,9 +291,9 @@ fn generate_template_files(dir: &Path, config: &ScaffoldConfig) -> Result<Vec<St
         // here. This arm keeps the match exhaustive; reaching it would mean a
         // future refactor routed a custom template through the built-in flow,
         // which would silently drop its files — fail loudly instead.
-        ProjectTemplate::Custom(_) => Err(
-            "internal error: custom template reached generate_template_files".to_string(),
-        ),
+        ProjectTemplate::Custom(_) => {
+            Err("internal error: custom template reached generate_template_files".to_string())
+        }
     }
 }
 
@@ -358,9 +358,9 @@ fn invalid_name_msg(name: &str) -> String {
 /// templates root.
 ///
 /// - `Ok(Some(_))` — a valid template directory with a parseable descriptor.
-/// - `Ok(None)`    — no templates root is configured, or no directory of this
-///                   name exists under it (reported upstream as "unknown").
-/// - `Err(_)`      — the name is unsafe, or the descriptor is missing/malformed.
+/// - `Ok(None)` — no templates root is configured, or no directory of this
+///   name exists under it (reported upstream as "unknown").
+/// - `Err(_)` — the name is unsafe, or the descriptor is missing/malformed.
 fn resolve_custom_template(name: &str) -> Result<Option<CustomTemplate>, String> {
     if !valid_template_name(name) {
         return Err(invalid_name_msg(name));
@@ -457,8 +457,7 @@ fn materialize_custom_template(
     collect_template_files(&files_root, &files_root, &mut rel_files)?;
     rel_files.sort();
 
-    std::fs::create_dir_all(dir)
-        .map_err(|e| format!("Failed to create project directory: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create project directory: {e}"))?;
 
     let mut created = Vec::new();
     for rel in &rel_files {
@@ -473,9 +472,8 @@ fn materialize_custom_template(
         let src_path = files_root.join(rel);
         let dest_path = dir.join(&dest_rel);
         if let Some(parent) = dest_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!("Failed to create directory {}: {e}", parent.display())
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory {}: {e}", parent.display()))?;
         }
 
         // Substitute placeholders in UTF-8 contents; copy non-UTF-8 (binary)
@@ -509,11 +507,7 @@ fn materialize_custom_template(
 /// Recursively collect regular files under `dir`, pushing their paths relative
 /// to `root`. Symlinks are rejected (a traversal vector); directory entries are
 /// recursed into. Uses `DirEntry::file_type`, which does not traverse symlinks.
-fn collect_template_files(
-    root: &Path,
-    dir: &Path,
-    out: &mut Vec<PathBuf>,
-) -> Result<(), String> {
+fn collect_template_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = std::fs::read_dir(dir)
         .map_err(|e| format!("Failed to read template directory {}: {e}", dir.display()))?;
     for entry in entries {
@@ -567,10 +561,7 @@ fn guard_relative(rel: &Path) -> Result<(), String> {
 }
 
 /// Apply placeholder substitution to each `Normal` component of a relative path.
-fn substitute_path(
-    rel: &Path,
-    substitute: &impl Fn(&str) -> String,
-) -> Result<PathBuf, String> {
+fn substitute_path(rel: &Path, substitute: &impl Fn(&str) -> String) -> Result<PathBuf, String> {
     let mut out = PathBuf::new();
     for comp in rel.components() {
         match comp {
@@ -1397,7 +1388,9 @@ mod tests {
             r#"{}"#,
             &[("app.json", r#"{"id":"{{id}}"}"#)],
         );
-        let custom = resolve_custom_template_in(store.path(), "t").unwrap().unwrap();
+        let custom = resolve_custom_template_in(store.path(), "t")
+            .unwrap()
+            .unwrap();
         let proj = tempfile::tempdir().unwrap();
         let config = ScaffoldConfig {
             id: "11111111-2222-3333-4444-555555555555".to_string(),
@@ -1418,7 +1411,9 @@ mod tests {
             r#"{}"#,
             &[("src/{{name}}.Codeunit.al", "ok")],
         );
-        let custom = resolve_custom_template_in(store.path(), "t").unwrap().unwrap();
+        let custom = resolve_custom_template_in(store.path(), "t")
+            .unwrap()
+            .unwrap();
         let proj = tempfile::tempdir().unwrap();
         let config = ScaffoldConfig {
             name: "Widget".to_string(),
@@ -1472,7 +1467,9 @@ mod tests {
             r#"{"generateId": true, "idFrom": 70000, "idTo": 70099, "description": "d"}"#,
             &[("app.json", "{}")],
         );
-        let custom = resolve_custom_template_in(store.path(), "t").unwrap().unwrap();
+        let custom = resolve_custom_template_in(store.path(), "t")
+            .unwrap()
+            .unwrap();
         assert_eq!(custom.name, "t");
         assert!(custom.descriptor.generate_id);
         assert_eq!(custom.descriptor.id_from, Some(70000));
@@ -1496,7 +1493,9 @@ mod tests {
         std::fs::write(tdir.join("template.json"), "{}").unwrap();
         std::os::unix::fs::symlink("/etc/passwd", tdir.join("files/leak.al")).unwrap();
 
-        let custom = resolve_custom_template_in(store.path(), "t").unwrap().unwrap();
+        let custom = resolve_custom_template_in(store.path(), "t")
+            .unwrap()
+            .unwrap();
         let proj = tempfile::tempdir().unwrap();
         let config = ScaffoldConfig {
             template: ProjectTemplate::Custom(custom),

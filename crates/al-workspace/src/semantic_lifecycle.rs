@@ -63,7 +63,9 @@ pub async fn ensure_error_codes_loaded(workspace: &Workspace) {
                 Ok(codes) => {
                     tracing::info!(count = codes.len(), "Loaded error codes via bridge");
                     for ec in codes {
-                        workspace.error_codes.insert(ec.code.clone(), ec.message.clone());
+                        workspace
+                            .error_codes
+                            .insert(ec.code.clone(), ec.message.clone());
                     }
                 }
                 Err(error) => tracing::warn!(%error, "Failed to load error codes via bridge"),

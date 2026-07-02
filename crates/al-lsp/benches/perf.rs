@@ -79,7 +79,11 @@ fn attr(name: &str, args: &[&str]) -> AttributeSymbol {
     }
 }
 
-fn method(name: &str, attributes: Vec<AttributeSymbol>, parameters: Vec<ParameterSymbol>) -> MethodSymbol {
+fn method(
+    name: &str,
+    attributes: Vec<AttributeSymbol>,
+    parameters: Vec<ParameterSymbol>,
+) -> MethodSymbol {
     MethodSymbol {
         name: name.to_string(),
         parameters,
@@ -299,7 +303,9 @@ fn report_stats_once() {
     // Serialized-JSON length is an *approximate* memory metric: it is the
     // on-disk SymbolReference footprint, a stable proxy for in-memory size
     // (the live index also holds Arc/DashMap overhead not counted here).
-    let bytes = serde_json::to_string(&entries).map(|s| s.len()).unwrap_or(0);
+    let bytes = serde_json::to_string(&entries)
+        .map(|s| s.len())
+        .unwrap_or(0);
     let idx = SymbolIndex::new();
     idx.add_entries_owned(entries);
     let graph = build_graph(&idx);

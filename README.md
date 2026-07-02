@@ -107,6 +107,10 @@ Current MCP tools:
 - `al_entrypoints` - list procedures with no incoming calls.
 - `al_trace_event` - trace publisher/subscriber event propagation.
 - `al_impact` - answer "who consumes this symbol?"
+- `al_suggestevent` - suggest integration event publishers to subscribe to, by tracing the call/event graph from a procedure, table, or event.
+- `al_testclassify` - classify every discovered AL test by where it actually runs today (local interpreter vs. requires live BC), with the reasons behind each decision.
+- `al_testcoverage` - report static test coverage across the workspace (which objects/procedures are reached by tests via the call graph). No live BC required.
+- `al_depgraph` - build the project's dependency graph from `app.json` (this app plus its declared dependencies), as JSON or Graphviz `dot`.
 
 The tool names intentionally mirror Microsoft's AL agent tool surface where possible, while adding analysis tools the official surface does not expose. CLI, MCP, and Zed tasks route through the daemon JSON-RPC dispatcher. Native LSP requests and execute commands use LSP server handlers, while sharing lower-level workspace, query, build, symbol, and test code.
 

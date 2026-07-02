@@ -1147,7 +1147,10 @@ Build failed.";
             ..Default::default()
         };
         assert!(
-            !disabled.to_alc_args().iter().any(|a| a.starts_with("/ruleset:")),
+            !disabled
+                .to_alc_args()
+                .iter()
+                .any(|a| a.starts_with("/ruleset:")),
             "ruleset must be suppressed when enableExternalRulesets is false"
         );
     }
@@ -1258,7 +1261,11 @@ Build failed.";
         })
         .await
         .expect("native build never errors at the infra level");
-        assert!(result.success, "native build via service failed: {}", result.output);
+        assert!(
+            result.success,
+            "native build via service failed: {}",
+            result.output
+        );
         assert!(result.app_path.is_some());
         assert!(result.diagnostics.is_empty());
     }

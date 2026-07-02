@@ -218,10 +218,7 @@ impl Ord for Value {
                 .cmp(&b.iter().collect::<Vec<_>>()),
             (Blob(a), Blob(b)) => a.cmp(b),
             (ErrorInfo(a), ErrorInfo(b)) => a.message.cmp(&b.message),
-            (
-                Codeunit { object_name: a },
-                Codeunit { object_name: b },
-            ) => a.cmp(b),
+            (Codeunit { object_name: a }, Codeunit { object_name: b }) => a.cmp(b),
             // Different variants handled by the index check above.
             _ => Ordering::Equal,
         }

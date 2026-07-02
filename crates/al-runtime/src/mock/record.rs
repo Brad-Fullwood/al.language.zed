@@ -416,7 +416,11 @@ impl MockRecord {
             .collect();
 
         // The cells of the aggregated field across the matching rows.
-        let target_cells = || matching.iter().filter_map(|row| target.and_then(|t| row.get(&t)));
+        let target_cells = || {
+            matching
+                .iter()
+                .filter_map(|row| target.and_then(|t| row.get(&t)))
+        };
 
         match agg {
             FlowAgg::Count => Value::Integer(matching.len() as i64),
@@ -464,7 +468,11 @@ impl MockRecord {
                                 FlowAgg::Min => cur < prev_n,
                                 _ => cur > prev_n,
                             };
-                            if take { Some(cell) } else { Some(prev) }
+                            if take {
+                                Some(cell)
+                            } else {
+                                Some(prev)
+                            }
                         }
                     };
                 }
@@ -1071,18 +1079,33 @@ mod tests {
         let rec = detail_table();
         // Sum(Amount WHERE Doc No. = "ORD1") = 10+20+30 = 60.
         let conds = [(1, FlowFilter::Eq(Value::Code("ORD1".into())))];
-        assert_eq!(rec.calc_flow(&conds, Some(3), FlowAgg::Sum), Value::Integer(60));
+        assert_eq!(
+            rec.calc_flow(&conds, Some(3), FlowAgg::Sum),
+            Value::Integer(60)
+        );
     }
 
     #[test]
     fn calc_flow_count_and_exist() {
         let rec = detail_table();
         let conds = [(1, FlowFilter::Eq(Value::Code("ORD1".into())))];
-        assert_eq!(rec.calc_flow(&conds, None, FlowAgg::Count), Value::Integer(3));
-        assert_eq!(rec.calc_flow(&conds, None, FlowAgg::Exist), Value::Boolean(true));
+        assert_eq!(
+            rec.calc_flow(&conds, None, FlowAgg::Count),
+            Value::Integer(3)
+        );
+        assert_eq!(
+            rec.calc_flow(&conds, None, FlowAgg::Exist),
+            Value::Boolean(true)
+        );
         let none = [(1, FlowFilter::Eq(Value::Code("ZZZ".into())))];
-        assert_eq!(rec.calc_flow(&none, None, FlowAgg::Count), Value::Integer(0));
-        assert_eq!(rec.calc_flow(&none, None, FlowAgg::Exist), Value::Boolean(false));
+        assert_eq!(
+            rec.calc_flow(&none, None, FlowAgg::Count),
+            Value::Integer(0)
+        );
+        assert_eq!(
+            rec.calc_flow(&none, None, FlowAgg::Exist),
+            Value::Boolean(false)
+        );
     }
 
     #[test]
@@ -1116,8 +1139,14 @@ mod tests {
     fn calc_flow_min_max_average() {
         let rec = detail_table();
         let conds = [(1, FlowFilter::Eq(Value::Code("ORD1".into())))];
-        assert_eq!(rec.calc_flow(&conds, Some(3), FlowAgg::Min), Value::Integer(10));
-        assert_eq!(rec.calc_flow(&conds, Some(3), FlowAgg::Max), Value::Integer(30));
+        assert_eq!(
+            rec.calc_flow(&conds, Some(3), FlowAgg::Min),
+            Value::Integer(10)
+        );
+        assert_eq!(
+            rec.calc_flow(&conds, Some(3), FlowAgg::Max),
+            Value::Integer(30)
+        );
         assert_eq!(
             rec.calc_flow(&conds, Some(3), FlowAgg::Average),
             Value::Decimal(20.0)
@@ -1128,10 +1157,22 @@ mod tests {
     fn calc_flow_empty_defaults() {
         let rec = detail_table();
         let none = [(1, FlowFilter::Eq(Value::Code("ZZZ".into())))];
-        assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Sum), Value::Integer(0));
-        assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Min), Value::Integer(0));
-        assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Max), Value::Integer(0));
-        assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Average), Value::Decimal(0.0));
+        assert_eq!(
+            rec.calc_flow(&none, Some(3), FlowAgg::Sum),
+            Value::Integer(0)
+        );
+        assert_eq!(
+            rec.calc_flow(&none, Some(3), FlowAgg::Min),
+            Value::Integer(0)
+        );
+        assert_eq!(
+            rec.calc_flow(&none, Some(3), FlowAgg::Max),
+            Value::Integer(0)
+        );
+        assert_eq!(
+            rec.calc_flow(&none, Some(3), FlowAgg::Average),
+            Value::Decimal(0.0)
+        );
         assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Lookup), Value::Empty);
     }
 
@@ -1145,6 +1186,9 @@ mod tests {
         rec.field_set(1, Value::Integer(2));
         rec.field_set(2, Value::Decimal(2.5));
         rec.insert(false).unwrap();
-        assert_eq!(rec.calc_flow(&[], Some(2), FlowAgg::Sum), Value::Decimal(12.5));
+        assert_eq!(
+            rec.calc_flow(&[], Some(2), FlowAgg::Sum),
+            Value::Decimal(12.5)
+        );
     }
 }

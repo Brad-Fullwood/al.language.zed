@@ -316,9 +316,7 @@ fn eval_date_literal(node: Node<'_>, source: &[u8]) -> Eval {
     let month: i64 = digits[4..6].parse().unwrap_or(0);
     let day: i64 = digits[6..8].parse().unwrap_or(0);
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return Eval::Error(simple_error(&format!(
-            "date literal out of range: {text}"
-        )));
+        return Eval::Error(simple_error(&format!("date literal out of range: {text}")));
     }
     Eval::Normal(Value::Date(value::al_days_from_ymd(year, month, day)))
 }
@@ -349,9 +347,7 @@ fn eval_time_literal(node: Node<'_>, source: &[u8]) -> Eval {
         0
     };
     if hours > 23 || minutes > 59 || seconds > 59 {
-        return Eval::Error(simple_error(&format!(
-            "time literal out of range: {text}"
-        )));
+        return Eval::Error(simple_error(&format!("time literal out of range: {text}")));
     }
     let ms = ((hours * 60 + minutes) * 60 + seconds) * 1000 + millis;
     Eval::Normal(Value::Time(ms))
@@ -405,16 +401,13 @@ fn eval_expression_node(
     // Recognise the assignment operators — plain `:=` and the compound
     // arithmetic forms `+=`, `-=`, `*=`, `/=`. Each binds the LHS variable
     // and is the lowest-precedence operator in the chain.
-    let assign = children
-        .iter()
-        .enumerate()
-        .find_map(|(idx, c)| {
-            if idx % 2 != 1 || c.kind() != "binary_operator" {
-                return None;
-            }
-            let text = c.utf8_text(source).ok()?.trim();
-            assignment_kind(text).map(|kind| (idx, kind))
-        });
+    let assign = children.iter().enumerate().find_map(|(idx, c)| {
+        if idx % 2 != 1 || c.kind() != "binary_operator" {
+            return None;
+        }
+        let text = c.utf8_text(source).ok()?.trim();
+        assignment_kind(text).map(|kind| (idx, kind))
+    });
 
     if let Some((op_idx, kind)) = assign {
         let lhs_node = children[op_idx - 1];
@@ -441,7 +434,9 @@ fn eval_expression_node(
             .unwrap_or_default();
 
         if lhs_name.is_empty() {
-            return Eval::Error(simple_error("expression: cannot resolve LHS name for assignment"));
+            return Eval::Error(simple_error(
+                "expression: cannot resolve LHS name for assignment",
+            ));
         }
 
         // Compound assignment (`x += rhs`) is `x := x <op> rhs`: load the

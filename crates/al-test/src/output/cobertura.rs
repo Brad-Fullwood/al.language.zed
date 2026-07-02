@@ -310,8 +310,7 @@ pub fn write_cobertura_dynamic<W: Write>(
             line_el.push_attribute(("hits", "1"));
             if let Some(b) = branch_lines.get(&line) {
                 // A decision site: report two-way condition coverage.
-                let sides_taken =
-                    usize::from(b.then_taken > 0) + usize::from(b.else_taken > 0);
+                let sides_taken = usize::from(b.then_taken > 0) + usize::from(b.else_taken > 0);
                 let pct = sides_taken * 50; // 0, 50 or 100 %
                 line_el.push_attribute(("branch", "true"));
                 line_el.push_attribute((
@@ -569,7 +568,10 @@ mod tests {
         // Human-readable comment that spells out the semantics, before <coverage>.
         let comment_pos = xml.find("<!--").expect("comment present");
         let coverage_pos = xml.find("<coverage").expect("coverage element present");
-        assert!(comment_pos < coverage_pos, "comment must precede <coverage>");
+        assert!(
+            comment_pos < coverage_pos,
+            "comment must precede <coverage>"
+        );
         assert!(
             xml.contains("DYNAMIC executed-line coverage"),
             "comment must label dynamic executed-line coverage, got:\n{xml}"
@@ -599,7 +601,10 @@ mod tests {
         if let Some(start) = xml.find("<!--") {
             let body = &xml[start + 4..];
             let end = body.find("-->").expect("comment is closed");
-            assert!(!body[..end].contains("--"), "XML comment body must not contain '--'");
+            assert!(
+                !body[..end].contains("--"),
+                "XML comment body must not contain '--'"
+            );
         }
     }
 }

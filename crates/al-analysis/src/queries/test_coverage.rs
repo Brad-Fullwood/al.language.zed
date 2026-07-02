@@ -200,7 +200,8 @@ fn augment_coverage_with_indirect_calls(
             continue;
         };
 
-        let mut seen: HashSet<String> = entry.covers.iter().map(|c| c.name.to_lowercase()).collect();
+        let mut seen: HashSet<String> =
+            entry.covers.iter().map(|c| c.name.to_lowercase()).collect();
 
         for edge in cg.callees_of(test_node) {
             if edge.kind != EdgeKind::IndirectCall {

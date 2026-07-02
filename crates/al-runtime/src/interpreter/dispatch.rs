@@ -410,11 +410,7 @@ fn bind_structured_locals(proc_node: tree_sitter::Node<'_>, source: &[u8], frame
 
 /// Bind every name on one `regular_variable_declaration` whose type is a
 /// structured handle (`Record`/`Codeunit`/`List`).
-fn bind_structured_var_decl(
-    reg: tree_sitter::Node<'_>,
-    source: &[u8],
-    frame: &mut CallFrame,
-) {
+fn bind_structured_var_decl(reg: tree_sitter::Node<'_>, source: &[u8], frame: &mut CallFrame) {
     let mut names: Vec<String> = Vec::new();
     let mut type_text: Option<String> = None;
 
@@ -825,7 +821,8 @@ fn builtin_maxstrlen(args: &[Value]) -> Eval {
 fn builtin_createdatetime(args: &[Value]) -> Eval {
     match args {
         [Value::Date(d), Value::Time(t)] => {
-            match d.checked_mul(crate::interpreter::value::MS_PER_DAY)
+            match d
+                .checked_mul(crate::interpreter::value::MS_PER_DAY)
                 .and_then(|ms| ms.checked_add(*t))
             {
                 Some(dt) => Eval::Normal(Value::DateTime(dt)),

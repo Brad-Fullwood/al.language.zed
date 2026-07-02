@@ -133,11 +133,16 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
             } else {
                 println!("\nOver-broad / unused grants (object-level; RIMDX rights not verified):");
                 for e in &over_broad {
-                    let set = e.get("permissionSet").and_then(|v| v.as_str()).unwrap_or("?");
+                    let set = e
+                        .get("permissionSet")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
                     let ot = e.get("objectType").and_then(|v| v.as_str()).unwrap_or("?");
                     let obj = e.get("object").and_then(|v| v.as_str()).unwrap_or("?");
                     let rights = e.get("rights").and_then(|v| v.as_str()).unwrap_or("");
-                    println!("  {set}: {ot} \"{obj}\" = {rights} — unused (object not referenced in workspace)");
+                    println!(
+                        "  {set}: {ot} \"{obj}\" = {rights} — unused (object not referenced in workspace)"
+                    );
                 }
                 eprintln!("\n{} over-broad grant(s)", over_broad.len());
             }
@@ -151,9 +156,15 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
                      found — over-approximation, R never flagged):"
                 );
                 for e in &over_granted {
-                    let set = e.get("permissionSet").and_then(|v| v.as_str()).unwrap_or("?");
+                    let set = e
+                        .get("permissionSet")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
                     let obj = e.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                    let granted = e.get("grantedRights").and_then(|v| v.as_str()).unwrap_or("");
+                    let granted = e
+                        .get("grantedRights")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let over = e.get("overGranted").and_then(|v| v.as_str()).unwrap_or("");
                     let observed = e
                         .get("observedRights")
@@ -244,26 +255,32 @@ pub fn cmd_arch_lint(json: bool) -> ExitCode {
 }
 
 pub fn cmd_native_check(json: bool) -> ExitCode {
-    run_command("nativeCheck", Some(serde_json::json!({})), json, None, |result| {
-        let findings = result.as_array().cloned().unwrap_or_default();
-        if findings.is_empty() {
-            println!("No native semantic issues found.");
-        } else {
-            for f in &findings {
-                let code = f.get("code").and_then(|v| v.as_str()).unwrap_or("?");
-                let sev = f.get("severity").and_then(|v| v.as_str()).unwrap_or("?");
-                let otype = f.get("objectType").and_then(|v| v.as_str()).unwrap_or("?");
-                let name = f.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
-                let msg = f.get("message").and_then(|v| v.as_str()).unwrap_or("?");
-                let file = f.get("file").and_then(|v| v.as_str()).unwrap_or("");
-                println!("[{code}] {sev} {otype} \"{name}\": {msg}");
-                if !file.is_empty() {
-                    println!("    {file}");
+    run_command(
+        "nativeCheck",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let findings = result.as_array().cloned().unwrap_or_default();
+            if findings.is_empty() {
+                println!("No native semantic issues found.");
+            } else {
+                for f in &findings {
+                    let code = f.get("code").and_then(|v| v.as_str()).unwrap_or("?");
+                    let sev = f.get("severity").and_then(|v| v.as_str()).unwrap_or("?");
+                    let otype = f.get("objectType").and_then(|v| v.as_str()).unwrap_or("?");
+                    let name = f.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
+                    let msg = f.get("message").and_then(|v| v.as_str()).unwrap_or("?");
+                    let file = f.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                    println!("[{code}] {sev} {otype} \"{name}\": {msg}");
+                    if !file.is_empty() {
+                        println!("    {file}");
+                    }
                 }
+                eprintln!("\n{} native semantic finding(s)", findings.len());
             }
-            eprintln!("\n{} native semantic finding(s)", findings.len());
-        }
-    })
+        },
+    )
 }
 
 fn format_block_location(loc: Option<&serde_json::Value>) -> String {

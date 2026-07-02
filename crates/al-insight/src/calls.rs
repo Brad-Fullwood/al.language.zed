@@ -637,7 +637,10 @@ fn is_codeunit_run_method(method: &str) -> bool {
 /// `Codeunit::<name>` literal; returns `None` for any other first argument
 /// (e.g. a variable, an expression, or a missing argument), because guessing
 /// a target there would be unsound.
-fn extract_codeunit_run_target(member_call_suffix: tree_sitter::Node, source: &[u8]) -> Option<String> {
+fn extract_codeunit_run_target(
+    member_call_suffix: tree_sitter::Node,
+    source: &[u8],
+) -> Option<String> {
     let arg_list = member_call_suffix.child_by_field_name("call")?;
     let text = arg_list.utf8_text(source).ok()?;
     let inner = text.trim().strip_prefix('(')?.strip_suffix(')')?.trim();
@@ -754,11 +757,8 @@ pub fn populate_call_edges_for_procedure(
                     // C15: a member call may target an event publisher on
                     // another object (e.g. `PublisherVar.OnSomeEvent()`).
                     // Firing it reaches the event node and every subscriber.
-                    let event_key = NodeKey::Event(
-                        entry.kind,
-                        entry.name.to_lowercase(),
-                        method_lower.clone(),
-                    );
+                    let event_key =
+                        NodeKey::Event(entry.kind, entry.name.to_lowercase(), method_lower.clone());
                     if let Some(event_id) = CallGraph::node_id_for(insight, &event_key) {
                         call_graph.add_direct_call(caller_id, event_id);
                         link_event_subscribers(caller_id, event_id, call_graph);
@@ -842,7 +842,10 @@ fn link_event_subscribers(caller_id: NodeId, event_id: NodeId, call_graph: &mut 
 /// so all of them are returned (the over-approximation). Interface names are
 /// compared case-insensitively after stripping the quotes that the symbol
 /// extractor preserves verbatim.
-fn find_interface_implementors(symbols: &SymbolIndex, interface_name: &str) -> Vec<Arc<SymbolEntry>> {
+fn find_interface_implementors(
+    symbols: &SymbolIndex,
+    interface_name: &str,
+) -> Vec<Arc<SymbolEntry>> {
     let target = interface_name.trim_matches('"');
     symbols
         .get_by_kind(ObjectKind::Codeunit)
@@ -2856,7 +2859,10 @@ mod tests {
             .callees_of(do_work)
             .iter()
             .any(|e| e.to == handler && e.kind == super::super::index::EdgeKind::IndirectCall);
-        assert!(reaches_handler, "DoWork → subscriber indirect edge expected");
+        assert!(
+            reaches_handler,
+            "DoWork → subscriber indirect edge expected"
+        );
     }
 
     #[test]
@@ -2883,8 +2889,14 @@ mod tests {
     #[test]
     fn c15_codeunit_run_target_parsed() {
         // Literal forms resolve; a variable argument does not.
-        assert_eq!(parse_codeunit_ref("Codeunit::\"Sales-Post\"").as_deref(), Some("Sales-Post"));
-        assert_eq!(parse_codeunit_ref("Codeunit::Worker").as_deref(), Some("Worker"));
+        assert_eq!(
+            parse_codeunit_ref("Codeunit::\"Sales-Post\"").as_deref(),
+            Some("Sales-Post")
+        );
+        assert_eq!(
+            parse_codeunit_ref("Codeunit::Worker").as_deref(),
+            Some("Worker")
+        );
         assert_eq!(parse_codeunit_ref("SomeVariable"), None);
         assert!(is_codeunit_run_method("Run"));
         assert!(is_codeunit_run_method("runmodal"));

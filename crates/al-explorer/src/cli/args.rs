@@ -591,7 +591,8 @@ Examples:
         after_help = "\
 Examples:
   al native-check
-  al native-check --json")]
+  al native-check --json"
+    )]
     NativeCheck,
     /// Find duplicate code blocks
     Duplicates {

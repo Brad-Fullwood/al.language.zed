@@ -86,10 +86,7 @@ impl InterpMode {
     /// `run`. Empty when coverage collection is disabled or `run` has not been
     /// called.
     pub fn coverage_report(&self) -> DynamicCoverageReport {
-        self.coverage
-            .lock()
-            .map(|c| c.report())
-            .unwrap_or_default()
+        self.coverage.lock().map(|c| c.report()).unwrap_or_default()
     }
 }
 

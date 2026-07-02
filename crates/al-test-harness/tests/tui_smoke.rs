@@ -75,8 +75,10 @@ fn tui_object_browser_lists_fixture_objects() {
     };
 
     // 1. Wait for the daemon to return packages (the "workspace" package proves
-    //    the project loaded).
-    let mut screen = poll(&buf, "workspace", 15);
+    //    the project loaded). The rendered screen from this poll isn't used
+    //    directly -- it's superseded by step 3's poll -- so it's only kept
+    //    around as a synchronization point.
+    let _ = poll(&buf, "workspace", 15);
     // 2. Select the workspace package: Down enters the Packages pane, Down moves
     //    to the next package. From the default (Runtime selected) this lands on
     //    workspace; if workspace is the only package, the move wraps back to it.
@@ -89,9 +91,13 @@ fn tui_object_browser_lists_fixture_objects() {
     // 3. Wait for a workspace object's details to render. The details pane shows
     //    "Package: workspace" for any selected workspace object — robust to which
     //    object-kind tab happens to be active (the list is kind-gated).
-    screen = {
+    let screen = {
         let s = poll(&buf, "Package: workspace", 6);
-        if s.contains("Package: workspace") { s } else { render(&buf) }
+        if s.contains("Package: workspace") {
+            s
+        } else {
+            render(&buf)
+        }
     };
 
     // Quit cleanly: al-explorer treats Ctrl-C (0x03) as "quit" in raw mode.

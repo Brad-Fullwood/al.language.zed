@@ -108,11 +108,16 @@ async fn mcp_initialize_and_list_tools() {
     for t in tool_objs {
         let name = t["name"].as_str().expect("tool name");
         assert!(
-            t["description"].as_str().is_some_and(|d| !d.trim().is_empty()),
+            t["description"]
+                .as_str()
+                .is_some_and(|d| !d.trim().is_empty()),
             "tool `{name}` has an empty description"
         );
         let schema = &t["inputSchema"];
-        assert_eq!(schema["type"], "object", "tool `{name}` schema not an object");
+        assert_eq!(
+            schema["type"], "object",
+            "tool `{name}` schema not an object"
+        );
         let props = schema["properties"]
             .as_object()
             .unwrap_or_else(|| panic!("tool `{name}` schema missing `properties`"));

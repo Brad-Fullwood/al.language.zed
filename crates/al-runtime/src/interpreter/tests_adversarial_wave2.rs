@@ -1113,7 +1113,11 @@ mod tests {
         let today = dispatch_call(None, "Today", vec![], &mut ctx);
         let time = dispatch_call(None, "Time", vec![], &mut ctx);
         let now = dispatch_call(None, "CurrentDateTime", vec![], &mut ctx);
-        assert!(matches!(today, Eval::Normal(Value::Date(_))), "got: {:?}", today);
+        assert!(
+            matches!(today, Eval::Normal(Value::Date(_))),
+            "got: {:?}",
+            today
+        );
         match time {
             Eval::Normal(Value::Time(ms)) => {
                 assert!((0..crate::interpreter::value::MS_PER_DAY).contains(&ms))

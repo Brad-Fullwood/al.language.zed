@@ -368,7 +368,9 @@ mod tests {
         // No baselineSymbols field -> empty baseline (backward compatible).
         assert!(baseline_symbols_from_params(&serde_json::json!({})).is_empty());
         // Non-array value is ignored rather than erroring.
-        assert!(baseline_symbols_from_params(&serde_json::json!({ "baselineSymbols": 7 })).is_empty());
+        assert!(
+            baseline_symbols_from_params(&serde_json::json!({ "baselineSymbols": 7 })).is_empty()
+        );
     }
 
     #[test]
@@ -382,7 +384,11 @@ mod tests {
             ]
         });
         let parsed = baseline_symbols_from_params(&params);
-        assert_eq!(parsed.len(), 1, "malformed entry must be skipped: {parsed:?}");
+        assert_eq!(
+            parsed.len(),
+            1,
+            "malformed entry must be skipped: {parsed:?}"
+        );
         assert_eq!(parsed[0].name, "My CU");
     }
 
@@ -413,7 +419,9 @@ mod tests {
         let arr = resp.result.expect("result");
         let changes = arr.as_array().expect("array");
         assert!(
-            changes.iter().any(|c| c["kind"] == "objectRemoved" && c["object"] == "Old CU"),
+            changes
+                .iter()
+                .any(|c| c["kind"] == "objectRemoved" && c["object"] == "Old CU"),
             "removed object must be reported: {changes:?}"
         );
     }
@@ -422,7 +430,8 @@ mod tests {
     fn breaking_changes_detects_removed_procedure_from_baseline() {
         // A5: object survives but a public procedure was removed.
         let ws = empty_ws();
-        ws.symbols.add_entries_owned(vec![codeunit("My CU", vec![])]);
+        ws.symbols
+            .add_entries_owned(vec![codeunit("My CU", vec![])]);
         let baseline = vec![codeunit("My CU", vec![public_method("DoWork")])];
         let resp = dispatch_breaking_changes(&ws, 3, &params_with_baseline(&baseline));
         let arr = resp.result.expect("result");
