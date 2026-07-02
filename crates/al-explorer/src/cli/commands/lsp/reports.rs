@@ -238,9 +238,14 @@ pub fn cmd_breaking_changes(baseline_app: Option<&str>, json: bool) -> ExitCode 
         }
         if changes.is_empty() {
             if baseline_provided {
-                println!("No breaking changes detected (against {}).", baseline_app.unwrap());
+                println!(
+                    "No breaking changes detected (against {}).",
+                    baseline_app.unwrap()
+                );
             } else {
-                println!("Not evaluated: no baseline supplied, so no breaking changes could be detected.");
+                println!(
+                    "Not evaluated: no baseline supplied, so no breaking changes could be detected."
+                );
             }
         } else {
             for c in &changes {
@@ -370,9 +375,14 @@ pub fn cmd_upgrade_report(baseline_app: Option<&str>, json: bool) -> ExitCode {
         }
         if issues.is_empty() {
             if baseline_provided {
-                println!("No upgrade issues found (against {}).", baseline_app.unwrap());
+                println!(
+                    "No upgrade issues found (against {}).",
+                    baseline_app.unwrap()
+                );
             } else {
-                println!("Not evaluated: no baseline supplied, so no upgrade issues could be detected.");
+                println!(
+                    "Not evaluated: no baseline supplied, so no upgrade issues could be detected."
+                );
             }
         } else {
             for i in &issues {
