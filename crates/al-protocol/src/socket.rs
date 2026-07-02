@@ -61,44 +61,48 @@ fn runtime_dir() -> Option<String> {
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
         return Some(dir);
     }
+    platform_runtime_dir()
+}
 
-    #[cfg(target_os = "linux")]
-    {
-        let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        for line in status.lines() {
-            // "Uid:\t<ruid>\t<euid>\t<suid>\t<fsuid>"
-            if let Some(rest) = line.strip_prefix("Uid:") {
-                let uid = rest.split_whitespace().next()?;
-                let _: u64 = uid.parse().ok()?;
-                return Some(format!("/run/user/{uid}"));
-            }
+/// Linux: `/run/user/<uid>`, with the uid read from `/proc/self/status`
+/// (avoids calling `getuid()` via FFI).
+#[cfg(target_os = "linux")]
+fn platform_runtime_dir() -> Option<String> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        // "Uid:\t<ruid>\t<euid>\t<suid>\t<fsuid>"
+        if let Some(rest) = line.strip_prefix("Uid:") {
+            let uid = rest.split_whitespace().next()?;
+            let _: u64 = uid.parse().ok()?;
+            return Some(format!("/run/user/{uid}"));
         }
-        return None;
     }
+    None
+}
 
-    // macOS: the OS already provisions a private, per-user, per-session temp
-    // directory in `$TMPDIR` (e.g. `/var/folders/xx/yyyy/T/`) — the closest
-    // equivalent to Linux's `/run/user/<uid>`. `XDG_RUNTIME_DIR` is a
-    // Linux/freedesktop convention that's normally unset on macOS, so relying
-    // on it alone made the daemon (and everything routed through it —
-    // al-explorer, MCP, Zed daemon-backed tasks) fail outright on macOS.
+/// Non-Linux Unix. macOS: the OS already provisions a private, per-user,
+/// per-session temp directory in `$TMPDIR` (e.g. `/var/folders/xx/yyyy/T/`) —
+/// the closest equivalent to Linux's `/run/user/<uid>`. `XDG_RUNTIME_DIR` is a
+/// Linux/freedesktop convention that's normally unset on macOS, so relying on
+/// it alone made the daemon (and everything routed through it — al-explorer,
+/// MCP, Zed daemon-backed tasks) fail outright on macOS.
+///
+/// Last-resort fallback (any other Unix, or macOS without `$TMPDIR` set): a
+/// per-user subdirectory of the system temp dir, so unrelated users on a
+/// shared host don't collide on the same path. `ensure_private_dir`
+/// (daemon/mod.rs) still re-asserts 0o700 on the final `al-lsp` directory and
+/// fails loudly if it's owned by someone else, so this doesn't weaken the
+/// single-owner guarantee even if the temp dir itself is world-writable.
+#[cfg(not(target_os = "linux"))]
+fn platform_runtime_dir() -> Option<String> {
     #[cfg(target_os = "macos")]
-    {
-        if let Ok(dir) = std::env::var("TMPDIR") {
-            let trimmed = dir.trim_end_matches('/');
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
+    if let Ok(dir) = std::env::var("TMPDIR") {
+        let trimmed = dir.trim_end_matches('/');
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
         }
     }
 
-    // Last-resort fallback for any other Unix (or macOS without `$TMPDIR`
-    // set, which shouldn't normally happen): a per-user subdirectory of the
-    // system temp dir, so unrelated users on a shared host don't collide on
-    // the same path. `ensure_private_dir` (daemon/mod.rs) still re-asserts
-    // 0o700 on the final `al-lsp` directory and fails loudly if it's owned by
-    // someone else, so this doesn't weaken the single-owner guarantee even
-    // if the temp dir itself is world-writable.
     let user = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .ok()?;
