@@ -641,10 +641,10 @@ chased in `resolution.rs`/`calls.rs` all turned out guarded.
 
 | Phase | Items | Gate |
 | --- | --- | --- |
-| 0. CI resuscitation | F1 (socket fix → land #11, #12, #13 in order), F2 (triggers/branch protection), F3 (toolchain pin) | All 5 CI jobs green on `dev`; feature-branch CI proven. **Do this before any other code change** — nothing below is verifiable until CI works. |
+| 0. CI resuscitation | F1 (socket fix → land #11, #12, #13 in order), F2 (triggers/branch protection), F3 (toolchain pin) | All 5 CI jobs green on `dev`; **after** F2's trigger/branch-protection change lands, a deliberate failure on a feature branch (or its PR) demonstrably blocks the merge — today `ci.yml` runs only on `main`/`dev`, so this gate is satisfied by the F2 change, not by current state. **Do this before any other code change** — nothing below is verifiable until CI works. |
 | 1. Correctness | C11 (data loss — do first), C25 (var params by value — the top interpreter fix), C17 (DAP breakpoint stall), C18/C19 (rename safety), C22 (object-index collision), C1, C2, C20, C24, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
 | 2. Truth surfaces | F5 (stale comments/docs/contradictions), F6 + C15 (DAP schema — re-verify per field, CodeLens, MCP command, tasks.json), C3 documentation | Each item verified at the layer `CLAUDE.md` requires (harness / editor screenshot). |
-| 3. Robustness | F7 (unwrap ratchet in al-lsp/al-protocol), F8 (zed_simulation fixture in CI, al-emit tests), C5, C7, C8, C12, C13, C14, F11 | Garbage-frame harness test green; zed_simulation running in CI; formatter idempotency fuzz green. |
+| 3. Robustness | F7 (unwrap ratchet in al-lsp/al-protocol), F8 (zed_simulation fixture in CI, al-emit tests), C5, C7, C8, C12, C13, C14, F11 | Garbage-frame harness test green; zed_simulation tests **executing** in CI (>0 run, 0 skipped for the fixture reason — requires F8's committed fixture and a real `AL_TEST_PROJECT_PATH`, since `ci.yml:70` currently sets it to `""` and the suite silently skips); formatter idempotency fuzz green. |
 | 4. Structure & docs | F9 (move-only splits), F10 (doc consolidation), F4 option 2/3 if option 1 was declined, C16 (finish the sweep) | Single tracker; no >2 000-line files; C16 sweep documented. |
 
 Ground rules for the agent (restating the repo's own guardrails, because two of the open PRs
