@@ -275,10 +275,10 @@ Direct source review of the core layers: `al-source` (all of `documents.rs`), `a
 `eval_stmt`/`dispatch`), `al-emit` (`method_id.rs`), `al-semantic` (`host.rs` FFI),
 `al-protocol` (`client.rs`, `socket.rs`), `al-symbols` (`oauth.rs`, `app_reader.rs`,
 `virtual_file.rs`), `al-analysis` (`resolution.rs`), `al-insight` (`calls.rs` hot spots),
-`al-project` (`toolchain.rs`). Not yet deep-read (carry the same method forward, see C10):
-`al-dap/bc_debug.rs` + `native_dap.rs`, `al-lsp` daemon `build_dispatch/*`, `workspace.rs`
-body, `al-syntax/formatting.rs` passes, `al-source/file_index.rs`, `al-test`, `al-workspace`,
-`al-explorer` TUI, `al-publish`/`al-bc` internals.
+`al-project` (`toolchain.rs`); second wave: `al-source/file_index.rs`,
+`al-syntax/formatting.rs` core loop, `al-lsp` `workspace.rs` init flow +
+daemon `build_dispatch/build.rs`, `al-dap/bc_debug.rs` plumbing, `al-bc` sanitizers,
+`al-explorer` TUI restore. Remaining files are enumerated in C16.
 
 ### C1 (P1) — Interpreter: mixed Integer/Decimal division is unsupported
 
@@ -390,14 +390,76 @@ emit a compile diagnostic instead of a silently wrong hash. **Verify:** unit tes
 `ß`-named method against a hash captured from `Hash.GetFNVHashCode` (or the
 `emit_differential.rs` harness when ALTool is available).
 
-### C10 (P2) — Finish the deep read with the same method
+### C11 (P1, data loss) — `rename_al_file_and_refresh` silently overwrites the destination
 
-The files listed as not-yet-read at the top of this section total ~15k lines, including the
-two largest modules in the repo (`bc_debug.rs`, `build_dispatch/*`). The implementing agent
-should sweep them with the same checklist used here: byte-vs-UTF-16 position math, lock
-scope across `.await`, blocking IO in async, unchecked indexing/`as` casts, protocol frames
-without bounds/deadlines, and BC-semantics fidelity for anything reimplementing runtime
-behavior. Findings feed the same fix/verify discipline as C1–C9.
+`al-lsp/src/server/daemon/build_dispatch/build.rs:608-620` calls `std::fs::rename(old, new)`
+with no destination-existence check; on Unix, rename silently replaces an existing file.
+Reachable from `dispatch_organize_files` (`build.rs:1067`): two files in the same directory
+whose objects normalize to the same `<Kind><Id>.<SanitizedName>.al` collide — and duplicate
+object definitions are a real-world state this project's own AL-NC001 native check exists to
+detect. Running `al organize-files` on such a workspace **destroys one of the two source
+files**. **Fix:** in `rename_al_file_and_refresh`, fail (or in organize-files, report a
+conflict row) when `new` exists and is not the same file; never overwrite. **Verify:** unit
+test with two colliding objects asserting both files survive and the response marks the
+conflict; `cli_smoke` covers the happy path.
+
+### C12 (P3) — `write_al_file_and_refresh` stomps open-document state
+
+`build.rs:595-607` calls `workspace.documents.open(uri, content)` for the written file,
+which resets the stored version to 0 (`documents.rs:210-225`). If the editor has that file
+open, the daemon-side write silently replaces the LSP-synced text and breaks the
+version/tree-cache pairing until the next `did_change`. **Fix:** only refresh the document
+store when the URI isn't already open, or route through an `apply_changes` full-replace so
+versioning stays monotonic; the file_index refresh is fine either way.
+
+### C13 (P3) — `file_index` torn-read guard defeated by equal-length texts
+
+`al-source/src/file_index.rs:143-165` detects a torn (text, tree) pair via
+`tree.root_node().end_byte() == text.len()`. A concurrent re-index after an edit that keeps
+the byte length identical (replacing one identifier character — common) passes the check
+with stale text and a fresh tree, yielding wrong byte-offset conversions downstream.
+**Fix:** version the pair — store `(generation, text)` and `(generation, tree)` from the
+same indexing pass (a single `AtomicU64` bumped in `index_from_result`) and compare
+generations instead of lengths.
+
+### C14 (P2) — The formatter is line-heuristic, with concrete misfire classes
+
+`al-syntax/src/formatting.rs` `format_al` is a line-based state machine (indent counters,
+`ends_with(" begin")`, label detection by trailing `:`), even though a tree-sitter CST is
+available in the same crate. Concrete misfires found by inspection: a `case` label
+containing `;`, `=`, `(`, `)` or `,` inside a quoted identifier or string label
+(`'a;b':`) is rejected by the label detector (`formatting.rs:211-219`) and mis-indented; a
+line *ending* in `begin` inside a trailing `//` comment triggers the var-section/block
+transitions (`:173,199`). The 60+ unit tests and idempotency suite protect common shapes,
+not these. **Fix (choose one):** (a) migrate the indent engine to walk the CST (the parse is
+already paid for elsewhere), or (b) keep the heuristic but exclude comment tails via the
+existing `has_line_comment_outside_strings` before state transitions, extend label detection
+to respect quoting, and add a fuzz-style idempotency test over the harness corpus.
+**Verify:** `format_al(format_al(x)) == format_al(x)` over the corpus plus fixtures for the
+two misfire classes.
+
+### C15 (P2, doc correction) — Gap A7's DAP-field list has drifted stale
+
+`Docs/gaps-and-future-work.md` A7 lists `sessionId` among schema fields "the native adapter
+does not consume" — but `bc_debug.rs:934-936` now forwards `config.session_id` in the
+`Attach` payload (and `breakOnNext` similarly). Meanwhile `useMcpServerForDebugging`,
+`snapshotFileName`, `profilingType`, `executionContext` remain genuinely unconsumed (zero
+grep hits in `al-dap`/`al-snapshot`). Any agent acting on A7 must re-verify **field by
+field** first, then fix the doc and the schema together.
+
+### C16 (P2) — Finish the deep read with the same method
+
+Covered in this pass beyond the first wave: `workspace.rs` init flow, `build_dispatch/build.rs`
+dispatchers, `bc_debug.rs` config/event plumbing (the try-lock drain + dedicated break
+channel design is sound), `file_index.rs`, `formatting.rs` core loop, `al-bc` error-body
+sanitizer (correct, including the non-rescrubbing loop), TUI terminal-restore. Still not
+deep-read: `native_dap.rs` body (~2.3k lines), `al-analysis/xliff.rs`, the remaining
+`al-insight` analyses, `al-analysis/queries/*` bodies, `al-test` engine internals,
+`oauth.rs` device-code/refresh flows, `al-publish`/`al-bc` HTTP paths. Sweep them with the
+same checklist: byte-vs-UTF-16 position math, lock scope across `.await`, blocking IO in
+async, unchecked indexing/`as` casts, protocol frames without bounds/deadlines, fs
+operations that can clobber existing files, and BC-semantics fidelity for anything
+reimplementing runtime behavior.
 
 ### What held up under scrutiny (no action)
 
@@ -417,10 +479,10 @@ chased in `resolution.rs`/`calls.rs` all turned out guarded.
 | Phase | Items | Gate |
 | --- | --- | --- |
 | 0. CI resuscitation | F1 (socket fix → land #11, #12, #13 in order), F2 (triggers/branch protection), F3 (toolchain pin) | All 5 CI jobs green on `dev`; feature-branch CI proven. **Do this before any other code change** — nothing below is verifiable until CI works. |
-| 1. Correctness | C1, C2, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
-| 2. Truth surfaces | F5 (stale comments/docs/contradictions), F6 (DAP schema, CodeLens, MCP command, tasks.json), C3 documentation | Each item verified at the layer `CLAUDE.md` requires (harness / editor screenshot). |
-| 3. Robustness | F7 (unwrap ratchet in al-lsp/al-protocol), F8 (zed_simulation fixture in CI, al-emit tests), C5, C7, C8, F11 | Garbage-frame harness test green; zed_simulation running in CI. |
-| 4. Structure & docs | F9 (move-only splits), F10 (doc consolidation), F4 option 2/3 if option 1 was declined, C10 (finish the sweep) | Single tracker; no >2 000-line files; C10 sweep documented. |
+| 1. Correctness | C11 (data loss — do first), C1, C2, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
+| 2. Truth surfaces | F5 (stale comments/docs/contradictions), F6 + C15 (DAP schema — re-verify per field, CodeLens, MCP command, tasks.json), C3 documentation | Each item verified at the layer `CLAUDE.md` requires (harness / editor screenshot). |
+| 3. Robustness | F7 (unwrap ratchet in al-lsp/al-protocol), F8 (zed_simulation fixture in CI, al-emit tests), C5, C7, C8, C12, C13, C14, F11 | Garbage-frame harness test green; zed_simulation running in CI; formatter idempotency fuzz green. |
+| 4. Structure & docs | F9 (move-only splits), F10 (doc consolidation), F4 option 2/3 if option 1 was declined, C16 (finish the sweep) | Single tracker; no >2 000-line files; C16 sweep documented. |
 
 Ground rules for the agent (restating the repo's own guardrails, because two of the open PRs
 violated them under environment pressure):
