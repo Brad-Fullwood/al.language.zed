@@ -552,9 +552,14 @@ extractor is line-heuristic like C14's formatter and shares that fragility class
 Wave 5 additionally covered: `references.rs` (→ C21), `definition.rs` object lookup (→ C22),
 `tokens.rs` semantic-token extraction (clean — UTF-16-correct columns/lengths, safe delta
 encoding, CRLF handling documented and right), `al-publish` compile/upload flow (clean;
-minor: upload treats a missing status as success). Still not deep-read: `completions.rs`
-body, the remaining `al-insight` analyses, `al-test` engine internals
-(`session.rs`/`router.rs`/`mutate.rs` bodies), `al-snapshot`. Sweep them with the
+minor: upload treats a missing status as success). Wave 6 closed out the sweep: `completions.rs` (clean; cosmetic nit — type-position
+completions always quote object names), `al-test` `router.rs` (clean, and notably
+well-designed: conservative routing that promotes doubtful tests toward the more capable
+backend, with honest `AffectedMode` fallback reporting), `al-snapshot` (thin bridge over the
+reviewed `bc_debug` session). Every crate has now been read at meaningful depth; the
+remaining unread lines are analysis-query bodies and `al-insight` scanners whose failure
+mode is a wrong report, not corruption — sweep them opportunistically when touching those
+features.rs`/`router.rs`/`mutate.rs` bodies), `al-snapshot`. Sweep them with the
 same checklist: byte-vs-UTF-16 position math, lock scope across `.await`, blocking IO in
 async, unchecked indexing/`as` casts, protocol frames without bounds/deadlines, fs
 operations that can clobber existing files, and BC-semantics fidelity for anything
