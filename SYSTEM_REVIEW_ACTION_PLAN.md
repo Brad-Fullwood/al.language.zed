@@ -447,13 +447,29 @@ does not consume" — but `bc_debug.rs:934-936` now forwards `config.session_id`
 grep hits in `al-dap`/`al-snapshot`). Any agent acting on A7 must re-verify **field by
 field** first, then fix the doc and the schema together.
 
+### C17 (P1) — Native DAP: BC break events stall while the adapter waits on stdin
+
+`al-dap/src/dap/native_dap.rs:1215-1231`: the main loop drains the BC-event channel with
+`try_recv()` **only before** blocking on `read_dap_body(&mut stdin)`. The background
+forwarder (`spawn_event_forwarder`, `:1082`) correctly converts SignalR `Break` pushes into
+DAP `stopped` frames and queues them — but nothing wakes the loop to write them to stdout.
+After a `continue`/`launch`, the DAP client sends nothing and waits for `stopped`; the
+adapter is parked on stdin; the `stopped` event sits in the channel. The debugger appears to
+hang at every breakpoint until unrelated client traffic (or a client timeout) arrives.
+**Fix:** replace the sequential drain-then-read with `tokio::select!` over
+`read_dap_body(...)` and `dap_event_rx.recv()` (write whichever completes; loop), or move
+all stdout writing into a single writer task fed by both responses and events. **Verify:**
+harness test driving the adapter over pipes — set a breakpoint, emit a synthetic Break via
+the session mock, assert the `stopped` frame arrives on stdout *without* sending another
+client request first.
+
 ### C16 (P2) — Finish the deep read with the same method
 
 Covered in this pass beyond the first wave: `workspace.rs` init flow, `build_dispatch/build.rs`
 dispatchers, `bc_debug.rs` config/event plumbing (the try-lock drain + dedicated break
 channel design is sound), `file_index.rs`, `formatting.rs` core loop, `al-bc` error-body
 sanitizer (correct, including the non-rescrubbing loop), TUI terminal-restore. Still not
-deep-read: `native_dap.rs` body (~2.3k lines), `al-analysis/xliff.rs`, the remaining
+deep-read: `al-analysis/xliff.rs`, the remaining
 `al-insight` analyses, `al-analysis/queries/*` bodies, `al-test` engine internals,
 `oauth.rs` device-code/refresh flows, `al-publish`/`al-bc` HTTP paths. Sweep them with the
 same checklist: byte-vs-UTF-16 position math, lock scope across `.await`, blocking IO in
@@ -479,7 +495,7 @@ chased in `resolution.rs`/`calls.rs` all turned out guarded.
 | Phase | Items | Gate |
 | --- | --- | --- |
 | 0. CI resuscitation | F1 (socket fix → land #11, #12, #13 in order), F2 (triggers/branch protection), F3 (toolchain pin) | All 5 CI jobs green on `dev`; feature-branch CI proven. **Do this before any other code change** — nothing below is verifiable until CI works. |
-| 1. Correctness | C11 (data loss — do first), C1, C2, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
+| 1. Correctness | C11 (data loss — do first), C17 (DAP breakpoint stall), C1, C2, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
 | 2. Truth surfaces | F5 (stale comments/docs/contradictions), F6 + C15 (DAP schema — re-verify per field, CodeLens, MCP command, tasks.json), C3 documentation | Each item verified at the layer `CLAUDE.md` requires (harness / editor screenshot). |
 | 3. Robustness | F7 (unwrap ratchet in al-lsp/al-protocol), F8 (zed_simulation fixture in CI, al-emit tests), C5, C7, C8, C12, C13, C14, F11 | Garbage-frame harness test green; zed_simulation running in CI; formatter idempotency fuzz green. |
 | 4. Structure & docs | F9 (move-only splits), F10 (doc consolidation), F4 option 2/3 if option 1 was declined, C16 (finish the sweep) | Single tracker; no >2 000-line files; C16 sweep documented. |
