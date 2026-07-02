@@ -584,6 +584,23 @@ add `Eval::Break` (and `Continue` if the grammar has it), handle in the loop eva
 it), and error if it escapes a loop. **Verify:** loop fixtures with early `break` matching
 BC-observed iteration counts.
 
+### C26 (P2) — Dead-code analysis flags every event subscriber as High-confidence dead
+
+`al-analysis/src/queries/dead_code.rs`: `find_unused_procedures` skips event **publishers**
+(`has_event_attribute`, `:415-450`, matches only `integrationevent`/`businessevent`) but not
+`[EventSubscriber]` procedures. Subscribers are conventionally declared `local procedure`
+and are invoked by the event system, never by a direct call — so with zero textual call
+sites each one is reported as **High confidence** ("provably unreachable within AL
+semantics"). Subscriber codeunits are the single most common BC extension pattern; `al
+dead-code` currently tells users to delete their event wiring with maximum confidence. The
+module itself parses the `EventSubscriber` attribute two functions later
+(`find_orphaned_subscribers`, `:629`) — the exclusion just isn't shared. `[Test]`
+procedures (runner-invoked) similarly land as Medium-confidence noise. **Fix:** extend the
+attribute check (or a sibling) to skip `eventsubscriber`- and `test`-attributed procedures
+from the unused-procedure pass (they remain covered by `find_orphaned_subscribers` for the
+genuinely-orphaned case). **Verify:** unit test — a local `[EventSubscriber]` with no direct
+calls must NOT appear in results; an orphaned one must still appear via PublisherRemoved.
+
 ### C16 (P2) — Finish the deep read with the same method
 
 Covered beyond the first wave: `workspace.rs` init flow, `build_dispatch/build.rs`
@@ -642,7 +659,7 @@ chased in `resolution.rs`/`calls.rs` all turned out guarded.
 | Phase | Items | Gate |
 | --- | --- | --- |
 | 0. CI resuscitation | F1 (socket fix → land #11, #12, #13 in order), F2 (triggers/branch protection), F3 (toolchain pin) | All 5 CI jobs green on `dev`; **after** F2's trigger/branch-protection change lands, a deliberate failure on a feature branch (or its PR) demonstrably blocks the merge — today `ci.yml` runs only on `main`/`dev`, so this gate is satisfied by the F2 change, not by current state. **Do this before any other code change** — nothing below is verifiable until CI works. |
-| 1. Correctness | C11 (data loss — do first), C25 (var params by value — the top interpreter fix), C17 (DAP breakpoint stall), C18/C19 (rename safety), C22 (object-index collision), C1, C2, C20, C24, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
+| 1. Correctness | C11 (data loss — do first), C25 (var params by value — the top interpreter fix), C17 (DAP breakpoint stall), C18/C19 (rename safety), C22 (object-index collision), C1, C2, C20, C24, C4, C6 (interpreter semantics + LSP text-store bugs), C26 (dead-code subscriber false positives); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
 | 2. Truth surfaces | F5 (stale comments/docs/contradictions), F6 + C15 (DAP schema — re-verify per field, CodeLens, MCP command, tasks.json), C3 documentation | Each item verified at the layer `CLAUDE.md` requires (harness / editor screenshot). |
 | 3. Robustness | F7 (unwrap ratchet in al-lsp/al-protocol), F8 (zed_simulation fixture in CI, al-emit tests), C5, C7, C8, C12, C13, C14, F11 | Garbage-frame harness test green; zed_simulation tests **executing** in CI (>0 run, 0 skipped for the fixture reason — requires F8's committed fixture and a real `AL_TEST_PROJECT_PATH`, since `ci.yml:70` currently sets it to `""` and the suite silently skips); formatter idempotency fuzz green. |
 | 4. Structure & docs | F9 (move-only splits), F10 (doc consolidation), F4 option 2/3 if option 1 was declined, C16 (finish the sweep) | Single tracker; no >2 000-line files; C16 sweep documented. |
