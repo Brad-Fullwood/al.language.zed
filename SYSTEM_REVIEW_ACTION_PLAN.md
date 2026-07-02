@@ -657,3 +657,55 @@ violated them under environment pressure):
    `/run-al-extension-in-zed` with the screenshot actually inspected.
 3. One concern per PR into `dev`; keep fmt-only sweeps separate from logic changes.
 4. Anything touching publish/marketplace or external services: confirm with the user first.
+
+---
+
+## 5. Appendix — file-by-file coverage statement (2026-07-02, final)
+
+All **236 non-test source files** across the 21 crates and the extension were visited.
+Depth tiers:
+
+- **Deep-read (~40 files):** every file cited in findings C1–C25, plus `documents.rs`,
+  `file_index.rs`, `lsp.rs`, `socket.rs`, `client.rs`, `oauth.rs`, `app_reader.rs`,
+  `nuget.rs`, `host.rs`, `bridge.rs` (structure), `eval_expr/eval_stmt/dispatch/value`,
+  `mock/record.rs`, `mock/filter.rs` (tokenizer), `method_id.rs`, `package.rs`,
+  `rename/references/definition/completions/signature`, `tokens.rs`, `navigation.rs`,
+  `type_resolver.rs`, `symbols.rs`, `workspace.rs` (init), `build.rs` (daemon),
+  `bc_debug.rs` (plumbing), `native_dap.rs` (loop), `daemon/mod.rs`, `src/lib.rs` +
+  `src/settings.rs` (extension), `formatting.rs` (core loop + brace pass).
+- **Structurally mapped + pattern-swept (the rest):** function-level maps plus a
+  production-code scan for the defect classes this review surfaced (unguarded
+  indexing/unwraps, fs clobbering, byte-vs-UTF-16 slicing, unsafe, credential logging).
+  **Every flagged site was manually verified**; all were either guarded or inside
+  `#[cfg(test)]` modules. Files in this tier: all remaining `al-analysis` queries and
+  `code_actions/*`, `al-insight` (`graph`/`search`/`calls` tail), `al-emit`
+  (`assemble`/`symbol_reference`/`symbol_extract`/`manifest`/`project`), `al-compile`,
+  `al-bc` (`launch`/`profiling`/`http_auth`/`bc_client`), `al-dap`
+  (`native_debug`/`config`/`framing`), `al-runtime` (`scope`/`coverage`/`stubs`/
+  `calcformula_parser`), `al-test` (all), `al-workspace`, `al-project`, `al-symbols`
+  (`model`/`index`/`source_index`/`app_inspect`/`bc_server`/`events`/`composition`/
+  `manifest`/`cache`), `al-snapshot`, `al-protocol` (`jsonrpc`), `al-types`, all of
+  `al-explorer` (incl. TUI panic-hook terminal restore — correct), the daemon dispatch
+  modules (`lsp_dispatch`/`debug_dispatch`/`insight_dispatch`/`codegen`/`xliff`/`fixes`/
+  `symbols_auth`), `dap_mode/*`, `mcp.rs`, and `al-test-harness/src/lib.rs`.
+
+Notable confirmations from the final tail (no new defects):
+
+- `al-symbols/index.rs` models same-name/different-kind objects **correctly**
+  (`by_name → Vec<Arc<SymbolEntry>>` with an explicit comment) — C22's fix should mirror
+  this design in `file_index`.
+- `daemon/build_dispatch/codegen.rs` `dispatch_generate` has object-ID **collision
+  guards with tests** — exactly the discipline `dispatch_organize_files` (C11) lacks;
+  reuse the pattern.
+- `scaffold.rs` ships a correct `atomic_write` (tmp + rename + cleanup-on-error) and an
+  app.json-exists guard against scaffolding over an existing project.
+- `permissions.rs` `writeln!`-to-String unwraps are infallible (`fmt::Write`); the
+  `windows(2)` indexing in `duplicates.rs` and the GUID indexing in `scaffold.rs` are
+  bounds-safe by construction; `apply_brace_style`'s `out.last().unwrap()` is guarded by
+  the preceding `do_merge` check.
+- Multi-line `Label` declarations are missed by `symbols.rs`'s line-based label scan —
+  one more member of the C14 line-heuristic family.
+
+Residual risk after this pass: logic-level defects in the ~30 largest analysis/insight
+query bodies that a pattern sweep cannot catch (wrong report content rather than crashes
+or corruption). Surfacing those requires fixture-driven testing (F8), not more reading.
