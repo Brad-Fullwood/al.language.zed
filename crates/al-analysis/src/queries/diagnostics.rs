@@ -26,7 +26,7 @@ pub struct SyntaxDiagnostic {
     /// Source range (0-indexed lines, UTF-16 code unit columns — LSP-ready).
     pub range: crate::queries::Range,
     pub severity: SyntaxDiagnosticSeverity,
-    /// Diagnostic code, e.g. `"syntax"` or `"AL-L001"`.
+    /// Diagnostic code, e.g. `"syntax"` or `"AL-NL001"`.
     pub code: String,
     /// Source label, e.g. `"al"` or `"al-lint"`.
     pub source: String,
@@ -38,11 +38,10 @@ pub struct SyntaxDiagnostic {
 /// to a direct parse on a cache miss so callers that pre-populate the store
 /// (e.g. `did_open` / `did_change`) get a zero-cost cache hit.
 ///
-/// Lint results are filtered by `config.is_lint_rule_enabled`. Note:
-/// `al_syntax::lint()` is currently a stub that always returns an empty
-/// `Vec` — all AL diagnostics surfaced today come from the syntax-error
-/// pass on the parse tree, not from native lint rules. The lint-filter
-/// branch remains for forward-compatibility with the planned rule engine.
+/// Lint results are filtered by `config.is_lint_rule_enabled`.
+/// `al_syntax::lint()` runs a small native rule set (AL-NL001, AL-NL002) in
+/// addition to the syntax-error pass on the parse tree; most AL diagnostics
+/// still come from the semantic CodeAnalysis bridge, not from native lint.
 ///
 /// Returns a transport-agnostic `Vec<SyntaxDiagnostic>`. The caller is
 /// responsible for converting to LSP `Diagnostic` values.

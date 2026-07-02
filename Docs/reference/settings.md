@@ -39,8 +39,8 @@ Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
 
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
-| `al.enableNativeLint` | boolean | `true` | ⛔ inert (native lint engine not implemented) |
-| `al.nativeLintRules` | object | `{}` | ⛔ inert |
+| `al.enableNativeLint` | boolean | `true` | ✅ wired (starter set: AL-NL001, AL-NL002) |
+| `al.nativeLintRules` | object | `{}` | ✅ wired (per-rule override) |
 
 ## Symbols & packages
 

@@ -1,6 +1,6 @@
 # Language Server (LSP)
 
-**Modules:** `crates/al-core/src/server/` (transport) + `crates/al-core/src/queries/` (logic) ·
+**Modules:** `crates/al-lsp/src/server/` (transport) + `crates/al-analysis/src/queries/` (logic) ·
 **Status:** ✅ shipped
 
 `al-lsp --stdio` is a native, Rust language server speaking LSP over stdio. The editor LSP path uses

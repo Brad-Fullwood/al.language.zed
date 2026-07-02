@@ -81,7 +81,7 @@
     "al.enableNativeLint": {
       "type": "boolean",
       "default": true,
-      "description": "Reserved for future native AL lint rules. The setting is parsed for compatibility, but native lint diagnostics are currently inert; diagnostics come from syntax parsing and the semantic CodeAnalysis bridge."
+      "description": "Enable native AL lint rules (a small starter set: AL-NL001 FindFirst/FindLast in a loop, AL-NL002 table field missing DataClassification). Most AL diagnostics still come from syntax parsing and the semantic CodeAnalysis bridge; native lint is a separate, additive set."
     },
     "al.nativeLintRules": {
       "type": "object",
@@ -89,8 +89,8 @@
         "type": "boolean"
       },
       "default": {},
-      "description": "Reserved per-rule enable/disable overrides for future native lint rules. Key is a rule code (e.g. 'AL-L001'). Parsed for compatibility but currently inert.",
-      "examples": [{ "AL-L001": false }]
+      "description": "Per-rule enable/disable overrides for native lint rules. Key is a rule code (e.g. 'AL-NL001'). Only takes effect when al.enableNativeLint is true.",
+      "examples": [{ "AL-NL001": false }]
     },
     "al.packageCachePath": {
       "type": ["string", "null"],

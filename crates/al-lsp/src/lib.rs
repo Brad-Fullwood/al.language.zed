@@ -1,13 +1,15 @@
-//! al-core: Central engine for AL language analysis.
+//! al-lsp: the language-server binary crate (LSP / daemon / MCP / DAP modes).
 //!
-//! Owns all state, queries, and orchestration. The `al-lsp` binary lives at
-//! `src/bin/al-lsp.rs` inside this crate; `al-explorer` consumes it through
-//! the daemon over `al-protocol`.
-//!
-//! Internal layers are organised as modules — `syntax`, `symbols`, `semantic`,
-//! `dap`, `server`, `queries`, `insight` — not standalone crates. The legacy
-//! `al-syntax` / `al-symbols` / `al-semantic` / `al-cli` / `al-dap-client`
-//! crate names are gone (consolidated April 2026).
+//! The engine itself is split across standalone crates (`al-syntax`,
+//! `al-symbols`, `al-semantic`, `al-analysis`, `al-insight`, `al-emit`,
+//! `al-compile`, `al-runtime`, `al-workspace`, `al-project`, `al-bc`,
+//! `al-source`, `al-dap`, `al-publish` — see `Docs/01-architecture.md` for the
+//! full layering). This crate hosts the `al-lsp` binary
+//! (`src/bin/al-lsp.rs`) and re-exports those crates under their pre-split
+//! module names below (`crate::syntax`, `crate::symbols`, `crate::build`,
+//! …) so internal call sites written before the crate split keep resolving
+//! without a large mechanical rename. `al-explorer` talks to this binary
+//! through the daemon over `al-protocol`.
 
 // Business Central client layer is the standalone `al-bc` crate; re-export its
 // modules so existing crate::{bc_client,http_auth,launch,profiling,snapshot}::…
@@ -16,13 +18,13 @@ pub use al_bc::{bc_client, http_auth, launch, profiling, snapshot};
 pub use al_symbols as symbols;
 // Project discovery, workspace config, and the error hierarchy now live in the
 // standalone `al-project` crate; re-export so crate::{project,config,errors}::…
-// keep resolving. (`toolchain` stays a thin al-core facade module — see
+// keep resolving. (`toolchain` stays a thin al-lsp facade module — see
 // src/toolchain.rs — that re-exports al_project::toolchain::* and parks the
 // Workspace-coupled `doctor()`.)
 pub use al_dap::{dap, native_debug};
 pub use al_project::{config, errors, project};
-// (place near the existing `pub use al_bc::{...}` re-export block; this keeps
-// crate::dap::… , crate::native_debug::… and al_core::dap::… resolving)
+// Keeps crate::dap::… and crate::native_debug::… resolving for call sites
+// written before al-dap was split out.
 pub use al_analysis::{generators, permissions, queries, resolution, scaffold, xliff};
 pub use al_compile as build;
 pub use al_emit as emit;
@@ -40,7 +42,7 @@ pub mod toolchain;
 
 // Re-exports for al-lsp (thin transport layer should not depend on analysis libs)
 
-/// LSP-bridge helpers: kept outside `al_core::syntax` so the syntax module stays free of `tower_lsp` references.
+/// LSP-bridge helpers: kept outside `crate::syntax` so the syntax module stays free of `tower_lsp` references.
 pub mod syntax_lsp {
     pub fn ts_range_to_lsp(
         range: &tree_sitter::Range,
@@ -55,7 +57,7 @@ pub mod syntax_lsp {
 }
 
 #[cfg(test)]
-#[allow(clippy::items_after_test_module)] // crate re-export facades follow (al-core->al-lsp rename)
+#[allow(clippy::items_after_test_module)] // crate re-export facades follow (pre-split module names re-exported for compatibility)
 pub mod ts {
     pub use tree_sitter::{Point, Range, Tree};
 }

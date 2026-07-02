@@ -1,6 +1,6 @@
 # Native `.app` Emitter & Build Pipeline
 
-**Modules:** `crates/al-core/src/emit/` (emitter) + `build.rs`, `publish.rs`, `toolchain.rs`,
+**Modules:** `crates/al-emit/src/` (emitter) + `build.rs`, `publish.rs`, `toolchain.rs`,
 `launch.rs`, `config.rs` · **Status:** ✅ shipped (default build path); `alc` fallback retained
 
 This is one of the project's headline differentiators: a **pure-Rust compiler back end** that

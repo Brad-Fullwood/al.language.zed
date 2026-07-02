@@ -1,6 +1,6 @@
 # Scaffolding & Code Generation
 
-**Modules:** `crates/al-core/src/scaffold.rs`, `generators.rs`, `permissions.rs` ·
+**Modules:** `crates/al-analysis/src/scaffold.rs`, `generators.rs`, `permissions.rs` ·
 **Status:** ✅ shipped (object generators not yet exposed as commands)
 
 The toolchain can create whole AL projects, generate common objects from existing symbols, and emit

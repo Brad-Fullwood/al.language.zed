@@ -1,6 +1,6 @@
 # Parsing & Syntax Engine
 
-**Module:** `crates/al-core/src/syntax/` · **Status:** ✅ shipped (formatter & lint have gaps, noted below)
+**Module:** `crates/al-syntax/src/` · **Status:** ✅ shipped (formatter & lint have gaps, noted below)
 
 The syntax layer is the foundation everything else stands on. It wraps the bundled `tree-sitter-al`
 grammar and turns parse trees into the structured information that completions, hover, definitions,

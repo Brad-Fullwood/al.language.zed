@@ -1,6 +1,6 @@
 # Symbol & Package Engine
 
-**Module:** `crates/al-core/src/symbols/` · **Status:** ✅ shipped
+**Module:** `crates/al-symbols/src/` · **Status:** ✅ shipped
 
 The symbol engine is why this project can answer advanced AL questions (search, completion, object
 lookup, event discovery, impact) as ordinary in-memory queries instead of repeatedly invoking the

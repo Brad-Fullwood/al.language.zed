@@ -92,7 +92,8 @@ install: build
 # Bridge not initialized" on every semantic request. Copying decouples the
 # installed binary from cargo's shared output path. The bridge dir is copied
 # alongside so it also resolves via host.rs Strategy 2 (<exe-dir>/bridge/) even
-# after `cargo clean`. Run this after editing al-core to refresh Zed's binary.
+# after `cargo clean`. Run this after editing al-lsp (or any crate it depends
+# on) to refresh Zed's binary.
 install-lsp:
 	@echo "=== Rebuild + reinstall semantic al-lsp ==="
 	cargo build -p al-lsp --bin al-lsp --features semantic

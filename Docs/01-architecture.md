@@ -11,9 +11,15 @@ lives in `crates/`.
 ```
 zed-al  (root package, src/)            WASM extension for Zed (cdylib → wasm32-wasip1)
 crates/
-  al-core/                              THE ENGINE. All state, queries, build, symbols, tests, DAP.
+  al-lsp/                                The language-server binary crate.
     src/bin/al-lsp.rs                   The al-lsp binary entry point (LSP / daemon / mcp / dap modes)
-    bridge/Bridge.cs, AlBridge.csproj   The .NET CodeAnalysis bridge (feature = "semantic")
+  al-semantic/                           The .NET CodeAnalysis bridge (feature = "semantic")
+    bridge/Bridge.cs, AlBridge.csproj
+  al-types, al-syntax, al-source, al-symbols, al-analysis, al-insight, al-emit,
+  al-compile, al-runtime, al-workspace, al-project, al-bc, al-dap, al-publish
+                                         Layered library crates — the actual engine. See the crate
+                                         map below and Docs/architecture.md for the full dependency
+                                         graph (derived directly from Cargo.toml).
   al-protocol/                          Daemon JSON-RPC types + Unix-socket client (al-explorer ↔ daemon)
   al-explorer/                          CLI + TUI companion (Unix-first)
   al-test-harness/                      End-to-end / fidelity / regression test harness
@@ -24,33 +30,35 @@ snippets/, themes/                      AL/JSON snippets and Business Central th
 docs/, examples/                        Settings reference, retirement plan, example settings
 ```
 
-A historical note from `crates/al-core/src/lib.rs`: the legacy `al-syntax` / `al-symbols` /
-`al-semantic` / `al-cli` / `al-dap-client` crates were **consolidated into `al-core` as modules**
-(April 2026). Today `al-core` is internally layered into modules — `syntax`, `symbols`, `semantic`,
-`dap`, `server`, `queries`, `insight`, `emit`, `test_engine`, `test_runtime` — not separate crates.
+The engine was originally one monolithic crate (`al-core`) and was later split into the layered
+crates above (see `Docs/redesign-crate-split-plan.md` for the historical rationale — that document
+describes the split *plan*, not the current state). `al-lsp` still re-exports several of these
+crates under their pre-split module names (`crate::syntax`, `crate::symbols`, `crate::build`, …) so
+call sites written before the split keep resolving; new code should depend on the real crates
+directly rather than through `al-lsp`'s re-exports.
 
-### `al-core` module map
+### Crate map
 
-| Module | Responsibility | Documented in |
+| Crate | Responsibility | Documented in |
 | --- | --- | --- |
-| `syntax/` | tree-sitter parsing, tokens, navigation, folding, formatting, complexity, sort | [parsing-and-syntax](./features/parsing-and-syntax.md) |
-| `queries/` | transport-agnostic LSP & analysis queries (hover, completion, definition, …, impact, dead_code, …) | [language-server](./features/language-server.md), [code-actions](./features/code-actions.md), [analysis-and-insight](./features/analysis-and-insight.md) |
-| `symbols/` | `.app` reading, symbol index, disk cache, composition, NuGet/server download, OAuth | [symbol-and-package-engine](./features/symbol-and-package-engine.md) |
-| `emit/` | pure-Rust `.app` (NAVX/ZIP) emitter, `SymbolReference.json`, method-id hashing | [native-app-emitter](./features/native-app-emitter.md) |
-| `semantic/` | the in-process .NET CodeAnalysis bridge | [semantic-bridge](./features/semantic-bridge.md) |
-| `insight/` | graph engine: call graph, event chains, entrypoints, impact | [analysis-and-insight](./features/analysis-and-insight.md) |
-| `dap/`, `native_debug.rs`, `bc_client.rs` | native debug adapter + BC SignalR/REST | [debugging-dap](./features/debugging-dap.md) |
-| `test_engine/`, `test_runtime/`, `test_runner.rs` | native interpreter, routing, mutation, coverage, live-BC backend | [native-test-runtime](./features/native-test-runtime.md) |
-| `server/` | LSP transport, daemon, MCP, DAP modes — the only place `tower_lsp` types appear | [language-server](./features/language-server.md), [daemon-protocol](./features/daemon-protocol.md), [ai-mcp](./features/ai-mcp.md) |
-| `build.rs`, `publish.rs`, `toolchain.rs`, `launch.rs`, `config.rs` | compile/publish orchestration, toolchain discovery, launch.json parsing, settings | [native-app-emitter](./features/native-app-emitter.md) |
-| `scaffold.rs`, `generators.rs`, `permissions.rs`, `xliff.rs` | project/object codegen, permission sets, translation | [scaffolding-and-codegen](./features/scaffolding-and-codegen.md), [xliff-translation](./features/xliff-translation.md) |
-| `workspace.rs`, `documents.rs`, `file_index.rs`, `parsing.rs` | the live workspace model and document store | this page |
+| `al-syntax` | tree-sitter parsing, tokens, navigation, folding, formatting, complexity, sort | [parsing-and-syntax](./features/parsing-and-syntax.md) |
+| `al-analysis` | transport-agnostic LSP & analysis queries (hover, completion, definition, …, impact, dead_code, …), plus scaffolding/codegen and XLIFF | [language-server](./features/language-server.md), [code-actions](./features/code-actions.md), [analysis-and-insight](./features/analysis-and-insight.md), [scaffolding-and-codegen](./features/scaffolding-and-codegen.md), [xliff-translation](./features/xliff-translation.md) |
+| `al-symbols` | `.app` reading, symbol index, disk cache, composition, NuGet/server download, OAuth | [symbol-and-package-engine](./features/symbol-and-package-engine.md) |
+| `al-emit` | pure-Rust `.app` (NAVX/ZIP) emitter, `SymbolReference.json`, method-id hashing | [native-app-emitter](./features/native-app-emitter.md) |
+| `al-semantic` | the in-process .NET CodeAnalysis bridge | [semantic-bridge](./features/semantic-bridge.md) |
+| `al-insight` | graph engine: call graph, event chains, entrypoints, impact | [analysis-and-insight](./features/analysis-and-insight.md) |
+| `al-dap` | native debug adapter + BC SignalR/REST | [debugging-dap](./features/debugging-dap.md) |
+| `al-test`, `al-runtime` | native interpreter, routing, mutation, coverage, live-BC backend | [native-test-runtime](./features/native-test-runtime.md) |
+| `al-lsp` (`src/server/`) | LSP transport, daemon, MCP, DAP modes — the only place `tower_lsp` types appear | [language-server](./features/language-server.md), [daemon-protocol](./features/daemon-protocol.md), [ai-mcp](./features/ai-mcp.md) |
+| `al-compile`, `al-publish`, `al-project` | compile/publish orchestration, toolchain discovery, launch.json parsing, settings | [native-app-emitter](./features/native-app-emitter.md) |
+| `al-workspace` | the live workspace model and document store | this page |
+| `al-source` | open-document store, on-disk file index, parse-tree caching | this page |
 
 ## Binaries
 
 ### `al-lsp`
 
-One binary, multiple modes, selected by argument (`crates/al-core/src/bin/al-lsp.rs`):
+One binary, multiple modes, selected by argument (`crates/al-lsp/src/bin/al-lsp.rs`):
 
 | Mode | Invocation | Purpose |
 | --- | --- | --- |
@@ -83,7 +91,7 @@ snippets, themes, and settings, and it resolves/downloads the `al-lsp` binary. S
 
 ```
                        ┌───────────────────────────────────────────────┐
-                       │                   al-core engine               │
+                       │              layered library crates (engine)   │
                        │  workspace · symbols · queries · build · tests │
                        │  insight · emit · dap · semantic bridge        │
                        └───────────────────────────────────────────────┘
@@ -112,7 +120,7 @@ Two important nuances:
 
 ## The transport-boundary rule
 
-A core design discipline (stated in `crates/al-core/src/server/mod.rs`):
+A core design discipline (stated in `crates/al-lsp/src/server/mod.rs`):
 
 > `crate::queries::*` returns transport-agnostic types; the `server` module is the **only** place in
 > the crate that imports `tower_lsp::lsp_types::*`.
@@ -129,15 +137,17 @@ where possible" north star.
 
 ## The live workspace model
 
-`Workspace` (`crates/al-core/src/workspace.rs`) is the shared, `Arc`-wrapped state every surface
+`Workspace` (`crates/al-workspace/src/lib.rs`) is the shared, `Arc`-wrapped state every surface
 reads from. Its key components:
 
-- **`DocumentStore`** (`documents.rs`) — open-document text as shared `Arc<String>`, with a bounded
-  parse-tree cache to cap memory.
-- **`FileIndex`** (`file_index.rs`) — the on-disk project model: file text, object metadata, parse
-  trees, document symbols, procedure definitions, event subscribers, and reverse indexes.
-- **`SymbolIndex`** (`symbols/index.rs`) — concurrent (DashMap) symbol index over `.app` packages,
-  with secondary indexes by name, kind+id, kind, extension target, and a composed-object cache.
+- **`DocumentStore`** (`al-source/src/documents.rs`) — open-document text as shared `Arc<String>`,
+  with a bounded parse-tree cache to cap memory.
+- **`FileIndex`** (`al-source/src/file_index.rs`) — the on-disk project model: file text, object
+  metadata, parse trees, document symbols, procedure definitions, event subscribers, and reverse
+  indexes.
+- **`SymbolIndex`** (`al-symbols/src/index.rs`) — concurrent (DashMap) symbol index over `.app`
+  packages, with secondary indexes by name, kind+id, kind, extension target, and a composed-object
+  cache.
 - **Insight / call graph** — built lazily from the symbol index + workspace source and cached, with
   invalidation keyed to edit kind (body-only vs. topology change).
 - **Semantic bridge handle** — lazily initialized .NET CodeAnalysis bridge (when built with

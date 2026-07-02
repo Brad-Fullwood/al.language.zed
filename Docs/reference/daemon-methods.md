@@ -44,5 +44,5 @@ Tests: `tests.discover`, `tests.run`, `tests.coverage`, `tests.run_batch`, `test
 - Unix-only (Unix domain socket at `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock`).
 
 > The exact parameter shapes for each method are defined at the call sites in
-> `crates/al-core/src/server/daemon/` and mirrored by the `al-explorer` CLI argument parsing; the CLI
+> `crates/al-lsp/src/server/daemon/` and mirrored by the `al-explorer` CLI argument parsing; the CLI
 > is the most convenient way to invoke any of these.

@@ -20,7 +20,10 @@ five surfaces that all share one engine:
 5. **Daemon** — a long-lived backend over a Unix socket that the CLI, MCP bridge, and Zed tasks
    all talk to.
 
-The single source of truth for analysis logic is the `al-core` crate. Zed, CLI, MCP, daemon, and
+The single source of truth for analysis logic is a set of layered library crates (`al-syntax`,
+`al-symbols`, `al-semantic`, `al-analysis`, `al-insight`, `al-emit`, `al-compile`, `al-runtime`,
+`al-workspace`, `al-project`, `al-bc`, `al-source`, `al-dap`, `al-publish` — see
+[01-architecture](./01-architecture.md)), hosted by the `al-lsp` binary. Zed, CLI, MCP, daemon, and
 LSP are thin transports over the same workspace, query, symbol, build, and test modules.
 
 ## The guiding idea

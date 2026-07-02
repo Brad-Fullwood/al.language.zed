@@ -1,7 +1,7 @@
 # Analysis & Insight Engine
 
-**Modules:** `crates/al-core/src/insight/` (graph engine) + analysis queries in
-`crates/al-core/src/queries/` · **Status:** ✅ shipped (a few items phase-gated, noted inline)
+**Modules:** `crates/al-insight/src/` (graph engine) + analysis queries in
+`crates/al-analysis/src/queries/` · **Status:** ✅ shipped (a few items phase-gated, noted inline)
 
 This is the largest source of "things Microsoft's extension doesn't ship." It is a graph-based code
 analysis engine plus a suite of specialized analyses, all available from the CLI (with `--json`), the
