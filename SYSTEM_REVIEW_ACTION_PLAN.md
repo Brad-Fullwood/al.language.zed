@@ -811,6 +811,14 @@ filename nit); record-store duplicate-key/modify-missing/delete/next-past-end se
 CopyStr clamping, empty `for` ranges, `exit(value)` from loops, `div`/`mod` signs, integer
 `+`/`-`/`*` i64-overflow trapping (but see C28 for the missing i32 bound).
 
+The daemon binary itself survives adversarial input (verified against the running
+`al-lsp daemon` over its Unix socket, 2026-07-03): a malformed JSON line returns a
+structured `-32700` error and the connection stays usable; a subsequent valid `status`
+request succeeds; a 2 MB line is rejected without killing the daemon, which answers the next
+request normally. The CLI (`al-explorer`) degrades gracefully on hostile inputs — empty
+file, 500 bytes of `/dev/urandom`, CRLF source, out-of-range and `u32::MAX` positions all
+produce clean "no result" messages with exit 0, no panic.
+
 The `.NET` FFI host (`al-semantic/src/host.rs`) is exemplary: null/negative/plausibility
 checks on the returned buffer, drop-guard freeing, correct safety comments. `al-source`'s
 snapshot discipline (`apply_changes_and_get`, `get_text_and_version`,
