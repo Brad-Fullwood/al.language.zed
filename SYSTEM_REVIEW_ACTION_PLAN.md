@@ -366,6 +366,10 @@ abort → spawn → store (single critical section).
 
 ### C6 (P2) — Text store: past-EOL clamp lands inside the line break
 
+> **EMPIRICALLY CONFIRMED (2026-07-03):** replacing (0,2)-(0,999) in `"hello\nworld\n"`
+> with `XX` yields `"heXXworld\n"` — the newline is swallowed and the lines join.
+
+
 `al-source/src/documents.rs:445–459` `position_to_offset` clamps an oversized `character`
 to `line_slice.len_utf16_cu()`, which **includes the trailing `\n`** — the regression test
 (`position_to_offset_clamps_overflow_character`, line 917) explicitly asserts landing past
@@ -499,6 +503,10 @@ each declaring `procedure Post()`; renaming one must not touch the other.
 
 ### C19 (P2) — Rename never validates the new name
 
+> **EMPIRICALLY CONFIRMED (2026-07-03):** renaming a local to `"my var with spaces"`
+> returns a WorkspaceEdit (1 file) — no rejection, broken code would be written.
+
+
 Neither `prepare_rename` nor `rename` (`rename.rs:8,30`) checks that `new_name` is a valid
 AL identifier. Renaming to `my var`, `2Start`, or a reserved keyword splices the raw string
 into every touched file — instant syntax errors workspace-wide (multiplied by C18's blast
@@ -509,6 +517,13 @@ variables cannot); return an LSP error for invalid names. **Verify:** unit tests
 space-containing, keyword, and empty new names.
 
 ### C20 (P2) — Record mock diverges from BC on `Init` and `Next`
+
+> **EMPIRICALLY CONFIRMED (2026-07-03):** `Item."No." := 'H1'; Item.Init(); Item.Insert();`
+> fails with `Insert: primary key field 1 has no value in current row`. Also confirmed:
+> `SetRange("No.", 'ABC')` does not match stored `'abc'` (the C2 filter leg). The rest of
+> the record engine probed correct: duplicate-key Insert errors, Modify-without-insert
+> errors, Delete→Get fails, Next-past-end returns 0.
+
 
 `al-runtime/src/mock/record.rs`:
 - `init()` (`:170-174`) clears the **entire** buffer. BC's `Init` explicitly preserves
@@ -541,6 +556,11 @@ with `includeDeclaration: false` — the declaration must be absent and the clic
 present.
 
 ### C22 (P1) — Object index collapses same-named objects of different types
+
+> **EMPIRICALLY CONFIRMED (2026-07-03):** with the page indexed after the table,
+> go-to-definition from `c: Record Customer` (cursor at token start) lands on
+> **page.al** — a Record reference navigating to a page.
+
 
 `al-source/src/file_index.rs:88,369`: `objects` maps **lowercase object name → one
 `PathBuf`**, last-write-wins. AL object names are unique **per object type** — `table
@@ -614,6 +634,10 @@ BC-observed iteration counts.
 
 ### C26 (P2) — Dead-code analysis flags every event subscriber as High-confidence dead
 
+> **EMPIRICALLY CONFIRMED (2026-07-03):** a local `[EventSubscriber]` procedure with no
+> direct calls is reported `("HandleThing", High)` by `dead_code()`.
+
+
 `al-analysis/src/queries/dead_code.rs`: `find_unused_procedures` skips event **publishers**
 (`has_event_attribute`, `:415-450`, matches only `integrationevent`/`businessevent`) but not
 `[EventSubscriber]` procedures. Subscribers are conventionally declared `local procedure`
@@ -667,6 +691,34 @@ the frame-setup (params + local binding) into a shared helper used by both paths
 **Verify:** the uninit-local fixture passes; existing `tests_records`/coverage suites stay
 green. Also noted in the same battery: `StrSubstNo('%1 %2', 'X')` leaves `%2` verbatim where
 BC substitutes blank — fold into C23's builtin-fidelity work.
+
+### C30 (P1) — Go-to-definition on `Record X` self-references or lands on the wrong kind
+
+Empirically (2026-07-03), with `table Customer` + `page Customer` + `c: Record Customer` in
+a workspace (page indexed last):
+
+- cursor **inside** the `Customer` token → definition returns **the cursor's own usage
+  site** (`/t/use.al` 4:18-26);
+- cursor at the token's **first character** → definition returns **the page**, not the table.
+
+Two stacked defects in `al-analysis/src/queries/definition.rs`:
+1. `is_object_modifier_target` (`:210`) recognizes only `object_modifier`/`implements_clause`
+   — the **type-subtype position of a variable declaration** (`Record X`, `Page X`,
+   `Codeunit X` — the most common object references in AL) is not treated as an object
+   name, so the early object-resolution stage never runs for unquoted single-word names.
+2. The last-resort "first same-file reference" fallback (`:115-125`) sits **above** the
+   workspace-object stage (`:129`) and its only guard is `range.start != position`, so it
+   returns the reference under the cursor itself whenever the cursor is not on the token's
+   first character — shadowing the object lookup entirely. When the cursor *is* at the first
+   character, the object stage runs and C22's kind-blind map picks whichever same-named
+   object indexed last.
+
+**Fix:** teach the object-name detection the type-subtype context (the node's parent chain
+includes the type reference — `al_syntax::type_resolver::parse_type_reference` already
+understands it); move the first-reference fallback **below** the workspace-object stage and
+exclude the node under the cursor from candidate refs; then C22's kind-keyed map makes the
+result kind-correct. **Verify:** the two probes above — mid-token and first-character cursor
+must both land on the **table**.
 
 ### C16 (P2) — Finish the deep read with the same method
 
@@ -726,7 +778,7 @@ chased in `resolution.rs`/`calls.rs` all turned out guarded.
 | Phase | Items | Gate |
 | --- | --- | --- |
 | 0. CI resuscitation | F1 (socket fix → land #11, #12, #13 in order), F2 (triggers/branch protection), F3 (toolchain pin) | All 5 CI jobs green on `dev`; **after** F2's trigger/branch-protection change lands, a deliberate failure on a feature branch (or its PR) demonstrably blocks the merge — today `ci.yml` runs only on `main`/`dev`, so this gate is satisfied by the F2 change, not by current state. **Do this before any other code change** — nothing below is verifiable until CI works. |
-| 1. Correctness | C11 (data loss — do first), C25 (var params by value — the top interpreter fix), C29 (test bodies skip local binding), C28 (Integer must trap 32-bit overflow), C17 (DAP breakpoint stall), C18/C19 (rename safety), C22 (object-index collision), C1, C2, C20, C24, C4, C6 (interpreter semantics + LSP text-store bugs), C26 (dead-code subscriber false positives), C27 (resurrect the 329 fixture assertions); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
+| 1. Correctness | C11 (data loss — do first), C25 (var params by value — the top interpreter fix), C29 (test bodies skip local binding), C28 (Integer must trap 32-bit overflow), C17 (DAP breakpoint stall), C18/C19 (rename safety), C22 (object-index collision), C1, C2, C20, C24, C4, C6 (interpreter semantics + LSP text-store bugs), C26 (dead-code subscriber false positives), C27 (resurrect the 329 fixture assertions), C30 (definition staging); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
 | 2. Truth surfaces | F5 (stale comments/docs/contradictions), F6 + C15 (DAP schema — re-verify per field, CodeLens, MCP command, tasks.json), C3 documentation | Each item verified at the layer `CLAUDE.md` requires (harness / editor screenshot). |
 | 3. Robustness | F7 (unwrap ratchet in al-lsp/al-protocol), F8 (zed_simulation fixture in CI, al-emit tests), C5, C7, C8, C12, C13, C14, F11 | Garbage-frame harness test green; zed_simulation tests **executing** in CI (>0 run, 0 skipped for the fixture reason — requires F8's committed fixture and a real `AL_TEST_PROJECT_PATH`, since `ci.yml:70` currently sets it to `""` and the suite silently skips); formatter idempotency fuzz green. |
 | 4. Structure & docs | F9 (move-only splits), F10 (doc consolidation), F4 option 2/3 if option 1 was declined, C16 (finish the sweep) | Single tracker; no >2 000-line files; C16 sweep documented. |
