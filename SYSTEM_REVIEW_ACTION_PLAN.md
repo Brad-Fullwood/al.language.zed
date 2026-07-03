@@ -309,6 +309,11 @@ interpreter fixture dividing Decimal by Integer.
 
 ### C2 (P1) — Interpreter: three-way divergence in string equality semantics
 
+> **EMPIRICALLY CONFIRMED (2026-07-03):** `c: Code[10] := 'abc'; c = 'ABC'` evaluates
+> **false** (BC: true), and `case 'ABC' of 'abc':` **matches** (BC: no match) — both
+> directions demonstrated through the interp test backend.
+
+
 - BC semantics: `Code` values are uppercased **at assignment**, so `Code = Code` is
   effectively case-insensitive; `Text = Text` is case-sensitive.
 - This engine: `Code` is never normalized on assignment (only the explicit `UpperCase()`
@@ -593,6 +598,10 @@ the increment; plus a Record and a Text variant.
 
 ### C24 (P2) — Interpreter: `break`/`continue` statements are unhandled
 
+> **EMPIRICALLY CONFIRMED (2026-07-03):** `break` inside `repeat..until` fails with
+> `unbound identifier: break`.
+
+
 `eval_stmt.rs:83-111`: the statement dispatch has no arm for a break/continue statement kind
 and no `Eval::Break`/`Continue` variants exist — such statements fall into the
 `eval_expression_stmt` catch-all, which treats `break` as an identifier/call lookup.
@@ -619,6 +628,45 @@ attribute check (or a sibling) to skip `eventsubscriber`- and `test`-attributed 
 from the unused-procedure pass (they remain covered by `find_orphaned_subscribers` for the
 genuinely-orphaned case). **Verify:** unit test — a local `[EventSubscriber]` with no direct
 calls must NOT appear in results; an orphaned one must still appear via PublisherRemoved.
+
+### C27 (P1) — The harness's fixture-gated suites are dead and unreproducible
+
+Two `al-test-harness` suites gate on `AL_TEST_PROJECT_PATH`: `data_driven.rs` (289 baked
+assertions across 8 LSP features) and `zed_simulation.rs` (40 end-to-end fixture tests).
+Empirically (2026-07-03): without the env var both silently skip (so they never run in CI —
+F8); pointed at the repo's own bundled fixture (`crates/al-test-harness/data/test_al_project`),
+`data_driven` fails **0/289** and `zed_simulation` fails **30/40**. The expectations were
+authored against a private out-of-repo project whose identity is recorded nowhere. 329
+assertions of the project's deepest LSP verification are unrunnable by anyone but the
+original author, and F8's naive fix (set the env var in CI) would turn CI red. **Fix:**
+regenerate fixture + expectations as a pair against a committed project (extend
+`test_al_project` and re-bake), and make both suites fail loudly on env-var mismatch instead
+of silently skipping. **Verify:** CI runs both suites green with the committed fixture.
+
+### C28 (P1) — Interpreter Integer is i64: 32-bit overflow passes silently
+
+Empirically (2026-07-03): `a := 2147483647; a := a * 3;` yields **6442450941 with no
+error**. BC's `Integer` is 32-bit signed and traps this overflow at runtime; the
+interpreter's `Value::Integer(i64)` only traps i64 overflow, so arithmetic that would error
+in BC silently produces values that cannot exist in BC (and comparisons/branches downstream
+diverge). BigInteger exists in AL for the 64-bit case, compounding the conflation. **Fix:**
+either represent Integer as i32 (with BigInteger as i64), or range-check results of integer
+ops against i32 bounds and error like BC. **Verify:** overflow fixtures per operator.
+
+### C29 (P1) — Test-runner path skips local default-binding: uninitialized locals error
+
+Empirically (2026-07-03): inside a `[Test]` body, `u := 'x' + t + 'y'` with unassigned
+`t: Text` fails with `unbound identifier: t`. BC zero-initializes every local. Root cause:
+the interp backend's direct test-method execution (`al-test/src/backends/interp.rs:392`)
+builds a bare `CallFrame::new(..)` and evaluates the body **without** the
+`bind_local_vars`/`bind_structured_locals` calls that `dispatch_workspace_procedure`
+(`al-runtime/src/interpreter/dispatch.rs:344-348`) performs — so default-binding exists only
+for *called* procedures, not for the test bodies themselves. Any test reading a local before
+assignment (`if t = '' then`, accumulators, out-style temporaries) errors. **Fix:** factor
+the frame-setup (params + local binding) into a shared helper used by both paths.
+**Verify:** the uninit-local fixture passes; existing `tests_records`/coverage suites stay
+green. Also noted in the same battery: `StrSubstNo('%1 %2', 'X')` leaves `%2` verbatim where
+BC substitutes blank — fold into C23's builtin-fidelity work.
 
 ### C16 (P2) — Finish the deep read with the same method
 
@@ -678,7 +726,7 @@ chased in `resolution.rs`/`calls.rs` all turned out guarded.
 | Phase | Items | Gate |
 | --- | --- | --- |
 | 0. CI resuscitation | F1 (socket fix → land #11, #12, #13 in order), F2 (triggers/branch protection), F3 (toolchain pin) | All 5 CI jobs green on `dev`; **after** F2's trigger/branch-protection change lands, a deliberate failure on a feature branch (or its PR) demonstrably blocks the merge — today `ci.yml` runs only on `main`/`dev`, so this gate is satisfied by the F2 change, not by current state. **Do this before any other code change** — nothing below is verifiable until CI works. |
-| 1. Correctness | C11 (data loss — do first), C25 (var params by value — the top interpreter fix), C17 (DAP breakpoint stall), C18/C19 (rename safety), C22 (object-index collision), C1, C2, C20, C24, C4, C6 (interpreter semantics + LSP text-store bugs), C26 (dead-code subscriber false positives); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
+| 1. Correctness | C11 (data loss — do first), C25 (var params by value — the top interpreter fix), C29 (test bodies skip local binding), C28 (Integer must trap 32-bit overflow), C17 (DAP breakpoint stall), C18/C19 (rename safety), C22 (object-index collision), C1, C2, C20, C24, C4, C6 (interpreter semantics + LSP text-store bugs), C26 (dead-code subscriber false positives), C27 (resurrect the 329 fixture assertions); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
 | 2. Truth surfaces | F5 (stale comments/docs/contradictions), F6 + C15 (DAP schema — re-verify per field, CodeLens, MCP command, tasks.json), C3 documentation | Each item verified at the layer `CLAUDE.md` requires (harness / editor screenshot). |
 | 3. Robustness | F7 (unwrap ratchet in al-lsp/al-protocol), F8 (zed_simulation fixture in CI, al-emit tests), C5, C7, C8, C12, C13, C14, F11 | Garbage-frame harness test green; zed_simulation tests **executing** in CI (>0 run, 0 skipped for the fixture reason — requires F8's committed fixture and a real `AL_TEST_PROJECT_PATH`, since `ci.yml:70` currently sets it to `""` and the suite silently skips); formatter idempotency fuzz green. |
 | 4. Structure & docs | F9 (move-only splits), F10 (doc consolidation), F4 option 2/3 if option 1 was declined, C16 (finish the sweep) | Single tracker; no >2 000-line files; C16 sweep documented. |
