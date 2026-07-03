@@ -447,6 +447,13 @@ generations instead of lengths.
 
 ### C14 (P2) — The formatter is line-heuristic, with concrete misfire classes
 
+> **EMPIRICALLY CONFIRMED (2026-07-03):** `'a;b':` case-label bodies lose their indent
+> level (label detector rejects labels containing `;`), and a `// then begin` comment on a
+> var-section line corrupts the entire rest of the file (declaration dedented, following
+> procedure over-indented, the object's closing `}` dragged inward). Idempotency itself held
+> across the 18-file repo corpus — the misfires are wrong-on-first-pass, stable thereafter.
+
+
 `al-syntax/src/formatting.rs` `format_al` is a line-based state machine (indent counters,
 `ends_with(" begin")`, label detection by trailing `:`), even though a tree-sitter CST is
 available in the same crate. Concrete misfires found by inspection: a `case` label
