@@ -55,7 +55,13 @@ pub fn parse_manifest(xml_bytes: &[u8]) -> Result<NavxManifest, ManifestError> {
                             attr.map_err(|e| ManifestError::InvalidAttribute(format!("{e}")))?;
                         let local = attr.key.local_name();
                         let key = std::str::from_utf8(local.as_ref())?;
-                        let val = attr.unescape_value().map_err(ManifestError::Xml)?;
+                        // quick-xml 0.41 renamed `unescape_value` →
+                        // `normalized_value` (same unescaping semantics plus
+                        // XML attribute-value normalization). NavxManifest.xml
+                        // carries no version declaration → XML 1.0 per spec.
+                        let val = attr
+                            .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                            .map_err(ManifestError::Xml)?;
                         match key {
                             "Id" => app_id = Some(val.to_string()),
                             "Name" => name = Some(val.to_string()),

@@ -7,13 +7,11 @@ wildcards = "warn"
 highlight = "all"
 
 [advisories]
-ignore = [
-  # `serial` (RUSTSEC-2017-0008) is unmaintained with no safe upgrade path. It
-  # is pulled in transitively only via `portable-pty`, a dev-dependency of
-  # `al-test-harness` used by the TUI PTY smoke test — it never ships in any
-  # binary. Ignore the unmaintained advisory until `portable-pty` drops it.
-  "RUSTSEC-2017-0008",
-]
+# Keep this empty as policy: fix advisories by upgrading, not ignoring
+# (SYSTEM_REVIEW_ACTION_PLAN F11). The previous RUSTSEC-2017-0008 (`serial`)
+# entry became stale when portable-pty 0.9 dropped the dep — cargo-deny now
+# warns advisory-not-detected for it.
+ignore = []
 
 [licenses]
 allow = [

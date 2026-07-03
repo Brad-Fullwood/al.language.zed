@@ -126,6 +126,15 @@ deliberate diff, not ambient drift.
 
 ### F4 (P1) — Remote agents cannot build the workspace at all
 
+> **STATUS: FIXED (2026-07-03).** Implemented as option 2 via CI: the
+> `Vendor grammar snapshot` workflow (`.github/workflows/vendor-grammar.yml`)
+> pushes the checked-out submodule tree to an orphan `grammar-vendor` branch
+> (exact rev recorded in `VENDORED_FROM_REV`), and `scripts/fetch-grammar.sh`
+> restores it in sandboxes; `CLAUDE.md` documents the fallback. Empirically
+> validated in-session: after `fetch-grammar.sh`, `cargo test --workspace
+> --exclude zed-al` passed the full suite locally for the first time.
+
+
 The `tree-sitter-al` submodule lives in a separate repo that sandboxed/remote agent sessions
 (scoped to `al.language.zed` only) cannot clone — this review hit it, and PR #13 shipped
 **unverified code** for the same reason. Every future agent session inherits this handicap.
@@ -281,6 +290,11 @@ daemon `build_dispatch/build.rs`, `al-dap/bc_debug.rs` plumbing, `al-bc` sanitiz
 `al-explorer` TUI restore. Remaining files are enumerated in C16.
 
 ### C1 (P1) — Interpreter: mixed Integer/Decimal division is unsupported
+
+> **EMPIRICALLY CONFIRMED (2026-07-03):** run end-to-end through the interp test
+> backend, `Avg := Total / Count` (Decimal ÷ Integer) fails with
+> `binary operator `/` not supported on (Decimal, Integer)`.
+
 
 `al-runtime/src/interpreter/eval_expr.rs` `apply_binary`: `+`/`-`/`*` have mixed
 Integer↔Decimal arms (lines 618–623), but `/` does not — `("/", Integer, Decimal)` and
@@ -556,6 +570,11 @@ StrPos, CalcDate at minimum); until then make extra `Format` arguments a hard er
 of silent misformatting. **Verify:** unit tests per builtin against BC-documented outputs.
 
 ### C25 (P1) — Interpreter: `var` parameters are silently pass-by-value
+
+> **EMPIRICALLY CONFIRMED (2026-07-03):** run end-to-end through the interp test
+> backend, `procedure Bump(var i: Integer) begin i := i + 1; end` leaves the
+> caller's variable unchanged (`n=1` after `Bump(n)`).
+
 
 `al-runtime/src/interpreter/dispatch.rs:334-366`: arguments are bound into the callee's
 frame by **clone** (`frame.bind(&param.name, args.get(i).cloned())`), the internal
