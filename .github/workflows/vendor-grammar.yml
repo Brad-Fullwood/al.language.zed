@@ -15,6 +15,9 @@ on:
     paths:
       - '.gitmodules'
       - 'tree-sitter-al'
+      # Editing this workflow re-runs the snapshot — also the escape hatch for
+      # sandboxed sessions whose token cannot POST workflow_dispatch (403).
+      - '.github/workflows/vendor-grammar.yml'
 
 permissions:
   contents: write
