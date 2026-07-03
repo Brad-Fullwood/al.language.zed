@@ -790,7 +790,26 @@ a user-visible warning. `al-project` `AlConfig::merge` audited clean (per-key pa
 unknown-key reporting). The MCP server exposes a curated 15-tool registry (no dynamic
 tool injection). Interpreter control flow reads led to C24/C25.
 
+### C32 (P3) — Emitted `.app` filename is not sanitized
+
+Empirically (2026-07-03): a project named `Scratch & App <X>` by `Pübli'sher` emits
+`Pübli'sher_Scratch & App <X>_1.0.0.0.app` — `<`/`>` are invalid in Windows filenames, so
+the same build fails with a raw IO error on Windows (the Windows `al-lsp` build is a release
+target). `build.rs` already has a `sanitize_filename` helper for organize-files; apply the
+same mapping to the artifact name in `al-compile`'s native emit path. **Verify:** emit
+succeeds on Windows CI for a hostile-name fixture. (The archive *contents* round-trip
+perfectly — manifest and SymbolReference escaping verified exact for `&`, `<`, `>`,
+quotes, and non-ASCII.)
+
 ### What held up under scrutiny (no action)
+
+Adversarial batteries that came back clean (2026-07-03): formatter idempotency over the
+18-file repo corpus (misfires are first-pass-wrong but stable — see C14); XLIFF extraction/
+generation/parse round-trip with hostile captions (`&`, `<`, quotes, `''` escapes) — exact;
+native emit → app_reader round-trip with hostile object names — exact (see C32 for the
+filename nit); record-store duplicate-key/modify-missing/delete/next-past-end semantics;
+CopyStr clamping, empty `for` ranges, `exit(value)` from loops, `div`/`mod` signs, integer
+`+`/`-`/`*` i64-overflow trapping (but see C28 for the missing i32 bound).
 
 The `.NET` FFI host (`al-semantic/src/host.rs`) is exemplary: null/negative/plausibility
 checks on the returned buffer, drop-guard freeing, correct safety comments. `al-source`'s
