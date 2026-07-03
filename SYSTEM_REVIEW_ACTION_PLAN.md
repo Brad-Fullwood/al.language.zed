@@ -35,6 +35,14 @@ be validated by pushing and watching the actual pipeline.
 
 ### F1 (P0) — CI is red on `dev`, and the three rescue PRs are stalled
 
+> **STATUS: FIXED (2026-07-03).** All five branches merged into `dev` (PRs #10-#14
+> auto-closed as merged), the socket clippy fix applied and verified, plus a same-day
+> quick-xml RUSTSEC advisory fixed by upgrading to 0.41. `dev` CI is now **fully green
+> across all 5 jobs** (runs on `4c98c7c` and `2ba4cfd`) — the first fully-green dev in the
+> repo's recent history. The stale branch refs remain only because session credentials
+> cannot delete refs; they are one-click deletions in the GitHub UI.
+
+
 `dev` HEAD `71b9333` fails the `CI (ubuntu-latest)`, `CI (macos-latest)`, and `cargo-deny` jobs.
 Three PRs from a prior session already exist to fix this, but none is green yet:
 
@@ -726,6 +734,21 @@ understands it); move the first-reference fallback **below** the workspace-objec
 exclude the node under the cursor from candidate refs; then C22's kind-keyed map makes the
 result kind-correct. **Verify:** the two probes above — mid-token and first-character cursor
 must both land on the **table**.
+
+### C31 (P3) — Workspace-table field resolution is a line scanner
+
+Empirically (2026-07-03): hover/completion on `H.Amount` (H: Record of a workspace table)
+works when the table is formatted one-field-per-line and returns **nothing** when two
+`field(...)` declarations share a line. Root cause chain, traced with debug logging:
+receiver and object path resolve correctly; `workspace_member`
+(`al-analysis/src/resolution.rs:1223`) matches only procedures and enum members from the
+document symbols, so **fields** fall through to `find_workspace_field` (`:1373`) — a
+line-based text scan (`parse_field_line(trimmed)`, one declaration per line). The parse
+tree already carries every field as a symbol child with its type; the text scan is
+redundant *and* wrong. **Fix:** add a Field arm to `workspace_member`'s symbol loop and
+delete `find_workspace_field`. **Verify:** the compact-table probe returns
+`Amount: Decimal (field)` like the conventional layout does. (Third empirically confirmed
+member of the C14 line-heuristic family, after the formatter and the XLIFF extractor.)
 
 ### C16 (P2) — Finish the deep read with the same method
 
