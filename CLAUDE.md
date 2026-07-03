@@ -59,6 +59,15 @@ a subset or skipped the editor check, say so.
   parse/symbols/LSP/lint/format all work without it; only compile-against-`alc`
   and live semantic analysis need it.
 
+## Sandboxed sessions and the tree-sitter-al submodule
+
+Agent sessions scoped to this repository alone cannot clone the
+`tree-sitter-al` submodule (separate repo), which makes the whole Rust
+workspace unbuildable. Fix: run `scripts/fetch-grammar.sh` — it restores the
+submodule tree from the `grammar-vendor` branch, which CI keeps in sync via
+the "Vendor grammar snapshot" workflow. Prefer the real submodule
+(`git submodule update --init --recursive`) whenever it is reachable.
+
 ## Hard guardrails
 
 - **Never test the extension by launching Zed/VS Code on the host**, and never
