@@ -60,6 +60,7 @@ fn ok(eval: Eval) -> Value {
     match eval {
         Eval::Normal(v) | Eval::Exit(v) => v,
         Eval::Error(e) => panic!("unexpected error: {}", e.message),
+        Eval::Break | Eval::Continue => panic!("unexpected break/continue"),
     }
 }
 

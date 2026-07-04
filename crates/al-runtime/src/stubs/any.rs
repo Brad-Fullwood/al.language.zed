@@ -343,6 +343,7 @@ mod tests {
             Eval::Normal(v) => v,
             Eval::Error(e) => panic!("unexpected error: {}", e.message),
             Eval::Exit(v) => v,
+            Eval::Break | Eval::Continue => panic!("unexpected break/continue"),
         }
     }
 

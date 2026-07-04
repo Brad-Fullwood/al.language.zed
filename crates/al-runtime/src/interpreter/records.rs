@@ -445,6 +445,8 @@ pub(crate) fn dispatch_record_method(
             Eval::Normal(v) => values.push(v),
             Eval::Error(e) => return Eval::Error(e),
             Eval::Exit(v) => return Eval::Exit(v),
+            // Expressions can't legally produce break/continue statements.
+            cf @ (Eval::Break | Eval::Continue) => return cf,
         }
     }
 

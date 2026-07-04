@@ -213,6 +213,7 @@ mod tests {
             Eval::Normal(_) => {}
             Eval::Error(e) => panic!("expected pass, got error: {}", e.message),
             Eval::Exit(_) => panic!("expected pass, got exit"),
+            Eval::Break | Eval::Continue => panic!("expected pass, got break/continue"),
         }
     }
 

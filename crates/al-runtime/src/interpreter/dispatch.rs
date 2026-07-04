@@ -387,8 +387,12 @@ fn dispatch_workspace_procedure(
         }
 
         // Unwrap Exit into Normal (exit only unwinds the current procedure).
+        // A break/continue that reached here escaped all loops — a runtime
+        // error in AL, not silent success (C24).
         return match result {
             Eval::Exit(v) => Eval::Normal(v),
+            Eval::Break => simple_error("break statement not inside a loop"),
+            Eval::Continue => simple_error("continue statement not inside a loop"),
             other => other,
         };
     }
@@ -980,6 +984,7 @@ mod tests {
             Eval::Normal(v) => v,
             Eval::Error(e) => panic!("unexpected error: {}", e.message),
             Eval::Exit(v) => v,
+            Eval::Break | Eval::Continue => panic!("unexpected break/continue"),
         }
     }
 
@@ -988,6 +993,7 @@ mod tests {
             Eval::Error(e) => e,
             Eval::Normal(v) => panic!("expected error, got Normal({})", v.type_name()),
             Eval::Exit(v) => panic!("expected error, got Exit({})", v.type_name()),
+            Eval::Break | Eval::Continue => panic!("expected error, got break/continue"),
         }
     }
 

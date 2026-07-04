@@ -97,6 +97,12 @@ fn eval_stmt_inner(
         "case_statement" => eval_case(node, source, stack, ctx),
         "assignment_statement" => eval_assignment(node, source, stack, ctx),
         "exit_statement" => eval_exit(node, source, stack, ctx),
+        // C24: `break`/`continue`. Requires the tree-sitter-al grammar to emit
+        // `break_statement`/`continue_statement` nodes (see the grammar prompt);
+        // until then these keywords parse as bare expressions and error as
+        // unbound identifiers. The interpreter side is ready.
+        "break_statement" => Eval::Break,
+        "continue_statement" => Eval::Continue,
         "asserterror_statement" => eval_asserterror(node, source, stack, ctx),
         "expression_statement" => {
             if let Some(inner) = node.named_child(0) {
@@ -126,7 +132,9 @@ fn eval_block(
         last = eval_stmt(child, source, stack, ctx);
         match &last {
             Eval::Normal(_) => {}
-            Eval::Error(_) | Eval::Exit(_) => return last,
+            // Error/Exit unwind the procedure; Break/Continue unwind to the
+            // nearest enclosing loop (C24). All propagate up out of the block.
+            Eval::Error(_) | Eval::Exit(_) | Eval::Break | Eval::Continue => return last,
         }
     }
     last
@@ -213,7 +221,8 @@ fn eval_while(
         }
         if let Some(body) = body_node {
             match eval_stmt(body, source, stack, ctx) {
-                Eval::Normal(_) => {}
+                Eval::Normal(_) | Eval::Continue => {}
+                Eval::Break => break,
                 other => return other,
             }
         }
@@ -317,7 +326,9 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
 
         if let Some(body) = body_node {
             match eval_stmt(body, source, stack, ctx) {
-                Eval::Normal(_) => {}
+                // Continue still runs the loop increment below (AL semantics).
+                Eval::Normal(_) | Eval::Continue => {}
+                Eval::Break => break,
                 other => return other,
             }
         }
@@ -396,7 +407,8 @@ fn eval_foreach(
 
         if let Some(body) = body_node {
             match eval_stmt(body, source, stack, ctx) {
-                Eval::Normal(_) => {}
+                Eval::Normal(_) | Eval::Continue => {}
+                Eval::Break => break,
                 other => return other,
             }
         }
@@ -426,7 +438,9 @@ fn eval_repeat(
         }
         if let Some(body) = body_node {
             match eval_stmt(body, source, stack, ctx) {
-                Eval::Normal(_) => {}
+                // Continue falls through to the `until` check (AL semantics).
+                Eval::Normal(_) | Eval::Continue => {}
+                Eval::Break => break,
                 other => return other,
             }
         }
@@ -615,7 +629,8 @@ fn eval_asserterror(
         Eval::Error(_) => Eval::Normal(Value::Empty),
         // Exit unwinds the procedure; asserterror does NOT swallow it. AL
         // semantics treat Exit as control flow that bypasses the assertion.
-        exit @ Eval::Exit(_) => exit,
+        // Break/Continue are loop control flow — likewise pass them through.
+        cf @ (Eval::Exit(_) | Eval::Break | Eval::Continue) => cf,
         Eval::Normal(_) => Eval::Error(ErrorInfo {
             message: "asserterror: expected an error to be raised, but none was".to_string(),
             error_type: Some("AssertError".to_string()),
@@ -1005,6 +1020,13 @@ fn eval_args_into(
             Eval::Normal(v) => out.push(v),
             Eval::Error(e) => return Err(ArgsShort::Error(e)),
             Eval::Exit(v) => return Err(ArgsShort::Exit(v)),
+            // An expression cannot legally produce break/continue (they are
+            // statements); treat as an error rather than silently dropping.
+            Eval::Break | Eval::Continue => {
+                return Err(ArgsShort::Error(simple_error(
+                    "break/continue is not valid in an expression",
+                )))
+            }
         }
     }
     Ok(())

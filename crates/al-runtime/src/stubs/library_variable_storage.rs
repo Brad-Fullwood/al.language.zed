@@ -465,6 +465,7 @@ mod tests {
             Eval::Normal(_) => {}
             Eval::Error(e) => panic!("expected pass, got error: {}", e.message),
             Eval::Exit(v) => panic!("expected pass, got exit({v:?})"),
+            Eval::Break | Eval::Continue => panic!("expected pass, got break/continue"),
         }
     }
 
@@ -484,6 +485,7 @@ mod tests {
             Eval::Normal(v) => v,
             Eval::Error(e) => panic!("expected Normal, got error: {}", e.message),
             Eval::Exit(v) => v,
+            Eval::Break | Eval::Continue => panic!("unexpected break/continue"),
         }
     }
 

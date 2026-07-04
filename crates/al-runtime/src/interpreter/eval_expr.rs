@@ -711,6 +711,7 @@ mod tests {
         match eval {
             Eval::Normal(v) | Eval::Exit(v) => v,
             Eval::Error(e) => panic!("unexpected error: {}", e.message),
+            Eval::Break | Eval::Continue => panic!("unexpected break/continue"),
         }
     }
 
@@ -719,6 +720,7 @@ mod tests {
             Eval::Error(e) => e,
             Eval::Normal(v) => panic!("expected error, got Normal({})", v.type_name()),
             Eval::Exit(v) => panic!("expected error, got Exit({})", v.type_name()),
+            Eval::Break | Eval::Continue => panic!("expected error, got break/continue"),
         }
     }
 
@@ -754,6 +756,9 @@ mod tests {
             ),
             Eval::Normal(_) => panic!("expected a depth-cap error, got Normal"),
             Eval::Exit(_) => panic!("expected a depth-cap error, got Exit"),
+            Eval::Break | Eval::Continue => {
+                panic!("expected a depth-cap error, got break/continue")
+            }
         }
     }
 
@@ -1004,6 +1009,7 @@ mod tests {
                 // Acceptable in Phase 2a — the harness can't always
                 // reach the identifier node depending on grammar shape.
             }
+            Eval::Break | Eval::Continue => panic!("unexpected break/continue"),
         }
     }
 

@@ -308,10 +308,14 @@ fn run_codeunit_interp(
             name: proc_name.clone(),
             status: match &result {
                 Eval::Normal(_) | Eval::Exit(_) => TestStatus::Pass,
-                Eval::Error(_) => TestStatus::Fail,
+                // A break/continue that unwound out of the whole test body
+                // escaped all loops — a runtime error, so the test fails (C24).
+                Eval::Error(_) | Eval::Break | Eval::Continue => TestStatus::Fail,
             },
             error: match &result {
                 Eval::Error(e) => Some(e.message.clone()),
+                Eval::Break => Some("break statement not inside a loop".to_string()),
+                Eval::Continue => Some("continue statement not inside a loop".to_string()),
                 _ => None,
             },
             duration_ms: Some(duration_ms),
