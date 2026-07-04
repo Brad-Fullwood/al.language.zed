@@ -66,13 +66,22 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
+    // The most common object reference in AL is a variable's declared type —
+    // `Record Customer`, `Page CustomerCard`, `Codeunit Foo`. The subtype token
+    // (`Customer`) is a plain unquoted identifier, so the quoted/spaced checks
+    // below miss it; detect the type-subtype position explicitly and carry the
+    // leading type keyword so the object resolves kind-correctly (C30 defect 1).
+    let type_subtype_kw = type_reference_subtype_keyword(node, source);
     let looks_like_object_name = node.kind() == "quoted_identifier"
         || clean_name.contains(' ')
-        || is_object_modifier_target(node);
+        || is_object_modifier_target(node)
+        || type_subtype_kw.is_some();
     if looks_like_object_name {
-        if let Some((obj_uri, range)) =
-            resolution::resolve_workspace_object_definition(workspace, clean_name)
-        {
+        if let Some((obj_uri, range)) = resolution::resolve_workspace_object_definition_of_type(
+            workspace,
+            clean_name,
+            type_subtype_kw.as_deref(),
+        ) {
             return Some(vec![Location {
                 uri: obj_uri,
                 range: range.into(),
@@ -104,18 +113,6 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 
     if let Some(decl_range) = find_same_file_procedure_decl(&tree, source, clean_name) {
         let def_range: Range = al_syntax::ts_range_to_syntax(&decl_range, source).into();
-        if def_range.start != position {
-            return Some(vec![Location {
-                uri: uri.clone(),
-                range: def_range,
-            }]);
-        }
-    }
-
-    let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
-    if !refs.is_empty() {
-        let first = &refs[0];
-        let def_range: Range = al_syntax::ts_range_to_syntax(first, text.as_bytes()).into();
         if def_range.start != position {
             return Some(vec![Location {
                 uri: uri.clone(),
@@ -173,7 +170,71 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
+    // Last-resort fallback: jump to the first *other* same-named reference in
+    // this file. This sits BELOW the workspace-object/procedure/package stages
+    // (C30 defect 2) so it can never shadow a real object lookup, and it skips
+    // any reference that contains the cursor — otherwise go-to-definition on an
+    // identifier with no resolvable declaration would return the cursor's own
+    // usage site.
+    let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
+    for r in &refs {
+        let def_range: Range = al_syntax::ts_range_to_syntax(r, text.as_bytes()).into();
+        if range_contains(def_range, position) {
+            continue;
+        }
+        return Some(vec![Location {
+            uri: uri.clone(),
+            range: def_range,
+        }]);
+    }
+
     None
+}
+
+/// True when `position` falls inside `range` (inclusive of start, exclusive of
+/// end on the same line; multi-line ranges compare by line then column).
+fn range_contains(range: Range, position: Position) -> bool {
+    let after_start = (position.line, position.character) >= (range.start.line, range.start.character);
+    let before_end = (position.line, position.character) < (range.end.line, range.end.character);
+    after_start && before_end
+}
+
+/// If `node` is the subtype identifier of a `type_reference` (e.g. `Customer`
+/// in `Record Customer`), return the leading AL type keyword (`Record`). Used
+/// to resolve a variable's declared-type reference to its object definition,
+/// kind-correctly.
+fn type_reference_subtype_keyword(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    // The subtype token nests a few levels below the `type_reference`
+    // (`identifier` → `name` → `name_or_keyword` → … → `type_reference`), so
+    // walk up to the enclosing type_reference rather than checking only the
+    // immediate parent. Stop before crossing out of the declaration.
+    let mut type_ref = None;
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        match n.kind() {
+            "type_reference" => {
+                type_ref = Some(n);
+                break;
+            }
+            "begin_end_block" | "statement_list" | "object_body" | "procedure_declaration" => {
+                break;
+            }
+            _ => {}
+        }
+        cur = n.parent();
+    }
+    let type_ref = type_ref?;
+    // The leading child is the type keyword (`kw_record`, `kw_page`, …). The
+    // cursor node is a subtype only if it starts after that keyword ends.
+    let kw_node = type_ref.child(0)?;
+    if node.start_byte() < kw_node.end_byte() {
+        return None;
+    }
+    let kw = kw_node.utf8_text(source).ok()?.trim().to_string();
+    if kw.is_empty() {
+        return None;
+    }
+    Some(kw)
 }
 
 fn find_same_file_procedure_decl(
@@ -401,6 +462,50 @@ mod tests {
         );
         let locs = result.unwrap();
         assert_eq!(locs[0].uri, Url::from_file_path(&table_path).unwrap());
+    }
+
+    #[test]
+    fn c30_unquoted_record_type_resolves_to_table_not_page_or_self() {
+        // `c: Record Customer` — the subtype is an unquoted single word, and a
+        // same-named page is indexed last. Go-to-definition must resolve to the
+        // TABLE (kind-correct, C22/C30 defect 1) regardless of where in the
+        // token the cursor sits, and must never return the cursor's own usage
+        // (C30 defect 2).
+        let ws = Workspace::new();
+        let table_path = std::path::PathBuf::from("/ws/Customer.Table.al");
+        let page_path = std::path::PathBuf::from("/ws/Customer.Page.al");
+        ws.file_index.add_file(
+            table_path.clone(),
+            "table 50100 Customer\n{\n    fields\n    {\n        field(1; \"No.\"; Code[20]) { }\n    }\n}\n".to_string(),
+        );
+        // Page added AFTER the table, so the name-only index would return the page.
+        ws.file_index.add_file(
+            page_path.clone(),
+            "page 50100 Customer\n{\n    layout { }\n}\n".to_string(),
+        );
+
+        let uri = Url::parse("file:///ws/Consumer.al").unwrap();
+        open_doc(
+            &ws,
+            &uri,
+            "codeunit 50101 Consumer\n{\n    procedure Foo()\n    var\n        c: Record Customer;\n    begin\n        c.Init();\n    end;\n}\n",
+        );
+
+        let table_uri = Url::from_file_path(&table_path).unwrap();
+        // Line 4: "        c: Record Customer;" → `Customer` at columns 18..26.
+        for col in [18u32, 22u32] {
+            let pos = Position {
+                line: 4,
+                character: col,
+            };
+            let locs = definition(&ws, &uri, pos)
+                .unwrap_or_else(|| panic!("expected a definition at column {col}"));
+            assert_eq!(locs.len(), 1, "one location at column {col}");
+            assert_eq!(
+                locs[0].uri, table_uri,
+                "column {col} must resolve to the TABLE, not the page or the cursor's own usage"
+            );
+        }
     }
 
     #[test]

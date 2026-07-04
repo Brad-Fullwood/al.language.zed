@@ -826,6 +826,41 @@ fn strip_inner_tags(s: &str) -> String {
     strip_all_tags(s)
 }
 
+/// Resolve a workspace object reference to its definition, kind-correctly.
+///
+/// The plain [`resolve_workspace_object_definition`] goes through
+/// `file_index.objects`, which is keyed by name only — so when a `table` and a
+/// `page` share a name, whichever was indexed last wins (C22). When the
+/// reference carries an AL type keyword (e.g. `Record Customer` → `Record`,
+/// which denotes a table), scan `object_info` (keyed by path, so it holds
+/// *every* object) for the entry whose name matches and whose kind maps to that
+/// AL type, and return that one. Falls back to the name-only resolver when no
+/// kind is supplied or no kind-matching object exists.
+pub(crate) fn resolve_workspace_object_definition_of_type(
+    workspace: &Workspace,
+    name: &str,
+    al_type_keyword: Option<&str>,
+) -> Option<(Url, Range)> {
+    if let Some(al_type) = al_type_keyword {
+        for entry in workspace.file_index.object_info.iter() {
+            let info = entry.value();
+            if info.name.eq_ignore_ascii_case(name)
+                && al_syntax::type_resolver::object_kind_to_al_type(&info.kind)
+                    .eq_ignore_ascii_case(al_type)
+            {
+                let path = entry.key().clone();
+                let uri = Url::from_file_path(&path).ok()?;
+                let (file_source, _tree) = workspace.file_index.get_cached_parse(&path)?;
+                return Some((
+                    uri,
+                    al_syntax::ts_range_to_syntax(&info.range, file_source.as_bytes()).into(),
+                ));
+            }
+        }
+    }
+    resolve_workspace_object_definition(workspace, name)
+}
+
 pub(crate) fn resolve_workspace_object_definition(
     workspace: &Workspace,
     name: &str,
