@@ -37,9 +37,6 @@ pub fn references(
     ));
     for r in &refs {
         let range: Range = al_syntax::ts_range_to_syntax(r, source_bytes).into();
-        if !include_declaration && range.start == position {
-            continue;
-        }
         locations.push(Location {
             uri: uri.clone(),
             range,
@@ -75,6 +72,23 @@ pub fn references(
                     range: al_syntax::ts_range_to_syntax(r, file_source_bytes).into(),
                 });
             }
+        }
+    }
+
+    // `includeDeclaration: false` means exclude the symbol's *declaration*, not
+    // the occurrence under the cursor. Resolve the declaration site (the same
+    // engine go-to-definition uses) and drop the location that matches it (C21).
+    // The previous code dropped whichever reference started at the request
+    // position, which wrongly removed the clicked usage when the cursor sat on
+    // its first character and never removed the actual declaration.
+    if !include_declaration {
+        if let Some(decl) = super::definition::definition(workspace, uri, position)
+            .and_then(|locs| locs.into_iter().next())
+        {
+            // Match on the start position, not the full range: go-to-definition
+            // reports the whole declaration (`MyVar: Integer`) while a reference
+            // is just the name token (`MyVar`), but both begin at the same spot.
+            locations.retain(|loc| !(loc.uri == decl.uri && loc.range.start == decl.range.start));
         }
     }
 
@@ -145,6 +159,51 @@ mod tests {
         assert!(
             with_decl.len() >= without_decl.len(),
             "include_declaration=true should not return fewer results"
+        );
+    }
+
+    #[test]
+    fn c21_exclude_declaration_not_the_clicked_usage() {
+        // Invoke references from a *usage* site with includeDeclaration=false.
+        // The declaration (line 4) must be excluded; the clicked usage (line 6)
+        // must still be present. Previously the code dropped whichever ref
+        // started at the request position — i.e. the clicked usage — and never
+        // dropped the declaration.
+        let uri = Url::parse("file:///test/c21.al").expect("test");
+        let src = r#"codeunit 50100 "Refs"
+{
+    procedure Calc()
+    var
+        MyVar: Integer;
+    begin
+        MyVar := 1;
+        MyVar += 2;
+    end;
+}"#;
+        let ws = ws_with_doc(&uri, src);
+        // Cursor at the first character of the `MyVar := 1` usage (line 6, col 8).
+        let pos = Position {
+            line: 6,
+            character: 8,
+        };
+        let without_decl = references(&ws, &uri, pos, false);
+        // The declaration on line 4 must be gone.
+        assert!(
+            !without_decl.iter().any(|l| l.range.start.line == 4),
+            "declaration (line 4) must be excluded; got {:?}",
+            without_decl
+                .iter()
+                .map(|l| l.range.start.line)
+                .collect::<Vec<_>>()
+        );
+        // The clicked usage on line 6 must still be present.
+        assert!(
+            without_decl.iter().any(|l| l.range.start.line == 6),
+            "clicked usage (line 6) must be present; got {:?}",
+            without_decl
+                .iter()
+                .map(|l| l.range.start.line)
+                .collect::<Vec<_>>()
         );
     }
 

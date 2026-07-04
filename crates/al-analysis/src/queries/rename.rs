@@ -33,6 +33,13 @@ pub fn rename(
     position: Position,
     new_name: &str,
 ) -> Option<WorkspaceEdit> {
+    // Reject a new name that would splice invalid AL into every touched file.
+    // Without this, renaming to `my var`, `2Start`, `` or a reserved keyword
+    // returns a WorkspaceEdit that writes syntax errors workspace-wide (C19).
+    if !is_valid_rename_target(new_name) {
+        return None;
+    }
+
     let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, uri)?;
 
     let node = al_syntax::find_node_at_position(&tree, &text, position.into())?;
@@ -144,6 +151,36 @@ pub fn rename(
     }
 
     Some(WorkspaceEdit { changes })
+}
+
+/// Whether `new_name` can be spliced into AL source as a rename target without
+/// producing invalid code. Accepts a plain identifier
+/// (`[A-Za-z_][A-Za-z0-9_]*` that is not a reserved keyword) or an
+/// already-quoted identifier (`"…"` with a non-empty, quote-free interior).
+/// Rejects empty names, names containing spaces or other characters that would
+/// require quoting, and bare keywords (C19).
+fn is_valid_rename_target(new_name: &str) -> bool {
+    let name = new_name.trim();
+    if name.is_empty() {
+        return false;
+    }
+    // Already-quoted identifier: quotable names (fields, objects) may be passed
+    // pre-quoted. Require a non-empty interior with no embedded quote.
+    if name.len() >= 2 && name.starts_with('"') && name.ends_with('"') {
+        let inner = &name[1..name.len() - 1];
+        return !inner.is_empty() && !inner.contains('"');
+    }
+    // Plain identifier grammar.
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return false;
+    }
+    // A bare reserved keyword is not a legal unquoted identifier.
+    !al_syntax::language_data::is_keyword(name)
 }
 
 fn make_rename_text(node_kind: &str, original_text: &str, new_name: &str) -> String {
@@ -349,6 +386,59 @@ mod tests {
         };
         let result = rename(&ws, &uri, pos, "Y");
         let _ = result;
+    }
+
+    #[test]
+    fn c19_invalid_new_names_rejected() {
+        assert!(!is_valid_rename_target(""));
+        assert!(!is_valid_rename_target("   "));
+        assert!(!is_valid_rename_target("my var with spaces"));
+        assert!(!is_valid_rename_target("2Start"));
+        assert!(!is_valid_rename_target("has-dash"));
+        assert!(!is_valid_rename_target("bad!name"));
+        assert!(!is_valid_rename_target("begin")); // reserved keyword
+        assert!(!is_valid_rename_target("\"\"")); // empty quoted
+        assert!(!is_valid_rename_target("\"bad\"quote\"")); // embedded quote
+    }
+
+    #[test]
+    fn c19_valid_new_names_accepted() {
+        assert!(is_valid_rename_target("NewVar"));
+        assert!(is_valid_rename_target("_leading"));
+        assert!(is_valid_rename_target("Var123"));
+        assert!(is_valid_rename_target("\"My Field\"")); // pre-quoted quotable name
+    }
+
+    #[test]
+    fn c19_rename_to_invalid_name_produces_no_edit() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    var
+        MyVar: Integer;
+    begin
+        MyVar := 42;
+    end;
+}"#,
+        );
+        let pos = Position {
+            line: 6,
+            character: 8,
+        };
+        // Space-containing name would splice broken code — must be rejected.
+        assert!(
+            rename(&ws, &uri, pos, "my var with spaces").is_none(),
+            "rename to a space-containing name must not produce edits"
+        );
+        assert!(rename(&ws, &uri, pos, "").is_none());
+        assert!(rename(&ws, &uri, pos, "begin").is_none());
+        // A valid name still works (control).
+        assert!(rename(&ws, &uri, pos, "NewVar").is_some());
     }
 
     #[test]

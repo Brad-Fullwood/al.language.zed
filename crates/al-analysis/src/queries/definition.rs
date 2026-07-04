@@ -194,7 +194,8 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 /// True when `position` falls inside `range` (inclusive of start, exclusive of
 /// end on the same line; multi-line ranges compare by line then column).
 fn range_contains(range: Range, position: Position) -> bool {
-    let after_start = (position.line, position.character) >= (range.start.line, range.start.character);
+    let after_start =
+        (position.line, position.character) >= (range.start.line, range.start.character);
     let before_end = (position.line, position.character) < (range.end.line, range.end.character);
     after_start && before_end
 }
