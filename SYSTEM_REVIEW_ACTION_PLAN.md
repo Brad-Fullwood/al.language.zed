@@ -22,12 +22,19 @@ regression tests and verified against the layer it touches:
 | Finding | Status | Fix |
 | --- | --- | --- |
 | C1 | ✅ fixed | mixed Integer/Decimal division promotes to Decimal |
+| C2 | ✅ fixed | Code equality/CASE is case-insensitive; assignment coerces to Code slots; Text CASE stays case-sensitive |
 | C4 | ✅ fixed | `did_change` compares a stored client version, not the internal counter |
+| C5 | ✅ fixed | diagnostics task abort→spawn→store holds the task lock (no double-up) |
 | C6 | ✅ fixed | over-EOL character clamps before the line break (no line merge) |
 | C7 | ✅ fixed | incremental edits re-check the doc-size cap (warns past cap) |
+| C8 | ✅ fixed | native compile runs in `spawn_blocking` (no blocking IO on the async runtime) |
 | C9 | ✅ fixed | method-id hash uses simple (1:1) `ToUpperInvariant` mapping |
 | C11 | ✅ fixed | rename refuses to overwrite a different existing file (data loss) |
 | C12 | ✅ fixed | daemon write keeps an open doc's version monotonic |
+| C13 | ✅ fixed | `file_index` caches an atomic `Arc<(text, tree)>` pair (no torn reads) |
+| C14 | ✅ fixed | formatter block-transition/label heuristics ignore comments and string interiors |
+| C17 | ✅ fixed | native DAP reads stdin on a dedicated task; main loop selects over break events and requests |
+| C18 | ✅ fixed | non-local rename edits only references binding to the cursor's declaration |
 | C19 | ✅ fixed | rename rejects invalid/keyword/empty new names |
 | C20 | ✅ fixed (init/next) | `Init` preserves the primary key; `Next` clamps-and-reports. Filter-casing leg still waits on C2 |
 | C21 | ✅ fixed | `references` excludes the declaration, not the clicked usage |
@@ -35,12 +42,14 @@ regression tests and verified against the layer it touches:
 | C25 | ✅ fixed | `var` parameters are by-reference (write-back to caller lvalues) |
 | C26 | ✅ fixed | dead-code skips event-subscriber/test/handler procedures |
 | C29 | ✅ fixed | test-runner binds locals to defaults (BC zero-init) |
+| C28 | ✅ fixed | Integer arithmetic traps 32-bit overflow (+/-/*/div); BigInteger stays i64 |
 | C30 | ✅ fixed | go-to-definition resolves `Record/Page/Codeunit X` type refs, kind-correct |
+| C31 | ✅ fixed | workspace-table field resolution is tree-based, not a line scanner |
 | C32 | ✅ fixed | emitted `.app` filename is sanitized for Windows |
-| C24 | ⊘ withdrawn | AL has no usable break/continue statements (reserved keywords only) — not a bug |
-| C3, C28 | ⏳ deferred | numeric value-model changes (exact Decimal; i32 Integer vs i64 BigInteger) — not quick patches |
+| C24 | ✅ fixed | `break`/`continue` are handled by the loop evaluators (grammar prompt in `Docs/`) |
+| C3 | ⏳ deferred | exact Decimal via `rust_decimal` — a workspace-wide value-model migration, tracked separately |
 
-Remaining P2/P3 items (C2, C5, C7, C8, C11–C18 residuals, C31) are still open.
+Remaining open items: C3 (exact Decimal) and residual partials (C20 filter-casing leg, C22 index map).
 
 ---
 
