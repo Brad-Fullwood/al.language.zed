@@ -24,7 +24,10 @@ regression tests and verified against the layer it touches:
 | C1 | ✅ fixed | mixed Integer/Decimal division promotes to Decimal |
 | C4 | ✅ fixed | `did_change` compares a stored client version, not the internal counter |
 | C6 | ✅ fixed | over-EOL character clamps before the line break (no line merge) |
+| C7 | ✅ fixed | incremental edits re-check the doc-size cap (warns past cap) |
 | C9 | ✅ fixed | method-id hash uses simple (1:1) `ToUpperInvariant` mapping |
+| C11 | ✅ fixed | rename refuses to overwrite a different existing file (data loss) |
+| C12 | ✅ fixed | daemon write keeps an open doc's version monotonic |
 | C19 | ✅ fixed | rename rejects invalid/keyword/empty new names |
 | C20 | ✅ fixed (init/next) | `Init` preserves the primary key; `Next` clamps-and-reports. Filter-casing leg still waits on C2 |
 | C21 | ✅ fixed | `references` excludes the declaration, not the clicked usage |
