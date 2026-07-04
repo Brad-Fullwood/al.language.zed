@@ -244,7 +244,15 @@ impl AlServer {
             return;
         }
 
-        if let Some(old) = self.diag_task.lock().await.take() {
+        // C5: hold the `diag_task` lock across abort → spawn → store as one
+        // critical section. Releasing it between the abort and the store let two
+        // interleaved did_change handlers both observe "no pending task", spawn
+        // two debounce tasks, and race two publishes for the same URI — the
+        // second store overwrote the first handle without aborting it. Holding
+        // the guard serializes scheduling so only the most recent keystroke's
+        // task survives.
+        let mut guard = self.diag_task.lock().await;
+        if let Some(old) = guard.take() {
             old.abort();
         }
 
@@ -291,7 +299,7 @@ impl AlServer {
             client.publish_diagnostics(uri, lsp_diags, None).await;
         });
 
-        *self.diag_task.lock().await = Some(handle);
+        *guard = Some(handle);
     }
 }
 
