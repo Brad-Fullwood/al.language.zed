@@ -385,6 +385,23 @@ impl DocumentStore {
                     doc.text = Rope::from_str(&change.text);
                 }
             }
+            // C7: the range-edit path above bypasses the size cap that `open`
+            // and full-document replacement enforce, so a document could grow
+            // unbounded through incremental inserts. Re-check the total size
+            // after applying the batch and warn when it exceeds the cap
+            // (matching the F-OPEN-042 intent; mid-stream range edits are not
+            // rolled back).
+            let cap = self
+                .max_doc_bytes
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if cap != 0 && doc.text.len_bytes() > cap {
+                tracing::warn!(
+                    uri = %uri,
+                    size = doc.text.len_bytes(),
+                    cap,
+                    "DocumentStore: document exceeds max_doc_bytes after incremental edits"
+                );
+            }
             doc.text_cache = std::sync::Arc::new(doc.text.to_string());
             doc.version += 1;
             self.trees.remove(uri);
