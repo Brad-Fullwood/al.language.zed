@@ -503,6 +503,11 @@ impl LanguageServer for AlServer {
         self.workspace
             .documents
             .open(uri.clone(), params.text_document.text);
+        // Record the client's opening version so the did_change guard can
+        // compare like-for-like (C4).
+        self.workspace
+            .documents
+            .set_client_version(&uri, params.text_document.version);
         crate::workspace::on_document_change(&self.workspace, &uri, &text);
 
         diagnostics::publish_diagnostics(self, &uri, &text).await;
@@ -520,12 +525,12 @@ impl LanguageServer for AlServer {
         // warn (not error) on a stale delivery — the editor will likely
         // re-sync on the next keystroke, and rejecting would create a
         // visible divergence between client and server text.
-        if let Some(server_version) = self.workspace.documents.get_version(&uri) {
-            if client_version < server_version {
+        if let Some(prev_client_version) = self.workspace.documents.get_client_version(&uri) {
+            if client_version < prev_client_version {
                 tracing::warn!(
                     uri = %uri,
                     client_version,
-                    server_version,
+                    prev_client_version,
                     "did_change: client version went backwards — applying anyway; editor should resync"
                 );
             }
@@ -555,6 +560,11 @@ impl LanguageServer for AlServer {
             .documents
             .apply_changes_and_get(&uri, &changes)
         {
+            // Record the applied client version so a later out-of-order
+            // delivery can be detected (C4).
+            self.workspace
+                .documents
+                .set_client_version(&uri, client_version);
             crate::workspace::on_document_change(&self.workspace, &uri, &text_arc);
             // Only schedule per-keystroke diagnostics when trigger is Continuous.
             // In OnSave mode, diagnostics are deferred to did_save to avoid per-keystroke work.

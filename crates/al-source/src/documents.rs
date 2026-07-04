@@ -84,6 +84,13 @@ struct Document {
     /// Arc allows get_text_arc() to return a cheap pointer copy instead of a string clone.
     text_cache: std::sync::Arc<String>,
     version: i32,
+    /// The last client-supplied LSP document version (from `didOpen`/`didChange`
+    /// params). Distinct from `version`, which is the store's internal edit
+    /// counter used to key the parse-tree cache. The client version is what the
+    /// out-of-order-delivery guard must compare against — the internal counter
+    /// starts at 0 and can never exceed the client's number, so comparing to it
+    /// is dead code (C4).
+    client_version: i32,
 }
 
 impl Default for DocumentStore {
@@ -220,6 +227,7 @@ impl DocumentStore {
                 text: Rope::from_str(&text),
                 text_cache: std::sync::Arc::new(text),
                 version: 0,
+                client_version: 0,
             },
         );
     }
@@ -267,6 +275,20 @@ impl DocumentStore {
 
     pub fn get_version(&self, uri: &Url) -> Option<i32> {
         self.docs.get(uri).map(|d| d.version)
+    }
+
+    /// The last client-supplied LSP version for `uri`, or `None` if not open.
+    /// Used by the `did_change` out-of-order-delivery guard (C4).
+    pub fn get_client_version(&self, uri: &Url) -> Option<i32> {
+        self.docs.get(uri).map(|d| d.client_version)
+    }
+
+    /// Record the client-supplied LSP version for `uri` (from `didOpen` /
+    /// `didChange`). No-op if the document isn't open.
+    pub fn set_client_version(&self, uri: &Url, version: i32) {
+        if let Some(mut d) = self.docs.get_mut(uri) {
+            d.client_version = version;
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -1053,6 +1075,44 @@ mod tests {
             Some((text, version)),
             "returned snapshot must equal the store's live (text, version)"
         );
+    }
+
+    #[test]
+    fn client_version_is_tracked_separately_from_internal_counter() {
+        // C4: the client version is what the did_change guard compares against.
+        // It is distinct from the internal edit counter, which starts at 0 and
+        // is bumped per apply — the two must not be conflated.
+        let store = DocumentStore::new();
+        let uri = test_uri("client_version");
+        store.open(uri.clone(), "x".to_string());
+
+        // Fresh document: client version defaults to 0, internal version 0.
+        assert_eq!(store.get_client_version(&uri), Some(0));
+        assert_eq!(store.get_version(&uri), Some(0));
+
+        // A client version can jump by more than 1 per notification.
+        store.set_client_version(&uri, 5);
+        assert_eq!(store.get_client_version(&uri), Some(5));
+
+        // Applying an edit bumps the internal counter but NOT the client version.
+        store
+            .apply_changes_and_get(
+                &uri,
+                &[TextChange {
+                    range: None,
+                    text: "y".to_string(),
+                }],
+            )
+            .unwrap();
+        assert_eq!(store.get_version(&uri), Some(1));
+        assert_eq!(
+            store.get_client_version(&uri),
+            Some(5),
+            "internal edit did not change the client version"
+        );
+
+        // Unopened document: no client version.
+        assert_eq!(store.get_client_version(&test_uri("nope")), None);
     }
 
     /// F-OPEN-054: `apply_changes_and_get` returns `None` (rather than a stale
