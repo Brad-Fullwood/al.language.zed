@@ -168,9 +168,14 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         prev_was_empty = false;
 
         let trimmed_lower = trimmed.to_lowercase();
+        // C14: block-transition heuristics must look at the code only — a line
+        // like `x: Integer; // then begin` must not be treated as ending in
+        // `begin`. `code`/`code_lower` strip any trailing line comment.
+        let code = code_portion(trimmed);
+        let code_lower = code.to_lowercase();
 
         // `begin` closes a var section — dedent back to the procedure level
-        if in_var_section && (trimmed_lower == "begin" || trimmed_lower.ends_with(" begin")) {
+        if in_var_section && (code_lower == "begin" || code_lower.ends_with(" begin")) {
             indent_level = (indent_level - 1).max(0);
             in_var_section = false;
         }
@@ -196,8 +201,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
 
         // `begin` after single-statement openers (if...then begin written separately)
         // drains the single-stmt stack since begin starts a block
-        if single_stmt_depth > 0 && (trimmed_lower == "begin" || trimmed_lower.ends_with(" begin"))
-        {
+        if single_stmt_depth > 0 && (code_lower == "begin" || code_lower.ends_with(" begin")) {
             indent_level = (indent_level - single_stmt_depth).max(0);
             single_stmt_depth = 0;
         }
@@ -208,15 +212,20 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // and not `OnValidate:` on a trigger header. Reject lines containing
         // anything other than the label token, optional inner spaces (for
         // multi-word string labels like `"Foo Bar"`) and the trailing colon.
+        // Use the code portion (comment stripped) and reject disqualifying
+        // characters only when they occur OUTSIDE a string, so a quoted label
+        // like `'a;b':` — whose `;` lives inside the quotes — is still a label
+        // (C14).
+        let label_code = code_portion(trimmed);
         let is_case_label = case_depth > 0
-            && trimmed.ends_with(':')
-            && !trimmed.ends_with("::")
+            && label_code.ends_with(':')
+            && !label_code.ends_with("::")
             // The colon must directly follow the last non-space character —
-            // no `;` or `=` etc. before it.
-            && !trimmed
-                .trim_end_matches(':')
-                .chars()
-                .any(|c| matches!(c, ';' | '=' | '(' | ')' | ','));
+            // no `;` or `=` etc. before it (outside string literals).
+            && !contains_char_outside_strings(
+                label_code.trim_end_matches(':'),
+                &[';', '=', '(', ')', ','],
+            );
         if is_case_label && in_case_label_body {
             // Drain any single-stmt from within the previous label body
             if single_stmt_depth > 0 {
@@ -354,12 +363,12 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             in_block_comment = !closes_block_comment;
         }
         let is_comment = trimmed.starts_with("//") || line_is_block_comment_body;
-        let is_block_opener = trimmed.ends_with('{')
-            || trimmed_lower == "begin"
-            || trimmed_lower.ends_with(" begin")
-            || trimmed_lower == "var"
-            || trimmed_lower == "repeat";
-        let is_single_stmt_opener = is_single_statement_opener(&trimmed_lower);
+        let is_block_opener = code.ends_with('{')
+            || code_lower == "begin"
+            || code_lower.ends_with(" begin")
+            || code_lower == "var"
+            || code_lower == "repeat";
+        let is_single_stmt_opener = is_single_statement_opener(&code_lower);
 
         if single_stmt_depth > 0
             && !is_block_opener
@@ -375,25 +384,25 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             single_stmt_depth = 0;
         }
 
-        if trimmed.ends_with('{') {
+        if code.ends_with('{') {
             indent_level += 1;
-        } else if trimmed_lower == "begin" || trimmed_lower.ends_with(" begin") {
+        } else if code_lower == "begin" || code_lower.ends_with(" begin") {
             indent_level += 1;
             if in_case_label_body {
                 case_begin_depth += 1;
             }
-        } else if trimmed_lower == "var" {
+        } else if code_lower == "var" {
             indent_level += 1;
             in_var_section = true;
-        } else if trimmed_lower == "repeat" {
+        } else if code_lower == "repeat" {
             indent_level += 1;
-        } else if trimmed_lower == "else" || trimmed_lower.starts_with("else ") {
+        } else if code_lower == "else" || code_lower.starts_with("else ") {
             // `else` without `begin` on same line — next stmt is single-stmt
-            if !trimmed_lower.ends_with(" begin") {
+            if !code_lower.ends_with(" begin") {
                 indent_level += 1;
                 single_stmt_depth += 1;
             }
-        } else if trimmed_lower.starts_with("case ") && trimmed_lower.ends_with(" of") {
+        } else if code_lower.starts_with("case ") && code_lower.ends_with(" of") {
             indent_level += 1;
             case_depth += 1;
         }
@@ -406,7 +415,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
 
         // Single-statement openers: if...then, for...do, while...do, with...do
         // Only when not followed by `begin` on the same line
-        if is_single_stmt_opener && !trimmed_lower.ends_with(" begin") {
+        if is_single_stmt_opener && !code_lower.ends_with(" begin") {
             indent_level += 1;
             single_stmt_depth += 1;
         }
@@ -834,7 +843,10 @@ fn property_sort_key(first_line: &str) -> String {
 /// True if `s` contains a `//` line comment that is OUTSIDE any single- or
 /// double-quoted span. Used by the brace-merge pass to avoid commenting out a
 /// `{` that would be merged onto a line ending in a trailing comment.
-fn has_line_comment_outside_strings(s: &str) -> bool {
+/// Byte index where a `//` line comment begins outside any string literal, or
+/// `None` if the line has no such comment. Doubled single-quotes (`''`) inside
+/// a `'...'` string are escapes, not string terminators.
+fn line_comment_start(s: &str) -> Option<usize> {
     let bytes = s.as_bytes();
     let mut i = 0;
     let mut in_single = false;
@@ -862,7 +874,59 @@ fn has_line_comment_outside_strings(s: &str) -> bool {
         match b {
             b'\'' => in_single = true,
             b'"' => in_double = true,
-            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => return true,
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn has_line_comment_outside_strings(s: &str) -> bool {
+    line_comment_start(s).is_some()
+}
+
+/// The code portion of a line with any trailing `//` comment removed (and
+/// trailing whitespace trimmed). Used before block-transition heuristics so a
+/// comment tail like `x: Integer; // then begin` can't trip the `ends_with
+/// "begin"` / case-label detection (C14).
+fn code_portion(s: &str) -> &str {
+    let end = line_comment_start(s).unwrap_or(s.len());
+    s[..end].trim_end()
+}
+
+/// True if any of `needles` appears in `s` **outside** a string literal.
+/// Lets case-label detection accept quoted labels like `'a;b'` whose `;`
+/// lives inside the quotes (C14).
+fn contains_char_outside_strings(s: &str, needles: &[char]) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_single {
+            if b == b'\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' => in_single = true,
+            b'"' => in_double = true,
+            _ if needles.contains(&(b as char)) => return true,
             _ => {}
         }
         i += 1;
@@ -1645,6 +1709,75 @@ codeunit 50100 Test
             pass1, pass2,
             "second-pass formatting with block comments should be a no-op"
         );
+    }
+
+    /// Leading whitespace of the first line whose trimmed content starts with
+    /// `needle` (matching the line start avoids matching the same token inside a
+    /// trailing comment).
+    fn indent_of(text: &str, needle: &str) -> usize {
+        let line = text
+            .lines()
+            .find(|l| l.trim_start().starts_with(needle))
+            .unwrap_or_else(|| panic!("needle {needle:?} not found in:\n{text}"));
+        line.len() - line.trim_start().len()
+    }
+
+    #[test]
+    fn c14_comment_ending_in_begin_does_not_corrupt_var_section() {
+        // A `// … begin` comment tail on a var line must not trip the
+        // var-section/block `ends_with("begin")` transition and dedent the rest
+        // of the file (C14).
+        let input = "\
+codeunit 50100 Test
+{
+    procedure P()
+    var
+        x: Integer; // then begin
+        y: Integer;
+    begin
+        x := 1;
+    end;
+}
+";
+        let out = fmt(input);
+        // Both var declarations sit at the same indent; the comment did not end
+        // the var section early.
+        assert_eq!(
+            indent_of(&out, "x: Integer"),
+            indent_of(&out, "y: Integer"),
+            "var lines must share indent:\n{out}"
+        );
+        // `begin` is one level shallower than the var entries.
+        assert!(
+            indent_of(&out, "begin") < indent_of(&out, "y: Integer"),
+            "begin must be shallower than var entries:\n{out}"
+        );
+        // Idempotent.
+        assert_eq!(fmt(&out), out);
+    }
+
+    #[test]
+    fn c14_quoted_case_label_with_semicolon_indents_as_label() {
+        // A quoted case label whose text contains `;` (`'a;b':`) must be treated
+        // as a label, so its body is indented one level deeper (C14).
+        let input = "\
+codeunit 50100 Test
+{
+    procedure P()
+    begin
+        case s of
+            'a;b':
+                Message('x');
+        end;
+    end;
+}
+";
+        let out = fmt(input);
+        assert!(
+            indent_of(&out, "Message('x')") > indent_of(&out, "'a;b':"),
+            "label body must be deeper than the label:\n{out}"
+        );
+        assert_eq!(fmt(&out), out, "must be idempotent");
     }
 
     // F-OPEN-110: KeywordCasing wiring
