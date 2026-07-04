@@ -574,19 +574,24 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
             Eval::Normal(Value::Decimal(d))
         }
     }
+    // C28: BC's `Integer` is 32-bit signed and traps overflow at runtime. The
+    // interpreter stores integers as i64, so an i64 `checked_*` alone lets
+    // arithmetic that would error in BC (e.g. `2147483647 * 3`) silently produce
+    // values that cannot exist in an Integer. Range-check every integer
+    // arithmetic result against i32 bounds and error like BC. (BigInteger is not
+    // separately modeled — see the value-model note in the review plan.)
+    fn checked_i32(result: Option<i64>) -> Eval {
+        match result {
+            Some(n) if (i32::MIN as i64..=i32::MAX as i64).contains(&n) => {
+                Eval::Normal(Value::Integer(n))
+            }
+            _ => Eval::Error(simple_error("integer overflow")),
+        }
+    }
     match (&op[..], left, right) {
-        ("+", Value::Integer(a), Value::Integer(b)) => match a.checked_add(b) {
-            Some(n) => Eval::Normal(Value::Integer(n)),
-            None => Eval::Error(simple_error("integer overflow")),
-        },
-        ("-", Value::Integer(a), Value::Integer(b)) => match a.checked_sub(b) {
-            Some(n) => Eval::Normal(Value::Integer(n)),
-            None => Eval::Error(simple_error("integer overflow")),
-        },
-        ("*", Value::Integer(a), Value::Integer(b)) => match a.checked_mul(b) {
-            Some(n) => Eval::Normal(Value::Integer(n)),
-            None => Eval::Error(simple_error("integer overflow")),
-        },
+        ("+", Value::Integer(a), Value::Integer(b)) => checked_i32(a.checked_add(b)),
+        ("-", Value::Integer(a), Value::Integer(b)) => checked_i32(a.checked_sub(b)),
+        ("*", Value::Integer(a), Value::Integer(b)) => checked_i32(a.checked_mul(b)),
         ("div", Value::Integer(a), Value::Integer(b))
         | ("/", Value::Integer(a), Value::Integer(b)) => {
             if b == 0 {
@@ -594,11 +599,8 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
             } else if op == "/" {
                 checked_decimal(a as f64 / b as f64)
             } else {
-                // i64::MIN / -1 overflows → checked_div returns None.
-                match a.checked_div(b) {
-                    Some(n) => Eval::Normal(Value::Integer(n)),
-                    None => Eval::Error(simple_error("integer overflow")),
-                }
+                // i32::MIN / -1 overflows the Integer range → error like BC.
+                checked_i32(a.checked_div(b))
             }
         }
         ("mod", Value::Integer(a), Value::Integer(b)) => {
@@ -822,6 +824,34 @@ mod tests {
         assert!(e.message.contains("division by zero"));
         let e = err(apply_binary("mod", Value::Integer(1), Value::Integer(0)));
         assert!(e.message.contains("modulo by zero"));
+    }
+
+    #[test]
+    fn c28_integer_arithmetic_traps_i32_overflow() {
+        // BC's Integer is 32-bit; 2147483647 * 3 overflows and errors (it must
+        // not silently produce 6442450941 in the i64 store).
+        let e = err(apply_binary(
+            "*",
+            Value::Integer(2_147_483_647),
+            Value::Integer(3),
+        ));
+        assert!(e.message.contains("overflow"), "got {}", e.message);
+        // i32::MAX + 1 overflows.
+        let e = err(apply_binary(
+            "+",
+            Value::Integer(i32::MAX as i64),
+            Value::Integer(1),
+        ));
+        assert!(e.message.contains("overflow"));
+        // A result that stays within i32 is fine.
+        assert_eq!(
+            ok(apply_binary(
+                "+",
+                Value::Integer(2_000_000_000),
+                Value::Integer(100),
+            )),
+            Value::Integer(2_000_000_100)
+        );
     }
 
     #[test]
