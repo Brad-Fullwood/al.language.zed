@@ -51,8 +51,10 @@ is_allowlisted() {
 }
 
 # Real crate directory names, derived from disk (not hardcoded) so this stays
-# correct as crates are added/removed/renamed.
-mapfile -t REAL_CRATES < <(find crates -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+# correct as crates are added/removed/renamed. Uses `-exec basename` rather than
+# GNU-only `find -printf`, so it works with BSD find on stock macOS (the
+# release-dryrun path runs there without Homebrew coreutils).
+mapfile -t REAL_CRATES < <(find crates -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
 
 is_real_crate() {
     local name="$1"
