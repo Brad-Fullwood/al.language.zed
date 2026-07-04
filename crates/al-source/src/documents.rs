@@ -453,9 +453,38 @@ fn position_to_offset(rope: &Rope, line: u32, character: u32) -> Option<usize> {
     // entire line on every position-to-offset call).
     let line_slice = rope.line(line);
     let line_byte_start = rope.line_to_byte(line);
-    let utf16_idx = (character as usize).min(line_slice.len_utf16_cu());
+    // Clamp an over-EOL `character` to the line length EXCLUDING its trailing
+    // line break. `len_utf16_cu()` counts the `\n` (or `\r\n`), so clamping to
+    // it lands *past* the newline and merges this line with the next — text
+    // corruption relative to what the client computed. LSP: a character beyond
+    // line length "defaults back to the line length", i.e. before the
+    // terminator (C6).
+    let max_char = line_slice.len_utf16_cu() - line_break_utf16_width(line_slice);
+    let utf16_idx = (character as usize).min(max_char);
     let char_in_line = line_slice.utf16_cu_to_char(utf16_idx);
     Some(rope.byte_to_char(line_byte_start) + char_in_line)
+}
+
+/// UTF-16 width of the trailing line break of `line` (a slice from
+/// `Rope::line`): 2 for `\r\n`, 1 for a lone `\n`/`\r`, 0 if the line has no
+/// terminator (e.g. the last line of a file without a trailing newline). Line
+/// breaks are ASCII, so their UTF-16 width equals their char count.
+fn line_break_utf16_width(line: ropey::RopeSlice) -> usize {
+    let n = line.len_chars();
+    if n == 0 {
+        return 0;
+    }
+    match line.char(n - 1) {
+        '\n' => {
+            if n >= 2 && line.char(n - 2) == '\r' {
+                2
+            } else {
+                1
+            }
+        }
+        '\r' => 1,
+        _ => 0,
+    }
 }
 
 #[cfg(test)]
@@ -919,10 +948,37 @@ mod tests {
         // Line 0 is "hello" (5 utf16 cu). Pass character = 999.
         let off = position_to_offset(&rope, 0, 999);
         assert!(off.is_some(), "out-of-line character must clamp, not None");
-        // Clamped result must point to end of line 0 INCLUDING the trailing
-        // \n — ropey's `line(line)` slice covers the line break, so the
-        // utf16_cu_to_char clamp lands at byte index 6 (just past 'hello\n').
-        assert_eq!(off, Some(6));
+        // Clamped result must point to the end of the VISIBLE text on line 0
+        // (char offset 5, just after 'hello'), BEFORE the trailing '\n' — LSP
+        // clamps an over-EOL character to the line length, not past the
+        // terminator. Landing at 6 would swallow the newline and merge lines
+        // (C6).
+        assert_eq!(off, Some(5));
+    }
+
+    #[test]
+    fn position_to_offset_over_eol_does_not_merge_lines() {
+        // C6: replacing (0,2)..(0,999) with "XX" must NOT delete the newline.
+        // The end position clamps to offset 5 (before '\n'), so 'hello\nworld\n'
+        // becomes 'heXX\nworld\n', not 'heXXworld\n'.
+        let rope = Rope::from_str("hello\nworld\n");
+        let start = position_to_offset(&rope, 0, 2).unwrap();
+        let end = position_to_offset(&rope, 0, 999).unwrap();
+        assert_eq!(start, 2);
+        assert_eq!(end, 5, "end must clamp before the newline, not past it");
+        let mut edited = rope.clone();
+        edited.remove(start..end);
+        edited.insert(start, "XX");
+        assert_eq!(edited.to_string(), "heXX\nworld\n");
+    }
+
+    #[test]
+    fn position_to_offset_over_eol_crlf() {
+        // A \r\n terminator (width 2) must be excluded from the clamp too.
+        let rope = Rope::from_str("hi\r\nthere\r\n");
+        let off = position_to_offset(&rope, 0, 999);
+        // "hi" is 2 chars; clamp must land at char offset 2 (before \r\n).
+        assert_eq!(off, Some(2));
     }
 
     /// T055 regression: a non-existent line still returns None — the clamp is
