@@ -99,11 +99,23 @@ pub fn rename(
         }
     }
 
+    // C18: for non-local symbols, rename only references that BIND to the same
+    // declaration as the symbol under the cursor — not every identifier that
+    // happens to be spelled the same. Two objects that each declare
+    // `procedure Post()` resolve to different declarations, so renaming one no
+    // longer rewrites the other (or unrelated same-named fields/locals). The
+    // binder is the go-to-definition query: two positions bind to the same
+    // symbol iff they resolve to the same declaration location.
+    let cursor_decl = node_decl_loc(workspace, uri, node, source_bytes);
+
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
     if !refs.is_empty() {
         let edits: Vec<TextEdit> = refs
             .iter()
             .filter_map(|r| {
+                if ref_decl_loc(workspace, uri, &text, r) != cursor_decl {
+                    return None;
+                }
                 let matched_text = text.get(r.start_byte..r.end_byte)?;
                 let replacement = make_rename_text(node.kind(), matched_text, new_name);
                 Some(TextEdit {
@@ -112,7 +124,9 @@ pub fn rename(
                 })
             })
             .collect();
-        changes.push((uri.clone(), edits));
+        if !edits.is_empty() {
+            changes.push((uri.clone(), edits));
+        }
     }
 
     let current_path = uri.to_file_path().ok();
@@ -134,6 +148,9 @@ pub fn rename(
             let edits: Vec<TextEdit> = refs
                 .iter()
                 .filter_map(|r| {
+                    if ref_decl_loc(workspace, &file_uri, &file_text, r) != cursor_decl {
+                        return None;
+                    }
                     let matched_text = file_text.get(r.start_byte..r.end_byte)?;
                     let replacement = make_rename_text("", matched_text, new_name);
                     Some(TextEdit {
@@ -142,7 +159,9 @@ pub fn rename(
                     })
                 })
                 .collect();
-            changes.push((file_uri, edits));
+            if !edits.is_empty() {
+                changes.push((file_uri, edits));
+            }
         }
     }
 
@@ -151,6 +170,81 @@ pub fn rename(
     }
 
     Some(WorkspaceEdit { changes })
+}
+
+type BindKey = (String, u32, u32);
+
+/// The canonical declaration a position binds to. Two positions rename together
+/// iff they share a canonical declaration (C18).
+///
+/// When `pos` sits on a declaration's own name, that name *is* the canonical
+/// declaration — an object-local identity that keeps two objects' same-named
+/// `procedure Post()` declarations distinct. (Go-to-definition on a declaration
+/// is unreliable: it skips the same-file decl at the cursor and can fall
+/// through to an unrelated same-named procedure in another object.) For every
+/// other position (a usage) we defer to go-to-definition, which resolves a bare
+/// procedure call same-file-first and a qualified call to its true owner.
+fn decl_loc(workspace: &Workspace, uri: &Url, pos: Position) -> BindKey {
+    if let Some(key) = enclosing_declaration_name(workspace, uri, pos) {
+        return key;
+    }
+    if let Some(loc) =
+        super::definition::definition(workspace, uri, pos).and_then(|locs| locs.into_iter().next())
+    {
+        return (
+            loc.uri.to_string(),
+            loc.range.start.line,
+            loc.range.start.character,
+        );
+    }
+    (uri.to_string(), pos.line, pos.character)
+}
+
+/// If `pos` falls on the *name* of a declaration (procedure, trigger, field, or
+/// variable), return that name's location as a `BindKey`. Returns `None` when
+/// `pos` is inside a declaration but not on its name (i.e. a usage in the body),
+/// so the caller falls back to go-to-definition.
+fn enclosing_declaration_name(workspace: &Workspace, uri: &Url, pos: Position) -> Option<BindKey> {
+    let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, uri)?;
+    let node = al_syntax::find_node_at_position(&tree, &text, pos.into())?;
+    let mut cur = Some(node);
+    while let Some(n) = cur {
+        match n.kind() {
+            "procedure_declaration"
+            | "trigger_declaration"
+            | "event_procedure_declaration"
+            | "field_declaration"
+            | "variable_declaration" => {
+                let name = n.child_by_field_name("name")?;
+                // Only treat this as the declaration site when the cursor node
+                // sits within the name token; otherwise it is a body usage.
+                if node.start_byte() >= name.start_byte() && node.end_byte() <= name.end_byte() {
+                    let range: Range =
+                        al_syntax::ts_range_to_syntax(&name.range(), text.as_bytes()).into();
+                    return Some((uri.to_string(), range.start.line, range.start.character));
+                }
+                return None;
+            }
+            _ => {}
+        }
+        cur = n.parent();
+    }
+    None
+}
+
+fn node_decl_loc(
+    workspace: &Workspace,
+    uri: &Url,
+    node: tree_sitter::Node,
+    source: &[u8],
+) -> BindKey {
+    let range: Range = al_syntax::ts_range_to_syntax(&node.range(), source).into();
+    decl_loc(workspace, uri, range.start)
+}
+
+fn ref_decl_loc(workspace: &Workspace, uri: &Url, text: &str, r: &tree_sitter::Range) -> BindKey {
+    let range: Range = al_syntax::ts_range_to_syntax(r, text.as_bytes()).into();
+    decl_loc(workspace, uri, range.start)
 }
 
 /// Whether `new_name` can be spliced into AL source as a rename target without
@@ -372,6 +466,73 @@ mod tests {
         assert!(
             touched_lines.contains(&2) && touched_lines.contains(&8),
             "expected rename to span declaration (line 2) AND call (line 8); got {touched_lines:?}"
+        );
+    }
+
+    /// C18: two separate objects each declare `procedure Post()`. These are
+    /// distinct declarations. Renaming the one in object A must not rewrite the
+    /// same-spelled procedure (or its call) in object B.
+    #[test]
+    fn rename_procedure_does_not_touch_same_name_in_other_object() {
+        let ws = Workspace::new();
+        let uri_a = Url::parse("file:///test/src/A.al").unwrap();
+        let uri_b = Url::parse("file:///test/src/B.al").unwrap();
+        let src_a = r#"codeunit 50100 "A"
+{
+    procedure Post()
+    begin
+    end;
+
+    procedure Run()
+    begin
+        Post();
+    end;
+}
+"#;
+        let src_b = r#"codeunit 50101 "B"
+{
+    procedure Post()
+    begin
+    end;
+
+    procedure Run()
+    begin
+        Post();
+    end;
+}
+"#;
+        open_doc(&ws, &uri_a, src_a);
+        open_doc(&ws, &uri_b, src_b);
+        ws.file_index
+            .add_file(uri_a.to_file_path().unwrap(), src_a.to_string());
+        ws.file_index
+            .add_file(uri_b.to_file_path().unwrap(), src_b.to_string());
+
+        // Cursor on A's `Post` declaration.
+        let pos = Position {
+            line: 2,
+            character: 14,
+        };
+        let result = rename(&ws, &uri_a, pos, "Publish").expect("rename should produce edits");
+
+        // No edits may land in B.
+        for (edit_uri, _edits) in &result.changes {
+            assert_ne!(
+                edit_uri, &uri_b,
+                "C18: rename of A::Post leaked into B; edits: {:?}",
+                result.changes
+            );
+        }
+        // A's declaration and its call site should both be covered.
+        let (_uri, edits) = result
+            .changes
+            .iter()
+            .find(|(u, _)| u == &uri_a)
+            .expect("A should have edits");
+        let touched: Vec<u32> = edits.iter().map(|e| e.range.start.line).collect();
+        assert!(
+            touched.contains(&2) && touched.contains(&8),
+            "expected A's decl (line 2) and call (line 8); got {touched:?}"
         );
     }
 
