@@ -206,8 +206,39 @@ pub fn build_app_from_project(
         Some(project_dir),
     )?;
 
-    let file_name = format!("{}_{}_{}.app", s("publisher"), s("name"), s("version"));
+    // Sanitize each component so a hostile publisher/name/version (`<`, `>`,
+    // `:`, quotes, …) doesn't produce a filename that is invalid on Windows —
+    // where the native emit would otherwise fail with a raw IO error. The
+    // archive *contents* already round-trip such names exactly; only the
+    // on-disk artifact name needs sanitizing (C32).
+    let file_name = format!(
+        "{}_{}_{}.app",
+        sanitize_filename_component(&s("publisher")),
+        sanitize_filename_component(&s("name")),
+        sanitize_filename_component(&s("version")),
+    );
     Ok(BuiltApp { bytes, file_name })
+}
+
+/// Replace characters that are invalid in a Windows filename (the `al-lsp`
+/// release target) with `_`, and trim the trailing dots/spaces Windows also
+/// rejects. Never returns an empty string.
+fn sanitize_filename_component(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if (c as u32) < 0x20 => '_',
+            c => c,
+        })
+        .collect();
+    while out.ends_with('.') || out.ends_with(' ') {
+        out.pop();
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
 }
 
 fn collect_al_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -291,6 +322,52 @@ mod tests {
         assert!(names.contains(&"src/src/Hello.al"));
         assert!(contents.has_source());
         assert!(!contents.has_compiled_code());
+    }
+
+    #[test]
+    fn c32_hostile_names_produce_a_valid_filename() {
+        // A project name/publisher containing Windows-invalid characters must
+        // still emit a filesystem-safe `.app` name (the archive contents keep
+        // the exact names; only the on-disk filename is sanitized).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"App <X>",
+                 "publisher":"Pub:Co", "version":"1.0.0.0", "platform":"26.0.0.0",
+                 "application":"26.5.0.0", "runtime":"14.0", "target":"Cloud",
+                 "idRanges":[{"from":50100,"to":50149}] }"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/Hello.al"),
+            "codeunit 50100 \"Spike Hello\" { procedure Greet(): Text begin exit('hi'); end; }",
+        )
+        .unwrap();
+
+        let built =
+            build_app_from_project(dir.path(), "17.0.34.45391", "2026-06-16T00:00:00Z").unwrap();
+        assert_eq!(built.file_name, "Pub_Co_App _X__1.0.0.0.app");
+        // No character that Windows rejects in a filename survives.
+        assert!(
+            !built
+                .file_name
+                .contains(['<', '>', ':', '"', '/', '\\', '|', '?', '*']),
+            "sanitized filename still has an invalid char: {}",
+            built.file_name
+        );
+        // The build itself must succeed (the write would fail on Windows with a
+        // raw name).
+        assert!(!built.bytes.is_empty());
+    }
+
+    #[test]
+    fn sanitize_filename_component_cases() {
+        assert_eq!(sanitize_filename_component("a<b>c"), "a_b_c");
+        assert_eq!(sanitize_filename_component("Pub:Co"), "Pub_Co");
+        assert_eq!(sanitize_filename_component("trailing. "), "trailing");
+        assert_eq!(sanitize_filename_component(""), "_");
+        assert_eq!(sanitize_filename_component("Normal Name"), "Normal Name");
     }
 
     #[test]
