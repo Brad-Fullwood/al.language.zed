@@ -35,6 +35,14 @@ be validated by pushing and watching the actual pipeline.
 
 ### F1 (P0) — CI is red on `dev`, and the three rescue PRs are stalled
 
+> **STATUS: FIXED (2026-07-03).** All five branches merged into `dev` (PRs #10-#14
+> auto-closed as merged), the socket clippy fix applied and verified, plus a same-day
+> quick-xml RUSTSEC advisory fixed by upgrading to 0.41. `dev` CI is now **fully green
+> across all 5 jobs** (runs on `4c98c7c` and `2ba4cfd`) — the first fully-green dev in the
+> repo's recent history. The stale branch refs remain only because session credentials
+> cannot delete refs; they are one-click deletions in the GitHub UI.
+
+
 `dev` HEAD `71b9333` fails the `CI (ubuntu-latest)`, `CI (macos-latest)`, and `cargo-deny` jobs.
 Three PRs from a prior session already exist to fix this, but none is green yet:
 
@@ -125,6 +133,15 @@ allowed to fail, as the early-warning channel for lint-rot. Document the bump pr
 deliberate diff, not ambient drift.
 
 ### F4 (P1) — Remote agents cannot build the workspace at all
+
+> **STATUS: FIXED (2026-07-03).** Implemented as option 2 via CI: the
+> `Vendor grammar snapshot` workflow (`.github/workflows/vendor-grammar.yml`)
+> pushes the checked-out submodule tree to an orphan `grammar-vendor` branch
+> (exact rev recorded in `VENDORED_FROM_REV`), and `scripts/fetch-grammar.sh`
+> restores it in sandboxes; `CLAUDE.md` documents the fallback. Empirically
+> validated in-session: after `fetch-grammar.sh`, `cargo test --workspace
+> --exclude zed-al` passed the full suite locally for the first time.
+
 
 The `tree-sitter-al` submodule lives in a separate repo that sandboxed/remote agent sessions
 (scoped to `al.language.zed` only) cannot clone — this review hit it, and PR #13 shipped
@@ -282,6 +299,11 @@ daemon `build_dispatch/build.rs`, `al-dap/bc_debug.rs` plumbing, `al-bc` sanitiz
 
 ### C1 (P1) — Interpreter: mixed Integer/Decimal division is unsupported
 
+> **EMPIRICALLY CONFIRMED (2026-07-03):** run end-to-end through the interp test
+> backend, `Avg := Total / Count` (Decimal ÷ Integer) fails with
+> `binary operator `/` not supported on (Decimal, Integer)`.
+
+
 `al-runtime/src/interpreter/eval_expr.rs` `apply_binary`: `+`/`-`/`*` have mixed
 Integer↔Decimal arms (lines 618–623), but `/` does not — `("/", Integer, Decimal)` and
 `("/", Decimal, Integer)` fall through to the catch-all `binary operator not supported`
@@ -294,6 +316,11 @@ four arithmetic operators. **Verify:** `cargo test -p al-runtime` plus an `al-te
 interpreter fixture dividing Decimal by Integer.
 
 ### C2 (P1) — Interpreter: three-way divergence in string equality semantics
+
+> **EMPIRICALLY CONFIRMED (2026-07-03):** `c: Code[10] := 'abc'; c = 'ABC'` evaluates
+> **false** (BC: true), and `case 'ABC' of 'abc':` **matches** (BC: no match) — both
+> directions demonstrated through the interp test backend.
+
 
 - BC semantics: `Code` values are uppercased **at assignment**, so `Code = Code` is
   effectively case-insensitive; `Text = Text` is case-sensitive.
@@ -346,6 +373,10 @@ keystroke triggers a run" contract. **Fix:** hold the `diag_task` lock across
 abort → spawn → store (single critical section).
 
 ### C6 (P2) — Text store: past-EOL clamp lands inside the line break
+
+> **EMPIRICALLY CONFIRMED (2026-07-03):** replacing (0,2)-(0,999) in `"hello\nworld\n"`
+> with `XX` yields `"heXXworld\n"` — the newline is swallowed and the lines join.
+
 
 `al-source/src/documents.rs:445–459` `position_to_offset` clamps an oversized `character`
 to `line_slice.len_utf16_cu()`, which **includes the trailing `\n`** — the regression test
@@ -424,6 +455,13 @@ generations instead of lengths.
 
 ### C14 (P2) — The formatter is line-heuristic, with concrete misfire classes
 
+> **EMPIRICALLY CONFIRMED (2026-07-03):** `'a;b':` case-label bodies lose their indent
+> level (label detector rejects labels containing `;`), and a `// then begin` comment on a
+> var-section line corrupts the entire rest of the file (declaration dedented, following
+> procedure over-indented, the object's closing `}` dragged inward). Idempotency itself held
+> across the 18-file repo corpus — the misfires are wrong-on-first-pass, stable thereafter.
+
+
 `al-syntax/src/formatting.rs` `format_al` is a line-based state machine (indent counters,
 `ends_with(" begin")`, label detection by trailing `:`), even though a tree-sitter CST is
 available in the same crate. Concrete misfires found by inspection: a `case` label
@@ -480,6 +518,10 @@ each declaring `procedure Post()`; renaming one must not touch the other.
 
 ### C19 (P2) — Rename never validates the new name
 
+> **EMPIRICALLY CONFIRMED (2026-07-03):** renaming a local to `"my var with spaces"`
+> returns a WorkspaceEdit (1 file) — no rejection, broken code would be written.
+
+
 Neither `prepare_rename` nor `rename` (`rename.rs:8,30`) checks that `new_name` is a valid
 AL identifier. Renaming to `my var`, `2Start`, or a reserved keyword splices the raw string
 into every touched file — instant syntax errors workspace-wide (multiplied by C18's blast
@@ -490,6 +532,13 @@ variables cannot); return an LSP error for invalid names. **Verify:** unit tests
 space-containing, keyword, and empty new names.
 
 ### C20 (P2) — Record mock diverges from BC on `Init` and `Next`
+
+> **EMPIRICALLY CONFIRMED (2026-07-03):** `Item."No." := 'H1'; Item.Init(); Item.Insert();`
+> fails with `Insert: primary key field 1 has no value in current row`. Also confirmed:
+> `SetRange("No.", 'ABC')` does not match stored `'abc'` (the C2 filter leg). The rest of
+> the record engine probed correct: duplicate-key Insert errors, Modify-without-insert
+> errors, Delete→Get fails, Next-past-end returns 0.
+
 
 `al-runtime/src/mock/record.rs`:
 - `init()` (`:170-174`) clears the **entire** buffer. BC's `Init` explicitly preserves
@@ -522,6 +571,11 @@ with `includeDeclaration: false` — the declaration must be absent and the clic
 present.
 
 ### C22 (P1) — Object index collapses same-named objects of different types
+
+> **EMPIRICALLY CONFIRMED (2026-07-03):** with the page indexed after the table,
+> go-to-definition from `c: Record Customer` (cursor at token start) lands on
+> **page.al** — a Record reference navigating to a page.
+
 
 `al-source/src/file_index.rs:88,369`: `objects` maps **lowercase object name → one
 `PathBuf`**, last-write-wins. AL object names are unique **per object type** — `table
@@ -557,6 +611,11 @@ of silent misformatting. **Verify:** unit tests per builtin against BC-documente
 
 ### C25 (P1) — Interpreter: `var` parameters are silently pass-by-value
 
+> **EMPIRICALLY CONFIRMED (2026-07-03):** run end-to-end through the interp test
+> backend, `procedure Bump(var i: Integer) begin i := i + 1; end` leaves the
+> caller's variable unchanged (`n=1` after `Bump(n)`).
+
+
 `al-runtime/src/interpreter/dispatch.rs:334-366`: arguments are bound into the callee's
 frame by **clone** (`frame.bind(&param.name, args.get(i).cloned())`), the internal
 `ParamDecl` struct (`:377-380`) doesn't even carry an `is_var` flag, `is_var` appears
@@ -574,6 +633,10 @@ the increment; plus a Record and a Text variant.
 
 ### C24 (P2) — Interpreter: `break`/`continue` statements are unhandled
 
+> **EMPIRICALLY CONFIRMED (2026-07-03):** `break` inside `repeat..until` fails with
+> `unbound identifier: break`.
+
+
 `eval_stmt.rs:83-111`: the statement dispatch has no arm for a break/continue statement kind
 and no `Eval::Break`/`Continue` variants exist — such statements fall into the
 `eval_expression_stmt` catch-all, which treats `break` as an identifier/call lookup.
@@ -583,6 +646,109 @@ add `Eval::Break` (and `Continue` if the grammar has it), handle in the loop eva
 (`eval_while`/`eval_for`/`eval_foreach`/`eval_repeat` swallow it; `eval_block` propagates
 it), and error if it escapes a loop. **Verify:** loop fixtures with early `break` matching
 BC-observed iteration counts.
+
+### C26 (P2) — Dead-code analysis flags every event subscriber as High-confidence dead
+
+> **EMPIRICALLY CONFIRMED (2026-07-03):** a local `[EventSubscriber]` procedure with no
+> direct calls is reported `("HandleThing", High)` by `dead_code()`.
+
+
+`al-analysis/src/queries/dead_code.rs`: `find_unused_procedures` skips event **publishers**
+(`has_event_attribute`, `:415-450`, matches only `integrationevent`/`businessevent`) but not
+`[EventSubscriber]` procedures. Subscribers are conventionally declared `local procedure`
+and are invoked by the event system, never by a direct call — so with zero textual call
+sites each one is reported as **High confidence** ("provably unreachable within AL
+semantics"). Subscriber codeunits are the single most common BC extension pattern; `al
+dead-code` currently tells users to delete their event wiring with maximum confidence. The
+module itself parses the `EventSubscriber` attribute two functions later
+(`find_orphaned_subscribers`, `:629`) — the exclusion just isn't shared. `[Test]`
+procedures (runner-invoked) similarly land as Medium-confidence noise. **Fix:** extend the
+attribute check (or a sibling) to skip `eventsubscriber`- and `test`-attributed procedures
+from the unused-procedure pass (they remain covered by `find_orphaned_subscribers` for the
+genuinely-orphaned case). **Verify:** unit test — a local `[EventSubscriber]` with no direct
+calls must NOT appear in results; an orphaned one must still appear via PublisherRemoved.
+
+### C27 (P1) — The harness's fixture-gated suites are dead and unreproducible
+
+Two `al-test-harness` suites gate on `AL_TEST_PROJECT_PATH`: `data_driven.rs` (289 baked
+assertions across 8 LSP features) and `zed_simulation.rs` (40 end-to-end fixture tests).
+Empirically (2026-07-03): without the env var both silently skip (so they never run in CI —
+F8); pointed at the repo's own bundled fixture (`crates/al-test-harness/data/test_al_project`),
+`data_driven` fails **0/289** and `zed_simulation` fails **30/40**. The expectations were
+authored against a private out-of-repo project whose identity is recorded nowhere. 329
+assertions of the project's deepest LSP verification are unrunnable by anyone but the
+original author, and F8's naive fix (set the env var in CI) would turn CI red. **Fix:**
+regenerate fixture + expectations as a pair against a committed project (extend
+`test_al_project` and re-bake), and make both suites fail loudly on env-var mismatch instead
+of silently skipping. **Verify:** CI runs both suites green with the committed fixture.
+
+### C28 (P1) — Interpreter Integer is i64: 32-bit overflow passes silently
+
+Empirically (2026-07-03): `a := 2147483647; a := a * 3;` yields **6442450941 with no
+error**. BC's `Integer` is 32-bit signed and traps this overflow at runtime; the
+interpreter's `Value::Integer(i64)` only traps i64 overflow, so arithmetic that would error
+in BC silently produces values that cannot exist in BC (and comparisons/branches downstream
+diverge). BigInteger exists in AL for the 64-bit case, compounding the conflation. **Fix:**
+either represent Integer as i32 (with BigInteger as i64), or range-check results of integer
+ops against i32 bounds and error like BC. **Verify:** overflow fixtures per operator.
+
+### C29 (P1) — Test-runner path skips local default-binding: uninitialized locals error
+
+Empirically (2026-07-03): inside a `[Test]` body, `u := 'x' + t + 'y'` with unassigned
+`t: Text` fails with `unbound identifier: t`. BC zero-initializes every local. Root cause:
+the interp backend's direct test-method execution (`al-test/src/backends/interp.rs:392`)
+builds a bare `CallFrame::new(..)` and evaluates the body **without** the
+`bind_local_vars`/`bind_structured_locals` calls that `dispatch_workspace_procedure`
+(`al-runtime/src/interpreter/dispatch.rs:344-348`) performs — so default-binding exists only
+for *called* procedures, not for the test bodies themselves. Any test reading a local before
+assignment (`if t = '' then`, accumulators, out-style temporaries) errors. **Fix:** factor
+the frame-setup (params + local binding) into a shared helper used by both paths.
+**Verify:** the uninit-local fixture passes; existing `tests_records`/coverage suites stay
+green. Also noted in the same battery: `StrSubstNo('%1 %2', 'X')` leaves `%2` verbatim where
+BC substitutes blank — fold into C23's builtin-fidelity work.
+
+### C30 (P1) — Go-to-definition on `Record X` self-references or lands on the wrong kind
+
+Empirically (2026-07-03), with `table Customer` + `page Customer` + `c: Record Customer` in
+a workspace (page indexed last):
+
+- cursor **inside** the `Customer` token → definition returns **the cursor's own usage
+  site** (`/t/use.al` 4:18-26);
+- cursor at the token's **first character** → definition returns **the page**, not the table.
+
+Two stacked defects in `al-analysis/src/queries/definition.rs`:
+1. `is_object_modifier_target` (`:210`) recognizes only `object_modifier`/`implements_clause`
+   — the **type-subtype position of a variable declaration** (`Record X`, `Page X`,
+   `Codeunit X` — the most common object references in AL) is not treated as an object
+   name, so the early object-resolution stage never runs for unquoted single-word names.
+2. The last-resort "first same-file reference" fallback (`:115-125`) sits **above** the
+   workspace-object stage (`:129`) and its only guard is `range.start != position`, so it
+   returns the reference under the cursor itself whenever the cursor is not on the token's
+   first character — shadowing the object lookup entirely. When the cursor *is* at the first
+   character, the object stage runs and C22's kind-blind map picks whichever same-named
+   object indexed last.
+
+**Fix:** teach the object-name detection the type-subtype context (the node's parent chain
+includes the type reference — `al_syntax::type_resolver::parse_type_reference` already
+understands it); move the first-reference fallback **below** the workspace-object stage and
+exclude the node under the cursor from candidate refs; then C22's kind-keyed map makes the
+result kind-correct. **Verify:** the two probes above — mid-token and first-character cursor
+must both land on the **table**.
+
+### C31 (P3) — Workspace-table field resolution is a line scanner
+
+Empirically (2026-07-03): hover/completion on `H.Amount` (H: Record of a workspace table)
+works when the table is formatted one-field-per-line and returns **nothing** when two
+`field(...)` declarations share a line. Root cause chain, traced with debug logging:
+receiver and object path resolve correctly; `workspace_member`
+(`al-analysis/src/resolution.rs:1223`) matches only procedures and enum members from the
+document symbols, so **fields** fall through to `find_workspace_field` (`:1373`) — a
+line-based text scan (`parse_field_line(trimmed)`, one declaration per line). The parse
+tree already carries every field as a symbol child with its type; the text scan is
+redundant *and* wrong. **Fix:** add a Field arm to `workspace_member`'s symbol loop and
+delete `find_workspace_field`. **Verify:** the compact-table probe returns
+`Amount: Decimal (field)` like the conventional layout does. (Third empirically confirmed
+member of the C14 line-heuristic family, after the formatter and the XLIFF extractor.)
 
 ### C16 (P2) — Finish the deep read with the same method
 
@@ -624,7 +790,34 @@ a user-visible warning. `al-project` `AlConfig::merge` audited clean (per-key pa
 unknown-key reporting). The MCP server exposes a curated 15-tool registry (no dynamic
 tool injection). Interpreter control flow reads led to C24/C25.
 
+### C32 (P3) — Emitted `.app` filename is not sanitized
+
+Empirically (2026-07-03): a project named `Scratch & App <X>` by `Pübli'sher` emits
+`Pübli'sher_Scratch & App <X>_1.0.0.0.app` — `<`/`>` are invalid in Windows filenames, so
+the same build fails with a raw IO error on Windows (the Windows `al-lsp` build is a release
+target). `build.rs` already has a `sanitize_filename` helper for organize-files; apply the
+same mapping to the artifact name in `al-compile`'s native emit path. **Verify:** emit
+succeeds on Windows CI for a hostile-name fixture. (The archive *contents* round-trip
+perfectly — manifest and SymbolReference escaping verified exact for `&`, `<`, `>`,
+quotes, and non-ASCII.)
+
 ### What held up under scrutiny (no action)
+
+Adversarial batteries that came back clean (2026-07-03): formatter idempotency over the
+18-file repo corpus (misfires are first-pass-wrong but stable — see C14); XLIFF extraction/
+generation/parse round-trip with hostile captions (`&`, `<`, quotes, `''` escapes) — exact;
+native emit → app_reader round-trip with hostile object names — exact (see C32 for the
+filename nit); record-store duplicate-key/modify-missing/delete/next-past-end semantics;
+CopyStr clamping, empty `for` ranges, `exit(value)` from loops, `div`/`mod` signs, integer
+`+`/`-`/`*` i64-overflow trapping (but see C28 for the missing i32 bound).
+
+The daemon binary itself survives adversarial input (verified against the running
+`al-lsp daemon` over its Unix socket, 2026-07-03): a malformed JSON line returns a
+structured `-32700` error and the connection stays usable; a subsequent valid `status`
+request succeeds; a 2 MB line is rejected without killing the daemon, which answers the next
+request normally. The CLI (`al-explorer`) degrades gracefully on hostile inputs — empty
+file, 500 bytes of `/dev/urandom`, CRLF source, out-of-range and `u32::MAX` positions all
+produce clean "no result" messages with exit 0, no panic.
 
 The `.NET` FFI host (`al-semantic/src/host.rs`) is exemplary: null/negative/plausibility
 checks on the returned buffer, drop-guard freeing, correct safety comments. `al-source`'s
@@ -642,7 +835,7 @@ chased in `resolution.rs`/`calls.rs` all turned out guarded.
 | Phase | Items | Gate |
 | --- | --- | --- |
 | 0. CI resuscitation | F1 (socket fix → land #11, #12, #13 in order), F2 (triggers/branch protection), F3 (toolchain pin) | All 5 CI jobs green on `dev`; **after** F2's trigger/branch-protection change lands, a deliberate failure on a feature branch (or its PR) demonstrably blocks the merge — today `ci.yml` runs only on `main`/`dev`, so this gate is satisfied by the F2 change, not by current state. **Do this before any other code change** — nothing below is verifiable until CI works. |
-| 1. Correctness | C11 (data loss — do first), C25 (var params by value — the top interpreter fix), C17 (DAP breakpoint stall), C18/C19 (rename safety), C22 (object-index collision), C1, C2, C20, C24, C4, C6 (interpreter semantics + LSP text-store bugs); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
+| 1. Correctness | C11 (data loss — do first), C25 (var params by value — the top interpreter fix), C29 (test bodies skip local binding), C28 (Integer must trap 32-bit overflow), C17 (DAP breakpoint stall), C18/C19 (rename safety), C22 (object-index collision), C1, C2, C20, C24, C4, C6 (interpreter semantics + LSP text-store bugs), C26 (dead-code subscriber false positives), C27 (resurrect the 329 fixture assertions), C30 (definition staging); C9 if emit fidelity matters this cycle | New regression tests land with each fix; `cargo test -p al-runtime -p al-source -p al-lsp` plus harness fixtures. |
 | 2. Truth surfaces | F5 (stale comments/docs/contradictions), F6 + C15 (DAP schema — re-verify per field, CodeLens, MCP command, tasks.json), C3 documentation | Each item verified at the layer `CLAUDE.md` requires (harness / editor screenshot). |
 | 3. Robustness | F7 (unwrap ratchet in al-lsp/al-protocol), F8 (zed_simulation fixture in CI, al-emit tests), C5, C7, C8, C12, C13, C14, F11 | Garbage-frame harness test green; zed_simulation tests **executing** in CI (>0 run, 0 skipped for the fixture reason — requires F8's committed fixture and a real `AL_TEST_PROJECT_PATH`, since `ci.yml:70` currently sets it to `""` and the suite silently skips); formatter idempotency fuzz green. |
 | 4. Structure & docs | F9 (move-only splits), F10 (doc consolidation), F4 option 2/3 if option 1 was declined, C16 (finish the sweep) | Single tracker; no >2 000-line files; C16 sweep documented. |

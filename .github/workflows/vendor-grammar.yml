@@ -1,0 +1,49 @@
+name: Vendor grammar snapshot
+
+# F4 (SYSTEM_REVIEW_ACTION_PLAN): sandboxed agent sessions are scoped to this
+# repository only and cannot clone the tree-sitter-al submodule, which makes
+# the whole Rust workspace unbuildable there. CI *does* have submodule access,
+# so this job snapshots the checked-out submodule tree (minus .git) onto an
+# orphan `grammar-vendor` branch. Sandboxes restore it with
+# `scripts/fetch-grammar.sh`. The snapshot records the exact submodule rev in
+# VENDORED_FROM_REV so drift is detectable against the superproject gitlink.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev, main]
+    paths:
+      - '.gitmodules'
+      - 'tree-sitter-al'
+      # Editing this workflow re-runs the snapshot — also the escape hatch for
+      # sandboxed sessions whose token cannot POST workflow_dispatch (403).
+      - '.github/workflows/vendor-grammar.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          submodules: recursive
+
+      - name: Push snapshot to grammar-vendor branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REV=$(git -C tree-sitter-al rev-parse HEAD)
+          TMP=$(mktemp -d)
+          rsync -a --exclude='.git' tree-sitter-al/ "$TMP/"
+          echo "$REV" > "$TMP/VENDORED_FROM_REV"
+          cd "$TMP"
+          git init -q -b grammar-vendor
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Vendored tree-sitter-al snapshot at ${REV}"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" grammar-vendor

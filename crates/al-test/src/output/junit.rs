@@ -322,7 +322,9 @@ mod tests {
         use quick_xml::events::Event;
         use quick_xml::Reader;
         let mut reader = Reader::from_str(&xml);
-        reader.config_mut().trim_text(true);
+        // No trim_text: 0.41 splits text at entity boundaries, so per-fragment
+        // trimming would eat interior spaces next to entities. Trim once at
+        // the end instead (drops the element's indentation whitespace).
         let mut in_failure = false;
         let mut found_text = String::new();
         loop {
@@ -330,9 +332,26 @@ mod tests {
                 Ok(Event::Start(e)) if e.local_name().as_ref() == b"failure" => {
                     in_failure = true;
                 }
+                // quick-xml 0.41: text no longer arrives pre-unescaped as one
+                // event — literal runs come as `Text` and each entity/char
+                // reference as a separate `GeneralRef`. Accumulate both until
+                // the closing tag.
                 Ok(Event::Text(e)) if in_failure => {
-                    found_text = e.unescape().unwrap().to_string();
-                    in_failure = false;
+                    found_text.push_str(&e.xml10_content().unwrap());
+                }
+                Ok(Event::GeneralRef(e)) if in_failure => {
+                    if let Some(ch) = e.resolve_char_ref().unwrap() {
+                        found_text.push(ch);
+                    } else {
+                        match e.decode().unwrap().as_ref() {
+                            "amp" => found_text.push('&'),
+                            "lt" => found_text.push('<'),
+                            "gt" => found_text.push('>'),
+                            "quot" => found_text.push('"'),
+                            "apos" => found_text.push('\''),
+                            other => panic!("unexpected entity reference: &{other};"),
+                        }
+                    }
                 }
                 Ok(Event::End(e)) if e.local_name().as_ref() == b"failure" => {
                     in_failure = false;
@@ -343,7 +362,8 @@ mod tests {
             }
         }
         assert_eq!(
-            found_text, raw_error,
+            found_text.trim(),
+            raw_error,
             "Round-tripped failure text must equal original"
         );
     }
