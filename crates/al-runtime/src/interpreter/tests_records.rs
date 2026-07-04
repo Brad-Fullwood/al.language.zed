@@ -137,6 +137,70 @@ fn c25_var_param_non_lvalue_arg_is_not_written_back() {
     assert_eq!(ok(r), Value::Integer(15));
 }
 
+// ─────────────────────────── C2: Code case semantics ───────────────────────
+
+#[test]
+fn c2_code_equality_is_case_insensitive() {
+    // BC uppercases Code at assignment and compares it caselessly. A Code var
+    // assigned 'abc' equals the literal 'ABC'.
+    let cu = r#"codeunit 50193 "Code Eq"
+{
+    procedure Run(): Boolean
+    var
+        c: Code[10];
+    begin
+        c := 'abc';
+        exit(c = 'ABC');
+    end;
+}
+"#;
+    let r = run(&[("/ws/CodeEq.al", cu)], "Code Eq", "Run", vec![]);
+    assert_eq!(ok(r), Value::Boolean(true));
+}
+
+#[test]
+fn c2_text_equality_is_case_sensitive() {
+    // Control: Text equality stays case-sensitive.
+    let cu = r#"codeunit 50194 "Text Eq"
+{
+    procedure Run(): Boolean
+    var
+        t: Text;
+    begin
+        t := 'abc';
+        exit(t = 'ABC');
+    end;
+}
+"#;
+    let r = run(&[("/ws/TextEq.al", cu)], "Text Eq", "Run", vec![]);
+    assert_eq!(ok(r), Value::Boolean(false));
+}
+
+#[test]
+fn c2_code_case_matching_is_case_insensitive() {
+    // A CASE over a Code selector matches case-insensitively.
+    let cu = r#"codeunit 50195 "Code Case"
+{
+    procedure Run(): Integer
+    var
+        c: Code[10];
+        r: Integer;
+    begin
+        c := 'abc';
+        case c of
+            'ABC':
+                r := 5;
+            else
+                r := 1;
+        end;
+        exit(r);
+    end;
+}
+"#;
+    let r = run(&[("/ws/CodeCase.al", cu)], "Code Case", "Run", vec![]);
+    assert_eq!(ok(r), Value::Integer(5));
+}
+
 // ───────────────────────────────── B6: records ─────────────────────────────
 
 #[test]

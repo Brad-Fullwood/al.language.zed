@@ -506,7 +506,7 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
             let mut lc = ll.walk();
             for lbl in ll.named_children(&mut lc) {
                 if let Eval::Normal(v) = eval_expr(lbl, source, stack, ctx) {
-                    if values_equal_for_case(&selector, &v) {
+                    if crate::interpreter::eval_expr::values_equal(&selector, &v) {
                         matched = true;
                         break;
                     }
@@ -571,6 +571,16 @@ fn eval_assignment(
     };
 
     if let Some(slot) = stack.lookup_mut(&lhs_name) {
+        // C2: assigning to a `Code`-typed variable coerces the value to `Code`
+        // and uppercases it (BC uppercases Code at assignment and treats it as
+        // caseless). Preserving the slot's `Code` type is what makes a later
+        // `CodeVar = 'ABC'` behave case-insensitively — a plain overwrite would
+        // demote the slot to `Text` and lose that. Only string-like RHS values
+        // are coerced; anything else overwrites as-is.
+        let rhs_val = match (&*slot, &rhs_val) {
+            (Value::Code(_), Value::Text(s) | Value::Code(s)) => Value::Code(s.to_uppercase()),
+            _ => rhs_val,
+        };
         *slot = rhs_val;
     } else if let Some(frame) = stack.top_mut() {
         // Auto-bind: declare in the current frame on first assignment
@@ -1095,31 +1105,11 @@ fn named_stmt_child(node: Node<'_>, n: usize) -> Option<Node<'_>> {
     children.into_iter().nth(n)
 }
 
-/// Case-insensitive equality for CASE selector vs arm value.
-fn values_equal_for_case(a: &Value, b: &Value) -> bool {
-    use Value::*;
-    match (a, b) {
-        (Integer(x), Integer(y)) => x == y,
-        (Decimal(x), Decimal(y)) => x == y,
-        // For Integer vs Decimal: round-trip via i64 if the decimal has no
-        // fractional part AND fits in i64 — exact comparison. Otherwise the
-        // Decimal cannot equal a whole-number Integer regardless of the
-        // lossy `as f64` cast (which loses precision above 2^53). This
-        // matters for currency-like AL values where i64 magnitudes >2^53
-        // are common.
-        (Integer(x), Decimal(y)) | (Decimal(y), Integer(x))
-            if y.fract() == 0.0 && *y >= i64::MIN as f64 && *y <= i64::MAX as f64 =>
-        {
-            *x == *y as i64
-        }
-        (Integer(_), Decimal(_)) | (Decimal(_), Integer(_)) => false,
-        (Boolean(x), Boolean(y)) => x == y,
-        (Text(x), Text(y)) | (Code(x), Code(y)) => x.eq_ignore_ascii_case(y),
-        (Text(x), Code(y)) | (Code(y), Text(x)) => x.eq_ignore_ascii_case(y),
-        (Null, Null) | (Empty, Empty) => true,
-        _ => false,
-    }
-}
+// CASE selector-vs-arm matching uses the same `values_equal` as `=`/`<>`
+// (C2): BC evaluates a CASE arm exactly like an equality test, so Text is
+// case-sensitive and Code is case-insensitive. The former separate
+// `values_equal_for_case` compared Text case-insensitively, which matched
+// `'ABC'` against `'abc'` where BC does not.
 
 #[cfg(test)]
 mod tests {
@@ -1686,16 +1676,24 @@ mod tests {
     }
 
     #[test]
-    fn case_text_selector_is_case_insensitive() {
-        // AL CASE compares Text/Code case-insensitively. Selector 'ABC'
-        // matches arm label 'abc'.
+    fn case_text_selector_is_case_sensitive() {
+        // C2: BC CASE matches with `=` semantics, so a Text selector is
+        // case-SENSITIVE. 'ABC' does NOT match the arm 'abc' → else runs.
         let (eval, stack) = run_stmt("case 'ABC' of 'abc': x := 5; else x := 1; end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(
             stack.lookup("x"),
-            Some(&Value::Integer(5)),
-            "Text CASE labels must compare case-insensitively"
+            Some(&Value::Integer(1)),
+            "Text CASE labels compare case-sensitively; 'ABC' must not match 'abc'"
         );
+    }
+
+    #[test]
+    fn case_text_selector_exact_match() {
+        // Control: an exact-case Text label still matches.
+        let (eval, stack) = run_stmt("case 'abc' of 'abc': x := 5; else x := 1; end;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(5)));
     }
 
     #[test]

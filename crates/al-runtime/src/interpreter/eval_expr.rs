@@ -458,6 +458,14 @@ fn eval_expression_node(
         };
 
         if let Some(slot) = stack.lookup_mut(&lhs_name) {
+            // C2: coerce/uppercase to Code when the target is a Code variable
+            // (BC uppercases Code at assignment and treats it caselessly), so a
+            // later `CodeVar = 'ABC'` matches case-insensitively. A plain
+            // overwrite would demote the slot to Text.
+            let new_val = match (&*slot, &new_val) {
+                (Value::Code(_), Value::Text(s) | Value::Code(s)) => Value::Code(s.to_uppercase()),
+                _ => new_val,
+            };
             *slot = new_val;
         } else if let Some(frame) = stack.top_mut() {
             frame.bind(&lhs_name, new_val);
@@ -660,15 +668,28 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
     }
 }
 
-fn values_equal(a: &Value, b: &Value) -> bool {
+/// AL value equality for `=`/`<>` and CASE matching. BC semantics (C2):
+/// - `Text = Text` is **case-sensitive**.
+/// - `Code = Code` and `Code = Text` are **case-insensitive** (Code is an
+///   uppercased, caseless type; a Text on the other side is coerced to Code).
+/// - `Integer = Decimal` compares exactly, round-tripping through i64 for
+///   whole-number decimals so large magnitudes (>2^53) don't lose precision
+///   in an `as f64` cast.
+pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
     use Value::*;
     match (a, b) {
         (Integer(x), Integer(y)) => x == y,
         (Decimal(x), Decimal(y)) => x == y,
-        (Integer(x), Decimal(y)) | (Decimal(y), Integer(x)) => (*x as f64) == *y,
+        (Integer(x), Decimal(y)) | (Decimal(y), Integer(x))
+            if y.fract() == 0.0 && *y >= i64::MIN as f64 && *y <= i64::MAX as f64 =>
+        {
+            *x == *y as i64
+        }
+        (Integer(_), Decimal(_)) | (Decimal(_), Integer(_)) => false,
         (Boolean(x), Boolean(y)) => x == y,
-        (Text(x), Text(y)) | (Code(x), Code(y)) => x == y,
-        (Text(x), Code(y)) | (Code(y), Text(x)) => x == y,
+        (Text(x), Text(y)) => x == y,
+        // Code is caseless in BC; a Text compared to a Code is coerced to Code.
+        (Code(x), Code(y)) | (Text(x), Code(y)) | (Code(y), Text(x)) => x.eq_ignore_ascii_case(y),
         (Date(x), Date(y)) | (Time(x), Time(y)) | (DateTime(x), DateTime(y)) => x == y,
         (Null, Null) | (Empty, Empty) => true,
         _ => false,
