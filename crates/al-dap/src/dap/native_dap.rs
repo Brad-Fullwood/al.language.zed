@@ -1209,24 +1209,50 @@ where
         find_app,
     };
 
-    let mut stdin = BufReader::new(io::stdin());
     let mut stdout = io::stdout();
 
-    loop {
-        // Drain any BC push events (e.g. stopped, output) before blocking on stdin.
-        while let Ok(frame) = dap_event_rx.try_recv() {
-            if let Err(e) = write_dap_frame(&mut stdout, &frame).await {
-                warn!("Failed to write BC event to Zed: {e}");
+    // C17: read stdin in a dedicated task that forwards each parsed DAP request
+    // body to a channel. The main loop then `select!`s over client requests and
+    // BC push events — both channel `recv()`s, which are cancel-safe — so a
+    // `stopped`/`output` event queued while the adapter is parked (e.g. after a
+    // `continue`, when the client sends nothing and waits for `stopped`) is
+    // written to stdout immediately instead of stalling until the next client
+    // request. Selecting on `read_dap_body` directly would risk cancelling a
+    // partial read and desyncing the framing, so the blocking read lives in its
+    // own never-cancelled task.
+    let (req_tx, mut req_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
+    tokio::spawn(async move {
+        let mut stdin = BufReader::new(io::stdin());
+        loop {
+            match read_dap_body(&mut stdin).await {
+                Ok(body) => {
+                    if req_tx.send(body).await.is_err() {
+                        break; // main loop gone
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => {
+                    error!("Read error: {e}");
+                    break;
+                }
             }
         }
+    });
 
-        let body = match read_dap_body(&mut stdin).await {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(e) => {
-                error!("Read error: {e}");
-                break;
+    loop {
+        let body = tokio::select! {
+            // A BC push event queued by the forwarder — write it right away.
+            Some(frame) = dap_event_rx.recv() => {
+                if let Err(e) = write_dap_frame(&mut stdout, &frame).await {
+                    warn!("Failed to write BC event to Zed: {e}");
+                }
+                continue;
             }
+            // A client request from the stdin-reader task.
+            maybe_body = req_rx.recv() => match maybe_body {
+                Some(b) => b,
+                None => break, // stdin closed (EOF) or read error
+            },
         };
 
         let msg: serde_json::Value = match serde_json::from_slice(&body) {
