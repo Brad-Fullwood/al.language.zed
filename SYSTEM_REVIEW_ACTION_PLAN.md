@@ -14,6 +14,33 @@ restating them.
 
 ---
 
+## 0. Implementation status (PR #16, 2026-07-04)
+
+Correctness fixes landed on `claude/system-review-action-plan-wgp02p` → `dev`, each with
+regression tests and verified against the layer it touches:
+
+| Finding | Status | Fix |
+| --- | --- | --- |
+| C1 | ✅ fixed | mixed Integer/Decimal division promotes to Decimal |
+| C4 | ✅ fixed | `did_change` compares a stored client version, not the internal counter |
+| C6 | ✅ fixed | over-EOL character clamps before the line break (no line merge) |
+| C9 | ✅ fixed | method-id hash uses simple (1:1) `ToUpperInvariant` mapping |
+| C19 | ✅ fixed | rename rejects invalid/keyword/empty new names |
+| C20 | ✅ fixed (init/next) | `Init` preserves the primary key; `Next` clamps-and-reports. Filter-casing leg still waits on C2 |
+| C21 | ✅ fixed | `references` excludes the declaration, not the clicked usage |
+| C22 | ◑ partial | kind-correct resolution added on the go-to-definition path; the name-keyed `file_index.objects` map is unchanged (other paths still collapse) |
+| C25 | ✅ fixed | `var` parameters are by-reference (write-back to caller lvalues) |
+| C26 | ✅ fixed | dead-code skips event-subscriber/test/handler procedures |
+| C29 | ✅ fixed | test-runner binds locals to defaults (BC zero-init) |
+| C30 | ✅ fixed | go-to-definition resolves `Record/Page/Codeunit X` type refs, kind-correct |
+| C32 | ✅ fixed | emitted `.app` filename is sanitized for Windows |
+| C24 | ⊘ withdrawn | AL has no usable break/continue statements (reserved keywords only) — not a bug |
+| C3, C28 | ⏳ deferred | numeric value-model changes (exact Decimal; i32 Integer vs i64 BigInteger) — not quick patches |
+
+Remaining P2/P3 items (C2, C5, C7, C8, C11–C18 residuals, C31) are still open.
+
+---
+
 ## 1. What was verified in this review (and what could not be)
 
 | Check | Result | Notes |
