@@ -356,7 +356,7 @@ fn inside_quoted_identifier(line: &str, idx: usize) -> bool {
 }
 
 /// Re-export from crate::syntax to avoid duplication.
-pub(crate) use al_syntax::{byte_col_to_utf16_col, utf16_col_to_byte_offset};
+pub(crate) use al_syntax::utf16_col_to_byte_offset;
 
 fn is_access_char(ch: u8) -> bool {
     is_identifier_char(ch) || ch == b'"'
@@ -1017,7 +1017,7 @@ pub(crate) fn completion_items_for_receiver(
                     }
                 }
 
-                let field_items = workspace_field_items(&file_text);
+                let field_items = workspace_field_items(&file_text, &tree);
                 workspace_fields = field_items.len();
                 for field in field_items {
                     items.push(field);
@@ -1360,16 +1360,17 @@ fn workspace_member(
         }
     }
 
-    let result = find_workspace_field(&content, member_name).map(|(field_type, field_range)| {
-        ResolvedMember {
-            name: member_name.to_string(),
-            type_info: Some(field_type),
-            uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
-            kind: ResolvedMemberKind::Field {
-                range: Some(field_range),
-            },
-        }
-    });
+    let result =
+        find_workspace_field(&content, &tree, member_name).map(|(field_type, field_range)| {
+            ResolvedMember {
+                name: member_name.to_string(),
+                type_info: Some(field_type),
+                uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
+                kind: ResolvedMemberKind::Field {
+                    range: Some(field_range),
+                },
+            }
+        });
 
     match &result {
         Some(member) => tracing::debug!(
@@ -1405,42 +1406,105 @@ fn parse_field_line(trimmed: &str) -> Option<(&str, &str)> {
     Some((name_part, ty))
 }
 
-fn find_workspace_field(text: &str, field_name: &str) -> Option<(ResolvedType, Range)> {
-    for (line_idx, line) in text.lines().enumerate() {
-        let trimmed = line.trim();
-        let Some((name_part, ty)) = parse_field_line(trimmed) else {
-            continue;
-        };
-        let candidate_name = name_part.trim_matches('"');
-        if !candidate_name.eq_ignore_ascii_case(field_name) {
+/// Every `field(id; "Name"; Type ...)` declaration node in `tree`. Tree-based
+/// (C31): a field is a node whose text begins with `field(` — so two `field(...)`
+/// on one line each resolve independently, unlike the old per-line text scan
+/// which only ever saw the first. We stop descending once matched (the paren
+/// child text begins with `(`, not `field(`, so it isn't double-counted).
+fn field_decl_nodes<'a>(tree: &'a tree_sitter::Tree, src: &[u8]) -> Vec<tree_sitter::Node<'a>> {
+    let mut out = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        let is_field = node
+            .utf8_text(src)
+            .map(|t| t.trim_start().starts_with("field("))
+            .unwrap_or(false);
+        if is_field {
+            out.push(node);
             continue;
         }
-        // `line.find` / `name_part.len()` are BYTE offsets, but LSP Position
-        // columns are UTF-16 code units. Convert both endpoints so field names
-        // containing non-ASCII characters (e.g. "Ørnamental") report correctly.
-        let byte_start = line.find(name_part).unwrap_or(0);
-        let byte_end = byte_start + name_part.len();
-        let col_start = byte_col_to_utf16_col(line, byte_start);
-        let col_end = byte_col_to_utf16_col(line, byte_end);
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    out
+}
+
+/// Byte offset → LSP `Position` (line + UTF-16 column) within `content`.
+fn byte_to_position(content: &str, byte: usize) -> Position {
+    let byte = byte.min(content.len());
+    let mut line = 0u32;
+    let mut line_start = 0usize;
+    for (i, ch) in content.char_indices() {
+        if i >= byte {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            line_start = i + ch.len_utf8();
+        }
+    }
+    let col = content[line_start..byte].encode_utf16().count() as u32;
+    Position {
+        line,
+        character: col,
+    }
+}
+
+/// Parse a field declaration `node` into `(name_part, type_str)` plus the byte
+/// range of the name within `content`. Feeds the node's own text to
+/// [`parse_field_line`], so layout (one-per-line vs several on a line) is
+/// irrelevant (C31).
+fn parse_field_node<'a>(
+    node: tree_sitter::Node<'_>,
+    content: &'a str,
+) -> Option<(&'a str, &'a str, usize, usize)> {
+    let src = content.as_bytes();
+    let node_text = node.utf8_text(src).ok()?;
+    let lead = node_text.len() - node_text.trim_start().len();
+    let trimmed = &node_text[lead..];
+    let (name_part, ty) = parse_field_line(trimmed)?;
+    // Offsets are into `trimmed`; map back into `content`.
+    let name_off = lead + (name_part.as_ptr() as usize - trimmed.as_ptr() as usize);
+    let name_byte_start = node.start_byte() + name_off;
+    let name_byte_end = name_byte_start + name_part.len();
+    // SAFETY of slices: name_part/ty borrow node_text which borrows `src` =
+    // content bytes, so their lifetime is tied to `content`.
+    let name_part: &'a str = &content[name_byte_start..name_byte_end];
+    let ty_start = node.start_byte() + lead + (ty.as_ptr() as usize - trimmed.as_ptr() as usize);
+    let ty: &'a str = &content[ty_start..ty_start + ty.len()];
+    Some((name_part, ty, name_byte_start, name_byte_end))
+}
+
+fn find_workspace_field(
+    content: &str,
+    tree: &tree_sitter::Tree,
+    field_name: &str,
+) -> Option<(ResolvedType, Range)> {
+    let src = content.as_bytes();
+    for node in field_decl_nodes(tree, src) {
+        let Some((name_part, ty, start, end)) = parse_field_node(node, content) else {
+            continue;
+        };
+        if !name_part.trim_matches('"').eq_ignore_ascii_case(field_name) {
+            continue;
+        }
         let range = Range {
-            start: Position {
-                line: line_idx as u32,
-                character: col_start,
-            },
-            end: Position {
-                line: line_idx as u32,
-                character: col_end,
-            },
+            start: byte_to_position(content, start),
+            end: byte_to_position(content, end),
         };
         return Some((parse_type_expr(ty), range));
     }
     None
 }
 
-fn workspace_field_items(text: &str) -> Vec<CompletionCandidate> {
-    text.lines()
-        .filter_map(|line| {
-            let (name_part, ty) = parse_field_line(line.trim())?;
+fn workspace_field_items(content: &str, tree: &tree_sitter::Tree) -> Vec<CompletionCandidate> {
+    let src = content.as_bytes();
+    field_decl_nodes(tree, src)
+        .into_iter()
+        .filter_map(|node| {
+            let (name_part, ty, _, _) = parse_field_node(node, content)?;
             Some(CompletionCandidate {
                 label: name_part.trim_matches('"').to_string(),
                 kind: CompletionCandidateKind::Field,
@@ -1543,13 +1607,17 @@ pub(crate) fn extract_doc_comment(text: &str, line_idx: usize) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_syntax::AlParser;
+    use al_syntax::{byte_col_to_utf16_col, AlParser};
+
+    fn tree_of(text: &str) -> tree_sitter::Tree {
+        AlParser::parse_quick(text).tree
+    }
 
     #[test]
     fn workspace_field_position_is_ascii_byte_equals_utf16() {
         let text =
             "table 50100 T\n{\n    fields\n    {\n        field(1; Name; Text[50]) { }\n    }\n}";
-        let (_ty, range) = find_workspace_field(text, "Name").expect("field found");
+        let (_ty, range) = find_workspace_field(text, &tree_of(text), "Name").expect("field found");
         let line = text.lines().nth(4).unwrap();
         let expected = line.find("Name").unwrap() as u32;
         assert_eq!(range.start.character, expected);
@@ -1558,12 +1626,26 @@ mod tests {
     }
 
     #[test]
+    fn c31_compact_table_two_fields_on_one_line() {
+        // C31: two field declarations on the same line must both resolve. The
+        // old per-line scanner only ever saw the first.
+        let text =
+            "table 1 T\n{\n    fields\n    { field(1; Amount; Decimal) { } field(2; Qty; Integer) { } }\n}";
+        let tree = tree_of(text);
+        let (ty_amount, _) = find_workspace_field(text, &tree, "Amount").expect("Amount resolves");
+        assert_eq!(ty_amount.type_name, "Decimal");
+        let (ty_qty, _) = find_workspace_field(text, &tree, "Qty").expect("Qty resolves");
+        assert_eq!(ty_qty.type_name, "Integer");
+    }
+
+    #[test]
     fn workspace_field_position_non_ascii_uses_utf16_columns() {
         // Field name starting with a 2-byte UTF-8 char ('Ø' = U+00D8, 1 UTF-16
         // unit, 2 UTF-8 bytes). The reported columns must be UTF-16 code units,
         // not byte offsets.
         let text = "table 50100 T\n{\n    fields\n    {\n        field(1; \"Ørnamental\"; Text[50]) { }\n    }\n}";
-        let (_ty, range) = find_workspace_field(text, "Ørnamental").expect("field found");
+        let (_ty, range) =
+            find_workspace_field(text, &tree_of(text), "Ørnamental").expect("field found");
         let line = text.lines().nth(4).unwrap();
         // name_part includes the surrounding quotes: "Ørnamental"
         let name_part = "\"Ørnamental\"";
@@ -1583,7 +1665,8 @@ mod tests {
         // 'ü' (U+00FC) mid-name: 2 UTF-8 bytes, 1 UTF-16 unit.
         let text =
             "table 1 T\n{\n    fields\n    {\n        field(1; \"München\"; Code[20]) { }\n    }\n}";
-        let (_ty, range) = find_workspace_field(text, "München").expect("field found");
+        let (_ty, range) =
+            find_workspace_field(text, &tree_of(text), "München").expect("field found");
         let line = text.lines().nth(4).unwrap();
         let name_part = "\"München\"";
         let byte_start = line.find(name_part).unwrap();
@@ -1603,7 +1686,7 @@ mod tests {
     #[test]
     fn workspace_field_items_lists_fields() {
         let text = "table 1 T\n{\n    fields\n    {\n        field(1; Name; Text[50]) { }\n        field(2; \"Ørn\"; Integer) { }\n    }\n}";
-        let items = workspace_field_items(text);
+        let items = workspace_field_items(text, &tree_of(text));
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"Name"));
         assert!(labels.contains(&"Ørn"));
