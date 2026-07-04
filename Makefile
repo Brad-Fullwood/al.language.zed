@@ -226,18 +226,20 @@ repro-artifacts:
 # "blocked on unpublished workspace dep (expected)" and do NOT fail the run.
 release-dryrun:
 	@echo "=== Release dry-run (read-only; nothing is published) ==="
-	@echo "--- 1/6 repo-slug consistency ---"
+	@echo "--- 1/7 repo-slug consistency ---"
 	@bash scripts/check-repo-consistency.sh
-	@echo "--- 2/6 release hygiene (versions / submodule / grammar rev / generated assets) ---"
+	@echo "--- 2/7 stale crates/<name> doc references ---"
+	@bash scripts/check-doc-paths.sh
+	@echo "--- 3/7 release hygiene (versions / submodule / grammar rev / generated assets) ---"
 	@bash scripts/check-release-hygiene.sh
-	@echo "--- 3/6 reproducible generated artifacts ---"
+	@echo "--- 4/7 reproducible generated artifacts ---"
 	@$(MAKE) --no-print-directory repro-artifacts
-	@echo "--- 4/6 build workspace (excl zed-al) + real semantic al-lsp ---"
+	@echo "--- 5/7 build workspace (excl zed-al) + real semantic al-lsp ---"
 	cargo build --workspace --exclude zed-al
 	cargo build -p al-lsp --bin al-lsp --features semantic
-	@echo "--- 5/6 test workspace (excl zed-al) ---"
+	@echo "--- 6/7 test workspace (excl zed-al) ---"
 	cargo test --workspace --exclude zed-al
-	@echo "--- 6/6 cargo publish --dry-run for publishable crates ---"
+	@echo "--- 7/7 cargo publish --dry-run for publishable crates ---"
 	@fail=0; \
 	for dir in crates/*/; do \
 		f="$$dir/Cargo.toml"; \
