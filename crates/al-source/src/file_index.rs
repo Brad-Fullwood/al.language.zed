@@ -97,7 +97,12 @@ pub struct FileIndex {
     pub object_info: DashMap<PathBuf, CachedObjectInfo>,
     /// File path → cached parse tree (avoids re-parsing for cross-file queries).
     /// Internal: invariant-coupled to `files` content; mutate only via impl methods (T004).
-    pub(crate) file_trees: DashMap<PathBuf, tree_sitter::Tree>,
+    /// Parsed files as a **coherent** `(text, tree)` pair, stored under one
+    /// `Arc` so a single `get` always returns matching text and tree. This is
+    /// the atomically-consistent source for `get_cached_parse` (C13); the tree
+    /// is stored here once (not duplicated), only the cheap text is also kept in
+    /// `files` for text-only readers.
+    pub(crate) file_trees: DashMap<PathBuf, std::sync::Arc<(String, tree_sitter::Tree)>>,
     /// File path → cached document symbols (avoids re-extracting for cross-file queries).
     pub(crate) file_symbols: DashMap<PathBuf, Vec<al_syntax::types::SyntaxDocumentSymbol>>,
     /// Lowercase procedure/event name → location (reverse index for O(1) go-to-definition).
@@ -132,36 +137,14 @@ impl FileIndex {
     /// Returns `(text, tree)` from the cache. Background files are always cached
     /// at index time via `add_file_with_meta`, so a miss means the file was never indexed.
     ///
-    /// `text` and `tree` live in two separate DashMaps, so two naive `.get()`
-    /// calls can race a concurrent `index_from_result` (which writes `file_trees`
-    /// then later `files`) and return a stale text paired with a fresh tree —
-    /// callers then convert tree byte offsets against the wrong source, yielding
-    /// wrong reference/definition locations. A tree's root node always spans its
-    /// entire source, so `tree.root_node().end_byte() == text.len()` is a cheap
-    /// coherence invariant. We re-read until that holds (bounded), guaranteeing
-    /// the returned pair came from the same indexing pass.
+    /// The `(text, tree)` pair is stored under a single `Arc` in `file_trees`,
+    /// so one `get` returns a mutually-consistent pair from the same indexing
+    /// pass — no torn read is possible even when a concurrent re-index keeps the
+    /// byte length identical (the previous length-based coherence check could
+    /// be defeated by an equal-length edit; C13).
     pub fn get_cached_parse(&self, path: &Path) -> Option<(String, tree_sitter::Tree)> {
-        // Spin briefly to pick up a coherent pair. A re-index completes in
-        // microseconds, so a torn read is resolved almost immediately; the cap
-        // exists only so a path being deleted mid-read can't spin forever.
-        for attempt in 0..1024 {
-            let text = self.files.get(path)?.value().clone();
-            let tree = self.file_trees.get(path)?.value().clone();
-            if tree.root_node().end_byte() == text.len() {
-                return Some((text, tree));
-            }
-            // Mismatch: a concurrent re-index updated one map but not the other.
-            // Back off so the writing thread can make progress, then retry.
-            if attempt < 32 {
-                std::hint::spin_loop();
-            } else {
-                std::thread::yield_now();
-            }
-        }
-        // Persistently incoherent (path churning under sustained re-indexing):
-        // report a miss rather than a torn pair. Callers treat `None` as
-        // "not cached yet" and retry on the next request.
-        None
+        let pair = self.file_trees.get(path)?.value().clone();
+        Some((pair.0.clone(), pair.1.clone()))
     }
 
     /// Returns the symbols extracted at index time. Falls back to extracting
@@ -362,8 +345,12 @@ impl FileIndex {
     /// here should consider widening the window or grouping mutations into
     /// a single transactional helper if the cost becomes meaningful.
     fn index_from_result(&self, path: PathBuf, content: String, tree: &tree_sitter::Tree) {
-        // Cache the tree unconditionally — all files benefit from it.
-        self.file_trees.insert(path.clone(), tree.clone());
+        // Cache the (text, tree) pair atomically under one Arc so a concurrent
+        // reader can never observe a torn text/tree combination (C13).
+        self.file_trees.insert(
+            path.clone(),
+            std::sync::Arc::new((content.clone(), tree.clone())),
+        );
         if let Some(obj_info) = al_syntax::find_object_declaration(tree, &content) {
             let obj_name = obj_info.name.to_lowercase();
             self.objects.insert(obj_name.clone(), path.clone());
@@ -1189,6 +1176,30 @@ mod tests {
     }
 
     #[test]
+    fn c13_equal_length_reindex_returns_coherent_new_pair() {
+        // C13: an edit that keeps the byte length identical (renaming one
+        // identifier character — common) previously defeated the length-based
+        // coherence check, which could pair stale text with a fresh tree. With
+        // the atomic (text, tree) pair, get_cached_parse returns the re-indexed
+        // content and its matching tree.
+        let index = FileIndex::new();
+        let path = PathBuf::from("/test/src/Eq.al");
+        let a = r#"codeunit 50100 "Eq" { procedure Aaa() begin end; }"#.to_string();
+        let b = r#"codeunit 50100 "Eq" { procedure Bbb() begin end; }"#.to_string();
+        assert_eq!(a.len(), b.len(), "test contents must be equal length");
+
+        index.add_file(path.clone(), a.clone());
+        let (t1, _) = index.get_cached_parse(&path).unwrap();
+        assert_eq!(t1, a);
+
+        index.add_file(path.clone(), b.clone());
+        let (t2, tree2) = index.get_cached_parse(&path).unwrap();
+        assert_eq!(t2, b, "must return the re-indexed content, not stale text");
+        // The tree came from the same Arc as the text, so its span matches.
+        assert_eq!(tree2.root_node().end_byte(), t2.len());
+    }
+
+    #[test]
     fn get_cached_parse_never_returns_torn_pair_under_concurrency() {
         use std::sync::Arc;
         use std::thread;
@@ -1269,10 +1280,10 @@ impl FileIndex {
     pub fn iter_parsed(&self) -> Vec<(std::path::PathBuf, String, tree_sitter::Tree)> {
         self.file_trees
             .iter()
-            .filter_map(|entry| {
+            .map(|entry| {
                 let path = entry.key().clone();
-                let text = self.files.get(&path)?.value().clone();
-                Some((path, text, entry.value().clone()))
+                let pair = entry.value();
+                (path, pair.0.clone(), pair.1.clone())
             })
             .collect()
     }
