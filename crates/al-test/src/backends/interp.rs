@@ -374,8 +374,8 @@ fn run_procedure_interp(
     let source = text.as_bytes();
     let root = tree.root_node();
 
-    let body = match find_procedure_body(root, source, proc_name) {
-        Some(b) => b,
+    let proc_node = match find_procedure_node(root, source, proc_name) {
+        Some(n) => n,
         None => {
             return (
                 Eval::Error(al_runtime::interpreter::value::ErrorInfo {
@@ -387,9 +387,26 @@ fn run_procedure_interp(
             )
         }
     };
+    let body = match procedure_body(proc_node) {
+        Some(b) => b,
+        None => {
+            return (
+                Eval::Error(al_runtime::interpreter::value::ErrorInfo {
+                    message: format!("procedure '{proc_name}' in '{codeunit_name}' has no body"),
+                    error_type: None,
+                    source: None,
+                }),
+                None,
+            )
+        }
+    };
 
     let mut stack = ScopeStack::new();
-    let frame = CallFrame::new(codeunit_name, proc_name);
+    let mut frame = CallFrame::new(codeunit_name, proc_name);
+    // C29: bind the test method's own locals to defaults, exactly as
+    // workspace-procedure dispatch does — BC zero-initializes every local, so a
+    // test that reads a local before assigning it must not error.
+    al_runtime::interpreter::dispatch::bind_procedure_locals(proc_node, source, &mut frame);
     stack.push(frame);
 
     let proc_source: Arc<dyn al_types::ProcedureSource> = workspace.file_index.clone();
@@ -412,6 +429,7 @@ fn run_procedure_interp(
             cov.set_current_file(&cu.file);
             cov
         }),
+        var_writebacks: Vec::new(),
     };
 
     let result = eval_stmt(body, source, &mut stack, &mut ctx);
@@ -422,19 +440,17 @@ fn run_procedure_interp(
 ///
 /// Uses an iterative walk (no recursion). Returns the first matching
 /// `begin_end_block` whose enclosing `procedure_declaration` has the given name.
-fn find_procedure_body<'a>(root: Node<'a>, source: &[u8], proc_name: &str) -> Option<Node<'a>> {
+/// Find the `procedure_declaration` node for `proc_name`. Returns the whole
+/// declaration (not just its body) so the caller can both bind the procedure's
+/// locals (C29) and locate its `begin_end_block` via [`procedure_body`].
+fn find_procedure_node<'a>(root: Node<'a>, source: &[u8], proc_name: &str) -> Option<Node<'a>> {
     let mut stack_nodes = vec![root];
     while let Some(current) = stack_nodes.pop() {
         if current.kind() == "procedure_declaration" {
             if let Some(name_node) = current.child_by_field_name("name") {
                 let name = name_node.utf8_text(source).unwrap_or("").trim_matches('"');
                 if name.eq_ignore_ascii_case(proc_name) {
-                    let mut cursor = current.walk();
-                    for child in current.named_children(&mut cursor) {
-                        if child.kind() == "begin_end_block" {
-                            return Some(child);
-                        }
-                    }
+                    return Some(current);
                 }
             }
             let mut cursor = current.walk();
@@ -442,12 +458,7 @@ fn find_procedure_body<'a>(root: Node<'a>, source: &[u8], proc_name: &str) -> Op
                 if matches!(child.kind(), "identifier" | "quoted_identifier") {
                     let name = child.utf8_text(source).unwrap_or("").trim_matches('"');
                     if name.eq_ignore_ascii_case(proc_name) {
-                        let mut c2 = current.walk();
-                        for child2 in current.named_children(&mut c2) {
-                            if child2.kind() == "begin_end_block" {
-                                return Some(child2);
-                            }
-                        }
+                        return Some(current);
                     }
                 }
                 if !matches!(
@@ -461,6 +472,18 @@ fn find_procedure_body<'a>(root: Node<'a>, source: &[u8], proc_name: &str) -> Op
         }
         let mut cursor = current.walk();
         stack_nodes.extend(current.named_children(&mut cursor));
+    }
+    None
+}
+
+/// The `begin_end_block` body of a `procedure_declaration`, if present.
+fn procedure_body<'a>(proc_node: Node<'a>) -> Option<Node<'a>> {
+    for i in 0..proc_node.named_child_count() {
+        if let Some(child) = proc_node.named_child(i) {
+            if child.kind() == "begin_end_block" {
+                return Some(child);
+            }
+        }
     }
     None
 }
@@ -578,6 +601,50 @@ mod tests {
             .expect("if branch decision recorded");
         assert_eq!(branch.then_taken, 1);
         assert_eq!(branch.else_taken, 0);
+    }
+
+    #[tokio::test]
+    async fn c29_uninitialized_local_zero_inits_instead_of_erroring() {
+        // BC zero-initializes every local. A [Test] body that reads a local
+        // before assigning it must not fail with "unbound identifier" — the
+        // test-runner path must bind locals to defaults just like workspace
+        // dispatch does. Here `t` defaults to an empty Text, so `'x' + t + 'y'`
+        // is 'xy' and the test passes; before the fix it errored.
+        let source = r#"codeunit 50120 "Uninit Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure ReadsUnassignedLocal()
+    var
+        t: Text;
+        u: Text;
+    begin
+        u := 'x' + t + 'y';
+        if u <> 'xy' then
+            Error('expected xy');
+    end;
+}
+"#;
+        let workspace = Workspace::new();
+        let path = std::path::PathBuf::from("/tmp/UninitTests.al");
+        workspace.file_index.add_file(path, source.to_string());
+
+        let session = InterpMode::new(Arc::new(workspace));
+        let tests = vec![TestId {
+            codeunit_id: 50120,
+            codeunit_name: "Uninit Tests".to_string(),
+            method_name: Some("ReadsUnassignedLocal".to_string()),
+        }];
+
+        let events = collect_events(&session, tests, RunOptions::default()).await;
+        let passed = events.iter().any(|e| {
+            matches!(e, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
+        });
+        assert!(
+            passed,
+            "reading a zero-initialized local must pass, not error; events: {events:?}"
+        );
     }
 
     #[tokio::test]

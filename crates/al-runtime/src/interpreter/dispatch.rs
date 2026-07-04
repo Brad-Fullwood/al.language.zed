@@ -86,6 +86,14 @@ pub struct DispatchCtx {
     /// statement's line and `eval_if`/`eval_case` record the branch decision.
     /// See [`crate::interpreter::coverage`].
     pub coverage: Option<crate::interpreter::coverage::Coverage>,
+    /// Write-back channel for `var` (by-reference) parameters. After a
+    /// workspace procedure runs, `dispatch_workspace_procedure` records
+    /// `(arg_index, final_value)` here for each `var` parameter; the caller in
+    /// `eval_stmt` drains it and writes each value back into the argument's
+    /// variable so mutations propagate to the caller (BC by-ref semantics).
+    /// Cleared at the top of every `dispatch_call`, so builtins and
+    /// non-workspace calls leave it empty. See C25.
+    pub var_writebacks: Vec<(usize, Value)>,
 }
 
 impl DispatchCtx {
@@ -99,6 +107,7 @@ impl DispatchCtx {
             deadline: None,
             cancel: None,
             coverage: None,
+            var_writebacks: Vec::new(),
         }
     }
 
@@ -115,6 +124,7 @@ impl DispatchCtx {
             deadline: None,
             cancel: None,
             coverage: None,
+            var_writebacks: Vec::new(),
         }
     }
 
@@ -185,6 +195,10 @@ pub fn dispatch_call(
     args: Vec<Value>,
     ctx: &mut DispatchCtx,
 ) -> Eval {
+    // Clear any var-parameter write-backs left over from a previous call so
+    // builtins and non-workspace calls (which never populate it) leave the
+    // channel empty for the caller to observe. See C25.
+    ctx.var_writebacks.clear();
     if let Some(recv) = receiver {
         if let Some(stub_fn) = stubs::resolve(recv, procedure) {
             return stub_fn(&args);
@@ -358,6 +372,20 @@ fn dispatch_workspace_procedure(
         ctx.cov_restore_file(cov_prev_file);
         ctx.recursion_depth -= 1;
 
+        // Record final values of `var` (by-reference) parameters so the caller
+        // can write them back into its own argument variables (C25). Read from
+        // the still-live callee frame before it is dropped. Nested calls during
+        // the body already cleared/consumed the channel via their own
+        // `dispatch_call`, so populating it here (after the body) is safe.
+        ctx.var_writebacks.clear();
+        for (i, param) in params.iter().enumerate() {
+            if param.is_var {
+                if let Some(val) = scope.top().and_then(|f| f.get(&param.name)).cloned() {
+                    ctx.var_writebacks.push((i, val));
+                }
+            }
+        }
+
         // Unwrap Exit into Normal (exit only unwinds the current procedure).
         return match result {
             Eval::Exit(v) => Eval::Normal(v),
@@ -372,10 +400,29 @@ fn dispatch_workspace_procedure(
     ))
 }
 
+/// Bind a procedure's local variables into `frame` exactly as workspace
+/// dispatch does: scalar `var`-section locals to their type defaults, then
+/// structured locals (`Record`/`Codeunit`/`List of [T]`) to their handle
+/// defaults. Exposed so the test-runner path can share the same frame setup
+/// and not execute `[Test]` bodies with unbound locals — BC zero-initializes
+/// every local, so reading one before assignment must not error (C29).
+pub fn bind_procedure_locals(
+    proc_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    frame: &mut CallFrame,
+) {
+    bind_local_vars(proc_node, source, frame);
+    bind_structured_locals(proc_node, source, frame);
+}
+
 #[derive(Debug, Clone)]
 struct ParamDecl {
     name: String,
     type_name: String,
+    /// True when the parameter is declared `var` (passed by reference). The
+    /// caller's argument variable is updated with the parameter's final value
+    /// after the call returns. See C25.
+    is_var: bool,
 }
 
 /// Pre-bind a procedure's structured local variables. Scans the `var_section`
@@ -494,6 +541,23 @@ fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) -> Vec<ParamD
         };
         let name = name_text.trim_matches('"').to_string();
 
+        // `var` (by-reference) modifier: the grammar puts an optional `kw_var`
+        // token before the name. Check both the node kind and the raw text so
+        // this works whether or not the token is exposed as a named child.
+        let mut is_var = false;
+        for i in 0..child.child_count() {
+            if let Some(n) = child.child(i) {
+                if n.kind() == "kw_var"
+                    || n.utf8_text(source)
+                        .map(|t| t.eq_ignore_ascii_case("var"))
+                        .unwrap_or(false)
+                {
+                    is_var = true;
+                    break;
+                }
+            }
+        }
+
         let type_node = child_by_field_or_kind(
             child,
             "type",
@@ -504,7 +568,11 @@ fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) -> Vec<ParamD
             .map(|t| t.trim().to_string())
             .unwrap_or_default();
 
-        params.push(ParamDecl { name, type_name });
+        params.push(ParamDecl {
+            name,
+            type_name,
+            is_var,
+        });
     }
 
     params

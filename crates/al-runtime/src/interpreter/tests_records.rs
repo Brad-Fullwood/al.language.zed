@@ -63,6 +63,79 @@ fn ok(eval: Eval) -> Value {
     }
 }
 
+// ─────────────────────────── C25: var parameters ───────────────────────────
+
+#[test]
+fn c25_var_param_mutation_propagates_to_caller() {
+    // `var` parameter is by-reference: the callee's mutation must be visible
+    // in the caller's variable after the call returns.
+    let cu = r#"codeunit 50190 "VarParam Tests"
+{
+    procedure Bump(var n: Integer)
+    begin
+        n := n + 1;
+    end;
+
+    procedure Run(): Integer
+    var
+        x: Integer;
+    begin
+        x := 10;
+        Bump(x);
+        exit(x);
+    end;
+}
+"#;
+    let r = run(&[("/ws/VarParam.al", cu)], "VarParam Tests", "Run", vec![]);
+    assert_eq!(ok(r), Value::Integer(11));
+}
+
+#[test]
+fn c25_value_param_does_not_propagate() {
+    // A plain (by-value) parameter must NOT propagate the callee's mutation.
+    let cu = r#"codeunit 50191 "ByVal Tests"
+{
+    procedure Bump(n: Integer)
+    begin
+        n := n + 1;
+    end;
+
+    procedure Run(): Integer
+    var
+        x: Integer;
+    begin
+        x := 10;
+        Bump(x);
+        exit(x);
+    end;
+}
+"#;
+    let r = run(&[("/ws/ByVal.al", cu)], "ByVal Tests", "Run", vec![]);
+    assert_eq!(ok(r), Value::Integer(10));
+}
+
+#[test]
+fn c25_var_param_non_lvalue_arg_is_not_written_back() {
+    // Passing a literal (not an lvalue) to a var parameter must not panic or
+    // corrupt state; the call still runs, the literal simply isn't written back.
+    let cu = r#"codeunit 50192 "VarLit Tests"
+{
+    procedure Bump(var n: Integer): Integer
+    begin
+        n := n + 5;
+        exit(n);
+    end;
+
+    procedure Run(): Integer
+    begin
+        exit(Bump(10));
+    end;
+}
+"#;
+    let r = run(&[("/ws/VarLit.al", cu)], "VarLit Tests", "Run", vec![]);
+    assert_eq!(ok(r), Value::Integer(15));
+}
+
 // ───────────────────────────────── B6: records ─────────────────────────────
 
 #[test]

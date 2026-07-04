@@ -616,6 +616,24 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
         ("-", Value::Decimal(a), Value::Integer(b)) => checked_decimal(a - b as f64),
         ("*", Value::Integer(a), Value::Decimal(b))
         | ("*", Value::Decimal(b), Value::Integer(a)) => checked_decimal(a as f64 * b),
+        // Mixed Integer/Decimal division. BC promotes to Decimal (e.g.
+        // `Avg := Total / Count`, Decimal ÷ Integer); the Int/Int and
+        // Decimal/Decimal arms above don't cover the mixed case, so without
+        // these it errors as "operator not supported".
+        ("/", Value::Integer(a), Value::Decimal(b)) => {
+            if b == 0.0 {
+                Eval::Error(simple_error("division by zero"))
+            } else {
+                checked_decimal(a as f64 / b)
+            }
+        }
+        ("/", Value::Decimal(a), Value::Integer(b)) => {
+            if b == 0 {
+                Eval::Error(simple_error("division by zero"))
+            } else {
+                checked_decimal(a / b as f64)
+            }
+        }
 
         ("+", Value::Text(a), Value::Text(b)) => Eval::Normal(Value::Text(format!("{a}{b}"))),
         ("+", Value::Text(a), Value::Code(b)) | ("+", Value::Code(b), Value::Text(a)) => {
@@ -778,6 +796,49 @@ mod tests {
         assert!(e.message.contains("division by zero"));
         let e = err(apply_binary("mod", Value::Integer(1), Value::Integer(0)));
         assert!(e.message.contains("modulo by zero"));
+    }
+
+    #[test]
+    fn mixed_integer_decimal_division_promotes(/* C1 */) {
+        // Decimal ÷ Integer (e.g. `Avg := Total / Count`) → Decimal.
+        assert_eq!(
+            ok(apply_binary("/", Value::Decimal(7.0), Value::Integer(2))),
+            Value::Decimal(3.5)
+        );
+        // Integer ÷ Decimal → Decimal.
+        assert_eq!(
+            ok(apply_binary("/", Value::Integer(7), Value::Decimal(2.0))),
+            Value::Decimal(3.5)
+        );
+    }
+
+    #[test]
+    fn mixed_integer_decimal_division_by_zero_is_error(/* C1 */) {
+        let e = err(apply_binary("/", Value::Decimal(1.0), Value::Integer(0)));
+        assert!(e.message.contains("division by zero"));
+        let e = err(apply_binary("/", Value::Integer(1), Value::Decimal(0.0)));
+        assert!(e.message.contains("division by zero"));
+    }
+
+    #[test]
+    fn all_four_operators_handle_mixed_types(/* C1 regression net */) {
+        // Every arithmetic operator must accept both Integer/Decimal orderings.
+        for op in ["+", "-", "*", "/"] {
+            assert!(
+                matches!(
+                    apply_binary(op, Value::Integer(6), Value::Decimal(2.0)),
+                    Eval::Normal(Value::Decimal(_))
+                ),
+                "op {op} Int,Dec should promote to Decimal"
+            );
+            assert!(
+                matches!(
+                    apply_binary(op, Value::Decimal(6.0), Value::Integer(2)),
+                    Eval::Normal(Value::Decimal(_))
+                ),
+                "op {op} Dec,Int should promote to Decimal"
+            );
+        }
     }
 
     #[test]

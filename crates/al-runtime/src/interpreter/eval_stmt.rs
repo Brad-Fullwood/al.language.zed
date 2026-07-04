@@ -734,7 +734,9 @@ pub(crate) fn eval_call(
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
-                return dispatch_call(Some(&object_name), &proc_name, args, ctx);
+                let result = dispatch_call(Some(&object_name), &proc_name, args, ctx);
+                apply_var_writebacks(args_node, source, stack, ctx);
+                return result;
             }
             _ => {}
         }
@@ -746,7 +748,65 @@ pub(crate) fn eval_call(
         Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
     };
 
-    dispatch_call(receiver.as_deref(), &proc_name, args, ctx)
+    let result = dispatch_call(receiver.as_deref(), &proc_name, args, ctx);
+    apply_var_writebacks(args_node, source, stack, ctx);
+    result
+}
+
+/// After a workspace procedure returns, propagate the final values of its
+/// `var` (by-reference) parameters back into the caller's argument variables
+/// (C25). `dispatch_workspace_procedure` populates `ctx.var_writebacks` with
+/// `(arg_index, final_value)`; here we map each index to its argument
+/// expression and, when that argument is a plain variable reference (a valid
+/// lvalue), overwrite the caller's binding. Arguments that are not simple
+/// variables (literals, computed expressions, field access) are skipped —
+/// they have no single slot to write back to, matching AL, which only permits
+/// lvalues in `var` argument positions.
+fn apply_var_writebacks(
+    args_node: Option<Node<'_>>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) {
+    if ctx.var_writebacks.is_empty() {
+        return;
+    }
+    let writebacks = std::mem::take(&mut ctx.var_writebacks);
+    let Some(an) = args_node else {
+        return;
+    };
+    let arg_nodes = arg_expr_nodes(an);
+    for (idx, val) in writebacks {
+        if let Some(node) = arg_nodes.get(idx) {
+            if let Some(name) = simple_lvalue_name(*node, source) {
+                if let Some(slot) = stack.lookup_mut(&name) {
+                    *slot = val;
+                }
+            }
+        }
+    }
+}
+
+/// Return the lowercased variable name if `node` is a plain variable reference
+/// (a single AL identifier, optionally quoted), or `None` for anything that is
+/// not a simple lvalue. Text-based and deliberately conservative: it never
+/// treats a literal, operator expression, or member access as an lvalue, so it
+/// cannot corrupt a caller variable by matching the wrong slot.
+fn simple_lvalue_name(node: Node<'_>, source: &[u8]) -> Option<String> {
+    let text = node.utf8_text(source).ok()?.trim();
+    let inner = text.trim_matches('"');
+    if inner.is_empty() {
+        return None;
+    }
+    let mut chars = inner.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(inner.to_ascii_lowercase())
 }
 
 /// Evaluate an optional argument-list node into a `Vec<Value>`.
