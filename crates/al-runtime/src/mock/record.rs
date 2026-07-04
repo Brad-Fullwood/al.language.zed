@@ -166,11 +166,22 @@ impl MockRecord {
             .collect()
     }
 
-    /// `INIT` — reset the current buffer to empty defaults.
+    /// `INIT` — reset non-key fields to defaults, but PRESERVE primary-key
+    /// fields. BC's `Init` keeps the key so the ubiquitous idiom
+    /// `Rec."No." := X; Rec.Init(); Rec.Insert();` inserts under `X`; clearing
+    /// the whole buffer here lost the key and failed the Insert (C20).
     pub fn init(&mut self) {
+        let preserved: Vec<(FieldNo, Value)> = self
+            .primary_key_fields
+            .iter()
+            .filter_map(|f| self.current.get(f).map(|v| (*f, v.clone())))
+            .collect();
         self.current.clear();
         self.x_rec.clear();
         self.iter_pos = None;
+        for (f, v) in preserved {
+            self.current.insert(f, v);
+        }
     }
 
     /// `RESET` — clear all filters and the sort key; reset to primary key order.
@@ -355,13 +366,23 @@ impl MockRecord {
     /// `NEXT(steps)` signature.  Returns `Ok(steps_actually_moved)`.
     pub fn next(&mut self, steps: i32) -> Result<i32, RecordError> {
         let current_pos = self.iter_pos.ok_or(RecordError::NoCurrentRow)?;
-        let new_pos = current_pos as i64 + steps as i64;
-        if new_pos < 0 || new_pos >= self.iter_set.len() as i64 {
+        if steps == 0 || self.iter_set.is_empty() {
             return Ok(0);
         }
-        let new_pos = new_pos as usize;
-        self.load_row_at(new_pos)?;
-        Ok(steps)
+        // BC moves as far as possible toward the target and returns the number
+        // of steps ACTUALLY taken, rather than staying put and returning 0 on
+        // overshoot (C20). `until Next() = 0` loops behave the same either way,
+        // but a batch `Next(N)` that overshoots the end now advances to the
+        // boundary and reports the partial move.
+        let last = self.iter_set.len() as i64 - 1;
+        let target = current_pos as i64 + steps as i64;
+        let clamped = target.clamp(0, last);
+        let actual = clamped - current_pos as i64;
+        if actual == 0 {
+            return Ok(0);
+        }
+        self.load_row_at(clamped as usize)?;
+        Ok(actual as i32)
     }
 
     /// `ISEMPTY` — `true` if no rows match the current filters.
@@ -901,20 +922,69 @@ mod tests {
         );
     }
 
-    // Vector 5: Modify after Reset with empty current buffer.
-    // reset() clears iter_pos and filters but NOT the current buffer.
-    // After init() (which does clear current), modify() has no key field
-    // → should return MissingKeyField, not NotFound, not panic.
+    // C20: `Init` preserves primary-key fields (only non-key fields reset), so
+    // after inserting row 1 and calling Init the key survives and Modify targets
+    // the existing row 1 successfully. A truly keyless buffer (never set) still
+    // errors with MissingKeyField — see `test_modify_with_no_key_set` below.
     #[test]
-    fn test_modify_after_init_empty_buffer_adversarial_i_5() {
+    fn test_modify_after_init_preserves_key_adversarial_i_5() {
         let mut rec = make_table();
         insert_row(&mut rec, 1, "Row");
-        rec.init(); // clears current buffer
+        rec.init(); // resets non-key fields, PRESERVES the key
+        assert_eq!(
+            rec.field_get(1),
+            Some(&Value::Integer(1)),
+            "Init must preserve the primary-key field"
+        );
+        rec.modify(false)
+            .expect("Modify after Init should target the preserved key's row");
+    }
+
+    #[test]
+    fn test_modify_with_no_key_set() {
+        // A fresh buffer with no key field set errors with MissingKeyField.
+        let mut rec = make_table();
         let err = rec.modify(false).unwrap_err();
         assert!(
             matches!(err, RecordError::MissingKeyField(_)),
-            "Modify with empty buffer should return MissingKeyField, got: {err:?}"
+            "Modify with no key set should return MissingKeyField, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn c20_init_after_key_then_insert_idiom() {
+        // The ubiquitous `Rec."No." := X; Rec.Init(); Rec.Insert();` must insert
+        // under X — Init preserves the key so Insert has a valid primary key.
+        let mut rec = make_table();
+        rec.field_set(1, Value::Integer(42));
+        rec.init();
+        rec.insert(false)
+            .expect("Insert after Init-with-key must succeed");
+        // The row is retrievable under key 42.
+        rec.get(vec![Value::Integer(42)]).expect("row 42 exists");
+    }
+
+    #[test]
+    fn c20_next_clamps_and_reports_actual_steps() {
+        let mut rec = make_table();
+        for i in 1i64..=5 {
+            insert_row(&mut rec, i, "r");
+        }
+        rec.find_set().unwrap(); // position at first (pos 0)
+                                 // Overshooting the end moves to the last row and reports the partial
+                                 // move (5 rows → from pos 0, Next(10) can only take 4 steps).
+        assert_eq!(
+            rec.next(10).unwrap(),
+            4,
+            "Next overshoot reports actual steps"
+        );
+        assert_eq!(
+            rec.field_get(1),
+            Some(&Value::Integer(5)),
+            "Next overshoot lands on the last row"
+        );
+        // Already at the end: another Next returns 0 (the loop terminator).
+        assert_eq!(rec.next(1).unwrap(), 0);
     }
 
     // Vector 5b: Modify after Reset (NOT init) — current buffer retains
