@@ -75,10 +75,39 @@ enum FieldFilter {
 impl FieldFilter {
     fn matches(&self, value: &Value) -> bool {
         match self {
-            FieldFilter::Range(lo, hi) => value >= lo && value <= hi,
+            // BC-correct range test (C20 filter leg): a `Code` cell compares
+            // caselessly and a numeric cell numerically, so `SetRange("No.",
+            // 'ABC')` matches a stored `'abc'` and cross-type `Text`/`Code`
+            // bounds don't fall out via `Value`'s variant-tag ordering.
+            FieldFilter::Range(lo, hi) => {
+                field_cmp(value, lo).is_some_and(|o| o.is_ge())
+                    && field_cmp(value, hi).is_some_and(|o| o.is_le())
+            }
             FieldFilter::Expr(expr) => filter::matches(expr, value),
         }
     }
+}
+
+/// Compare a stored field `value` against a filter `bound` with BC field
+/// semantics: numeric fields numerically (tolerant of Integer/Decimal mix),
+/// a `Code` cell caselessly, a `Text` cell case-sensitively, and other scalars
+/// by their natural order. Returns `None` when the two are not comparable.
+fn field_cmp(value: &Value, bound: &Value) -> Option<std::cmp::Ordering> {
+    if let (Some(x), Some(y)) = (as_number(value), as_number(bound)) {
+        return Some(x.cmp(&y));
+    }
+    if let (Some(x), Some(y)) = (flow_text(value), flow_text(bound)) {
+        return Some(if matches!(value, Value::Code(_)) {
+            x.to_ascii_uppercase().cmp(&y.to_ascii_uppercase())
+        } else {
+            x.cmp(&y)
+        });
+    }
+    // Same-variant non-string scalars (Date/Time/DateTime/Boolean/…).
+    if std::mem::discriminant(value) == std::mem::discriminant(bound) {
+        return Some(value.cmp(bound));
+    }
+    None
 }
 
 /// The current-key fields that determine iteration order.
@@ -602,6 +631,35 @@ mod tests {
 
         assert_eq!(rec.x_rec_field(2), Some(&old_desc));
         assert_eq!(rec.field_get(2), Some(&Value::Text("NewName".to_string())));
+    }
+
+    /// C20 filter leg: a `Code` field is caseless, so `SetRange("No.", 'ABC')`
+    /// must match a stored `'abc'`, and a `Text` filter bound on a `Code` cell
+    /// (different `Value` variants) must not fall out via variant-tag ordering.
+    #[test]
+    fn code_field_setrange_is_caseless() {
+        let mut rec = MockRecord::new(50100, "CodeKeyed", vec![1]);
+        for code in ["abc", "def", "xyz"] {
+            rec.field_set(1, Value::Code(code.to_string()));
+            rec.insert(false).expect("insert should succeed");
+        }
+        // Exact case-insensitive point range: upper-case bound, lower-case data.
+        rec.set_range(1, Value::Text("ABC".into()), Value::Text("ABC".into()));
+        assert_eq!(rec.count(), 1, "SetRange('ABC') must match stored 'abc'");
+
+        // Inclusive span across cases.
+        rec.reset();
+        rec.set_range(1, Value::Code("ABC".into()), Value::Code("DEF".into()));
+        assert_eq!(
+            rec.count(),
+            2,
+            "range [ABC..DEF] must match 'abc' and 'def'"
+        );
+
+        // A non-matching bound still excludes.
+        rec.reset();
+        rec.set_range(1, Value::Text("QQQ".into()), Value::Text("QQQ".into()));
+        assert_eq!(rec.count(), 0);
     }
 
     #[test]

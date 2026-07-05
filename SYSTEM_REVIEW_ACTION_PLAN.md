@@ -36,7 +36,7 @@ regression tests and verified against the layer it touches:
 | C17 | ✅ fixed | native DAP reads stdin on a dedicated task; main loop selects over break events and requests |
 | C18 | ✅ fixed | non-local rename edits only references binding to the cursor's declaration |
 | C19 | ✅ fixed | rename rejects invalid/keyword/empty new names |
-| C20 | ✅ fixed (init/next) | `Init` preserves the primary key; `Next` clamps-and-reports. Filter-casing leg still waits on C2 |
+| C20 | ✅ fixed | `Init` preserves the primary key; `Next` clamps-and-reports; `Code` field filters are caseless and type-tolerant (`SetRange('ABC')` matches stored `'abc'`) |
 | C21 | ✅ fixed | `references` excludes the declaration, not the clicked usage |
 | C22 | ◑ partial | kind-correct resolution added on the go-to-definition path; the name-keyed `file_index.objects` map is unchanged (other paths still collapse) |
 | C25 | ✅ fixed | `var` parameters are by-reference (write-back to caller lvalues) |
@@ -49,7 +49,8 @@ regression tests and verified against the layer it touches:
 | C24 | ✅ fixed | `break`/`continue` are handled by the loop evaluators (grammar prompt in `Docs/`) |
 | C3 | ✅ fixed | `Value::Decimal` is exact `rust_decimal::Decimal` (BC `System.Decimal`); no f64 drift, no NaN/infinity |
 
-Remaining open items: residual partials only (C20 filter-casing leg, C22 index map).
+Remaining open item: C22 residual (the name-keyed `file_index.objects` map still collapses
+same-named objects of different types on paths other than go-to-definition).
 
 ---
 

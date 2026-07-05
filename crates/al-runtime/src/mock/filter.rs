@@ -397,9 +397,11 @@ fn cmp_value(value: &Value, ov: &OrderableValue) -> Option<std::cmp::Ordering> {
         (Value::Integer(a), OrderableValue::Decimal(b)) => Some(Decimal::from(*a).cmp(b)),
         (Value::Decimal(a), OrderableValue::Decimal(b)) => Some(a.cmp(b)),
         (Value::Decimal(a), OrderableValue::Integer(b)) => Some(a.cmp(&Decimal::from(*b))),
-        (Value::Text(a), OrderableValue::Text(b)) | (Value::Code(a), OrderableValue::Text(b)) => {
-            Some(a.cmp(b))
+        // A `Code` field compares caselessly (BC), a `Text` field case-sensitively.
+        (Value::Code(a), OrderableValue::Text(b)) => {
+            Some(a.to_ascii_uppercase().cmp(&b.to_ascii_uppercase()))
         }
+        (Value::Text(a), OrderableValue::Text(b)) => Some(a.cmp(b)),
         (Value::Date(a), OrderableValue::Integer(b)) => Some(a.cmp(b)),
         _ => None,
     }
