@@ -496,7 +496,7 @@ pub async fn initialize_core_workspace(
             tracing::info!(
                 symbols = workspace.symbols.len(),
                 workspace_files = file_count,
-                workspace_objects = workspace.file_index.objects.len(),
+                workspace_objects = workspace.file_index.object_count(),
                 "workspace: initialized"
             );
         }

@@ -314,8 +314,7 @@ fn resolve_receiver_signature(
     let decl = resolver.resolve_type(receiver_name, position.into())?;
     let subtype = decl.type_subtype.as_deref()?;
 
-    let obj_key = subtype.to_lowercase();
-    let file_path = workspace.file_index.objects.get(&obj_key)?.value().clone();
+    let file_path = workspace.file_index.object_path(subtype)?;
     let doc_symbols: Vec<super::AlDocumentSymbol> = workspace
         .file_index
         .get_cached_symbols(&file_path)?

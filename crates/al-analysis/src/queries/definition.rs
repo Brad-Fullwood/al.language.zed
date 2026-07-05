@@ -123,8 +123,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 
     let current_path = uri.to_file_path().ok();
 
-    if let Some(obj_path_entry) = workspace.file_index.objects.get(&clean_name.to_lowercase()) {
-        let file_path = obj_path_entry.value().clone();
+    if let Some(file_path) = workspace.file_index.object_path(clean_name) {
         let is_current = current_path.as_ref().is_some_and(|cp| *cp == file_path);
         if !is_current {
             if let Some(obj_info_entry) = workspace.file_index.object_info.get(&file_path) {

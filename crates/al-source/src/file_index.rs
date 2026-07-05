@@ -71,6 +71,16 @@ pub struct CachedObjectInfo {
     pub range: tree_sitter::Range,
 }
 
+/// One owner of an object name: the declaring file plus the object kind
+/// (`"table"`, `"page"`, …). AL object names are unique only *within* a kind,
+/// so a name maps to a list of these — a table `Customer` and a page `Customer`
+/// are distinct owners that must not collapse onto one another (C22).
+#[derive(Debug, Clone)]
+pub struct ObjectEntry {
+    pub kind: String,
+    pub path: PathBuf,
+}
+
 /// A procedure/event location cached at index time.
 #[derive(Debug, Clone)]
 pub struct CachedProcedureInfo {
@@ -83,9 +93,13 @@ pub struct FileIndex {
     /// File path → full text content.
     /// Public — used by the al-lsp binary for stats and by daemon dispatchers.
     pub files: DashMap<PathBuf, String>,
-    /// Lowercase object name → file path. Internal: invariant-coupled to
-    /// `path_to_object`; mutate only via the impl methods (T004).
-    pub objects: DashMap<String, PathBuf>,
+    /// Lowercase object name → the list of owners (one per object kind) that
+    /// declare it. Keyed by name only, but multi-valued and kind-tagged so
+    /// same-named objects of different kinds coexist and a removal of one can
+    /// never strand another (C22). Internal: invariant-coupled to
+    /// `path_to_object`; mutate only via the impl methods (T004). Read via
+    /// `object_path` / `object_path_of_kind` / `object_count`.
+    pub objects: DashMap<String, Vec<ObjectEntry>>,
     /// File path → lowercase object name (reverse index for O(1) cleanup).
     /// Internal: invariant-coupled to `objects` (T004).
     pub(crate) path_to_object: DashMap<PathBuf, String>,
@@ -353,7 +367,18 @@ impl FileIndex {
         );
         if let Some(obj_info) = al_syntax::find_object_declaration(tree, &content) {
             let obj_name = obj_info.name.to_lowercase();
-            self.objects.insert(obj_name.clone(), path.clone());
+            let kind = obj_info.kind.clone();
+            // Record this owner under its name, replacing any prior entry from
+            // this same path (re-index) or of the same kind (redefinition) —
+            // owners of *other* kinds are preserved so they never collapse (C22).
+            {
+                let mut owners = self.objects.entry(obj_name.clone()).or_default();
+                owners.retain(|e| e.path != path && !e.kind.eq_ignore_ascii_case(&kind));
+                owners.push(ObjectEntry {
+                    kind,
+                    path: path.clone(),
+                });
+            }
             self.path_to_object.insert(path.clone(), obj_name);
             self.object_info.insert(
                 path.clone(),
@@ -419,16 +444,53 @@ impl FileIndex {
         }
     }
 
-    /// F-040: only remove the `objects[name] → path` mapping when it still
-    /// points at `path`. Without this guard, two AL objects sharing a name
-    /// across kinds / packages — say a table `Foo` and a page `Foo` — both
-    /// insert under `objects["foo"]`. Whoever inserted last wins; removing
-    /// the OTHER file then dropped the surviving object's mapping and made
-    /// it unfindable. Keys can still collide on insert (DashMap is a single-
-    /// value map), but stale-key removal is now collision-safe.
+    /// Drop only the owner declared by `path`, keeping same-named owners of
+    /// other kinds (C22). A table `Foo` and a page `Foo` are separate entries
+    /// under `objects["foo"]`, so removing the table's file leaves the page
+    /// findable. The key is removed only when its last owner is gone.
     fn remove_owned_object_mapping(&self, obj_name: &str, path: &Path) {
+        use dashmap::mapref::entry::Entry;
+        if let Entry::Occupied(mut occ) = self.objects.entry(obj_name.to_string()) {
+            occ.get_mut().retain(|e| e.path != path);
+            if occ.get().is_empty() {
+                occ.remove();
+            }
+        }
+    }
+
+    /// First owner of `name`, regardless of kind. For callers that don't carry
+    /// a kind; kind-aware callers should use [`object_path_of_kind`].
+    ///
+    /// [`object_path_of_kind`]: Self::object_path_of_kind
+    pub fn object_path(&self, name: &str) -> Option<PathBuf> {
         self.objects
-            .remove_if(obj_name, |_, current_path| current_path == path);
+            .get(&name.to_lowercase())
+            .and_then(|owners| owners.first().map(|e| e.path.clone()))
+    }
+
+    /// The owner of `name` whose kind is one of `kinds` (case-insensitive) —
+    /// e.g. resolving `Enum Foo` passes `["enum", "enumextension"]` so a
+    /// same-named table can never win (C22).
+    pub fn object_path_of_kind(&self, name: &str, kinds: &[&str]) -> Option<PathBuf> {
+        self.objects.get(&name.to_lowercase()).and_then(|owners| {
+            owners
+                .iter()
+                .find(|e| kinds.iter().any(|k| e.kind.eq_ignore_ascii_case(k)))
+                .map(|e| e.path.clone())
+        })
+    }
+
+    /// Every file that declares an object named `name` (all kinds).
+    pub fn object_paths(&self, name: &str) -> Vec<PathBuf> {
+        self.objects
+            .get(&name.to_lowercase())
+            .map(|owners| owners.iter().map(|e| e.path.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Total number of indexed objects across all names and kinds.
+    pub fn object_count(&self) -> usize {
+        self.objects.iter().map(|e| e.value().len()).sum()
     }
 
     fn remove_procedures_for_file(&self, path: &Path) {
@@ -457,9 +519,7 @@ impl FileIndex {
     }
 
     pub fn find_by_object_name(&self, name: &str) -> Option<PathBuf> {
-        self.objects
-            .get(&name.to_lowercase())
-            .map(|r| r.value().clone())
+        self.object_path(name)
     }
 
     pub fn len(&self) -> usize {
@@ -757,8 +817,9 @@ mod tests {
         assert!(index.get_content(&path).is_none());
     }
 
-    /// F-040 positive: when two files share an object name (table Foo,
-    /// page Foo), removing one file must NOT drop the other file's mapping.
+    /// F-040 / C22 positive: when two files share an object name (table Foo,
+    /// page Foo) they are distinct kind-tagged owners, so removing one file
+    /// must NOT drop the other file's mapping.
     #[test]
     fn remove_file_preserves_other_owners_object_mapping() {
         let index = FileIndex::new();
@@ -769,13 +830,13 @@ mod tests {
             table_path.clone(),
             r#"table 50100 "Foo" { fields { } }"#.to_string(),
         );
-        // Insert the page second — its insert overwrites the `objects[foo]`
-        // entry. Before F-040, removing the table would then have
-        // unconditionally dropped the surviving page's mapping.
+        // The page is a separate owner under objects["foo"]; it no longer
+        // overwrites the table (C22), and both are indexed.
         index.add_file(
             page_path.clone(),
             r#"page 50100 "Foo" { layout { } actions { } }"#.to_string(),
         );
+        assert_eq!(index.object_count(), 2);
 
         index.remove_file(&table_path);
 
@@ -787,6 +848,57 @@ mod tests {
             Some(page_path.as_path()),
             "F-040: surviving owner's object mapping was dropped"
         );
+    }
+
+    /// C22: a table and a page sharing a name are kind-addressable regardless
+    /// of index order — a `Record Foo` reference (kind "table") never resolves
+    /// to the page, and deleting the page leaves the table resolvable.
+    #[test]
+    fn same_named_objects_are_kind_addressable() {
+        for page_first in [false, true] {
+            let index = FileIndex::new();
+            let table_path = PathBuf::from("/tmp/c22/Foo.Table.al");
+            let page_path = PathBuf::from("/tmp/c22/Foo.Page.al");
+            let add_table = || {
+                index.add_file(
+                    table_path.clone(),
+                    r#"table 50100 "Foo" { fields { } }"#.to_string(),
+                )
+            };
+            let add_page = || {
+                index.add_file(
+                    page_path.clone(),
+                    r#"page 50100 "Foo" { layout { } actions { } }"#.to_string(),
+                )
+            };
+            if page_first {
+                add_page();
+                add_table();
+            } else {
+                add_table();
+                add_page();
+            }
+
+            assert_eq!(
+                index.object_path_of_kind("foo", &["table"]).as_deref(),
+                Some(table_path.as_path()),
+                "kind=table must resolve to the table (page_first={page_first})"
+            );
+            assert_eq!(
+                index.object_path_of_kind("foo", &["page"]).as_deref(),
+                Some(page_path.as_path()),
+                "kind=page must resolve to the page (page_first={page_first})"
+            );
+
+            // Deleting the page must not break table resolution.
+            index.remove_file(&page_path);
+            assert_eq!(
+                index.object_path_of_kind("foo", &["table"]).as_deref(),
+                Some(table_path.as_path()),
+                "table must survive page deletion (page_first={page_first})"
+            );
+            assert!(index.object_path_of_kind("foo", &["page"]).is_none());
+        }
     }
 
     /// F-040 negative: when the file being removed IS the current owner of
@@ -1089,7 +1201,7 @@ mod tests {
             handles.push(thread::spawn(move || {
                 // These may or may not see partially-written state — should never panic
                 let _count = idx.files.len();
-                let _obj = idx.objects.get("cu0");
+                let _obj = idx.object_path("cu0");
                 let _proc = idx.procedures.get("proc0");
             }));
         }

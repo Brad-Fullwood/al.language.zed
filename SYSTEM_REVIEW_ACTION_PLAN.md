@@ -38,7 +38,7 @@ regression tests and verified against the layer it touches:
 | C19 | ✅ fixed | rename rejects invalid/keyword/empty new names |
 | C20 | ✅ fixed | `Init` preserves the primary key; `Next` clamps-and-reports; `Code` field filters are caseless and type-tolerant (`SetRange('ABC')` matches stored `'abc'`) |
 | C21 | ✅ fixed | `references` excludes the declaration, not the clicked usage |
-| C22 | ◑ partial | kind-correct resolution added on the go-to-definition path; the name-keyed `file_index.objects` map is unchanged (other paths still collapse) |
+| C22 | ✅ fixed | `file_index.objects` is a multi-owner, kind-tagged map (a table and a page named the same coexist); lookups are kind-aware (`object_path_of_kind`) and removal never strands a survivor |
 | C25 | ✅ fixed | `var` parameters are by-reference (write-back to caller lvalues) |
 | C26 | ✅ fixed | dead-code skips event-subscriber/test/handler procedures |
 | C29 | ✅ fixed | test-runner binds locals to defaults (BC zero-init) |
@@ -49,8 +49,7 @@ regression tests and verified against the layer it touches:
 | C24 | ✅ fixed | `break`/`continue` are handled by the loop evaluators (grammar prompt in `Docs/`) |
 | C3 | ✅ fixed | `Value::Decimal` is exact `rust_decimal::Decimal` (BC `System.Decimal`); no f64 drift, no NaN/infinity |
 
-Remaining open item: C22 residual (the name-keyed `file_index.objects` map still collapses
-same-named objects of different types on paths other than go-to-definition).
+All C1–C32 correctness findings are resolved.
 
 ---
 

@@ -622,7 +622,7 @@ pub(crate) async fn dispatch_request(
                 "pid": std::process::id(),
                 "indexedSymbols": workspace.symbols.len(),
                 "workspaceFiles": workspace.file_index.len(),
-                "workspaceObjects": workspace.file_index.objects.len(),
+                "workspaceObjects": workspace.file_index.object_count(),
                 "builtinTypes": workspace.builtins.read().ok().map(|g| g.len()).unwrap_or(0), // SILENT: avoid RwLock poison panic per CLAUDE.md
                 "semanticCache": cache_stats,
             });

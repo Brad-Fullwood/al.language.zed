@@ -415,9 +415,9 @@ pub(crate) fn resolve_expression_type(
         });
     }
 
-    if let Some(path) = workspace.file_index.objects.get(&expr.to_lowercase()) {
-        tracing::debug!(expr = %expr, path = %path.value().display(), "resolve_type: found in workspace_objects");
-        return workspace_object_type(workspace, path.value());
+    if let Some(path) = workspace.file_index.object_path(expr) {
+        tracing::debug!(expr = %expr, path = %path.display(), "resolve_type: found in workspace_objects");
+        return workspace_object_type(workspace, &path);
     }
 
     let result = workspace
@@ -1112,8 +1112,11 @@ pub(crate) fn enum_completion_items(
     let mut index_values = 0usize;
     let mut builtin_values = 0usize;
 
-    if let Some(path) = workspace.file_index.objects.get(&enum_name.to_lowercase()) {
-        if let Some((file_text, tree)) = workspace.file_index.get_cached_parse(path.value()) {
+    if let Some(path) = workspace
+        .file_index
+        .object_path_of_kind(enum_name, &["enum", "enumextension"])
+    {
+        if let Some((file_text, tree)) = workspace.file_index.get_cached_parse(&path) {
             for symbol in al_syntax::extract_document_symbols(&tree, &file_text) {
                 if !symbol.name.eq_ignore_ascii_case(enum_name) {
                     continue;
@@ -1238,9 +1241,9 @@ fn resolve_object_path(
         }
     }
 
-    if let Some(path) = workspace.file_index.objects.get(&name.to_lowercase()) {
-        tracing::debug!(name = %name, source = "workspace_index", path = %path.value().display(), "resolve_object_path: found in workspace index");
-        return Some(path.value().clone());
+    if let Some(path) = workspace.file_index.object_path(name) {
+        tracing::debug!(name = %name, source = "workspace_index", path = %path.display(), "resolve_object_path: found in workspace index");
+        return Some(path);
     }
 
     tracing::debug!(name = %name, "resolve_object_path: not found");
