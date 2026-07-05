@@ -142,13 +142,26 @@ fn decimal_in_range_impl(min: Decimal, max: Decimal, places: i64) -> Eval {
     let pow = Decimal::from(10_i64.pow(scale));
     // Scale the bounds to whole units of the least significant place, then pick
     // an integer in [min_scaled, max_scaled] and divide back — all exact (C3).
-    let min_scaled = (min * pow).ceil().to_i64().unwrap_or(0);
-    let max_scaled = (max * pow).floor().to_i64().unwrap_or(0);
+    // A bound (or the span) that overflows the decimal/i64 range at this scale
+    // is reported rather than panicking (Decimal `*` panics on overflow) or
+    // being silently truncated to 0 (which would return an out-of-range value).
+    let (Some(min_scaled), Some(max_scaled)) = (
+        min.checked_mul(pow).and_then(|v| v.ceil().to_i64()),
+        max.checked_mul(pow).and_then(|v| v.floor().to_i64()),
+    ) else {
+        return err("Any.DecimalInRange: range too large for the requested DecimalPlaces");
+    };
     if min_scaled >= max_scaled {
         return ok(Value::Decimal(Decimal::new(min_scaled, scale)));
     }
-    let span = max_scaled - min_scaled + 1;
+    let Some(span) = max_scaled
+        .checked_sub(min_scaled)
+        .and_then(|d| d.checked_add(1))
+    else {
+        return err("Any.DecimalInRange: range too large for the requested DecimalPlaces");
+    };
     let raw = next_rand(span);
+    // raw ∈ [1, span]; min_scaled + raw - 1 ∈ [min_scaled, max_scaled], in range.
     ok(Value::Decimal(Decimal::new(min_scaled + raw - 1, scale)))
 }
 

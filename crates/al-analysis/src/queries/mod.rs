@@ -5,6 +5,7 @@
 
 pub mod arch_lint;
 pub mod audit;
+pub(crate) mod binding;
 pub mod breaking_changes;
 pub mod bulk_fix;
 pub mod code_actions;

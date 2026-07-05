@@ -76,20 +76,20 @@ pub fn references(
     }
 
     // `includeDeclaration: false` means exclude the symbol's *declaration*, not
-    // the occurrence under the cursor. Resolve the declaration site (the same
-    // engine go-to-definition uses) and drop the location that matches it (C21).
-    // The previous code dropped whichever reference started at the request
-    // position, which wrongly removed the clicked usage when the cursor sat on
-    // its first character and never removed the actual declaration.
+    // the occurrence under the cursor. Resolve the declaration's canonical site
+    // and drop the location that matches it (C21). We use the shared
+    // `binding::decl_loc`, not raw go-to-definition: invoked on a declaration's
+    // own name, go-to-definition falls through to a *usage*, which would leave
+    // the declaration in and drop a real usage instead. `decl_loc` treats a
+    // declaration-name cursor as its own site, so the exclusion is correct
+    // whether the cursor sits on the declaration or on a usage.
     if !include_declaration {
-        if let Some(decl) = super::definition::definition(workspace, uri, position)
-            .and_then(|locs| locs.into_iter().next())
-        {
-            // Match on the start position, not the full range: go-to-definition
-            // reports the whole declaration (`MyVar: Integer`) while a reference
-            // is just the name token (`MyVar`), but both begin at the same spot.
-            locations.retain(|loc| !(loc.uri == decl.uri && loc.range.start == decl.range.start));
-        }
+        let (decl_uri, decl_line, decl_char) = super::binding::decl_loc(workspace, uri, position);
+        locations.retain(|loc| {
+            loc.uri.to_string() != decl_uri
+                || loc.range.start.line != decl_line
+                || loc.range.start.character != decl_char
+        });
     }
 
     locations
@@ -204,6 +204,42 @@ mod tests {
                 .iter()
                 .map(|l| l.range.start.line)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn c21_exclude_declaration_when_cursor_on_declaration() {
+        // Adversarial: invoke references from the DECLARATION site (not a usage)
+        // with includeDeclaration=false. The declaration (line 4) must be
+        // excluded and BOTH usages (lines 6 and 7) preserved. Regression guard
+        // for the case where go-to-definition on a declaration falls through to
+        // a usage — which previously excluded a usage and kept the declaration.
+        let uri = Url::parse("file:///test/c21decl.al").expect("test");
+        let src = r#"codeunit 50100 "Refs"
+{
+    procedure Calc()
+    var
+        MyVar: Integer;
+    begin
+        MyVar := 1;
+        MyVar += 2;
+    end;
+}"#;
+        let ws = ws_with_doc(&uri, src);
+        // Cursor at the first character of the `MyVar` DECLARATION (line 4, col 8).
+        let pos = Position {
+            line: 4,
+            character: 8,
+        };
+        let without_decl = references(&ws, &uri, pos, false);
+        let lines: Vec<u32> = without_decl.iter().map(|l| l.range.start.line).collect();
+        assert!(
+            !lines.contains(&4),
+            "declaration (line 4) must be excluded; got {lines:?}"
+        );
+        assert!(
+            lines.contains(&6) && lines.contains(&7),
+            "both usages (lines 6, 7) must be present; got {lines:?}"
         );
     }
 

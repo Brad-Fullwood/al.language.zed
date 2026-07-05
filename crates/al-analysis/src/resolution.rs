@@ -849,8 +849,16 @@ pub(crate) fn resolve_workspace_object_definition_of_type(
                     .eq_ignore_ascii_case(al_type)
             {
                 let path = entry.key().clone();
-                let uri = Url::from_file_path(&path).ok()?;
-                let (file_source, _tree) = workspace.file_index.get_cached_parse(&path)?;
+                // A kind match whose file is transiently uncached or whose path
+                // is non-absolute must not abort the whole resolution — fall
+                // through to the name-only resolver below instead of returning
+                // None (which would make go-to-definition yield nothing).
+                let (Ok(uri), Some((file_source, _tree))) = (
+                    Url::from_file_path(&path),
+                    workspace.file_index.get_cached_parse(&path),
+                ) else {
+                    break;
+                };
                 return Some((
                     uri,
                     al_syntax::ts_range_to_syntax(&info.range, file_source.as_bytes()).into(),
