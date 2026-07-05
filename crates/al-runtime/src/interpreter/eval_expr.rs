@@ -577,8 +577,16 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
     // interpreter stores integers as i64, so an i64 `checked_*` alone lets
     // arithmetic that would error in BC (e.g. `2147483647 * 3`) silently produce
     // values that cannot exist in an Integer. Range-check every integer
-    // arithmetic result against i32 bounds and error like BC. (BigInteger is not
-    // separately modeled — see the value-model note in the review plan.)
+    // arithmetic result against i32 bounds and error like BC.
+    //
+    // Known limitation (accepted tradeoff): `Value::Integer` carries BOTH AL
+    // `Integer` and `BigInteger` — they are not separately modeled — so this
+    // trap also fires on legitimate `BigInteger` arithmetic in (2^31, 2^63)
+    // (e.g. `5000000000 + 1` errors instead of yielding 5000000001). We
+    // deliberately prefer a loud, correct-for-`Integer` error here over the
+    // pre-C28 behavior of silently producing out-of-range `Integer` results —
+    // `Integer` is by far the more common type. Faithfully supporting both
+    // needs a `BigInteger`-tagged value (a value-model change deferred with C3).
     fn checked_i32(result: Option<i64>) -> Eval {
         match result {
             Some(n) if (i32::MIN as i64..=i32::MAX as i64).contains(&n) => {
