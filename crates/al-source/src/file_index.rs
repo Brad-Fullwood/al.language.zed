@@ -916,6 +916,66 @@ mod tests {
         );
     }
 
+    /// C22: three objects (table, page, codeunit) sharing a name all coexist
+    /// and are independently kind-addressable.
+    #[test]
+    fn three_kinds_same_name_coexist() {
+        let index = FileIndex::new();
+        let t = PathBuf::from("/c22/Foo.Table.al");
+        let p = PathBuf::from("/c22/Foo.Page.al");
+        let c = PathBuf::from("/c22/Foo.Codeunit.al");
+        index.add_file(t.clone(), r#"table 50100 "Foo" { fields { } }"#.to_string());
+        index.add_file(
+            p.clone(),
+            r#"page 50100 "Foo" { layout { } actions { } }"#.to_string(),
+        );
+        index.add_file(c.clone(), r#"codeunit 50100 "Foo" { }"#.to_string());
+
+        assert_eq!(index.object_count(), 3);
+        assert_eq!(index.object_paths("foo").len(), 3);
+        assert_eq!(
+            index.object_path_of_kind("foo", &["table"]).as_deref(),
+            Some(t.as_path())
+        );
+        assert_eq!(
+            index.object_path_of_kind("foo", &["page"]).as_deref(),
+            Some(p.as_path())
+        );
+        assert_eq!(
+            index.object_path_of_kind("foo", &["codeunit"]).as_deref(),
+            Some(c.as_path())
+        );
+        assert!(index.object_path_of_kind("foo", &["enum"]).is_none());
+    }
+
+    /// C22: re-indexing a file whose object was renamed drops the old name and
+    /// registers the new one — no stale owner strands behind (via the
+    /// path_to_object cleanup that runs before every re-index).
+    #[test]
+    fn reindex_object_rename_clears_old_name() {
+        let index = FileIndex::new();
+        let path = PathBuf::from("/c22/Renamed.al");
+        index.add_file(
+            path.clone(),
+            r#"table 50100 "OldName" { fields { } }"#.to_string(),
+        );
+        assert!(index.find_by_object_name("oldname").is_some());
+
+        index.add_file(
+            path.clone(),
+            r#"table 50100 "NewName" { fields { } }"#.to_string(),
+        );
+        assert!(
+            index.find_by_object_name("oldname").is_none(),
+            "old object name must not linger after a rename re-index"
+        );
+        assert_eq!(
+            index.find_by_object_name("newname").as_deref(),
+            Some(path.as_path())
+        );
+        assert_eq!(index.object_count(), 1, "no stale duplicate owner");
+    }
+
     #[test]
     fn empty_index() {
         let index = FileIndex::new();

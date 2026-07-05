@@ -536,6 +536,62 @@ mod tests {
         );
     }
 
+    /// C18 adversarial: two tables each declare a field `Amount`. Renaming the
+    /// field in table A must not rewrite table B's same-named field. Fields are
+    /// the other common non-local symbol (besides procedures).
+    #[test]
+    fn rename_field_does_not_touch_same_name_in_other_table() {
+        let ws = Workspace::new();
+        let uri_a = Url::parse("file:///test/src/TableA.al").unwrap();
+        let uri_b = Url::parse("file:///test/src/TableB.al").unwrap();
+        let src_a = r#"table 50100 "A"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Amount; Decimal) { }
+    }
+}
+"#;
+        let src_b = r#"table 50101 "B"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Amount; Decimal) { }
+    }
+}
+"#;
+        open_doc(&ws, &uri_a, src_a);
+        open_doc(&ws, &uri_b, src_b);
+        ws.file_index
+            .add_file(uri_a.to_file_path().unwrap(), src_a.to_string());
+        ws.file_index
+            .add_file(uri_b.to_file_path().unwrap(), src_b.to_string());
+
+        // Cursor on A's `Amount` field declaration. Line 5 is
+        // `        field(2; Amount; Decimal) { }` — `Amount` spans chars 17..23.
+        let pos = Position {
+            line: 5,
+            character: 18,
+        };
+        let result =
+            rename(&ws, &uri_a, pos, "Total").expect("rename of A.Amount should produce edits");
+        // A must actually be edited (proves the cursor hit the field), and no
+        // edit may land in table B.
+        assert!(
+            result.changes.iter().any(|(u, _)| u == &uri_a),
+            "expected an edit in table A"
+        );
+        for (edit_uri, _edits) in &result.changes {
+            assert_ne!(
+                edit_uri, &uri_b,
+                "C18: rename of A.Amount leaked into table B: {:?}",
+                result.changes
+            );
+        }
+    }
+
     #[test]
     fn rename_returns_none_when_no_refs() {
         let ws = Workspace::new();

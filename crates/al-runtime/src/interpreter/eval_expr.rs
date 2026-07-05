@@ -861,6 +861,72 @@ mod tests {
     }
 
     #[test]
+    fn c3_repeating_division_yields_value_not_error() {
+        // 10 / 3 is a non-terminating decimal. rust_decimal rounds to its 28-
+        // digit precision and returns a value — it must NOT be treated as an
+        // overflow/undefined error (that only happens past the 96-bit range).
+        let r = ok(apply_binary(
+            "/",
+            Value::Decimal(dec!(10)),
+            Value::Decimal(dec!(3)),
+        ));
+        match r {
+            Value::Decimal(d) => {
+                // 3.3333333333333333333333333333 (28 threes), well within range.
+                assert!(d > dec!(3.333) && d < dec!(3.334), "got {d}");
+            }
+            other => panic!("expected Decimal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn c3_decimal_overflow_on_add_and_mul_errors() {
+        // Past the 96-bit range every checked op returns None → runtime error,
+        // never a silent wrap or NaN/Inf (which rust_decimal cannot represent).
+        assert!(err(apply_binary(
+            "*",
+            Value::Decimal(Decimal::MAX),
+            Value::Decimal(Decimal::MAX),
+        ))
+        .message
+        .contains("overflow"));
+        assert!(err(apply_binary(
+            "+",
+            Value::Decimal(Decimal::MAX),
+            Value::Decimal(Decimal::MAX),
+        ))
+        .message
+        .contains("overflow"));
+    }
+
+    #[test]
+    fn c3_large_integer_decimal_equality_is_exact() {
+        // i64::MAX (9223372036854775807) exceeds f64's 2^53 exact-integer
+        // range, so the old `as f64` cast made `Integer(i64::MAX) = Decimal(same)`
+        // wrongly true for nearby values. With exact promotion it is precise:
+        // equal to itself, not equal to itself minus one.
+        let big = i64::MAX;
+        let as_dec = Decimal::from(big);
+        assert_eq!(
+            ok(apply_binary(
+                "=",
+                Value::Integer(big),
+                Value::Decimal(as_dec)
+            )),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            ok(apply_binary(
+                "=",
+                Value::Integer(big),
+                Value::Decimal(Decimal::from(big - 1))
+            )),
+            Value::Boolean(false),
+            "i64::MAX must not equal i64::MAX-1 (would collide under as-f64)"
+        );
+    }
+
+    #[test]
     fn mixed_integer_decimal_division_promotes(/* C1 */) {
         // Decimal ÷ Integer (e.g. `Avg := Total / Count`) → Decimal.
         assert_eq!(

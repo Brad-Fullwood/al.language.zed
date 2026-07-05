@@ -662,6 +662,37 @@ mod tests {
         assert_eq!(rec.count(), 0);
     }
 
+    /// C20 negative: a `Text` field is case-SENSITIVE (only `Code` is caseless).
+    /// `SetRange('ABC')` on a Text cell must NOT match a stored `'abc'`.
+    #[test]
+    fn text_field_setrange_is_case_sensitive() {
+        let mut rec = MockRecord::new(50101, "TextKeyed", vec![1]);
+        // Field 1 is the PK (some string); store Text values.
+        for v in ["abc", "ABC", "AbC"] {
+            rec.field_set(1, Value::Text(v.to_string()));
+            rec.insert(false).expect("insert should succeed");
+        }
+        rec.set_range(1, Value::Text("ABC".into()), Value::Text("ABC".into()));
+        assert_eq!(
+            rec.count(),
+            1,
+            "Text SetRange('ABC') must match only the exact-case 'ABC'"
+        );
+    }
+
+    /// C20: a numeric field filter is tolerant of Integer/Decimal bound mixing —
+    /// an Integer cell in [1.5 .. 3.5] matches when the bounds are Decimals.
+    #[test]
+    fn numeric_field_setrange_mixes_integer_and_decimal() {
+        let mut rec = MockRecord::new(50102, "NumKeyed", vec![1]);
+        for n in 1..=5i64 {
+            rec.field_set(1, Value::Integer(n));
+            rec.insert(false).expect("insert should succeed");
+        }
+        rec.set_range(1, Value::Decimal(dec!(1.5)), Value::Decimal(dec!(3.5)));
+        assert_eq!(rec.count(), 2, "integers 2 and 3 fall in [1.5..3.5]");
+    }
+
     #[test]
     fn test_count_after_mass_delete_is_zero() {
         let mut rec = make_table();
