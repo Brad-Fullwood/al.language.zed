@@ -37,7 +37,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use crate::interpreter::scope::Eval;
-use crate::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::value::{Decimal, ErrorInfo, Value};
 
 /// Maximum items the queue can hold (mirrors `array[25] of Variant`).
 const MAX_QUEUE_SIZE: usize = 25;
@@ -250,7 +250,7 @@ pub fn dequeue_text(_args: &[Value]) -> Eval {
 pub fn dequeue_decimal(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
         Ok(Value::Decimal(d)) => ok(Value::Decimal(d)),
-        Ok(Value::Integer(i)) => ok(Value::Decimal(i as f64)),
+        Ok(Value::Integer(i)) => ok(Value::Decimal(Decimal::from(i))),
         Ok(v) => err(format!(
             "Library Variable Storage: DequeueDecimal type mismatch — got {}",
             v.type_name()
@@ -332,7 +332,7 @@ pub fn peek_decimal(args: &[Value]) -> Eval {
     };
     QUEUE.with(|q| match q.borrow().peek(index) {
         Ok(Value::Decimal(d)) => ok(Value::Decimal(*d)),
-        Ok(Value::Integer(i)) => ok(Value::Decimal(*i as f64)),
+        Ok(Value::Integer(i)) => ok(Value::Decimal(Decimal::from(*i))),
         Ok(v) => err(format!(
             "Library Variable Storage: PeekDecimal type mismatch — got {}",
             v.type_name()
@@ -404,7 +404,7 @@ pub fn peek_boolean(args: &[Value]) -> Eval {
 fn format_value(v: &Value) -> String {
     match v {
         Value::Integer(n) => n.to_string(),
-        Value::Decimal(n) => n.to_string(),
+        Value::Decimal(n) => n.normalize().to_string(),
         Value::Boolean(true) => "Yes".to_string(),
         Value::Boolean(false) => "No".to_string(),
         Value::Text(s) | Value::Code(s) => s.clone(),
@@ -455,6 +455,7 @@ pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     fn setup() {
         reset_queue();
@@ -657,9 +658,9 @@ mod tests {
     #[test]
     fn dequeue_decimal_returns_decimal() {
         setup();
-        enqueue(&[Value::Decimal(3.5)]);
+        enqueue(&[Value::Decimal(dec!(3.5))]);
         match assert_value(dequeue_decimal(&[])) {
-            Value::Decimal(d) => assert!((d - 3.5).abs() < 1e-9),
+            Value::Decimal(d) => assert_eq!(d, dec!(3.5)),
             other => panic!("expected Decimal, got {other:?}"),
         }
     }

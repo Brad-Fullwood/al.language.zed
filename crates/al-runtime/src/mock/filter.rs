@@ -7,7 +7,7 @@
 //! - [`parse`] — parse a filter expression string into a [`FilterExpr`] AST.
 //! - [`matches`] — test whether a [`Value`] satisfies a [`FilterExpr`].
 
-use crate::interpreter::value::Value;
+use crate::interpreter::value::{Decimal, Value};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -62,7 +62,7 @@ pub struct Pattern {
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrderableValue {
     Integer(i64),
-    Decimal(f64),
+    Decimal(Decimal),
     Text(String),
 }
 
@@ -70,7 +70,7 @@ impl fmt::Display for OrderableValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             OrderableValue::Integer(n) => write!(f, "{n}"),
-            OrderableValue::Decimal(d) => write!(f, "{d}"),
+            OrderableValue::Decimal(d) => write!(f, "{}", d.normalize()),
             OrderableValue::Text(s) => write!(f, "{s}"),
         }
     }
@@ -284,7 +284,7 @@ fn parse_orderable_str(s: &str) -> Option<OrderableValue> {
     if let Ok(n) = s.parse::<i64>() {
         return Some(OrderableValue::Integer(n));
     }
-    if let Ok(d) = s.parse::<f64>() {
+    if let Ok(d) = s.parse::<Decimal>() {
         return Some(OrderableValue::Decimal(d));
     }
     Some(OrderableValue::Text(s.to_string()))
@@ -339,7 +339,7 @@ fn value_to_filter_string(value: &Value) -> String {
     match value {
         Value::Text(s) | Value::Code(s) => s.clone(),
         Value::Integer(n) => n.to_string(),
-        Value::Decimal(d) => d.to_string(),
+        Value::Decimal(d) => d.normalize().to_string(),
         Value::Boolean(b) => b.to_string(),
         Value::Char(c) => c.to_string(),
         Value::Date(d) => d.to_string(),
@@ -394,9 +394,9 @@ fn wildcard_match(pattern: &str, text: &str, case_insensitive: bool) -> bool {
 fn cmp_value(value: &Value, ov: &OrderableValue) -> Option<std::cmp::Ordering> {
     match (value, ov) {
         (Value::Integer(a), OrderableValue::Integer(b)) => Some(a.cmp(b)),
-        (Value::Integer(a), OrderableValue::Decimal(b)) => (*a as f64).partial_cmp(b),
-        (Value::Decimal(a), OrderableValue::Decimal(b)) => a.partial_cmp(b),
-        (Value::Decimal(a), OrderableValue::Integer(b)) => a.partial_cmp(&(*b as f64)),
+        (Value::Integer(a), OrderableValue::Decimal(b)) => Some(Decimal::from(*a).cmp(b)),
+        (Value::Decimal(a), OrderableValue::Decimal(b)) => Some(a.cmp(b)),
+        (Value::Decimal(a), OrderableValue::Integer(b)) => Some(a.cmp(&Decimal::from(*b))),
         (Value::Text(a), OrderableValue::Text(b)) | (Value::Code(a), OrderableValue::Text(b)) => {
             Some(a.cmp(b))
         }
@@ -408,6 +408,7 @@ fn cmp_value(value: &Value, ov: &OrderableValue) -> Option<std::cmp::Ordering> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     fn int(n: i64) -> Value {
         Value::Integer(n)
@@ -764,11 +765,11 @@ mod tests {
     #[test]
     fn test_decimal_range_precision_adversarial_i_20() {
         let expr = parse("1.5..1.6").unwrap();
-        let v_mid = Value::Decimal(1.55f64);
-        let v_lo = Value::Decimal(1.5f64);
-        let v_hi = Value::Decimal(1.6f64);
-        let v_below = Value::Decimal(1.4999f64);
-        let v_above = Value::Decimal(1.6001f64);
+        let v_mid = Value::Decimal(dec!(1.55));
+        let v_lo = Value::Decimal(dec!(1.5));
+        let v_hi = Value::Decimal(dec!(1.6));
+        let v_below = Value::Decimal(dec!(1.4999));
+        let v_above = Value::Decimal(dec!(1.6001));
 
         assert!(matches(&expr, &v_lo), "1.5 must be in [1.5..1.6]");
         assert!(matches(&expr, &v_hi), "1.6 must be in [1.5..1.6]");
@@ -782,17 +783,15 @@ mod tests {
             "1.6001 must NOT be in [1.5..1.6]"
         );
 
-        // Boundary fp artifact: 0.1 + 0.2 in f64 is slightly above 0.3.
-        // Test that filter("0.1..0.3") does NOT match 0.1+0.2 if fp rounding
-        // pushes it above 0.3. This is the known f64 footgun.
-        let sum = 0.1f64 + 0.2f64; // 0.30000000000000004 in IEEE 754
+        // C3: with exact decimals the old f64 footgun is gone — 0.1 + 0.2 is
+        // EXACTLY 0.3, so it lands on the upper boundary of [0.1..0.3] and MUST
+        // match. (Under f64 the sum was 0.30000000000000004 and fell out.)
+        let sum = dec!(0.1) + dec!(0.2);
+        assert_eq!(sum, dec!(0.3), "0.1 + 0.2 must be exactly 0.3");
         let range_03 = parse("0.1..0.3").unwrap();
-        // sum is slightly > 0.3, so it should NOT match — but f64 partial_cmp
-        // sees sum > 0.3, so the range check fails. This is the precision footgun.
-        // If this assertion FAILS it means the fp precision issue did NOT bite here.
         assert!(
-            !matches(&range_03, &Value::Decimal(sum)),
-            "0.1+0.2 = {sum} should NOT match 0.1..0.3 due to f64 precision (known footgun)"
+            matches(&range_03, &Value::Decimal(sum)),
+            "0.1+0.2 = {sum} must match 0.1..0.3 exactly (no f64 drift)"
         );
     }
 }

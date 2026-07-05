@@ -47,9 +47,9 @@ regression tests and verified against the layer it touches:
 | C31 | ✅ fixed | workspace-table field resolution is tree-based, not a line scanner |
 | C32 | ✅ fixed | emitted `.app` filename is sanitized for Windows |
 | C24 | ✅ fixed | `break`/`continue` are handled by the loop evaluators (grammar prompt in `Docs/`) |
-| C3 | ⏳ deferred | exact Decimal via `rust_decimal` — a workspace-wide value-model migration, tracked separately |
+| C3 | ✅ fixed | `Value::Decimal` is exact `rust_decimal::Decimal` (BC `System.Decimal`); no f64 drift, no NaN/infinity |
 
-Remaining open items: C3 (exact Decimal) and residual partials (C20 filter-casing leg, C22 index map).
+Remaining open items: residual partials only (C20 filter-casing leg, C22 index map).
 
 ---
 

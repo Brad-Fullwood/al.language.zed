@@ -36,7 +36,8 @@
 use std::cell::Cell;
 
 use crate::interpreter::scope::Eval;
-use crate::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::value::{Decimal, ErrorInfo, Value};
+use rust_decimal::prelude::ToPrimitive;
 
 thread_local! {
     /// Current LCG state.  Initial value 1 matches BC's default when
@@ -116,7 +117,7 @@ pub fn rand_int_in_range(args: &[Value]) -> Eval {
 pub fn rand_dec(args: &[Value]) -> Eval {
     let (max_val, places) = match args {
         [Value::Integer(m), Value::Integer(p)] => (*m, *p),
-        [Value::Decimal(m), Value::Integer(p)] => (*m as i64, *p),
+        [Value::Decimal(m), Value::Integer(p)] => (m.to_i64().unwrap_or(0), *p),
         _ => return err("LibraryRandom.RandDec expects (Integer, Integer)"),
     };
     if places < 0 {
@@ -128,7 +129,8 @@ pub fn rand_dec(args: &[Value]) -> Eval {
     let pow = 10_i64.pow(places as u32);
     let scaled_max = max_val.saturating_mul(pow).max(1);
     let raw = next_rand(scaled_max);
-    ok(Value::Decimal(raw as f64 / pow as f64))
+    // Exact: raw / 10^places as a base-10 decimal (no float division, C3).
+    ok(Value::Decimal(Decimal::new(raw, places as u32)))
 }
 
 /// `LibraryRandom.RandText([MaxLength: Integer]): Text`
@@ -300,7 +302,10 @@ mod tests {
         for _ in 0..50 {
             match rand_dec(&[Value::Integer(100), Value::Integer(2)]) {
                 Eval::Normal(Value::Decimal(d)) => {
-                    assert!(d > 0.0 && d <= 100.0, "decimal out of range (0, 100]: {d}");
+                    assert!(
+                        d > Decimal::ZERO && d <= Decimal::from(100),
+                        "decimal out of range (0, 100]: {d}"
+                    );
                 }
                 other => panic!("unexpected: {other:?}"),
             }

@@ -14,6 +14,7 @@ use crate::interpreter::dispatch::{dispatch_call, DispatchCtx};
 use crate::interpreter::scope::Eval;
 use crate::interpreter::value::Value;
 use crate::test_support::MockSource as Workspace;
+use rust_decimal_macros::dec;
 
 /// A workspace table with a `Code` primary key and a couple of data fields.
 const ITEM_TABLE: &str = r#"table 50100 "Item"
@@ -89,6 +90,56 @@ fn c25_var_param_mutation_propagates_to_caller() {
 "#;
     let r = run(&[("/ws/VarParam.al", cu)], "VarParam Tests", "Run", vec![]);
     assert_eq!(ok(r), Value::Integer(11));
+}
+
+// ─────────────────────────── C3: exact Decimal ───────────────────────────
+
+#[test]
+fn c3_decimal_arithmetic_is_exact_end_to_end() {
+    // Full evaluation path: `0.1 + 0.2 = 0.3` returns TRUE. Under the old f64
+    // Decimal the sum was 0.30000000000000004 and this comparison was FALSE.
+    let cu = r#"codeunit 50191 "Decimal Tests"
+{
+    procedure SumIsExact(): Boolean
+    var
+        d: Decimal;
+    begin
+        d := 0.1 + 0.2;
+        exit(d = 0.3);
+    end;
+
+    procedure Accumulate(): Decimal
+    var
+        total: Decimal;
+        i: Integer;
+    begin
+        total := 0;
+        for i := 1 to 10 do
+            total := total + 0.1;
+        exit(total);
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Decimal.al", cu)],
+        "Decimal Tests",
+        "SumIsExact",
+        vec![],
+    );
+    assert_eq!(
+        ok(r),
+        Value::Boolean(true),
+        "0.1 + 0.2 must equal 0.3 exactly through the interpreter"
+    );
+
+    // Ten accumulations of 0.1 land on exactly 1.0 (f64 drifts to 0.9999…).
+    let r = run(
+        &[("/ws/Decimal.al", cu)],
+        "Decimal Tests",
+        "Accumulate",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Decimal(dec!(1.0)));
 }
 
 #[test]
@@ -871,7 +922,7 @@ fn b6_flowfield_max() {
 #[test]
 fn b6_flowfield_average() {
     // Average always returns Decimal: (10+20+30)/3 = 20.0.
-    assert_eq!(ok(run_flow("AvgOnRead")), Value::Decimal(20.0));
+    assert_eq!(ok(run_flow("AvgOnRead")), Value::Decimal(dec!(20.0)));
 }
 
 #[test]

@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-use crate::interpreter::value::Value;
+use crate::interpreter::value::{Decimal, Value};
 use crate::mock::filter::{self, FilterExpr};
 
 /// A field number, matching BC's integer field-number convention.
@@ -448,17 +448,17 @@ impl MockRecord {
             FlowAgg::Exist => Value::Boolean(!matching.is_empty()),
             FlowAgg::Sum => {
                 let mut int_sum: i64 = 0;
-                let mut dec_sum: f64 = 0.0;
+                let mut dec_sum = Decimal::ZERO;
                 let mut any_decimal = false;
                 for cell in target_cells() {
                     match cell {
                         Value::Integer(n) => {
                             int_sum = int_sum.saturating_add(*n);
-                            dec_sum += *n as f64;
+                            dec_sum = dec_sum.checked_add(Decimal::from(*n)).unwrap_or(dec_sum);
                         }
                         Value::Decimal(d) => {
                             any_decimal = true;
-                            dec_sum += *d;
+                            dec_sum = dec_sum.checked_add(*d).unwrap_or(dec_sum);
                         }
                         _ => {}
                     }
@@ -470,11 +470,12 @@ impl MockRecord {
                 }
             }
             FlowAgg::Average => {
-                let nums: Vec<f64> = target_cells().filter_map(as_number).collect();
+                let nums: Vec<Decimal> = target_cells().filter_map(as_number).collect();
                 if nums.is_empty() {
-                    Value::Decimal(0.0)
+                    Value::Decimal(Decimal::ZERO)
                 } else {
-                    Value::Decimal(nums.iter().sum::<f64>() / nums.len() as f64)
+                    let sum: Decimal = nums.iter().copied().sum();
+                    Value::Decimal(sum.checked_div(Decimal::from(nums.len())).unwrap_or(sum))
                 }
             }
             FlowAgg::Min | FlowAgg::Max => {
@@ -505,9 +506,9 @@ impl MockRecord {
 }
 
 /// Numeric view of a value for FlowField aggregation (`Integer`/`Decimal`).
-fn as_number(v: &Value) -> Option<f64> {
+fn as_number(v: &Value) -> Option<Decimal> {
     match v {
-        Value::Integer(n) => Some(*n as f64),
+        Value::Integer(n) => Some(Decimal::from(*n)),
         Value::Decimal(d) => Some(*d),
         _ => None,
     }
@@ -548,6 +549,7 @@ fn flow_text(v: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     fn make_table() -> MockRecord {
         MockRecord::new(27, "Item", vec![1])
@@ -823,43 +825,35 @@ mod tests {
         assert_eq!(rec.count(), 5);
     }
 
-    // Vector 1: NaN Decimal as primary key — BTreeMap uses Ord (total_cmp)
-    // for lookup, so insert+get should round-trip. However, PartialEq is
-    // derived (uses f64 ==) which returns false for NaN==NaN, violating the
-    // Eq contract. This test exposes the Eq/PartialEq inconsistency: the
-    // derived PartialEq says NaN != NaN, but Ord says they are Equal.
+    // Vector 1: Decimal PK Eq/Ord consistency. With exact `rust_decimal` (C3)
+    // there is no NaN, so `a == a` holds unconditionally and Eq mirrors Ord.
     #[test]
-    fn test_nan_decimal_pk_eq_consistency_adversarial_i_1() {
-        let nan = Value::Decimal(f64::NAN);
-        // Ord/total_cmp says NaN == NaN — this should hold for Eq.
-        // If the derived PartialEq is used, this assertion will FAIL
-        // because f64 NaN != NaN.
-        assert!(
-            nan == nan,
-            "Eq contract: a == a must hold for Value::Decimal(NaN)"
+    fn test_decimal_pk_eq_consistency_adversarial_i_1() {
+        let d = Value::Decimal(dec!(1.25));
+        assert!(d == d, "Eq contract: a == a must hold for a Decimal value");
+        assert_eq!(
+            d.cmp(&Value::Decimal(dec!(1.25))),
+            std::cmp::Ordering::Equal
         );
     }
 
-    // Vector 1b: NaN Decimal round-trips through BTreeMap insert/get.
-    // BTreeMap uses Ord for all key operations, so even with broken PartialEq
-    // the map should find the key. But contains_key on the extracted PrimaryKey
-    // goes through Vec<Value> comparison which uses PartialEq — potential
-    // inconsistency with BTreeMap's Ord-based lookup.
+    // Vector 1b: a Decimal primary key round-trips through the store and a
+    // second insert of the same exact key is a DuplicateKey error.
     #[test]
-    fn test_nan_decimal_pk_roundtrip_adversarial_i_1b() {
-        let mut rec = MockRecord::new(99, "NanTable", vec![1]);
-        rec.field_set(1, Value::Decimal(f64::NAN));
-        rec.field_set(2, Value::Text("nanrow".to_string()));
-        rec.insert(false).expect("insert NaN PK should succeed");
+    fn test_decimal_pk_roundtrip_adversarial_i_1b() {
+        let mut rec = MockRecord::new(99, "DecTable", vec![1]);
+        rec.field_set(1, Value::Decimal(dec!(3.14)));
+        rec.field_set(2, Value::Text("decrow".to_string()));
+        rec.insert(false).expect("insert Decimal PK should succeed");
 
-        // Second insert with NaN PK should be a DuplicateKey error.
-        rec.field_set(1, Value::Decimal(f64::NAN));
+        // Second insert with the same PK should be a DuplicateKey error.
+        rec.field_set(1, Value::Decimal(dec!(3.14)));
         rec.field_set(2, Value::Text("duplicate".to_string()));
         let err = rec.insert(false).unwrap_err();
         assert_eq!(
             err,
             RecordError::DuplicateKey,
-            "NaN PK must trigger DuplicateKey on second insert"
+            "Decimal PK must trigger DuplicateKey on second insert"
         );
     }
 
@@ -1219,7 +1213,7 @@ mod tests {
         );
         assert_eq!(
             rec.calc_flow(&conds, Some(3), FlowAgg::Average),
-            Value::Decimal(20.0)
+            Value::Decimal(dec!(20.0))
         );
     }
 
@@ -1241,7 +1235,7 @@ mod tests {
         );
         assert_eq!(
             rec.calc_flow(&none, Some(3), FlowAgg::Average),
-            Value::Decimal(0.0)
+            Value::Decimal(dec!(0.0))
         );
         assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Lookup), Value::Empty);
     }
@@ -1254,11 +1248,11 @@ mod tests {
         rec.field_set(2, Value::Integer(10));
         rec.insert(false).unwrap();
         rec.field_set(1, Value::Integer(2));
-        rec.field_set(2, Value::Decimal(2.5));
+        rec.field_set(2, Value::Decimal(dec!(2.5)));
         rec.insert(false).unwrap();
         assert_eq!(
             rec.calc_flow(&[], Some(2), FlowAgg::Sum),
-            Value::Decimal(12.5)
+            Value::Decimal(dec!(12.5))
         );
     }
 }

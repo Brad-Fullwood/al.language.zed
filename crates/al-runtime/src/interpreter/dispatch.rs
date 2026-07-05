@@ -940,7 +940,7 @@ pub(crate) fn clock_current_datetime() -> i64 {
 fn render_value(v: &Value) -> String {
     match v {
         Value::Integer(n) => n.to_string(),
-        Value::Decimal(n) => n.to_string(),
+        Value::Decimal(n) => n.normalize().to_string(),
         Value::Boolean(true) => "Yes".to_string(),
         Value::Boolean(false) => "No".to_string(),
         Value::Text(s) | Value::Code(s) => s.clone(),

@@ -32,7 +32,8 @@
 use std::cell::Cell;
 
 use crate::interpreter::scope::Eval;
-use crate::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::value::{Decimal, ErrorInfo, Value};
+use rust_decimal::prelude::ToPrimitive;
 
 // We import the same Cell type and use the same algorithm as library_random,
 // but we keep a *separate* thread-local here so the two stubs don't need to
@@ -110,42 +111,45 @@ pub fn decimal_in_range(args: &[Value]) -> Eval {
     match args {
         // Two-arg form: DecimalInRange(Max, Places)
         [Value::Integer(max), Value::Integer(places)] => {
-            decimal_in_range_impl(0.0, *max as f64, *places)
+            decimal_in_range_impl(Decimal::ZERO, Decimal::from(*max), *places)
         }
         // Three-arg integer form: DecimalInRange(Min, Max, Places)
         [Value::Integer(min), Value::Integer(max), Value::Integer(places)] => {
-            decimal_in_range_impl(*min as f64, *max as f64, *places)
+            decimal_in_range_impl(Decimal::from(*min), Decimal::from(*max), *places)
         }
         // Three-arg decimal form
         [Value::Decimal(min), Value::Decimal(max), Value::Integer(places)] => {
             decimal_in_range_impl(*min, *max, *places)
         }
         [Value::Integer(min), Value::Decimal(max), Value::Integer(places)] => {
-            decimal_in_range_impl(*min as f64, *max, *places)
+            decimal_in_range_impl(Decimal::from(*min), *max, *places)
         }
         [Value::Decimal(min), Value::Integer(max), Value::Integer(places)] => {
-            decimal_in_range_impl(*min, *max as f64, *places)
+            decimal_in_range_impl(*min, Decimal::from(*max), *places)
         }
         _ => err("Any.DecimalInRange expects (Integer, Integer) or (Num, Num, Integer)"),
     }
 }
 
-fn decimal_in_range_impl(min: f64, max: f64, places: i64) -> Eval {
+fn decimal_in_range_impl(min: Decimal, max: Decimal, places: i64) -> Eval {
     if places < 0 {
         return err("Any.DecimalInRange: DecimalPlaces must be ≥ 0");
     }
     if places > 9 {
         return err("Any.DecimalInRange: DecimalPlaces must be ≤ 9");
     }
-    let pow = 10_i64.pow(places as u32) as f64;
-    let min_scaled = (min * pow).ceil() as i64;
-    let max_scaled = (max * pow).floor() as i64;
+    let scale = places as u32;
+    let pow = Decimal::from(10_i64.pow(scale));
+    // Scale the bounds to whole units of the least significant place, then pick
+    // an integer in [min_scaled, max_scaled] and divide back — all exact (C3).
+    let min_scaled = (min * pow).ceil().to_i64().unwrap_or(0);
+    let max_scaled = (max * pow).floor().to_i64().unwrap_or(0);
     if min_scaled >= max_scaled {
-        return ok(Value::Decimal(min_scaled as f64 / pow));
+        return ok(Value::Decimal(Decimal::new(min_scaled, scale)));
     }
     let span = max_scaled - min_scaled + 1;
     let raw = next_rand(span);
-    ok(Value::Decimal((min_scaled + raw - 1) as f64 / pow))
+    ok(Value::Decimal(Decimal::new(min_scaled + raw - 1, scale)))
 }
 
 /// `Any.AlphabeticText(Length: Integer): Text`
@@ -435,7 +439,10 @@ mod tests {
         for _ in 0..50 {
             match decimal_in_range(&[Value::Integer(100), Value::Integer(2)]) {
                 Eval::Normal(Value::Decimal(d)) => {
-                    assert!(d > 0.0 && d <= 100.0, "out of range: {d}")
+                    assert!(
+                        d > Decimal::ZERO && d <= Decimal::from(100),
+                        "out of range: {d}"
+                    )
                 }
                 other => panic!("unexpected: {other:?}"),
             }
@@ -448,7 +455,10 @@ mod tests {
         for _ in 0..50 {
             match decimal_in_range(&[Value::Integer(10), Value::Integer(20), Value::Integer(2)]) {
                 Eval::Normal(Value::Decimal(d)) => {
-                    assert!((10.0..=20.0).contains(&d), "out of range: {d}")
+                    assert!(
+                        d >= Decimal::from(10) && d <= Decimal::from(20),
+                        "out of range: {d}"
+                    )
                 }
                 other => panic!("unexpected: {other:?}"),
             }
