@@ -67,7 +67,11 @@ jobs:
       - name: Test
         run: cargo test --workspace --exclude zed-al
         env:
-          # zed_simulation fixture tests silently skip when absent — acceptable in CI
+          # zed_simulation.rs now runs unconditionally against the bundled
+          # fixture (data/test_al_project) and no longer reads this var.
+          # data_driven.rs / performance.rs still gate on it (real-project-only
+          # assertions that don't fit the bundled fixture) and silently skip
+          # when absent — acceptable in CI.
           AL_TEST_PROJECT_PATH: ""
 
       - name: Clippy
