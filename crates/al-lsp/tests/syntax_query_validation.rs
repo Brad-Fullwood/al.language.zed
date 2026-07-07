@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use tree_sitter::Query;
 
 fn al_language() -> tree_sitter::Language {
-    al_lsp::syntax::parser::language()
+    al_syntax::parser::language()
 }
 
 fn languages_dir() -> PathBuf {

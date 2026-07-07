@@ -45,10 +45,10 @@ use std::sync::Arc;
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
-use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Request, Response, RpcError};
 #[cfg(unix)]
 use al_protocol::socket_path;
+use al_workspace::Workspace;
 use tokio::io::AsyncBufReadExt;
 #[cfg(unix)]
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -684,11 +684,13 @@ pub(crate) fn extract_uri(params: &serde_json::Value) -> Option<url::Url> {
     url::Url::parse(uri_str).ok() // SILENT: bad client input is not user-affecting
 }
 
-pub(crate) fn extract_position(params: &serde_json::Value) -> Option<crate::queries::Position> {
+pub(crate) fn extract_position(
+    params: &serde_json::Value,
+) -> Option<al_analysis::queries::Position> {
     // Cap to u32::MAX to prevent silent truncation of attacker-controlled values.
     let line = u32::try_from(params.get("line")?.as_u64()?).ok()?;
     let character = u32::try_from(params.get("character")?.as_u64()?).ok()?;
-    Some(crate::queries::Position { line, character })
+    Some(al_analysis::queries::Position { line, character })
 }
 
 /// Extract a JSON-RPC integer parameter as `i32` without silent truncation.
@@ -756,8 +758,8 @@ pub(crate) fn require_project_root(workspace: &Workspace, id: u64) -> Result<Pat
 pub(crate) fn parse_object_kind(
     id: u64,
     kind_str: &str,
-) -> Result<crate::symbols::ObjectKind, Response> {
-    kind_str.parse::<crate::symbols::ObjectKind>().map_err(|_| {
+) -> Result<al_symbols::ObjectKind, Response> {
+    kind_str.parse::<al_symbols::ObjectKind>().map_err(|_| {
         rpc_error(
             id,
             error_codes::INVALID_PARAMS,
@@ -811,7 +813,7 @@ pub(crate) fn file_uri_from_params(params: &serde_json::Value) -> Option<url::Ur
     None
 }
 
-pub(crate) fn lint_diag_to_json(d: &crate::syntax::LintDiagnostic) -> serde_json::Value {
+pub(crate) fn lint_diag_to_json(d: &al_syntax::LintDiagnostic) -> serde_json::Value {
     serde_json::json!({
         "code": d.code,
         "message": d.message,
@@ -824,7 +826,7 @@ pub(crate) fn lint_diag_to_json(d: &crate::syntax::LintDiagnostic) -> serde_json
 }
 
 pub(crate) async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path) {
-    let result = crate::workspace::initialize_core_workspace(workspace, project_root).await;
+    let result = al_workspace::initialize_core_workspace(workspace, project_root).await;
 
     tracing::info!(
         files = result.file_count,
@@ -1030,7 +1032,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_ping_returns_pong() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let shutdown = Notify::new();
         let req = Request::new(7, "ping", None);
         let resp = dispatch_request(&ws, req, &shutdown).await;
@@ -1041,7 +1043,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_unknown_method_is_method_not_found() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let shutdown = Notify::new();
         let req = Request::new(11, "definitelyNotAMethod", None);
         let resp = dispatch_request(&ws, req, &shutdown).await;
@@ -1058,7 +1060,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_status_reports_pid() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let shutdown = Notify::new();
         let req = Request::new(3, "status", None);
         let resp = dispatch_request(&ws, req, &shutdown).await;
@@ -1077,7 +1079,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_shutdown_signals_notify_and_acks() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let shutdown = Notify::new();
         let notified = shutdown.notified();
         tokio::pin!(notified);
@@ -1100,7 +1102,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_diag_defaults_to_summary_when_params_absent() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let shutdown = Notify::new();
         let req = Request::new(5, "diag", None);
         let resp = dispatch_request(&ws, req, &shutdown).await;
@@ -1115,7 +1117,7 @@ mod tests {
 
     #[test]
     fn dispatch_diag_summary_serializes_memory_stats() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let resp = dispatch_diag(&ws, 1, &serde_json::json!({ "cmd": "summary" }));
         assert_eq!(resp.id, 1);
         assert!(resp.error.is_none());
@@ -1128,7 +1130,7 @@ mod tests {
 
     #[test]
     fn dispatch_diag_rejects_unknown_subcommand() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let resp = dispatch_diag(&ws, 2, &serde_json::json!({ "cmd": "bogus" }));
         assert_eq!(resp.id, 2);
         assert!(resp.result.is_none());
@@ -1152,7 +1154,7 @@ mod tests {
     fn require_project_root_errors_when_no_project_loaded() {
         // A fresh workspace has no project; require_project_root must return
         // an INTERNAL_ERROR Response rather than a path.
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let err = require_project_root(&ws, 4).expect_err("no project => Err");
         assert_eq!(err.id, 4);
         let rpc = err.error.expect("must carry an RpcError");
@@ -1166,7 +1168,7 @@ mod tests {
         std::fs::write(&file, b"codeunit 50000 Foo {}").unwrap();
         let uri = url::Url::from_file_path(&file).unwrap();
 
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         assert!(ws.documents.get_text(&uri).is_none());
 
         // ensure_document uses block_in_place, which requires a multi-thread
@@ -1182,7 +1184,7 @@ mod tests {
 
     #[test]
     fn require_document_text_returns_file_not_found_for_missing_file() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let uri = url::Url::parse("file:///no/such/al-file-xyz.al").unwrap();
         let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
         let err = rt.block_on(async { require_document_text(&ws, &uri, 6).unwrap_err() });
@@ -1195,7 +1197,7 @@ mod tests {
     fn ensure_document_returns_none_for_non_file_uri() {
         // A non-file URI has no filesystem path; ensure_document must return
         // None rather than panicking.
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let uri = url::Url::parse("https://example.com/x.al").unwrap();
         let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
         let got = rt.block_on(async { ensure_document(&ws, &uri) });
@@ -1277,7 +1279,7 @@ mod tests {
     /// are what we pin here.)
     #[tokio::test]
     async fn dispatch_rules_returns_array_result() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let shutdown = Notify::new();
         let resp = dispatch_request(&ws, Request::new(21, "rules", None), &shutdown).await;
         assert_eq!(resp.id, 21);
@@ -1290,7 +1292,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_packages_returns_empty_array_on_fresh_workspace() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let shutdown = Notify::new();
         let resp = dispatch_request(&ws, Request::new(22, "packages", None), &shutdown).await;
         assert_eq!(resp.id, 22);
@@ -1303,7 +1305,7 @@ mod tests {
     /// workspace it must still succeed and return a JSON array.
     #[tokio::test]
     async fn dispatch_entrypoints_succeeds_on_empty_workspace() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let shutdown = Notify::new();
         let resp = dispatch_request(&ws, Request::new(23, "entrypoints", None), &shutdown).await;
         assert_eq!(resp.id, 23);
@@ -1316,7 +1318,7 @@ mod tests {
     /// proving both the routing entry and the shared `invalid_params` helper.
     #[tokio::test]
     async fn dispatch_hover_without_params_is_invalid_params() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let shutdown = Notify::new();
         let resp = dispatch_request(&ws, Request::new(31, "hover", None), &shutdown).await;
         assert_eq!(resp.id, 31);
@@ -1330,7 +1332,7 @@ mod tests {
     /// empty-params case — this covers a swath of the routing table at once.
     #[tokio::test]
     async fn dispatch_param_validating_methods_route_and_reject_empty_params() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let shutdown = Notify::new();
         for method in [
             "definition",
@@ -1368,7 +1370,7 @@ mod tests {
     /// through `parse_object_kind` and surface INVALID_PARAMS naming the input.
     #[tokio::test]
     async fn dispatch_object_with_bad_kind_is_invalid_params() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let shutdown = Notify::new();
         let params = serde_json::json!({ "kind": "notakind", "name": "X" });
         let req = Request::new(45, "object", Some(params));
@@ -1383,7 +1385,7 @@ mod tests {
     /// not-found path too — a regression here would mismatch client futures.
     #[tokio::test]
     async fn dispatch_preserves_request_id_on_unknown_method() {
-        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let shutdown = Notify::new();
         let resp = dispatch_request(&ws, Request::new(9_999, "nope.nope", None), &shutdown).await;
         assert_eq!(resp.id, 9_999);
@@ -1395,7 +1397,7 @@ mod tests {
 
     #[test]
     fn lint_diag_to_json_uses_one_based_positions() {
-        use crate::syntax::{LintDiagnostic, LintSeverity};
+        use al_syntax::{LintDiagnostic, LintSeverity};
         use tree_sitter::{Point, Range};
         let diag = LintDiagnostic {
             code: "AL0001".to_string(),

@@ -7,7 +7,7 @@ use super::AlServer;
 // spawn_blocking wrapper — see crates/al-lsp/src/server/lsp.rs.
 
 pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<FoldingRange>> {
-    crate::queries::folding::folding_ranges(&server.workspace, uri)
+    al_analysis::queries::folding::folding_ranges(&server.workspace, uri)
         .map(|ranges| ranges.into_iter().map(Into::into).collect())
 }
 
@@ -20,7 +20,7 @@ pub(crate) fn handle_signature_help(
     position: Position,
 ) -> Option<SignatureHelp> {
     let core_pos = position.into();
-    let result = crate::queries::signature::signature_help(&server.workspace, uri, core_pos)?;
+    let result = al_analysis::queries::signature::signature_help(&server.workspace, uri, core_pos)?;
     Some(SignatureHelp {
         signatures: result
             .signatures
@@ -66,13 +66,13 @@ pub(crate) fn handle_code_action(
             NumberOrString::String(s) => s.clone(),
             NumberOrString::Number(n) => n.to_string(),
         });
-        let diag_info = crate::queries::code_actions::DiagnosticInfo {
+        let diag_info = al_analysis::queries::code_actions::DiagnosticInfo {
             range: diag.range.into(),
             message: diag.message.clone(),
             code,
         };
         if let Some(entry) =
-            crate::queries::code_actions::quick_fix_for_diagnostic(uri, &text, &diag_info)
+            al_analysis::queries::code_actions::quick_fix_for_diagnostic(uri, &text, &diag_info)
         {
             actions.push(core_action_to_lsp(entry, Some(diag)));
         }
@@ -81,7 +81,7 @@ pub(crate) fn handle_code_action(
         // wasn't wired into the LSP code-action surface. Plumb it
         // through so the user sees the suggested namespace `using`
         // imports next to the AL compiler diagnostic.
-        for entry in crate::queries::code_actions::namespace_quick_fix_for_diagnostic(
+        for entry in al_analysis::queries::code_actions::namespace_quick_fix_for_diagnostic(
             &server.workspace,
             uri,
             &text,
@@ -91,8 +91,10 @@ pub(crate) fn handle_code_action(
         }
     }
 
-    let core_range: crate::queries::Range = range.into();
-    for entry in crate::queries::code_actions::source_actions(&server.workspace, uri, core_range) {
+    let core_range: al_analysis::queries::Range = range.into();
+    for entry in
+        al_analysis::queries::code_actions::source_actions(&server.workspace, uri, core_range)
+    {
         actions.push(core_action_to_lsp(entry, None));
     }
 
@@ -139,7 +141,7 @@ pub(crate) fn handle_code_action(
 }
 
 /// Convert an `al-analysis` transport-agnostic `WorkspaceEdit` to a tower-lsp `WorkspaceEdit`.
-pub(crate) fn core_workspace_edit_to_lsp(we: crate::queries::WorkspaceEdit) -> WorkspaceEdit {
+pub(crate) fn core_workspace_edit_to_lsp(we: al_analysis::queries::WorkspaceEdit) -> WorkspaceEdit {
     let mut changes = std::collections::HashMap::new();
     for (uri, edits) in we.changes {
         let lsp_edits: Vec<TextEdit> = edits
@@ -158,13 +160,13 @@ pub(crate) fn core_workspace_edit_to_lsp(we: crate::queries::WorkspaceEdit) -> W
 }
 
 fn core_action_to_lsp(
-    entry: crate::queries::code_actions::CodeActionEntry,
+    entry: al_analysis::queries::code_actions::CodeActionEntry,
     diag: Option<&Diagnostic>,
 ) -> CodeActionOrCommand {
     let kind = match entry.kind {
-        crate::queries::code_actions::CodeActionKind::QuickFix => CodeActionKind::QUICKFIX,
-        crate::queries::code_actions::CodeActionKind::Refactor => CodeActionKind::REFACTOR,
-        crate::queries::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
+        al_analysis::queries::code_actions::CodeActionKind::QuickFix => CodeActionKind::QUICKFIX,
+        al_analysis::queries::code_actions::CodeActionKind::Refactor => CodeActionKind::REFACTOR,
+        al_analysis::queries::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
     };
     let edit = entry.edit.map(core_workspace_edit_to_lsp);
     CodeActionOrCommand::CodeAction(CodeAction {
@@ -182,6 +184,6 @@ pub(crate) fn handle_inlay_hint(
     uri: &Url,
     range: Range,
 ) -> Option<Vec<InlayHint>> {
-    crate::queries::inlay_hints::inlay_hints(&server.workspace, uri, range.into())
+    al_analysis::queries::inlay_hints::inlay_hints(&server.workspace, uri, range.into())
         .map(|hints| hints.into_iter().map(Into::into).collect())
 }

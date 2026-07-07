@@ -3,7 +3,7 @@
 //! Lives in the `al-lsp` crate, whose binary entry point is
 //! `crates/al-lsp/src/bin/al-lsp.rs`.
 //!
-//! `crate::queries::*` returns transport-agnostic types; this module is the
+//! `al_analysis::queries::*` returns transport-agnostic types; this module is the
 //! only place in the crate that imports `tower_lsp::lsp_types::*` (the
 //! transport-boundary coding rule).
 

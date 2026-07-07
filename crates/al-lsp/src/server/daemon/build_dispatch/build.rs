@@ -2,8 +2,8 @@
 
 use super::super::{ensure_document, file_not_found, file_uri_from_params, invalid_params};
 use super::{ERR_INITIALIZING, ERR_NO_PROJECT};
-use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
+use al_workspace::Workspace;
 
 /// Common BC server connection parameters extracted from JSON-RPC params.
 struct BcServerParams {
@@ -63,7 +63,7 @@ fn parse_bc_server_params(params: &serde_json::Value, output_subdir: &str) -> Bc
 /// HTTP client. Reuses the launch-config allowlist so both surfaces agree.
 /// Returns `Some(INVALID_PARAMS error)` when the URL must be rejected.
 fn reject_unsafe_server_url(id: u64, server_url: &str) -> Option<Response> {
-    if crate::launch::is_safe_http_server(server_url) {
+    if al_bc::launch::is_safe_http_server(server_url) {
         return None;
     }
     Some(Response {
@@ -108,7 +108,7 @@ pub(in crate::server::daemon) fn dispatch_location(
     let kind_filter = params
         .get("kind")
         .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<crate::symbols::ObjectKind>().ok());
+        .and_then(|s| s.parse::<al_symbols::ObjectKind>().ok());
     let id_filter = params.get("id").and_then(|v| v.as_i64());
 
     let mut candidates = workspace.symbols.get_by_name(name);
@@ -126,7 +126,7 @@ pub(in crate::server::daemon) fn dispatch_location(
 
     if let Some(entry) = candidates.first() {
         let app_path = workspace.symbols.app_path(&entry.package);
-        match crate::symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
+        match al_symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
             Ok(path) => {
                 return Response {
                     id,
@@ -183,13 +183,18 @@ pub(in crate::server::daemon) fn dispatch_source(
     let kind_filter = params
         .get("kind")
         .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<crate::symbols::ObjectKind>().ok());
+        .and_then(|s| s.parse::<al_symbols::ObjectKind>().ok());
 
     let proc_filter = params.get("proc").and_then(|v| v.as_str());
     let trigger_filter = params.get("trigger").and_then(|v| v.as_str());
 
-    match crate::queries::source::source(workspace, name, kind_filter, proc_filter, trigger_filter)
-    {
+    match al_analysis::queries::source::source(
+        workspace,
+        name,
+        kind_filter,
+        proc_filter,
+        trigger_filter,
+    ) {
         Some(result) => Response {
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
@@ -218,7 +223,7 @@ pub(in crate::server::daemon) fn dispatch_event_source(
     let Some(line) = params.get("line").and_then(|v| v.as_u64()) else {
         return invalid_params(id);
     };
-    match crate::queries::source::event_source(
+    match al_analysis::queries::source::event_source(
         workspace,
         std::path::Path::new(file),
         line.min(u64::from(u32::MAX)) as u32,
@@ -312,13 +317,13 @@ pub(in crate::server::daemon) async fn dispatch_compile(
         // analysis, so structured diagnostics come from the LSP, not this step.
         if !use_official_compiler {
             // B2: route through the shared build service (native backend).
-            let compile_result = crate::build::build(crate::build::BuildRequest {
+            let compile_result = al_compile::build(al_compile::BuildRequest {
                 project_root: &project_root,
-                backend: crate::build::BuildBackend::Native,
+                backend: al_compile::BuildBackend::Native,
                 toolchain: None,
                 package_cache: None,
                 analyzers: None,
-                config: crate::build::CompilationConfigOptions::default(),
+                config: al_compile::CompilationConfigOptions::default(),
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -357,7 +362,7 @@ pub(in crate::server::daemon) async fn dispatch_compile(
             .config
             .try_read()
             .ok()
-            .map(|cfg| crate::build::CompilationConfigOptions {
+            .map(|cfg| al_compile::CompilationConfigOptions {
                 compilation_options: cfg.compilation_options.clone(),
                 incremental_build: cfg.incremental_build,
                 enable_external_rulesets: cfg.enable_external_rulesets,
@@ -370,9 +375,9 @@ pub(in crate::server::daemon) async fn dispatch_compile(
         // failures (no toolchain, missing app.json, alc spawn) propagate as Err
         // → INTERNAL/CODE_ANALYSIS error; a compile that ran with error
         // diagnostics comes back as Ok(success:false).
-        let compile_result = crate::build::build(crate::build::BuildRequest {
+        let compile_result = al_compile::build(al_compile::BuildRequest {
             project_root: &project_root,
-            backend: crate::build::BuildBackend::Alc,
+            backend: al_compile::BuildBackend::Alc,
             toolchain: Some(toolchain),
             package_cache: package_cache.as_deref(),
             analyzers: None,
@@ -463,13 +468,13 @@ pub(in crate::server::daemon) async fn dispatch_package(
     let use_official_compiler = workspace.config.read().await.use_official_compiler;
     if !use_official_compiler {
         // B2: route through the shared build service (native backend).
-        let compile_result = match crate::build::build(crate::build::BuildRequest {
+        let compile_result = match al_compile::build(al_compile::BuildRequest {
             project_root: &project_root,
-            backend: crate::build::BuildBackend::Native,
+            backend: al_compile::BuildBackend::Native,
             toolchain: None,
             package_cache: None,
             analyzers: None,
-            config: crate::build::CompilationConfigOptions::default(),
+            config: al_compile::CompilationConfigOptions::default(),
         })
         .await
         {
@@ -548,7 +553,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
         .map(|cfg| {
             (
                 cfg.code_analyzers.clone(),
-                crate::build::CompilationConfigOptions {
+                al_compile::CompilationConfigOptions {
                     compilation_options: cfg.compilation_options.clone(),
                     incremental_build: cfg.incremental_build,
                     enable_external_rulesets: cfg.enable_external_rulesets,
@@ -568,9 +573,9 @@ pub(in crate::server::daemon) async fn dispatch_package(
     // B2: route through the shared build service (alc backend). Infra failures
     // propagate as Err → INTERNAL_ERROR; a compile that ran (even with error
     // diagnostics) is an Ok(CompileResult) serialized verbatim.
-    match crate::build::build(crate::build::BuildRequest {
+    match al_compile::build(al_compile::BuildRequest {
         project_root: &project_root,
-        backend: crate::build::BuildBackend::Alc,
+        backend: al_compile::BuildBackend::Alc,
         toolchain: Some(&toolchain),
         package_cache: None,
         analyzers: analyzer_filter.as_deref(),
@@ -652,7 +657,7 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
     if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
         return err;
     }
-    let config = crate::snapshot::SnapshotConfig {
+    let config = al_bc::snapshot::SnapshotConfig {
         server_url: bc.server_url,
         company: bc.company,
         output_dir: bc.output_dir,
@@ -664,7 +669,7 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
     match cmd {
         "start" => {
             let description = params.get("description").and_then(|v| v.as_str());
-            match crate::snapshot::start_snapshot(&config, description).await {
+            match al_bc::snapshot::start_snapshot(&config, description).await {
                 Ok(snapshot_id) => Response {
                     id,
                     result: Some(serde_json::json!({
@@ -688,7 +693,7 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
         }
 
         "list" => {
-            match crate::snapshot::list_snapshots(&config).await {
+            match al_bc::snapshot::list_snapshots(&config).await {
                 Ok(snapshots) => {
                     let items: Vec<serde_json::Value> = snapshots
                         .iter()
@@ -732,7 +737,7 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
                 }
             };
 
-            match crate::snapshot::download_snapshot(&config, &snapshot_id).await {
+            match al_bc::snapshot::download_snapshot(&config, &snapshot_id).await {
                 Ok(path) => Response {
                     id,
                     result: Some(serde_json::json!({
@@ -790,7 +795,7 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
     if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
         return err;
     }
-    let config = crate::profiling::ProfilingConfig {
+    let config = al_bc::profiling::ProfilingConfig {
         server_url: bc.server_url,
         company: bc.company,
         output_dir: bc.output_dir,
@@ -800,7 +805,7 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
     };
 
     match cmd {
-        "start" => match crate::profiling::start_profiling(&config).await {
+        "start" => match al_bc::profiling::start_profiling(&config).await {
             Ok(session_id) => Response {
                 id,
                 result: Some(serde_json::json!({
@@ -829,7 +834,7 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
                 .unwrap_or("profiling-session")
                 .to_string();
 
-            match crate::profiling::stop_profiling(&config, &session_id).await {
+            match al_bc::profiling::stop_profiling(&config, &session_id).await {
                 Ok(path) => Response {
                     id,
                     result: Some(serde_json::json!({
@@ -883,7 +888,7 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
             let top_n = params.get("topN").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
             let top_n = top_n.min(1000);
 
-            match crate::profiling::analyze_profile_file(&profile_path, top_n).await {
+            match al_bc::profiling::analyze_profile_file(&profile_path, top_n).await {
                 Ok(result) => {
                     let hotspots: Vec<serde_json::Value> = result
                         .hotspots
@@ -948,8 +953,8 @@ pub(in crate::server::daemon) fn dispatch_metrics(
         for entry in workspace.file_index.files.iter() {
             let path = entry.key().to_string_lossy().to_string();
             let text = entry.value();
-            let parsed = crate::syntax::AlParser::parse_quick(text);
-            let metrics = crate::syntax::complexity::compute_complexity(&parsed.tree, text);
+            let parsed = al_syntax::AlParser::parse_quick(text);
+            let metrics = al_syntax::complexity::compute_complexity(&parsed.tree, text);
             if !metrics.is_empty() {
                 let hotspots: Vec<serde_json::Value> = metrics
                     .iter()
@@ -983,8 +988,8 @@ pub(in crate::server::daemon) fn dispatch_metrics(
         return file_not_found(id);
     };
 
-    let parsed = crate::syntax::AlParser::parse_quick(&text);
-    let metrics = crate::syntax::complexity::compute_complexity(&parsed.tree, &text);
+    let parsed = al_syntax::AlParser::parse_quick(&text);
+    let metrics = al_syntax::complexity::compute_complexity(&parsed.tree, &text);
 
     let hotspots: Vec<serde_json::Value> = metrics
         .iter()
@@ -1005,7 +1010,7 @@ pub(in crate::server::daemon) fn dispatch_metrics(
     }
 }
 fn procedure_complexity_to_json(
-    m: &crate::syntax::complexity::ProcedureComplexity,
+    m: &al_syntax::complexity::ProcedureComplexity,
 ) -> serde_json::Value {
     serde_json::json!({
         "name": m.name,
@@ -1034,7 +1039,7 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
         return invalid_params(id);
     };
 
-    let sorted = match crate::syntax::sort_members(&content) {
+    let sorted = match al_syntax::sort_members(&content) {
         Some(s) => s,
         None => content.clone(),
     };
@@ -1102,8 +1107,8 @@ pub(in crate::server::daemon) fn dispatch_organize_files(
         .collect();
 
     for (path, text) in snapshot {
-        let parsed = crate::syntax::AlParser::parse_quick(&text);
-        let obj = match crate::syntax::find_object_declaration(&parsed.tree, &text) {
+        let parsed = al_syntax::AlParser::parse_quick(&text);
+        let obj = match al_syntax::find_object_declaration(&parsed.tree, &text) {
             Some(o) => o,
             None => continue,
         };
@@ -1179,7 +1184,7 @@ pub(in crate::server::daemon) fn dispatch_profiler_hints(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    let hints = crate::queries::profiler_hints::profiler_hints(workspace, &hotspots);
+    let hints = al_analysis::queries::profiler_hints::profiler_hints(workspace, &hotspots);
     let value = serde_json::to_value(&hints).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -1192,8 +1197,8 @@ pub(in crate::server::daemon) fn dispatch_profiler_hints(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
     use al_protocol::jsonrpc::error_codes;
+    use al_workspace::Workspace;
 
     fn empty_ws() -> Workspace {
         Workspace::new()
@@ -1260,9 +1265,9 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         {
             let mut guard = ws.project.write().await;
-            *guard = Some(crate::project::AlProject {
+            *guard = Some(al_project::project::AlProject {
                 root: tmp.path().to_path_buf(),
-                app_json: crate::project::AppManifest {
+                app_json: al_project::project::AppManifest {
                     id: String::new(),
                     name: "test".into(),
                     publisher: "test".into(),
@@ -1648,10 +1653,10 @@ mod tests {
     /// `ENV_LOCK` pattern in `toolchain.rs`.
     static AL_TOOL_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    fn make_project(root: &std::path::Path) -> crate::project::AlProject {
-        crate::project::AlProject {
+    fn make_project(root: &std::path::Path) -> al_project::project::AlProject {
+        al_project::project::AlProject {
             root: root.to_path_buf(),
-            app_json: crate::project::AppManifest {
+            app_json: al_project::project::AppManifest {
                 id: String::new(),
                 name: "test".into(),
                 publisher: "test".into(),

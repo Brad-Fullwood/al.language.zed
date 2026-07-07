@@ -1,7 +1,7 @@
 //! Debug session dispatcher.
 
-use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{Response, RpcError};
+use al_workspace::Workspace;
 use serde::Serialize;
 
 /// Serialize `state` into a `Response`'s `result`. On serialization failure
@@ -79,7 +79,7 @@ fn missing_cmd(id: u64, msg: &str) -> Response {
 /// instead of `(0, 0)`. Returns `None` when the file isn't indexed yet — the
 /// caller must then either supply the metadata explicitly or surface an error.
 fn resolve_object_metadata(workspace: &Workspace, file: &str) -> Option<(i32, i32)> {
-    use crate::dap::native_dap::kind_to_object_type;
+    use al_dap::dap::native_dap::kind_to_object_type;
     // The CLI sends `file` as a `file://` URI (via `file_to_uri`); internal
     // callers may pass a plain filesystem path. `file_index.object_info` is
     // keyed by plain paths, so `PathBuf::from("file:///…")` never matched and
@@ -104,9 +104,9 @@ fn resolve_object_metadata(workspace: &Workspace, file: &str) -> Option<(i32, i3
 /// was supplied. Extracted for unit-testability — the surrounding
 /// `resolve_debug_config` adds project + file IO that is hard to mock.
 fn pick_named_config<'a>(
-    configs: &'a [crate::launch::BcServerConfig],
+    configs: &'a [al_bc::launch::BcServerConfig],
     requested_name: Option<&str>,
-) -> Result<&'a crate::launch::BcServerConfig, String> {
+) -> Result<&'a al_bc::launch::BcServerConfig, String> {
     match requested_name {
         Some(name) => configs.iter().find(|c| c.name == name).ok_or_else(|| {
             let known: Vec<&str> = configs.iter().map(|c| c.name.as_str()).collect();
@@ -121,9 +121,9 @@ fn pick_named_config<'a>(
 fn resolve_debug_config(
     workspace: &Workspace,
     params: &serde_json::Value,
-) -> Result<crate::dap::bc_debug::BcDebugConfig, String> {
-    use crate::dap::bc_debug::BcDebugConfig;
-    use crate::launch::find_launch_config;
+) -> Result<al_dap::dap::bc_debug::BcDebugConfig, String> {
+    use al_bc::launch::find_launch_config;
+    use al_dap::dap::bc_debug::BcDebugConfig;
 
     let project_root = workspace
         .project
@@ -140,7 +140,7 @@ fn resolve_debug_config(
     let config_name = params.get("config").and_then(|v| v.as_str());
     let bc_cfg = pick_named_config(&debug_file.configs, config_name)?;
 
-    use crate::launch::{AuthMethod, EnvironmentType};
+    use al_bc::launch::{AuthMethod, EnvironmentType};
 
     let environment_type = match bc_cfg.environment_type {
         EnvironmentType::OnPrem => "OnPrem".to_string(),
@@ -174,8 +174,8 @@ pub(super) async fn dispatch_debug(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    use crate::dap::bc_debug::BcDebugConfig;
-    use crate::native_debug::NativeDebugSession;
+    use al_dap::dap::bc_debug::BcDebugConfig;
+    use al_dap::native_debug::NativeDebugSession;
     use al_protocol::jsonrpc::error_codes;
 
     let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
@@ -531,7 +531,7 @@ pub(super) async fn dispatch_debug(
 #[cfg(test)]
 mod pick_named_config_tests {
     use super::pick_named_config;
-    use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
+    use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 
     fn cfg(name: &str) -> BcServerConfig {
         BcServerConfig {
@@ -581,7 +581,7 @@ mod pick_named_config_tests {
 #[cfg(test)]
 mod resolve_object_metadata_tests {
     use super::resolve_object_metadata;
-    use crate::workspace::Workspace;
+    use al_workspace::Workspace;
 
     #[test]
     fn resolves_indexed_codeunit_to_object_type_and_id() {
@@ -612,7 +612,7 @@ mod resolve_object_metadata_tests {
         // Negative regression: a cached object id beyond the i32 range must
         // make the helper return None rather than silently wrapping via
         // `as i32` and routing a breakpoint to the wrong BC object.
-        use crate::file_index::CachedObjectInfo;
+        use al_source::file_index::CachedObjectInfo;
         let ws = Workspace::new();
         let path = std::path::PathBuf::from("/tmp/Overflow.al");
         let zero = tree_sitter::Point { row: 0, column: 0 };
@@ -640,8 +640,8 @@ mod resolve_object_metadata_tests {
 #[cfg(test)]
 mod dispatch_debug_tests {
     use super::dispatch_debug;
-    use crate::workspace::Workspace;
     use al_protocol::jsonrpc::error_codes;
+    use al_workspace::Workspace;
     use serde_json::json;
 
     fn err_code(r: &al_protocol::jsonrpc::Response) -> i32 {

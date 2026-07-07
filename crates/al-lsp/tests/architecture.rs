@@ -28,7 +28,7 @@ fn test_cached_procedure_info_does_not_embed_tower_lsp_range() {
         "CachedProcedureInfo in file_index.rs still has a field typed \
          `tower_lsp::lsp_types::Range`. al-core data structures must not \
          embed tower_lsp types. Replace with a crate-local range type \
-         (e.g., `al_lsp::queries::Range` or a plain `[u32; 4]`)."
+         (e.g., `al_analysis::queries::Range` or a plain `[u32; 4]`)."
     );
 }
 

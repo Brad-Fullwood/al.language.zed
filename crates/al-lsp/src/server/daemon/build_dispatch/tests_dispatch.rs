@@ -2,8 +2,8 @@
 
 use super::super::rpc_error;
 use super::ERR_NO_PROJECT;
-use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response};
+use al_workspace::Workspace;
 use std::path::PathBuf;
 
 const MAX_TIMEOUT_MS: u64 = 60 * 60 * 1000;
@@ -100,7 +100,7 @@ pub(in crate::server::daemon) fn dispatch_tests_discover(
     workspace: &Workspace,
     id: u64,
 ) -> Response {
-    let tests = crate::queries::tests::discover_tests(workspace);
+    let tests = al_analysis::queries::tests::discover_tests(workspace);
     let value = serde_json::to_value(&tests).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -113,7 +113,7 @@ pub(in crate::server::daemon) fn dispatch_tests_coverage(
     workspace: &Workspace,
     id: u64,
 ) -> Response {
-    let report = crate::queries::test_coverage::test_coverage(workspace);
+    let report = al_analysis::queries::test_coverage::test_coverage(workspace);
     let value = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -140,9 +140,9 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    use crate::launch::find_launch_config;
-    use crate::queries::test_diagnostics::results_to_diagnostics;
-    use crate::test_runner::TestRunnerClient;
+    use al_analysis::queries::test_diagnostics::results_to_diagnostics;
+    use al_bc::launch::find_launch_config;
+    use al_test::test_runner::TestRunnerClient;
 
     let project_root = match workspace
         .project
@@ -252,8 +252,8 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
         tracing::warn!(error = %e, "test_results store init failed; persistence skipped");
     } else if let Some(store) = workspace.test_results.read().ok().and_then(|g| g.clone()) {
         for m in &result.methods {
-            let rec = crate::test_engine::persistence::TestRunRecord {
-                timestamp: crate::test_engine::persistence::now_secs(),
+            let rec = al_test::persistence::TestRunRecord {
+                timestamp: al_test::persistence::now_secs(),
                 codeunit_id: result.id,
                 codeunit_name: result.name.clone(),
                 method_name: m.name.clone(),
@@ -300,12 +300,12 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    use crate::launch::find_launch_config;
-    use crate::test_engine::backends::interp::InterpMode;
-    use crate::test_engine::backends::live_bc::LiveBcMode;
-    use crate::test_engine::output::{cobertura, junit};
-    use crate::test_engine::router::RoutingDecision;
-    use crate::test_engine::session::{RunOptions, TestEvent, TestId, TestSession};
+    use al_bc::launch::find_launch_config;
+    use al_test::backends::interp::InterpMode;
+    use al_test::backends::live_bc::LiveBcMode;
+    use al_test::output::{cobertura, junit};
+    use al_test::router::RoutingDecision;
+    use al_test::session::{RunOptions, TestEvent, TestId, TestSession};
     use tokio::sync::mpsc;
 
     let project_root = match workspace
@@ -384,7 +384,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
                             id,
                             error_codes::INVALID_PARAMS,
                             "'junitOut' path escapes the project root",
-                        )
+                        );
                     }
                 }
             }
@@ -399,7 +399,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
                             id,
                             error_codes::INVALID_PARAMS,
                             "'coberturaOut' path escapes the project root",
-                        )
+                        );
                     }
                 }
             }
@@ -418,8 +418,8 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
             .unwrap_or(false),
     };
 
-    let discovered = crate::queries::tests::discover_tests(workspace);
-    let classifications = crate::test_engine::router::classify_codeunits(workspace, &discovered);
+    let discovered = al_analysis::queries::tests::discover_tests(workspace);
+    let classifications = al_test::router::classify_codeunits(workspace, &discovered);
     let mut all_interp: std::collections::HashMap<i32, bool> = std::collections::HashMap::new();
     for c in &classifications {
         let is_interp = matches!(c.decision, RoutingDecision::Interp);
@@ -494,7 +494,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     drop(tx); // rx ends once every backend's sender is gone
 
     let mut events: Vec<TestEvent> = Vec::new();
-    let mut summaries: Vec<crate::test_engine::result::TestCodeunitResult> = Vec::new();
+    let mut summaries: Vec<al_test::result::TestCodeunitResult> = Vec::new();
     while let Some(ev) = rx.recv().await {
         if let TestEvent::SuiteComplete { ref summary, .. } = ev {
             summaries.push(summary.clone());
@@ -530,8 +530,8 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     } else if let Some(store_arc) = workspace.test_results.read().ok().and_then(|g| g.clone()) {
         for summary in &summaries {
             for m in &summary.methods {
-                let rec = crate::test_engine::persistence::TestRunRecord {
-                    timestamp: crate::test_engine::persistence::now_secs(),
+                let rec = al_test::persistence::TestRunRecord {
+                    timestamp: al_test::persistence::now_secs(),
                     codeunit_id: summary.id,
                     codeunit_name: summary.name.clone(),
                     method_name: m.name.clone(),
@@ -560,7 +560,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
                 tracing::warn!(error = %e, path = %path.display(), "dynamic cobertura write failed");
             }
         } else {
-            let coverage = crate::queries::test_coverage::test_coverage(workspace);
+            let coverage = al_analysis::queries::test_coverage::test_coverage(workspace);
             if let Err(e) = write_cobertura_to_path(&coverage, path).await {
                 tracing::warn!(error = %e, path = %path.display(), "cobertura write failed");
             }
@@ -648,7 +648,7 @@ async fn write_cobertura_dynamic_to_path(
         tokio::fs::create_dir_all(parent).await?;
     }
     let mut buf = Vec::new();
-    crate::test_engine::output::cobertura::write_cobertura_dynamic(report, &mut buf)?;
+    al_test::output::cobertura::write_cobertura_dynamic(report, &mut buf)?;
     tokio::fs::write(path, buf).await
 }
 pub(in crate::server::daemon) async fn dispatch_tests_run_auto(
@@ -656,7 +656,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_auto(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let discovered = crate::queries::tests::discover_tests(workspace);
+    let discovered = al_analysis::queries::tests::discover_tests(workspace);
     let mut codeunit_ids: Vec<serde_json::Value> = Vec::with_capacity(discovered.len());
     let mut codeunit_names: Vec<serde_json::Value> = Vec::with_capacity(discovered.len());
     for cu in &discovered {
@@ -767,46 +767,42 @@ pub(in crate::server::daemon) async fn dispatch_tests_last_results(
 async fn ensure_result_store(
     workspace: &Workspace,
     project_root: &std::path::Path,
-) -> Result<(), crate::test_engine::PersistenceError> {
+) -> Result<(), al_test::PersistenceError> {
     {
         let guard = workspace.test_results.read().map_err(|_| {
-            crate::test_engine::PersistenceError::Io(std::io::Error::other(
-                "test_results lock poisoned",
-            ))
+            al_test::PersistenceError::Io(std::io::Error::other("test_results lock poisoned"))
         })?;
         if guard.is_some() {
             return Ok(());
         }
     }
-    let store = crate::test_engine::TestResultStore::open_for_project(project_root).await?;
+    let store = al_test::TestResultStore::open_for_project(project_root).await?;
     let mut guard = workspace.test_results.write().map_err(|_| {
-        crate::test_engine::PersistenceError::Io(std::io::Error::other(
-            "test_results lock poisoned",
-        ))
+        al_test::PersistenceError::Io(std::io::Error::other("test_results lock poisoned"))
     })?;
     *guard = Some(std::sync::Arc::new(store));
     Ok(())
 }
 async fn write_junit_to_path(
-    summaries: &[crate::test_engine::result::TestCodeunitResult],
+    summaries: &[al_test::result::TestCodeunitResult],
     path: &std::path::Path,
 ) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
     let mut buf = Vec::new();
-    crate::test_engine::output::junit::write_junit(summaries, &mut buf)?;
+    al_test::output::junit::write_junit(summaries, &mut buf)?;
     tokio::fs::write(path, buf).await
 }
 async fn write_cobertura_to_path(
-    report: &crate::queries::test_coverage::CoverageReport,
+    report: &al_analysis::queries::test_coverage::CoverageReport,
     path: &std::path::Path,
 ) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
     let mut buf = Vec::new();
-    crate::test_engine::output::cobertura::write_cobertura(report, &mut buf)?;
+    al_test::output::cobertura::write_cobertura(report, &mut buf)?;
     tokio::fs::write(path, buf).await
 }
 pub(in crate::server::daemon) fn dispatch_tests_affected(
@@ -825,7 +821,7 @@ pub(in crate::server::daemon) fn dispatch_tests_affected(
         .iter()
         .filter_map(|v| v.as_str().map(String::from))
         .collect();
-    let affected = crate::queries::tests::affected_tests(workspace, &paths);
+    let affected = al_analysis::queries::tests::affected_tests(workspace, &paths);
     Response {
         id,
         result: Some(serde_json::json!({ "affected": affected })),
@@ -837,7 +833,7 @@ pub(in crate::server::daemon) fn dispatch_tests_classify(
     workspace: &Workspace,
     id: u64,
 ) -> Response {
-    use crate::test_engine::router;
+    use al_test::router;
     let results = router::classify_all(workspace);
     let json: Vec<serde_json::Value> = results
         .into_iter()
@@ -926,7 +922,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_replay(
             );
         }
     };
-    let snapshot = match crate::test_snapshots::format::deserialize_snapshot(&bytes) {
+    let snapshot = match al_snapshot::format::deserialize_snapshot(&bytes) {
         Ok(s) => s,
         Err(e) => {
             return rpc_error(
@@ -939,7 +935,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_replay(
     // No live observation yet — emit an info-only "Match" verdict so the
     // caller can confirm the snapshot loads. Real verification arrives
     // when the BC bridge is wired (see bc_debug_bridge.rs).
-    let verdict = crate::test_snapshots::replayer::ReplayVerdict::Match;
+    let verdict = al_snapshot::replayer::ReplayVerdict::Match;
     Response {
         id,
         result: Some(serde_json::json!({
@@ -965,9 +961,9 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_diff(
         Some(s) => s,
         None => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'pathB'"),
     };
-    let read = async |p: &str| -> Result<crate::test_snapshots::format::Snapshot, String> {
+    let read = async |p: &str| -> Result<al_snapshot::format::Snapshot, String> {
         let bytes = tokio::fs::read(p).await.map_err(|e| e.to_string())?;
-        crate::test_snapshots::format::deserialize_snapshot(&bytes).map_err(|e| e.to_string())
+        al_snapshot::format::deserialize_snapshot(&bytes).map_err(|e| e.to_string())
     };
     let a = match read(path_a).await {
         Ok(s) => s,
@@ -977,7 +973,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_diff(
         Ok(s) => s,
         Err(e) => return rpc_error(id, error_codes::INVALID_PARAMS, &format!("pathB: {e}")),
     };
-    let divergences = crate::test_snapshots::diff::diff_snapshots(&a, &b);
+    let divergences = al_snapshot::diff::diff_snapshots(&a, &b);
     Response {
         id,
         result: Some(serde_json::json!({ "divergences": divergences })),
@@ -993,8 +989,8 @@ pub(in crate::server::daemon) async fn dispatch_tests_mutate(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    use crate::test_engine::mutate::MutationOptions;
     use al_protocol::jsonrpc::error_codes;
+    use al_test::mutate::MutationOptions;
 
     let _project_root = match workspace
         .project
@@ -1028,17 +1024,15 @@ pub(in crate::server::daemon) async fn dispatch_tests_mutate(
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let report = match crate::test_engine::mutate::run_mutation_testing(workspace, opts, tx).await {
+    let report = match al_test::mutate::run_mutation_testing(workspace, opts, tx).await {
         Ok(report) => report,
-        Err(crate::test_engine::mutate::MutationError::NoTestFiles) => {
-            crate::test_engine::mutate::MutationReport {
-                variants: vec![],
-                killed: 0,
-                survived: 0,
-                errored: 0,
-                executor_phase: crate::test_engine::mutate::MutationExecutorPhase::Interpreter,
-            }
-        }
+        Err(al_test::mutate::MutationError::NoTestFiles) => al_test::mutate::MutationReport {
+            variants: vec![],
+            killed: 0,
+            survived: 0,
+            errored: 0,
+            executor_phase: al_test::mutate::MutationExecutorPhase::Interpreter,
+        },
         Err(e) => {
             return rpc_error(
                 id,
@@ -1067,8 +1061,8 @@ pub(in crate::server::daemon) async fn dispatch_tests_mutate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
     use al_protocol::jsonrpc::error_codes;
+    use al_workspace::Workspace;
 
     fn empty_ws() -> Workspace {
         Workspace::new()
@@ -1261,9 +1255,9 @@ mod tests {
         // NO .zed/debug.json and NO .vscode/launch.json on purpose.
         {
             let mut guard = ws.project.write().await;
-            *guard = Some(crate::project::AlProject {
+            *guard = Some(al_project::project::AlProject {
                 root: tmp.path().to_path_buf(),
-                app_json: crate::project::AppManifest {
+                app_json: al_project::project::AppManifest {
                     id: String::new(),
                     name: "test".into(),
                     publisher: "test".into(),
@@ -1348,9 +1342,9 @@ mod tests {
         let ws = std::sync::Arc::new(empty_ws());
         {
             let mut guard = ws.project.write().await;
-            *guard = Some(crate::project::AlProject {
+            *guard = Some(al_project::project::AlProject {
                 root: tmp.path().to_path_buf(),
-                app_json: crate::project::AppManifest {
+                app_json: al_project::project::AppManifest {
                     id: String::new(),
                     name: "test".into(),
                     publisher: "test".into(),
@@ -1532,9 +1526,9 @@ mod tests {
         .unwrap();
         {
             let mut guard = ws.project.write().await;
-            *guard = Some(crate::project::AlProject {
+            *guard = Some(al_project::project::AlProject {
                 root: tmp.path().to_path_buf(),
-                app_json: crate::project::AppManifest {
+                app_json: al_project::project::AppManifest {
                     id: String::new(),
                     name: "test".into(),
                     publisher: "test".into(),
@@ -1575,9 +1569,9 @@ mod tests {
         .unwrap();
         {
             let mut guard = ws.project.write().await;
-            *guard = Some(crate::project::AlProject {
+            *guard = Some(al_project::project::AlProject {
                 root: tmp.path().to_path_buf(),
-                app_json: crate::project::AppManifest {
+                app_json: al_project::project::AppManifest {
                     id: String::new(),
                     name: "test".into(),
                     publisher: "test".into(),
@@ -1616,9 +1610,9 @@ mod tests {
         }
         {
             let mut guard = ws.project.write().await;
-            *guard = Some(crate::project::AlProject {
+            *guard = Some(al_project::project::AlProject {
                 root: tmp.path().to_path_buf(),
-                app_json: crate::project::AppManifest {
+                app_json: al_project::project::AppManifest {
                     id: String::new(),
                     name: "test".into(),
                     publisher: "test".into(),
@@ -1657,9 +1651,9 @@ mod tests {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
         }
         let mut guard = ws.project.write().await;
-        *guard = Some(crate::project::AlProject {
+        *guard = Some(al_project::project::AlProject {
             root: tmp.path().to_path_buf(),
-            app_json: crate::project::AppManifest {
+            app_json: al_project::project::AppManifest {
                 id: String::new(),
                 name: "test".into(),
                 publisher: "test".into(),
@@ -1722,7 +1716,7 @@ mod tests {
 
     #[test]
     fn freeze_test_codeunit_result_wire_format() {
-        use crate::test_engine::result::{TestCodeunitResult, TestMethodResult, TestStatus};
+        use al_test::result::{TestCodeunitResult, TestMethodResult, TestStatus};
         let v = TestCodeunitResult::from_methods(
             "X".to_string(),
             42,
@@ -1751,7 +1745,9 @@ mod tests {
 
     #[test]
     fn freeze_test_coverage_report_wire_format() {
-        use crate::queries::test_coverage::{CoverageReport, CoveredProcedure, TestCoverageEntry};
+        use al_analysis::queries::test_coverage::{
+            CoverageReport, CoveredProcedure, TestCoverageEntry,
+        };
         let r = CoverageReport {
             coverage: vec![TestCoverageEntry {
                 codeunit: "TestCU".to_string(),
@@ -1790,7 +1786,7 @@ mod tests {
 
     #[test]
     fn freeze_test_codeunit_discovery_wire_format() {
-        use crate::queries::tests::{TestCodeunit, TestProcedure};
+        use al_analysis::queries::tests::{TestCodeunit, TestProcedure};
         let v = TestCodeunit {
             id: 50100,
             name: "MyTests".to_string(),
@@ -1820,9 +1816,9 @@ mod tests {
         }
         {
             let mut guard = ws.project.write().await;
-            *guard = Some(crate::project::AlProject {
+            *guard = Some(al_project::project::AlProject {
                 root: tmp.path().to_path_buf(),
-                app_json: crate::project::AppManifest {
+                app_json: al_project::project::AppManifest {
                     id: String::new(),
                     name: "test".into(),
                     publisher: "test".into(),
@@ -1846,12 +1842,12 @@ mod tests {
             .and_then(|g| g.clone())
             .expect("store should be initialised");
         store
-            .append(crate::test_engine::persistence::TestRunRecord {
+            .append(al_test::persistence::TestRunRecord {
                 timestamp: 1_700_000_000,
                 codeunit_id: 50200,
                 codeunit_name: "Persisted".into(),
                 method_name: "TestRoundtrip".into(),
-                status: crate::test_engine::result::TestStatus::Pass,
+                status: al_test::result::TestStatus::Pass,
                 duration_ms: Some(7),
                 error: None,
             })
@@ -1912,7 +1908,7 @@ mod tests {
     fn freeze_routing_decision_wire_format() {
         // Wire format freeze for the routing strings — used by CLI,
         // TUI, and CodeLens. DO NOT rename without bumping schema_version.
-        use crate::test_engine::router::RoutingDecision;
+        use al_test::router::RoutingDecision;
         assert_eq!(RoutingDecision::Interp.as_str(), "interp");
         assert_eq!(RoutingDecision::InterpRecord.as_str(), "interpRecord");
         assert_eq!(RoutingDecision::LiveBc.as_str(), "liveBc");
@@ -1921,7 +1917,7 @@ mod tests {
 
     #[test]
     fn freeze_affected_test_wire_format() {
-        use crate::queries::tests::AffectedTest;
+        use al_analysis::queries::tests::AffectedTest;
         let v = AffectedTest {
             codeunit_id: 50100,
             codeunit_name: "X".into(),
@@ -1939,8 +1935,7 @@ mod tests {
     async fn freeze_run_batch_response_shape() {
         // run_batch with no project produces an error envelope; the shape
         // we pin is the SUCCESS envelope, so synthesize one directly.
-        let summary =
-            crate::test_engine::result::TestCodeunitResult::from_methods("Cu".into(), 1, vec![]);
+        let summary = al_test::result::TestCodeunitResult::from_methods("Cu".into(), 1, vec![]);
         let summaries_json = serde_json::to_value(&[summary]).unwrap();
         let response = serde_json::json!({
             "summaries": summaries_json,
@@ -1967,9 +1962,9 @@ mod tests {
         }
         {
             let mut g = ws.project.write().await;
-            *g = Some(crate::project::AlProject {
+            *g = Some(al_project::project::AlProject {
                 root: tmp.path().to_path_buf(),
-                app_json: crate::project::AppManifest {
+                app_json: al_project::project::AppManifest {
                     id: String::new(),
                     name: "test".into(),
                     publisher: "test".into(),

@@ -14,18 +14,18 @@
 //!     return is the minimum bar — see `*_does_not_panic` tests).
 //!   - No real filesystem I/O except into `tempfile::TempDir`.
 
-use al_lsp::queries::breaking_changes::analyze_breaking_changes;
-use al_lsp::queries::bulk_fix::add_application_area;
-use al_lsp::queries::dead_code::dead_code;
-use al_lsp::queries::deps::build_dependency_graph;
-use al_lsp::queries::impact::impact;
-use al_lsp::queries::obsolescence::obsolescence_timeline;
-use al_lsp::queries::profiler_hints::parse_profile;
-use al_lsp::queries::sql_patterns::detect_sql_patterns;
-use al_lsp::queries::suggest_event::{suggest_event, EventQuery, QuerySource};
-use al_lsp::queries::upgrade::upgrade_report;
-use al_lsp::symbols::model::{ObjectKind, SymbolEntry};
-use al_lsp::workspace::Workspace;
+use al_analysis::queries::breaking_changes::analyze_breaking_changes;
+use al_analysis::queries::bulk_fix::add_application_area;
+use al_analysis::queries::dead_code::dead_code;
+use al_analysis::queries::deps::build_dependency_graph;
+use al_analysis::queries::impact::impact;
+use al_analysis::queries::obsolescence::obsolescence_timeline;
+use al_analysis::queries::profiler_hints::parse_profile;
+use al_analysis::queries::sql_patterns::detect_sql_patterns;
+use al_analysis::queries::suggest_event::{suggest_event, EventQuery, QuerySource};
+use al_analysis::queries::upgrade::upgrade_report;
+use al_symbols::model::{ObjectKind, SymbolEntry};
+use al_workspace::Workspace;
 use std::path::PathBuf;
 
 #[test]

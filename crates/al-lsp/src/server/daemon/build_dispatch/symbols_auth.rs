@@ -1,8 +1,8 @@
 //! Symbol download, authentication, and cache-clear dispatchers.
 
 use super::{ERR_INITIALIZING, ERR_NO_PROJECT};
-use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
+use al_workspace::Workspace;
 use std::path::PathBuf;
 
 pub(in crate::server::daemon) async fn dispatch_clear_cache(id: u64) -> Response {
@@ -63,7 +63,7 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
                 // Keyring-aware: cached_token_expiry checks the OS keyring first,
                 // then the legacy file, so status is correct after a token has
                 // migrated off plaintext disk (S1).
-                match crate::symbols::oauth::cached_token_expiry(tenant) {
+                match al_symbols::oauth::cached_token_expiry(tenant) {
                     Some(expires_at) => {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -102,7 +102,7 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
                     }
                 }
                 // Clears both the OS keyring entry and any legacy plaintext file.
-                if crate::symbols::oauth::invalidate_cached_token(tenant) {
+                if al_symbols::oauth::invalidate_cached_token(tenant) {
                     cleared += 1;
                 }
             }
@@ -143,7 +143,7 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
             let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
             let msgs_clone = messages.clone();
 
-            match crate::symbols::oauth::acquire_token(&client, &tenant, move |msg| {
+            match al_symbols::oauth::acquire_token(&client, &tenant, move |msg| {
                 if let Ok(mut guard) = msgs_clone.lock() {
                     guard.push(msg.to_string());
                 }
@@ -258,7 +258,7 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
     // apps that aren't on the public feeds even though their .app was
     // sitting right there.
     let mut skipped: Vec<serde_json::Value> = Vec::new();
-    let all_deps: Vec<crate::symbols::nuget::AppDependency> = all_deps
+    let all_deps: Vec<al_symbols::nuget::AppDependency> = all_deps
         .into_iter()
         .filter(|dep| match find_satisfied_package(&dest, dep) {
             Some(existing) => {
@@ -284,15 +284,15 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
                 }
                 let cfg = &project_configs[0];
                 let auth = match cfg.authentication {
-                    crate::launch::AuthMethod::Windows => {
-                        crate::symbols::bc_server::AuthMethod::Windows
+                    al_bc::launch::AuthMethod::Windows => {
+                        al_symbols::bc_server::AuthMethod::Windows
                     }
-                    crate::launch::AuthMethod::UserPassword => {
-                        crate::symbols::bc_server::AuthMethod::UserPassword
+                    al_bc::launch::AuthMethod::UserPassword => {
+                        al_symbols::bc_server::AuthMethod::UserPassword
                     }
-                    crate::launch::AuthMethod::AAD => crate::symbols::bc_server::AuthMethod::AAD,
+                    al_bc::launch::AuthMethod::AAD => al_symbols::bc_server::AuthMethod::AAD,
                 };
-                let client = match crate::symbols::bc_server::BcServerClient::new(
+                let client = match al_symbols::bc_server::BcServerClient::new(
                     auth,
                     cfg.tenant.clone(),
                     std::sync::Arc::new(|msg| tracing::info!("{msg}")),
@@ -301,7 +301,7 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
                     Ok(c) => c,
                     Err(e) => return vec![serde_json::json!({ "error": e.to_string() })],
                 };
-                let url_deps: Vec<(String, crate::symbols::nuget::AppDependency)> = all_deps
+                let url_deps: Vec<(String, al_symbols::nuget::AppDependency)> = all_deps
                     .iter()
                     .filter_map(|dep| cfg.dev_packages_url(dep).map(|url| (url, dep.clone())))
                     .collect();
@@ -334,8 +334,7 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
                         cfg.symbols_country_region.clone(),
                     )
                 };
-                let client =
-                    crate::symbols::nuget::NuGetClient::new(nuget_feeds).with_country(country);
+                let client = al_symbols::nuget::NuGetClient::new(nuget_feeds).with_country(country);
                 let nuget_results = client.download_all(&all_deps, &dest).await;
                 nuget_results
                     .into_iter()
@@ -396,7 +395,7 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
 }
 fn find_satisfied_package(
     dest: &std::path::Path,
-    dep: &crate::symbols::nuget::AppDependency,
+    dep: &al_symbols::nuget::AppDependency,
 ) -> Option<String> {
     fn normalize(s: &str) -> String {
         s.chars()
@@ -440,7 +439,7 @@ fn refresh_workspace_after_download(workspace: &Workspace, result: &[serde_json:
     if downloaded_paths.is_empty() {
         return 0;
     }
-    let cache = crate::symbols::cache::SymbolCache::default_location();
+    let cache = al_symbols::cache::SymbolCache::default_location();
     let loaded = workspace
         .symbols
         .load_packages_cached(&downloaded_paths, &cache);
@@ -452,7 +451,7 @@ fn refresh_workspace_after_download(workspace: &Workspace, result: &[serde_json:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
+    use al_workspace::Workspace;
 
     fn empty_ws() -> Workspace {
         Workspace::new()

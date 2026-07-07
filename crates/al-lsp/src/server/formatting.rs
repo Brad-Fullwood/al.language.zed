@@ -9,13 +9,13 @@ pub(crate) fn handle_formatting(
 ) -> Option<Vec<TextEdit>> {
     let text = server.workspace.documents.get_text(uri)?;
 
-    let format_options = crate::syntax::FormatOptions {
+    let format_options = al_syntax::FormatOptions {
         tab_size: options.tab_size as usize,
         insert_spaces: options.insert_spaces,
-        ..crate::syntax::FormatOptions::default()
+        ..al_syntax::FormatOptions::default()
     };
 
-    let formatted = crate::syntax::format_al(&text, &format_options);
+    let formatted = al_syntax::format_al(&text, &format_options);
 
     if formatted == text {
         return Some(Vec::new());
@@ -41,7 +41,7 @@ pub(crate) fn handle_formatting(
 
 /// Handle textDocument/rangeFormatting.
 ///
-/// Delegates to `crate::syntax::format_range` which formats the full document
+/// Delegates to `al_syntax::format_range` which formats the full document
 /// for correct indent context, then returns edits covering only the selected lines.
 ///
 /// **By design (F-OPEN-112):** because the indent of a line in AL depends on the
@@ -63,30 +63,28 @@ pub(crate) fn handle_range_formatting(
 ) -> Option<Vec<TextEdit>> {
     let text = server.workspace.documents.get_text(uri)?;
 
-    let format_options = crate::syntax::FormatOptions {
+    let format_options = al_syntax::FormatOptions {
         tab_size: options.tab_size as usize,
         insert_spaces: options.insert_spaces,
         ..Default::default()
     };
 
-    crate::syntax::format_range(&text, range.start.line, range.end.line, &format_options).map(
-        |edits| {
-            edits
-                .into_iter()
-                .map(|e| TextEdit {
-                    range: Range {
-                        start: Position {
-                            line: e.start_line,
-                            character: e.start_character,
-                        },
-                        end: Position {
-                            line: e.end_line,
-                            character: e.end_character,
-                        },
+    al_syntax::format_range(&text, range.start.line, range.end.line, &format_options).map(|edits| {
+        edits
+            .into_iter()
+            .map(|e| TextEdit {
+                range: Range {
+                    start: Position {
+                        line: e.start_line,
+                        character: e.start_character,
                     },
-                    new_text: e.new_text,
-                })
-                .collect()
-        },
-    )
+                    end: Position {
+                        line: e.end_line,
+                        character: e.end_character,
+                    },
+                },
+                new_text: e.new_text,
+            })
+            .collect()
+    })
 }

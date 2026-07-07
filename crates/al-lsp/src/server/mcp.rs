@@ -19,7 +19,7 @@ use al_protocol::jsonrpc::Request;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
 
-use crate::workspace::Workspace;
+use al_workspace::Workspace;
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 

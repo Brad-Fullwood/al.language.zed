@@ -17,7 +17,7 @@ use super::{diagnostics, formatting, workspace};
 
 /// `al.clearSymbolCache` — remove the on-disk virtual-file cache.
 pub(super) async fn clear_symbol_cache(server: &AlServer) {
-    let cache_dir = crate::symbols::virtual_file::cache_dir();
+    let cache_dir = al_symbols::virtual_file::cache_dir();
     match tokio::fs::remove_dir_all(&cache_dir).await {
         Ok(()) => {
             tracing::info!(path = ?cache_dir, "Cleared symbol cache");
@@ -209,7 +209,7 @@ pub(super) async fn compile(server: &AlServer) {
                 .await;
             return;
         };
-        match crate::build::compile_project(&tc, &root, None).await {
+        match al_compile::compile_project(&tc, &root, None).await {
             Ok(result) => publish_compile_result(server, &root, &result).await,
             Err(e) => {
                 server
@@ -221,7 +221,7 @@ pub(super) async fn compile(server: &AlServer) {
         return;
     }
 
-    let result = crate::build::native_compile(&root);
+    let result = al_compile::native_compile(&root);
     publish_compile_result(server, &root, &result).await;
 }
 
@@ -231,16 +231,16 @@ pub(super) async fn compile(server: &AlServer) {
 /// next line per LSP, not the old u32::MAX sentinel — T067), and the relative→
 /// absolute path resolution (F-019) are all unit-testable.
 fn group_compile_diagnostics(
-    diagnostics: &[crate::build::CompileDiagnostic],
+    diagnostics: &[al_compile::CompileDiagnostic],
     root: &std::path::Path,
 ) -> std::collections::HashMap<String, Vec<Diagnostic>> {
     let mut by_file: std::collections::HashMap<String, Vec<Diagnostic>> =
         std::collections::HashMap::new();
     for d in diagnostics {
         let severity = match d.severity {
-            crate::build::DiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
-            crate::build::DiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
-            crate::build::DiagnosticSeverity::Info => DiagnosticSeverity::INFORMATION,
+            al_compile::DiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
+            al_compile::DiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
+            al_compile::DiagnosticSeverity::Info => DiagnosticSeverity::INFORMATION,
         };
         let start_line = d.line.saturating_sub(1);
         let start_char = d.column.saturating_sub(1);
@@ -288,7 +288,7 @@ fn group_compile_diagnostics(
 async fn publish_compile_result(
     server: &AlServer,
     root: &std::path::Path,
-    result: &crate::build::CompileResult,
+    result: &al_compile::CompileResult,
 ) {
     let by_file = group_compile_diagnostics(&result.diagnostics, root);
     let current_affected: std::collections::HashSet<String> = by_file.keys().cloned().collect();
@@ -390,8 +390,12 @@ pub(super) fn find_references(
     let (Some(uri), Some(position)) = (uri, position) else {
         return serde_json::json!([]);
     };
-    let locations =
-        crate::queries::references::references(&server.workspace, &uri, position.into(), false);
+    let locations = al_analysis::queries::references::references(
+        &server.workspace,
+        &uri,
+        position.into(),
+        false,
+    );
     let lsp_locations: Vec<Location> = locations.into_iter().map(Into::into).collect();
     serde_json::to_value(lsp_locations).unwrap_or_else(|_| serde_json::json!([]))
 }
@@ -423,7 +427,7 @@ pub(super) fn show_profiler(
 /// `al.runTest` — run the `[Test]` procedure the lens targets against the
 /// configured BC server (gap A8).
 ///
-/// The lens passes a [`crate::queries::code_lens::TestTarget`] (codeunit id +
+/// The lens passes a [`al_analysis::queries::code_lens::TestTarget`] (codeunit id +
 /// method). Running BC tests requires a launch configuration (`.zed/debug.json`
 /// or `.vscode/launch.json`); when one is present we kick off the run in the
 /// background (mirroring the daemon's `tests.run` flow) and report pass/fail via
@@ -436,7 +440,7 @@ pub(super) async fn run_test(
     server: &AlServer,
     arguments: &[serde_json::Value],
 ) -> serde_json::Value {
-    use crate::queries::code_lens::TestTarget;
+    use al_analysis::queries::code_lens::TestTarget;
 
     let Some(target) = arguments
         .first()
@@ -458,7 +462,7 @@ pub(super) async fn run_test(
         .map(|p| p.root.clone());
     let config = project_root
         .as_deref()
-        .and_then(crate::launch::find_launch_config)
+        .and_then(al_bc::launch::find_launch_config)
         .and_then(|df| df.configs.into_iter().next());
 
     let Some(config) = config else {
@@ -502,13 +506,13 @@ pub(super) async fn run_test(
 /// BC dev test API, reports the outcome, and persists per-method records so the
 /// CodeLens status updates on the next refresh.
 async fn run_test_background(
-    workspace: Arc<crate::workspace::Workspace>,
+    workspace: Arc<al_workspace::Workspace>,
     client: tower_lsp::Client,
-    config: crate::launch::BcServerConfig,
-    target: crate::queries::code_lens::TestTarget,
+    config: al_bc::launch::BcServerConfig,
+    target: al_analysis::queries::code_lens::TestTarget,
 ) {
     let codeunit_name = format!("Codeunit {}", target.codeunit_id);
-    let runner = crate::test_runner::TestRunnerClient::new(&config);
+    let runner = al_test::test_runner::TestRunnerClient::new(&config);
     let result = runner
         .run_codeunit(
             target.codeunit_id,
@@ -534,8 +538,8 @@ async fn run_test_background(
     // results store is already initialised — we don't create one here.
     if let Some(store) = workspace.test_results.read().ok().and_then(|g| g.clone()) {
         for m in &result.methods {
-            let rec = crate::test_engine::persistence::TestRunRecord {
-                timestamp: crate::test_engine::persistence::now_secs(),
+            let rec = al_test::persistence::TestRunRecord {
+                timestamp: al_test::persistence::now_secs(),
                 codeunit_id: result.id,
                 codeunit_name: result.name.clone(),
                 method_name: m.name.clone(),
@@ -568,7 +572,7 @@ async fn run_test_background(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{CompileDiagnostic, DiagnosticSeverity as S};
+    use al_compile::{CompileDiagnostic, DiagnosticSeverity as S};
 
     fn diag(file: &str, line: u32, column: u32, sev: S, code: &str) -> CompileDiagnostic {
         CompileDiagnostic {

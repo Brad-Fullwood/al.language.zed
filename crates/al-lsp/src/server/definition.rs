@@ -10,7 +10,7 @@ pub(crate) fn handle_definition(
     position: Position,
 ) -> Option<GotoDefinitionResponse> {
     let core_pos = position.into();
-    let locations = crate::queries::definition::definition(&server.workspace, uri, core_pos)?;
+    let locations = al_analysis::queries::definition::definition(&server.workspace, uri, core_pos)?;
 
     // A `LocationLink[]` response is only valid when the client advertised
     // `textDocument.definition.linkSupport`; otherwise the LSP spec requires a
@@ -51,12 +51,12 @@ pub(crate) fn handle_definition(
 fn origin_selection_range(
     server: &AlServer,
     uri: &Url,
-    pos: crate::queries::Position,
+    pos: al_analysis::queries::Position,
 ) -> Option<Range> {
-    let (text, tree) = crate::parsing::get_or_parse(&server.workspace.documents, uri)?;
-    let node = crate::syntax::find_node_at_position(&tree, &text, pos.into())?;
-    let core: crate::queries::Range =
-        crate::syntax::ts_range_to_syntax(&node.range(), text.as_bytes()).into();
+    let (text, tree) = al_source::parsing::get_or_parse(&server.workspace.documents, uri)?;
+    let node = al_syntax::find_node_at_position(&tree, &text, pos.into())?;
+    let core: al_analysis::queries::Range =
+        al_syntax::ts_range_to_syntax(&node.range(), text.as_bytes()).into();
     Some(core.into())
 }
 
@@ -70,7 +70,7 @@ pub(crate) fn handle_rename(
     new_name: String,
 ) -> Option<WorkspaceEdit> {
     let core_pos = position.into();
-    let result = crate::queries::rename::rename(&server.workspace, uri, core_pos, &new_name)?;
+    let result = al_analysis::queries::rename::rename(&server.workspace, uri, core_pos, &new_name)?;
     Some(super::handlers::core_workspace_edit_to_lsp(result))
 }
 
@@ -81,7 +81,7 @@ pub(crate) fn handle_prepare_rename(
 ) -> Option<PrepareRenameResponse> {
     let core_pos = position.into();
     let (range, placeholder) =
-        crate::queries::rename::prepare_rename(&server.workspace, uri, core_pos)?;
+        al_analysis::queries::rename::prepare_rename(&server.workspace, uri, core_pos)?;
     Some(PrepareRenameResponse::RangeWithPlaceholder {
         range: range.into(),
         placeholder,

@@ -19,8 +19,8 @@ mod editor_services;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use crate::dap::framing::{read_dap_body, write_dap_frame};
 use crate::toolchain::AlToolchain;
+use al_dap::dap::framing::{read_dap_body, write_dap_frame};
 use thiserror::Error;
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tracing::{debug, error, info, warn};
@@ -119,7 +119,7 @@ pub async fn run_dap_server(toolchain: &AlToolchain) -> Result<(), DapError> {
 /// patching messages for compatibility in both directions.
 ///
 /// **Cancellation note** (F-OPEN-041). Unlike the native DAP backend
-/// (`crate::dap::native_dap`), this proxy does NOT implement the DAP
+/// (`al_dap::dap::native_dap`), this proxy does NOT implement the DAP
 /// `cancel` request. Cancellation is delegated to EditorServices.Host
 /// itself; if the BC server takes a long time to honour a Step / Continue
 /// the user can't cancel from Zed via DAP. The proxy DOES however kill

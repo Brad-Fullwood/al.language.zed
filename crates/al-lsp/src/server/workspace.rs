@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::workspace::Workspace;
+use al_workspace::Workspace;
 use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
 use tracing::{debug, info, warn};
@@ -60,9 +60,9 @@ pub(crate) async fn initialize_workspace(
     let toolchain_result = tokio::task::spawn_blocking(crate::toolchain::find_toolchain)
         .await
         .unwrap_or_else(|join_err| {
-            Err(crate::errors::DiscoveryError::Io(std::io::Error::other(
-                format!("find_toolchain task panicked: {join_err}"),
-            )))
+            Err(al_project::errors::DiscoveryError::Io(
+                std::io::Error::other(format!("find_toolchain task panicked: {join_err}")),
+            ))
         });
     match toolchain_result {
         Ok(tc) => {
@@ -85,7 +85,7 @@ pub(crate) async fn initialize_workspace(
         .and_then(|u| u.to_file_path().ok()) // SILENT: non-file URIs legitimately have no path
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    match crate::project::find_project(&workspace_root) {
+    match al_project::project::find_project(&workspace_root) {
         Ok(mut project) => {
             info!(
                 name = %project.app_json.name,
@@ -112,7 +112,7 @@ pub(crate) async fn initialize_workspace(
             // doesn't strand the editor — but warm starts no longer race
             // package symbol load against the first hover/completion.
             if !project.packages.is_empty() {
-                let cache = crate::symbols::cache::SymbolCache::default_location();
+                let cache = al_symbols::cache::SymbolCache::default_location();
                 let loaded = workspace
                     .symbols
                     .load_packages_cached(&project.packages, &cache);
@@ -151,7 +151,7 @@ pub(crate) async fn initialize_workspace(
                         if !downloaded.is_empty() {
                             project.packages = downloaded;
 
-                            let cache = crate::symbols::cache::SymbolCache::default_location();
+                            let cache = al_symbols::cache::SymbolCache::default_location();
                             let loaded = workspace
                                 .symbols
                                 .load_packages_cached(&project.packages, &cache);
@@ -267,7 +267,7 @@ pub(crate) async fn initialize_workspace(
     {
         let config = workspace.config.read().await;
         if config.enable_native_lint
-            && config.diagnostics_scope == crate::config::DiagnosticsScope::Project
+            && config.diagnostics_scope == al_project::config::DiagnosticsScope::Project
         {
             // Snapshot lint config fields before iterating so we don't hold the
             // RwLock read guard across `client.publish_diagnostics().await`.
@@ -289,14 +289,14 @@ pub(crate) async fn initialize_workspace(
                     // Use cached parse tree from file_index instead of re-parsing.
                     if let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) {
                         let source = text.as_bytes();
-                        let errors = crate::syntax::AlParser::errors_from_tree(&tree);
+                        let errors = al_syntax::AlParser::errors_from_tree(&tree);
                         let mut lsp_diags = Vec::new();
                         for err in &errors {
                             lsp_diags.push(crate::server::diagnostics::syntax_error_to_diagnostic(
                                 err, source,
                             ));
                         }
-                        let lint_result = crate::syntax::lint(&tree, &text);
+                        let lint_result = al_syntax::lint(&tree, &text);
                         for lint in &lint_result {
                             if is_lint_enabled(&lint.code) {
                                 lsp_diags.push(crate::server::diagnostics::lint_to_diagnostic(
@@ -355,7 +355,7 @@ fn log_source_availability(packages: &[PathBuf]) {
     let no_source: Vec<String> = packages
         .iter()
         .filter_map(|path| {
-            if crate::symbols::virtual_file::app_has_source(path) {
+            if al_symbols::virtual_file::app_has_source(path) {
                 return None;
             }
             let stem = path
@@ -439,8 +439,8 @@ async fn prompt_download_symbols(
 ///
 /// Uses the first available server config. Returns downloaded .app file paths.
 async fn download_symbols_from_server(
-    project: &crate::project::AlProject,
-    deps: &[crate::project::AppDependency],
+    project: &al_project::project::AlProject,
+    deps: &[al_project::project::AppDependency],
     lsp_client: &tower_lsp::Client,
 ) -> Vec<PathBuf> {
     let configs = &project.server_configs;
@@ -459,7 +459,7 @@ async fn download_symbols_from_server(
     let dest = project.root.join(".alpackages");
     // Wire auth messages to LSP showMessage so the user sees device code prompts
     let lsp = lsp_client.clone();
-    let message_sink: crate::symbols::bc_server::MessageSink = std::sync::Arc::new(move |msg| {
+    let message_sink: al_symbols::bc_server::MessageSink = std::sync::Arc::new(move |msg| {
         let c = lsp.clone();
         let m = msg.to_string();
         tokio::spawn(async move {
@@ -468,14 +468,12 @@ async fn download_symbols_from_server(
         });
     });
     let auth = match config.authentication {
-        crate::launch::AuthMethod::Windows => crate::symbols::bc_server::AuthMethod::Windows,
-        crate::launch::AuthMethod::UserPassword => {
-            crate::symbols::bc_server::AuthMethod::UserPassword
-        }
-        crate::launch::AuthMethod::AAD => crate::symbols::bc_server::AuthMethod::AAD,
+        al_bc::launch::AuthMethod::Windows => al_symbols::bc_server::AuthMethod::Windows,
+        al_bc::launch::AuthMethod::UserPassword => al_symbols::bc_server::AuthMethod::UserPassword,
+        al_bc::launch::AuthMethod::AAD => al_symbols::bc_server::AuthMethod::AAD,
     };
     let insecure_tls = config.accept_invalid_certs;
-    let client = match crate::symbols::bc_server::BcServerClient::new(
+    let client = match al_symbols::bc_server::BcServerClient::new(
         auth,
         config.tenant.clone(),
         message_sink,
@@ -487,8 +485,8 @@ async fn download_symbols_from_server(
             return Vec::new();
         }
     };
-    // crate::project::AppDependency is re-exported from crate::symbols — clone directly.
-    let url_deps: Vec<(String, crate::symbols::nuget::AppDependency)> = deps
+    // al_project::project::AppDependency is re-exported from al_symbols — clone directly.
+    let url_deps: Vec<(String, al_symbols::nuget::AppDependency)> = deps
         .iter()
         .filter_map(|dep| config.dev_packages_url(dep).map(|url| (url, dep.clone())))
         .collect();
@@ -527,11 +525,11 @@ async fn download_symbols_from_server(
 /// Called from both the LSP workspace initializer and the daemon download dispatcher
 /// so the mapping is defined exactly once.
 pub(crate) fn map_nuget_feeds(
-    feeds: &[crate::project::NuGetFeed],
-) -> Vec<crate::symbols::nuget::NuGetFeed> {
+    feeds: &[al_project::project::NuGetFeed],
+) -> Vec<al_symbols::nuget::NuGetFeed> {
     feeds
         .iter()
-        .map(|f| crate::symbols::nuget::NuGetFeed {
+        .map(|f| al_symbols::nuget::NuGetFeed {
             index_url: f.index_url.clone(),
         })
         .collect()
@@ -542,18 +540,18 @@ pub(crate) fn map_nuget_feeds(
 /// first; the public Microsoft feeds (MSSymbols/AppSourceSymbols/MSApps)
 /// are appended unless `al.useOnlyCustomFeeds` is set.
 pub(crate) fn effective_nuget_feeds(
-    config: &crate::config::AlConfig,
-) -> Vec<crate::project::NuGetFeed> {
-    let mut feeds: Vec<crate::project::NuGetFeed> = config
+    config: &al_project::config::AlConfig,
+) -> Vec<al_project::project::NuGetFeed> {
+    let mut feeds: Vec<al_project::project::NuGetFeed> = config
         .nuget_feeds
         .iter()
-        .map(|f| crate::project::NuGetFeed {
+        .map(|f| al_project::project::NuGetFeed {
             name: f.name.clone(),
             index_url: f.url.clone(),
         })
         .collect();
     if !config.use_only_custom_feeds {
-        feeds.extend(crate::project::nuget_feeds());
+        feeds.extend(al_project::project::nuget_feeds());
     }
     feeds
 }
@@ -562,8 +560,8 @@ pub(crate) fn effective_nuget_feeds(
 ///
 /// Returns paths to successfully downloaded .app files.
 async fn download_packages_nuget(
-    workspace: &crate::workspace::Workspace,
-    deps: &[crate::project::AppDependency],
+    workspace: &al_workspace::Workspace,
+    deps: &[al_project::project::AppDependency],
     dest: &Path,
 ) -> Vec<PathBuf> {
     info!(
@@ -572,7 +570,7 @@ async fn download_packages_nuget(
         "Downloading symbol packages from NuGet"
     );
 
-    // crate::project::AppDependency is re-exported from crate::symbols — pass directly.
+    // al_project::project::AppDependency is re-exported from al_symbols — pass directly.
     // F-OPEN-259: honor al.nugetFeeds / al.useOnlyCustomFeeds / al.symbolsCountryRegion.
     let (feeds, country) = {
         let cfg = workspace.config.read().await;
@@ -582,7 +580,7 @@ async fn download_packages_nuget(
         )
     };
 
-    let client = crate::symbols::nuget::NuGetClient::new(feeds).with_country(country);
+    let client = al_symbols::nuget::NuGetClient::new(feeds).with_country(country);
     let results = client.download_all(deps, dest).await;
 
     let mut downloaded = Vec::new();
@@ -668,7 +666,7 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
     }
 
     // Reload symbol index (with cache for fast subsequent starts)
-    let cache = crate::symbols::cache::SymbolCache::default_location();
+    let cache = al_symbols::cache::SymbolCache::default_location();
     let loaded = server
         .workspace
         .symbols
@@ -710,7 +708,7 @@ pub(crate) fn handle_workspace_symbol(
     // reads from cached object_info, not re-parsing files on every request).
     const MAX_LSP_SYMBOLS: usize = 10_000;
     let ws_results =
-        crate::queries::search::workspace_search(&server.workspace, query, MAX_LSP_SYMBOLS);
+        al_analysis::queries::search::workspace_search(&server.workspace, query, MAX_LSP_SYMBOLS);
 
     let mut results = Vec::new();
 
@@ -740,8 +738,11 @@ pub(crate) fn handle_workspace_symbol(
     // Child symbols: procedures, triggers, events.
     let remaining = MAX_LSP_SYMBOLS.saturating_sub(results.len());
     if remaining > 0 {
-        let child_results =
-            crate::queries::search::workspace_search_children(&server.workspace, query, remaining);
+        let child_results = al_analysis::queries::search::workspace_search_children(
+            &server.workspace,
+            query,
+            remaining,
+        );
         for r in child_results {
             if let Ok(file_uri) = Url::from_file_path(&r.file_path) {
                 #[allow(deprecated)]
@@ -969,7 +970,7 @@ fn strip_jsonc_comments_and_parse(
     // as Zed itself tolerates them. Delegate to the canonical byte-safe
     // implementation in `dap::json_util` so multi-byte UTF-8 (e.g. emoji in a
     // theme name or comment) is never corrupted by `byte as char` casting.
-    let result = crate::dap::json_util::strip_trailing_commas(&result);
+    let result = al_dap::dap::json_util::strip_trailing_commas(&result);
 
     Ok(serde_json::from_str(&result)?)
 }
@@ -1179,11 +1180,11 @@ mod tests {
     /// only-custom flag is set.
     #[test]
     fn effective_feeds_honor_custom_and_only_flags() {
-        let mut cfg = crate::config::AlConfig::default();
+        let mut cfg = al_project::config::AlConfig::default();
         let feeds = effective_nuget_feeds(&cfg);
         assert_eq!(feeds.len(), 3, "the three public Microsoft feeds");
 
-        cfg.nuget_feeds = vec![crate::config::NuGetFeedConfig {
+        cfg.nuget_feeds = vec![al_project::config::NuGetFeedConfig {
             name: "corp".into(),
             url: "https://nuget.corp.example/v3/index.json".into(),
         }];
@@ -1203,11 +1204,11 @@ mod tests {
     #[test]
     fn map_nuget_feeds_preserves_index_urls_in_order() {
         let feeds = vec![
-            crate::project::NuGetFeed {
+            al_project::project::NuGetFeed {
                 name: "first".to_string(),
                 index_url: "https://a.example/index.json".to_string(),
             },
-            crate::project::NuGetFeed {
+            al_project::project::NuGetFeed {
                 name: "second".to_string(),
                 index_url: "https://b.example/index.json".to_string(),
             },
