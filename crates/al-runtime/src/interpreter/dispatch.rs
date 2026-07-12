@@ -348,6 +348,10 @@ fn dispatch_workspace_procedure(
         let mut frame = CallFrame::new(object_name.as_str(), procedure);
         for (i, param) in params.iter().enumerate() {
             let val = args.get(i).cloned().unwrap_or(Value::Empty);
+            // Coerce an integer argument to the parameter's declared width so a
+            // `BigInteger` parameter keeps i64 semantics even when passed a small
+            // Integer literal (and vice versa) — matches BC's fixed param types (C28).
+            let val = coerce_int_width(val, &param.type_name);
             frame.bind(&param.name, val);
         }
         // Bind the procedure's local `var` section to default values so a
@@ -675,10 +679,15 @@ fn check_param_type(arg: &Value, type_name: &str) -> Option<String> {
     }
     let lower = type_name.to_lowercase();
     match lower.as_str() {
-        "integer" | "biginteger" if !matches!(arg, Value::Integer(_)) => {
+        "integer" | "biginteger" if !matches!(arg, Value::Integer(_) | Value::BigInteger(_)) => {
             return Some(format!("expected Integer, got {}", arg.type_name()));
         }
-        "decimal" if !matches!(arg, Value::Decimal(_) | Value::Integer(_)) => {
+        "decimal"
+            if !matches!(
+                arg,
+                Value::Decimal(_) | Value::Integer(_) | Value::BigInteger(_)
+            ) =>
+        {
             return Some(format!("expected Decimal, got {}", arg.type_name()));
         }
         "boolean" if !matches!(arg, Value::Boolean(_)) => {
@@ -694,6 +703,18 @@ fn check_param_type(arg: &Value, type_name: &str) -> Option<String> {
         _ => {}
     }
     None
+}
+
+/// Coerce an integer value to the width named by `type_name` (`Integer` vs
+/// `BigInteger`), leaving non-integer values and non-integer types untouched.
+/// Used at parameter binding so a `BigInteger` parameter keeps i64 arithmetic
+/// semantics even when the caller passes a small `Integer` literal (C28).
+fn coerce_int_width(val: Value, type_name: &str) -> Value {
+    match (type_name.to_ascii_lowercase().as_str(), &val) {
+        ("biginteger", Value::Integer(n)) => Value::BigInteger(*n),
+        ("integer", Value::BigInteger(n)) => Value::Integer(*n),
+        _ => val,
+    }
 }
 
 fn simple_error(msg: impl Into<String>) -> Eval {
@@ -939,7 +960,7 @@ pub(crate) fn clock_current_datetime() -> i64 {
 /// Render a `Value` as AL would show it in StrSubstNo / Format.
 fn render_value(v: &Value) -> String {
     match v {
-        Value::Integer(n) => n.to_string(),
+        Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
         Value::Decimal(n) => n.normalize().to_string(),
         Value::Boolean(true) => "Yes".to_string(),
         Value::Boolean(false) => "No".to_string(),

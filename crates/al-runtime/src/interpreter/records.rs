@@ -963,7 +963,7 @@ fn truthy(v: &Value) -> bool {
 
 fn render_simple(v: &Value) -> String {
     match v {
-        Value::Integer(n) => n.to_string(),
+        Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
         Value::Decimal(d) => d.normalize().to_string(),
         Value::Text(s) | Value::Code(s) => s.clone(),
         Value::Boolean(b) => b.to_string(),

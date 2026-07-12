@@ -338,7 +338,7 @@ fn pattern_matches(pat: &Pattern, value: &Value) -> bool {
 fn value_to_filter_string(value: &Value) -> String {
     match value {
         Value::Text(s) | Value::Code(s) => s.clone(),
-        Value::Integer(n) => n.to_string(),
+        Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
         Value::Decimal(d) => d.normalize().to_string(),
         Value::Boolean(b) => b.to_string(),
         Value::Char(c) => c.to_string(),
@@ -393,8 +393,11 @@ fn wildcard_match(pattern: &str, text: &str, case_insensitive: bool) -> bool {
 /// Returns None if the types are incompatible for ordering.
 fn cmp_value(value: &Value, ov: &OrderableValue) -> Option<std::cmp::Ordering> {
     match (value, ov) {
-        (Value::Integer(a), OrderableValue::Integer(b)) => Some(a.cmp(b)),
-        (Value::Integer(a), OrderableValue::Decimal(b)) => Some(Decimal::from(*a).cmp(b)),
+        // Integer and BigInteger fields compare identically against a numeric bound.
+        (Value::Integer(a) | Value::BigInteger(a), OrderableValue::Integer(b)) => Some(a.cmp(b)),
+        (Value::Integer(a) | Value::BigInteger(a), OrderableValue::Decimal(b)) => {
+            Some(Decimal::from(*a).cmp(b))
+        }
         (Value::Decimal(a), OrderableValue::Decimal(b)) => Some(a.cmp(b)),
         (Value::Decimal(a), OrderableValue::Integer(b)) => Some(a.cmp(&Decimal::from(*b))),
         // A `Code` field compares caselessly (BC), a `Text` field case-sensitively.

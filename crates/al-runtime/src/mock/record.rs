@@ -481,7 +481,7 @@ impl MockRecord {
                 let mut any_decimal = false;
                 for cell in target_cells() {
                     match cell {
-                        Value::Integer(n) => {
+                        Value::Integer(n) | Value::BigInteger(n) => {
                             int_sum = int_sum.saturating_add(*n);
                             dec_sum = dec_sum.checked_add(Decimal::from(*n)).unwrap_or(dec_sum);
                         }
@@ -537,7 +537,7 @@ impl MockRecord {
 /// Numeric view of a value for FlowField aggregation (`Integer`/`Decimal`).
 fn as_number(v: &Value) -> Option<Decimal> {
     match v {
-        Value::Integer(n) => Some(Decimal::from(*n)),
+        Value::Integer(n) | Value::BigInteger(n) => Some(Decimal::from(*n)),
         Value::Decimal(d) => Some(*d),
         _ => None,
     }

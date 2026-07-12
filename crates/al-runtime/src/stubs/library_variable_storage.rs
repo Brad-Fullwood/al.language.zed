@@ -170,7 +170,7 @@ pub fn assert_not_underflow(_args: &[Value]) -> Eval {
 
 pub fn assert_peek_available(args: &[Value]) -> Eval {
     let index = match args {
-        [Value::Integer(i)] => *i,
+        [Value::Integer(i) | Value::BigInteger(i)] => *i,
         _ => return err("Library Variable Storage: AssertPeekAvailable expects (Integer)"),
     };
     QUEUE.with(|q| {
@@ -220,9 +220,9 @@ pub fn dequeue(_args: &[Value]) -> Eval {
 /// Returns the value at the 1-based `Index` position.
 pub fn peek(args: &[Value]) -> Eval {
     let index = match args {
-        [Value::Integer(i)] => *i as usize,
+        [Value::Integer(i) | Value::BigInteger(i)] => *i as usize,
         // Allow (_, index) for callers that pass a placeholder variant + index.
-        [_, Value::Integer(i)] => *i as usize,
+        [_, Value::Integer(i) | Value::BigInteger(i)] => *i as usize,
         _ => return err("Library Variable Storage: Peek expects (Variant, Integer)"),
     };
     QUEUE.with(|q| match q.borrow().peek(index) {
@@ -250,7 +250,7 @@ pub fn dequeue_text(_args: &[Value]) -> Eval {
 pub fn dequeue_decimal(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
         Ok(Value::Decimal(d)) => ok(Value::Decimal(d)),
-        Ok(Value::Integer(i)) => ok(Value::Decimal(Decimal::from(i))),
+        Ok(Value::Integer(i) | Value::BigInteger(i)) => ok(Value::Decimal(Decimal::from(i))),
         Ok(v) => err(format!(
             "Library Variable Storage: DequeueDecimal type mismatch — got {}",
             v.type_name()
@@ -261,7 +261,8 @@ pub fn dequeue_decimal(_args: &[Value]) -> Eval {
 
 pub fn dequeue_integer(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
-        Ok(Value::Integer(i)) => ok(Value::Integer(i)),
+        // Integer and BigInteger are one numeric class; return with type intact.
+        Ok(v @ (Value::Integer(_) | Value::BigInteger(_))) => ok(v),
         Ok(v) => err(format!(
             "Library Variable Storage: DequeueInteger type mismatch — got {}",
             v.type_name()
@@ -403,7 +404,7 @@ pub fn peek_boolean(args: &[Value]) -> Eval {
 
 fn format_value(v: &Value) -> String {
     match v {
-        Value::Integer(n) => n.to_string(),
+        Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
         Value::Decimal(n) => n.normalize().to_string(),
         Value::Boolean(true) => "Yes".to_string(),
         Value::Boolean(false) => "No".to_string(),

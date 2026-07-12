@@ -284,7 +284,7 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
     };
 
     let start_i = match &start_val {
-        Value::Integer(n) => *n,
+        Value::Integer(n) | Value::BigInteger(n) => *n,
         v => {
             return Eval::Error(simple_error(&format!(
                 "for_statement: start must be Integer, got {}",
@@ -293,12 +293,26 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
         }
     };
     let end_i = match &end_val {
-        Value::Integer(n) => *n,
+        Value::Integer(n) | Value::BigInteger(n) => *n,
         v => {
             return Eval::Error(simple_error(&format!(
                 "for_statement: end must be Integer, got {}",
                 v.type_name()
             )))
+        }
+    };
+
+    // The counter is a BigInteger if either bound is one, or if the loop
+    // variable is already declared BigInteger — so a wide range counts at i64
+    // width instead of overflowing the 32-bit Integer trap (C28).
+    let counter_big = matches!(start_val, Value::BigInteger(_))
+        || matches!(end_val, Value::BigInteger(_))
+        || matches!(stack.lookup(&var_name), Some(Value::BigInteger(_)));
+    let make_counter = |i: i64| {
+        if counter_big {
+            Value::BigInteger(i)
+        } else {
+            Value::Integer(i)
         }
     };
 
@@ -319,9 +333,9 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
         }
 
         if let Some(slot) = stack.lookup_mut(&var_name) {
-            *slot = Value::Integer(i);
+            *slot = make_counter(i);
         } else if let Some(frame) = stack.top_mut() {
-            frame.bind(&var_name, Value::Integer(i));
+            frame.bind(&var_name, make_counter(i));
         }
 
         if let Some(body) = body_node {
@@ -579,6 +593,15 @@ fn eval_assignment(
         // are coerced; anything else overwrites as-is.
         let rhs_val = match (&*slot, &rhs_val) {
             (Value::Code(_), Value::Text(s) | Value::Code(s)) => Value::Code(s.to_uppercase()),
+            // AL variables have a fixed declared type, so an integer assignment
+            // keeps the slot's Integer/BigInteger width. This is what lets
+            // `Big: BigInteger; Big := 5; Big := Big * 1000000000` compute at
+            // i64 width instead of tripping the 32-bit Integer overflow trap
+            // (C28). The slot type comes from `default_for` at declaration.
+            (Value::BigInteger(_), Value::Integer(n) | Value::BigInteger(n)) => {
+                Value::BigInteger(*n)
+            }
+            (Value::Integer(_), Value::Integer(n) | Value::BigInteger(n)) => Value::Integer(*n),
             _ => rhs_val,
         };
         *slot = rhs_val;
@@ -1159,6 +1182,59 @@ mod tests {
             stack.extend(current.named_children(&mut cursor));
         }
         None
+    }
+
+    /// Run statements against a frame that declares `bi: BigInteger(0)`, so the
+    /// declared-type stickiness path (C28) can be exercised end to end.
+    fn run_stmt_with_bigint(source_snippet: &str) -> (Eval, ScopeStack) {
+        let wrapper = format!(
+            "codeunit 50100 \"X\"\n{{\n    procedure Test()\n    var\n        bi: BigInteger;\n    begin\n        {source_snippet}\n    end;\n}}"
+        );
+        let result = al_syntax::parser::AlParser::parse_quick(&wrapper);
+        let tree = result.tree;
+        let bytes = wrapper.as_bytes();
+        let body = find_proc_body(tree.root_node(), bytes).expect("procedure body");
+        let mut stack = ScopeStack::new();
+        let mut frame = CallFrame::new("X", "Test");
+        frame.bind("bi", Value::BigInteger(0));
+        stack.push(frame);
+        let mut ctx = ctx();
+        let eval = eval_stmt(body, bytes, &mut stack, &mut ctx);
+        (eval, stack)
+    }
+
+    #[test]
+    fn c28_biginteger_literal_arithmetic_end_to_end() {
+        // A literal beyond the 32-bit range types as BigInteger, so the sum
+        // computes instead of tripping the Integer overflow trap.
+        let (eval, stack) = run_stmt("y := 5000000000 + 1;");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("y"), Some(&Value::BigInteger(5_000_000_001)));
+    }
+
+    #[test]
+    fn c28_integer_literal_overflow_errors_end_to_end() {
+        // Both operands are in-range Integer literals, so the product overflows
+        // BC's 32-bit Integer and must error (not silently wrap).
+        let (eval, _) = run_stmt("x := 2147483647 * 2;");
+        assert!(eval.is_error(), "expected Integer overflow, got {eval:?}");
+    }
+
+    #[test]
+    fn c28_declared_biginteger_var_keeps_width_the_finding_scenario() {
+        // The exact reported scenario: a BigInteger variable assigned a small
+        // literal keeps its width, so later arithmetic stays at i64.
+        // A small Integer literal into a BigInteger slot keeps BigInteger width.
+        let (_e1, stack1) = run_stmt_with_bigint("bi := 5;");
+        assert_eq!(
+            stack1.lookup("bi"),
+            Some(&Value::BigInteger(5)),
+            "small literal assigned to a BigInteger slot must stay BigInteger"
+        );
+        // Full scenario: subsequent arithmetic then uses i64 width, not the trap.
+        let (eval, stack) = run_stmt_with_bigint("bi := 5; bi := bi * 1000000000;");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("bi"), Some(&Value::BigInteger(5_000_000_000)));
     }
 
     #[test]

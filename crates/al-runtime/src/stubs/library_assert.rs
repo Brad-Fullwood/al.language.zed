@@ -169,7 +169,7 @@ fn render_value(v: &Value) -> String {
 
 fn to_decimal(v: &Value) -> Option<Decimal> {
     match v {
-        Value::Integer(n) => Some(Decimal::from(*n)),
+        Value::Integer(n) | Value::BigInteger(n) => Some(Decimal::from(*n)),
         Value::Decimal(n) => Some(*n),
         _ => None,
     }
