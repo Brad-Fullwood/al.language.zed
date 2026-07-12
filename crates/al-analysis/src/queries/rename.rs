@@ -33,6 +33,13 @@ pub fn rename(
     position: Position,
     new_name: &str,
 ) -> Option<WorkspaceEdit> {
+    // Reject a new name that would splice invalid AL into every touched file.
+    // Without this, renaming to `my var`, `2Start`, `` or a reserved keyword
+    // returns a WorkspaceEdit that writes syntax errors workspace-wide (C19).
+    if !is_valid_rename_target(new_name) {
+        return None;
+    }
+
     let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, uri)?;
 
     let node = al_syntax::find_node_at_position(&tree, &text, position.into())?;
@@ -92,11 +99,23 @@ pub fn rename(
         }
     }
 
+    // C18: for non-local symbols, rename only references that BIND to the same
+    // declaration as the symbol under the cursor — not every identifier that
+    // happens to be spelled the same. Two objects that each declare
+    // `procedure Post()` resolve to different declarations, so renaming one no
+    // longer rewrites the other (or unrelated same-named fields/locals). The
+    // binder is the go-to-definition query: two positions bind to the same
+    // symbol iff they resolve to the same declaration location.
+    let cursor_decl = node_decl_loc(workspace, uri, node, source_bytes);
+
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
     if !refs.is_empty() {
         let edits: Vec<TextEdit> = refs
             .iter()
             .filter_map(|r| {
+                if ref_decl_loc(workspace, uri, &text, r) != cursor_decl {
+                    return None;
+                }
                 let matched_text = text.get(r.start_byte..r.end_byte)?;
                 let replacement = make_rename_text(node.kind(), matched_text, new_name);
                 Some(TextEdit {
@@ -105,7 +124,9 @@ pub fn rename(
                 })
             })
             .collect();
-        changes.push((uri.clone(), edits));
+        if !edits.is_empty() {
+            changes.push((uri.clone(), edits));
+        }
     }
 
     let current_path = uri.to_file_path().ok();
@@ -127,6 +148,9 @@ pub fn rename(
             let edits: Vec<TextEdit> = refs
                 .iter()
                 .filter_map(|r| {
+                    if ref_decl_loc(workspace, &file_uri, &file_text, r) != cursor_decl {
+                        return None;
+                    }
                     let matched_text = file_text.get(r.start_byte..r.end_byte)?;
                     let replacement = make_rename_text("", matched_text, new_name);
                     Some(TextEdit {
@@ -135,7 +159,9 @@ pub fn rename(
                     })
                 })
                 .collect();
-            changes.push((file_uri, edits));
+            if !edits.is_empty() {
+                changes.push((file_uri, edits));
+            }
         }
     }
 
@@ -144,6 +170,53 @@ pub fn rename(
     }
 
     Some(WorkspaceEdit { changes })
+}
+
+use super::binding::{decl_loc, BindKey};
+
+fn node_decl_loc(
+    workspace: &Workspace,
+    uri: &Url,
+    node: tree_sitter::Node,
+    source: &[u8],
+) -> BindKey {
+    let range: Range = al_syntax::ts_range_to_syntax(&node.range(), source).into();
+    decl_loc(workspace, uri, range.start)
+}
+
+fn ref_decl_loc(workspace: &Workspace, uri: &Url, text: &str, r: &tree_sitter::Range) -> BindKey {
+    let range: Range = al_syntax::ts_range_to_syntax(r, text.as_bytes()).into();
+    decl_loc(workspace, uri, range.start)
+}
+
+/// Whether `new_name` can be spliced into AL source as a rename target without
+/// producing invalid code. Accepts a plain identifier
+/// (`[A-Za-z_][A-Za-z0-9_]*` that is not a reserved keyword) or an
+/// already-quoted identifier (`"…"` with a non-empty, quote-free interior).
+/// Rejects empty names, names containing spaces or other characters that would
+/// require quoting, and bare keywords (C19).
+fn is_valid_rename_target(new_name: &str) -> bool {
+    let name = new_name.trim();
+    if name.is_empty() {
+        return false;
+    }
+    // Already-quoted identifier: quotable names (fields, objects) may be passed
+    // pre-quoted. Require a non-empty interior with no embedded quote.
+    if name.len() >= 2 && name.starts_with('"') && name.ends_with('"') {
+        let inner = &name[1..name.len() - 1];
+        return !inner.is_empty() && !inner.contains('"');
+    }
+    // Plain identifier grammar.
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return false;
+    }
+    // A bare reserved keyword is not a legal unquoted identifier.
+    !al_syntax::language_data::is_keyword(name)
 }
 
 fn make_rename_text(node_kind: &str, original_text: &str, new_name: &str) -> String {
@@ -338,6 +411,129 @@ mod tests {
         );
     }
 
+    /// C18: two separate objects each declare `procedure Post()`. These are
+    /// distinct declarations. Renaming the one in object A must not rewrite the
+    /// same-spelled procedure (or its call) in object B.
+    #[test]
+    fn rename_procedure_does_not_touch_same_name_in_other_object() {
+        let ws = Workspace::new();
+        let uri_a = Url::parse("file:///test/src/A.al").unwrap();
+        let uri_b = Url::parse("file:///test/src/B.al").unwrap();
+        let src_a = r#"codeunit 50100 "A"
+{
+    procedure Post()
+    begin
+    end;
+
+    procedure Run()
+    begin
+        Post();
+    end;
+}
+"#;
+        let src_b = r#"codeunit 50101 "B"
+{
+    procedure Post()
+    begin
+    end;
+
+    procedure Run()
+    begin
+        Post();
+    end;
+}
+"#;
+        open_doc(&ws, &uri_a, src_a);
+        open_doc(&ws, &uri_b, src_b);
+        ws.file_index
+            .add_file(uri_a.to_file_path().unwrap(), src_a.to_string());
+        ws.file_index
+            .add_file(uri_b.to_file_path().unwrap(), src_b.to_string());
+
+        // Cursor on A's `Post` declaration.
+        let pos = Position {
+            line: 2,
+            character: 14,
+        };
+        let result = rename(&ws, &uri_a, pos, "Publish").expect("rename should produce edits");
+
+        // No edits may land in B.
+        for (edit_uri, _edits) in &result.changes {
+            assert_ne!(
+                edit_uri, &uri_b,
+                "C18: rename of A::Post leaked into B; edits: {:?}",
+                result.changes
+            );
+        }
+        // A's declaration and its call site should both be covered.
+        let (_uri, edits) = result
+            .changes
+            .iter()
+            .find(|(u, _)| u == &uri_a)
+            .expect("A should have edits");
+        let touched: Vec<u32> = edits.iter().map(|e| e.range.start.line).collect();
+        assert!(
+            touched.contains(&2) && touched.contains(&8),
+            "expected A's decl (line 2) and call (line 8); got {touched:?}"
+        );
+    }
+
+    /// C18 adversarial: two tables each declare a field `Amount`. Renaming the
+    /// field in table A must not rewrite table B's same-named field. Fields are
+    /// the other common non-local symbol (besides procedures).
+    #[test]
+    fn rename_field_does_not_touch_same_name_in_other_table() {
+        let ws = Workspace::new();
+        let uri_a = Url::parse("file:///test/src/TableA.al").unwrap();
+        let uri_b = Url::parse("file:///test/src/TableB.al").unwrap();
+        let src_a = r#"table 50100 "A"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Amount; Decimal) { }
+    }
+}
+"#;
+        let src_b = r#"table 50101 "B"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Amount; Decimal) { }
+    }
+}
+"#;
+        open_doc(&ws, &uri_a, src_a);
+        open_doc(&ws, &uri_b, src_b);
+        ws.file_index
+            .add_file(uri_a.to_file_path().unwrap(), src_a.to_string());
+        ws.file_index
+            .add_file(uri_b.to_file_path().unwrap(), src_b.to_string());
+
+        // Cursor on A's `Amount` field declaration. Line 5 is
+        // `        field(2; Amount; Decimal) { }` — `Amount` spans chars 17..23.
+        let pos = Position {
+            line: 5,
+            character: 18,
+        };
+        let result =
+            rename(&ws, &uri_a, pos, "Total").expect("rename of A.Amount should produce edits");
+        // A must actually be edited (proves the cursor hit the field), and no
+        // edit may land in table B.
+        assert!(
+            result.changes.iter().any(|(u, _)| u == &uri_a),
+            "expected an edit in table A"
+        );
+        for (edit_uri, _edits) in &result.changes {
+            assert_ne!(
+                edit_uri, &uri_b,
+                "C18: rename of A.Amount leaked into table B: {:?}",
+                result.changes
+            );
+        }
+    }
+
     #[test]
     fn rename_returns_none_when_no_refs() {
         let ws = Workspace::new();
@@ -349,6 +545,59 @@ mod tests {
         };
         let result = rename(&ws, &uri, pos, "Y");
         let _ = result;
+    }
+
+    #[test]
+    fn c19_invalid_new_names_rejected() {
+        assert!(!is_valid_rename_target(""));
+        assert!(!is_valid_rename_target("   "));
+        assert!(!is_valid_rename_target("my var with spaces"));
+        assert!(!is_valid_rename_target("2Start"));
+        assert!(!is_valid_rename_target("has-dash"));
+        assert!(!is_valid_rename_target("bad!name"));
+        assert!(!is_valid_rename_target("begin")); // reserved keyword
+        assert!(!is_valid_rename_target("\"\"")); // empty quoted
+        assert!(!is_valid_rename_target("\"bad\"quote\"")); // embedded quote
+    }
+
+    #[test]
+    fn c19_valid_new_names_accepted() {
+        assert!(is_valid_rename_target("NewVar"));
+        assert!(is_valid_rename_target("_leading"));
+        assert!(is_valid_rename_target("Var123"));
+        assert!(is_valid_rename_target("\"My Field\"")); // pre-quoted quotable name
+    }
+
+    #[test]
+    fn c19_rename_to_invalid_name_produces_no_edit() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    var
+        MyVar: Integer;
+    begin
+        MyVar := 42;
+    end;
+}"#,
+        );
+        let pos = Position {
+            line: 6,
+            character: 8,
+        };
+        // Space-containing name would splice broken code — must be rejected.
+        assert!(
+            rename(&ws, &uri, pos, "my var with spaces").is_none(),
+            "rename to a space-containing name must not produce edits"
+        );
+        assert!(rename(&ws, &uri, pos, "").is_none());
+        assert!(rename(&ws, &uri, pos, "begin").is_none());
+        // A valid name still works (control).
+        assert!(rename(&ws, &uri, pos, "NewVar").is_some());
     }
 
     #[test]

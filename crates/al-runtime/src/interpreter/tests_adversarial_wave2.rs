@@ -46,6 +46,7 @@ mod tests {
     use crate::interpreter::scope::{CallFrame, Eval, ScopeStack};
     use crate::interpreter::value::Value;
     use crate::test_support::MockSource as Workspace;
+    use rust_decimal_macros::dec;
 
     fn ctx() -> DispatchCtx {
         DispatchCtx::new_pure(Arc::new(Workspace::new()))
@@ -927,7 +928,7 @@ mod tests {
     fn b4_compound_divide_equals_promotes_to_decimal() {
         let (eval, stack) = run_stmt("x := 10; x /= 4;");
         assert!(matches!(eval, Eval::Normal(_)), "got: {:?}", eval);
-        assert_eq!(stack.lookup("x"), Some(&Value::Decimal(2.5)));
+        assert_eq!(stack.lookup("x"), Some(&Value::Decimal(dec!(2.5))));
     }
 
     /// A multi-name local `var` line binds every name to its type default, so an

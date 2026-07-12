@@ -84,6 +84,13 @@ struct Document {
     /// Arc allows get_text_arc() to return a cheap pointer copy instead of a string clone.
     text_cache: std::sync::Arc<String>,
     version: i32,
+    /// The last client-supplied LSP document version (from `didOpen`/`didChange`
+    /// params). Distinct from `version`, which is the store's internal edit
+    /// counter used to key the parse-tree cache. The client version is what the
+    /// out-of-order-delivery guard must compare against — the internal counter
+    /// starts at 0 and can never exceed the client's number, so comparing to it
+    /// is dead code (C4).
+    client_version: i32,
 }
 
 impl Default for DocumentStore {
@@ -220,6 +227,7 @@ impl DocumentStore {
                 text: Rope::from_str(&text),
                 text_cache: std::sync::Arc::new(text),
                 version: 0,
+                client_version: 0,
             },
         );
     }
@@ -267,6 +275,20 @@ impl DocumentStore {
 
     pub fn get_version(&self, uri: &Url) -> Option<i32> {
         self.docs.get(uri).map(|d| d.version)
+    }
+
+    /// The last client-supplied LSP version for `uri`, or `None` if not open.
+    /// Used by the `did_change` out-of-order-delivery guard (C4).
+    pub fn get_client_version(&self, uri: &Url) -> Option<i32> {
+        self.docs.get(uri).map(|d| d.client_version)
+    }
+
+    /// Record the client-supplied LSP version for `uri` (from `didOpen` /
+    /// `didChange`). No-op if the document isn't open.
+    pub fn set_client_version(&self, uri: &Url, version: i32) {
+        if let Some(mut d) = self.docs.get_mut(uri) {
+            d.client_version = version;
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -363,6 +385,23 @@ impl DocumentStore {
                     doc.text = Rope::from_str(&change.text);
                 }
             }
+            // C7: the range-edit path above bypasses the size cap that `open`
+            // and full-document replacement enforce, so a document could grow
+            // unbounded through incremental inserts. Re-check the total size
+            // after applying the batch and warn when it exceeds the cap
+            // (matching the F-OPEN-042 intent; mid-stream range edits are not
+            // rolled back).
+            let cap = self
+                .max_doc_bytes
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if cap != 0 && doc.text.len_bytes() > cap {
+                tracing::warn!(
+                    uri = %uri,
+                    size = doc.text.len_bytes(),
+                    cap,
+                    "DocumentStore: document exceeds max_doc_bytes after incremental edits"
+                );
+            }
             doc.text_cache = std::sync::Arc::new(doc.text.to_string());
             doc.version += 1;
             self.trees.remove(uri);
@@ -453,9 +492,38 @@ fn position_to_offset(rope: &Rope, line: u32, character: u32) -> Option<usize> {
     // entire line on every position-to-offset call).
     let line_slice = rope.line(line);
     let line_byte_start = rope.line_to_byte(line);
-    let utf16_idx = (character as usize).min(line_slice.len_utf16_cu());
+    // Clamp an over-EOL `character` to the line length EXCLUDING its trailing
+    // line break. `len_utf16_cu()` counts the `\n` (or `\r\n`), so clamping to
+    // it lands *past* the newline and merges this line with the next — text
+    // corruption relative to what the client computed. LSP: a character beyond
+    // line length "defaults back to the line length", i.e. before the
+    // terminator (C6).
+    let max_char = line_slice.len_utf16_cu() - line_break_utf16_width(line_slice);
+    let utf16_idx = (character as usize).min(max_char);
     let char_in_line = line_slice.utf16_cu_to_char(utf16_idx);
     Some(rope.byte_to_char(line_byte_start) + char_in_line)
+}
+
+/// UTF-16 width of the trailing line break of `line` (a slice from
+/// `Rope::line`): 2 for `\r\n`, 1 for a lone `\n`/`\r`, 0 if the line has no
+/// terminator (e.g. the last line of a file without a trailing newline). Line
+/// breaks are ASCII, so their UTF-16 width equals their char count.
+fn line_break_utf16_width(line: ropey::RopeSlice) -> usize {
+    let n = line.len_chars();
+    if n == 0 {
+        return 0;
+    }
+    match line.char(n - 1) {
+        '\n' => {
+            if n >= 2 && line.char(n - 2) == '\r' {
+                2
+            } else {
+                1
+            }
+        }
+        '\r' => 1,
+        _ => 0,
+    }
 }
 
 #[cfg(test)]
@@ -919,10 +987,37 @@ mod tests {
         // Line 0 is "hello" (5 utf16 cu). Pass character = 999.
         let off = position_to_offset(&rope, 0, 999);
         assert!(off.is_some(), "out-of-line character must clamp, not None");
-        // Clamped result must point to end of line 0 INCLUDING the trailing
-        // \n — ropey's `line(line)` slice covers the line break, so the
-        // utf16_cu_to_char clamp lands at byte index 6 (just past 'hello\n').
-        assert_eq!(off, Some(6));
+        // Clamped result must point to the end of the VISIBLE text on line 0
+        // (char offset 5, just after 'hello'), BEFORE the trailing '\n' — LSP
+        // clamps an over-EOL character to the line length, not past the
+        // terminator. Landing at 6 would swallow the newline and merge lines
+        // (C6).
+        assert_eq!(off, Some(5));
+    }
+
+    #[test]
+    fn position_to_offset_over_eol_does_not_merge_lines() {
+        // C6: replacing (0,2)..(0,999) with "XX" must NOT delete the newline.
+        // The end position clamps to offset 5 (before '\n'), so 'hello\nworld\n'
+        // becomes 'heXX\nworld\n', not 'heXXworld\n'.
+        let rope = Rope::from_str("hello\nworld\n");
+        let start = position_to_offset(&rope, 0, 2).unwrap();
+        let end = position_to_offset(&rope, 0, 999).unwrap();
+        assert_eq!(start, 2);
+        assert_eq!(end, 5, "end must clamp before the newline, not past it");
+        let mut edited = rope.clone();
+        edited.remove(start..end);
+        edited.insert(start, "XX");
+        assert_eq!(edited.to_string(), "heXX\nworld\n");
+    }
+
+    #[test]
+    fn position_to_offset_over_eol_crlf() {
+        // A \r\n terminator (width 2) must be excluded from the clamp too.
+        let rope = Rope::from_str("hi\r\nthere\r\n");
+        let off = position_to_offset(&rope, 0, 999);
+        // "hi" is 2 chars; clamp must land at char offset 2 (before \r\n).
+        assert_eq!(off, Some(2));
     }
 
     /// T055 regression: a non-existent line still returns None — the clamp is
@@ -997,6 +1092,44 @@ mod tests {
             Some((text, version)),
             "returned snapshot must equal the store's live (text, version)"
         );
+    }
+
+    #[test]
+    fn client_version_is_tracked_separately_from_internal_counter() {
+        // C4: the client version is what the did_change guard compares against.
+        // It is distinct from the internal edit counter, which starts at 0 and
+        // is bumped per apply — the two must not be conflated.
+        let store = DocumentStore::new();
+        let uri = test_uri("client_version");
+        store.open(uri.clone(), "x".to_string());
+
+        // Fresh document: client version defaults to 0, internal version 0.
+        assert_eq!(store.get_client_version(&uri), Some(0));
+        assert_eq!(store.get_version(&uri), Some(0));
+
+        // A client version can jump by more than 1 per notification.
+        store.set_client_version(&uri, 5);
+        assert_eq!(store.get_client_version(&uri), Some(5));
+
+        // Applying an edit bumps the internal counter but NOT the client version.
+        store
+            .apply_changes_and_get(
+                &uri,
+                &[TextChange {
+                    range: None,
+                    text: "y".to_string(),
+                }],
+            )
+            .unwrap();
+        assert_eq!(store.get_version(&uri), Some(1));
+        assert_eq!(
+            store.get_client_version(&uri),
+            Some(5),
+            "internal edit did not change the client version"
+        );
+
+        // Unopened document: no client version.
+        assert_eq!(store.get_client_version(&test_uri("nope")), None);
     }
 
     /// F-OPEN-054: `apply_changes_and_get` returns `None` (rather than a stale

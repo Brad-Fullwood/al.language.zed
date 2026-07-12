@@ -14,7 +14,7 @@
 //! assertion propagates as an `Eval::Error` and aborts the test method.
 
 use crate::interpreter::scope::Eval;
-use crate::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::value::{Decimal, ErrorInfo, Value};
 
 fn err(message: impl Into<String>) -> Eval {
     Eval::Error(ErrorInfo {
@@ -104,33 +104,11 @@ pub fn are_nearly_equal(args: &[Value]) -> Eval {
         [e, a, p, Value::Text(m)] | [e, a, p, Value::Code(m)] => (e, a, p, m.clone()),
         _ => return err("Assert.AreNearlyEqual expects (Decimal, Decimal, Decimal[, Text])"),
     };
-    let (Some(ef), Some(af), Some(pf)) = (to_f64(e), to_f64(a), to_f64(p)) else {
+    let (Some(ef), Some(af), Some(pf)) = (to_decimal(e), to_decimal(a), to_decimal(p)) else {
         return err("Assert.AreNearlyEqual: non-numeric argument");
     };
-    // Two identical NaN sentinels are treated as equal — they represent
-    // the same invalid state (matches the Value::Eq impl which uses
-    // total_cmp). Mixed NaN / non-NaN pairs are an error.
-    if ef.is_nan() || af.is_nan() {
-        return if ef.is_nan() && af.is_nan() {
-            ok()
-        } else {
-            err("Assert.AreNearlyEqual: cannot compare NaN with a numeric value")
-        };
-    }
-    if pf.is_nan() {
-        return err("Assert.AreNearlyEqual: precision must not be NaN");
-    }
-    // Same-signed Inf is treated as equal; opposite-signed or one-sided
-    // Inf is an error.
-    if ef.is_infinite() || af.is_infinite() {
-        return if ef == af {
-            ok()
-        } else {
-            err(format!(
-                "Assert.AreNearlyEqual: cannot compare {ef} and {af} (infinity)"
-            ))
-        };
-    }
+    // Exact decimals: no NaN/infinity can arise, so the comparison is a plain
+    // exact tolerance check (C3).
     if (ef - af).abs() <= pf {
         ok()
     } else {
@@ -140,7 +118,10 @@ pub fn are_nearly_equal(args: &[Value]) -> Eval {
             format!(": {msg}")
         };
         err(format!(
-            "Assert.AreNearlyEqual failed{suffix}: |{ef} - {af}| > {pf}"
+            "Assert.AreNearlyEqual failed{suffix}: |{} - {}| > {}",
+            ef.normalize(),
+            af.normalize(),
+            pf.normalize()
         ))
     }
 }
@@ -160,7 +141,9 @@ fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Integer(x), Integer(y)) => x == y,
         (Decimal(x), Decimal(y)) => x == y,
-        (Integer(x), Decimal(y)) | (Decimal(y), Integer(x)) => (*x as f64) == *y,
+        (Integer(x), Decimal(y)) | (Decimal(y), Integer(x)) => {
+            rust_decimal::Decimal::from(*x) == *y
+        }
         (Boolean(x), Boolean(y)) => x == y,
         (Text(x), Text(y)) | (Code(x), Code(y)) => x == y,
         (Text(x), Code(y)) | (Code(y), Text(x)) => x == y,
@@ -174,7 +157,7 @@ fn render_value(v: &Value) -> String {
     use Value::*;
     match v {
         Integer(n) => n.to_string(),
-        Decimal(n) => n.to_string(),
+        Decimal(n) => n.normalize().to_string(),
         Boolean(b) => b.to_string(),
         Text(s) | Code(s) => format!("\"{s}\""),
         Date(d) | Time(d) | DateTime(d) => d.to_string(),
@@ -184,9 +167,9 @@ fn render_value(v: &Value) -> String {
     }
 }
 
-fn to_f64(v: &Value) -> Option<f64> {
+fn to_decimal(v: &Value) -> Option<Decimal> {
     match v {
-        Value::Integer(n) => Some(*n as f64),
+        Value::Integer(n) => Some(Decimal::from(*n)),
         Value::Decimal(n) => Some(*n),
         _ => None,
     }
@@ -207,12 +190,14 @@ pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     fn assert_pass(eval: Eval) {
         match eval {
             Eval::Normal(_) => {}
             Eval::Error(e) => panic!("expected pass, got error: {}", e.message),
             Eval::Exit(_) => panic!("expected pass, got exit"),
+            Eval::Break | Eval::Continue => panic!("expected pass, got break/continue"),
         }
     }
 
@@ -278,7 +263,7 @@ mod tests {
     fn areequal_mixed_numeric() {
         // 5 == 5.0 across Integer/Decimal — Library Assert's variant
         // semantics treat these as equal.
-        assert_pass(are_equal(&[Value::Integer(5), Value::Decimal(5.0)]));
+        assert_pass(are_equal(&[Value::Integer(5), Value::Decimal(dec!(5.0))]));
     }
 
     #[test]
@@ -293,15 +278,15 @@ mod tests {
     #[test]
     fn arenearlyequal_within_precision() {
         assert_pass(are_nearly_equal(&[
-            Value::Decimal(1.0),
-            Value::Decimal(1.0001),
-            Value::Decimal(0.001),
+            Value::Decimal(dec!(1.0)),
+            Value::Decimal(dec!(1.0001)),
+            Value::Decimal(dec!(0.001)),
         ]));
         assert_fail_contains(
             are_nearly_equal(&[
-                Value::Decimal(1.0),
-                Value::Decimal(1.5),
-                Value::Decimal(0.001),
+                Value::Decimal(dec!(1.0)),
+                Value::Decimal(dec!(1.5)),
+                Value::Decimal(dec!(0.001)),
             ]),
             "|1 - 1.5| > 0.001",
         );
@@ -328,41 +313,37 @@ mod tests {
     }
 
     #[test]
-    fn are_nearly_equal_nan_inputs_adversarial_h_11() {
-        // FINDING P1 wrong-result: AreNearlyEqual(NaN, NaN, 0.001) fails with
-        // "AreNearlyEqual failed: |NaN - NaN| > 0.001" because (NaN-NaN).abs()
-        // = NaN and NaN <= precision is false. Two identical NaN sentinels
-        // should be treated as equal — they represent the same invalid state.
-        // Expected: Normal (pass)
-        // Observed: Error("AreNearlyEqual failed: |NaN - NaN| > 0.001")
+    fn are_nearly_equal_is_exact_no_float_drift() {
+        // C3: exact decimals mean a computed sum has no binary-float residue,
+        // so AreNearlyEqual with ZERO tolerance still passes for 0.1 + 0.2 = 0.3
+        // (which fails under f64). NaN/infinity can no longer be constructed.
+        let sum = dec!(0.1) + dec!(0.2);
         let result = are_nearly_equal(&[
-            Value::Decimal(f64::NAN),
-            Value::Decimal(f64::NAN),
-            Value::Decimal(0.001),
+            Value::Decimal(sum),
+            Value::Decimal(dec!(0.3)),
+            Value::Decimal(Decimal::ZERO),
         ]);
         assert!(
             matches!(result, Eval::Normal(_)),
-            "AreNearlyEqual(NaN, NaN, ..) should pass: NaN == NaN sentinel, got: {:?}",
-            result
+            "0.1 + 0.2 must be exactly 0.3 (zero tolerance), got: {result:?}"
         );
     }
 
     #[test]
-    fn are_nearly_equal_inf_inf_adversarial_h_12() {
-        // FINDING P1 wrong-result: AreNearlyEqual(Inf, Inf, 0.001) fails with
-        // "AreNearlyEqual failed: |inf - inf| > 0.001" because (Inf-Inf).abs()
-        // = NaN and NaN <= 0.001 is false. But Inf == Inf exactly.
-        // Expected: Normal (pass)
-        // Observed: Error("AreNearlyEqual failed: |inf - inf| > 0.001")
-        let result = are_nearly_equal(&[
-            Value::Decimal(f64::INFINITY),
-            Value::Decimal(f64::INFINITY),
-            Value::Decimal(0.001),
-        ]);
-        assert!(
-            matches!(result, Eval::Normal(_)),
-            "AreNearlyEqual(Inf, Inf, ..) should pass: Inf == Inf exactly, got: {:?}",
-            result
+    fn are_nearly_equal_respects_precision_band() {
+        // Just inside the band passes; just outside fails.
+        assert_pass(are_nearly_equal(&[
+            Value::Decimal(dec!(1.0)),
+            Value::Decimal(dec!(1.0009)),
+            Value::Decimal(dec!(0.001)),
+        ]));
+        assert_fail_contains(
+            are_nearly_equal(&[
+                Value::Decimal(dec!(1.0)),
+                Value::Decimal(dec!(1.01)),
+                Value::Decimal(dec!(0.001)),
+            ]),
+            "AreNearlyEqual failed",
         );
     }
 }

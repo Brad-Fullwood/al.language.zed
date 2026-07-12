@@ -71,6 +71,16 @@ pub struct CachedObjectInfo {
     pub range: tree_sitter::Range,
 }
 
+/// One owner of an object name: the declaring file plus the object kind
+/// (`"table"`, `"page"`, …). AL object names are unique only *within* a kind,
+/// so a name maps to a list of these — a table `Customer` and a page `Customer`
+/// are distinct owners that must not collapse onto one another (C22).
+#[derive(Debug, Clone)]
+pub struct ObjectEntry {
+    pub kind: String,
+    pub path: PathBuf,
+}
+
 /// A procedure/event location cached at index time.
 #[derive(Debug, Clone)]
 pub struct CachedProcedureInfo {
@@ -83,9 +93,13 @@ pub struct FileIndex {
     /// File path → full text content.
     /// Public — used by the al-lsp binary for stats and by daemon dispatchers.
     pub files: DashMap<PathBuf, String>,
-    /// Lowercase object name → file path. Internal: invariant-coupled to
-    /// `path_to_object`; mutate only via the impl methods (T004).
-    pub objects: DashMap<String, PathBuf>,
+    /// Lowercase object name → the list of owners (one per object kind) that
+    /// declare it. Keyed by name only, but multi-valued and kind-tagged so
+    /// same-named objects of different kinds coexist and a removal of one can
+    /// never strand another (C22). Internal: invariant-coupled to
+    /// `path_to_object`; mutate only via the impl methods (T004). Read via
+    /// `object_path` / `object_path_of_kind` / `object_count`.
+    pub objects: DashMap<String, Vec<ObjectEntry>>,
     /// File path → lowercase object name (reverse index for O(1) cleanup).
     /// Internal: invariant-coupled to `objects` (T004).
     pub(crate) path_to_object: DashMap<PathBuf, String>,
@@ -97,7 +111,12 @@ pub struct FileIndex {
     pub object_info: DashMap<PathBuf, CachedObjectInfo>,
     /// File path → cached parse tree (avoids re-parsing for cross-file queries).
     /// Internal: invariant-coupled to `files` content; mutate only via impl methods (T004).
-    pub(crate) file_trees: DashMap<PathBuf, tree_sitter::Tree>,
+    /// Parsed files as a **coherent** `(text, tree)` pair, stored under one
+    /// `Arc` so a single `get` always returns matching text and tree. This is
+    /// the atomically-consistent source for `get_cached_parse` (C13); the tree
+    /// is stored here once (not duplicated), only the cheap text is also kept in
+    /// `files` for text-only readers.
+    pub(crate) file_trees: DashMap<PathBuf, std::sync::Arc<(String, tree_sitter::Tree)>>,
     /// File path → cached document symbols (avoids re-extracting for cross-file queries).
     pub(crate) file_symbols: DashMap<PathBuf, Vec<al_syntax::types::SyntaxDocumentSymbol>>,
     /// Lowercase procedure/event name → location (reverse index for O(1) go-to-definition).
@@ -132,36 +151,14 @@ impl FileIndex {
     /// Returns `(text, tree)` from the cache. Background files are always cached
     /// at index time via `add_file_with_meta`, so a miss means the file was never indexed.
     ///
-    /// `text` and `tree` live in two separate DashMaps, so two naive `.get()`
-    /// calls can race a concurrent `index_from_result` (which writes `file_trees`
-    /// then later `files`) and return a stale text paired with a fresh tree —
-    /// callers then convert tree byte offsets against the wrong source, yielding
-    /// wrong reference/definition locations. A tree's root node always spans its
-    /// entire source, so `tree.root_node().end_byte() == text.len()` is a cheap
-    /// coherence invariant. We re-read until that holds (bounded), guaranteeing
-    /// the returned pair came from the same indexing pass.
+    /// The `(text, tree)` pair is stored under a single `Arc` in `file_trees`,
+    /// so one `get` returns a mutually-consistent pair from the same indexing
+    /// pass — no torn read is possible even when a concurrent re-index keeps the
+    /// byte length identical (the previous length-based coherence check could
+    /// be defeated by an equal-length edit; C13).
     pub fn get_cached_parse(&self, path: &Path) -> Option<(String, tree_sitter::Tree)> {
-        // Spin briefly to pick up a coherent pair. A re-index completes in
-        // microseconds, so a torn read is resolved almost immediately; the cap
-        // exists only so a path being deleted mid-read can't spin forever.
-        for attempt in 0..1024 {
-            let text = self.files.get(path)?.value().clone();
-            let tree = self.file_trees.get(path)?.value().clone();
-            if tree.root_node().end_byte() == text.len() {
-                return Some((text, tree));
-            }
-            // Mismatch: a concurrent re-index updated one map but not the other.
-            // Back off so the writing thread can make progress, then retry.
-            if attempt < 32 {
-                std::hint::spin_loop();
-            } else {
-                std::thread::yield_now();
-            }
-        }
-        // Persistently incoherent (path churning under sustained re-indexing):
-        // report a miss rather than a torn pair. Callers treat `None` as
-        // "not cached yet" and retry on the next request.
-        None
+        let pair = self.file_trees.get(path)?.value().clone();
+        Some((pair.0.clone(), pair.1.clone()))
     }
 
     /// Returns the symbols extracted at index time. Falls back to extracting
@@ -362,11 +359,26 @@ impl FileIndex {
     /// here should consider widening the window or grouping mutations into
     /// a single transactional helper if the cost becomes meaningful.
     fn index_from_result(&self, path: PathBuf, content: String, tree: &tree_sitter::Tree) {
-        // Cache the tree unconditionally — all files benefit from it.
-        self.file_trees.insert(path.clone(), tree.clone());
+        // Cache the (text, tree) pair atomically under one Arc so a concurrent
+        // reader can never observe a torn text/tree combination (C13).
+        self.file_trees.insert(
+            path.clone(),
+            std::sync::Arc::new((content.clone(), tree.clone())),
+        );
         if let Some(obj_info) = al_syntax::find_object_declaration(tree, &content) {
             let obj_name = obj_info.name.to_lowercase();
-            self.objects.insert(obj_name.clone(), path.clone());
+            let kind = obj_info.kind.clone();
+            // Record this owner under its name, replacing any prior entry from
+            // this same path (re-index) or of the same kind (redefinition) —
+            // owners of *other* kinds are preserved so they never collapse (C22).
+            {
+                let mut owners = self.objects.entry(obj_name.clone()).or_default();
+                owners.retain(|e| e.path != path && !e.kind.eq_ignore_ascii_case(&kind));
+                owners.push(ObjectEntry {
+                    kind,
+                    path: path.clone(),
+                });
+            }
             self.path_to_object.insert(path.clone(), obj_name);
             self.object_info.insert(
                 path.clone(),
@@ -432,16 +444,53 @@ impl FileIndex {
         }
     }
 
-    /// F-040: only remove the `objects[name] → path` mapping when it still
-    /// points at `path`. Without this guard, two AL objects sharing a name
-    /// across kinds / packages — say a table `Foo` and a page `Foo` — both
-    /// insert under `objects["foo"]`. Whoever inserted last wins; removing
-    /// the OTHER file then dropped the surviving object's mapping and made
-    /// it unfindable. Keys can still collide on insert (DashMap is a single-
-    /// value map), but stale-key removal is now collision-safe.
+    /// Drop only the owner declared by `path`, keeping same-named owners of
+    /// other kinds (C22). A table `Foo` and a page `Foo` are separate entries
+    /// under `objects["foo"]`, so removing the table's file leaves the page
+    /// findable. The key is removed only when its last owner is gone.
     fn remove_owned_object_mapping(&self, obj_name: &str, path: &Path) {
+        use dashmap::mapref::entry::Entry;
+        if let Entry::Occupied(mut occ) = self.objects.entry(obj_name.to_string()) {
+            occ.get_mut().retain(|e| e.path != path);
+            if occ.get().is_empty() {
+                occ.remove();
+            }
+        }
+    }
+
+    /// First owner of `name`, regardless of kind. For callers that don't carry
+    /// a kind; kind-aware callers should use [`object_path_of_kind`].
+    ///
+    /// [`object_path_of_kind`]: Self::object_path_of_kind
+    pub fn object_path(&self, name: &str) -> Option<PathBuf> {
         self.objects
-            .remove_if(obj_name, |_, current_path| current_path == path);
+            .get(&name.to_lowercase())
+            .and_then(|owners| owners.first().map(|e| e.path.clone()))
+    }
+
+    /// The owner of `name` whose kind is one of `kinds` (case-insensitive) —
+    /// e.g. resolving `Enum Foo` passes `["enum", "enumextension"]` so a
+    /// same-named table can never win (C22).
+    pub fn object_path_of_kind(&self, name: &str, kinds: &[&str]) -> Option<PathBuf> {
+        self.objects.get(&name.to_lowercase()).and_then(|owners| {
+            owners
+                .iter()
+                .find(|e| kinds.iter().any(|k| e.kind.eq_ignore_ascii_case(k)))
+                .map(|e| e.path.clone())
+        })
+    }
+
+    /// Every file that declares an object named `name` (all kinds).
+    pub fn object_paths(&self, name: &str) -> Vec<PathBuf> {
+        self.objects
+            .get(&name.to_lowercase())
+            .map(|owners| owners.iter().map(|e| e.path.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Total number of indexed objects across all names and kinds.
+    pub fn object_count(&self) -> usize {
+        self.objects.iter().map(|e| e.value().len()).sum()
     }
 
     fn remove_procedures_for_file(&self, path: &Path) {
@@ -470,9 +519,7 @@ impl FileIndex {
     }
 
     pub fn find_by_object_name(&self, name: &str) -> Option<PathBuf> {
-        self.objects
-            .get(&name.to_lowercase())
-            .map(|r| r.value().clone())
+        self.object_path(name)
     }
 
     pub fn len(&self) -> usize {
@@ -770,8 +817,9 @@ mod tests {
         assert!(index.get_content(&path).is_none());
     }
 
-    /// F-040 positive: when two files share an object name (table Foo,
-    /// page Foo), removing one file must NOT drop the other file's mapping.
+    /// F-040 / C22 positive: when two files share an object name (table Foo,
+    /// page Foo) they are distinct kind-tagged owners, so removing one file
+    /// must NOT drop the other file's mapping.
     #[test]
     fn remove_file_preserves_other_owners_object_mapping() {
         let index = FileIndex::new();
@@ -782,13 +830,13 @@ mod tests {
             table_path.clone(),
             r#"table 50100 "Foo" { fields { } }"#.to_string(),
         );
-        // Insert the page second — its insert overwrites the `objects[foo]`
-        // entry. Before F-040, removing the table would then have
-        // unconditionally dropped the surviving page's mapping.
+        // The page is a separate owner under objects["foo"]; it no longer
+        // overwrites the table (C22), and both are indexed.
         index.add_file(
             page_path.clone(),
             r#"page 50100 "Foo" { layout { } actions { } }"#.to_string(),
         );
+        assert_eq!(index.object_count(), 2);
 
         index.remove_file(&table_path);
 
@@ -800,6 +848,57 @@ mod tests {
             Some(page_path.as_path()),
             "F-040: surviving owner's object mapping was dropped"
         );
+    }
+
+    /// C22: a table and a page sharing a name are kind-addressable regardless
+    /// of index order — a `Record Foo` reference (kind "table") never resolves
+    /// to the page, and deleting the page leaves the table resolvable.
+    #[test]
+    fn same_named_objects_are_kind_addressable() {
+        for page_first in [false, true] {
+            let index = FileIndex::new();
+            let table_path = PathBuf::from("/tmp/c22/Foo.Table.al");
+            let page_path = PathBuf::from("/tmp/c22/Foo.Page.al");
+            let add_table = || {
+                index.add_file(
+                    table_path.clone(),
+                    r#"table 50100 "Foo" { fields { } }"#.to_string(),
+                )
+            };
+            let add_page = || {
+                index.add_file(
+                    page_path.clone(),
+                    r#"page 50100 "Foo" { layout { } actions { } }"#.to_string(),
+                )
+            };
+            if page_first {
+                add_page();
+                add_table();
+            } else {
+                add_table();
+                add_page();
+            }
+
+            assert_eq!(
+                index.object_path_of_kind("foo", &["table"]).as_deref(),
+                Some(table_path.as_path()),
+                "kind=table must resolve to the table (page_first={page_first})"
+            );
+            assert_eq!(
+                index.object_path_of_kind("foo", &["page"]).as_deref(),
+                Some(page_path.as_path()),
+                "kind=page must resolve to the page (page_first={page_first})"
+            );
+
+            // Deleting the page must not break table resolution.
+            index.remove_file(&page_path);
+            assert_eq!(
+                index.object_path_of_kind("foo", &["table"]).as_deref(),
+                Some(table_path.as_path()),
+                "table must survive page deletion (page_first={page_first})"
+            );
+            assert!(index.object_path_of_kind("foo", &["page"]).is_none());
+        }
     }
 
     /// F-040 negative: when the file being removed IS the current owner of
@@ -815,6 +914,66 @@ mod tests {
             index.find_by_object_name("solofoo").is_none(),
             "owner removal should clear the mapping"
         );
+    }
+
+    /// C22: three objects (table, page, codeunit) sharing a name all coexist
+    /// and are independently kind-addressable.
+    #[test]
+    fn three_kinds_same_name_coexist() {
+        let index = FileIndex::new();
+        let t = PathBuf::from("/c22/Foo.Table.al");
+        let p = PathBuf::from("/c22/Foo.Page.al");
+        let c = PathBuf::from("/c22/Foo.Codeunit.al");
+        index.add_file(t.clone(), r#"table 50100 "Foo" { fields { } }"#.to_string());
+        index.add_file(
+            p.clone(),
+            r#"page 50100 "Foo" { layout { } actions { } }"#.to_string(),
+        );
+        index.add_file(c.clone(), r#"codeunit 50100 "Foo" { }"#.to_string());
+
+        assert_eq!(index.object_count(), 3);
+        assert_eq!(index.object_paths("foo").len(), 3);
+        assert_eq!(
+            index.object_path_of_kind("foo", &["table"]).as_deref(),
+            Some(t.as_path())
+        );
+        assert_eq!(
+            index.object_path_of_kind("foo", &["page"]).as_deref(),
+            Some(p.as_path())
+        );
+        assert_eq!(
+            index.object_path_of_kind("foo", &["codeunit"]).as_deref(),
+            Some(c.as_path())
+        );
+        assert!(index.object_path_of_kind("foo", &["enum"]).is_none());
+    }
+
+    /// C22: re-indexing a file whose object was renamed drops the old name and
+    /// registers the new one — no stale owner strands behind (via the
+    /// path_to_object cleanup that runs before every re-index).
+    #[test]
+    fn reindex_object_rename_clears_old_name() {
+        let index = FileIndex::new();
+        let path = PathBuf::from("/c22/Renamed.al");
+        index.add_file(
+            path.clone(),
+            r#"table 50100 "OldName" { fields { } }"#.to_string(),
+        );
+        assert!(index.find_by_object_name("oldname").is_some());
+
+        index.add_file(
+            path.clone(),
+            r#"table 50100 "NewName" { fields { } }"#.to_string(),
+        );
+        assert!(
+            index.find_by_object_name("oldname").is_none(),
+            "old object name must not linger after a rename re-index"
+        );
+        assert_eq!(
+            index.find_by_object_name("newname").as_deref(),
+            Some(path.as_path())
+        );
+        assert_eq!(index.object_count(), 1, "no stale duplicate owner");
     }
 
     #[test]
@@ -1102,7 +1261,7 @@ mod tests {
             handles.push(thread::spawn(move || {
                 // These may or may not see partially-written state — should never panic
                 let _count = idx.files.len();
-                let _obj = idx.objects.get("cu0");
+                let _obj = idx.object_path("cu0");
                 let _proc = idx.procedures.get("proc0");
             }));
         }
@@ -1189,6 +1348,30 @@ mod tests {
     }
 
     #[test]
+    fn c13_equal_length_reindex_returns_coherent_new_pair() {
+        // C13: an edit that keeps the byte length identical (renaming one
+        // identifier character — common) previously defeated the length-based
+        // coherence check, which could pair stale text with a fresh tree. With
+        // the atomic (text, tree) pair, get_cached_parse returns the re-indexed
+        // content and its matching tree.
+        let index = FileIndex::new();
+        let path = PathBuf::from("/test/src/Eq.al");
+        let a = r#"codeunit 50100 "Eq" { procedure Aaa() begin end; }"#.to_string();
+        let b = r#"codeunit 50100 "Eq" { procedure Bbb() begin end; }"#.to_string();
+        assert_eq!(a.len(), b.len(), "test contents must be equal length");
+
+        index.add_file(path.clone(), a.clone());
+        let (t1, _) = index.get_cached_parse(&path).unwrap();
+        assert_eq!(t1, a);
+
+        index.add_file(path.clone(), b.clone());
+        let (t2, tree2) = index.get_cached_parse(&path).unwrap();
+        assert_eq!(t2, b, "must return the re-indexed content, not stale text");
+        // The tree came from the same Arc as the text, so its span matches.
+        assert_eq!(tree2.root_node().end_byte(), t2.len());
+    }
+
+    #[test]
     fn get_cached_parse_never_returns_torn_pair_under_concurrency() {
         use std::sync::Arc;
         use std::thread;
@@ -1269,10 +1452,10 @@ impl FileIndex {
     pub fn iter_parsed(&self) -> Vec<(std::path::PathBuf, String, tree_sitter::Tree)> {
         self.file_trees
             .iter()
-            .filter_map(|entry| {
+            .map(|entry| {
                 let path = entry.key().clone();
-                let text = self.files.get(&path)?.value().clone();
-                Some((path, text, entry.value().clone()))
+                let pair = entry.value();
+                (path, pair.0.clone(), pair.1.clone())
             })
             .collect()
     }

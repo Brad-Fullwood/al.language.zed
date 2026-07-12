@@ -658,7 +658,21 @@ pub struct BuildRequest<'a> {
 /// and surface them differently — preserving the pre-B2 contract.
 pub async fn build(req: BuildRequest<'_>) -> Result<CompileResult, AlError> {
     match req.backend {
-        BuildBackend::Native => Ok(native_compile(req.project_root)),
+        BuildBackend::Native => {
+            // C8: native_compile reads every `.al` file and writes the `.app` —
+            // blocking IO. Running it directly on the async runtime stalls a
+            // tokio worker for the whole compile, delaying unrelated LSP
+            // requests on the small default runtime. Offload to the blocking
+            // pool.
+            let root = req.project_root.to_path_buf();
+            tokio::task::spawn_blocking(move || native_compile(&root))
+                .await
+                .map_err(|e| {
+                    AlError::Io(std::io::Error::other(format!(
+                        "native compile task panicked: {e}"
+                    )))
+                })
+        }
         BuildBackend::Alc => {
             let toolchain = req.toolchain.ok_or(AlError::NoToolchain)?;
             compile_project_with_analyzers(

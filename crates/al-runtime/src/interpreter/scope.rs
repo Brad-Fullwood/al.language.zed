@@ -152,6 +152,12 @@ pub enum Eval {
     Normal(Value),
     Error(ErrorInfo),
     Exit(Value),
+    /// `break` — unwinds to the nearest enclosing loop, which stops iterating.
+    /// Reaching a procedure body (escaping all loops) is a runtime error. (C24)
+    Break,
+    /// `continue` — unwinds to the nearest enclosing loop, which proceeds to
+    /// its next iteration. Escaping all loops is a runtime error. (C24)
+    Continue,
 }
 
 impl Eval {
@@ -160,7 +166,7 @@ impl Eval {
     pub fn into_value(self) -> Option<Value> {
         match self {
             Eval::Normal(v) | Eval::Exit(v) => Some(v),
-            Eval::Error(_) => None,
+            Eval::Error(_) | Eval::Break | Eval::Continue => None,
         }
     }
 

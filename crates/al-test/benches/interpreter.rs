@@ -9,7 +9,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 
 use al_runtime::interpreter::dispatch::{dispatch_call, DispatchCtx};
-use al_runtime::interpreter::value::Value;
+use al_runtime::interpreter::value::{Decimal, Value};
 use al_runtime::mock::record::MockRecord;
 use al_runtime::stubs;
 
@@ -21,8 +21,8 @@ fn bench_arithmetic(c: &mut Criterion) {
     // Pre-allocate values that will be reused on every iteration.
     let base_int = Value::Integer(0);
     let step_int = Value::Integer(7);
-    let base_dec = Value::Decimal(0.0);
-    let step_dec = Value::Decimal(3.5);
+    let base_dec = Value::Decimal(Decimal::ZERO);
+    let step_dec = Value::Decimal(Decimal::new(35, 1));
 
     c.bench_function("arithmetic/integer_accumulate_1000", |b| {
         b.iter(|| {
@@ -58,7 +58,7 @@ fn bench_arithmetic(c: &mut Criterion) {
             for _ in 0..1000 {
                 if let Value::Decimal(n) = &acc {
                     if let Value::Decimal(s) = &step_dec {
-                        acc = Value::Decimal(n + s);
+                        acc = Value::Decimal(*n + *s);
                     }
                 }
             }

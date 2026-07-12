@@ -470,9 +470,7 @@ fn lookup_via_receiver(
     }
 
     if let Some(subtype) = &decl.type_subtype {
-        let obj_key = subtype.to_lowercase();
-        if let Some(file_path) = workspace.file_index.objects.get(&obj_key) {
-            let file_path = file_path.value().clone();
+        if let Some(file_path) = workspace.file_index.object_path(subtype) {
             if let Some(target_symbols) = workspace.file_index.get_cached_symbols(&file_path) {
                 let target_symbols: Vec<super::AlDocumentSymbol> =
                     target_symbols.into_iter().map(Into::into).collect();

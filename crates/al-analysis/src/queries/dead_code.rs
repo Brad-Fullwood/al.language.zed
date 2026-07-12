@@ -377,7 +377,7 @@ fn collect_procedures(
                     let name = name.trim_matches('"').to_string();
                     let line = node.start_position().row as u32 + 1;
 
-                    let is_event = has_event_attribute(node, source);
+                    let is_event = is_framework_invoked_procedure(node, source);
 
                     // `local`/`internal` procedures are unreachable from
                     // other extensions — locality drives the confidence of
@@ -412,18 +412,42 @@ fn node_has_local_modifier(node: tree_sitter::Node, source: &[u8]) -> bool {
     false
 }
 
-fn has_event_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
+/// True when the procedure is invoked by a framework, not by a direct AL call:
+/// an event **publisher** (`[IntegrationEvent]`/`[BusinessEvent]`), an event
+/// **subscriber** (`[EventSubscriber]` — dispatched by the event system, never
+/// called directly), a **test** method (`[Test]`, runner-invoked), or a test
+/// **handler** (`[…Handler]`, invoked by the test runtime). Such procedures have
+/// zero textual call sites by design, so the unused-procedure pass must skip
+/// them — otherwise it reports the single most common BC extension pattern
+/// (subscriber codeunits) as provably dead (C26). Genuinely-orphaned
+/// subscribers are still surfaced by `find_orphaned_subscribers`.
+fn is_framework_invoked_procedure(node: tree_sitter::Node, source: &[u8]) -> bool {
+    fn attr_is_framework(text: &str) -> bool {
+        // Extract each attribute's *name* (the token right after `[`, before any
+        // `(` args or `]`) so a string argument that merely contains "test"
+        // (e.g. `[Obsolete('use TestMethod')]`) can't cause a false skip.
+        text.split('[').any(|seg| {
+            let name = seg
+                .split(|c: char| c == '(' || c == ']' || c == ',' || c.is_whitespace())
+                .next()
+                .unwrap_or("")
+                .to_lowercase();
+            matches!(
+                name.as_str(),
+                "integrationevent"
+                    | "businessevent"
+                    | "eventsubscriber"
+                    | "test"
+                    | "testpermissions"
+            ) || name.ends_with("handler")
+        })
+    }
+
     let mut sibling = node.prev_sibling();
     while let Some(s) = sibling {
         if s.kind() == "attribute" || s.kind() == "attribute_list" {
             if let Ok(text) = s.utf8_text(source) {
-                let t = text.to_lowercase();
-                // Lowercase literals correspond to `insight::attr_names::INTEGRATION_EVENT`
-                // / `BUSINESS_EVENT`. `t` is already lowercased so substring match
-                // is case-insensitive. Update both call sites if the canonical
-                // names ever change (compile-time link via static_assertions
-                // would be over-engineering for two strings).
-                if t.contains("integrationevent") || t.contains("businessevent") {
+                if attr_is_framework(text) {
                     return true;
                 }
             }
@@ -438,8 +462,7 @@ fn has_event_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
     for child in node.children(&mut cursor) {
         if child.kind() == "attribute" || child.kind() == "attribute_list" {
             if let Ok(text) = child.utf8_text(source) {
-                let t = text.to_lowercase();
-                if t.contains("integrationevent") || t.contains("businessevent") {
+                if attr_is_framework(text) {
                     return true;
                 }
             }
@@ -791,6 +814,64 @@ mod tests {
         assert!(
             !unused.iter().any(|u| u.name == "UsedProc"),
             "UsedProc should not be flagged as unused"
+        );
+    }
+
+    #[test]
+    fn c26_event_subscriber_and_test_not_flagged_as_dead() {
+        // A local [EventSubscriber] is dispatched by the event system and a
+        // [Test] is runner-invoked; neither has a direct call site, but neither
+        // must be reported as dead code (C26). A genuinely-unused plain helper
+        // in the same object still must be.
+        let ws = workspace_with_files(vec![
+            (
+                "/src/Pub.al",
+                r#"codeunit 50101 "Some Pub"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnFoo()
+    begin
+    end;
+}"#,
+            ),
+            (
+                "/src/Subs.al",
+                r#"codeunit 50100 "Subs"
+{
+    Subtype = Test;
+
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Some Pub", 'OnFoo', '', false, false)]
+    local procedure HandleFoo()
+    begin
+    end;
+
+    [Test]
+    procedure TestSomething()
+    begin
+    end;
+
+    [ConfirmHandler]
+    procedure HandleConfirm(Question: Text; var Reply: Boolean)
+    begin
+    end;
+
+    local procedure GenuinelyUnused()
+    begin
+    end;
+}"#,
+            ),
+        ]);
+
+        let unused = dead_code(&ws);
+        for name in ["HandleFoo", "TestSomething", "HandleConfirm"] {
+            assert!(
+                !unused.iter().any(|u| u.name == name),
+                "{name} is framework-invoked and must not be flagged; got {unused:?}"
+            );
+        }
+        assert!(
+            unused.iter().any(|u| u.name == "GenuinelyUnused"),
+            "a plain uncalled helper must still be flagged; got {unused:?}"
         );
     }
 
