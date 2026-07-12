@@ -270,6 +270,27 @@ impl Value {
         }
     }
 
+    /// Coerce `incoming` to the declared type of the `slot` it is being assigned
+    /// into. AL variables have a fixed type, so an assignment preserves the
+    /// slot's type rather than adopting the RHS's:
+    ///
+    /// * a `Code` slot uppercases a string RHS and stays `Code` (caseless — C2);
+    /// * an `Integer`/`BigInteger` slot keeps its width so later arithmetic uses
+    ///   the right overflow trap (C28).
+    ///
+    /// Any other combination overwrites as-is. Shared by both assignment paths
+    /// (`eval_assignment` and the expression-form handler in `eval_expr`).
+    pub(crate) fn coerce_into_slot(slot: &Value, incoming: Value) -> Value {
+        match (slot, &incoming) {
+            (Value::Code(_), Value::Text(s) | Value::Code(s)) => Value::Code(s.to_uppercase()),
+            (Value::BigInteger(_), Value::Integer(n) | Value::BigInteger(n)) => {
+                Value::BigInteger(*n)
+            }
+            (Value::Integer(_), Value::Integer(n) | Value::BigInteger(n)) => Value::Integer(*n),
+            _ => incoming,
+        }
+    }
+
     /// Default value for the named AL type. Returns `None` if the type
     /// name is unknown to the interpreter.
     pub fn default_for(type_name: &str) -> Option<Value> {

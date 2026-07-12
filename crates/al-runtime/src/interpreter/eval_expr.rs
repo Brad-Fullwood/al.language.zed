@@ -471,23 +471,9 @@ fn eval_expression_node(
         };
 
         if let Some(slot) = stack.lookup_mut(&lhs_name) {
-            // C2: coerce/uppercase to Code when the target is a Code variable
-            // (BC uppercases Code at assignment and treats it caselessly), so a
-            // later `CodeVar = 'ABC'` matches case-insensitively. A plain
-            // overwrite would demote the slot to Text.
-            let new_val = match (&*slot, &new_val) {
-                (Value::Code(_), Value::Text(s) | Value::Code(s)) => Value::Code(s.to_uppercase()),
-                // AL variables keep their declared Integer/BigInteger width on
-                // assignment, so a BigInteger slot stays BigInteger even when a
-                // small Integer literal is stored — later arithmetic then uses
-                // i64 width instead of the 32-bit Integer overflow trap (C28).
-                (Value::BigInteger(_), Value::Integer(n) | Value::BigInteger(n)) => {
-                    Value::BigInteger(*n)
-                }
-                (Value::Integer(_), Value::Integer(n) | Value::BigInteger(n)) => Value::Integer(*n),
-                _ => new_val,
-            };
-            *slot = new_val;
+            // Preserve the slot's declared type (Code caselessness / integer
+            // width) rather than adopting the RHS's — see `coerce_into_slot`.
+            *slot = Value::coerce_into_slot(slot, new_val);
         } else if let Some(frame) = stack.top_mut() {
             frame.bind(&lhs_name, new_val);
         } else {

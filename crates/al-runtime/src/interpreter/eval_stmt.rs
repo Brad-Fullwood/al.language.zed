@@ -585,26 +585,9 @@ fn eval_assignment(
     };
 
     if let Some(slot) = stack.lookup_mut(&lhs_name) {
-        // C2: assigning to a `Code`-typed variable coerces the value to `Code`
-        // and uppercases it (BC uppercases Code at assignment and treats it as
-        // caseless). Preserving the slot's `Code` type is what makes a later
-        // `CodeVar = 'ABC'` behave case-insensitively — a plain overwrite would
-        // demote the slot to `Text` and lose that. Only string-like RHS values
-        // are coerced; anything else overwrites as-is.
-        let rhs_val = match (&*slot, &rhs_val) {
-            (Value::Code(_), Value::Text(s) | Value::Code(s)) => Value::Code(s.to_uppercase()),
-            // AL variables have a fixed declared type, so an integer assignment
-            // keeps the slot's Integer/BigInteger width. This is what lets
-            // `Big: BigInteger; Big := 5; Big := Big * 1000000000` compute at
-            // i64 width instead of tripping the 32-bit Integer overflow trap
-            // (C28). The slot type comes from `default_for` at declaration.
-            (Value::BigInteger(_), Value::Integer(n) | Value::BigInteger(n)) => {
-                Value::BigInteger(*n)
-            }
-            (Value::Integer(_), Value::Integer(n) | Value::BigInteger(n)) => Value::Integer(*n),
-            _ => rhs_val,
-        };
-        *slot = rhs_val;
+        // Preserve the slot's declared type (Code caselessness / integer width)
+        // rather than adopting the RHS's — see `coerce_into_slot`.
+        *slot = Value::coerce_into_slot(slot, rhs_val);
     } else if let Some(frame) = stack.top_mut() {
         // Auto-bind: declare in the current frame on first assignment
         // (simulates AL's permissive variable declaration semantics in
