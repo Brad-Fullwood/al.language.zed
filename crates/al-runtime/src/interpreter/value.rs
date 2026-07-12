@@ -270,6 +270,18 @@ impl Value {
         }
     }
 
+    /// Numeric view as an exact `Decimal`: `Integer`/`BigInteger` promote
+    /// losslessly (i64 fits the 96-bit range), `Decimal` passes through, and
+    /// everything else is `None`. The single conversion used by numeric
+    /// comparison, FlowField aggregation, and the assert helpers.
+    pub fn as_decimal(&self) -> Option<Decimal> {
+        match self {
+            Value::Integer(n) | Value::BigInteger(n) => Some(Decimal::from(*n)),
+            Value::Decimal(d) => Some(*d),
+            _ => None,
+        }
+    }
+
     /// Coerce `incoming` to the declared type of the `slot` it is being assigned
     /// into. AL variables have a fixed type, so an assignment preserves the
     /// slot's type rather than adopting the RHS's:

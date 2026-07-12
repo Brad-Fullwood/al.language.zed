@@ -133,7 +133,7 @@ fn utf8_text<'a>(node: Node<'_>, source: &'a [u8]) -> Option<&'a str> {
 /// `BigInteger`; otherwise `Integer`.
 fn int_literal_value(text: &str) -> Option<Value> {
     let text = text.trim();
-    let had_suffix = text.ends_with('l') || text.ends_with('L');
+    let had_suffix = text.ends_with(['l', 'L']);
     let n: i64 = text.trim_end_matches(['l', 'L']).parse().ok()?;
     let fits_i32 = (i32::MIN as i64..=i32::MAX as i64).contains(&n);
     Some(if had_suffix || !fits_i32 {

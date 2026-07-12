@@ -536,11 +536,7 @@ impl MockRecord {
 
 /// Numeric view of a value for FlowField aggregation (`Integer`/`Decimal`).
 fn as_number(v: &Value) -> Option<Decimal> {
-    match v {
-        Value::Integer(n) | Value::BigInteger(n) => Some(Decimal::from(*n)),
-        Value::Decimal(d) => Some(*d),
-        _ => None,
-    }
+    v.as_decimal()
 }
 
 /// Test one resolved FlowField condition against a row's cell value.

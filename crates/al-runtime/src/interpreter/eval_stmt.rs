@@ -283,21 +283,21 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
             .contains("downto"),
     };
 
-    let start_i = match &start_val {
-        Value::Integer(n) | Value::BigInteger(n) => *n,
-        v => {
+    let start_i = match start_val.as_int() {
+        Some(n) => n,
+        None => {
             return Eval::Error(simple_error(&format!(
                 "for_statement: start must be Integer, got {}",
-                v.type_name()
+                start_val.type_name()
             )))
         }
     };
-    let end_i = match &end_val {
-        Value::Integer(n) | Value::BigInteger(n) => *n,
-        v => {
+    let end_i = match end_val.as_int() {
+        Some(n) => n,
+        None => {
             return Eval::Error(simple_error(&format!(
                 "for_statement: end must be Integer, got {}",
-                v.type_name()
+                end_val.type_name()
             )))
         }
     };

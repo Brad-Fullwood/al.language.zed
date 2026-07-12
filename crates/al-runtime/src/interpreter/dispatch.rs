@@ -710,10 +710,13 @@ fn check_param_type(arg: &Value, type_name: &str) -> Option<String> {
 /// Used at parameter binding so a `BigInteger` parameter keeps i64 arithmetic
 /// semantics even when the caller passes a small `Integer` literal (C28).
 fn coerce_int_width(val: Value, type_name: &str) -> Value {
-    match (type_name.to_ascii_lowercase().as_str(), &val) {
-        ("biginteger", Value::Integer(n)) => Value::BigInteger(*n),
-        ("integer", Value::BigInteger(n)) => Value::Integer(*n),
-        _ => val,
+    // Match on the value first so the (allocation-free) type-name check is only
+    // reached for integer arguments — the common Text/Record/Boolean args skip
+    // it entirely.
+    match val {
+        Value::Integer(n) if type_name.eq_ignore_ascii_case("biginteger") => Value::BigInteger(n),
+        Value::BigInteger(n) if type_name.eq_ignore_ascii_case("integer") => Value::Integer(n),
+        other => other,
     }
 }
 
