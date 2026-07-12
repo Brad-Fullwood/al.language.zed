@@ -208,6 +208,10 @@ fn eval_unary(
 
     match (operator_text.to_ascii_lowercase().as_str(), value) {
         ("-", Value::Integer(n)) => Eval::Normal(Value::Integer(-n)),
+        // A BigInteger can hold the full i64 range, so `-n` could overflow at
+        // i64::MIN (unlike the 32-bit Integer above); wrapping_neg avoids the
+        // debug-build panic and is identical for every reachable value (C28).
+        ("-", Value::BigInteger(n)) => Eval::Normal(Value::BigInteger(n.wrapping_neg())),
         ("-", Value::Decimal(n)) => Eval::Normal(Value::Decimal(-n)),
         ("not", Value::Boolean(b)) => Eval::Normal(Value::Boolean(!b)),
         (op, v) => Eval::Error(simple_error(&format!(

@@ -1196,6 +1196,16 @@ mod tests {
     }
 
     #[test]
+    fn c28_unary_negation_of_biginteger() {
+        // Regression: a negative BigInteger literal is unary minus applied to a
+        // >i32 literal. Without a BigInteger arm in eval_unary this errored as
+        // "operator not supported".
+        let (eval, stack) = run_stmt("y := -5000000000;");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("y"), Some(&Value::BigInteger(-5_000_000_000)));
+    }
+
+    #[test]
     fn c28_integer_literal_overflow_errors_end_to_end() {
         // Both operands are in-range Integer literals, so the product overflows
         // BC's 32-bit Integer and must error (not silently wrap).
