@@ -45,14 +45,12 @@ fn eval_expr_inner(
     match node.kind() {
         // Literal forms — the AL grammar uses `integer`, `decimal`, `string`
         // as the actual node kinds (not `integer_literal` etc.).
-        "integer_literal" | "integer" => match utf8_text(node, source)
-            .and_then(|t| t.trim_end_matches(['l', 'L']).parse::<i64>().ok())
-        {
-            Some(n) => Eval::Normal(Value::Integer(n)),
-            None => Eval::Error(simple_error(&format!(
-                "malformed integer literal: {}",
-                utf8_text(node, source).unwrap_or("?")
-            ))),
+        "integer_literal" | "integer" => match utf8_text(node, source) {
+            Some(t) => match int_literal_value(t) {
+                Some(v) => Eval::Normal(v),
+                None => Eval::Error(simple_error(&format!("malformed integer literal: {t}"))),
+            },
+            None => Eval::Error(simple_error("invalid integer literal text")),
         },
         "decimal_literal" | "decimal" => {
             match utf8_text(node, source).and_then(|t| t.parse::<Decimal>().ok()) {
@@ -130,6 +128,21 @@ fn utf8_text<'a>(node: Node<'_>, source: &'a [u8]) -> Option<&'a str> {
     node.utf8_text(source).ok()
 }
 
+/// Type an integer literal (C28). An `l`/`L` suffix — AL's `BigInteger` literal
+/// marker — or a magnitude outside the 32-bit `Integer` range yields a
+/// `BigInteger`; otherwise `Integer`.
+fn int_literal_value(text: &str) -> Option<Value> {
+    let text = text.trim();
+    let had_suffix = text.ends_with(['l', 'L']);
+    let n: i64 = text.trim_end_matches(['l', 'L']).parse().ok()?;
+    let fits_i32 = (i32::MIN as i64..=i32::MAX as i64).contains(&n);
+    Some(if had_suffix || !fits_i32 {
+        Value::BigInteger(n)
+    } else {
+        Value::Integer(n)
+    })
+}
+
 fn named_child(node: Node<'_>, index: usize) -> Option<Node<'_>> {
     node.named_child(index)
 }
@@ -139,9 +152,9 @@ fn eval_literal(node: Node<'_>, source: &[u8]) -> Eval {
         return Eval::Error(simple_error("invalid literal text"));
     };
     match node.kind() {
-        "integer_literal" => match text.parse::<i64>() {
-            Ok(n) => Eval::Normal(Value::Integer(n)),
-            Err(_) => Eval::Error(simple_error(&format!("malformed integer literal: {text}"))),
+        "integer_literal" => match int_literal_value(text) {
+            Some(v) => Eval::Normal(v),
+            None => Eval::Error(simple_error(&format!("malformed integer literal: {text}"))),
         },
         "decimal_literal" => match text.parse::<Decimal>() {
             Ok(n) => Eval::Normal(Value::Decimal(n)),
@@ -195,6 +208,10 @@ fn eval_unary(
 
     match (operator_text.to_ascii_lowercase().as_str(), value) {
         ("-", Value::Integer(n)) => Eval::Normal(Value::Integer(-n)),
+        // A BigInteger can hold the full i64 range, so `-n` could overflow at
+        // i64::MIN (unlike the 32-bit Integer above); wrapping_neg avoids the
+        // debug-build panic and is identical for every reachable value (C28).
+        ("-", Value::BigInteger(n)) => Eval::Normal(Value::BigInteger(n.wrapping_neg())),
         ("-", Value::Decimal(n)) => Eval::Normal(Value::Decimal(-n)),
         ("not", Value::Boolean(b)) => Eval::Normal(Value::Boolean(!b)),
         (op, v) => Eval::Error(simple_error(&format!(
@@ -458,15 +475,9 @@ fn eval_expression_node(
         };
 
         if let Some(slot) = stack.lookup_mut(&lhs_name) {
-            // C2: coerce/uppercase to Code when the target is a Code variable
-            // (BC uppercases Code at assignment and treats it caselessly), so a
-            // later `CodeVar = 'ABC'` matches case-insensitively. A plain
-            // overwrite would demote the slot to Text.
-            let new_val = match (&*slot, &new_val) {
-                (Value::Code(_), Value::Text(s) | Value::Code(s)) => Value::Code(s.to_uppercase()),
-                _ => new_val,
-            };
-            *slot = new_val;
+            // Preserve the slot's declared type (Code caselessness / integer
+            // width) rather than adopting the RHS's — see `coerce_into_slot`.
+            *slot = Value::coerce_into_slot(slot, new_val);
         } else if let Some(frame) = stack.top_mut() {
             frame.bind(&lhs_name, new_val);
         } else {
@@ -560,108 +571,132 @@ fn extract_identifier_name(node: Node<'_>, source: &[u8]) -> Option<String> {
     None
 }
 
+/// A numeric operand classified for arithmetic: an integer-like value (with a
+/// flag for whether it is a `BigInteger`, which widens the overflow trap from
+/// i32 to i64) or a `Decimal`.
+enum Num {
+    Int { val: i64, big: bool },
+    Dec(Decimal),
+}
+
+impl Num {
+    fn to_decimal(&self) -> Decimal {
+        match self {
+            Num::Int { val, .. } => Decimal::from(*val),
+            Num::Dec(d) => *d,
+        }
+    }
+}
+
+fn classify_numeric(v: &Value) -> Option<Num> {
+    match v {
+        Value::Integer(n) => Some(Num::Int {
+            val: *n,
+            big: false,
+        }),
+        Value::BigInteger(n) => Some(Num::Int { val: *n, big: true }),
+        Value::Decimal(d) => Some(Num::Dec(*d)),
+        _ => None,
+    }
+}
+
+/// Wrap an integer arithmetic result at the correct width. BC's `Integer` is
+/// 32-bit and traps overflow at runtime; `BigInteger` is 64-bit. The i64
+/// carrier means an i64 `checked_*` alone would let `2147483647 * 3` silently
+/// produce a value no `Integer` can hold, so an `Integer` result is also
+/// range-checked against i32. Either overflow is a runtime error, never a
+/// silent wrap (C28).
+fn checked_int(result: Option<i64>, big: bool) -> Eval {
+    match result {
+        Some(n) if big => Eval::Normal(Value::BigInteger(n)),
+        Some(n) if (i32::MIN as i64..=i32::MAX as i64).contains(&n) => {
+            Eval::Normal(Value::Integer(n))
+        }
+        _ => Eval::Error(simple_error("integer overflow")),
+    }
+}
+
+/// Wrap a Decimal result. `rust_decimal` has no NaN/infinity; the only failure
+/// mode is overflow of the 96-bit range, which `checked_*` reports as `None`.
+fn checked_decimal(d: Option<Decimal>) -> Eval {
+    match d {
+        Some(v) => Eval::Normal(Value::Decimal(v)),
+        None => Eval::Error(simple_error("decimal arithmetic overflow")),
+    }
+}
+
+/// Apply `+ - * / div mod` to two classified numeric operands.
+///
+/// * `/` is AL real division: always `Decimal` (e.g. `Avg := Total / Count`).
+/// * `div`/`mod` are integer-only; on any `Decimal` operand they error.
+/// * Integer/Integer stays `Integer` (i32 trap); if either side is a
+///   `BigInteger` the result is `BigInteger` (i64 trap) — BC's promotion (C28).
+fn apply_numeric(op: &str, l: Num, r: Num) -> Eval {
+    // Real division always promotes to Decimal.
+    if op == "/" {
+        let (a, b) = (l.to_decimal(), r.to_decimal());
+        if b == Decimal::ZERO {
+            return Eval::Error(simple_error("division by zero"));
+        }
+        return checked_decimal(a.checked_div(b));
+    }
+    match (l, r) {
+        (Num::Int { val: a, big: ab }, Num::Int { val: b, big: bb }) => {
+            let big = ab || bb;
+            match op {
+                "+" => checked_int(a.checked_add(b), big),
+                "-" => checked_int(a.checked_sub(b), big),
+                "*" => checked_int(a.checked_mul(b), big),
+                "div" => {
+                    if b == 0 {
+                        Eval::Error(simple_error("division by zero"))
+                    } else {
+                        // i32::MIN / -1 (or i64::MIN / -1) overflows → error.
+                        checked_int(a.checked_div(b), big)
+                    }
+                }
+                "mod" => {
+                    if b == 0 {
+                        Eval::Error(simple_error("modulo by zero"))
+                    } else {
+                        checked_int(a.checked_rem(b), big)
+                    }
+                }
+                _ => unreachable!("op pre-filtered by apply_binary"),
+            }
+        }
+        (l, r) => {
+            // At least one Decimal operand → Decimal arithmetic.
+            let (a, b) = (l.to_decimal(), r.to_decimal());
+            match op {
+                "+" => checked_decimal(a.checked_add(b)),
+                "-" => checked_decimal(a.checked_sub(b)),
+                "*" => checked_decimal(a.checked_mul(b)),
+                "div" | "mod" => Eval::Error(simple_error(&format!(
+                    "binary operator `{op}` is integer-only (not supported on Decimal)"
+                ))),
+                _ => unreachable!("op pre-filtered by apply_binary"),
+            }
+        }
+    }
+}
+
 /// Apply a binary operator to two values. Made `pub(crate)` so unit tests
 /// (and Phase 3's mock dispatch) can reuse the operator semantics.
 pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
     let op = operator.to_ascii_lowercase();
-    // Wrap a Decimal result. `rust_decimal` has no NaN/infinity; the only
-    // failure mode is overflow of the 96-bit range, which the `checked_*`
-    // operators report as `None`. AL semantics: overflow is a runtime error.
-    fn checked_decimal(d: Option<Decimal>) -> Eval {
-        match d {
-            Some(v) => Eval::Normal(Value::Decimal(v)),
-            None => Eval::Error(simple_error("decimal arithmetic overflow")),
-        }
-    }
-    // C28: BC's `Integer` is 32-bit signed and traps overflow at runtime. The
-    // interpreter stores integers as i64, so an i64 `checked_*` alone lets
-    // arithmetic that would error in BC (e.g. `2147483647 * 3`) silently produce
-    // values that cannot exist in an Integer. Range-check every integer
-    // arithmetic result against i32 bounds and error like BC.
-    //
-    // Known limitation (accepted tradeoff): `Value::Integer` carries BOTH AL
-    // `Integer` and `BigInteger` — they are not separately modeled — so this
-    // trap also fires on legitimate `BigInteger` arithmetic in (2^31, 2^63)
-    // (e.g. `5000000000 + 1` errors instead of yielding 5000000001). We
-    // deliberately prefer a loud, correct-for-`Integer` error here over the
-    // pre-C28 behavior of silently producing out-of-range `Integer` results —
-    // `Integer` is by far the more common type. Faithfully supporting both
-    // needs a `BigInteger`-tagged value (a value-model change deferred with C3).
-    fn checked_i32(result: Option<i64>) -> Eval {
-        match result {
-            Some(n) if (i32::MIN as i64..=i32::MAX as i64).contains(&n) => {
-                Eval::Normal(Value::Integer(n))
-            }
-            _ => Eval::Error(simple_error("integer overflow")),
-        }
-    }
-    match (&op[..], left, right) {
-        ("+", Value::Integer(a), Value::Integer(b)) => checked_i32(a.checked_add(b)),
-        ("-", Value::Integer(a), Value::Integer(b)) => checked_i32(a.checked_sub(b)),
-        ("*", Value::Integer(a), Value::Integer(b)) => checked_i32(a.checked_mul(b)),
-        ("div", Value::Integer(a), Value::Integer(b))
-        | ("/", Value::Integer(a), Value::Integer(b)) => {
-            if b == 0 {
-                Eval::Error(simple_error("division by zero"))
-            } else if op == "/" {
-                checked_decimal(Decimal::from(a).checked_div(Decimal::from(b)))
-            } else {
-                // i32::MIN / -1 overflows the Integer range → error like BC.
-                checked_i32(a.checked_div(b))
-            }
-        }
-        ("mod", Value::Integer(a), Value::Integer(b)) => {
-            if b == 0 {
-                Eval::Error(simple_error("modulo by zero"))
-            } else {
-                match a.checked_rem(b) {
-                    Some(n) => Eval::Normal(Value::Integer(n)),
-                    None => Eval::Error(simple_error("integer overflow")),
-                }
-            }
-        }
-        ("+", Value::Decimal(a), Value::Decimal(b)) => checked_decimal(a.checked_add(b)),
-        ("-", Value::Decimal(a), Value::Decimal(b)) => checked_decimal(a.checked_sub(b)),
-        ("*", Value::Decimal(a), Value::Decimal(b)) => checked_decimal(a.checked_mul(b)),
-        ("/", Value::Decimal(a), Value::Decimal(b)) if b != Decimal::ZERO => {
-            checked_decimal(a.checked_div(b))
-        }
-        ("/", Value::Decimal(_), Value::Decimal(_)) => {
-            Eval::Error(simple_error("division by zero"))
-        }
-        ("+", Value::Integer(a), Value::Decimal(b))
-        | ("+", Value::Decimal(b), Value::Integer(a)) => {
-            checked_decimal(Decimal::from(a).checked_add(b))
-        }
-        ("-", Value::Integer(a), Value::Decimal(b)) => {
-            checked_decimal(Decimal::from(a).checked_sub(b))
-        }
-        ("-", Value::Decimal(a), Value::Integer(b)) => {
-            checked_decimal(a.checked_sub(Decimal::from(b)))
-        }
-        ("*", Value::Integer(a), Value::Decimal(b))
-        | ("*", Value::Decimal(b), Value::Integer(a)) => {
-            checked_decimal(Decimal::from(a).checked_mul(b))
-        }
-        // Mixed Integer/Decimal division. BC promotes to Decimal (e.g.
-        // `Avg := Total / Count`, Decimal ÷ Integer); the Int/Int and
-        // Decimal/Decimal arms above don't cover the mixed case, so without
-        // these it errors as "operator not supported".
-        ("/", Value::Integer(a), Value::Decimal(b)) => {
-            if b == Decimal::ZERO {
-                Eval::Error(simple_error("division by zero"))
-            } else {
-                checked_decimal(Decimal::from(a).checked_div(b))
-            }
-        }
-        ("/", Value::Decimal(a), Value::Integer(b)) => {
-            if b == 0 {
-                Eval::Error(simple_error("division by zero"))
-            } else {
-                checked_decimal(a.checked_div(Decimal::from(b)))
-            }
-        }
 
+    // Numeric arithmetic (Integer, BigInteger, Decimal, and every mix) is
+    // handled first, before the value-consuming match, so the operand-type
+    // classification lives in one place (C28). Non-arithmetic ops and
+    // non-numeric operands fall through to the match below.
+    if matches!(op.as_str(), "+" | "-" | "*" | "/" | "div" | "mod") {
+        if let (Some(l), Some(r)) = (classify_numeric(&left), classify_numeric(&right)) {
+            return apply_numeric(&op, l, r);
+        }
+    }
+
+    match (&op[..], left, right) {
         ("+", Value::Text(a), Value::Text(b)) => Eval::Normal(Value::Text(format!("{a}{b}"))),
         ("+", Value::Text(a), Value::Code(b)) | ("+", Value::Code(b), Value::Text(a)) => {
             Eval::Normal(Value::Text(format!("{a}{b}")))
@@ -697,9 +732,10 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
 pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
     use Value::*;
     match (a, b) {
-        (Integer(x), Integer(y)) => x == y,
+        // Integer and BigInteger are one numeric class; compared by value.
+        (Integer(x) | BigInteger(x), Integer(y) | BigInteger(y)) => x == y,
         (Decimal(x), Decimal(y)) => x == y,
-        (Integer(x), Decimal(y)) | (Decimal(y), Integer(x)) => {
+        (Integer(x) | BigInteger(x), Decimal(y)) | (Decimal(y), Integer(x) | BigInteger(x)) => {
             rust_decimal::Decimal::from(*x) == *y
         }
         (Boolean(x), Boolean(y)) => x == y,
@@ -715,9 +751,9 @@ pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
 fn values_cmp(a: &Value, b: &Value, predicate: impl Fn(std::cmp::Ordering) -> bool) -> Eval {
     use Value::*;
     let ord = match (a, b) {
-        (Integer(x), Integer(y)) => x.cmp(y),
-        (Integer(x), Decimal(y)) => rust_decimal::Decimal::from(*x).cmp(y),
-        (Decimal(x), Integer(y)) => x.cmp(&rust_decimal::Decimal::from(*y)),
+        (Integer(x) | BigInteger(x), Integer(y) | BigInteger(y)) => x.cmp(y),
+        (Integer(x) | BigInteger(x), Decimal(y)) => rust_decimal::Decimal::from(*x).cmp(y),
+        (Decimal(x), Integer(y) | BigInteger(y)) => x.cmp(&rust_decimal::Decimal::from(*y)),
         (Decimal(x), Decimal(y)) => x.cmp(y),
         (Text(x), Text(y)) | (Code(x), Code(y)) => x.cmp(y),
         (Date(x), Date(y)) | (Time(x), Time(y)) | (DateTime(x), DateTime(y)) => x.cmp(y),
@@ -931,6 +967,95 @@ mod tests {
             )),
             Value::Boolean(false),
             "i64::MAX must not equal i64::MAX-1 (would collide under as-f64)"
+        );
+    }
+
+    #[test]
+    fn c28_biginteger_arithmetic_uses_i64_width_not_i32_trap() {
+        // The core fix: BigInteger arithmetic past the 32-bit Integer range must
+        // compute, not error. 5_000_000_000 + 1 = 5_000_000_001.
+        assert_eq!(
+            ok(apply_binary(
+                "+",
+                Value::BigInteger(5_000_000_000),
+                Value::BigInteger(1)
+            )),
+            Value::BigInteger(5_000_000_001)
+        );
+        // A BigInteger result stays BigInteger (not silently demoted to Integer).
+        assert!(matches!(
+            ok(apply_binary(
+                "*",
+                Value::BigInteger(3_000_000_000),
+                Value::BigInteger(2)
+            )),
+            Value::BigInteger(6_000_000_000)
+        ));
+    }
+
+    #[test]
+    fn c28_integer_arithmetic_still_traps_at_i32() {
+        // BC's 32-bit Integer overflow must still error when both operands are
+        // Integer — the guarantee C28 originally added, preserved.
+        assert!(err(apply_binary(
+            "*",
+            Value::Integer(2_000_000_000),
+            Value::Integer(2)
+        ))
+        .message
+        .contains("overflow"));
+    }
+
+    #[test]
+    fn c28_mixed_integer_biginteger_promotes_to_biginteger() {
+        // BC promotes Integer op BigInteger → BigInteger; the sum exceeds i32
+        // but must NOT trap because the BigInteger operand widens the result.
+        assert_eq!(
+            ok(apply_binary(
+                "+",
+                Value::Integer(2_000_000_000),
+                Value::BigInteger(2_000_000_000)
+            )),
+            Value::BigInteger(4_000_000_000)
+        );
+    }
+
+    #[test]
+    fn c28_biginteger_overflow_at_i64_traps() {
+        // BigInteger is 64-bit; past that it errors rather than wrapping.
+        assert!(err(apply_binary(
+            "*",
+            Value::BigInteger(i64::MAX),
+            Value::BigInteger(2)
+        ))
+        .message
+        .contains("overflow"));
+    }
+
+    #[test]
+    fn c28_integer_and_biginteger_compare_equal_by_value() {
+        // `5 = 5L` holds; the two integer types are one numeric class.
+        assert_eq!(
+            ok(apply_binary("=", Value::Integer(5), Value::BigInteger(5))),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            ok(apply_binary("<", Value::Integer(5), Value::BigInteger(6))),
+            Value::Boolean(true)
+        );
+        assert!(values_equal(&Value::BigInteger(5), &Value::Integer(5)));
+    }
+
+    #[test]
+    fn c28_biginteger_divided_by_integer_promotes_to_decimal() {
+        // Real division always yields Decimal, regardless of integer width.
+        assert_eq!(
+            ok(apply_binary(
+                "/",
+                Value::BigInteger(5_000_000_000),
+                Value::Integer(2)
+            )),
+            Value::Decimal(dec!(2500000000))
         );
     }
 

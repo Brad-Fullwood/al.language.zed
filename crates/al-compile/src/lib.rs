@@ -540,10 +540,9 @@ fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
         (DiagnosticSeverity::Error, r.trim())
     } else if let Some(r) = rest.strip_prefix("warning") {
         (DiagnosticSeverity::Warning, r.trim())
-    } else if let Some(r) = rest.strip_prefix("info") {
-        (DiagnosticSeverity::Info, r.trim())
     } else {
-        return None;
+        let r = rest.strip_prefix("info")?;
+        (DiagnosticSeverity::Info, r.trim())
     };
 
     let (code, message) = if let Some(colon_pos) = rest.find(':') {

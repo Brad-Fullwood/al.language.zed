@@ -66,7 +66,10 @@ pub enum Value {
     Null,
     /// Cleared / default-initialised value (`Clear(x)` semantics).
     Empty,
-    /// AL `Integer` / `BigInteger` — i64 wide enough for both.
+    /// AL `Integer` — 32-bit signed. Stored in an i64 carrier, but arithmetic
+    /// traps at the i32 range to match BC (see `apply_binary`). Distinct from
+    /// [`Value::BigInteger`] so the interpreter can apply the right overflow
+    /// width; the two compare equal by numeric value (C28).
     Integer(i64),
     /// AL `Decimal` — exact 96-bit decimal (`rust_decimal::Decimal`), matching
     /// BC's `System.Decimal`: no binary-float drift, no NaN/infinity (C3).
@@ -120,6 +123,11 @@ pub enum Value {
         /// The declared subtype object name (e.g. `"Library - Sales"`).
         object_name: String,
     },
+    /// AL `BigInteger` — 64-bit signed. Appended to the enum to preserve the
+    /// variant-ordering stability contract; it is treated as the same numeric
+    /// class as [`Value::Integer`] for comparison (see `variant_index`), and
+    /// arithmetic on it traps only at the i64 range (C28).
+    BigInteger(i64),
 }
 
 /// In-memory record handle. Phase 2 uses an opaque key into a per-thread
@@ -159,7 +167,9 @@ impl Ord for Value {
             match v {
                 Null => 0,
                 Empty => 1,
-                Integer(_) => 2,
+                // Integer and BigInteger are one numeric class: same index so
+                // they order by value, and `5 = 5L` holds (C28).
+                Integer(_) | BigInteger(_) => 2,
                 Decimal(_) => 3,
                 Boolean(_) => 4,
                 Char(_) => 5,
@@ -189,7 +199,7 @@ impl Ord for Value {
         }
         match (self, other) {
             (Null, Null) | (Empty, Empty) => Ordering::Equal,
-            (Integer(a), Integer(b)) => a.cmp(b),
+            (Integer(a) | BigInteger(a), Integer(b) | BigInteger(b)) => a.cmp(b),
             (Decimal(a), Decimal(b)) => a.cmp(b),
             (Boolean(a), Boolean(b)) => a.cmp(b),
             (Char(a), Char(b)) => a.cmp(b),
@@ -250,11 +260,55 @@ impl Value {
         matches!(self, Value::Boolean(true))
     }
 
+    /// The i64 payload of an `Integer` or `BigInteger`, else `None`. Use this
+    /// wherever a consumer treats the two integer types interchangeably
+    /// (filters, field compares, coercions) rather than matching each variant.
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            Value::Integer(n) | Value::BigInteger(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Numeric view as an exact `Decimal`: `Integer`/`BigInteger` promote
+    /// losslessly (i64 fits the 96-bit range), `Decimal` passes through, and
+    /// everything else is `None`. The single conversion used by numeric
+    /// comparison, FlowField aggregation, and the assert helpers.
+    pub fn as_decimal(&self) -> Option<Decimal> {
+        match self {
+            Value::Integer(n) | Value::BigInteger(n) => Some(Decimal::from(*n)),
+            Value::Decimal(d) => Some(*d),
+            _ => None,
+        }
+    }
+
+    /// Coerce `incoming` to the declared type of the `slot` it is being assigned
+    /// into. AL variables have a fixed type, so an assignment preserves the
+    /// slot's type rather than adopting the RHS's:
+    ///
+    /// * a `Code` slot uppercases a string RHS and stays `Code` (caseless — C2);
+    /// * an `Integer`/`BigInteger` slot keeps its width so later arithmetic uses
+    ///   the right overflow trap (C28).
+    ///
+    /// Any other combination overwrites as-is. Shared by both assignment paths
+    /// (`eval_assignment` and the expression-form handler in `eval_expr`).
+    pub(crate) fn coerce_into_slot(slot: &Value, incoming: Value) -> Value {
+        match (slot, &incoming) {
+            (Value::Code(_), Value::Text(s) | Value::Code(s)) => Value::Code(s.to_uppercase()),
+            (Value::BigInteger(_), Value::Integer(n) | Value::BigInteger(n)) => {
+                Value::BigInteger(*n)
+            }
+            (Value::Integer(_), Value::Integer(n) | Value::BigInteger(n)) => Value::Integer(*n),
+            _ => incoming,
+        }
+    }
+
     /// Default value for the named AL type. Returns `None` if the type
     /// name is unknown to the interpreter.
     pub fn default_for(type_name: &str) -> Option<Value> {
         match type_name.to_ascii_lowercase().as_str() {
-            "integer" | "biginteger" => Some(Value::Integer(0)),
+            "integer" => Some(Value::Integer(0)),
+            "biginteger" => Some(Value::BigInteger(0)),
             "decimal" => Some(Value::Decimal(Decimal::ZERO)),
             "boolean" => Some(Value::Boolean(false)),
             "text" => Some(Value::Text(String::new())),
@@ -276,6 +330,7 @@ impl Value {
             Value::Null => "Null",
             Value::Empty => "Empty",
             Value::Integer(_) => "Integer",
+            Value::BigInteger(_) => "BigInteger",
             Value::Decimal(_) => "Decimal",
             Value::Boolean(_) => "Boolean",
             Value::Char(_) => "Char",
@@ -385,8 +440,10 @@ mod tests {
     #[test]
     fn default_for_covers_every_supported_type() {
         use std::cmp::Ordering;
-        // biginteger aliases integer.
-        assert_eq!(Value::default_for("biginteger"), Some(Value::Integer(0)));
+        // biginteger has its own zero value, distinct variant from Integer but
+        // numerically equal to it (C28).
+        assert_eq!(Value::default_for("biginteger"), Some(Value::BigInteger(0)));
+        assert_eq!(Value::BigInteger(0), Value::Integer(0));
         // Decimal default is 0.0 (not NaN, not unset).
         assert_eq!(
             Value::default_for("decimal"),

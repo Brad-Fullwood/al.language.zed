@@ -168,11 +168,7 @@ fn render_value(v: &Value) -> String {
 }
 
 fn to_decimal(v: &Value) -> Option<Decimal> {
-    match v {
-        Value::Integer(n) => Some(Decimal::from(*n)),
-        Value::Decimal(n) => Some(*n),
-        _ => None,
-    }
+    v.as_decimal()
 }
 
 pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
