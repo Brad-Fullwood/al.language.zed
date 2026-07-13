@@ -609,27 +609,28 @@ fn apply_keyword_casing(line: &str, casing: &KeywordCasing) -> String {
         // scanner and let a later keyword be mis-cased.
         if b == b'\'' || b == b'"' {
             let quote = b;
-            out.push(b as char);
+            let start = i;
             i += 1;
+            // Advance to the matching close quote, honoring the `''` escape for
+            // single-quoted literals. Quotes and escapes are ASCII, so this
+            // byte scan never mistakes a UTF-8 continuation byte for a quote,
+            // and `i` lands back on a char boundary at the terminator.
             while i < bytes.len() {
                 if bytes[i] == quote {
-                    // AL `''` escape (single quotes only): both bytes are content.
                     if quote == b'\'' && i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                        out.push('\'');
-                        out.push('\'');
-                        i += 2;
+                        i += 2; // escaped quote — content, not a terminator
                     } else {
+                        i += 1; // consume the closing quote
                         break;
                     }
                 } else {
-                    out.push(bytes[i] as char);
                     i += 1;
                 }
             }
-            if i < bytes.len() {
-                out.push(bytes[i] as char);
-                i += 1;
-            }
+            // Copy the whole literal as a str slice (both ends are char
+            // boundaries) — never byte-by-byte, which corrupted non-ASCII
+            // content (e.g. `'Grüße'`, `"Preis in €"`) into mojibake.
+            out.push_str(&line[start..i]);
             continue;
         }
         if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
@@ -659,8 +660,12 @@ fn apply_keyword_casing(line: &str, casing: &KeywordCasing) -> String {
             }
             continue;
         }
-        out.push(b as char);
-        i += 1;
+        // Any other char: copy it whole. `i` is on a char boundary here (the
+        // string/comment/identifier branches all leave it aligned), so a stray
+        // multi-byte char is preserved rather than truncated to one byte.
+        let ch = line[i..].chars().next().unwrap_or(b as char);
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
@@ -1790,6 +1795,28 @@ codeunit 50100 Test
             ..Default::default()
         };
         assert_eq!(apply_keyword_casing(input, &opts.keyword_casing), input);
+    }
+
+    #[test]
+    fn keyword_casing_preserves_non_ascii_content() {
+        // Regression: keyword casing copied string/identifier content byte by
+        // byte via `as char`, mangling multi-byte UTF-8 into mojibake. The
+        // non-ASCII content must survive verbatim while keywords are cased.
+        let out = apply_keyword_casing("if X then Message('Grüße: €');", &KeywordCasing::Upper);
+        assert!(
+            out.contains("'Grüße: €'"),
+            "non-ASCII string content corrupted: {out}"
+        );
+        assert!(
+            out.starts_with("IF ") && out.contains(" THEN "),
+            "keywords were not upper-cased: {out}"
+        );
+        // A quoted identifier containing non-ASCII is likewise preserved.
+        let id = apply_keyword_casing("field(1; \"Preis in €\"; Decimal)", &KeywordCasing::Lower);
+        assert!(
+            id.contains("\"Preis in €\""),
+            "quoted identifier corrupted: {id}"
+        );
     }
 
     #[test]

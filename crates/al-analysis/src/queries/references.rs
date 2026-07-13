@@ -23,25 +23,42 @@ pub fn references(
         return Vec::new();
     };
 
+    // The canonical declaration the cursor binds to. Every *identifier*
+    // reference we keep must bind to this same declaration — otherwise "find
+    // references" on `A::Post` would also list the unrelated `B::Post` and its
+    // callers (the same binding-awareness rename got in C18, applied here).
+    // Event-subscriber string-literal references are already specific to the
+    // named event, so they are kept without the binding filter.
+    let cursor_decl = super::binding::decl_loc(workspace, uri, position);
+
     let mut locations = Vec::new();
 
-    let source_bytes = text.as_bytes();
-    // Identifier references plus event-subscriber string-literal references: an
-    // event's subscribers name it via a string literal inside
-    // `[EventSubscriber(...)]`, which the identifier walk cannot see (audit
-    // 2026-06-20). Both are collected so `references` on an event surfaces its
-    // subscribers, not just its declaration and raise sites.
-    let mut refs = al_syntax::find_variable_references(&tree, &text, clean_name);
-    refs.extend(al_syntax::find_event_subscriber_references(
-        &tree, &text, clean_name,
-    ));
-    for r in &refs {
-        let range: Range = al_syntax::ts_range_to_syntax(r, source_bytes).into();
-        locations.push(Location {
-            uri: uri.clone(),
-            range,
-        });
-    }
+    // Collect binding-filtered identifier refs + unfiltered event-subscriber
+    // refs from one parsed file into `locations`.
+    let mut collect_from = |file_uri: &Url, ftext: &str, ftree: &tree_sitter::Tree| {
+        let bytes = ftext.as_bytes();
+        for r in al_syntax::find_variable_references(ftree, ftext, clean_name) {
+            let range: Range = al_syntax::ts_range_to_syntax(&r, bytes).into();
+            if super::binding::decl_loc(workspace, file_uri, range.start) == cursor_decl {
+                locations.push(Location {
+                    uri: file_uri.clone(),
+                    range,
+                });
+            }
+        }
+        // Event subscribers name the event via a string literal inside
+        // `[EventSubscriber(...)]`, which the identifier walk cannot see (audit
+        // 2026-06-20); surface them so `references` on an event lists its
+        // subscribers, not just its declaration and raise sites.
+        for r in al_syntax::find_event_subscriber_references(ftree, ftext, clean_name) {
+            locations.push(Location {
+                uri: file_uri.clone(),
+                range: al_syntax::ts_range_to_syntax(&r, bytes).into(),
+            });
+        }
+    };
+
+    collect_from(uri, &text, &tree);
 
     let current_path = uri.to_file_path().ok();
     // Snapshot file paths to avoid holding the DashMap shard lock across
@@ -57,22 +74,13 @@ pub fn references(
         if current_path.as_ref() == Some(&file_path) {
             continue;
         }
+        let Ok(file_uri) = Url::from_file_path(&file_path) else {
+            continue;
+        };
         let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(&file_path) else {
             continue;
         };
-        let mut refs = al_syntax::find_variable_references(&file_tree, &file_text, clean_name);
-        refs.extend(al_syntax::find_event_subscriber_references(
-            &file_tree, &file_text, clean_name,
-        ));
-        let file_source_bytes = file_text.as_bytes();
-        for r in &refs {
-            if let Ok(file_uri) = Url::from_file_path(&file_path) {
-                locations.push(Location {
-                    uri: file_uri,
-                    range: al_syntax::ts_range_to_syntax(r, file_source_bytes).into(),
-                });
-            }
-        }
+        collect_from(&file_uri, &file_text, &file_tree);
     }
 
     // `includeDeclaration: false` means exclude the symbol's *declaration*, not
@@ -84,11 +92,11 @@ pub fn references(
     // declaration-name cursor as its own site, so the exclusion is correct
     // whether the cursor sits on the declaration or on a usage.
     if !include_declaration {
-        let (decl_uri, decl_line, decl_char) = super::binding::decl_loc(workspace, uri, position);
+        let (decl_uri, decl_line, decl_char) = &cursor_decl;
         locations.retain(|loc| {
-            loc.uri.to_string() != decl_uri
-                || loc.range.start.line != decl_line
-                || loc.range.start.character != decl_char
+            &loc.uri.to_string() != decl_uri
+                || loc.range.start.line != *decl_line
+                || loc.range.start.character != *decl_char
         });
     }
 
@@ -240,6 +248,42 @@ mod tests {
         assert!(
             lines.contains(&6) && lines.contains(&7),
             "both usages (lines 6, 7) must be present; got {lines:?}"
+        );
+    }
+
+    #[test]
+    fn references_are_binding_aware_across_objects() {
+        // Two objects each declare and call `procedure Post()`. "Find all
+        // references" on A::Post must stay within A — it must not list B's
+        // same-named (but distinct) declaration or its call site.
+        let ws = Workspace::new();
+        let uri_a = Url::parse("file:///test/refbind/A.al").unwrap();
+        let uri_b = Url::parse("file:///test/refbind/B.al").unwrap();
+        let src_a = "codeunit 50100 \"A\"\n{\n    procedure Post()\n    begin\n    end;\n\n    procedure Run()\n    begin\n        Post();\n    end;\n}";
+        let src_b = "codeunit 50101 \"B\"\n{\n    procedure Post()\n    begin\n    end;\n\n    procedure Run()\n    begin\n        Post();\n    end;\n}";
+        ws.documents.open(uri_a.clone(), src_a.to_string());
+        ws.documents.open(uri_b.clone(), src_b.to_string());
+        ws.file_index
+            .add_file(uri_a.to_file_path().unwrap(), src_a.to_string());
+        ws.file_index
+            .add_file(uri_b.to_file_path().unwrap(), src_b.to_string());
+
+        // Cursor on A's `Post` declaration (line 2, the `Post` token at col 14).
+        let pos = Position {
+            line: 2,
+            character: 14,
+        };
+        let locs = references(&ws, &uri_a, pos, true);
+        assert!(
+            locs.iter().all(|l| l.uri == uri_a),
+            "references on A::Post leaked into another object: {:?}",
+            locs.iter().map(|l| l.uri.as_str()).collect::<Vec<_>>()
+        );
+        // A's declaration and its own call site should both be present.
+        assert!(
+            locs.len() >= 2,
+            "expected A's declaration and call, got {}",
+            locs.len()
         );
     }
 
