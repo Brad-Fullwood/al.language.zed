@@ -66,6 +66,22 @@ pub fn inlay_hints(workspace: &Workspace, uri: &Url, range: Range) -> Option<Vec
     }
 }
 
+/// The inclusive last source row a node occupies. tree-sitter's
+/// `end_position()` points one byte past the node, so its `row` lands on the
+/// *next* line (at column 0) only when the node ends exactly at a line break;
+/// for a node ending mid-line (e.g. an `argument_list` at its `)`), the row is
+/// already the node's own last line. Normalizing to the inclusive last row lets
+/// a range filter keep a call whose arguments end on `range.start.line` instead
+/// of dropping its parameter hints.
+fn inclusive_last_row(node: tree_sitter::Node<'_>) -> u32 {
+    let end = node.end_position();
+    if end.column == 0 {
+        (end.row as u32).saturating_sub(1)
+    } else {
+        end.row as u32
+    }
+}
+
 // Eight arguments is past the clippy threshold but each one is genuinely
 // independent — tree-sitter root / raw source bytes / rope text / tree
 // handle / workspace / pre-computed doc symbols / requested range /
@@ -89,10 +105,8 @@ fn collect_inlay_hints(
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         let node_start = node.start_position().row as u32;
-        // tree-sitter end_position().row is exclusive; use `<=` not `<` or a
-        // node ending exactly one row before the range is wrongly visited.
-        let node_end = node.end_position().row as u32;
-        if node_end <= range.start.line || node_start > range.end.line {
+        let node_end = inclusive_last_row(node);
+        if node_end < range.start.line || node_start > range.end.line {
             continue;
         }
 
@@ -534,11 +548,8 @@ fn collect_return_type_hints(
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         let node_start = node.start_position().row as u32;
-        // end_position().row is exclusive (see note in the argument-hints
-        // walker above): use `<=` so a node ending exactly on the row before
-        // the range is correctly skipped.
-        let node_end = node.end_position().row as u32;
-        if node_end <= range.start.line || node_start > range.end.line {
+        let node_end = inclusive_last_row(node);
+        if node_end < range.start.line || node_start > range.end.line {
             continue;
         }
 

@@ -24,9 +24,12 @@ fn external_caller_exists(workspace: &Workspace, current_uri: &Url, proc_name: &
         if !text_lower.contains(&needle_lower) {
             continue;
         }
-        // Refine: require the match to be followed by `(` or whitespace
-        // followed by `(` to avoid hitting substrings inside other
-        // identifiers (e.g. `Foo` matching `FooBar`).
+        // Require the match to be a whole identifier (not a substring of a
+        // longer one like `Foo` in `FooBar`). We deliberately do NOT also
+        // require a following `(`: AL lets a parameterless procedure be called
+        // bare (`Helper;`), so demanding parens missed those callers and let
+        // "make local" silently break them. Over-detecting here only withholds
+        // the refactor conservatively, which is the safe direction for a guard.
         let mut start = 0;
         while let Some(off) = text_lower[start..].find(&needle_lower) {
             let pos = start + off;
@@ -37,15 +40,11 @@ fn external_caller_exists(workspace: &Workspace, current_uri: &Url, proc_name: &
                     .as_bytes()
                     .get(pos - 1)
                     .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
-            let after = text_lower[end..]
-                .chars()
-                .find(|c| !c.is_whitespace())
-                .unwrap_or(' ');
             let identifier_continues = text_lower
                 .as_bytes()
                 .get(end)
                 .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
-            if !prev_is_ident && !identifier_continues && after == '(' {
+            if !prev_is_ident && !identifier_continues {
                 return true;
             }
             start = end;

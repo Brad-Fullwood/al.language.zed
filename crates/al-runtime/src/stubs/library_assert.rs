@@ -59,7 +59,7 @@ pub fn are_equal(args: &[Value]) -> Eval {
         [e, a, Value::Text(m)] | [e, a, Value::Code(m)] => (e, a, m.clone()),
         _ => return err("Assert.AreEqual expects (Variant, Variant[, Text])"),
     };
-    if values_equal(expected, actual) {
+    if crate::interpreter::eval_expr::values_equal(expected, actual) {
         ok()
     } else {
         let suffix = if msg.is_empty() {
@@ -82,7 +82,7 @@ pub fn are_not_equal(args: &[Value]) -> Eval {
         [e, a, Value::Text(m)] | [e, a, Value::Code(m)] => (e, a, m.clone()),
         _ => return err("Assert.AreNotEqual expects (Variant, Variant[, Text])"),
     };
-    if !values_equal(expected, actual) {
+    if !crate::interpreter::eval_expr::values_equal(expected, actual) {
         ok()
     } else {
         let suffix = if msg.is_empty() {
@@ -134,23 +134,6 @@ pub fn fail(args: &[Value]) -> Eval {
         _ => "Assert.Fail expects (Text)".to_string(),
     };
     err(msg)
-}
-
-fn values_equal(a: &Value, b: &Value) -> bool {
-    use Value::*;
-    match (a, b) {
-        (Integer(x), Integer(y)) => x == y,
-        (Decimal(x), Decimal(y)) => x == y,
-        (Integer(x), Decimal(y)) | (Decimal(y), Integer(x)) => {
-            rust_decimal::Decimal::from(*x) == *y
-        }
-        (Boolean(x), Boolean(y)) => x == y,
-        (Text(x), Text(y)) | (Code(x), Code(y)) => x == y,
-        (Text(x), Code(y)) | (Code(y), Text(x)) => x == y,
-        (Date(x), Date(y)) | (Time(x), Time(y)) | (DateTime(x), DateTime(y)) => x == y,
-        (Null, Null) | (Empty, Empty) => true,
-        _ => false,
-    }
 }
 
 fn render_value(v: &Value) -> String {

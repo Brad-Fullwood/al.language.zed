@@ -113,7 +113,7 @@ pub fn method_id(
 /// handful of characters (`'ß'` → `"SS"`, ligatures, etc.) that ToUpperInvariant
 /// leaves unchanged. Take the full mapping only when it is 1:1; otherwise keep
 /// the original char, matching ToUpperInvariant for those code points.
-fn to_upper_invariant(s: &str) -> String {
+pub(crate) fn to_upper_invariant(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         let mut it = c.to_uppercase();

@@ -333,7 +333,7 @@ pub fn peek_decimal(args: &[Value]) -> Eval {
     };
     QUEUE.with(|q| match q.borrow().peek(index) {
         Ok(Value::Decimal(d)) => ok(Value::Decimal(*d)),
-        Ok(Value::Integer(i)) => ok(Value::Decimal(Decimal::from(*i))),
+        Ok(Value::Integer(i) | Value::BigInteger(i)) => ok(Value::Decimal(Decimal::from(*i))),
         Ok(v) => err(format!(
             "Library Variable Storage: PeekDecimal type mismatch — got {}",
             v.type_name()

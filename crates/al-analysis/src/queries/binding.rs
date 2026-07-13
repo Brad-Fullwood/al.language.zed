@@ -67,13 +67,22 @@ pub(crate) fn enclosing_declaration_name(
             | "regular_variable_declaration"
             | "label_declaration"
             | "parameter" => {
-                let name = n.child_by_field_name("name")?;
-                // Only treat this as the declaration site when the cursor node
-                // sits within the name token; otherwise it is a body usage.
-                if node.start_byte() >= name.start_byte() && node.end_byte() <= name.end_byte() {
-                    let range: Range =
-                        al_syntax::ts_range_to_syntax(&name.range(), text.as_bytes()).into();
-                    return Some((uri.to_string(), range.start.line, range.start.character));
+                // A `regular_variable_declaration` can declare several names on
+                // one line (`Total, Status: Integer` — the `name` field is
+                // `multiple`), each a distinct variable. Return whichever name
+                // token the cursor sits within, so the 2nd+ name is still
+                // recognized as its own canonical declaration site. Only treat
+                // this as a declaration site when the cursor is on a name;
+                // otherwise it is a body usage.
+                let mut names = n.walk();
+                for name in n.children_by_field_name("name", &mut names) {
+                    if node.start_byte() >= name.start_byte()
+                        && node.end_byte() <= name.end_byte()
+                    {
+                        let range: Range =
+                            al_syntax::ts_range_to_syntax(&name.range(), text.as_bytes()).into();
+                        return Some((uri.to_string(), range.start.line, range.start.character));
+                    }
                 }
                 return None;
             }

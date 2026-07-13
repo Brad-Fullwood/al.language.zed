@@ -258,7 +258,12 @@ impl MockRecord {
     pub fn delete(&mut self, _run_trigger: bool) -> Result<(), RecordError> {
         let key = self.current_primary_key()?;
         self.rows.remove(&key).ok_or(RecordError::NotFound)?;
-        self.iter_pos = None;
+        // Keep `iter_pos` intact: BC's canonical delete loop
+        // `if FindSet then repeat Delete until Next() = 0` relies on `Next`
+        // advancing from the current position to the next surviving key. The
+        // deleted key stays in `iter_set` (a snapshot) and is simply stepped
+        // over; clearing `iter_pos` here made the next `Next()` error with
+        // "no current row" and abort the loop after a single delete.
         Ok(())
     }
 
@@ -702,6 +707,27 @@ mod tests {
             rec.delete(false).unwrap();
         }
         assert_eq!(rec.count(), 0);
+        assert!(rec.is_empty());
+    }
+
+    #[test]
+    fn delete_during_findset_iteration_drains_the_set() {
+        // BC's canonical `if FindSet then repeat Delete until Next() = 0`
+        // deletes every row. Regression: delete() used to clear iter_pos, so
+        // the first Next() after a Delete errored and the loop aborted after a
+        // single row.
+        let mut rec = make_table();
+        for i in 1..=5i64 {
+            insert_row(&mut rec, i, "item");
+        }
+        assert!(rec.find_set().unwrap());
+        loop {
+            rec.delete(false).expect("delete current row");
+            if rec.next(1).expect("next after delete must not error") == 0 {
+                break;
+            }
+        }
+        assert_eq!(rec.count(), 0, "delete loop must drain every row");
         assert!(rec.is_empty());
     }
 

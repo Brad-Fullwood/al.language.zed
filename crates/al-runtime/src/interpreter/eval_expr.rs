@@ -734,17 +734,17 @@ pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         // Integer and BigInteger are one numeric class; compared by value.
         (Integer(x) | BigInteger(x), Integer(y) | BigInteger(y)) => x == y,
-        (Decimal(x), Decimal(y)) => x == y,
         (Integer(x) | BigInteger(x), Decimal(y)) | (Decimal(y), Integer(x) | BigInteger(x)) => {
             rust_decimal::Decimal::from(*x) == *y
         }
-        (Boolean(x), Boolean(y)) => x == y,
-        (Text(x), Text(y)) => x == y,
         // Code is caseless in BC; a Text compared to a Code is coerced to Code.
         (Code(x), Code(y)) | (Text(x), Code(y)) | (Code(y), Text(x)) => x.eq_ignore_ascii_case(y),
-        (Date(x), Date(y)) | (Time(x), Time(y)) | (DateTime(x), DateTime(y)) => x == y,
-        (Null, Null) | (Empty, Empty) => true,
-        _ => false,
+        // Everything else uses structural equality (`Value`'s Eq): Text,
+        // Boolean, Decimal, Date/Time/DateTime, Duration, Guid, Char, Option,
+        // Null, Empty, … A cross-type non-numeric pair is unequal by variant.
+        // (This is what lets `Assert.AreEqual` work on Duration/Guid/Char/Option,
+        // which the previous explicit arm list silently treated as never-equal.)
+        _ => a == b,
     }
 }
 
@@ -755,7 +755,13 @@ fn values_cmp(a: &Value, b: &Value, predicate: impl Fn(std::cmp::Ordering) -> bo
         (Integer(x) | BigInteger(x), Decimal(y)) => rust_decimal::Decimal::from(*x).cmp(y),
         (Decimal(x), Integer(y) | BigInteger(y)) => x.cmp(&rust_decimal::Decimal::from(*y)),
         (Decimal(x), Decimal(y)) => x.cmp(y),
-        (Text(x), Text(y)) | (Code(x), Code(y)) => x.cmp(y),
+        (Text(x), Text(y)) => x.cmp(y),
+        // `Code` is caseless in BC, so relational operators must compare it
+        // case-insensitively too — matching `values_equal` and the record
+        // filter (C2/C20). A Text/Code mix coerces to caseless Code.
+        (Code(x), Code(y)) | (Text(x), Code(y)) | (Code(x), Text(y)) => {
+            x.to_ascii_uppercase().cmp(&y.to_ascii_uppercase())
+        }
         (Date(x), Date(y)) | (Time(x), Time(y)) | (DateTime(x), DateTime(y)) => x.cmp(y),
         (l, r) => {
             return Eval::Error(simple_error(&format!(
@@ -1057,6 +1063,58 @@ mod tests {
             )),
             Value::Decimal(dec!(2500000000))
         );
+    }
+
+    #[test]
+    fn code_relational_comparison_is_caseless() {
+        // Review fix: `<=`/`<` on Code must be case-insensitive like `=`
+        // (C2/C20). Previously `<=` was case-sensitive, so `=` and `<=`
+        // disagreed for the same pair.
+        assert_eq!(
+            ok(apply_binary(
+                "<=",
+                Value::Code("abc".into()),
+                Value::Code("ABC".into())
+            )),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            ok(apply_binary(
+                "<",
+                Value::Code("abc".into()),
+                Value::Code("ABD".into())
+            )),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            ok(apply_binary(
+                "=",
+                Value::Code("abc".into()),
+                Value::Code("ABC".into())
+            )),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn values_equal_covers_non_numeric_variants() {
+        // Review fix: `Assert.AreEqual` on Duration/Guid/Char/Option used to
+        // always fail because both `values_equal` copies only listed a subset
+        // of variants; the structural fallback now covers them.
+        assert!(values_equal(&Value::Duration(1000), &Value::Duration(1000)));
+        assert!(!values_equal(
+            &Value::Duration(1000),
+            &Value::Duration(2000)
+        ));
+        assert!(values_equal(
+            &Value::Guid("abc".into()),
+            &Value::Guid("abc".into())
+        ));
+        assert!(values_equal(&Value::Char('x'), &Value::Char('x')));
+        assert!(!values_equal(&Value::Char('x'), &Value::Char('y')));
+        // BigInteger still unifies with Integer, and cross-type stays unequal.
+        assert!(values_equal(&Value::BigInteger(5), &Value::Integer(5)));
+        assert!(!values_equal(&Value::Integer(5), &Value::Text("5".into())));
     }
 
     #[test]
