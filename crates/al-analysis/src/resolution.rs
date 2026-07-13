@@ -1529,7 +1529,21 @@ fn workspace_field_items(content: &str, tree: &tree_sitter::Tree) -> Vec<Complet
 }
 
 fn split_last<'a>(value: &'a str, needle: &str) -> Option<(&'a str, &'a str)> {
-    let idx = value.rfind(needle)?;
+    // Split on the last occurrence of `needle` that is NOT inside a quoted
+    // identifier, so a `.`/`::` within `"a.b"` is not mistaken for a member
+    // separator (which would leave `"a` / `b"` and fail to resolve the
+    // receiver). Scanning by char index keeps every slice on a char boundary,
+    // so multi-byte content inside quotes can't panic.
+    let mut in_quotes = false;
+    let mut last: Option<usize> = None;
+    for (i, c) in value.char_indices() {
+        if c == '"' {
+            in_quotes = !in_quotes;
+        } else if !in_quotes && value[i..].starts_with(needle) {
+            last = Some(i);
+        }
+    }
+    let idx = last?;
     Some((&value[..idx], &value[idx + needle.len()..]))
 }
 
@@ -2199,6 +2213,24 @@ mod tests {
     #[test]
     fn split_last_none_when_missing() {
         assert_eq!(split_last("abc", "::"), None);
+    }
+
+    #[test]
+    fn split_last_ignores_separators_inside_quotes() {
+        // A `.` inside a quoted identifier is not a member separator.
+        assert_eq!(split_last("\"a.b\"", "."), None);
+        // Member access on a quoted receiver splits at the outer dot only.
+        assert_eq!(
+            split_last("\"a.b\".DoWork", "."),
+            Some(("\"a.b\"", "DoWork"))
+        );
+        // A quoted member with dots keeps the receiver intact.
+        assert_eq!(
+            split_last("Rec.\"Field.Name\"", "."),
+            Some(("Rec", "\"Field.Name\""))
+        );
+        // `::` inside quotes is likewise ignored.
+        assert_eq!(split_last("\"a::b\"", "::"), None);
     }
 
     #[test]
