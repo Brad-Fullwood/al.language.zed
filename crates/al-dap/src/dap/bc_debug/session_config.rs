@@ -74,7 +74,9 @@ impl BcDebugConfig {
             cfg.server_instance = Some(s.to_string());
         }
         if let Some(n) = args.get("port").and_then(|v| v.as_u64()) {
-            cfg.port = n as u16;
+            if let Ok(port) = u16::try_from(n) {
+                cfg.port = port;
+            }
         }
         if let Some(s) = args.get("tenant").and_then(|v| v.as_str()) {
             cfg.tenant = s.to_string();
@@ -243,6 +245,16 @@ mod tests {
         assert!(
             url.contains(":7049"),
             "default port should be in URL: {url}"
+        );
+    }
+
+    #[test]
+    fn from_dap_args_rejects_out_of_range_port() {
+        let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({ "port": 65536 }));
+        assert_eq!(
+            cfg.port,
+            BcDebugConfig::default().port,
+            "out-of-range port must not truncate into a valid-looking port"
         );
     }
 

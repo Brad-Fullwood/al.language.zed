@@ -16,11 +16,13 @@ pub(in crate::server::daemon) fn dispatch_metrics(
     let threshold_cyclomatic = params
         .get("thresholdCyclomatic")
         .and_then(|v| v.as_u64())
-        .unwrap_or(10) as u32;
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(10);
     let threshold_cognitive = params
         .get("thresholdCognitive")
         .and_then(|v| v.as_u64())
-        .unwrap_or(15) as u32;
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(15);
 
     if all {
         let mut all_results: Vec<serde_json::Value> = Vec::new();
@@ -153,6 +155,29 @@ mod tests {
         assert_eq!(r["thresholdCyclomatic"], serde_json::json!(10));
         assert_eq!(r["thresholdCognitive"], serde_json::json!(15));
         assert!(r.get("procedures").and_then(|v| v.as_array()).is_some());
+    }
+
+    #[test]
+    fn metrics_out_of_range_threshold_falls_back_to_default() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = write_al(
+            &tmp,
+            "M.al",
+            "codeunit 50100 \"M\"\n{\n  procedure Do()\n  begin\n  end;\n}\n",
+        );
+        let resp = dispatch_metrics(
+            &ws,
+            2,
+            &serde_json::json!({ "file": file, "thresholdCyclomatic": u64::MAX }),
+        );
+        assert!(resp.error.is_none(), "{:?}", resp.error);
+        let r = resp.result.expect("result");
+        assert_eq!(
+            r["thresholdCyclomatic"],
+            serde_json::json!(10),
+            "an out-of-range threshold must not wrap into a tiny value via `as u32`"
+        );
     }
 
     #[test]

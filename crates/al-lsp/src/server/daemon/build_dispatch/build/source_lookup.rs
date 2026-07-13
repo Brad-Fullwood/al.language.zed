@@ -49,7 +49,14 @@ pub(in crate::server::daemon) fn dispatch_location(
         // (interfaces & co.) carry sentinel/hash values that callers may
         // forward verbatim.
         if obj_id > 0 {
-            candidates.retain(|e| i64::from(e.id) == obj_id || e.id <= 0);
+            let has_exact = candidates.iter().any(|e| i64::from(e.id) == obj_id);
+            candidates.retain(|e| {
+                if has_exact {
+                    i64::from(e.id) == obj_id
+                } else {
+                    e.id <= 0
+                }
+            });
         }
     }
 

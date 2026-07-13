@@ -200,11 +200,20 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
         },
 
         "stop" => {
-            let session_id = params
-                .get("sessionId")
-                .and_then(|v| v.as_str())
-                .unwrap_or("profiling-session")
-                .to_string();
+            let session_id = match params.get("sessionId").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => {
+                    return Response {
+                        id,
+                        result: None,
+                        error: Some(RpcError {
+                            code: error_codes::INVALID_PARAMS,
+                            message: "Missing 'sessionId' parameter for stop command".to_string(),
+                        }),
+                        ..Default::default()
+                    };
+                }
+            };
 
             match al_bc::profiling::stop_profiling(&config, &session_id).await {
                 Ok(path) => Response {

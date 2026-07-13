@@ -16,11 +16,19 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let content = if let Some(text) = params.get("content").and_then(|v| v.as_str()) {
+    let raw_content = params.get("content").and_then(|v| v.as_str());
+    let file_uri = file_uri_from_params(params);
+    if raw_content.is_some() && file_uri.is_some() {
+        // Mutually exclusive: sorting would run on `content` but write the
+        // result back to `file`, silently replacing unrelated source if the
+        // two don't actually correspond to the same text.
+        return invalid_params(id);
+    }
+    let content = if let Some(text) = raw_content {
         text.to_string()
-    } else if let Some(uri) = file_uri_from_params(params) {
-        ensure_document(workspace, &uri);
-        match workspace.documents.get_text(&uri) {
+    } else if let Some(uri) = &file_uri {
+        ensure_document(workspace, uri);
+        match workspace.documents.get_text(uri) {
             Some(t) => t,
             None => return invalid_params(id),
         }
@@ -39,7 +47,7 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     if changed && !dry_run {
-        if let Some(uri) = file_uri_from_params(params) {
+        if let Some(uri) = &file_uri {
             if let Ok(path) = uri.to_file_path() {
                 // F-011: refresh document store + file index + insight graph
                 // so subsequent daemon queries observe the sorted content.
@@ -93,6 +101,7 @@ pub(in crate::server::daemon) fn dispatch_organize_files(
         .file_index
         .files
         .iter()
+        .filter(|e| e.key().starts_with(&root))
         .map(|e| (e.key().clone(), e.value().clone()))
         .collect();
 
@@ -217,6 +226,19 @@ mod tests {
             r.get("changed").and_then(|v| v.as_bool()).is_some(),
             "must return a changed flag"
         );
+    }
+
+    #[test]
+    fn sort_members_both_content_and_file_is_invalid_params() {
+        // Both set: sorting would run on `content` but write the result to
+        // `file`, silently replacing unrelated source. Must be rejected.
+        let ws = empty_ws();
+        let resp = dispatch_sort_members(
+            &ws,
+            3,
+            &serde_json::json!({ "content": "codeunit 1 \"X\" {}", "file": "file:///tmp/x.al" }),
+        );
+        assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
     }
 
     #[test]

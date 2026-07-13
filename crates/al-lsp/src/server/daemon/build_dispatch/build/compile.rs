@@ -10,20 +10,6 @@ pub(in crate::server::daemon) async fn dispatch_compile(
     workspace: &Workspace,
     id: u64,
 ) -> Response {
-    let tc = match workspace.toolchain.try_read() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: ERR_INITIALIZING.to_string(),
-                }),
-                ..Default::default()
-            };
-        }
-    };
     let project = match workspace.project.try_read() {
         Ok(guard) => guard,
         Err(_) => {
@@ -53,17 +39,8 @@ pub(in crate::server::daemon) async fn dispatch_compile(
             };
         }
     };
-    // The toolchain is only required for the opt-in Microsoft `dotnet alc`
-    // path; the default native `.app` emitter needs none. Defer the
-    // "no toolchain" check to the official-compiler branch below so a native
-    // compile — the documented default — succeeds without any Microsoft
-    // toolchain installed (audit 2026-06-20). Previously this early guard
-    // failed `compile` with "No toolchain loaded" even though the native
-    // emitter it was about to run never touches the toolchain.
-    let toolchain = tc.clone();
     let package_cache = project.as_ref().map(|p| p.packages_dir.clone());
-    // Drop the read guards before acquiring async locks
-    drop(tc);
+    // Drop the read guard before acquiring async locks
     drop(project);
 
     // Native-first compile policy. Default keeps compilation on the pure-Rust
@@ -71,7 +48,7 @@ pub(in crate::server::daemon) async fn dispatch_compile(
     // Microsoft's `dotnet alc` subprocess. There is no silent fallback.
     let use_official_compiler = workspace.config.read().await.use_official_compiler;
 
-    let result: Result<serde_json::Value, String> = async {
+    let result: Result<serde_json::Value, (i32, String)> = async {
         // Native-first: the pure-Rust native `.app` emitter is the default — no
         // `alc`, no C# bridge. `al.useOfficialCompiler: true` opts into the
         // Microsoft `dotnet alc` subprocess. The native emitter does no semantic
@@ -87,7 +64,7 @@ pub(in crate::server::daemon) async fn dispatch_compile(
                 config: al_compile::CompilationConfigOptions::default(),
             })
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| (error_codes::CODE_ANALYSIS_ERROR, e.to_string()))?;
             return Ok(serde_json::json!({
                 "success": compile_result.success,
                 "diagnostics": [],
@@ -109,29 +86,35 @@ pub(in crate::server::daemon) async fn dispatch_compile(
             "al.useOfficialCompiler=true - compiling via the NON-NATIVE Microsoft \
              `dotnet alc` subprocess instead of the native `.app` emitter"
         );
-        let Some(toolchain) = toolchain.as_ref() else {
-            return Err(
+        // The toolchain is only required for this opt-in Microsoft `dotnet alc`
+        // path; acquire it lazily here so a native compile (the default,
+        // handled above) never contends with it (audit 2026-06-20).
+        let tc = match workspace.toolchain.try_read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => return Err((error_codes::INTERNAL_ERROR, ERR_INITIALIZING.to_string())),
+        };
+        let Some(toolchain) = tc.as_ref() else {
+            return Err((
+                error_codes::CODE_ANALYSIS_ERROR,
                 "al.useOfficialCompiler=true but no AL toolchain is installed. Install \
                  ALTool, or unset al.useOfficialCompiler to use the native `.app` emitter."
                     .to_string(),
-            );
+            ));
         };
         // A2–A4: honour the configured compilation options on the official
-        // `al.compile` path too (not just packaging). Falls back to defaults
-        // (no extra flags) if the config lock is momentarily contended.
-        let config_options = workspace
-            .config
-            .try_read()
-            .ok()
-            .map(|cfg| al_compile::CompilationConfigOptions {
-                compilation_options: cfg.compilation_options.clone(),
-                incremental_build: cfg.incremental_build,
-                enable_external_rulesets: cfg.enable_external_rulesets,
-                rule_set_path: cfg.rule_set_path.clone(),
-                assembly_probing_paths: cfg.assembly_probing_paths.clone(),
-                output_analyzer_statistics: cfg.output_analyzer_statistics,
-            })
-            .unwrap_or_default();
+        // `al.compile` path too (not just packaging). Snapshot the config once
+        // so a concurrent update can't cause this to silently fall back to
+        // defaults (dropping configured flags) mid-request.
+        let cfg = workspace.config.read().await;
+        let config_options = al_compile::CompilationConfigOptions {
+            compilation_options: cfg.compilation_options.clone(),
+            incremental_build: cfg.incremental_build,
+            enable_external_rulesets: cfg.enable_external_rulesets,
+            rule_set_path: cfg.rule_set_path.clone(),
+            assembly_probing_paths: cfg.assembly_probing_paths.clone(),
+            output_analyzer_statistics: cfg.output_analyzer_statistics,
+        };
+        drop(cfg);
         // B2: route through the shared build service (alc backend). Infra
         // failures (no toolchain, missing app.json, alc spawn) propagate as Err
         // → INTERNAL/CODE_ANALYSIS error; a compile that ran with error
@@ -145,7 +128,12 @@ pub(in crate::server::daemon) async fn dispatch_compile(
             config: config_options,
         })
         .await
-        .map_err(|e| format!("Compilation failed: {}", e))?;
+        .map_err(|e| {
+            (
+                error_codes::CODE_ANALYSIS_ERROR,
+                format!("Compilation failed: {}", e),
+            )
+        })?;
         let app_path = compile_result
             .app_path
             .as_ref()
@@ -176,13 +164,10 @@ pub(in crate::server::daemon) async fn dispatch_compile(
             error: None,
             ..Default::default()
         },
-        Err(msg) => Response {
+        Err((code, message)) => Response {
             id,
             result: None,
-            error: Some(RpcError {
-                code: error_codes::CODE_ANALYSIS_ERROR,
-                message: msg,
-            }),
+            error: Some(RpcError { code, message }),
             ..Default::default()
         },
     }
@@ -259,6 +244,8 @@ pub(in crate::server::daemon) async fn dispatch_package(
                 "diagnostics": [],
                 "appPath": compile_result.app_path.as_ref().map(|p| p.display().to_string()),
                 "output": compile_result.output,
+                "backend": "native",
+                "validated": false,
             })),
             error: None,
             ..Default::default()
@@ -301,30 +288,28 @@ pub(in crate::server::daemon) async fn dispatch_package(
         }
     };
 
-    // Read code_analyzers + compilation settings from config (non-async
-    // try_read; falls back to empty = all MS analyzers, no extra flags).
+    // Read code_analyzers + compilation settings from a single config
+    // snapshot, so a concurrent config update can't cause this request to
+    // silently fall back to defaults (dropping configured flags or enabling
+    // the full MS analyzer set) mid-request.
     // A2–A4: compilationOptions / incrementalBuild / enableExternalRulesets /
     // ruleSetPath / assemblyProbingPaths / outputAnalyzerStatistics were parsed
     // into AlConfig but never read — extract them here and thread them into the
     // alc invocation via CompilationConfigOptions.
-    let (code_analyzers, config_options) = workspace
-        .config
-        .try_read()
-        .ok()
-        .map(|cfg| {
-            (
-                cfg.code_analyzers.clone(),
-                al_compile::CompilationConfigOptions {
-                    compilation_options: cfg.compilation_options.clone(),
-                    incremental_build: cfg.incremental_build,
-                    enable_external_rulesets: cfg.enable_external_rulesets,
-                    rule_set_path: cfg.rule_set_path.clone(),
-                    assembly_probing_paths: cfg.assembly_probing_paths.clone(),
-                    output_analyzer_statistics: cfg.output_analyzer_statistics,
-                },
-            )
-        })
-        .unwrap_or_default();
+    let (code_analyzers, config_options) = {
+        let cfg = workspace.config.read().await;
+        (
+            cfg.code_analyzers.clone(),
+            al_compile::CompilationConfigOptions {
+                compilation_options: cfg.compilation_options.clone(),
+                incremental_build: cfg.incremental_build,
+                enable_external_rulesets: cfg.enable_external_rulesets,
+                rule_set_path: cfg.rule_set_path.clone(),
+                assembly_probing_paths: cfg.assembly_probing_paths.clone(),
+                output_analyzer_statistics: cfg.output_analyzer_statistics,
+            },
+        )
+    };
     let analyzer_filter: Option<Vec<String>> = if code_analyzers.is_empty() {
         None
     } else {

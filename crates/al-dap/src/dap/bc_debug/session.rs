@@ -621,9 +621,9 @@ impl BcDebugSession {
     /// BC hub method: `SetBreakpointResponse(breakpointResponse)`
     /// Note: BC uses "SetBreakpointResponse" for continue, not a "continue" method.
     pub async fn continue_execution(&self, breakpoint_response: serde_json::Value) -> Result<()> {
-        *self.is_stopped.lock().await = false;
         self.invoke("SetBreakpointResponse", vec![breakpoint_response])
             .await?;
+        *self.is_stopped.lock().await = false;
         Ok(())
     }
 
