@@ -15,6 +15,8 @@
 
 use std::collections::BTreeMap;
 
+pub use rust_decimal::Decimal;
+
 /// AL `Date` carrier: days since 0001-01-01 (CLR `DateTime.Ticks` style is
 /// overkill here — Phase 2 just needs ordering and arithmetic).
 pub type AlDate = i64;
@@ -54,20 +56,24 @@ pub fn al_days_from_ymd(year: i64, month: i64, day: i64) -> i64 {
 /// One AL runtime value.
 ///
 /// `PartialEq` is implemented manually (below) to mirror the `Ord` total
-/// ordering — `Decimal` uses `f64::total_cmp` so NaN equals NaN, satisfying
-/// the `Eq` contract `a == a`. This keeps the three impls (PartialEq / Eq /
-/// Ord) consistent and lets `Value` be a valid `BTreeMap` key.
+/// ordering. `Decimal` is an exact 96-bit decimal (`rust_decimal`) with a
+/// total `Ord` and no NaN, so equality is exact and the three impls
+/// (PartialEq / Eq / Ord) stay consistent, letting `Value` be a valid
+/// `BTreeMap` key.
 #[derive(Debug, Clone)]
 pub enum Value {
     /// Uninitialised slot (before assignment).
     Null,
     /// Cleared / default-initialised value (`Clear(x)` semantics).
     Empty,
-    /// AL `Integer` / `BigInteger` — i64 wide enough for both.
+    /// AL `Integer` — 32-bit signed. Stored in an i64 carrier, but arithmetic
+    /// traps at the i32 range to match BC (see `apply_binary`). Distinct from
+    /// [`Value::BigInteger`] so the interpreter can apply the right overflow
+    /// width; the two compare equal by numeric value (C28).
     Integer(i64),
-    /// AL `Decimal` — fixed-precision via string form for now (Phase 2
-    /// uses f64; Phase 3 may upgrade to a proper decimal type).
-    Decimal(f64),
+    /// AL `Decimal` — exact 96-bit decimal (`rust_decimal::Decimal`), matching
+    /// BC's `System.Decimal`: no binary-float drift, no NaN/infinity (C3).
+    Decimal(Decimal),
     Boolean(bool),
     /// AL `Char` — single Unicode code point.
     Char(char),
@@ -117,6 +123,11 @@ pub enum Value {
         /// The declared subtype object name (e.g. `"Library - Sales"`).
         object_name: String,
     },
+    /// AL `BigInteger` — 64-bit signed. Appended to the enum to preserve the
+    /// variant-ordering stability contract; it is treated as the same numeric
+    /// class as [`Value::Integer`] for comparison (see `variant_index`), and
+    /// arithmetic on it traps only at the i64 range (C28).
+    BigInteger(i64),
 }
 
 /// In-memory record handle. Phase 2 uses an opaque key into a per-thread
@@ -132,15 +143,14 @@ pub struct RecordValue {
 }
 
 // Variants are ordered by their declaration index, then within each variant
-// by an obvious natural order. Decimal uses `f64::total_cmp` so NaN sorts
-// consistently. `Variant`/`Array`/`List`/`Dict`/`Blob`/`ErrorInfo` are
-// never used as primary-key components in BC, so their orderings are
-// implementation-defined (length-then-content) — adequate for BTreeMap
-// stability without committing to an external contract.
+// by an obvious natural order. `Decimal` has an exact total `Ord`.
+// `Variant`/`Array`/`List`/`Dict`/`Blob`/`ErrorInfo` are never used as
+// primary-key components in BC, so their orderings are implementation-defined
+// (length-then-content) — adequate for BTreeMap stability without committing
+// to an external contract.
 
 /// Manual `PartialEq` mirroring the `Ord` impl so the three trait impls
-/// stay consistent. `Decimal(NaN) == Decimal(NaN)` is `true` here (via
-/// `total_cmp`), satisfying the `Eq` contract `a == a`.
+/// stay consistent.
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other).is_eq()
@@ -157,7 +167,9 @@ impl Ord for Value {
             match v {
                 Null => 0,
                 Empty => 1,
-                Integer(_) => 2,
+                // Integer and BigInteger are one numeric class: same index so
+                // they order by value, and `5 = 5L` holds (C28).
+                Integer(_) | BigInteger(_) => 2,
                 Decimal(_) => 3,
                 Boolean(_) => 4,
                 Char(_) => 5,
@@ -187,8 +199,8 @@ impl Ord for Value {
         }
         match (self, other) {
             (Null, Null) | (Empty, Empty) => Ordering::Equal,
-            (Integer(a), Integer(b)) => a.cmp(b),
-            (Decimal(a), Decimal(b)) => a.total_cmp(b),
+            (Integer(a) | BigInteger(a), Integer(b) | BigInteger(b)) => a.cmp(b),
+            (Decimal(a), Decimal(b)) => a.cmp(b),
             (Boolean(a), Boolean(b)) => a.cmp(b),
             (Char(a), Char(b)) => a.cmp(b),
             (Text(a), Text(b)) | (Code(a), Code(b)) => a.cmp(b),
@@ -248,12 +260,56 @@ impl Value {
         matches!(self, Value::Boolean(true))
     }
 
+    /// The i64 payload of an `Integer` or `BigInteger`, else `None`. Use this
+    /// wherever a consumer treats the two integer types interchangeably
+    /// (filters, field compares, coercions) rather than matching each variant.
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            Value::Integer(n) | Value::BigInteger(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Numeric view as an exact `Decimal`: `Integer`/`BigInteger` promote
+    /// losslessly (i64 fits the 96-bit range), `Decimal` passes through, and
+    /// everything else is `None`. The single conversion used by numeric
+    /// comparison, FlowField aggregation, and the assert helpers.
+    pub fn as_decimal(&self) -> Option<Decimal> {
+        match self {
+            Value::Integer(n) | Value::BigInteger(n) => Some(Decimal::from(*n)),
+            Value::Decimal(d) => Some(*d),
+            _ => None,
+        }
+    }
+
+    /// Coerce `incoming` to the declared type of the `slot` it is being assigned
+    /// into. AL variables have a fixed type, so an assignment preserves the
+    /// slot's type rather than adopting the RHS's:
+    ///
+    /// * a `Code` slot uppercases a string RHS and stays `Code` (caseless — C2);
+    /// * an `Integer`/`BigInteger` slot keeps its width so later arithmetic uses
+    ///   the right overflow trap (C28).
+    ///
+    /// Any other combination overwrites as-is. Shared by both assignment paths
+    /// (`eval_assignment` and the expression-form handler in `eval_expr`).
+    pub(crate) fn coerce_into_slot(slot: &Value, incoming: Value) -> Value {
+        match (slot, &incoming) {
+            (Value::Code(_), Value::Text(s) | Value::Code(s)) => Value::Code(s.to_uppercase()),
+            (Value::BigInteger(_), Value::Integer(n) | Value::BigInteger(n)) => {
+                Value::BigInteger(*n)
+            }
+            (Value::Integer(_), Value::Integer(n) | Value::BigInteger(n)) => Value::Integer(*n),
+            _ => incoming,
+        }
+    }
+
     /// Default value for the named AL type. Returns `None` if the type
     /// name is unknown to the interpreter.
     pub fn default_for(type_name: &str) -> Option<Value> {
         match type_name.to_ascii_lowercase().as_str() {
-            "integer" | "biginteger" => Some(Value::Integer(0)),
-            "decimal" => Some(Value::Decimal(0.0)),
+            "integer" => Some(Value::Integer(0)),
+            "biginteger" => Some(Value::BigInteger(0)),
+            "decimal" => Some(Value::Decimal(Decimal::ZERO)),
             "boolean" => Some(Value::Boolean(false)),
             "text" => Some(Value::Text(String::new())),
             "code" => Some(Value::Code(String::new())),
@@ -274,6 +330,7 @@ impl Value {
             Value::Null => "Null",
             Value::Empty => "Empty",
             Value::Integer(_) => "Integer",
+            Value::BigInteger(_) => "BigInteger",
             Value::Decimal(_) => "Decimal",
             Value::Boolean(_) => "Boolean",
             Value::Char(_) => "Char",
@@ -301,6 +358,7 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     #[test]
     fn truthiness_is_strict() {
@@ -361,34 +419,36 @@ mod tests {
     }
 
     #[test]
-    fn decimal_ord_transitivity_total_cmp_no_bug_adversarial_h_2() {
-        // AUDIT (no bug): Decimal Ord uses f64::total_cmp — a TOTAL ORDER.
-        // IEEE 754-2008 totalOrder places positive NaN AFTER all finite values
-        // (NaN > +Inf > ... > +0 > -0 > ... > -Inf > negative NaN).
-        // So Value::Decimal(NaN) > Value::Decimal(1.0). Transitivity holds.
-        // Kill attempt confirmed: no Ord violation exists.
-        let nan = Value::Decimal(f64::NAN);
-        let one = Value::Decimal(1.0);
-        let two = Value::Decimal(2.0);
-        // total_cmp: NaN > all finite values (NaN sorts as maximum)
-        assert!(nan > one, "NaN > 1.0 under total_cmp (NaN is largest)");
-        assert!(one < two);
-        // transitivity: nan > two && two > one => nan > one (already checked)
-        assert!(nan > two, "transitivity: NaN > two && two > one");
+    fn decimal_is_exact_no_binary_float_drift() {
+        // C3: Value::Decimal is rust_decimal — exact base-10, no NaN, no drift.
+        // The canonical f64 footgun (0.1 + 0.2 != 0.3) does NOT happen here.
         assert_eq!(
-            nan.cmp(&Value::Decimal(f64::NAN)),
-            std::cmp::Ordering::Equal,
-            "NaN == NaN under total_cmp (consistent sentinel)"
+            Value::Decimal(dec!(0.1) + dec!(0.2)),
+            Value::Decimal(dec!(0.3)),
+            "0.1 + 0.2 must equal 0.3 exactly"
+        );
+        // Ordering is a genuine total order over finite decimals.
+        let one = Value::Decimal(dec!(1.0));
+        let two = Value::Decimal(dec!(2.0));
+        assert!(one < two);
+        assert_eq!(
+            one.cmp(&Value::Decimal(dec!(1.0))),
+            std::cmp::Ordering::Equal
         );
     }
 
     #[test]
     fn default_for_covers_every_supported_type() {
         use std::cmp::Ordering;
-        // biginteger aliases integer.
-        assert_eq!(Value::default_for("biginteger"), Some(Value::Integer(0)));
+        // biginteger has its own zero value, distinct variant from Integer but
+        // numerically equal to it (C28).
+        assert_eq!(Value::default_for("biginteger"), Some(Value::BigInteger(0)));
+        assert_eq!(Value::BigInteger(0), Value::Integer(0));
         // Decimal default is 0.0 (not NaN, not unset).
-        assert_eq!(Value::default_for("decimal"), Some(Value::Decimal(0.0)));
+        assert_eq!(
+            Value::default_for("decimal"),
+            Some(Value::Decimal(Decimal::ZERO))
+        );
         assert_eq!(Value::default_for("date"), Some(Value::Date(0)));
         assert_eq!(Value::default_for("time"), Some(Value::Time(0)));
         assert_eq!(Value::default_for("datetime"), Some(Value::DateTime(0)));
@@ -416,7 +476,7 @@ mod tests {
         // A huge integer must still sort BELOW a tiny decimal, because the
         // variant index dominates the inner value.
         let huge_int = Value::Integer(i64::MAX);
-        let tiny_dec = Value::Decimal(-1.0e300);
+        let tiny_dec = Value::Decimal(dec!(-1000000));
         assert!(
             huge_int < tiny_dec,
             "Integer variant precedes Decimal variant"
@@ -426,7 +486,7 @@ mod tests {
             Value::Null,
             Value::Empty,
             Value::Integer(0),
-            Value::Decimal(0.0),
+            Value::Decimal(Decimal::ZERO),
             Value::Boolean(false),
             Value::Char('\0'),
             Value::Text(String::new()),
@@ -475,7 +535,7 @@ mod tests {
     #[test]
     fn within_variant_scalar_ordering() {
         assert!(Value::Integer(-5) < Value::Integer(5));
-        assert!(Value::Decimal(1.5) < Value::Decimal(2.5));
+        assert!(Value::Decimal(dec!(1.5)) < Value::Decimal(dec!(2.5)));
         assert!(Value::Boolean(false) < Value::Boolean(true));
         assert!(Value::Char('a') < Value::Char('z'));
         assert!(Value::Text("apple".into()) < Value::Text("banana".into()));
@@ -576,13 +636,14 @@ mod tests {
     }
 
     #[test]
-    fn eq_mirrors_cmp_including_nan_self_equality() {
-        // Eq contract a == a must hold even for NaN decimals (total_cmp).
-        let nan = Value::Decimal(f64::NAN);
+    fn eq_mirrors_cmp_across_variants() {
+        // Eq contract a == a holds; distinct variants never compare equal even
+        // for the same numeric value (Integer(0) is not Decimal(0)).
+        let d = Value::Decimal(dec!(1.25));
         #[allow(clippy::eq_op)]
-        let nan_self_eq = nan == nan;
-        assert!(nan_self_eq, "Decimal(NaN) must equal itself to satisfy Eq");
-        assert_ne!(Value::Integer(0), Value::Decimal(0.0));
+        let self_eq = d == d;
+        assert!(self_eq, "a decimal must equal itself");
+        assert_ne!(Value::Integer(0), Value::Decimal(Decimal::ZERO));
         assert_eq!(
             Value::Integer(1).partial_cmp(&Value::Integer(2)),
             Some(std::cmp::Ordering::Less)
@@ -593,7 +654,7 @@ mod tests {
     fn type_name_covers_structured_variants() {
         assert_eq!(Value::Null.type_name(), "Null");
         assert_eq!(Value::Empty.type_name(), "Empty");
-        assert_eq!(Value::Decimal(0.0).type_name(), "Decimal");
+        assert_eq!(Value::Decimal(Decimal::ZERO).type_name(), "Decimal");
         assert_eq!(Value::Char('x').type_name(), "Char");
         assert_eq!(Value::Text(String::new()).type_name(), "Text");
         assert_eq!(Value::Code(String::new()).type_name(), "Code");
@@ -676,10 +737,10 @@ mod tests {
         let mut map: BTreeMap<Value, &str> = BTreeMap::new();
         map.insert(Value::Integer(2), "two");
         map.insert(Value::Integer(1), "one");
-        map.insert(Value::Decimal(f64::NAN), "nan");
-        // Lookups round-trip, including the NaN key (total_cmp makes it stable).
+        map.insert(Value::Decimal(dec!(3.5)), "dec");
+        // Lookups round-trip; the exact decimal key is stable.
         assert_eq!(map.get(&Value::Integer(1)), Some(&"one"));
-        assert_eq!(map.get(&Value::Decimal(f64::NAN)), Some(&"nan"));
+        assert_eq!(map.get(&Value::Decimal(dec!(3.5))), Some(&"dec"));
         let keys: Vec<_> = map.keys().cloned().collect();
         assert!(keys[0] < keys[1]);
     }

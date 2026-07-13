@@ -37,7 +37,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use crate::interpreter::scope::Eval;
-use crate::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::value::{Decimal, ErrorInfo, Value};
 
 /// Maximum items the queue can hold (mirrors `array[25] of Variant`).
 const MAX_QUEUE_SIZE: usize = 25;
@@ -170,7 +170,7 @@ pub fn assert_not_underflow(_args: &[Value]) -> Eval {
 
 pub fn assert_peek_available(args: &[Value]) -> Eval {
     let index = match args {
-        [Value::Integer(i)] => *i,
+        [Value::Integer(i) | Value::BigInteger(i)] => *i,
         _ => return err("Library Variable Storage: AssertPeekAvailable expects (Integer)"),
     };
     QUEUE.with(|q| {
@@ -220,9 +220,9 @@ pub fn dequeue(_args: &[Value]) -> Eval {
 /// Returns the value at the 1-based `Index` position.
 pub fn peek(args: &[Value]) -> Eval {
     let index = match args {
-        [Value::Integer(i)] => *i as usize,
+        [Value::Integer(i) | Value::BigInteger(i)] => *i as usize,
         // Allow (_, index) for callers that pass a placeholder variant + index.
-        [_, Value::Integer(i)] => *i as usize,
+        [_, Value::Integer(i) | Value::BigInteger(i)] => *i as usize,
         _ => return err("Library Variable Storage: Peek expects (Variant, Integer)"),
     };
     QUEUE.with(|q| match q.borrow().peek(index) {
@@ -250,7 +250,7 @@ pub fn dequeue_text(_args: &[Value]) -> Eval {
 pub fn dequeue_decimal(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
         Ok(Value::Decimal(d)) => ok(Value::Decimal(d)),
-        Ok(Value::Integer(i)) => ok(Value::Decimal(i as f64)),
+        Ok(Value::Integer(i) | Value::BigInteger(i)) => ok(Value::Decimal(Decimal::from(i))),
         Ok(v) => err(format!(
             "Library Variable Storage: DequeueDecimal type mismatch — got {}",
             v.type_name()
@@ -261,7 +261,8 @@ pub fn dequeue_decimal(_args: &[Value]) -> Eval {
 
 pub fn dequeue_integer(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
-        Ok(Value::Integer(i)) => ok(Value::Integer(i)),
+        // Integer and BigInteger are one numeric class; return with type intact.
+        Ok(v @ (Value::Integer(_) | Value::BigInteger(_))) => ok(v),
         Ok(v) => err(format!(
             "Library Variable Storage: DequeueInteger type mismatch — got {}",
             v.type_name()
@@ -332,7 +333,7 @@ pub fn peek_decimal(args: &[Value]) -> Eval {
     };
     QUEUE.with(|q| match q.borrow().peek(index) {
         Ok(Value::Decimal(d)) => ok(Value::Decimal(*d)),
-        Ok(Value::Integer(i)) => ok(Value::Decimal(*i as f64)),
+        Ok(Value::Integer(i)) => ok(Value::Decimal(Decimal::from(*i))),
         Ok(v) => err(format!(
             "Library Variable Storage: PeekDecimal type mismatch — got {}",
             v.type_name()
@@ -403,8 +404,8 @@ pub fn peek_boolean(args: &[Value]) -> Eval {
 
 fn format_value(v: &Value) -> String {
     match v {
-        Value::Integer(n) => n.to_string(),
-        Value::Decimal(n) => n.to_string(),
+        Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
+        Value::Decimal(n) => n.normalize().to_string(),
         Value::Boolean(true) => "Yes".to_string(),
         Value::Boolean(false) => "No".to_string(),
         Value::Text(s) | Value::Code(s) => s.clone(),
@@ -455,6 +456,7 @@ pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     fn setup() {
         reset_queue();
@@ -465,6 +467,7 @@ mod tests {
             Eval::Normal(_) => {}
             Eval::Error(e) => panic!("expected pass, got error: {}", e.message),
             Eval::Exit(v) => panic!("expected pass, got exit({v:?})"),
+            Eval::Break | Eval::Continue => panic!("expected pass, got break/continue"),
         }
     }
 
@@ -484,6 +487,7 @@ mod tests {
             Eval::Normal(v) => v,
             Eval::Error(e) => panic!("expected Normal, got error: {}", e.message),
             Eval::Exit(v) => v,
+            Eval::Break | Eval::Continue => panic!("unexpected break/continue"),
         }
     }
 
@@ -655,9 +659,9 @@ mod tests {
     #[test]
     fn dequeue_decimal_returns_decimal() {
         setup();
-        enqueue(&[Value::Decimal(3.5)]);
+        enqueue(&[Value::Decimal(dec!(3.5))]);
         match assert_value(dequeue_decimal(&[])) {
-            Value::Decimal(d) => assert!((d - 3.5).abs() < 1e-9),
+            Value::Decimal(d) => assert_eq!(d, dec!(3.5)),
             other => panic!("expected Decimal, got {other:?}"),
         }
     }

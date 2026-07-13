@@ -445,6 +445,8 @@ pub(crate) fn dispatch_record_method(
             Eval::Normal(v) => values.push(v),
             Eval::Error(e) => return Eval::Error(e),
             Eval::Exit(v) => return Eval::Exit(v),
+            // Expressions can't legally produce break/continue statements.
+            cf @ (Eval::Break | Eval::Continue) => return cf,
         }
     }
 
@@ -738,7 +740,7 @@ fn parse_scalar(s: &str) -> Value {
     if let Ok(n) = t.parse::<i64>() {
         return Value::Integer(n);
     }
-    if let Ok(d) = t.parse::<f64>() {
+    if let Ok(d) = t.parse::<crate::interpreter::value::Decimal>() {
         return Value::Decimal(d);
     }
     Value::Text(t.to_string())
@@ -961,8 +963,8 @@ fn truthy(v: &Value) -> bool {
 
 fn render_simple(v: &Value) -> String {
     match v {
-        Value::Integer(n) => n.to_string(),
-        Value::Decimal(d) => d.to_string(),
+        Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
+        Value::Decimal(d) => d.normalize().to_string(),
         Value::Text(s) | Value::Code(s) => s.clone(),
         Value::Boolean(b) => b.to_string(),
         _ => String::new(),

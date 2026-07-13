@@ -91,9 +91,13 @@ pub fn method_id(
     disambiguate: bool,
     containing_object_id: i64,
 ) -> i32 {
-    // ToUpperInvariant: AL identifiers are effectively ASCII; uppercase is a
-    // close match. (Quoted Unicode identifiers are a known edge case.)
-    let mut h = fnv1_utf16(&name.to_uppercase());
+    // .NET `ToUpperInvariant` uses *simple* (1:1) Unicode case mapping, whereas
+    // Rust's `to_uppercase()` uses *full* mapping — so `'ß'` becomes `"SS"` and
+    // ligatures expand, producing a different hash than alc for a quoted
+    // Unicode method name (C9). Approximate simple case mapping by keeping any
+    // char whose uppercase expands to more than one char unchanged (which is
+    // exactly what those non-1:1 chars do under ToUpperInvariant).
+    let mut h = fnv1_utf16(&to_upper_invariant(name));
     h = combine(h, return_kind);
     for (i, p) in params.iter().enumerate() {
         h = combine(combine(combine(h, i as i32), bool_hash(p.is_var)), p.kind);
@@ -102,6 +106,25 @@ pub fn method_id(
         }
     }
     adjust_for_system_codeunits(h, containing_object_id)
+}
+
+/// Approximate .NET `String.ToUpperInvariant`, which uses simple (1:1) Unicode
+/// case mapping. Rust's `char::to_uppercase` uses full mapping, which expands a
+/// handful of characters (`'ß'` → `"SS"`, ligatures, etc.) that ToUpperInvariant
+/// leaves unchanged. Take the full mapping only when it is 1:1; otherwise keep
+/// the original char, matching ToUpperInvariant for those code points.
+fn to_upper_invariant(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let mut it = c.to_uppercase();
+        match (it.next(), it.next()) {
+            (Some(u), None) => out.push(u),
+            // Expanded to multiple chars (or none) — ToUpperInvariant keeps the
+            // original code point.
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// `Hash.Combine(h1, h2)`, exposed for other emit code (e.g. object-id hashing).
@@ -138,6 +161,19 @@ mod tests {
     /// NavTypeKind id by name, from the generated data (no hardcoded values).
     fn k(name: &str) -> i32 {
         al_syntax::language_data::nav_type_kind_id(name).unwrap()
+    }
+
+    #[test]
+    fn c9_to_upper_invariant_uses_simple_case_mapping() {
+        // ASCII uppercases exactly like ToUpperInvariant.
+        assert_eq!(to_upper_invariant("Hello"), "HELLO");
+        // 1:1 accented letters DO uppercase (matching ToUpperInvariant).
+        assert_eq!(to_upper_invariant("café"), "CAFÉ");
+        // Characters whose FULL uppercase expands (ß→SS, ﬁ→FI) are left
+        // unchanged, matching .NET ToUpperInvariant (Rust's to_uppercase would
+        // expand them and diverge from alc).
+        assert_eq!(to_upper_invariant("straße"), "STRAßE");
+        assert_eq!(to_upper_invariant("ﬁle"), "ﬁLE");
     }
 
     fn p(kind: &str, is_var: bool) -> ParamSig {

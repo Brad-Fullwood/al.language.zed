@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-use crate::interpreter::value::Value;
+use crate::interpreter::value::{Decimal, Value};
 use crate::mock::filter::{self, FilterExpr};
 
 /// A field number, matching BC's integer field-number convention.
@@ -75,10 +75,39 @@ enum FieldFilter {
 impl FieldFilter {
     fn matches(&self, value: &Value) -> bool {
         match self {
-            FieldFilter::Range(lo, hi) => value >= lo && value <= hi,
+            // BC-correct range test (C20 filter leg): a `Code` cell compares
+            // caselessly and a numeric cell numerically, so `SetRange("No.",
+            // 'ABC')` matches a stored `'abc'` and cross-type `Text`/`Code`
+            // bounds don't fall out via `Value`'s variant-tag ordering.
+            FieldFilter::Range(lo, hi) => {
+                field_cmp(value, lo).is_some_and(|o| o.is_ge())
+                    && field_cmp(value, hi).is_some_and(|o| o.is_le())
+            }
             FieldFilter::Expr(expr) => filter::matches(expr, value),
         }
     }
+}
+
+/// Compare a stored field `value` against a filter `bound` with BC field
+/// semantics: numeric fields numerically (tolerant of Integer/Decimal mix),
+/// a `Code` cell caselessly, a `Text` cell case-sensitively, and other scalars
+/// by their natural order. Returns `None` when the two are not comparable.
+fn field_cmp(value: &Value, bound: &Value) -> Option<std::cmp::Ordering> {
+    if let (Some(x), Some(y)) = (as_number(value), as_number(bound)) {
+        return Some(x.cmp(&y));
+    }
+    if let (Some(x), Some(y)) = (flow_text(value), flow_text(bound)) {
+        return Some(if matches!(value, Value::Code(_)) {
+            x.to_ascii_uppercase().cmp(&y.to_ascii_uppercase())
+        } else {
+            x.cmp(&y)
+        });
+    }
+    // Same-variant non-string scalars (Date/Time/DateTime/Boolean/…).
+    if std::mem::discriminant(value) == std::mem::discriminant(bound) {
+        return Some(value.cmp(bound));
+    }
+    None
 }
 
 /// The current-key fields that determine iteration order.
@@ -166,11 +195,22 @@ impl MockRecord {
             .collect()
     }
 
-    /// `INIT` — reset the current buffer to empty defaults.
+    /// `INIT` — reset non-key fields to defaults, but PRESERVE primary-key
+    /// fields. BC's `Init` keeps the key so the ubiquitous idiom
+    /// `Rec."No." := X; Rec.Init(); Rec.Insert();` inserts under `X`; clearing
+    /// the whole buffer here lost the key and failed the Insert (C20).
     pub fn init(&mut self) {
+        let preserved: Vec<(FieldNo, Value)> = self
+            .primary_key_fields
+            .iter()
+            .filter_map(|f| self.current.get(f).map(|v| (*f, v.clone())))
+            .collect();
         self.current.clear();
         self.x_rec.clear();
         self.iter_pos = None;
+        for (f, v) in preserved {
+            self.current.insert(f, v);
+        }
     }
 
     /// `RESET` — clear all filters and the sort key; reset to primary key order.
@@ -355,13 +395,23 @@ impl MockRecord {
     /// `NEXT(steps)` signature.  Returns `Ok(steps_actually_moved)`.
     pub fn next(&mut self, steps: i32) -> Result<i32, RecordError> {
         let current_pos = self.iter_pos.ok_or(RecordError::NoCurrentRow)?;
-        let new_pos = current_pos as i64 + steps as i64;
-        if new_pos < 0 || new_pos >= self.iter_set.len() as i64 {
+        if steps == 0 || self.iter_set.is_empty() {
             return Ok(0);
         }
-        let new_pos = new_pos as usize;
-        self.load_row_at(new_pos)?;
-        Ok(steps)
+        // BC moves as far as possible toward the target and returns the number
+        // of steps ACTUALLY taken, rather than staying put and returning 0 on
+        // overshoot (C20). `until Next() = 0` loops behave the same either way,
+        // but a batch `Next(N)` that overshoots the end now advances to the
+        // boundary and reports the partial move.
+        let last = self.iter_set.len() as i64 - 1;
+        let target = current_pos as i64 + steps as i64;
+        let clamped = target.clamp(0, last);
+        let actual = clamped - current_pos as i64;
+        if actual == 0 {
+            return Ok(0);
+        }
+        self.load_row_at(clamped as usize)?;
+        Ok(actual as i32)
     }
 
     /// `ISEMPTY` — `true` if no rows match the current filters.
@@ -427,17 +477,17 @@ impl MockRecord {
             FlowAgg::Exist => Value::Boolean(!matching.is_empty()),
             FlowAgg::Sum => {
                 let mut int_sum: i64 = 0;
-                let mut dec_sum: f64 = 0.0;
+                let mut dec_sum = Decimal::ZERO;
                 let mut any_decimal = false;
                 for cell in target_cells() {
                     match cell {
-                        Value::Integer(n) => {
+                        Value::Integer(n) | Value::BigInteger(n) => {
                             int_sum = int_sum.saturating_add(*n);
-                            dec_sum += *n as f64;
+                            dec_sum = dec_sum.checked_add(Decimal::from(*n)).unwrap_or(dec_sum);
                         }
                         Value::Decimal(d) => {
                             any_decimal = true;
-                            dec_sum += *d;
+                            dec_sum = dec_sum.checked_add(*d).unwrap_or(dec_sum);
                         }
                         _ => {}
                     }
@@ -449,11 +499,12 @@ impl MockRecord {
                 }
             }
             FlowAgg::Average => {
-                let nums: Vec<f64> = target_cells().filter_map(as_number).collect();
+                let nums: Vec<Decimal> = target_cells().filter_map(as_number).collect();
                 if nums.is_empty() {
-                    Value::Decimal(0.0)
+                    Value::Decimal(Decimal::ZERO)
                 } else {
-                    Value::Decimal(nums.iter().sum::<f64>() / nums.len() as f64)
+                    let sum: Decimal = nums.iter().copied().sum();
+                    Value::Decimal(sum.checked_div(Decimal::from(nums.len())).unwrap_or(sum))
                 }
             }
             FlowAgg::Min | FlowAgg::Max => {
@@ -484,12 +535,8 @@ impl MockRecord {
 }
 
 /// Numeric view of a value for FlowField aggregation (`Integer`/`Decimal`).
-fn as_number(v: &Value) -> Option<f64> {
-    match v {
-        Value::Integer(n) => Some(*n as f64),
-        Value::Decimal(d) => Some(*d),
-        _ => None,
-    }
+fn as_number(v: &Value) -> Option<Decimal> {
+    v.as_decimal()
 }
 
 /// Test one resolved FlowField condition against a row's cell value.
@@ -527,6 +574,7 @@ fn flow_text(v: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     fn make_table() -> MockRecord {
         MockRecord::new(27, "Item", vec![1])
@@ -579,6 +627,66 @@ mod tests {
 
         assert_eq!(rec.x_rec_field(2), Some(&old_desc));
         assert_eq!(rec.field_get(2), Some(&Value::Text("NewName".to_string())));
+    }
+
+    /// C20 filter leg: a `Code` field is caseless, so `SetRange("No.", 'ABC')`
+    /// must match a stored `'abc'`, and a `Text` filter bound on a `Code` cell
+    /// (different `Value` variants) must not fall out via variant-tag ordering.
+    #[test]
+    fn code_field_setrange_is_caseless() {
+        let mut rec = MockRecord::new(50100, "CodeKeyed", vec![1]);
+        for code in ["abc", "def", "xyz"] {
+            rec.field_set(1, Value::Code(code.to_string()));
+            rec.insert(false).expect("insert should succeed");
+        }
+        // Exact case-insensitive point range: upper-case bound, lower-case data.
+        rec.set_range(1, Value::Text("ABC".into()), Value::Text("ABC".into()));
+        assert_eq!(rec.count(), 1, "SetRange('ABC') must match stored 'abc'");
+
+        // Inclusive span across cases.
+        rec.reset();
+        rec.set_range(1, Value::Code("ABC".into()), Value::Code("DEF".into()));
+        assert_eq!(
+            rec.count(),
+            2,
+            "range [ABC..DEF] must match 'abc' and 'def'"
+        );
+
+        // A non-matching bound still excludes.
+        rec.reset();
+        rec.set_range(1, Value::Text("QQQ".into()), Value::Text("QQQ".into()));
+        assert_eq!(rec.count(), 0);
+    }
+
+    /// C20 negative: a `Text` field is case-SENSITIVE (only `Code` is caseless).
+    /// `SetRange('ABC')` on a Text cell must NOT match a stored `'abc'`.
+    #[test]
+    fn text_field_setrange_is_case_sensitive() {
+        let mut rec = MockRecord::new(50101, "TextKeyed", vec![1]);
+        // Field 1 is the PK (some string); store Text values.
+        for v in ["abc", "ABC", "AbC"] {
+            rec.field_set(1, Value::Text(v.to_string()));
+            rec.insert(false).expect("insert should succeed");
+        }
+        rec.set_range(1, Value::Text("ABC".into()), Value::Text("ABC".into()));
+        assert_eq!(
+            rec.count(),
+            1,
+            "Text SetRange('ABC') must match only the exact-case 'ABC'"
+        );
+    }
+
+    /// C20: a numeric field filter is tolerant of Integer/Decimal bound mixing —
+    /// an Integer cell in [1.5 .. 3.5] matches when the bounds are Decimals.
+    #[test]
+    fn numeric_field_setrange_mixes_integer_and_decimal() {
+        let mut rec = MockRecord::new(50102, "NumKeyed", vec![1]);
+        for n in 1..=5i64 {
+            rec.field_set(1, Value::Integer(n));
+            rec.insert(false).expect("insert should succeed");
+        }
+        rec.set_range(1, Value::Decimal(dec!(1.5)), Value::Decimal(dec!(3.5)));
+        assert_eq!(rec.count(), 2, "integers 2 and 3 fall in [1.5..3.5]");
     }
 
     #[test]
@@ -802,43 +910,35 @@ mod tests {
         assert_eq!(rec.count(), 5);
     }
 
-    // Vector 1: NaN Decimal as primary key — BTreeMap uses Ord (total_cmp)
-    // for lookup, so insert+get should round-trip. However, PartialEq is
-    // derived (uses f64 ==) which returns false for NaN==NaN, violating the
-    // Eq contract. This test exposes the Eq/PartialEq inconsistency: the
-    // derived PartialEq says NaN != NaN, but Ord says they are Equal.
+    // Vector 1: Decimal PK Eq/Ord consistency. With exact `rust_decimal` (C3)
+    // there is no NaN, so `a == a` holds unconditionally and Eq mirrors Ord.
     #[test]
-    fn test_nan_decimal_pk_eq_consistency_adversarial_i_1() {
-        let nan = Value::Decimal(f64::NAN);
-        // Ord/total_cmp says NaN == NaN — this should hold for Eq.
-        // If the derived PartialEq is used, this assertion will FAIL
-        // because f64 NaN != NaN.
-        assert!(
-            nan == nan,
-            "Eq contract: a == a must hold for Value::Decimal(NaN)"
+    fn test_decimal_pk_eq_consistency_adversarial_i_1() {
+        let d = Value::Decimal(dec!(1.25));
+        assert!(d == d, "Eq contract: a == a must hold for a Decimal value");
+        assert_eq!(
+            d.cmp(&Value::Decimal(dec!(1.25))),
+            std::cmp::Ordering::Equal
         );
     }
 
-    // Vector 1b: NaN Decimal round-trips through BTreeMap insert/get.
-    // BTreeMap uses Ord for all key operations, so even with broken PartialEq
-    // the map should find the key. But contains_key on the extracted PrimaryKey
-    // goes through Vec<Value> comparison which uses PartialEq — potential
-    // inconsistency with BTreeMap's Ord-based lookup.
+    // Vector 1b: a Decimal primary key round-trips through the store and a
+    // second insert of the same exact key is a DuplicateKey error.
     #[test]
-    fn test_nan_decimal_pk_roundtrip_adversarial_i_1b() {
-        let mut rec = MockRecord::new(99, "NanTable", vec![1]);
-        rec.field_set(1, Value::Decimal(f64::NAN));
-        rec.field_set(2, Value::Text("nanrow".to_string()));
-        rec.insert(false).expect("insert NaN PK should succeed");
+    fn test_decimal_pk_roundtrip_adversarial_i_1b() {
+        let mut rec = MockRecord::new(99, "DecTable", vec![1]);
+        rec.field_set(1, Value::Decimal(dec!(3.14)));
+        rec.field_set(2, Value::Text("decrow".to_string()));
+        rec.insert(false).expect("insert Decimal PK should succeed");
 
-        // Second insert with NaN PK should be a DuplicateKey error.
-        rec.field_set(1, Value::Decimal(f64::NAN));
+        // Second insert with the same PK should be a DuplicateKey error.
+        rec.field_set(1, Value::Decimal(dec!(3.14)));
         rec.field_set(2, Value::Text("duplicate".to_string()));
         let err = rec.insert(false).unwrap_err();
         assert_eq!(
             err,
             RecordError::DuplicateKey,
-            "NaN PK must trigger DuplicateKey on second insert"
+            "Decimal PK must trigger DuplicateKey on second insert"
         );
     }
 
@@ -901,20 +1001,69 @@ mod tests {
         );
     }
 
-    // Vector 5: Modify after Reset with empty current buffer.
-    // reset() clears iter_pos and filters but NOT the current buffer.
-    // After init() (which does clear current), modify() has no key field
-    // → should return MissingKeyField, not NotFound, not panic.
+    // C20: `Init` preserves primary-key fields (only non-key fields reset), so
+    // after inserting row 1 and calling Init the key survives and Modify targets
+    // the existing row 1 successfully. A truly keyless buffer (never set) still
+    // errors with MissingKeyField — see `test_modify_with_no_key_set` below.
     #[test]
-    fn test_modify_after_init_empty_buffer_adversarial_i_5() {
+    fn test_modify_after_init_preserves_key_adversarial_i_5() {
         let mut rec = make_table();
         insert_row(&mut rec, 1, "Row");
-        rec.init(); // clears current buffer
+        rec.init(); // resets non-key fields, PRESERVES the key
+        assert_eq!(
+            rec.field_get(1),
+            Some(&Value::Integer(1)),
+            "Init must preserve the primary-key field"
+        );
+        rec.modify(false)
+            .expect("Modify after Init should target the preserved key's row");
+    }
+
+    #[test]
+    fn test_modify_with_no_key_set() {
+        // A fresh buffer with no key field set errors with MissingKeyField.
+        let mut rec = make_table();
         let err = rec.modify(false).unwrap_err();
         assert!(
             matches!(err, RecordError::MissingKeyField(_)),
-            "Modify with empty buffer should return MissingKeyField, got: {err:?}"
+            "Modify with no key set should return MissingKeyField, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn c20_init_after_key_then_insert_idiom() {
+        // The ubiquitous `Rec."No." := X; Rec.Init(); Rec.Insert();` must insert
+        // under X — Init preserves the key so Insert has a valid primary key.
+        let mut rec = make_table();
+        rec.field_set(1, Value::Integer(42));
+        rec.init();
+        rec.insert(false)
+            .expect("Insert after Init-with-key must succeed");
+        // The row is retrievable under key 42.
+        rec.get(vec![Value::Integer(42)]).expect("row 42 exists");
+    }
+
+    #[test]
+    fn c20_next_clamps_and_reports_actual_steps() {
+        let mut rec = make_table();
+        for i in 1i64..=5 {
+            insert_row(&mut rec, i, "r");
+        }
+        rec.find_set().unwrap(); // position at first (pos 0)
+                                 // Overshooting the end moves to the last row and reports the partial
+                                 // move (5 rows → from pos 0, Next(10) can only take 4 steps).
+        assert_eq!(
+            rec.next(10).unwrap(),
+            4,
+            "Next overshoot reports actual steps"
+        );
+        assert_eq!(
+            rec.field_get(1),
+            Some(&Value::Integer(5)),
+            "Next overshoot lands on the last row"
+        );
+        // Already at the end: another Next returns 0 (the loop terminator).
+        assert_eq!(rec.next(1).unwrap(), 0);
     }
 
     // Vector 5b: Modify after Reset (NOT init) — current buffer retains
@@ -1149,7 +1298,7 @@ mod tests {
         );
         assert_eq!(
             rec.calc_flow(&conds, Some(3), FlowAgg::Average),
-            Value::Decimal(20.0)
+            Value::Decimal(dec!(20.0))
         );
     }
 
@@ -1171,7 +1320,7 @@ mod tests {
         );
         assert_eq!(
             rec.calc_flow(&none, Some(3), FlowAgg::Average),
-            Value::Decimal(0.0)
+            Value::Decimal(dec!(0.0))
         );
         assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Lookup), Value::Empty);
     }
@@ -1184,11 +1333,11 @@ mod tests {
         rec.field_set(2, Value::Integer(10));
         rec.insert(false).unwrap();
         rec.field_set(1, Value::Integer(2));
-        rec.field_set(2, Value::Decimal(2.5));
+        rec.field_set(2, Value::Decimal(dec!(2.5)));
         rec.insert(false).unwrap();
         assert_eq!(
             rec.calc_flow(&[], Some(2), FlowAgg::Sum),
-            Value::Decimal(12.5)
+            Value::Decimal(dec!(12.5))
         );
     }
 }

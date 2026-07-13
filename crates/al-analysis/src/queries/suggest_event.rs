@@ -173,7 +173,7 @@ fn query_procedure(
         }
     } else {
         let obj_lower = object_name.to_lowercase();
-        for (key, _) in insight.index.iter() {
+        for key in insight.index.keys() {
             let proc_id = match key {
                 NodeKey::Procedure(kind, obj, _name)
                     if *kind == object_kind && obj == &obj_lower =>
@@ -508,7 +508,7 @@ fn collect_published_events(
     points: &mut Vec<IntegrationPoint>,
 ) {
     let obj_lower = object_name.to_lowercase();
-    for (key, _) in insight.index.iter() {
+    for key in insight.index.keys() {
         if let NodeKey::Event(kind, obj, _event_lower) = key {
             if *kind == object_kind && obj == &obj_lower {
                 let (event_type_str, params) = resolve_event_details(insight, symbols, key);

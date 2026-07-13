@@ -13,8 +13,11 @@ thiserror = { workspace = true }
 tree-sitter = "0.25"
 # stubs/any.rs GuidValue() pulls OS entropy via getrandom (prod).
 getrandom = { workspace = true }
+# Value::Decimal is an exact 96-bit decimal (BC System.Decimal semantics, C3).
+rust_decimal = { workspace = true }
 
 [dev-dependencies]
 # al-syntax is used ONLY in #[cfg(test)] (parsing fixtures + the test_support mock).
 al-syntax = { path = "../al-syntax", version = "0.1.0" }
 proptest = "1"
+rust_decimal_macros = { workspace = true }

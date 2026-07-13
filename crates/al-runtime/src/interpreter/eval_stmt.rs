@@ -97,6 +97,12 @@ fn eval_stmt_inner(
         "case_statement" => eval_case(node, source, stack, ctx),
         "assignment_statement" => eval_assignment(node, source, stack, ctx),
         "exit_statement" => eval_exit(node, source, stack, ctx),
+        // C24: `break`/`continue`. Requires the tree-sitter-al grammar to emit
+        // `break_statement`/`continue_statement` nodes (see the grammar prompt);
+        // until then these keywords parse as bare expressions and error as
+        // unbound identifiers. The interpreter side is ready.
+        "break_statement" => Eval::Break,
+        "continue_statement" => Eval::Continue,
         "asserterror_statement" => eval_asserterror(node, source, stack, ctx),
         "expression_statement" => {
             if let Some(inner) = node.named_child(0) {
@@ -126,7 +132,9 @@ fn eval_block(
         last = eval_stmt(child, source, stack, ctx);
         match &last {
             Eval::Normal(_) => {}
-            Eval::Error(_) | Eval::Exit(_) => return last,
+            // Error/Exit unwind the procedure; Break/Continue unwind to the
+            // nearest enclosing loop (C24). All propagate up out of the block.
+            Eval::Error(_) | Eval::Exit(_) | Eval::Break | Eval::Continue => return last,
         }
     }
     last
@@ -213,7 +221,8 @@ fn eval_while(
         }
         if let Some(body) = body_node {
             match eval_stmt(body, source, stack, ctx) {
-                Eval::Normal(_) => {}
+                Eval::Normal(_) | Eval::Continue => {}
+                Eval::Break => break,
                 other => return other,
             }
         }
@@ -274,22 +283,36 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
             .contains("downto"),
     };
 
-    let start_i = match &start_val {
-        Value::Integer(n) => *n,
-        v => {
+    let start_i = match start_val.as_int() {
+        Some(n) => n,
+        None => {
             return Eval::Error(simple_error(&format!(
                 "for_statement: start must be Integer, got {}",
-                v.type_name()
+                start_val.type_name()
             )))
         }
     };
-    let end_i = match &end_val {
-        Value::Integer(n) => *n,
-        v => {
+    let end_i = match end_val.as_int() {
+        Some(n) => n,
+        None => {
             return Eval::Error(simple_error(&format!(
                 "for_statement: end must be Integer, got {}",
-                v.type_name()
+                end_val.type_name()
             )))
+        }
+    };
+
+    // The counter is a BigInteger if either bound is one, or if the loop
+    // variable is already declared BigInteger — so a wide range counts at i64
+    // width instead of overflowing the 32-bit Integer trap (C28).
+    let counter_big = matches!(start_val, Value::BigInteger(_))
+        || matches!(end_val, Value::BigInteger(_))
+        || matches!(stack.lookup(&var_name), Some(Value::BigInteger(_)));
+    let make_counter = |i: i64| {
+        if counter_big {
+            Value::BigInteger(i)
+        } else {
+            Value::Integer(i)
         }
     };
 
@@ -310,14 +333,16 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
         }
 
         if let Some(slot) = stack.lookup_mut(&var_name) {
-            *slot = Value::Integer(i);
+            *slot = make_counter(i);
         } else if let Some(frame) = stack.top_mut() {
-            frame.bind(&var_name, Value::Integer(i));
+            frame.bind(&var_name, make_counter(i));
         }
 
         if let Some(body) = body_node {
             match eval_stmt(body, source, stack, ctx) {
-                Eval::Normal(_) => {}
+                // Continue still runs the loop increment below (AL semantics).
+                Eval::Normal(_) | Eval::Continue => {}
+                Eval::Break => break,
                 other => return other,
             }
         }
@@ -396,7 +421,8 @@ fn eval_foreach(
 
         if let Some(body) = body_node {
             match eval_stmt(body, source, stack, ctx) {
-                Eval::Normal(_) => {}
+                Eval::Normal(_) | Eval::Continue => {}
+                Eval::Break => break,
                 other => return other,
             }
         }
@@ -426,7 +452,9 @@ fn eval_repeat(
         }
         if let Some(body) = body_node {
             match eval_stmt(body, source, stack, ctx) {
-                Eval::Normal(_) => {}
+                // Continue falls through to the `until` check (AL semantics).
+                Eval::Normal(_) | Eval::Continue => {}
+                Eval::Break => break,
                 other => return other,
             }
         }
@@ -492,7 +520,7 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
             let mut lc = ll.walk();
             for lbl in ll.named_children(&mut lc) {
                 if let Eval::Normal(v) = eval_expr(lbl, source, stack, ctx) {
-                    if values_equal_for_case(&selector, &v) {
+                    if crate::interpreter::eval_expr::values_equal(&selector, &v) {
                         matched = true;
                         break;
                     }
@@ -557,7 +585,9 @@ fn eval_assignment(
     };
 
     if let Some(slot) = stack.lookup_mut(&lhs_name) {
-        *slot = rhs_val;
+        // Preserve the slot's declared type (Code caselessness / integer width)
+        // rather than adopting the RHS's — see `coerce_into_slot`.
+        *slot = Value::coerce_into_slot(slot, rhs_val);
     } else if let Some(frame) = stack.top_mut() {
         // Auto-bind: declare in the current frame on first assignment
         // (simulates AL's permissive variable declaration semantics in
@@ -615,7 +645,8 @@ fn eval_asserterror(
         Eval::Error(_) => Eval::Normal(Value::Empty),
         // Exit unwinds the procedure; asserterror does NOT swallow it. AL
         // semantics treat Exit as control flow that bypasses the assertion.
-        exit @ Eval::Exit(_) => exit,
+        // Break/Continue are loop control flow — likewise pass them through.
+        cf @ (Eval::Exit(_) | Eval::Break | Eval::Continue) => cf,
         Eval::Normal(_) => Eval::Error(ErrorInfo {
             message: "asserterror: expected an error to be raised, but none was".to_string(),
             error_type: Some("AssertError".to_string()),
@@ -734,7 +765,9 @@ pub(crate) fn eval_call(
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
-                return dispatch_call(Some(&object_name), &proc_name, args, ctx);
+                let result = dispatch_call(Some(&object_name), &proc_name, args, ctx);
+                apply_var_writebacks(args_node, source, stack, ctx);
+                return result;
             }
             _ => {}
         }
@@ -746,7 +779,65 @@ pub(crate) fn eval_call(
         Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
     };
 
-    dispatch_call(receiver.as_deref(), &proc_name, args, ctx)
+    let result = dispatch_call(receiver.as_deref(), &proc_name, args, ctx);
+    apply_var_writebacks(args_node, source, stack, ctx);
+    result
+}
+
+/// After a workspace procedure returns, propagate the final values of its
+/// `var` (by-reference) parameters back into the caller's argument variables
+/// (C25). `dispatch_workspace_procedure` populates `ctx.var_writebacks` with
+/// `(arg_index, final_value)`; here we map each index to its argument
+/// expression and, when that argument is a plain variable reference (a valid
+/// lvalue), overwrite the caller's binding. Arguments that are not simple
+/// variables (literals, computed expressions, field access) are skipped —
+/// they have no single slot to write back to, matching AL, which only permits
+/// lvalues in `var` argument positions.
+fn apply_var_writebacks(
+    args_node: Option<Node<'_>>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) {
+    if ctx.var_writebacks.is_empty() {
+        return;
+    }
+    let writebacks = std::mem::take(&mut ctx.var_writebacks);
+    let Some(an) = args_node else {
+        return;
+    };
+    let arg_nodes = arg_expr_nodes(an);
+    for (idx, val) in writebacks {
+        if let Some(node) = arg_nodes.get(idx) {
+            if let Some(name) = simple_lvalue_name(*node, source) {
+                if let Some(slot) = stack.lookup_mut(&name) {
+                    *slot = val;
+                }
+            }
+        }
+    }
+}
+
+/// Return the lowercased variable name if `node` is a plain variable reference
+/// (a single AL identifier, optionally quoted), or `None` for anything that is
+/// not a simple lvalue. Text-based and deliberately conservative: it never
+/// treats a literal, operator expression, or member access as an lvalue, so it
+/// cannot corrupt a caller variable by matching the wrong slot.
+fn simple_lvalue_name(node: Node<'_>, source: &[u8]) -> Option<String> {
+    let text = node.utf8_text(source).ok()?.trim();
+    let inner = text.trim_matches('"');
+    if inner.is_empty() {
+        return None;
+    }
+    let mut chars = inner.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(inner.to_ascii_lowercase())
 }
 
 /// Evaluate an optional argument-list node into a `Vec<Value>`.
@@ -945,6 +1036,13 @@ fn eval_args_into(
             Eval::Normal(v) => out.push(v),
             Eval::Error(e) => return Err(ArgsShort::Error(e)),
             Eval::Exit(v) => return Err(ArgsShort::Exit(v)),
+            // An expression cannot legally produce break/continue (they are
+            // statements); treat as an error rather than silently dropping.
+            Eval::Break | Eval::Continue => {
+                return Err(ArgsShort::Error(simple_error(
+                    "break/continue is not valid in an expression",
+                )))
+            }
         }
     }
     Ok(())
@@ -1013,31 +1111,11 @@ fn named_stmt_child(node: Node<'_>, n: usize) -> Option<Node<'_>> {
     children.into_iter().nth(n)
 }
 
-/// Case-insensitive equality for CASE selector vs arm value.
-fn values_equal_for_case(a: &Value, b: &Value) -> bool {
-    use Value::*;
-    match (a, b) {
-        (Integer(x), Integer(y)) => x == y,
-        (Decimal(x), Decimal(y)) => x == y,
-        // For Integer vs Decimal: round-trip via i64 if the decimal has no
-        // fractional part AND fits in i64 — exact comparison. Otherwise the
-        // Decimal cannot equal a whole-number Integer regardless of the
-        // lossy `as f64` cast (which loses precision above 2^53). This
-        // matters for currency-like AL values where i64 magnitudes >2^53
-        // are common.
-        (Integer(x), Decimal(y)) | (Decimal(y), Integer(x))
-            if y.fract() == 0.0 && *y >= i64::MIN as f64 && *y <= i64::MAX as f64 =>
-        {
-            *x == *y as i64
-        }
-        (Integer(_), Decimal(_)) | (Decimal(_), Integer(_)) => false,
-        (Boolean(x), Boolean(y)) => x == y,
-        (Text(x), Text(y)) | (Code(x), Code(y)) => x.eq_ignore_ascii_case(y),
-        (Text(x), Code(y)) | (Code(y), Text(x)) => x.eq_ignore_ascii_case(y),
-        (Null, Null) | (Empty, Empty) => true,
-        _ => false,
-    }
-}
+// CASE selector-vs-arm matching uses the same `values_equal` as `=`/`<>`
+// (C2): BC evaluates a CASE arm exactly like an equality test, so Text is
+// case-sensitive and Code is case-insensitive. The former separate
+// `values_equal_for_case` compared Text case-insensitively, which matched
+// `'ABC'` against `'abc'` where BC does not.
 
 #[cfg(test)]
 mod tests {
@@ -1087,6 +1165,69 @@ mod tests {
             stack.extend(current.named_children(&mut cursor));
         }
         None
+    }
+
+    /// Run statements against a frame that declares `bi: BigInteger(0)`, so the
+    /// declared-type stickiness path (C28) can be exercised end to end.
+    fn run_stmt_with_bigint(source_snippet: &str) -> (Eval, ScopeStack) {
+        let wrapper = format!(
+            "codeunit 50100 \"X\"\n{{\n    procedure Test()\n    var\n        bi: BigInteger;\n    begin\n        {source_snippet}\n    end;\n}}"
+        );
+        let result = al_syntax::parser::AlParser::parse_quick(&wrapper);
+        let tree = result.tree;
+        let bytes = wrapper.as_bytes();
+        let body = find_proc_body(tree.root_node(), bytes).expect("procedure body");
+        let mut stack = ScopeStack::new();
+        let mut frame = CallFrame::new("X", "Test");
+        frame.bind("bi", Value::BigInteger(0));
+        stack.push(frame);
+        let mut ctx = ctx();
+        let eval = eval_stmt(body, bytes, &mut stack, &mut ctx);
+        (eval, stack)
+    }
+
+    #[test]
+    fn c28_biginteger_literal_arithmetic_end_to_end() {
+        // A literal beyond the 32-bit range types as BigInteger, so the sum
+        // computes instead of tripping the Integer overflow trap.
+        let (eval, stack) = run_stmt("y := 5000000000 + 1;");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("y"), Some(&Value::BigInteger(5_000_000_001)));
+    }
+
+    #[test]
+    fn c28_unary_negation_of_biginteger() {
+        // Regression: a negative BigInteger literal is unary minus applied to a
+        // >i32 literal. Without a BigInteger arm in eval_unary this errored as
+        // "operator not supported".
+        let (eval, stack) = run_stmt("y := -5000000000;");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("y"), Some(&Value::BigInteger(-5_000_000_000)));
+    }
+
+    #[test]
+    fn c28_integer_literal_overflow_errors_end_to_end() {
+        // Both operands are in-range Integer literals, so the product overflows
+        // BC's 32-bit Integer and must error (not silently wrap).
+        let (eval, _) = run_stmt("x := 2147483647 * 2;");
+        assert!(eval.is_error(), "expected Integer overflow, got {eval:?}");
+    }
+
+    #[test]
+    fn c28_declared_biginteger_var_keeps_width_the_finding_scenario() {
+        // The exact reported scenario: a BigInteger variable assigned a small
+        // literal keeps its width, so later arithmetic stays at i64.
+        // A small Integer literal into a BigInteger slot keeps BigInteger width.
+        let (_e1, stack1) = run_stmt_with_bigint("bi := 5;");
+        assert_eq!(
+            stack1.lookup("bi"),
+            Some(&Value::BigInteger(5)),
+            "small literal assigned to a BigInteger slot must stay BigInteger"
+        );
+        // Full scenario: subsequent arithmetic then uses i64 width, not the trap.
+        let (eval, stack) = run_stmt_with_bigint("bi := 5; bi := bi * 1000000000;");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("bi"), Some(&Value::BigInteger(5_000_000_000)));
     }
 
     #[test]
@@ -1604,16 +1745,24 @@ mod tests {
     }
 
     #[test]
-    fn case_text_selector_is_case_insensitive() {
-        // AL CASE compares Text/Code case-insensitively. Selector 'ABC'
-        // matches arm label 'abc'.
+    fn case_text_selector_is_case_sensitive() {
+        // C2: BC CASE matches with `=` semantics, so a Text selector is
+        // case-SENSITIVE. 'ABC' does NOT match the arm 'abc' → else runs.
         let (eval, stack) = run_stmt("case 'ABC' of 'abc': x := 5; else x := 1; end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(
             stack.lookup("x"),
-            Some(&Value::Integer(5)),
-            "Text CASE labels must compare case-insensitively"
+            Some(&Value::Integer(1)),
+            "Text CASE labels compare case-sensitively; 'ABC' must not match 'abc'"
         );
+    }
+
+    #[test]
+    fn case_text_selector_exact_match() {
+        // Control: an exact-case Text label still matches.
+        let (eval, stack) = run_stmt("case 'abc' of 'abc': x := 5; else x := 1; end;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(5)));
     }
 
     #[test]

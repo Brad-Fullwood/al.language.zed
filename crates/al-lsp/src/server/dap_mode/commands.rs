@@ -109,7 +109,7 @@ pub(super) async fn get_status(server: &AlServer) -> serde_json::Value {
     let has_toolchain = server.workspace.toolchain.read().await.is_some();
     let indexed_symbols = server.workspace.symbols.len();
     let workspace_files = server.workspace.file_index.len();
-    let workspace_objects = server.workspace.file_index.objects.len();
+    let workspace_objects = server.workspace.file_index.object_count();
     let builtins = server
         .workspace
         .builtins

@@ -64,3 +64,8 @@ petgraph = "0.7"
 futures = "0.3"
 getrandom = "0.2"
 zeroize = { version = "1", features = ["derive"] }
+# Exact 96-bit decimal matching BC's System.Decimal (C3). Pure-Rust, no NaN /
+# no binary-float drift; `maths` adds pow/round helpers used by the interpreter.
+rust_decimal = { version = "1", default-features = false, features = ["std", "maths"] }
+# `dec!(…)` literal macro — dev/test ergonomics only.
+rust_decimal_macros = "1"

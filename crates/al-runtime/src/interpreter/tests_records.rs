@@ -14,6 +14,7 @@ use crate::interpreter::dispatch::{dispatch_call, DispatchCtx};
 use crate::interpreter::scope::Eval;
 use crate::interpreter::value::Value;
 use crate::test_support::MockSource as Workspace;
+use rust_decimal_macros::dec;
 
 /// A workspace table with a `Code` primary key and a couple of data fields.
 const ITEM_TABLE: &str = r#"table 50100 "Item"
@@ -60,7 +61,195 @@ fn ok(eval: Eval) -> Value {
     match eval {
         Eval::Normal(v) | Eval::Exit(v) => v,
         Eval::Error(e) => panic!("unexpected error: {}", e.message),
+        Eval::Break | Eval::Continue => panic!("unexpected break/continue"),
     }
+}
+
+// ─────────────────────────── C25: var parameters ───────────────────────────
+
+#[test]
+fn c25_var_param_mutation_propagates_to_caller() {
+    // `var` parameter is by-reference: the callee's mutation must be visible
+    // in the caller's variable after the call returns.
+    let cu = r#"codeunit 50190 "VarParam Tests"
+{
+    procedure Bump(var n: Integer)
+    begin
+        n := n + 1;
+    end;
+
+    procedure Run(): Integer
+    var
+        x: Integer;
+    begin
+        x := 10;
+        Bump(x);
+        exit(x);
+    end;
+}
+"#;
+    let r = run(&[("/ws/VarParam.al", cu)], "VarParam Tests", "Run", vec![]);
+    assert_eq!(ok(r), Value::Integer(11));
+}
+
+// ─────────────────────────── C3: exact Decimal ───────────────────────────
+
+#[test]
+fn c3_decimal_arithmetic_is_exact_end_to_end() {
+    // Full evaluation path: `0.1 + 0.2 = 0.3` returns TRUE. Under the old f64
+    // Decimal the sum was 0.30000000000000004 and this comparison was FALSE.
+    let cu = r#"codeunit 50191 "Decimal Tests"
+{
+    procedure SumIsExact(): Boolean
+    var
+        d: Decimal;
+    begin
+        d := 0.1 + 0.2;
+        exit(d = 0.3);
+    end;
+
+    procedure Accumulate(): Decimal
+    var
+        total: Decimal;
+        i: Integer;
+    begin
+        total := 0;
+        for i := 1 to 10 do
+            total := total + 0.1;
+        exit(total);
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Decimal.al", cu)],
+        "Decimal Tests",
+        "SumIsExact",
+        vec![],
+    );
+    assert_eq!(
+        ok(r),
+        Value::Boolean(true),
+        "0.1 + 0.2 must equal 0.3 exactly through the interpreter"
+    );
+
+    // Ten accumulations of 0.1 land on exactly 1.0 (f64 drifts to 0.9999…).
+    let r = run(
+        &[("/ws/Decimal.al", cu)],
+        "Decimal Tests",
+        "Accumulate",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Decimal(dec!(1.0)));
+}
+
+#[test]
+fn c25_value_param_does_not_propagate() {
+    // A plain (by-value) parameter must NOT propagate the callee's mutation.
+    let cu = r#"codeunit 50191 "ByVal Tests"
+{
+    procedure Bump(n: Integer)
+    begin
+        n := n + 1;
+    end;
+
+    procedure Run(): Integer
+    var
+        x: Integer;
+    begin
+        x := 10;
+        Bump(x);
+        exit(x);
+    end;
+}
+"#;
+    let r = run(&[("/ws/ByVal.al", cu)], "ByVal Tests", "Run", vec![]);
+    assert_eq!(ok(r), Value::Integer(10));
+}
+
+#[test]
+fn c25_var_param_non_lvalue_arg_is_not_written_back() {
+    // Passing a literal (not an lvalue) to a var parameter must not panic or
+    // corrupt state; the call still runs, the literal simply isn't written back.
+    let cu = r#"codeunit 50192 "VarLit Tests"
+{
+    procedure Bump(var n: Integer): Integer
+    begin
+        n := n + 5;
+        exit(n);
+    end;
+
+    procedure Run(): Integer
+    begin
+        exit(Bump(10));
+    end;
+}
+"#;
+    let r = run(&[("/ws/VarLit.al", cu)], "VarLit Tests", "Run", vec![]);
+    assert_eq!(ok(r), Value::Integer(15));
+}
+
+// ─────────────────────────── C2: Code case semantics ───────────────────────
+
+#[test]
+fn c2_code_equality_is_case_insensitive() {
+    // BC uppercases Code at assignment and compares it caselessly. A Code var
+    // assigned 'abc' equals the literal 'ABC'.
+    let cu = r#"codeunit 50193 "Code Eq"
+{
+    procedure Run(): Boolean
+    var
+        c: Code[10];
+    begin
+        c := 'abc';
+        exit(c = 'ABC');
+    end;
+}
+"#;
+    let r = run(&[("/ws/CodeEq.al", cu)], "Code Eq", "Run", vec![]);
+    assert_eq!(ok(r), Value::Boolean(true));
+}
+
+#[test]
+fn c2_text_equality_is_case_sensitive() {
+    // Control: Text equality stays case-sensitive.
+    let cu = r#"codeunit 50194 "Text Eq"
+{
+    procedure Run(): Boolean
+    var
+        t: Text;
+    begin
+        t := 'abc';
+        exit(t = 'ABC');
+    end;
+}
+"#;
+    let r = run(&[("/ws/TextEq.al", cu)], "Text Eq", "Run", vec![]);
+    assert_eq!(ok(r), Value::Boolean(false));
+}
+
+#[test]
+fn c2_code_case_matching_is_case_insensitive() {
+    // A CASE over a Code selector matches case-insensitively.
+    let cu = r#"codeunit 50195 "Code Case"
+{
+    procedure Run(): Integer
+    var
+        c: Code[10];
+        r: Integer;
+    begin
+        c := 'abc';
+        case c of
+            'ABC':
+                r := 5;
+            else
+                r := 1;
+        end;
+        exit(r);
+    end;
+}
+"#;
+    let r = run(&[("/ws/CodeCase.al", cu)], "Code Case", "Run", vec![]);
+    assert_eq!(ok(r), Value::Integer(5));
 }
 
 // ───────────────────────────────── B6: records ─────────────────────────────
@@ -733,7 +922,7 @@ fn b6_flowfield_max() {
 #[test]
 fn b6_flowfield_average() {
     // Average always returns Decimal: (10+20+30)/3 = 20.0.
-    assert_eq!(ok(run_flow("AvgOnRead")), Value::Decimal(20.0));
+    assert_eq!(ok(run_flow("AvgOnRead")), Value::Decimal(dec!(20.0)));
 }
 
 #[test]
