@@ -3,7 +3,9 @@
 use al_protocol::jsonrpc::Response;
 use al_workspace::Workspace;
 
-use crate::server::daemon::{ensure_document, file_not_found, file_uri_from_params, invalid_params};
+use crate::server::daemon::{
+    ensure_document, file_not_found, file_uri_from_params, invalid_params,
+};
 
 pub(in crate::server::daemon) fn dispatch_metrics(
     workspace: &Workspace,

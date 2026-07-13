@@ -120,7 +120,9 @@ pub(super) struct NegotiateConnection {
 /// A missing `negotiateVersion` field is treated as 0 for backward
 /// compatibility (pre-versioning SignalR servers). An unrecognised version is
 /// logged but handled on a best-effort basis (token if present, else id).
-pub(super) fn resolve_negotiate_connection(negotiate: &serde_json::Value) -> Result<NegotiateConnection> {
+pub(super) fn resolve_negotiate_connection(
+    negotiate: &serde_json::Value,
+) -> Result<NegotiateConnection> {
     // SignalR redirect responses carry a `url` (and `accessToken`) instead of
     // a connection id. We do not follow redirects, so surface a clear error
     // rather than failing later with a confusing "no connectionId".

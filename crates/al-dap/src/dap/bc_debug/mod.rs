@@ -19,17 +19,17 @@
 //! `get_metadata`), `wire` (SignalR message shape, negotiate, handshake), and
 //! `session` (`BcDebugSession` + its `invoke()` loop and test doubles).
 
-mod session_config;
 mod events;
 mod rest;
-mod wire;
 mod session;
+mod session_config;
+mod wire;
 
-pub use session_config::BcDebugConfig;
 pub use events::{BcEvent, BreakLocation};
 pub use rest::{get_metadata, publish_app};
-pub(crate) use wire::percent_encode_url;
 pub use session::BcDebugSession;
+pub use session_config::BcDebugConfig;
+pub(crate) use wire::percent_encode_url;
 
 #[cfg(test)]
 pub(crate) use session::fake;
