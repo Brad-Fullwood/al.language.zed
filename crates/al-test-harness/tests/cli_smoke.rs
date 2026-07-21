@@ -6,16 +6,41 @@
 //! setup. The first command pays the daemon cold-start; the rest are fast.
 
 use std::process::Command;
+use std::sync::{Mutex, Once};
 
 use al_test_harness::{al_explorer_binary, test_project_dir};
 
-/// Run `al-explorer <args>` in the fixture project; return (success, stdout+stderr).
-fn al(args: &[&str]) -> (bool, String) {
-    let out = Command::new(al_explorer_binary())
+// Every case targets the same project-scoped singleton daemon. Keep this a
+// deterministic wiring suite rather than an accidental 12-client cold-start
+// stress test: warm the daemon once, then probe commands one at a time.
+static CLI_SERIAL: Mutex<()> = Mutex::new(());
+static DAEMON_READY: Once = Once::new();
+
+fn run_al(args: &[&str]) -> std::process::Output {
+    Command::new(al_explorer_binary())
         .args(args)
         .current_dir(test_project_dir())
         .output()
-        .expect("run al-explorer");
+        .expect("run al-explorer")
+}
+
+/// Run `al-explorer <args>` in the fixture project; return (success, stdout+stderr).
+fn al(args: &[&str]) -> (bool, String) {
+    let _serial = CLI_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if args != ["version"] {
+        DAEMON_READY.call_once(|| {
+            let warm = run_al(&["diag"]);
+            assert!(
+                warm.status.success(),
+                "failed to warm al-lsp daemon:\n{}{}",
+                String::from_utf8_lossy(&warm.stdout),
+                String::from_utf8_lossy(&warm.stderr)
+            );
+        });
+    }
+    let out = run_al(args);
     let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
     combined.push_str(&String::from_utf8_lossy(&out.stderr));
     (out.status.success(), combined)
