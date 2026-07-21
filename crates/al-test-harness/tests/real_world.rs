@@ -630,13 +630,14 @@ async fn test_completion_after_dot() {
     end;
 }"#;
 
+    client.open_file("objects/table.al", TABLE_AL).await;
     client.open_file("objects/test.al", code).await;
 
-    // After "Staging." on line 6, col 16
     let completions = client.completion("objects/test.al", 6, 16).await;
+    let labels = completion_labels(&completions);
     assert!(
-        !completions.is_empty(),
-        "member completion returned no items"
+        labels.contains(&"SetJournalData"),
+        "record member completion omitted SetJournalData: {labels:?}"
     );
 
     client.shutdown().await;
