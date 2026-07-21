@@ -1515,9 +1515,6 @@ mod tests {
 
     #[tokio::test]
     async fn run_batch_rejects_out_of_range_codeunit_id() {
-        // Negative regression: a codeunitIds entry beyond the i32 range must be
-        // rejected with INVALID_PARAMS rather than silently wrapping via
-        // `as i32` and executing tests against the wrong codeunit.
         let ws = std::sync::Arc::new(empty_ws());
         let tmp = tempfile::TempDir::new().unwrap();
         let dot_zed = tmp.path().join(".zed");
@@ -1633,9 +1630,6 @@ mod tests {
 
     #[tokio::test]
     async fn last_results_single_lookup_rejects_out_of_range_codeunit_id() {
-        // Negative regression: out-of-range codeunitId in the single
-        // (codeunit, method) lookup path must return INVALID_PARAMS rather
-        // than silently wrapping via `as i32`.
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = ws_with_project(&tmp).await;
         let resp = dispatch_tests_last_results(
@@ -1656,8 +1650,6 @@ mod tests {
 
     #[tokio::test]
     async fn last_results_bulk_filter_rejects_out_of_range_codeunit_id() {
-        // Negative regression: out-of-range codeunitId in the bulk-filter path
-        // must return INVALID_PARAMS rather than silently wrapping via `as i32`.
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = ws_with_project(&tmp).await;
         let resp = dispatch_tests_last_results(

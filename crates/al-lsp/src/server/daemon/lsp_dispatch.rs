@@ -809,8 +809,6 @@ mod tests {
         );
     }
 
-    /// Custom `Serialize` impl that always returns an error — used to drive the
-    /// serialisation-failure path in `ok_response`.
     struct AlwaysFails;
 
     impl serde::Serialize for AlwaysFails {

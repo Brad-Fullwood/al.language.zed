@@ -17,11 +17,7 @@ pub(in crate::server::daemon) fn dispatch_lint(
     let all = params.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if all {
-        // Lint all workspace files using cached parse trees. Clean files are
-        // included with an empty diagnostics array — previously only dirty
-        // files were returned, so a fully-clean 62-file workspace reported
-        // "0 diagnostics across 0 files", indistinguishable from "scanned
-        // nothing".
+        // Include clean files so callers can distinguish them from unscanned files.
         let mut results: Vec<serde_json::Value> = Vec::new();
         for entry in workspace.file_index.files.iter() {
             let path = entry.key();

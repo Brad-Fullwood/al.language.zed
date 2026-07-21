@@ -21,32 +21,19 @@ use super::wire::{
 
 const PENDING_EVENT_CAPACITY: usize = 64;
 
-/// Capacity of the SignalR event channel that the reader task forwards
-/// every server-push message into. A misbehaving (or malicious) BC server
-/// flooding the daemon used to grow this channel unboundedly, since the
-/// previous channel was `mpsc::unbounded_channel`.
-///
-/// 4096 messages × ~few-KB-each = ~MB-scale bound. Variable-expansion
-/// responses can be large (deep AL records); Break / step-complete events
-/// are small. If the channel ever fills, the reader task drops the
-/// offending message with a `warn!` log — that's preferable to OOM.
-/// Break events have a *separate* dedicated channel (`break_event_*`)
-/// that stays unbounded because each entry is a single `bool` and a
-/// dropped Break event leaves the debugger silently stuck.
+/// Maximum queued SignalR messages awaiting the session loop.
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 /// Native BC debug session over SignalR.
 pub struct BcDebugSession {
     ws_tx: mpsc::Sender<String>,
-    /// Receive events/completions from the hub (unbounded — never drops events)
+    /// Receives bounded events and completions from the hub.
     event_rx: Mutex<mpsc::Receiver<SignalRMessage>>,
     next_id: AtomicI64,
     /// SignalR connection ID — used in browser URL for debug context
     pub connection_id: String,
     is_stopped: Mutex<bool>,
-    /// Server-push type-1 events that arrived while an `invoke()` was waiting
-    /// for its own completion. Callers drain this buffer after each invoke.
-    /// Unbounded so that Break events are never silently dropped.
+    /// Server-push events buffered while an invocation awaits its completion.
     pending_events: Mutex<VecDeque<SignalRMessage>>,
     /// Receives `true` when a Break event arrives and `false` when the session
     /// ends (Detached or FatalError). Populated by the WebSocket reader task,
@@ -357,6 +344,11 @@ impl BcDebugSession {
                     }
                     if msg.type_ == 1 {
                         let mut buf = self.pending_events.lock().await;
+                        if buf.len() >= PENDING_EVENT_CAPACITY {
+                            return Err(DapError::ConnectionFailed(format!(
+                                "pending SignalR event limit exceeded ({PENDING_EVENT_CAPACITY})"
+                            )));
+                        }
                         buf.push_back(msg);
                     }
                 }
@@ -717,28 +709,6 @@ impl BcDebugSession {
 
 #[cfg(test)]
 impl BcDebugSession {
-    /// Test-only constructor that bypasses the SignalR negotiate + WebSocket
-    /// handshake performed by [`BcDebugSession::connect`], wiring up the exact
-    /// same internal channels so unit tests can drive `invoke()` and the public
-    /// debug operations against injected `SignalRMessage` responses.
-    ///
-    /// Returns the session plus three injection handles:
-    /// - `event_tx`: push `SignalRMessage`s (type-3 completions and type-1
-    ///   server-push callbacks) that the session's `invoke()` / drain paths
-    ///   consume — i.e. the channel the real WebSocket *reader* task feeds.
-    /// - `break_event_tx`: signal `wait_for_break_event()` (`true` = Break,
-    ///   `false` = session end) — the channel the reader task feeds.
-    /// - `ws_rx`: receives the JSON frames the session *sends* (the channel the
-    ///   real WebSocket *writer* task drains), so tests can assert the on-wire
-    ///   request shape.
-    ///
-    /// Behaviour-preserving: compiled only under `#[cfg(test)]`, spawns no
-    /// tasks, and constructs the struct with the identical field initialisers
-    /// `connect()` uses. It introduces no new runtime code path.
-    ///
-    /// Module-private (not `pub`): the in-file `tests` child module can reach it
-    /// while the private `SignalRMessage` type stays unexposed (no
-    /// `private_interfaces` leak).
     fn test_new(
         connection_id: String,
     ) -> (
@@ -933,16 +903,6 @@ pub(crate) mod fake {
 mod tests {
     use super::*;
 
-    // --- SignalR session injection (BcDebugSession::test_new) -----------------
-    //
-    // `test_new` wires the same internal channels `connect()` builds but skips
-    // the negotiate + WebSocket handshake, so these tests drive the REAL
-    // `invoke()` loop and every public debug operation against injected SignalR
-    // messages. They assert on both the on-wire request shape (`ws_rx`, the
-    // channel the writer task drains) and the parsed responses / error branches.
-
-    /// Build a type-1 (server-invoked callback) SignalR message, e.g. a
-    /// `Break`/`IsAlive` push from the server.
     fn invocation(
         target: Option<&str>,
         arguments: Option<Vec<serde_json::Value>>,
@@ -957,8 +917,6 @@ mod tests {
         }
     }
 
-    /// Build a type-3 (completion) SignalR message — the server's response to
-    /// one of our invocations.
     fn completion(
         id: &str,
         result: Option<serde_json::Value>,
@@ -1390,12 +1348,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invoke_rejects_excess_pending_events() {
+        let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
+        for _ in 0..=PENDING_EVENT_CAPACITY {
+            event_tx
+                .send(invocation(Some("IsAlive"), None))
+                .await
+                .unwrap();
+        }
+        let error = session.invoke("IsAlive", vec![]).await.unwrap_err();
+        assert!(matches!(
+            error,
+            DapError::ConnectionFailed(message) if message.contains("pending SignalR event limit exceeded")
+        ));
+    }
+
+    #[tokio::test]
     async fn invoke_times_out_when_no_completion_arrives() {
         let (session, _event_tx, _b, _w) = BcDebugSession::test_new("c".into());
-        // No completion is ever pushed; _event_tx / _w stay alive so neither
-        // channel closes. A short explicit budget exercises the real timeout
-        // branch of the invoke loop without waiting a production-length deadline,
-        // and asserts the reported duration matches the configured budget.
         let timeout = tokio::time::Duration::from_millis(50);
         let err = session
             .invoke_with_timeout("IsAlive", vec![], timeout)

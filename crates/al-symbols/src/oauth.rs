@@ -1284,8 +1284,8 @@ fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
     }
     if let Err(e) = file.sync_all() {
         warn!(error = %e, "Failed to fsync OAuth token cache tempfile");
-        // Continue — rename will still complete; the durability guarantee
-        // is best-effort and a fresh refresh-flow will recover on next boot.
+        let _ = std::fs::remove_file(&tmp_path);
+        return;
     }
     drop(file);
     if let Err(e) = std::fs::rename(&tmp_path, path) {

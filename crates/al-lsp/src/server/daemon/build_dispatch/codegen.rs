@@ -96,10 +96,6 @@ pub(in crate::server::daemon) fn dispatch_new_project(
         };
     }
 
-    // Honor the requested project template. The CLI forwards `--template`
-    // verbatim; previously this field was dropped, so every `al new` produced
-    // the Default extension scaffold regardless of the flag and an invalid
-    // template was silently accepted.
     let template = match params.get("template") {
         // Present but not a string is a malformed request, not an absent
         // field — reject it rather than silently falling back to the default.
@@ -162,10 +158,7 @@ pub(in crate::server::daemon) async fn dispatch_error_codes(
     workspace: &Workspace,
     id: u64,
 ) -> Response {
-    // Lazily load the catalog from the semantic bridge when a toolchain is
-    // present, so the CLI/`errorCodes` RPC reflects ALTool instead of always
-    // reporting an empty list (the dedicated RPC previously never triggered
-    // bridge init — only diagnostics did).
+    // Load the semantic catalog before reading the shared error-code index.
     crate::semantic::ensure_error_codes_loaded(workspace).await;
     let value: Vec<serde_json::Value> = workspace
         .error_codes

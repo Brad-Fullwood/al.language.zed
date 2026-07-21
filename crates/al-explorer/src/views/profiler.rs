@@ -197,7 +197,7 @@ impl ProfilerView {
             }
         };
 
-        // Cap the number of nodes we iterate. A malformed or adversarial
+        // Cap the number of nodes we iterate. A malformed or untrusted
         // profile could declare millions of nodes; iterating all of them in the
         // synchronous TUI would freeze the UI. Real BC CPU profiles are far
         // smaller than this bound.

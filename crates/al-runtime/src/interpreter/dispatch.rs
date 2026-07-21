@@ -68,7 +68,7 @@ pub struct DispatchCtx {
     pub ast_depth: usize,
     /// Optional wall-clock deadline for this dispatch. `eval_stmt` loop
     /// constructs (while / repeat / for) check this on every iteration so
-    /// an adversarial `while true do …` test can't pin the daemon thread
+    /// an unbounded `while true do …` test can't pin the daemon thread
     /// past the configured per-test budget. `None` means "no deadline" —
     /// used by unit-test paths that need full determinism.
     pub deadline: Option<std::time::Instant>,

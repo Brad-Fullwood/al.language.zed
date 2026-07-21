@@ -1002,8 +1002,6 @@ pub fn register_workspace_nodes(
         });
     }
 
-    // Clear any previously registered workspace entries before re-adding to prevent
-    // duplicates when the call graph is rebuilt.
     symbols.remove_package_entries("workspace");
     if !workspace_entries.is_empty() {
         symbols.add_entries_owned(workspace_entries);
@@ -2071,9 +2069,6 @@ mod tests {
 
     #[test]
     fn extract_object_var_types_finds_codeunit_and_page_and_report_vars() {
-        // regression: object-typed variables (Codeunit / Page /
-        // Report etc.) should be captured so member-call resolution can
-        // translate `MyVar.Method()` to `<ObjectName>.Method()`.
         let source = r#"codeunit 50100 "Test CU"
 {
     procedure DoWork()

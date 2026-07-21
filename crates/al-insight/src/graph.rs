@@ -475,8 +475,7 @@ impl InsightGraph {
                     // but only within the first kind that has matches. Cross-kind
                     // events that happen to share a name are semantically distinct;
                     // linking to both would create false-positive subscriptions.
-                    // Kind disambiguation is best-effort when the subscriber attribute
-                    // omits ObjectType — well-formed AL always includes it.
+                    // A missing ObjectType searches every publisher kind.
                     let event_indices: Vec<NodeIndex> = self.get_nodes(&event_key).to_vec();
                     if event_indices.is_empty() {
                         continue;
