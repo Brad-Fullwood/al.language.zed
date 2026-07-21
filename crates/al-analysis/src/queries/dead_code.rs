@@ -109,16 +109,12 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
         }
     }
 
-    // Parallelise per-file scans with rayon. Each file's
-    // procedure / field / subscriber checks are independent given the
-    // pre-built workspace-global sets — no shared mutable state needed.
-    // Per-file results accumulate into thread-local Vecs and flat_map back
-    // out preserving the path-sorted input order. CPU-bound dead-code on
-    // 1000+ file workspaces drops from "sequential single-thread" to
-    // "scales with cores".
-    use rayon::prelude::*;
+    // Keep the query on the daemon dispatch thread. Rayon worker startup made
+    // this small, latency-sensitive request hang indefinitely on Windows even
+    // though the same parsed inputs complete immediately in serial. The
+    // path-sorted input still makes output deterministic.
     let per_file_results: Vec<Vec<UnusedSymbol>> = all_files
-        .par_iter()
+        .iter()
         .map(|(file_path, file_text, file_tree)| {
             let mut local = Vec::new();
             let Some(obj_info) = al_syntax::find_object_declaration(file_tree, file_text) else {

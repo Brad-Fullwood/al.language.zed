@@ -91,6 +91,10 @@ impl Default for FormatOptions {
 
 /// See module-level docs for the complete set of rules.
 pub fn format_al(text: &str, options: &FormatOptions) -> String {
+    // `str::lines` intentionally strips both LF and CRLF terminators. Keep
+    // track of the source convention so a no-op format check stays a no-op on
+    // Windows checkouts instead of rewriting every line ending to LF.
+    let uses_crlf = text.contains("\r\n");
     let indent_str = if options.insert_spaces {
         " ".repeat(options.tab_size)
     } else {
@@ -404,7 +408,12 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     let result = normalize_blank_lines_between_procedures(result, options);
     let result = wrap_long_property_lines(result, options);
 
-    apply_brace_style(result, options)
+    let result = apply_brace_style(result, options);
+    if uses_crlf {
+        result.replace('\n', "\r\n")
+    } else {
+        result
+    }
 }
 
 /// Format a range of lines within AL source code.
@@ -1193,6 +1202,14 @@ end;
 }
 "#;
         assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn preserves_crlf_line_endings() {
+        let input = "codeunit 50100 Test\r\n{\r\n}\r\n";
+        let output = fmt(input);
+        assert_eq!(output, input);
+        assert!(!output.replace("\r\n", "").contains('\n'));
     }
 
     #[test]
