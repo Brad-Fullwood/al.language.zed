@@ -45,7 +45,7 @@ unreachable: `{ "error": "Cannot connect to al-lsp daemon… Hint: al-lsp daemon
 The TUI (ratatui + crossterm) has **five switchable views** (F1–F5, with Alt+1–Alt+5 fallbacks for
 terminals that swallow function keys), a mode bar, mouse support, and **lazy hydration** — the initial
 symbol dump is "slim" (no member arrays) and full member data is fetched on demand when you select an
-object (FB-1). Single-line inputs are capped at 4096 bytes.
+object. Single-line inputs are capped at 4096 bytes.
 
 | View | Key | Shows |
 | --- | --- | --- |

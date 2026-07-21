@@ -2,23 +2,16 @@
 # check-doc-paths.sh -- Guard against crates/<name>/... references to crates
 # that don't exist on disk.
 #
-# The engine was originally one monolithic crate (`al-core`), later split into
-# ~20 layered crates. Docs and source comments describing `crates/al-core/...`
-# paths survived the split for weeks after the crate was deleted (Docs/01-
-# architecture.md, 14 Docs/features/*.md files, README.md, al-lsp/src/lib.rs's
-# own doc comment) -- this script exists so that class of drift fails CI
-# immediately instead of being found by a future audit.
+# The engine was split from one crate into multiple layered crates. This check
+# prevents documentation from retaining paths to crates that no longer exist.
 #
-# What it checks: every `crates/<name>` path referenced in a tracked Markdown
+# Every `crates/<name>` path referenced in a tracked Markdown
 # file or Rust doc comment, where <name> looks like a crate directory name
 # (al-[a-z-]+), must exist under crates/. Files listed in ALLOWLIST are
 # historical/point-in-time documents (redesign plans, progress logs, dated
 # spikes) that intentionally describe a past architecture and are exempt.
 #
-# Usage:
-#   ./scripts/check-doc-paths.sh
-#
-# Exit non-zero if any non-allowlisted file references a nonexistent crate path.
+# Exits non-zero if a non-allowlisted file references a nonexistent crate path.
 
 set -euo pipefail
 

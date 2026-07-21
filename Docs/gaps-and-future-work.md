@@ -1,133 +1,74 @@
-# Gaps, Misleading Surfaces & Future Work — Actionable Audit
+# Current Limitations
 
-This is a code-verified, actionable audit of the project: where features are **missing**, where a
-surface **implies one thing but does another** (a setting/schema/command that looks functional but
-isn't fully wired), and **future progression / nice-to-have** items. Each finding cites the source so
-it can be acted on or dismissed.
+This page lists confirmed boundaries in the current implementation. Planned work
+and priorities live in [ROADMAP.md](../ROADMAP.md); completed audit history does
+not belong in either user-facing document.
 
-It complements [`roadmap.md`](./roadmap.md) (the narrative, subsystem-grouped roadmap) and the
-repository's [`ROADMAP.md`](../ROADMAP.md). Where this audit and a feature page disagree, this audit is
-the more recently verified.
+## Compiler and semantic analysis
 
-**Severity legend:** 🔴 misleading (a user could reasonably expect behavior that doesn't happen) ·
-🟠 functional gap (works but incomplete) · 🟢 nice-to-have / future progression.
+- Native builds validate syntax, project configuration, dependencies, object and
+  member declarations, declared-symbol bindings, transaction rules, and package
+  integrity. They do not reproduce every Microsoft procedure-body binding,
+  overload, control-flow, or analyzer rule.
+- Exact CodeCop, AppSourceCop, UICop, and PerTenantCop compatibility requires the
+  optional Microsoft CodeAnalysis bridge or official compiler.
+- Dependency `.app` packages expose declarations but not executable bodies, so
+  call-graph analysis does not infer side effects it cannot observe.
+- External rulesets, probing paths, analyzer statistics, incremental mode, and
+  extra compiler options apply to the official `alc` backend. They do not change
+  the native emitter or in-process semantic bridge.
 
----
+## Language services and symbols
 
-## ✅ Closed (gap-closure pass)
+- Workspace diagnostics provide native syntax results for all indexed files and
+  semantic bridge diagnostics for open documents. Semantic analysis of every
+  unopened file is not enabled by default.
+- References, dead-code analysis, and call graphs cannot inspect call sites inside
+  dependency packages when source is unavailable.
+- Package navigation distinguishes embedded source from generated public-API
+  outlines; generated outlines are not original package source.
 
-- **A2/A3/A4** — `compilationOptions`, `incrementalBuild`, `enableExternalRulesets`/
-  `ruleSetPath`/`assemblyProbingPaths`/`outputAnalyzerStatistics` are now wired
-  through to the `alc` invocation (`al-compile` `to_alc_args()` + daemon
-  `package`/official-`compile`). Unit-tested; live `alc` e2e needs ALTool.
-- **A5/A6** — `breaking`/`upgrade` now build the baseline from
-  `params.baselineSymbols` instead of an empty Vec, so removals/changes are
-  reported. The daemon method was unit-tested against a synthetic baseline;
-  the CLI now has a real path to it too — `al breaking --baseline-app
-  <old.app>` / `al upgrade --baseline-app <old.app>` read a previous `.app`'s
-  symbols and pass them through. Omitting `--baseline-app` no longer prints a
-  misleadingly clean "no changes"/"no issues" — it prints an explicit
-  "Not evaluated: no baseline supplied" message instead (and a stderr warning
-  in `--json` mode, so scripts consuming stdout can't miss it either).
-- **A13** — the `.alformat.json` options `sortProperties`, `maxLineLength`,
-  `braceStyle`, `blankLinesBetweenProcedures` are implemented (opt-in,
-  default-noop, idempotent) — no longer parsed-and-ignored. 24 tests.
-- **A1** — native lint now spans file-local rules (`AL-NL001` FindFirst/FindLast
-  in a loop, `AL-NL002` table field missing DataClassification), project semantic
-  rules (`AL-NC001`–`AL-NC006`), and resolved transaction rules (`AL-NL003`
-  unsafe `Commit`, `AL-NL004` database writes in a `[TryFunction]` call/event
-  stack). The engine is wired through editor, CLI/daemon, and native builds;
-  standard/third-party declarations participate through loaded `.app` symbols.
-  The optional CodeAnalysis bridge remains available for exact Microsoft analyzer
-  compatibility. Additional catalogue rules are tracked in `ROADMAP.md`.
+## Native test runtime
 
----
+- Local execution supports pure logic and a bounded workspace-record subset.
+  Field and table triggers, transactions, permissions, locking,
+  `RecordRef`/`FieldRef`, package-only table schemas, UI, HTTP, reports, sessions,
+  and other platform behavior route to live Business Central.
+- Routing remains conservative and partly pattern-based. The enforced runtime
+  capability boundary prevents a missed record operation from silently running
+  with the wrong permissions.
+- Test lifecycle and handler semantics are not executed locally.
+- Dynamic coverage records statements and two-way decisions; per-case-arm and
+  condition coverage are not modelled.
+- `test-snapshot replay` validates an existing file and `diff` compares files.
+  Live snapshot capture is not exposed through the CLI or daemon.
 
-## A. Misleading surfaces — "implies one thing, does another"
+## Debugging and Business Central
 
-These are the highest-priority items because they can erode trust: a setting, schema field, command,
-or output that *looks* functional but is inert, ignored, or empty. The fix for each is either **wire
-it** or **mark/rename it** so the surface matches reality.
+- Business Central remains authoritative for runtime behavior. DAP support covers
+  launch/attach, publish, breakpoints, stack, scopes, variables, evaluate,
+  stepping, and disconnect, but requires continued validation against current BC
+  REST and SignalR contracts.
+- Native `.app` output has compatibility and live-tenant validation coverage, but
+  base-app-dependent and resource-heavy projects still need broader corpus
+  coverage before Microsoft compatibility paths can be reduced.
 
-| # | Severity | Surface | What it implies | What actually happens | Evidence | Suggested action |
-|---|---|---|---|---|---|---|
-| A2 | 🔴 | `al.compilationOptions` setting | Extra args passed to `alc` | Parsed into `config.compilation_options` but **never read** anywhere | `config.rs:89,423`; 0 consumers outside `config.rs` | Pass through to the `alc` invocation in `build.rs`, or mark parsed-only in `docs/settings.md`. |
-| A3 | 🔴 | `al.incrementalBuild` setting | Incremental compile | Parsed; **never read** | `config.rs:91,424`; 0 consumers | Wire into build, or mark parsed-only. |
-| A4 | 🔴 | `al.enableExternalRulesets`, `al.ruleSetPath`, `al.assemblyProbingPaths`, `al.outputAnalyzerStatistics` | Forwarded to the CodeAnalysis/`alc` path | Parsed; **not plumbed** into build/semantic paths (the code comment says so) | `config.rs:41–56` ("plumbing … is not wired"); 0 consumers | Plumb into the semantic bridge / `alc` args, or mark parsed-only. |
-| A7 | ✅ | DAP schema/config honesty and MCP debug control | Debug fields should either affect behavior or be absent; agents should be able to control debugging | `sessionId` and `breakOnNext` are consumed; unsupported launch fields were removed. Agent control is independently exposed through stateful MCP `al_debug`, rather than Microsoft's `useMcpServerForDebugging` launch toggle. | `debug_adapter_schemas/al.json`; `crates/al-lsp/src/server/mcp.rs`; `Docs/features/debugging-dap.md` | Keep the DAP schema and `al_debug` command contract covered as either surface evolves. |
-| A8 | 🔴 | CodeLens lenses (`al.findReferences`, `al.showProfiler`, `al.runTest`) | Clickable actions above procedures/tests | IDs are emitted, but not all are wired through execute commands → clicking can be a no-op | `queries/code_lens.rs`; `ROADMAP.md` (Zed UX) | Implement the command handlers or re-route to existing task/editor flows. |
-| A9 | ✅ | `InterpRecord` routing class | "Supported workspace records run locally" | Executable backend is wired through single, batch, TUI, and MCP routes; unsupported/package-table behavior still falls back to live BC | `crates/al-test/src/backends/interp.rs`; `router.rs`; daemon test dispatch; README | Keep routing notes and capability-boundary tests in sync as the supported subset grows. |
-| A10 | 🟠 | `test-snapshot replay` / `diff` | Live snapshot record/replay | `replay` validates snapshot **loading**; `diff` compares snapshot **files**; live-BC record/replay isn't wired | `test_snapshots/`; README | Document the file-vs-live split in `--help` output, then wire the live bridge. |
-| A11 | 🟠 | Cobertura coverage output | Line/branch coverage (the format's usual meaning) | It's **static call-graph** coverage, not dynamic | `test_engine/output/cobertura.rs`; `queries/test_coverage.rs` | Label output as static coverage; pursue dynamic coverage from interpreter execution. |
-| A12 | 🟠 | `test-mutate --parallel` | Parallel mutant execution | Flag is **advisory**; execution is sequential | `test_engine/mutate.rs` | Implement parallelism or drop the flag. |
-| A13 | 🟠 | `.alformat.json` options `blankLinesBetweenProcedures`, `maxLineLength`, `braceStyle`, `sortProperties` | Formatter behavior | Parsed but not applied (the format query does `warn!` when set — good) | `syntax/formatting.rs`; `queries/format.rs` | Implement, or document as reserved (the warning is a reasonable interim). |
+## Translation and generated assets
 
-> **Corrected during this audit (no longer misleading):** the permission-set audit
-> (`queries/audit.rs:196`) and XLIFF `suggest_translations` (`xliff.rs:729`) are **implemented**, not
-> stubs — earlier notes that called them stubs were wrong and the feature docs have been fixed.
+- XLIFF suggestions use exact and fuzzy translation-memory matches followed by
+  symbol-name suggestions. No machine-translation provider is bundled.
+- Full grammar generation requires an installed Microsoft AL extension and the
+  tree-sitter CLI. `make language` only regenerates the Zed language package; it
+  does not regenerate grammar data or themes.
+- The external grammar corpus is a measured compatibility suite, not proof that
+  every parsed file has correct semantics. Focused fixtures remain required for
+  grammar changes.
 
----
+## Releases
 
-## B. Functional gaps — works, but incomplete
-
-| # | Severity | Area | Gap | Evidence | Suggested action |
-|---|---|---|---|---|---|
-| B1 | 🟡 | Native compile | **Native verification shipped:** every native build rejects syntax, project/dependency, ID/declaration, declared-symbol binding, and package-integrity errors with structured `ALNxxxx` diagnostics; failed builds preserve the last good artifact. `pack-native --validate` now runs this fast gate first, then invokes `alc` once as an explicit compatibility oracle and fails closed if the toolchain is unavailable. Remaining parity work is procedure-body expression/overload/control-flow and analyzer semantics, not a missing build gate. | `al-emit/src/{project,verification}.rs`; `al-compile/src/lib.rs`; `al-explorer/src/cli/commands/build.rs` | Expand native body-level semantic coverage and differential fixtures. |
-| B2 | 🟡 | Build unification | DONE (core) — a shared **BuildService** (`al_compile::build(BuildRequest{backend,toolchain,package_cache,analyzers,config})` → `Result<CompileResult, AlError>`, with `BuildBackend::Native`/`Alc` + `from_use_official_compiler`) is the single executor for both backends, returning the uniform `CompileResult`. Infra failures (no toolchain / missing app.json / alc spawn) propagate as `Err`→RpcError; a compile that ran (even with error diagnostics) is `Ok(success:false)`. Daemon `dispatch_compile` and `dispatch_package` both route through it (the duplicated native-vs-alc branching collapsed). **Remaining:** migrate `al-explorer pack-native`/`--validate`, the publish path, and DAP launch onto the same service; thread a cancellation token through `BuildRequest`. | `al-compile/src/lib.rs` (`build`/`BuildBackend`/`BuildRequest`); `daemon/build_dispatch/build.rs` | Migrate remaining consumers (publish, DAP, al-explorer) + add cancellation. |
-| B3 | 🟡 | Emitter fidelity | Differential-verified against **alc 17.0**: the native `.app` is semantically identical to alc for a 10-object-kind self-contained corpus (enum/enumextension/interface/codeunit/table/page-with-actions+triggers/query/permissionset/xmlport/report) — `SymbolReference.json` semantically identical (incl. FNV method-id hashes), `NavxManifest.xml` identical except the `<Build>` provenance line, `DocComments.xml` matches (was wrongly reported empty). Fixed the one real divergence (native emitted empty `Platform=""`/`Application=""` attrs alc omits). Remaining: control-property type inference and page-customization bindings for objects that reference base-app symbols aren't differentially covered (needs a BC symbol cache). | `tests/emit_differential.rs` (live `alc`, env-gated); `emit/manifest.rs` | Extend the corpus with base-app-dependent objects once symbols are cached (see C10). |
-| B4 | 🟠 | Interpreter coverage | **Done:** compound assignment `+=`/`-=`/`*=`/`/=`; multi-name local `var` declarations (`A, B, C : Integer;` default-bound); scope-qualified enum members `"Enum"::Member` / `Enum::"T"::"V"` (→ `Value::Option`, ordinal unresolved=0); Date/Time literals (`20240701D`, `063030T`) + `DateTime` via `CreateDateTime`; builtins `MaxStrLen`, `CreateDateTime`, `CurrentDateTime`, `Today`, `Time`; **calls now dispatch in RHS-expression position** (`x := Builtin(...)` — `eval_expr` threads `DispatchCtx`); multi-arg call commas fixed. **Caveats:** `MaxStrLen` returns *current content length* (interpreter doesn't model declared length caps); enum ordinals are 0 (BC-free, no symbol table); enum equality not wired. **Remaining:** multi-arm `CASE` without begin/end parses as one arm (W2-17, tree-sitter-al grammar bug, not interpreter). (List-of-T member access now done — see B6.) | `crates/al-runtime/src/interpreter/tests_adversarial_wave2.rs` (W2-01/02/03/04/07/12/15/19 un-ignored; `b4_*` + `al_date_math_*` added) | Continue: fix the multi-arm CASE grammar; track declared length caps to make `MaxStrLen` exact. |
-| B5 | ✅ | Interpreter dispatch | **Done (native dispatch):** cross-procedure dispatch resolves against the real workspace via `al_types::ProcedureSource` — a test can call a procedure in another workspace codeunit either by object name (`"Math Lib".Add(...)`) or through a `Codeunit <Subtype>` **variable** (`lib.Add(...)`, via the new `Value::Codeunit` handle), and the interpreter executes the real body. Calls now also dispatch in **expression position** (`x := lib.Add(2,3)`, `if Cu.Run() then`) — `eval_expr` threads `DispatchCtx`. Unresolved callees/objects return a graceful `Eval::Error`, never a panic. **Remaining:** records passed by `var` are not aliased back (arguments are by value); `InterpMode` (al-test) still builds the session per codeunit. | `crates/al-runtime/src/interpreter/{dispatch,eval_expr,eval_stmt}.rs`; tests `interpreter::tests_records` (`b5_*`) | Done. Model `var`-parameter aliasing next. |
-| B6 | 🟡 | Records in tests | **Done (core record ops):** `Value::Record` is wired to `MockRecord`. A `Record <Subtype>` local binds to a backing store built lazily from the **workspace table definition** (field-name→number map + primary key parsed from the `fields`/`keys` sections). Implemented and value-tested: `Init`, field get/set (`Rec."Field" := v` / `v := Rec."Field"`), `Insert`, `Modify`, `Delete`, `Get`, `SetRange`/`SetFilter` (BC filter syntax), `FindSet`/`FindFirst`/`FindLast`/`Find`/`Next`, `Count`, `IsEmpty`, `Reset`, `SetCurrentKey`, `DeleteAll`. `List of [T]` member calls (`.Add/.Get/.Count/.Contains/...`) also dispatch (closes W2-08). **FlowField / `CalcFormula` evaluation — Done:** a `FieldClass = FlowField` field with a parseable `CalcFormula` is evaluated against the referenced table's in-memory store, applying the `WHERE` clause (`CONST` / `FIELD(...)`-of-current-record / `FILTER(...)`, reusing the existing filter engine), both via `CalcFields(<field>)` (writes the buffer) and on a direct read (auto-calc). Aggregation classes implemented and value-tested: `Sum`, `Count`, `Exist`, `Average`, `Min`, `Max`, `Lookup` (empty match → `0`/`false`/`Empty`; `Sum`/`Min`/`Max` stay `Integer` when all cells are `Integer`, else `Decimal`). **Remaining (honest):** `Linked` is a record-relationship marker, not an aggregation, and is not modelled (read returns an error); a FlowField whose formula fails to parse falls back to the buffer value; FlowFilters (filter fields feeding the formula) are not applied; the referenced table must be a workspace table (base-app tables still error); record `var`-parameter aliasing and numeric field-type coercion are not modelled; record stores are keyed by table name (two vars of the same table share one backing buffer/cursor). | `crates/al-runtime/src/interpreter/records.rs`; `crates/al-runtime/src/mock/` (`calc_flow`, `calcformula_parser`, `filter`); tests `interpreter::tests_records` (`b6_*`, incl. `b6_flowfield_*`) + `mock::record::tests` (`calc_flow_*`) + `tests_adversarial_wave2` (W2-08) | Model base-app tables once a symbol cache lands; apply FlowFilters; honour the `Linked` relationship. |
-| B7 | 🟠 | Test routing & selection | **Affected-test selection** now uses **call-graph reachability**: a test is affected iff it transitively reaches a changed object's members (procedures/events/subscribers), via a fully-resolved backward walk; honest `mode` reports `callGraph` vs the legacy `fileBased` fallback (used when a changed path isn't an indexed object). Coverage limits: resolves direct calls, declared-type member calls, record-op→table-event triggers, and event subscribers, but NOT polymorphic dispatch (`Codeunit.Run(id)`, interface-typed calls) or `.app`-only bodies (declarations have no call sites) — those are conservative false-negatives. **Backend routing** (`Interp`/`InterpRecord`/`LiveBc`) is still the conservative substring-disqualifier classifier, not AST/call-graph. | `al-insight/src/index.rs` (`reachable_callers`); `al-insight/src/calls.rs` (`resolve_all_workspace_call_edges`); `al-analysis/src/queries/tests.rs` (`affected_tests_detailed`, `AffectedMode`); `al-test/src/router.rs` | Resolve indirect/interface/event polymorphic dispatch to close the reachability false-negatives; migrate the backend-routing classifier off substring disqualifiers onto the same call-graph. |
-| B8 | 🟠 | DAP variable inspection | Structured value expansion is shallow — `variablesReference` is always 0, so records don't drill in | DAP agent audit; `dap/native_dap.rs` | Wire `ExpandNode`/`ExpandGlobals` recursion. |
-| B9 | 🟠 | DAP capabilities | No pause / function breakpoints / set-variable / restart / step-back (pause is a genuine BC limitation; the others are not) | `dap/native_dap.rs` | Implement set-variable and restart where BC allows. |
-| B10 | 🟠 | Symbol download | BC-server download lacks the NuGet path's explicit concurrency limit + per-package dedupe | `symbols/bc_server.rs` vs `nuget.rs` | Bring BC-server controls to parity. |
-| B11 | 🟢 | Diagnostics scope | DONE — `workspace/diagnostic` implemented (`workspaceDiagnostics: true`). Reports parse/syntax errors across **every indexed workspace file** (reusing cached trees, no re-parse) plus bridge/semantic diagnostics for **open documents**. Semantic analysis is deliberately not run on unopened files (per-file CLR round-trip), so workspace scope = syntax everywhere + semantic for open files. | `server/lsp.rs`; `server/diagnostics.rs`; `queries/diagnostics.rs::workspace_syntax_diagnostics` | Optional future: run the bridge across the full project when a toolchain is present (cost permitting). |
-| B12 | ✅ | Object generators | RESOLVED: `generate_page`/`generate_report`/`generate_test` are all reachable via `al-explorer generate <kind>` (daemon `generate`). Closed the last gap — `generate test --subject <codeunit>` ignored the `subject` param (subject was mis-sourced from `table`, matched only against Tables), so the subject-driven `[Test]` stub path was unreachable | `generators.rs`; `daemon/build_dispatch/codegen.rs` `dispatch_generate`; `al-explorer` `cmd_generate` | Done: `subject` now resolves a workspace Codeunit and feeds `generate_test_stubs`; covered by dispatch unit tests + manual CLI run. |
-| B13 | 🟢 | Permission audit depth | Coverage **plus** object-level over-broad (`overBroad`) **plus right-level (RIMDX) over-grant** (`overGrantedRights`): for a referenced `tabledata` grant, observed write sites are derived from al-insight (record-var subtype + Insert/Modify/Delete/ModifyAll/DeleteAll/Rename call sites) and any granted I/M/D with **no** observed write is flagged (R never flagged — unprovable). Over-approximates in the safe direction (flag only when no write found); documented blind spots: RecordRef/FieldRef dynamic writes, interface/dynamic dispatch, base-app code. | `queries/audit.rs` (`compute_over_broad`, `compute_over_granted_rights`) | Resolve dynamic/RecordRef writes to shrink false-negatives. |
-| B14 | 🟢 | Profiler accuracy | **DONE** — self-time aggregates the profile's `timeDeltas` per node (`samples[i]` charged `timeDeltas[i]`, µs → ms; sums per sampled node id, guards mismatched array lengths). Falls back to the old 1 ms/hit estimate only when `samples`/`timeDeltas` are absent; `hit_count` is still reported and ranking is time-based. **`total_time_ms` now rolls up the call tree** — `total(node) = self + Σ total(child)` via an iterative post-order DFS over the `children` adjacency (handles a forest of multiple roots, memoizes shared subtrees, and guards cycles/dangling child ids so it can't loop or panic); self-time is unchanged. Done in `al-bc` (`analyze_profile`) and `al-analysis` (`parse_profile`), each with chain + cycle/dangling tests. The `al-explorer` TUI copy still shares the unified `aggregate_self_time_us` but keeps `total_time_ms ≈ self_time` (no roll-up there yet — would need the same `aggregate_total_time_ms` ported). | `al-bc/src/profiling.rs` (`analyze_profile`, `aggregate_total_time_ms`); `queries/profiler_hints.rs` (`parse_profile`, `aggregate_total_time_ms`); `al-explorer/src/views/profiler.rs` (self-time only) | Port the `total_time_ms` call-tree roll-up into the `al-explorer` TUI profiler copy for parity. |
-| B15 | 🟠 | Arch lint rules | `builtin_rules()` now ships 4 always-on BC layering rules — table→no `Page.Run`/`Page.RunModal`, table→no interactive dialogs (`Message`/`Confirm`/`StrMenu`), table→no explicit `Commit`, page→no direct DB writes (`.Insert`/`.Delete`/`.ModifyAll`/`.DeleteAll`) — each unit-tested with violating + clean fixtures. Matching is still **literal substring** (case-insensitive); regex was skipped because the `regex` crate is not a workspace dep (adding one was out of scope per the gap brief). So naming-relationship rules (e.g. tables referencing `*Mgt`/`*Management` codeunits, cross-area internals) remain unexpressible. | `queries/arch_lint.rs` | Add regex/alternation matching (introduce the `regex` crate) to express naming-based cross-layer rules. |
-| B16 | ✅ | Platform parity (Windows) | **Resolved:** daemon IPC now uses the cross-platform `interprocess::local_socket` seam: Unix-domain sockets on Linux/macOS and per-user named pipes on Windows. `al-lsp daemon`, the full `al-explorer` CLI/TUI, and Zed tasks compile and ship on Windows; the unsupported-platform stubs and `#[cfg(unix)]` explorer gates were removed. The Windows CI/release jobs build both binaries and package `al-explorer.exe`. MCP remains independently portable over stdio. | `al-protocol` `client.rs`/`socket.rs`; `al-lsp` `server/daemon/mod.rs`; `al-explorer`; release/CI workflows; `README.md`; `Docs/architecture.md` | Keep Windows native build/test coverage green. |
-
----
-
-## C. Future progression & nice-to-haves
-
-| # | Severity | Area | Item | Source |
-|---|---|---|---|---|
-| C1 | 🟢 | MCP | DONE — `al_call` forwards any method and parameter object to the shared daemon dispatcher, so the complete current and future tool catalog is available to MCP without a hand-maintained allow-list. Named tools such as `al_suggestevent`, `al_testclassify`, `al_testcoverage`, and `al_depgraph` remain ergonomic aliases with richer schemas; XLIFF, code actions, package inspection, and every other dispatcher method are reachable through the generic bridge. | `crates/al-lsp/src/server/mcp.rs`; `crates/al-test-harness/tests/mcp_stdio.rs`; `Docs/reference/mcp-tools.md` |
-| C2 | 🟡 | MCP | PARTIAL — added schema tests (in-crate `mcp.rs` unit tests + `al-test-harness/tests/mcp_stdio.rs`) asserting every tool advertises a non-empty description and a well-formed input schema (object, `required` array whose fields are all declared in `properties`), and that `tools/list` returns the registry; `al_testclassify` output is exercised end-to-end and asserted to carry per-test local-vs-needs-BC routing (`decision`, mirroring the router's `runs_locally`/`execution_note`). **Remaining:** output-schema declarations for tools; routing detail in `al_runtests` output itself. | `crates/al-test-harness/tests/mcp_stdio.rs`; `crates/al-test/src/router.rs`; `ROADMAP.md` |
-| C3 | 🟢 | MCP | Agent-oriented diagnostics for missing symbols / BC config / semantic bridge / source-unavailable navigation | `ROADMAP.md` |
-| C4 | ✅ | Zed UX | **DONE** — `.zed/tasks.json` ships 7 project-local AL workflow tasks, each mapping to a **verified-real** `al-explorer` subcommand: affected tests (`test-affected $ZED_FILE`), dependency graph (`deps-graph --format json`), XLIFF refresh (`xlf refresh`), XLIFF untranslated (`xlf untranslated`), test-snapshot diff (`test-snapshot diff`), test-snapshot replay (`test-snapshot replay`), and table impact (`impact $ZED_SYMBOL --table`). Tasks use `$ZED_FILE`/`$ZED_SYMBOL`/`$ZED_WORKTREE_ROOT` and pin `cwd` to the project root so the daemon finds `app.json`. File is strict JSON (no JSONC) so it parses with `serde_json`, not only Zed's lenient reader. **Remaining:** `xlf suggest` (a real subcommand) is not yet exposed as a task; the two-file `test-snapshot diff` baseline path is a template the user edits (no Zed variable maps to a second file). | `.zed/tasks.json`; `al-explorer` `cli/args.rs`, `cli/subcommands.rs`; ROADMAP (Zed UX) |
-| C5 | 🟢 | Zed UX | **Partially done** — `crates/al-test-harness/tests/extension_smoke.rs` adds offline (no-BC) **wiring** smoke tests: the `al-explorer`/`al-lsp` binaries resolve to built files and run; the daemon/LSP startup path comes up and answers (`al-explorer diag` → `symbolCount`); the MCP transport answers `tools/list`; and every `al-explorer` task in `.zed/tasks.json` is parsed and proven to name a real subcommand (`al-explorer <sub> --help` exit 0 — fails loudly on an invented command). **Honest scope:** these verify *plumbing*, not pixels — they do not render Zed or assert highlighting/task-picker behavior; full in-editor verification still needs the GUI e2e harness (`editor-e2e/drive.sh`). **Remaining:** binary-*download* path, DAP startup, and restoring settings-schema registration on Stable (pending the 0.8 extension API in the registry) are not covered here. | `crates/al-test-harness/tests/extension_smoke.rs`; `ROADMAP.md`; `README.md` (Zed Integration) |
-| C6 | 🟡 | Symbols | DONE (core) — 11 deterministic Criterion benches over the hot paths (cold load+index, warm lookup by name/id/search, insight graph build/trace/table-impact/callgraph, completion) against a fixed synthetic workspace; emits a `[C6 MEMORY]` proxy (serialized bytes/symbol, insight node/edge counts). `Docs/benchmarks.md` documents run+read. **Remaining:** true byte-level heap/RSS accounting; a CI regression gate; embedded-source vs outline vs metadata-only distinction in user output. | `al-lsp/benches/perf.rs`; `Docs/benchmarks.md` |
-| C7 | ✅ | Symbols | DONE — **`appLocalFolderPaths` and `packageCachePath` are live inputs** across LSP, daemon/CLI/TUI, and core-workspace initialization. Relative paths resolve from the project root, scans are deterministic and version-deduped, and LSP settings changes replace the file-backed symbol generation without a restart. Dependency satisfaction uses manifest GUID + minimum version rather than “any package exists.” `SymbolReference.json` itself remains declaration-only, but source-backed packages expose their complete embedded AL through structured `source`, navigation, and the dependency call/effect index; only source-free packages use generated outlines. | `al-project/src/project.rs` (`apply_symbol_settings`); `al-workspace/src/lib.rs`; `al-lsp/src/server/workspace.rs`, `lsp.rs`, `server/daemon`; `al-symbols/src/source_index.rs`, `virtual_file.rs` |
-| C8 | 🟢 | Bridge retirement | Bridge-free semantic diagnostics are live: `AL-NC001`–`AL-NC006` validate object IDs/names/ranges, AppSource affixes, extension targets against workspace/dependency symbols, and member IDs; `AL-NL003`/`AL-NL004` add full call/event-stack transaction analysis. They now flow through LSP diagnostics, `lint`, the rule registry, and the native compile/package gate as well as `nativeCheck`. Standard Microsoft and third-party AL bodies embedded in loaded `.app` packages are parsed into a cached dependency source index and participate in the same call/effect graph as project code; only genuinely source-free packages use declaration/event fallback. Native build also performs syntax/project/dependency/binding/artifact validation before atomic output. Distinct `AL-NC*`/`AL-NL*` namespaces avoid Microsoft `AL####` collisions. **Honest scope:** exact CodeCop/AppSourceCop/UICop/PerTenantCop catalogue compatibility remains optional through the .NET bridge/`alc`. | `al-analysis/src/queries/native_check.rs`; `al-analysis/src/queries/transaction_lint.rs`; `al-workspace/src/lib.rs`; `al-symbols/src/source_index.rs`; `al-emit/src/verification.rs` |
-| C9 | 🟢 | Tests | DONE (statement + two-way branch, now surfaced end-to-end) — a `Coverage` collector is threaded through `DispatchCtx` (opt-in, zero-cost when off): `eval_stmt` records each executed statement line (not-taken branch bodies are never visited → statement coverage), `eval_if`/`eval_case` record the then/else decision, and cross-procedure calls attribute lines to the callee's file. Wired via `InterpMode::with_coverage` → `coverage_report()`. **Now surfaced over the daemon:** `RunOptions.coverage` (opt-in, default off) drives `tests.run_batch`/`run_auto` (`coverage: true`, exposed as `al-explorer test-run-all --coverage`) to run interp-routed tests with the collector, return a per-file `coverage` object (executed lines + branch decisions) in the RPC result, and — when `coberturaOut` is set — emit a **dynamic** Cobertura document (`write_cobertura_dynamic`, `coverage-mode="dynamic-executed-lines"` + leading comment) instead of the static call-graph one. The static path stays the default so existing runs are unchanged. **Remaining:** per-`case`-arm/condition (MC-DC) coverage; expand mutators. | `al-runtime/src/interpreter/coverage.rs`; `al-test/src/backends/interp.rs` (`with_coverage`); `al-test/src/output/cobertura.rs` (`write_cobertura_dynamic`); `al-lsp` `tests_dispatch.rs` (`dispatch_tests_run_batch`) |
-| C10 | ✅ | Emit | DONE (core) — a pure-Rust `pack-native` `.app` (no Microsoft `alc`) was **published to and installed on a live BC cloud sandbox**: POST `/dev/apps` returned HTTP 200, and a re-POST returned 422 "duplicate package ID … already exists in a published extension" (confirming install); a corrupt `.app` control returned 422 "not an extension file" (confirming BC validates). So BC accepts the native emitter's output end-to-end. Remaining: broaden to base-app-dependent objects (needs symbol download config) and expand fixtures (profiles/reports/translations/control add-ins). | `ROADMAP.md` (Native App Emission); verified against tenant Sandbox via `/dev/apps` |
-| C11 | ✅ | Toolchain | DONE (env var) — `AL_DOTNET_PATH` overrides the `dotnet` host used to launch Microsoft's net8 AL tools (`alc`/`aldoc`/`altool`), for machines where `dotnet` isn't on `PATH` or a specific SDK must be pinned. Applied in `dotnet_command`/`dotnet_command_async`/`official_lsp_command` via a `dotnet_program()` resolver; if the override is unset/missing/not-executable it logs a warning and falls back to bare `dotnet` (never hard-fails discovery). **Remaining:** not yet surfaced as an `al.dotnetPath` LSP setting — al-lsp has no `config.rs` and the command constructors sit in build/bridge hot paths; intended wiring is for the server's settings handler to export this env var from parsed config (TODO in source). | `al-project/src/toolchain.rs` (`dotnet_program`, `DOTNET_PATH_ENV`); `ROADMAP.md` (Architecture Unification); README |
-| C12 | ✅ | Scaffolding | DONE — user-defined project templates: `ProjectTemplate::from_str` falls back to a `Custom` template resolved from `$AL_TEMPLATES_DIR` / `$XDG_CONFIG_HOME/al/templates` / `~/.config/al/templates` (`<name>/template.json` + `files/` tree). Placeholders (`{{name}}`/`{{publisher}}`/`{{id}}`/`{{id_from}}`/…) substituted in contents and file/dir names; path-traversal + symlink guarded; built-ins unchanged. | `scaffold.rs` |
-| C13 | 🟠 | XLIFF | **Translation-memory backend DONE; machine-translation not.** `suggest_translations_with_memory` builds an index of already-translated units (target present + state `translated`/`final`) and, per untranslated unit, returns: an **exact** normalized-source match (origin `tm-exact`, confidence 1.0), else a cheap **fuzzy** match (Sørensen–Dice token overlap on lowercased/whitespace-collapsed tokens — no new crate; `strsim` is only a transitive dep) above a 0.5 threshold (origin `tm-fuzzy`, confidence < 1.0), else the existing symbol-name match (origin `name`). Each suggestion is tagged with `origin` + `confidence` so output stays honest. **Still open:** a real machine-translation backend; and the LSP `xlf suggest` dispatch still calls the name-only `suggest_translations` shim — wiring it to pass the parsed XLIFF units as memory is a one-line change deferred (it lives outside `xliff.rs`). | `xliff.rs` (`suggest_translations_with_memory`, `TranslationMemory`, `SuggestionOrigin`) |
-| C14 | ✅ | Docs/process | DONE — `Docs/architecture.md` (Mermaid crate-dependency + request-flow diagrams, edges from real Cargo.toml deps), `Docs/testing-guide.md` (per-layer verification + repro-report template), and `make release-dryrun` (read-only release-readiness gate) + `make repro-artifacts`; linked from `Docs/README.md`. | `Docs/architecture.md`; `Docs/testing-guide.md`; `Makefile` |
-| C15 | ✅ | Analysis | DONE — affected-test detection is call-graph-based (B7), and indirect/polymorphic edges now resolve via a new `EdgeKind::IndirectCall` (sound over-approximation, added-only): (a) interface dispatch → every `implements`-ing codeunit's method, (b) `Codeunit.Run(Codeunit::"X")`/RunModal literal → `X.OnRun`, (c) event publish-site → its `[EventSubscriber]` handlers. Wired into coverage (`test_coverage.rs` credits one-hop IndirectCall callees) and affected-tests (automatic). **Remaining:** non-literal `Codeunit.Run(Var)`; overloaded-name over-credit (name-based direct resolution). | `al-insight/src/calls.rs` (`EdgeKind::IndirectCall`); `queries/test_coverage.rs` |
-
----
-
-## D. Suggested triage order
-
-1. **Fix the misleading surfaces (Section A) first** — they are cheap relative to their trust cost.
-   A1 (native lint) and A5–A6 (breaking/upgrade baseline) are now closed (see above). Remaining
-   clearest wins: wire or mark-as-reserved the still-inert settings (A2–A4), and make
-   `test-classify` / `xlf suggest` / Cobertura output state their true behavior (A9–A11). Most are
-   a few lines plus a doc note.
-2. **Then the high-leverage functional gaps:** native compile validation (B1) and the build-service
-   unification (B2), since they unblock correctness and several other items.
-3. **Then test-runtime depth (B4–B7)** — each increment migrates more tests from "needs BC" to "runs
-   locally," which is the project's core differentiator.
-4. **Nice-to-haves (Section C)** as capacity allows, prioritizing MCP schema/diagnostic quality
-   (C2–C3; complete dispatcher availability in C1 is done) and the bridge-retirement native
-   replacements (C8), which together improve agent UX and reduce external dependencies.
-
-> Maintenance note: when an item here is fixed, update both this audit and the relevant feature page's
-> status tag so the two never drift. Keeping the README/settings/schema claims matching code is the
-> project's stated honesty contract.
+- `tree-sitter-al` is a separate owned repository. Its commit must be pushed and
+  remotely reachable before the superproject gitlink and `extension.toml`
+  revision are published.
+- Publishable workspace libraries have independent semantic versions. The Zed
+  extension, `al-lsp`, `extension.toml`, and corresponding lockfile product
+  entries use the synchronized release version.

@@ -18,7 +18,7 @@ route here; MCP calls the same dispatcher in-process. Every method below is avai
 `location`, `permissions`, `compile`, `package`, `newProject`, `errorCodes`, `builtinTypes`, `setup`,
 `clearCache`, `authenticate`, `downloadSymbols`, `snapshot`, `profiling`, `generate`, `obsolete`,
 `audit.dataClassification`, `permissions.audit`, `deps.graph`, `breaking`, `arch.lint`, `duplicates`,
-`upgrade`, `profiler.hints`.
+`upgrade`, `profiler.hints`, `nativeCheck`, `diag`.
 
 XLIFF: `xlf.generate`, `xlf.refresh`, `xlf.untranslated`, `xlf.suggest`.
 
@@ -48,14 +48,17 @@ calls.
 
 ## Conventions & limits
 
+- Lifecycle methods: `ping` returns an empty object, `status` returns daemon/workspace state, and
+  `shutdown` requests an orderly daemon stop.
 - JSON-RPC 2.0 over newline-delimited frames; error codes include standard set plus `-32000`
-  (code analysis) and `-32001` (file not found). `null` results serialized explicitly (F-017).
-- Hardening: `duplicates` `minTokens`/`minSimilarity` clamped (F-OPEN-007); `graphExport` capped at
+  (code analysis) and `-32001` (file not found). `null` results are serialized explicitly.
+- `duplicates` clamps `minTokens` and `minSimilarity`; `graphExport` is capped at
   50k nodes+edges; `trace`/`traceChain` depth bounded; 64 MB max request line; ≤64 concurrent
   connections; 30-minute idle shutdown (skipped during an active debug session).
 - Local-only IPC: Unix-domain socket at `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` (with platform
   runtime-directory fallbacks) on Linux/macOS; per-user named pipe on Windows.
 
-> The exact parameter shapes for each method are defined at the call sites in
-> `crates/al-lsp/src/server/daemon/` and mirrored by the `al-explorer` CLI argument parsing; the CLI
-> provides dedicated argument UX, while MCP passes the same parameter object through `al_call`.
+Common parameter shapes: position queries accept `uri` plus `{line, character}`; `breaking` and
+`upgrade` accept `baselineSymbols`; `tests.snapshot_replay` accepts `snapshotPath`; and
+`tests.snapshot_diff` accepts `snapshotA` and `snapshotB`. Other method shapes are defined beside
+their dispatcher and mirrored by `al-explorer`; MCP passes the same object through `al_call`.

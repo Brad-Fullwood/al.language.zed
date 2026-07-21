@@ -2,7 +2,7 @@
 
 AL Language for Zed is a native Business Central AL toolchain for Zed. It is not a syntax-highlighting package with a thin language-server wrapper. The repository contains a Rust language server, debug adapter, CLI/TUI, MCP server, symbol engine, query engine, test runner, and generated Zed language package for Microsoft Dynamics 365 Business Central AL development.
 
-The guiding idea is simple: make the AL developer experience native, inspectable, scriptable, fast, and available from Zed, the terminal, CI, and AI agents. Microsoft tooling still matters, especially for compiler-correct builds and Business Central runtime behavior, but this project owns as much of the day-to-day editor and analysis stack as possible.
+The toolchain is available from Zed, the terminal, CI, and MCP clients. Microsoft tooling remains available where exact compiler semantics or Business Central runtime behavior is required.
 
 > Tester callout: this project is ready for serious testers across Zed editing, `al-lsp`, `al-explorer`, MCP, debugging, symbol downloads, and pure-logic test execution. Please test real Business Central projects, compare behavior against the official Microsoft tooling, and report exact commands, project shape, platform, expected result, actual result, and whether the issue is native-only or also reproduces through the Microsoft fallback. The roadmap in [ROADMAP.md](./ROADMAP.md) lists known gaps so testers can distinguish expected limitations from regressions.
 
@@ -95,9 +95,9 @@ The default `.app` build path is verified native Rust. Microsoft `alc` remains a
 
 The practical benefit is a safer and usually faster-feeling development loop: the editor and CLI keep using already-built indexes for most questions, and the compile path becomes a deterministic build step instead of the only way to understand the project.
 
-## AI And Agent Workflows
+## MCP Automation
 
-AI integration is a first-class surface, not an afterthought. The extension registers a Zed context server named `AL Tools`, which launches `al-lsp mcp` from `PATH`. The MCP server speaks newline-delimited JSON-RPC over stdio and forwards tool calls into the same daemon dispatcher used by the CLI.
+The extension registers a Zed context server named `AL Tools`, which launches `al-lsp mcp` from `PATH`. The MCP server speaks newline-delimited JSON-RPC over stdio and forwards tool calls into the same daemon dispatcher used by the CLI.
 
 Current MCP tools:
 
@@ -139,7 +139,8 @@ The router is conservative and currently pattern-based. `Interp` and supported `
 
 The record runtime is wired to workspace table definitions, with isolated in-memory data, keys, BC-style filters, common CRUD/navigation methods, and CalcFormula-backed FlowFields. It intentionally does not emulate platform triggers, transactions, permissions, RecordRef/FieldRef, or package-only table schemas.
 
-Snapshot test commands are exposed by the CLI, but live-BC record/replay is not fully wired yet: replay currently validates snapshot loading, and diff compares existing snapshot files.
+`test-snapshot replay` validates an existing snapshot file and `test-snapshot diff` compares two
+files. Live Business Central snapshot capture is not exposed as a command.
 
 ## Specialized AL Workflows
 
@@ -156,12 +157,18 @@ The native engine enables workflows that are difficult to get from a generic edi
 - SQL scan: find patterns such as `FindFirst` in loops, `Get` in loops, `CalcFields` in loops, and unfiltered `FindSet`.
 - Architecture lint: validate project-specific dependency rules from `.alarch.json`.
 - Duplicate detection: find repeated AL code blocks.
-- Breaking-change and upgrade analysis: compare public surfaces, obsolete metadata, permissions, and upgrade risk. Note: the baseline (a previous published version to diff against) is not yet wired, so `breaking` and `upgrade` currently run against an empty baseline and report no changes.
+- Breaking-change and upgrade analysis: compare public surfaces, obsolete metadata, permissions,
+  and upgrade risk against a previous `.app` supplied with `--baseline-app`. Without a baseline the
+  commands report that the analysis was not evaluated.
 - Permission and data audits: inspect permission sets, table data classification, and missing metadata.
 - XLIFF tooling: generate, refresh, inspect untranslated entries, and suggest translations from workspace symbols.
 - Bulk fixes: add application areas, tooltips, data classification, organize files, and sort members.
 
-These are not just README ideas. The shared daemon catalog is available from both CLI and MCP (`al_call` provides complete MCP coverage); Zed tasks and editor actions are entry points to the same implementations. The task picker emphasizes common editor workflows, but any CLI workflow remains runnable from Zed's terminal. XLIFF refresh/untranslated/suggest, package inspection, code actions, and the rest of the daemon catalog are callable from MCP through `al_call` even when they do not have a dedicated named alias.
+The shared daemon catalog is available from both CLI and MCP (`al_call` provides complete dispatcher
+coverage); Zed tasks and editor actions use the same implementations. XLIFF
+refresh/untranslated/suggest and code actions are callable through `al_call` even when they do not
+have a dedicated named alias. Low-level `.app` inspection remains a Rust library API rather than a
+daemon or MCP method.
 
 ## Command And Feature Surface
 
@@ -236,13 +243,13 @@ The CLI command surface includes:
 - LSP-style queries: `hover`, `definition`, `references`, `signature`, `completions`, `symbols`, `folding`, `tokens`, `parse`, `rename`, `hints`.
 - Symbols and objects: `search`, `object`, `by-id`, `composed`, `builtins`, `rules`, `error-codes`, `generate-completions`, `version`.
 - Events and insight: `events`, `subscribers`, `event-source`, `trace`, `intercept`, `entrypoints`, `graph`, `impact`, `suggest-event`, `insight-stats`.
-- Analysis: `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `breaking`, `upgrade`, `obsolete`, `audit-data`, `permission-audit`, `profiler-hints`.
+- Analysis: `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `native-check`, `breaking`, `upgrade`, `obsolete`, `audit-data`, `permission-audit`, `profiler-hints`.
 - Formatting/refactoring/codegen: `format`, `lint`, `fix`, `permissions`, `generate`, `add-application-area`, `add-tooltips`, `add-data-classification`, `sort-members`, `organize-files`.
 - Debug/profiling: `debug`, `snapshot`, `profile`.
 - Tests: `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`, `test-classify`, `test-snapshot`, `test-results`.
 - Translation: `xlf`.
 
-Nested command groups include `debug start|breakpoint|state|eval|continue|step|history|stop`, `snapshot start|list|download`, `profile start|stop|analyze`, `test-snapshot record|replay|diff`, and `xlf generate|refresh|untranslated|suggest`.
+Nested command groups include `debug start|breakpoint|state|eval|continue|step|history|stop`, `snapshot start|list|download`, `profile start|stop|analyze`, `test-snapshot replay|diff`, and `xlf generate|refresh|untranslated|suggest`.
 
 ### Daemon Protocol
 
@@ -254,7 +261,8 @@ The symbol engine is one of the key reasons the project can support advanced AL 
 
 - `.app` files are read natively as NAVX/ZIP packages.
 - `NavxManifest.xml` and `SymbolReference.json` are parsed directly.
-- `app_inspect` can list, classify, and safely extract package entries for IP and format auditing.
+- The `al-symbols::app_inspect` library API can list, classify, and safely extract package entries
+  for format and provenance audits. It is not currently exposed through `al-explorer` or MCP.
 - Source files embedded in `.app` packages can be exposed as virtual source for navigation; packages without embedded source fall back to generated public-API outlines.
 - Archive entries, manifest size, symbol size, and total package size are bounded.
 - Parsed package data is cached on disk and validated before reuse.
@@ -296,7 +304,8 @@ Several directories are generated or synchronized output. This matters because m
 Release-critical invariants:
 
 - `extension.toml` `[grammars.al].rev` must match the submodule commit recorded in the superproject gitlink for the release commit. A leading `+` in `git submodule status` is a release blocker.
-- The root package version, `extension.toml` version, crate versions, and lockfile path-package versions should move together.
+- Product versions for `zed-al`, `extension.toml`, `al-lsp`, and their lockfile entries move
+  together. Library crates keep independent semantic versions.
 - `zed_extension_api` must stay pinned to a released crates.io API in committed release state.
 - Release asset names in `src/lib.rs` must stay aligned with `.github/workflows/release.yml`.
 - `languages/al` must be current against `al-gen --zed-language-only`; CI and release hygiene fail when those generated files drift.
@@ -357,29 +366,46 @@ Common AL settings:
 }
 ```
 
-`al.useOfficialLsp` is the explicit escape hatch for delegating to Microsoft's official AL LSP. The default path is this project's native `al-lsp`. Custom `dotnet` path configuration is not currently supported; the toolchain invokes `dotnet` by name.
+`al.useOfficialLsp` is the explicit escape hatch for delegating to Microsoft's official AL LSP. The
+default path is this project's native `al-lsp`. Set `AL_DOTNET_PATH` to select a specific executable
+for Microsoft .NET-hosted AL tools; otherwise the toolchain resolves `dotnet` from `PATH`.
 
-**Every setting - with types, defaults, and descriptions - is documented in [docs/settings.md](docs/settings.md), and a ready-to-copy, fully-commented template is at [examples/zed-settings.jsonc](examples/zed-settings.jsonc).** `al.enableNativeLint` and `al.nativeLintRules` control the native file, project-semantic, and resolved call/event-stack rules (`AL-NL*`/`AL-NC*`). Microsoft's CodeAnalysis bridge is optional and additive.
+**Every setting—with types, defaults, and descriptions—is documented in the
+[settings reference](Docs/reference/settings.md), and a ready-to-copy template is available at
+[examples/zed-settings.jsonc](examples/zed-settings.jsonc).** `al.enableNativeLint` and
+`al.nativeLintRules` control the native file, project-semantic, and resolved call/event-stack rules
+(`AL-NL*`/`AL-NC*`). Microsoft's CodeAnalysis bridge is optional and additive.
 
 On Zed Dev/Nightly (extension API >= 0.8) the `lsp.al-lsp.settings` keys autocomplete and validate as you type; on Stable Zed the settings still apply, just without in-editor autocomplete (use the template above). This lights up on Stable automatically once the 0.8 extension API reaches the registry.
 
 ### Project-file schemas (app.json, rulesets)
 
-This extension ships JSON Schemas for the AL project files you edit by hand: `app.json`, `*.ruleset.json`, `AppSourceCop.json`, and `migration.json`. Associate them with Zed's bundled JSON language server (the `json.schemas` block in [examples/zed-settings.jsonc](examples/zed-settings.jsonc)) to get autocomplete and validation for those files on **every Zed channel today**. See [docs/settings.md](docs/settings.md#project-file-schemas-appjson-rulesets-) for the mapping.
+This extension ships JSON Schemas for the AL project files you edit by hand: `app.json`,
+`*.ruleset.json`, `AppSourceCop.json`, and `migration.json`. Associate them with Zed's bundled JSON
+language server using the `json.schemas` block in
+[examples/zed-settings.jsonc](examples/zed-settings.jsonc). The mapping is documented in the
+[settings reference](Docs/reference/settings.md#project-file-schemas-appjson-rulesets-).
 
 ## Debugging
 
-The extension registers the `al` debug adapter and debug locator. Snippets cover common Business Central launch and attach configurations, including browser launch, tenant/environment settings, sandbox attach, and agent-session fields. Debug-config schemas are tracked in the repository for reference; debug configurations are authored via the bundled snippets rather than a registered settings-editor schema. (For language-server settings and project-file schema autocomplete, see [Zed Settings](#zed-settings) above and [docs/settings.md](docs/settings.md).)
+The extension registers the `al` debug adapter and debug locator. Snippets cover common Business
+Central launch and attach configurations, including browser launch, tenant/environment settings,
+sandbox attach, and agent-session fields. Debug-config schemas are tracked for reference;
+configurations are authored through the bundled snippets. See [Zed Settings](#zed-settings) and the
+[settings reference](Docs/reference/settings.md) for language-server and project-file schemas.
 
 Debug support has two important layers:
 
 - Native Zed/DAP integration in `al-lsp --dap`.
-- Stateful AI-agent control through the `al_debug` tool in `al-lsp mcp`.
+- Stateful MCP debug control through the `al_debug` tool in `al-lsp mcp`.
 - Business Central runtime/debug service integration for actual AL execution.
 
-The native adapter currently implements the core launch/attach, publish, breakpoint, stepping, stack, scopes, variables, and evaluate flow against BC REST/SignalR. AI agents can use MCP to attach, set conditional breakpoints, inspect state, stack, locals, globals, and expanded values, evaluate expressions in a selected frame, continue, step, inspect history, and stop. The MCP process retains the native session between tool calls; it exposes structured debug operations rather than raw DAP frames. The BC runtime remains the source of truth for executing AL in a server environment. See [the DAP feature guide](Docs/features/debugging-dap.md#ai-agent-control-through-mcp).
+The native adapter currently implements the core launch/attach, publish, breakpoint, stepping, stack, scopes, variables, and evaluate flow against BC REST/SignalR. MCP clients can attach, set conditional breakpoints, inspect state, stack, locals, globals, and expanded values, evaluate expressions in a selected frame, continue, step, inspect history, and stop. The MCP process retains the native session between tool calls; it exposes structured debug operations rather than raw DAP frames. The BC runtime remains the source of truth for executing AL in a server environment. See [the DAP feature guide](Docs/features/debugging-dap.md#mcp-debug-control).
 
 ## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for generated-file ownership, the verification matrix, and
+the required grammar-first publishing workflow.
 
 Prerequisites:
 
@@ -417,6 +443,7 @@ cargo fmt --all --check
 cargo test --workspace --exclude zed-al
 cargo test -p zed-al --target wasm32-wasip1
 cargo test -p al-protocol
+make wasm
 cargo test -p al-test-harness
 scripts/check-repo-consistency.sh
 scripts/check-release-hygiene.sh
@@ -437,15 +464,17 @@ Releases are tag-driven. Pushing a `v*` tag starts `.github/workflows/release.ym
 Before tagging:
 
 1. Start from a clean worktree except for the intentional release changes.
-2. Commit any `tree-sitter-al` submodule changes inside the submodule.
-3. Update the superproject submodule pointer.
-4. Confirm `git submodule status` has no leading `+`.
-5. Keep `extension.toml` grammar rev synchronized with the superproject gitlink.
-6. Bump versions consistently across `extension.toml`, `Cargo.toml`, crates, and `Cargo.lock`.
-7. Make the tag name match the package version, for example `v0.2.2` for version `0.2.2`.
+2. Commit and push any `tree-sitter-al` changes inside the submodule.
+3. Verify the grammar commit is reachable from the grammar remote.
+4. Update the superproject gitlink and `extension.toml` revision to that commit.
+5. Regenerate `languages/al` and confirm `git submodule status` has no leading `+`.
+6. Bump the synchronized product versions in `extension.toml`, root `Cargo.toml`, `al-lsp`, and
+   `Cargo.lock`; version library crates independently when their APIs change.
+7. Make the tag name match the product version, for example `v0.2.2` for version `0.2.2`.
 8. Run repository consistency checks, release hygiene checks, and the relevant test suite.
 9. Require green CI on the exact commit being tagged; the tag workflow enforces this before building artifacts.
-10. Tag from the exact commit you want users to install.
+10. Push the superproject commit only after the referenced grammar commit is available remotely.
+11. Tag from the exact commit you want users to install.
 
 ## License
 

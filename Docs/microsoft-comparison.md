@@ -1,9 +1,8 @@
 # Microsoft Comparison
 
-This page consolidates how **AL Language for Zed** compares to Microsoft's official **AL Language**
-extension for VS Code (and the surrounding toolchain: `alc`, the .NET AL Language Server,
-`EditorServices.Host`, and the BC dev services). Per-feature detail lives in the feature pages; this
-is the at-a-glance map plus the honest "where Microsoft is still the authority."
+This page compares AL Language for Zed with Microsoft's AL extension and related tools: `alc`, the
+.NET AL Language Server, `EditorServices.Host`, and Business Central development services. See the
+feature pages for implementation details and limitations.
 
 ## Legend
 
@@ -28,8 +27,8 @@ delegate by design)
 
 | Capability | This project | Microsoft |
 | --- | --- | --- |
-| Produce `.app` | ✅ pure-Rust emitter, 10–12× faster cold / 60–465× warm, semantically-identical `SymbolReference.json` on supported fixtures | 🔷 `alc` (parse→bind→type-check→emit) |
-| Compile-time semantic validation | ❌ (delegated to LSP + BC server) | 🔷 `alc` (authoritative) |
+| Produce `.app` | ✅ pure-Rust verified emitter; semantic `SymbolReference.json` parity on the live differential corpus | 🔷 `alc` (parse→bind→type-check→emit) |
+| Compile-time validation | ✅ native syntax/project/declaration/declared-binding/integrity checks; optional `alc` compatibility gate | 🔷 `alc` (authoritative complete semantics) |
 | `.app` reading / inspection | ✅ native NAVX/ZIP, cached, composed objects | internal |
 | Symbol download | ✅ NuGet + BC server, concurrent, deduped, no restart | ✅ download-symbols |
 | OAuth (Entra) | ✅ PKCE + device code, token zeroization | ✅ |
@@ -43,7 +42,7 @@ delegate by design)
 | Multi-hop event chain tracing | ✅ | ❌ |
 | SQL anti-pattern scan | ✅ | ❌ (3rd-party analyzers) |
 | Impact / table impact | ✅ detailed | partial (find-references) |
-| Breaking-change / upgrade reports | 🟡 (baseline not yet wired) | ❌ |
+| Breaking-change / upgrade reports | ✅ with `--baseline-app <old.app>` | ❌ |
 | Architecture lint (`.alarch.json`) | ✅ | ❌ |
 | Obsolescence timeline | ✅ | ❌ |
 | Data-classification audit | ✅ | ❌ |
@@ -60,8 +59,8 @@ delegate by design)
 | Test discovery (static, BC-free) | ✅ | needs toolchain |
 | Routing transparency (`test-classify`) | ✅ | ❌ |
 | JUnit output / coverage | ✅ (coverage static) | partial (needs BC) |
-| Mutation testing | 🟡 early | ❌ |
-| Snapshot regression | 🟡 scaffolded | partial (snapshot debugging) |
+| Mutation testing | ✅ interpreter-routed, optionally parallel | ❌ |
+| Snapshot files | replay validation and file diff | partial (snapshot debugging) |
 | DB/HTTP/UI/report tests | 🔷 route to live BC | 🔷 live BC |
 
 ## Debugging
@@ -82,10 +81,10 @@ delegate by design)
 | Scriptable CLI (`--json`) for every query/analysis | ✅ `al-explorer` | ❌ |
 | Interactive terminal TUI | ✅ (5 views) | ❌ |
 | Shared daemon (JSON-RPC) | ✅ | ❌ |
-| MCP server for AI agents | ✅ complete shared dispatcher via `al_call`, plus Microsoft-compatible and project-specific named aliases | ✅ AL agent tools |
+| MCP server | ✅ complete shared dispatcher via `al_call`, plus named aliases | ✅ AL agent tools |
 | Project/object scaffolding | ✅ (+ Copilot/Agent/API templates) | ✅ (fewer templates) |
 | Permission-set generation | ✅ (AL + XML) | ❌ |
-| XLIFF generate/refresh/untranslated | ✅ (suggest is a stub) | partial (3rd-party common) |
+| XLIFF generate/refresh/untranslated/suggest | ✅ translation-memory and symbol-name suggestions | partial (3rd-party common) |
 
 ## Where Microsoft is still the authority (by design)
 
@@ -98,10 +97,8 @@ The project does not pretend to replace these — it keeps the Microsoft path on
 - **Official AL Language Server** — `al.useOfficialLsp` delegates the whole editor session.
 - **Official debug adapter** — `al.useOfficialDap` uses `EditorServices.Host`.
 
-## The one-paragraph summary
+## Summary
 
-For the day-to-day loop — editing, navigating, analyzing, building an artifact, running pure-logic
-tests, and debugging — this project is native, fast, editor-independent, scriptable, and exposes a
-large set of analyses Microsoft doesn't ship. For the things that must be exactly Microsoft's
-(compile-time semantics, runtime behavior), it delegates explicitly and keeps those paths tested.
-That combination — native where it helps, Microsoft where it must be — is the whole thesis.
+The native implementation covers editing, navigation, analysis, verified package creation,
+pure-logic test execution, and the Zed debug-adapter protocol. Exact Microsoft compiler semantics,
+analyzer compatibility, and Business Central runtime behavior remain explicit integration points.

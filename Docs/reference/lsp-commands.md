@@ -8,7 +8,7 @@ Quick lookup for the native language server (`al-lsp --stdio`). Behavior is docu
 `textDocument/`: `hover`, `completion`, `definition`, `references`, `documentSymbol`, `formatting`,
 `rangeFormatting`, `foldingRange`, `rename`, `prepareRename`, `semanticTokens/full`, `signatureHelp`,
 `codeAction`, `codeLens`, `inlayHint`, `diagnostic` (pull), plus the document lifecycle (`didOpen`,
-`didChange`, `didClose`, `didSave`). `workspace/`: `symbol`, `executeCommand`,
+`didChange`, `didClose`, `didSave`). `workspace/`: `symbol`, `diagnostic`, `executeCommand`,
 `didChangeConfiguration`. Lifecycle: `initialize`, `initialized`, `shutdown`.
 
 ## Advertised capabilities
@@ -16,7 +16,7 @@ Quick lookup for the native language server (`al-lsp --stdio`). Behavior is docu
 Full text sync; save (no text); hover; completion (triggers `.` `:`); definition; references;
 document symbols; document + range formatting; folding; rename (+ prepare); semantic tokens (full +
 legend); CodeLens; inlay hints; signature help (triggers `(` `,`); workspace symbols; code actions;
-pull diagnostics (`identifier: "al-lsp"`, inter-file dependencies; no workspace diagnostics);
+pull diagnostics (`identifier: "al-lsp"`, inter-file dependencies, workspace diagnostics);
 execute commands.
 
 ## Client capability gating
@@ -43,9 +43,8 @@ execute commands.
 
 ## CodeLens command IDs
 
-Emitted by the CodeLens provider (distinct from execute commands): `al.findReferences`,
-`al.showProfiler`, `al.runTest`. 🟡 Not all are wired through to execute commands yet (see
-[roadmap](../roadmap.md)).
+The CodeLens provider emits `al.findReferences`, `al.showProfiler`, and `al.runTest`; all three are
+registered through `workspace/executeCommand`.
 
 ## Delegation
 

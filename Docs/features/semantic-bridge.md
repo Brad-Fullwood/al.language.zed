@@ -46,28 +46,26 @@ plausible empty results.
 
 ### Correctness contracts
 
-- **Position (F-036):** LSP 0-based UTF-16 `(line, column)` is passed through unchanged. .NET string
+- **Position:** LSP 0-based UTF-16 `(line, column)` is passed through unchanged. .NET string
   indexes are UTF-16 code units. The bridge validates that the line exists and that the column is on
   that line (including its end position); an invalid column cannot spill into a later line, and EOF is
   not shifted back to the previous character.
-- **Unsaved text (F-037):** when `text` is supplied, the bridge uses the editor buffer instead of
+- **Unsaved text:** when `text` is supplied, the bridge uses the editor buffer instead of
   reading disk, so hover/completion reflect unsaved edits.
 - **Project context:** hover and completion forward `al.packageCachePath`, or the discovered project's
   package directory, so dependency symbols participate in binding.
 - **Resource limits:** 16 MiB per document, 32 MiB per JSON request, 256 MiB max response. Paths crossing
   the JSON/FFI boundary must be valid UTF-8 and fail explicitly otherwise.
 
-### Resilience (`lifecycle.rs`, `cache.rs`)
+### Resilience
 
-- **Lazy init** on first use, serialized by a lifecycle mutex and guarded by
-  `al.enableCodeAnalysis`. Failed initialization is capped at three attempts and user notification is
-  one-shot.
-- **Timeout + cooldown (T047):** 30 s per call; on timeout a cooldown gate prevents a thundering-herd
-  of retries. It uses a monotonic clock; its stamp and process-wide in-flight gate survive a bridge
-  restart, so a hung call from a previous generation cannot be bypassed. Diagnostics, hover, and
-  completion invoke generation-checked recovery for fatal bridge failures; a late failure cannot tear
-  down a newer bridge.
-- **Disk cache** (under `…/al-lsp/semantic/`) stores `builtins()` and `errorCodes()` keyed by
+- **Workspace lifecycle** (`al-workspace/src/semantic_lifecycle.rs`) performs lazy initialization,
+  serializes restart attempts, caps repeated initialization failures, and emits one user
+  notification for persistent failure.
+- **Timeout and cooldown** (`al-semantic/src/bridge.rs`) apply a 30-second call timeout and prevent a
+  retry stampede. Generation checks prevent a late failure from tearing down a newer bridge.
+- **Disk cache** (`al-semantic/src/cache.rs`, under `…/al-lsp/semantic/`) stores `builtins()` and
+  `errorCodes()` keyed by
   sanitized toolchain version, turning a ~500 ms CLR call into a cache hit. Each atomic cache envelope
   also stores the exact unsanitized version, schema, and catalog kind, so sanitized-name collisions,
   stale formats, oversized files, partial writes, and corrupt JSON fail closed and regenerate.
@@ -133,6 +131,8 @@ automatically. To control it:
 - `cargo test -p al-semantic --all-features` covers boundary validation, cooldown/restart state,
   cache integrity, serialization, managed initialization error propagation, and the
   disabled-feature behavior.
+- `cargo test -p al-workspace --features semantic` covers workspace initialization, restart, and
+  notification behavior.
 - `AL_TOOL_PATH=<official-extension>/bin/<platform> cargo test -p al-semantic --features semantic --test live_bridge`
   loads the real Microsoft DLL and verifies initialization/health, compiler semantic diagnostics,
   unsaved-buffer type lookup, invalid-position rejection, member completion, shipped CodeCop loading,

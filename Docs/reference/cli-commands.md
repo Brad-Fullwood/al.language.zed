@@ -39,7 +39,7 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | `builtins` | — | Built-in types + method counts |
 | `rules` | — | Registered native file, project-semantic, and transaction-stack lint rules |
 | `error-codes` | — | AL compiler error codes |
-| `generate-completions` | — | Export completion/symbol data |
+| `generate-completions <shell>` | — | Generate shell completions for bash, zsh, fish, elvish, or PowerShell |
 
 ## LSP-style queries
 
@@ -64,8 +64,8 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | `compile` | `--project <dir>` | Compile (native default; `al.useOfficialCompiler` → `alc`) |
 | `package` | — | Package compiled app into `.app` |
 | `pack-native` | `--project <dir> --out <path> [--validate]` | Verified pure-Rust `.app` build; rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure; global `--json` returns exact native ranges; `--validate` adds `alc` after native checks |
-| `download-symbols` | `--source server\|nuget` | Download dependency symbols |
-| `authenticate` | — | BC / Entra authentication |
+| `download-symbols` | `--project <dir> --source server\|nuget` | Download dependency symbols |
+| `authenticate [login\|status\|clear]` | `--tenant <tenant>` | BC / Entra authentication and cached-session management |
 
 ## Format, refactor, codegen
 
@@ -75,7 +75,7 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | `lint [file]` | `--all --analyzers <list>` | Lint via native + Microsoft analyzers |
 | `fix [file]` | `--dry-run --rule <code>` | Apply fixable diagnostics |
 | `permissions` | `--format al\|xml --name <n> --id <N> --role-id <id>` | Generate permission set |
-| `new <dir>` | `--name --publisher --template <t>` | New project (templates: default, pte, appsource, library, test, copilot, agent, api) |
+| `new <dir>` | `--name --publisher --template <t>` | New project from a built-in or configured user template |
 | `generate <kind>` | `--id --name --table --page-type --subject` | Generate page/report/test (`test` requires `--subject`) |
 | `sort-members [file]` | `--all --dry-run` | Canonical member order |
 | `organize-files` | `--dry-run` | Rename `.al` files to `<Type><Id>.<Name>.al` |
@@ -97,14 +97,15 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | `metrics [file]` | `--all --threshold-cyclomatic N --threshold-cognitive N` | Complexity |
 | `dead-code` | — | Unused procedures/fields/subscribers (with confidence) |
 | `sql-scan` | — | SQL anti-patterns |
-| `duplicates` | — | Duplicate code blocks |
+| `duplicates` | `--min-tokens N --min-similarity R` | Duplicate code blocks |
 | `arch-lint` | — | `.alarch.json` architecture rules |
-| `breaking` | — | Breaking API changes (baseline not yet wired) |
-| `upgrade` | — | Upgrade impact report |
+| `native-check` | — | Native object/member/range and project semantic checks |
+| `breaking` | `--baseline-app <old.app>` | Breaking API changes; reports unevaluated when omitted |
+| `upgrade` | `--baseline-app <old.app>` | Upgrade impact report; reports unevaluated when omitted |
 | `obsolete` | — | `[Obsolete]` timeline |
 | `audit-data` | — | Data-classification audit |
 | `permission-audit` | — | Permission-set coverage audit |
-| `profiler-hints <file>` | — | Map `.alcpuprofile` hotspots to source |
+| `profiler-hints [hotspots…]` | — | Optimization hints for named hotspot procedures |
 
 ## Debug & profiling
 
@@ -112,15 +113,15 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | --- | --- | --- |
 | `debug` | `start [--config] · breakpoint [--file --line --condition] · state · eval <expr> · continue · step <over\|into\|out> · history [--var] · stop` | Drive a debug session |
 | `snapshot` | `start · list · download <id>` (+ `--server --company --username --password --output-dir`) | Snapshot debugging |
-| `profile` | `start · stop [--session_id] · analyze <path> [--top N]` (+ server/auth flags) | CPU profiling |
+| `profile` | `start · stop [--session-id] · analyze <path> [--top N]` (+ server/auth flags) | CPU profiling |
 
 ## Tests
 
 | Command | Flags | Purpose |
 | --- | --- | --- |
 | `tests` | — | Discover `[Test]` codeunits/methods |
-| `test-run <id>` | `--name --method --config` | Run one codeunit/method (live BC) |
-| `test-run-all` | `--parallel --timeout-ms N --junit-out P --cobertura-out P --filter G` | Run all (router decides backend) |
+| `test-run <id>` | `--name --method --config` | Run one codeunit/method using the selected native or live-BC backend |
+| `test-run-all` | `--parallel --timeout-ms N --junit-out P --cobertura-out P --filter G --coverage` | Run all (router decides backend) |
 | `test-coverage` | — | Static coverage summary |
 | `test-classify` | — | Routing decision per test |
 | `test-affected <files…>` | — | Tests affected by changed files |

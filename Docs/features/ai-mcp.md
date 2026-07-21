@@ -1,14 +1,14 @@
-# AI & MCP Server
+# MCP Server
 
 **Module:** `crates/al-lsp/src/server/mcp.rs` · **Status:** ✅ shipped
 
-AI integration is a first-class surface, not an afterthought. The extension registers a Zed context
-server named **AL Tools** that launches `al-lsp mcp` from `PATH`. The MCP server speaks
+The extension registers a Zed context server named **AL Tools** that launches `al-lsp mcp` from
+`PATH`. The MCP server speaks
 newline-delimited JSON-RPC 2.0 over stdio (protocol version `2024-11-05`) and forwards every tool call
 into the **same daemon dispatcher** the CLI uses — so MCP behavior and CLI behavior cannot drift.
 The `al_call` tool accepts any dispatcher method and its parameter object, which means the complete
 shared tool surface is available to MCP without a second allow-list. Named tools remain as
-discoverable shortcuts for common agent workflows.
+discoverable shortcuts for common workflows.
 
 ## Lifecycle
 
@@ -41,7 +41,7 @@ the alias's mapped method or `al_call`'s requested method, builds a daemon `Requ
 
 `al_debug` is intentionally stateful: the MCP process retains the workspace's `NativeDebugSession`
 between calls. This lets an agent execute a continuous debugging loop instead of launching isolated
-commands. See [Debugging (DAP) & Business Central Runtime](./debugging-dap.md#ai-agent-control-through-mcp)
+commands. See [Debugging (DAP) & Business Central Runtime](./debugging-dap.md#mcp-debug-control)
 for the complete command contract and the boundary between Zed's DAP launch flow and MCP control.
 
 The tool names intentionally **mirror Microsoft's AL agent tool surface** where possible (`al_build`,
@@ -52,18 +52,15 @@ operation without requiring another hand-written MCP registration.
 
 ## Microsoft comparison
 
-Microsoft has an AL agent tool surface for its Copilot/agent integrations. This project matches the
-familiar tool names so agents written against Microsoft's surface feel at home, then goes further by
-exposing the project's unique analyses (dead code, SQL scan, entrypoints, event tracing, impact) as
-agent tools — none of which are in the standard official surface. Because the tools dispatch through
-the shared daemon, an agent gets exactly the same answers a developer gets from `al-explorer`.
+Microsoft exposes a similar AL tool surface for Copilot and agent integrations. This project keeps
+the familiar names for common operations and also exposes dead-code, SQL-pattern, entrypoint, event,
+and impact analysis. All tools dispatch through the shared daemon used by `al-explorer`.
 
-## Why this approach
+## Design rationale
 
-LLM agents are most useful when they can *ask precise questions about the codebase* and *act* on the
-answers. Routing MCP through the same dispatcher as the CLI means: one implementation, stable answers,
-and `al_call` makes every current and future dispatcher operation immediately available to agents.
-The stdio + NDJSON-RPC transport works with Claude Code, Zed's agent panel, and any custom MCP client.
+Routing MCP through the same dispatcher as the CLI keeps one implementation for both surfaces.
+`al_call` makes dispatcher operations available without a separate registration, while named tools
+provide richer discovery for common operations. The stdio transport works with any MCP client.
 
 ## How to use
 
@@ -72,7 +69,7 @@ The stdio + NDJSON-RPC transport works with Claude Code, Zed's agent panel, and 
 2. In Zed's agent panel, the **AL Tools** context server appears and its tools become callable.
 3. Standalone: run `al-lsp mcp --project <path>` and connect any MCP client over stdio.
 
-## Limitations & roadmap
+## Limitations
 
 - Methods reached through `al_call` use the shared daemon parameter contract rather than a dedicated
   per-method MCP schema; named aliases can still be added where richer discovery materially helps an
@@ -82,6 +79,3 @@ The stdio + NDJSON-RPC transport works with Claude Code, Zed's agent panel, and 
 - MCP itself is platform-independent stdio and runs on Linux, macOS, and Windows. Zed's context-server
   command currently resolves `al-lsp` from `PATH` on every platform, rather than using the extension's
   LSP/DAP download-resolution chain.
-- `ROADMAP.md` (AI And MCP): add output-schema coverage, include routing details in `al_runtests`
-  output so agents know which tests ran locally vs needed live BC, and add agent-oriented diagnostics
-  for missing symbols/config/bridge/source.

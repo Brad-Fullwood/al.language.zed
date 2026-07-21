@@ -23,9 +23,11 @@ translation-memory tools stay compatible.
   existing translations/state, removing obsolete units, and marking changed source as
   `needs-review-translation`.
 - **Untranslated:** lists units with no target.
-- **Suggest** (`suggest_translations`): matches untranslated source text against workspace symbol
-  names and table-field names, returning suggestions ranked by confidence (1.0 exact object-name
-  match, 0.9 field-name match). This is symbol-name matching, not machine translation.
+- **Suggest** (`suggest_translations_with_memory`): indexes translated/final units already present in
+  the language file, then tries an exact normalized-source match, a fuzzy token-overlap match, and
+  finally workspace object/table-field names. Results include an origin (`tm-exact`, `tm-fuzzy`, or
+  `name`) and confidence score. This is deterministic translation-memory reuse, not machine
+  translation.
 - **State model:** `new` / `translated` / `needs-review-translation` / `final`.
 
 Defensive bound: `MAX_XLF_FILE_BYTES = 64 MiB`.
@@ -37,7 +39,7 @@ Defensive bound: `MAX_XLF_FILE_BYTES = 64 MiB`.
 | Generate `.g.xlf` | ✅ native | ✅ (via `alc`/extension; `GenerateCaptions` feature) |
 | Refresh/merge translations | ✅ native | partial (3rd-party tools commonly used) |
 | List untranslated | ✅ | ❌ (3rd-party) |
-| Suggest translations | ✅ (symbol-name matching) | ❌ |
+| Suggest translations | ✅ translation-memory and symbol-name matching | ❌ |
 | ID compatibility | ✅ matches MS scheme | reference |
 
 The generated `.g.xlf` and the ID scheme are deliberately Microsoft-compatible, so these workflows
@@ -56,18 +58,16 @@ one CLI command (and CI-automatable) without leaving the toolchain.
 al-explorer xlf generate [--project <dir>]      # write the .g.xlf base (Zed: AL: XLIFF Generate)
 al-explorer xlf refresh <lang.xlf> --generated <base.g.xlf>
 al-explorer xlf untranslated <lang.xlf>
-al-explorer xlf suggest <lang.xlf>              # symbol-name match suggestions
+al-explorer xlf suggest <lang.xlf>              # translation-memory and symbol suggestions
 ```
 
 These are shared daemon workflows. The CLI exposes dedicated `xlf` subcommands, Zed currently exposes
 XLIFF **generation** as a task, and MCP can invoke every XLIFF method through `al_call` (for example,
 `method: "xlf.refresh"`).
 
-## Limitations & roadmap
+## Limitations
 
-- 🟡 `suggest` does workspace symbol-name/field matching only; machine-translation / translation-
-  memory backends are a future enhancement.
+- `suggest` reuses translations already present in the supplied language file and workspace symbol
+  names. It does not call a machine-translation service or an external translation-memory database.
 - Zed exposes generation only; refresh/untranslated/suggest are available through the CLI and MCP's
   complete dispatcher bridge.
-- `ROADMAP.md` lists XLIFF refresh/untranslated/suggest as Zed-task candidates; dedicated MCP aliases
-  remain optional discoverability improvements because `al_call` already provides full access.

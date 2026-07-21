@@ -1,12 +1,8 @@
 name: Vendor grammar snapshot
 
-# F4 (SYSTEM_REVIEW_ACTION_PLAN): sandboxed agent sessions are scoped to this
-# repository only and cannot clone the tree-sitter-al submodule, which makes
-# the whole Rust workspace unbuildable there. CI *does* have submodule access,
-# so this job snapshots the checked-out submodule tree (minus .git) onto an
-# orphan `grammar-vendor` branch. Sandboxes restore it with
-# `scripts/fetch-grammar.sh`. The snapshot records the exact submodule rev in
-# VENDORED_FROM_REV so drift is detectable against the superproject gitlink.
+# Some restricted development environments cannot clone the grammar submodule.
+# This workflow publishes a matching snapshot on `grammar-vendor` for
+# `scripts/fetch-grammar.sh`; VENDORED_FROM_REV records the source revision.
 
 on:
   workflow_dispatch:
@@ -15,8 +11,6 @@ on:
     paths:
       - '.gitmodules'
       - 'tree-sitter-al'
-      # Editing this workflow re-runs the snapshot — also the escape hatch for
-      # sandboxed sessions whose token cannot POST workflow_dispatch (403).
       - '.github/workflows/vendor-grammar.yml'
 
 permissions:

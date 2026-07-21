@@ -186,6 +186,7 @@ graph TD
   al_explorer --> al_emit
   al_explorer --> al_project
   al_explorer --> al_compile
+  al_explorer --> al_symbols
 
   zed_al -.->|spawns al-lsp at runtime| al_lsp
   al_test_harness -.->|drives binaries in tests| al_lsp

@@ -19,10 +19,10 @@ Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
 | `al.diagnosticsScope` | `project`\|`openFiles` | `project` | ✅ |
 | `al.diagnosticsTrigger` | `continuous`\|`onSave` | `continuous` | ✅ |
 | `al.codeAnalyzers` | string[] | `["CodeCop","AppSourceCop","UICop","PerTenantCop"]` | ✅ (incl. 3rd-party DLL paths) |
-| `al.enableExternalRulesets` | boolean | `false` | 🟡 see ROADMAP (build/semantic wiring) |
-| `al.ruleSetPath` | string\|null | `null` | 🟡 |
-| `al.assemblyProbingPaths` | string[] | `[]` | 🟡 |
-| `al.outputAnalyzerStatistics` | boolean | `false` | 🟡 |
+| `al.enableExternalRulesets` | boolean | `false` | ✅ official `alc` backend; not the in-process bridge |
+| `al.ruleSetPath` | string\|null | `null` | ✅ official `alc` backend; not the in-process bridge |
+| `al.assemblyProbingPaths` | string[] | `[]` | ✅ official `alc` backend; not the in-process bridge |
+| `al.outputAnalyzerStatistics` | boolean | `false` | ✅ official `alc` backend; not the in-process bridge |
 
 ## Editor features
 
@@ -53,8 +53,8 @@ Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
 
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
-| `al.compilationOptions` | string[] | `[]` | ✅ (passed to `alc`) |
-| `al.incrementalBuild` | boolean | `false` | ✅ |
+| `al.compilationOptions` | string[] | `[]` | ✅ official `alc` backend only |
+| `al.incrementalBuild` | boolean | `false` | ✅ official `alc` backend only |
 | `al.useOfficialCompiler` | boolean | `false` | ✅ escape hatch → `dotnet alc` |
 
 ## Debug adapter
@@ -86,7 +86,8 @@ Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
 
 ## Environment variables
 
-For CI and troubleshooting: `AL_TOOL_PATH`,
+For CI, custom templates, and troubleshooting: `AL_TOOL_PATH`, `AL_DOTNET_PATH`,
+`AL_TEMPLATES_DIR`,
 `AL_COMPILE_TIMEOUT_SECS`, `AL_LOG_FILE_LEVEL`, `AL_LSP_ALLOW_HTTP_FEED`, `AL_EDITOR_SERVICES_PATH`,
 `AL_BRIDGE_DIR`, `AL_ERROR_CODES_LIVE`, `AL_DAP_CAPTURE`, `AL_OAUTH_DISABLE_KEYRING`. BC credentials
 (secrets, prefer OAuth/keyring): `BC_CLIENT_ID`, `BC_TOKEN`/`BC_ACCESS_TOKEN`,

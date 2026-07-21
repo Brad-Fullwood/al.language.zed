@@ -546,12 +546,7 @@ internal class CodeAnalysisBridge
             {
                 startInfo.FileName = "dotnet";
                 startInfo.Arguments = $"\"{alcPath}\" {alcArgs}";
-                // alc.dll targets net8.0; machines that only have a newer
-                // runtime installed refuse to launch it without roll-forward.
-                // The Rust-side alc fallback sets this too (toolchain.rs) —
-                // without it the child died with "You must install or update
-                // .NET" on stderr and this handler reported success=false
-                // with ZERO diagnostics (FB-14).
+                // Permit alc.dll to run when only a newer .NET runtime is installed.
                 startInfo.EnvironmentVariables["DOTNET_ROLL_FORWARD"] = "Major";
             }
             else
@@ -584,24 +579,29 @@ internal class CodeAnalysisBridge
             if (diagnostics.Count == 0 && !string.IsNullOrWhiteSpace(stdout))
                 diagnostics = ParseAlcStdout(stdout);
 
-            try
+            var appJsonPath = Path.Combine(project, "app.json");
+            if (File.Exists(appJsonPath))
             {
-                var appJsonPath = Path.Combine(project, "app.json");
-                if (File.Exists(appJsonPath))
+                var appJson = JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(appJsonPath));
+                if (appJson.TryGetProperty("name", out var nameProperty)
+                    && appJson.TryGetProperty("publisher", out var publisherProperty)
+                    && appJson.TryGetProperty("version", out var versionProperty))
                 {
-                    var appJson = JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(appJsonPath));
-                    var name = appJson.GetProperty("name").GetString() ?? "app";
-                    var publisher = appJson.GetProperty("publisher").GetString() ?? "publisher";
-                    var version = appJson.GetProperty("version").GetString() ?? "1.0.0.0";
+                    var name = nameProperty.GetString();
+                    var publisher = publisherProperty.GetString();
+                    var version = versionProperty.GetString();
+                    if (string.IsNullOrWhiteSpace(name)
+                        || string.IsNullOrWhiteSpace(publisher)
+                        || string.IsNullOrWhiteSpace(version))
+                    {
+                        throw new InvalidDataException("app.json contains empty package identity fields");
+                    }
                     var expected = Path.Combine(project, "output", $"{publisher}_{name}_{version}.app");
                     if (File.Exists(expected)) appPath = expected;
                 }
             }
-            catch { /* ignore */ }
 
-            // Always include raw compiler output (capped) so a failure can
-            // never be silent — a non-zero exit with no parsed diagnostics
-            // must still tell the user WHY (FB-14).
+            // Retain capped compiler output when structured diagnostics are unavailable.
             var rawOutput = (stdout + (string.IsNullOrWhiteSpace(stderr) ? "" : "\n" + stderr)).Trim();
             if (rawOutput.Length > 64 * 1024) rawOutput = rawOutput.Substring(0, 64 * 1024) + "\n…(truncated)";
 

@@ -322,7 +322,7 @@ Examples:
         /// Publisher name
         #[arg(short, long, default_value = "Default Publisher")]
         publisher: String,
-        /// Project template: default, pte, appsource, library, test, copilot, agent, api
+        /// Built-in template name or a user template from the configured template directory
         #[arg(short, long, default_value = "default")]
         template: String,
     },
@@ -454,7 +454,7 @@ Examples:
     },
     /// Discover test codeunits in the workspace
     Tests,
-    /// Run tests in a codeunit via BC REST API
+    /// Run tests in a codeunit using the native or live-BC backend selected by the router
     #[command(name = "test-run")]
     TestRun {
         /// Codeunit object ID to run
@@ -496,9 +496,7 @@ Examples:
     /// route to live BC.
     #[command(name = "test-classify")]
     TestClassify,
-    /// Record, replay, or diff test execution snapshots.
-    /// file-based today — `replay`/`diff` work on .snap.json files on disk;
-    /// live-BC record/replay is not wired yet (see each subcommand's --help).
+    /// Validate or compare test execution snapshot files.
     #[command(name = "test-snapshot")]
     TestSnapshot {
         #[command(subcommand)]

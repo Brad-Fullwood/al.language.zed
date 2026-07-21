@@ -18,7 +18,7 @@ path does **not** use the daemon — it uses LSP handlers directly. See
   Linux uses `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` with a `/run/user/{uid}` fallback; macOS uses its
   per-user `$TMPDIR` when XDG is unset; Windows uses
   `\\.\pipe\al-lsp-{user-scope-hash}-{project-hash}`. Unix directories are `0700` and sockets `0600`.
-- **Auto-start & locking (`client.rs`, F-046):** `DaemonClient::connect` tries the local endpoint,
+- **Auto-start and locking (`client.rs`):** `DaemonClient::connect` tries the local endpoint,
   else takes a per-project filesystem `.lock` (atomic `create_new`) and spawns the daemon while
   losers wait; stale locks
   (>30 s) are reclaimed. Client timeouts: 2 s socket poll (not the request deadline), 30 s default
@@ -42,9 +42,9 @@ focused submodules:
   expand/eval, continue/step, history, stop), used by both CLI and MCP `al_debug`.
 
 The complete method list is in the [daemon method reference](../reference/daemon-methods.md). Notable
-hardening: duplicate-detection `minTokens`/`minSimilarity` are clamped to safe ranges (F-OPEN-007);
+hardening: duplicate-detection `minTokens`/`minSimilarity` are clamped to safe ranges;
 graph export is capped at 50k nodes+edges; trace depth is bounded; JSON-RPC `null` results are
-serialized explicitly (F-017).
+serialized explicitly.
 
 ## One dispatcher, three front ends
 

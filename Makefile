@@ -6,8 +6,8 @@
 #   make rust      — rebuild all Rust crates (native, excludes zed-al)
 #   make wasm      — rebuild only the WASM extension (zed-al, wasm32-wasip1)
 #   make bridges   — rebuild just .NET bridges
-#   make grammar   — regenerate the tree-sitter-al parser sources (required before
-#                    `tree-sitter build` from a fresh clone — see F-006)
+#   make grammar   — regenerate the tree-sitter-al parser sources before a
+#                    fresh `tree-sitter build`
 #   make language  — regenerate only the Zed-facing languages/al package files
 #   make repro-artifacts — regenerate generated artifacts; fail on any diff (CI drift guard)
 #   make release-dryrun  — read-only release-readiness gate (never publishes)
@@ -58,7 +58,7 @@ install: build
 	@# (a prerequisite for the toolchain!), `al` is Microsoft's altool
 	@# wrapper — clobbering it would break alc discovery, and the previous
 	@# blanket "(OK)" message claimed a foreign binary as our alias
-	@# (audit 2026-06-12). Use `al-explorer` in scripts; `al` is best-effort.
+	@# Use `al-explorer` in scripts; the `al` alias is best-effort.
 	@if [ -L "$(INSTALL_DIR)/al" ] && [ "$$(readlink "$(INSTALL_DIR)/al")" = "$(EXPLORER_BIN)" ]; then \
 		echo "al alias -> al-explorer already installed (OK)"; \
 	elif [ ! -e "$(INSTALL_DIR)/al" ]; then \
@@ -80,20 +80,9 @@ install: build
 	@echo "Install complete."
 
 # ── Fast refresh of just the semantic al-lsp ─────────────────────
-# Rebuild al-lsp WITH --features semantic and COPY it into INSTALL_DIR.
-#
-# WHY a copy and not a symlink: ~/.local/bin/al-lsp must be the
-# `--features semantic` binary (the real in-process .NET CLR host). A symlink
-# into target/debug/al-lsp is unsafe because any `cargo build --workspace`
-# (tests, coverage runs, plain builds) compiles al-lsp WITHOUT the feature and
-# rewrites that same path with the no-op stub host. cargo does not encode
-# features in the bin path, so last-build-wins and the stub silently replaces
-# the real host — Zed then shows "AL semantic bridge failed to initialize:
-# Bridge not initialized" on every semantic request. Copying decouples the
-# installed binary from cargo's shared output path. The bridge dir is copied
-# alongside so it also resolves via host.rs Strategy 2 (<exe-dir>/bridge/) even
-# after `cargo clean`. Run this after editing al-lsp (or any crate it depends
-# on) to refresh Zed's binary.
+# Copy rather than symlink the feature-enabled binary: Cargo uses the same
+# target path for default and semantic builds, so a later workspace build can
+# otherwise replace the installed semantic binary with the stub build.
 install-lsp:
 	@echo "=== Rebuild + reinstall semantic al-lsp ==="
 	cargo build -p al-lsp --bin al-lsp --features semantic

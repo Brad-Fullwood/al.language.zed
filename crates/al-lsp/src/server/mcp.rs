@@ -4,13 +4,13 @@
 //! (Claude Code, Zed's agent panel via `context_servers`, custom agents)
 //! over stdio, using newline-delimited JSON-RPC 2.0 per the MCP spec.
 //!
-//! `al_call` is the stable, zero-drift bridge to every daemon method. Named
+//! `al_call` forwards requests to any daemon method. Named
 //! convenience tools mirror Microsoft's AL agent tools (`al_build`,
 //! `al_symbolsearch`, `al_getdiagnostics`, …) so agents trained on the
 //! official surface transfer, plus this project's differentiators
 //! (dead-code, SQL anti-patterns, event tracing, impact analysis) that the
-//! official tooling does not offer. Arguments are forwarded VERBATIM as
-//! daemon-dispatch params — validation happens in the dispatchers, which
+//! official tooling does not offer. Arguments are forwarded as
+//! daemon-dispatch parameters; validation happens in the dispatchers, which
 //! already return structured JSON-RPC errors.
 
 use std::path::PathBuf;
@@ -46,8 +46,8 @@ fn tools() -> &'static [ToolDef] {
         ToolDef {
             name: "al_call",
             method: "",
-            description: "Call any AL tool exposed by the shared daemon dispatcher. This is the \
-                          complete, zero-drift MCP entry point used for methods that do not have a \
+            description: "Call any AL tool exposed by the shared daemon dispatcher. This entry \
+                          point supports methods that do not have a \
                           named convenience alias. Args: method (the daemon method name) and params \
                           (that method's parameter object, default {}). See the daemon method \
                           reference for the complete method catalog and parameter conventions.",
