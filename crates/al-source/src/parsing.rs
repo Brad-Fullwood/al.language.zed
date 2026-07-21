@@ -9,7 +9,7 @@ use crate::documents::DocumentStore;
 
 /// Get the text and parse tree for a document, using the cache when possible.
 ///
-/// If the document's version matches a previously cached tree, returns the cached
+/// If the document's version matches a cached tree, returns the cached
 /// tree without re-parsing. Otherwise parses the document and caches the result.
 ///
 /// Returns `Arc<String>` to avoid deep-copying the document on every LSP request.

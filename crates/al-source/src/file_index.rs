@@ -15,7 +15,7 @@ pub const MAX_WORKSPACE_FILES: usize = 10_000;
 const MAX_DEPTH: usize = 10;
 
 /// Real AL source files are KB-scale; a multi-megabyte `.al` is almost
-/// certainly a build artifact, generated blob, or adversarial input. Reading
+/// certainly a build artifact, generated blob, or pathological input. Reading
 /// it would pin its full contents in the in-memory `files` map. `scan` and
 /// `incremental_scan` skip and log larger files.
 pub const MAX_AL_FILE_BYTES: u64 = 50 * 1024 * 1024; // 50 MiB
@@ -165,7 +165,7 @@ impl FileIndex {
     }
 
     /// Skips hidden directories, `node_modules`, and `.alpackages`.
-    /// On a re-scan, files that were previously indexed but no longer
+    /// On a re-scan, indexed files that no longer
     /// exist on disk are removed from every index (primary + secondary
     /// object-name / object-id / procedure maps).
     /// Returns the number of files freshly indexed (not the resulting
@@ -232,8 +232,7 @@ impl FileIndex {
                     cap = MAX_AL_FILE_BYTES,
                     "skipping .al file: exceeds per-file size cap"
                 );
-                // If this path was previously indexed (it was small enough at
-                // the time) and has since grown past the cap, its old content,
+                // If this path is indexed and has grown past the cap, its old content,
                 // parse tree, and object/procedure mappings are now stale and
                 // will never be refreshed. Evict it so the index never serves
                 // outdated data for an oversized file. Record it as removed so
@@ -272,7 +271,7 @@ impl FileIndex {
         delta
     }
 
-    /// If the file was previously indexed, the old object-name mapping is
+    /// If the file is already indexed, the old object-name mapping is
     /// removed before the new one is inserted, so no stale entries remain.
     /// Records current mtime+size so `incremental_scan` can skip this file
     /// if it hasn't changed since.
@@ -470,13 +469,7 @@ impl FileIndex {
     fn remove_procedures_for_file(&self, path: &Path) {
         if let Some((_, old_proc_names)) = self.path_to_procedures.remove(path) {
             for proc_name in old_proc_names {
-                // Use the entry API so the retain-then-maybe-remove sequence
-                // happens under a single, continuously-held shard lock. The
-                // previous get_mut → drop → remove sequence released the lock
-                // between the empty check and the removal: a concurrent
-                // `index_from_result` could push a fresh, legitimate entry for
-                // the same proc name in that window, which `remove` would then
-                // wipe out, causing intermittent go-to-definition misses.
+                // Retain and conditional removal must hold one shard lock.
                 use dashmap::mapref::entry::Entry;
                 if let Entry::Occupied(mut occ) = self.procedures.entry(proc_name) {
                     occ.get_mut().retain(|e| e.file != path);
@@ -526,10 +519,6 @@ impl FileIndex {
             let entry = match entry_result {
                 Ok(e) => e,
                 Err(e) => {
-                    // Per-entry errors (e.g. permission denied on a specific
-                    // child) are surfaced rather than silently dropped by the
-                    // old `flatten()`, so unreadable parts of the workspace are
-                    // observable in the logs.
                     tracing::debug!(error = %e, dir = %dir.display(), "skipping directory entry due to error");
                     continue;
                 }
@@ -791,9 +780,6 @@ mod tests {
         assert!(index.get_content(&path).is_none());
     }
 
-    /// positive: when two files share an object name (table Foo,
-    /// page Foo) they are distinct kind-tagged owners, so removing one file
-    /// must NOT drop the other file's mapping.
     #[test]
     fn remove_file_preserves_other_owners_object_mapping() {
         let index = FileIndex::new();
@@ -912,9 +898,6 @@ mod tests {
         assert!(index.object_path_of_kind("foo", &["enum"]).is_none());
     }
 
-    /// re-indexing a file whose object was renamed drops the old name and
-    /// registers the new one — no stale owner strands behind (via the
-    /// path_to_object cleanup that runs before every re-index).
     #[test]
     fn reindex_object_rename_clears_old_name() {
         let index = FileIndex::new();
@@ -1300,11 +1283,6 @@ mod tests {
 
     #[test]
     fn equal_length_reindex_returns_coherent_new_pair() {
-        // an edit that keeps the byte length identical (renaming one
-        // identifier character — common) previously defeated the length-based
-        // coherence check, which could pair stale text with a fresh tree. With
-        // the atomic (text, tree) pair, get_cached_parse returns the re-indexed
-        // content and its matching tree.
         let index = FileIndex::new();
         let path = PathBuf::from("/test/src/Eq.al");
         let a = r#"codeunit 50100 "Eq" { procedure Aaa() begin end; }"#.to_string();

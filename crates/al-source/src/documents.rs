@@ -56,8 +56,7 @@ pub struct DocumentStore {
     trees: DashMap<Url, CachedTree>,
     /// Monotonic source of access stamps for the approximate-LRU tree cache.
     tree_access_counter: std::sync::atomic::AtomicU64,
-    /// Maximum number of parse trees to retain. `0` means
-    /// "unbounded" (the historical behaviour); the constructor seeds it with
+    /// Maximum number of parse trees to retain. `0` means unbounded; the constructor seeds it with
     /// [`DEFAULT_MAX_CACHED_TREES`]. Atomic so the daemon can retune it on a
     /// config update without locking the whole store.
     max_cached_trees: std::sync::atomic::AtomicUsize,
@@ -215,9 +214,7 @@ impl DocumentStore {
     }
 
     pub fn open(&self, uri: Url, text: String) {
-        // Refuse to ingest an oversized document. Any previously
-        // open version of this URI is left untouched, and crucially the giant
-        // text is never copied into the rope/cache.
+        // Leave an existing document untouched when the replacement exceeds the cap.
         if self.exceeds_cap(&uri, text.len()) {
             return;
         }
@@ -347,9 +344,6 @@ impl DocumentStore {
                             doc.text.remove(s..e);
                             doc.text.insert(s, &change.text);
                         }
-                        // Backward range (end < start). Silently dropping the
-                        // change would make the editor and server diverge. Log
-                        // the malformed input and skip it.
                         (Some(s), Some(e)) => {
                             tracing::warn!(
                                 uri = %uri,
@@ -358,10 +352,6 @@ impl DocumentStore {
                                 "DocumentStore: skipping malformed TextChange with end<start"
                             );
                         }
-                        // One or both endpoints out-of-bounds. The position
-                        // came from the LSP client; almost always a client bug.
-                        // Same treatment: warn + skip rather than silently
-                        // diverge.
                         _ => {
                             tracing::warn!(
                                 uri = %uri,
@@ -485,12 +475,7 @@ fn position_to_offset(rope: &Rope, line: u32, character: u32) -> Option<usize> {
     // entire line on every position-to-offset call).
     let line_slice = rope.line(line);
     let line_byte_start = rope.line_to_byte(line);
-    // Clamp an over-EOL `character` to the line length EXCLUDING its trailing
-    // line break. `len_utf16_cu()` counts the `\n` (or `\r\n`), so clamping to
-    // it lands *past* the newline and merges this line with the next — text
-    // corruption relative to what the client computed. LSP: a character beyond
-    // line length "defaults back to the line length", i.e. before the
-    // terminator.
+    // LSP line lengths exclude the trailing line break.
     let max_char = line_slice.len_utf16_cu() - line_break_utf16_width(line_slice);
     let utf16_idx = (character as usize).min(max_char);
     let char_in_line = line_slice.utf16_cu_to_char(utf16_idx);
@@ -632,8 +617,6 @@ mod tests {
 
     #[test]
     fn test_tree_cache_unbounded_when_cap_cleared() {
-        // Setting the cap to None (or 0) restores the historical unbounded
-        // behaviour — every cached tree is retained.
         let store = DocumentStore::new();
         store.set_max_cached_trees(None);
         for i in 0..50 {
@@ -646,9 +629,6 @@ mod tests {
 
     #[test]
     fn test_default_cap_bounds_daemon_style_growth() {
-        // Simulates the daemon path: open every file and parse it, never
-        // closing. With the default cap the tree cache is bounded even though
-        // far more files than the cap are opened.
         let store = DocumentStore::new();
         let n = DEFAULT_MAX_CACHED_TREES * 3;
         for i in 0..n {
@@ -680,8 +660,6 @@ mod tests {
 
     #[test]
     fn test_max_doc_bytes_rejects_oversized_open() {
-        // With a cap set, an oversized open() must not ingest the
-        // document — neither the rope nor the cache should hold the giant text.
         let store = DocumentStore::new();
         store.set_max_doc_bytes(Some(8));
         let uri = test_uri("huge");
