@@ -73,6 +73,16 @@ fn read_bounded_line<R: BufRead>(
             Err(e) => return Err(e),
         };
         if available.is_empty() {
+            // `interprocess` can report an empty buffer for a connected,
+            // nonblocking Windows named pipe before the peer has written its
+            // response. Treat that like `WouldBlock` while the request is
+            // still live; otherwise a normal server scheduling delay is
+            // misreported as a disconnected daemon.
+            #[cfg(windows)]
+            if deadline.is_some_and(|deadline| std::time::Instant::now() < deadline) {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
             return if buf.is_empty() {
                 Ok(None)
             } else {
