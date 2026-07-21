@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     fn search_dotnet_tool_store_finds_user_local_install() {
-        // Mirrors the F-004 reproduction layout: ~/.local/bin/.store/...
+        // User-local dotnet tools live below ~/.local/bin/.store.
         let tmp = tempfile::tempdir().unwrap();
         let store = tmp.path().join(".local/bin/.store");
         std::fs::create_dir_all(&store).unwrap();
