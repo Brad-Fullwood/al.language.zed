@@ -87,9 +87,7 @@ pub fn strip_trailing_commas(input: &str) -> String {
         result.push(b);
     }
 
-    // We only removed ASCII bytes (commas) and preserved all other
-    // bytes including multi-byte UTF-8 sequences intact, so the result is
-    // valid UTF-8.
+    // Removing ASCII commas cannot split a UTF-8 sequence.
     String::from_utf8(result).expect("UTF-8 invariant maintained by strip logic")
 }
 
