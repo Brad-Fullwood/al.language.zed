@@ -72,22 +72,28 @@ fn tui_object_browser_lists_fixture_objects() {
         s
     };
 
-    // Package names are sorted and the first package is selected when loading
-    // completes. The fixture's `(workspace)` package sorts first, so no input is
-    // needed; sending Down here would move the selection to `Runtime`.
-    let _ = poll(&buf, "workspace", 15);
-
-    // Wait for a workspace object's details to render. The details pane shows
-    // "Package: (workspace)" for any selected workspace object, regardless of
-    // which object-kind tab is active.
-    let screen = {
-        let s = poll(&buf, "Package: (workspace)", 6);
-        if s.contains("Package: (workspace)") {
-            s
-        } else {
-            render(&buf)
+    // A fresh daemon labels the local package `(workspace)`, while a daemon
+    // reused by the full suite can expose it as `workspace`. Runtime sorts
+    // first in the latter case, so inspect the actual selection before moving.
+    let mut screen = poll(&buf, "workspace", 15);
+    if screen.contains(">> Runtime") {
+        let down = b"\x1b[B";
+        for _ in 0..2 {
+            let _ = writer.write_all(down);
+            let _ = writer.flush();
+            thread::sleep(Duration::from_millis(400));
         }
-    };
+    }
+
+    // Wait for a workspace object's details to render, regardless of which
+    // object-kind tab is active or which workspace label the daemon supplied.
+    for _ in 0..6 {
+        thread::sleep(Duration::from_secs(2));
+        screen = render(&buf);
+        if screen.contains("Package: workspace") || screen.contains("Package: (workspace)") {
+            break;
+        }
+    }
 
     // Quit cleanly: al-explorer treats Ctrl-C (0x03) as "quit" in raw mode.
     let _ = writer.write_all(&[0x03]);
@@ -101,7 +107,7 @@ fn tui_object_browser_lists_fixture_objects() {
         "TUI mode bar not rendered (TUI may not have started).\n--- screen ---\n{screen}"
     );
     assert!(
-        screen.contains("Package: (workspace)"),
+        screen.contains("Package: workspace") || screen.contains("Package: (workspace)"),
         "TUI did not render a workspace object after selecting the workspace package.\n--- screen ---\n{screen}"
     );
 }
