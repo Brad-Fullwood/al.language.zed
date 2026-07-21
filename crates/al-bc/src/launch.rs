@@ -319,7 +319,7 @@ fn parse_environment_type(s: &str) -> Option<EnvironmentType> {
             // ERROR (not WARN) because the launch entry is silently dropped —
             // the user typed a config they wanted to use and we're refusing
             // it. Naming the valid values in the message lets them fix the
-            // typo without consulting docs. F-OPEN-073.
+            // typo without consulting docs. .
             tracing::error!(
                 environment_type = %other,
                 "Unknown environmentType in launch.json — expected one of OnPrem / Sandbox / Production; dropping this configuration entry"
@@ -337,7 +337,7 @@ fn parse_auth_method(s: Option<&str>, env_type: &EnvironmentType) -> AuthMethod 
         None if *env_type == EnvironmentType::OnPrem => AuthMethod::Windows,
         None => AuthMethod::AAD,
         Some(other) => {
-            // T032 / launch-auth-fallback: env-type-aware fallback rather than
+            // env-type-aware fallback rather than
             // silently jumping to AAD on every typo. A misconfigured launch.json
             // for an OnPrem server should not silently switch to cloud OAuth — it
             // typically means the user typed a vendor-specific value (e.g.

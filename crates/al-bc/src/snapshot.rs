@@ -107,7 +107,7 @@ pub async fn start_snapshot(
         });
     }
 
-    // Content-Length-capped read (F-OPEN-044). Same defence-in-depth as
+    // Content-Length-capped read. Same defence-in-depth as
     // the NuGet metadata cap: refuse server responses without a length
     // header or exceeding 16 MB.
     let json: serde_json::Value = crate::bc_client::read_json_body_capped(resp)
@@ -151,7 +151,7 @@ pub async fn list_snapshots(config: &SnapshotConfig) -> Result<Vec<SnapshotInfo>
         });
     }
 
-    // Content-Length-capped read (F-OPEN-044).
+    // Content-Length-capped read.
     let json: serde_json::Value = crate::bc_client::read_json_body_capped(resp)
         .await
         .map_err(|e| SnapshotError::ServerError {
@@ -165,7 +165,11 @@ pub async fn list_snapshots(config: &SnapshotConfig) -> Result<Vec<SnapshotInfo>
     } else if let Some(arr) = json.get("value").and_then(|v| v.as_array()) {
         arr.clone()
     } else {
-        vec![]
+        return Err(SnapshotError::ServerError {
+            status: status.as_u16(),
+            message: "snapshot list response must be an array or an OData `value` array"
+                .to_string(),
+        });
     };
 
     let snapshots = entries
@@ -253,7 +257,7 @@ pub async fn download_snapshot(
     let file_name = format!("{safe_id}.alvsc");
     let dest = config.output_dir.join(&file_name);
 
-    // Content-Length-capped binary read (F-OPEN-044 follow-up). A misbehaving
+    // Content-Length-capped binary read (follow-up). A misbehaving
     // server could otherwise stream gigabytes through `bytes()` straight into
     // the daemon's memory; the helper enforces a 500 MB cap pre- and post-read.
     let bytes = crate::bc_client::read_binary_body_capped(resp)
@@ -499,8 +503,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_snapshots_unrecognized_shape_yields_empty() {
-        // Neither array nor {value:[...]} -> empty list, not an error.
+    async fn list_snapshots_unrecognized_shape_returns_error() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -510,8 +513,10 @@ mod tests {
             .await;
 
         let config = config_for(&server.uri());
-        let snaps = list_snapshots(&config).await.expect("list should succeed");
-        assert!(snaps.is_empty());
+        let error = list_snapshots(&config)
+            .await
+            .expect_err("an unknown response shape must not look like an empty list");
+        assert!(error.to_string().contains("must be an array"));
     }
 
     #[tokio::test]

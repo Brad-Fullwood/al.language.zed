@@ -28,7 +28,7 @@ use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 /// Anything past this is replaced with a `... [N more bytes truncated]`
 /// suffix so that a verbose BC error page (which can echo request URL
 /// parameters or auth header context) doesn't propagate unbounded into
-/// logs and JSON-RPC responses (T006 / sec-003).
+/// logs and JSON-RPC responses.
 pub(crate) const ERROR_BODY_MAX: usize = 512;
 
 /// Truncate `body` to ERROR_BODY_MAX bytes (UTF-8 boundary safe) and
@@ -107,7 +107,7 @@ pub enum BcClientError {
 /// 500 MB. Typical BC extensions are 1–50 MB, with the largest BaseApp
 /// builds around 200 MB. Anything past 500 MB is almost certainly a
 /// build mistake or a malformed input we shouldn't be loading into the
-/// daemon's address space. F-OPEN-(xliff-publish-audit-3).
+/// daemon's address space.
 const MAX_UPLOADABLE_APP_BYTES: u64 = 500 * 1024 * 1024;
 
 /// Read an `.app` file into memory after verifying its size doesn't
@@ -128,7 +128,7 @@ async fn read_app_capped(app_path: &Path) -> Result<Vec<u8>, BcClientError> {
 /// Upper bound on JSON response bodies from the BC dev API.
 /// Snapshot lists, profile-start replies, test-run results — all tiny
 /// in practice (under 1 MB). 16 MB is a generous defence-in-depth bound
-/// that mirrors the NuGet metadata cap (F-OPEN-018) and stops a
+/// that mirrors the NuGet metadata cap and stops a
 /// misbehaving server from streaming gigabytes through `serde_json`.
 pub(crate) const MAX_BC_JSON_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -136,7 +136,7 @@ pub(crate) const MAX_BC_JSON_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 /// `MAX_BC_JSON_RESPONSE_BYTES`. Requires a `Content-Length` header so
 /// the cap is enforceable without first buffering the whole body —
 /// responses without one are refused. Same hardening pattern as
-/// `NuGetClient::fetch_metadata_json` (F-OPEN-018).
+/// `NuGetClient::fetch_metadata_json`.
 pub async fn read_json_body_capped<T: serde::de::DeserializeOwned>(
     response: reqwest::Response,
 ) -> Result<T, BcClientError> {
@@ -177,10 +177,7 @@ pub async fn read_json_body_capped<T: serde::de::DeserializeOwned>(
 /// BC dev API. 500 MB mirrors `MAX_UPLOADABLE_APP_BYTES`: profiling
 /// `.alcpuprofile` and snapshot `.alvsc` files are typically a few MB to tens
 /// of MB; anything past 500 MB is almost certainly a misbehaving server and
-/// we refuse to buffer it into the daemon's address space. F-OPEN-044
-/// hardened JSON reads but left binary downloads (`resp.bytes().await`)
-/// uncapped — this closes that gap with the same two-stage Content-Length
-/// pre-check + post-read re-check used by `bc_server::download_one`.
+/// we refuse to buffer it into the daemon's address space.
 pub(crate) const MAX_BC_BINARY_RESPONSE_BYTES: u64 = 500 * 1024 * 1024;
 
 /// Read a binary response body, refusing bodies larger than
@@ -220,7 +217,7 @@ pub async fn read_binary_body_capped(
 /// before truncating. `sanitize_error_body` ultimately trims to 512 bytes for
 /// display, but without an up-front cap a misbehaving BC server could stream a
 /// multi-gigabyte error body that `response.text()` would buffer entirely into
-/// memory first (F-OPEN-014).
+/// memory first.
 pub(crate) const MAX_ERROR_BODY_BYTES: u64 = 64 * 1024; // 64 KiB — far more than any real error page
 
 /// Read an error response body, refusing to buffer more than
@@ -231,7 +228,7 @@ pub(crate) const MAX_ERROR_BODY_BYTES: u64 = 64 * 1024; // 64 KiB — far more t
 /// entirely) is not buffered at all, since `reqwest`'s `text()`/`bytes()`
 /// would otherwise pull the whole body into memory. A server that lies about a
 /// small `Content-Length` and then streams a huge body is still bounded by the
-/// post-read size re-check (F-OPEN-014).
+/// post-read size re-check.
 pub async fn read_error_body_capped(response: reqwest::Response) -> String {
     match response.content_length() {
         Some(len) if len <= MAX_ERROR_BODY_BYTES => {
@@ -285,21 +282,9 @@ impl BcClient {
         }
         let client = Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)
-            .timeout(Duration::from_secs(300))  // 5 min for large uploads
+            .timeout(Duration::from_secs(300)) // 5 min for large uploads
             .build()
-            .unwrap_or_else(|e| {
-                // reqwest::Client::builder().build() failures are essentially
-                // unreachable on a healthy install (TLS backend missing or
-                // OS-level config corruption). Falling back to Client::default()
-                // means the user might silently lose timeout / TLS-permissive
-                // settings on every BC request — surface at error level so the
-                // root cause appears in the log even though we don't propagate.
-                tracing::error!(
-                    error = %e,
-                    "Failed to build TLS-configured HTTP client; falling back to Client::default(). Subsequent BC requests may fail with TLS handshake errors or hang past the configured 300s timeout."
-                );
-                Client::default()
-            });
+            .expect("reqwest client must support the configured TLS backend");
 
         let base_url = build_base_url(config);
 
@@ -408,7 +393,7 @@ impl BcClient {
         if status.is_success() {
             // Use the capped reader so a hostile BC server cannot stream an
             // arbitrarily large JSON body into the daemon's address space
-            // (F-OPEN-044 hardening — enforces MAX_BC_JSON_RESPONSE_BYTES via
+            // (hardening — enforces MAX_BC_JSON_RESPONSE_BYTES via
             // a Content-Length pre-check plus a post-read size re-check).
             let body = read_json_body_capped::<T>(response).await?;
             return Ok(body);
@@ -423,11 +408,11 @@ impl BcClient {
     ) -> Result<T, BcClientError> {
         // Read + scrub via the capped reader so a hostile BC server cannot
         // stream a multi-gigabyte error body that `response.text()` would
-        // buffer entirely into memory before truncation (F-OPEN-014). The
+        // buffer entirely into memory before truncation. The
         // capped reader rejects oversize/absent Content-Length without
         // buffering and re-checks the actual size post-read, then runs
         // `sanitize_error_body` itself — never propagating the full BC error
-        // body into logs/JSON-RPC responses (T006 / sec-003). BC servers can
+        // body into logs/JSON-RPC responses. BC servers can
         // echo request URL parameters (incl. tenant) into error pages, and a
         // verbose 401 page sometimes mirrors the Authorization header family;
         // we keep enough text to be useful for debugging without leaving a
@@ -894,12 +879,9 @@ mod tests {
 
     #[tokio::test]
     async fn handle_response_success_path_uses_capped_json_reader() {
-        // Regression for F-OPEN-118: the success branch of `handle_response`
-        // must route through `read_json_body_capped`, which REQUIRES a
+        // The success branch must route through `read_json_body_capped`, which requires a
         // Content-Length so the 16 MB cap is enforceable. A chunked (no
-        // Content-Length) 200 JSON body is therefore refused. The previous
-        // code called `response.json()` directly and would have returned Ok,
-        // so this test fails before the fix and passes after.
+        // Content-Length) 200 JSON body is therefore refused.
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/BC/dev/extensions"))
@@ -930,12 +912,11 @@ mod tests {
 
     #[tokio::test]
     async fn handle_response_error_path_uses_capped_error_reader() {
-        // Regression for F-OPEN-119: the non-2xx branch routes through
-        // `map_error_response`, which must use `read_error_body_capped`. An
+        // The non-2xx branch routes through `map_error_response`, which must
+        // use `read_error_body_capped`. An
         // error body advertising a Content-Length above the 64 KiB cap must
         // NOT be buffered — the returned message carries the sentinel instead
-        // of the body. The previous code called `response.text()` directly and
-        // would have buffered the whole body.
+        // of the body.
         let oversize = (MAX_ERROR_BODY_BYTES + 1).to_string();
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))

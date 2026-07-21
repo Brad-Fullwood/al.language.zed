@@ -106,7 +106,7 @@ pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, Profili
         });
     }
 
-    // Content-Length-capped read (F-OPEN-044). BC dev API responses for
+    // Content-Length-capped read. BC dev API responses for
     // session start are tiny (a few hundred bytes); 16 MB is a generous
     // defence-in-depth bound. Wrap the cross-crate BcClientError into our
     // local error variant so the caller doesn't see a foreign type.
@@ -130,7 +130,7 @@ pub async fn stop_profiling(
     session_id: &str,
 ) -> Result<PathBuf, ProfilingError> {
     // Validate that output_dir is an absolute path before doing any work
-    // (F-OPEN path traversal guard; mirrors snapshot.rs). A relative output_dir
+    // A relative output_dir
     // would be resolved against the long-lived daemon's cwd, allowing the
     // downloaded profile to escape to an arbitrary location. Fail fast, before
     // the network round-trip.
@@ -177,7 +177,7 @@ pub async fn stop_profiling(
     let file_name = format!("profile-{timestamp}.alcpuprofile");
     let dest = config.output_dir.join(&file_name);
 
-    // Content-Length-capped binary read (F-OPEN-044 follow-up). A misbehaving
+    // Content-Length-capped binary read (follow-up). A misbehaving
     // server could otherwise stream gigabytes through `bytes()` straight into
     // the daemon's memory; the helper enforces a 500 MB cap pre- and post-read.
     let bytes = crate::bc_client::read_binary_body_capped(resp)
