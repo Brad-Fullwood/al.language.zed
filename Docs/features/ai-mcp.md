@@ -22,7 +22,7 @@ the alias's mapped method or `al_call`'s requested method, builds a daemon `Requ
 
 | MCP tool | Internal method | Parameters | What it does |
 | --- | --- | --- | --- |
-| `al_call` | selected at call time | `method` (string, required), `params` (object, default `{}`) | Call any method in the shared daemon catalog; this is the complete, zero-drift bridge. |
+| `al_call` | selected at call time | `method` (string, required), `params` (object, default `{}`) | Call any method in the shared daemon catalog through one generic entry point. |
 | `al_debug` | `debug` | `cmd` (required) plus command-specific debug parameters | Drive a persistent BC debug session: start, breakpoint, state, stack, locals/globals/expansion, evaluate, continue, step, history, and stop. |
 | `al_build` | `compile` | — | Compile the project (native emitter by default); returns success, diagnostics, `.app` path. |
 | `al_downloadsymbols` | `downloadSymbols` | — | Download dependency symbol packages into `.alpackages`. |

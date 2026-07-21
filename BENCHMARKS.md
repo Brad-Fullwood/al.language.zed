@@ -20,6 +20,8 @@ They are not release benchmarks.
   symbol shapes and method identifiers.
 - The native emitter writes `TextData/*.xliff` and registers the XLIFF content type when the project
   contains translatable text.
+- The latest correctness and package-fidelity observations are recorded separately in
+  [`benchmarks/FINDINGS.md`](benchmarks/FINDINGS.md); they do not make performance claims.
 - The Microsoft compiler remains the compatibility authority for expression/type semantics and the
   complete analyzer catalogue. Use `pack-native --validate` or `al.useOfficialCompiler=true` when
   that validation is required.

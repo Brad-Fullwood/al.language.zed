@@ -103,7 +103,7 @@ The symbol engine is a core strength; the next work should make it more complete
 MCP is a strategic first-class entry point to the same tools as CLI and Zed, not a curated secondary
 surface.
 
-- Keep the complete shared daemon catalog available through the zero-drift `al_call` bridge. Named
+- Keep the complete shared daemon catalog available through the generic `al_call` bridge. Named
   aliases such as `al_suggestevent`, `al_testclassify`, `al_testcoverage`, `al_depgraph`, and
   `al_debug` exist for richer discovery; they must never become an availability allow-list.
 - Add output-schema coverage and optional rich aliases where a dedicated per-operation schema

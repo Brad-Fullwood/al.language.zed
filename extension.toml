@@ -28,7 +28,7 @@ name = "AL Tools"
 
 # Keep this revision in sync with the `tree-sitter-al/` submodule HEAD —
 # Zed's syntax highlighting uses this rev, while native parsing in
-# `al-core` uses the bundled submodule. Divergence shows up as
+# the native crates use the bundled submodule. Divergence shows up as
 # parse-tree differences for the same .al file across the two surfaces.
 # Bump both together in a release-prep step. Verify with:
 #   diff <(echo "extension"; grep '^rev' extension.toml | cut -d'"' -f2) \
