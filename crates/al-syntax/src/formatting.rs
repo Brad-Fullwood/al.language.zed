@@ -167,12 +167,9 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             in_var_section = false;
         }
 
-        // an OBJECT-level `var` section has no closing `begin` — it
+        // An object-level `var` section has no closing `begin`; it
         // ends at the next member declaration: an attribute line
         // (`[EventSubscriber(...)]`) or a procedure/trigger header.
-        // Previously the next member stayed at variable indentation
-        // (verified on a real codeunit: the attribute + `local procedure`
-        // header were pushed to var-entry depth while `begin` stayed put).
         if in_var_section {
             let is_member_start = trimmed.starts_with('[')
                 || trimmed_lower.starts_with("procedure ")
@@ -1594,11 +1591,6 @@ end;
 
     #[test]
     fn test_block_comment_between_if_then_and_body_preserves_indent() {
-        // Regression: a multi-line `/* */` block comment between an
-        // `if … then` and its body must NOT drain the single-statement
-        // indent stack. Previously the text-based scanner saw the comment
-        // body as a regular statement and collapsed the indent, leaving
-        // the actual body de-indented. See iteration-6 formatter audit.
         let input = "\
 codeunit 50100 Test
 {
@@ -1613,7 +1605,6 @@ codeunit 50100 Test
 ";
         let opts = FormatOptions::default();
         let out = format_al(input, &opts);
-        // The body line must remain indented one level past `if … then`.
         assert!(
             out.contains("            Message('yes');"),
             "block comment must not collapse single-stmt indent — got:\n{out}"
@@ -1763,9 +1754,6 @@ codeunit 50100 Test
 
     #[test]
     fn keyword_casing_preserves_non_ascii_content() {
-        // Regression: keyword casing copied string/identifier content byte by
-        // byte via `as char`, mangling multi-byte UTF-8 into mojibake. The
-        // non-ASCII content must survive verbatim while keywords are cased.
         let out = apply_keyword_casing("if X then Message('Grüße: €');", &KeywordCasing::Upper);
         assert!(
             out.contains("'Grüße: €'"),
@@ -1775,7 +1763,6 @@ codeunit 50100 Test
             out.starts_with("IF ") && out.contains(" THEN "),
             "keywords were not upper-cased: {out}"
         );
-        // A quoted identifier containing non-ASCII is likewise preserved.
         let id = apply_keyword_casing("field(1; \"Preis in €\"; Decimal)", &KeywordCasing::Lower);
         assert!(
             id.contains("\"Preis in €\""),

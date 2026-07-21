@@ -524,11 +524,6 @@ mod tests {
 
     #[test]
     fn find_variable_references_returns_each_span_once() {
-        // Regression: the AL grammar wraps some identifiers
-        // in a `name` node whose span equals the inner `identifier`, and both
-        // kinds matched the reference predicate, so every reference was
-        // collected twice — doubling `references` results and `rename` edit
-        // counts. Each source span must appear at most once.
         let src = r#"codeunit 50100 "T"
 {
     var GlobalCounter: Integer;

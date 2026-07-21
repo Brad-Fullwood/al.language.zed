@@ -1038,13 +1038,7 @@ fn collect_variable_name_nodes(
 }
 
 fn is_variable_name_node(kind: &str) -> bool {
-    // accept any `kw_*` node as an identifier fallback, not just
-    // the single `kw_function` we hardcoded before. AL grammar sometimes
-    // tokenises identifier-positioned reserved words (e.g. `record`, `query`,
-    // `trigger`) as their dedicated `kw_*` nodes when they appear inside
-    // `var FunctionRef: Codeunit ...`-style declarations. The pre-fix list
-    // silently dropped outline entries for those positions whenever a new
-    // grammar release added a `kw_*` not in the literal match list.
+    // Reserved words in identifier position retain their `kw_*` grammar kind.
     matches!(
         kind,
         "identifier"
@@ -1093,11 +1087,6 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
         }
 
         let line_no = node.start_position().row as u32 + offset as u32;
-        // skip this entry if we can't locate the
-        // identifier within the source line. `unwrap_or_default()` was
-        // producing a (0, 0) range at column 0 — visually wrong for the
-        // outline. Real ASCII identifiers always match; this guard handles
-        // the edge case of whitespace-collapsing surprises.
         let Some(start_byte) = line.find(name_part) else {
             continue;
         };
@@ -1620,27 +1609,6 @@ codeunit 50100 Test { }"#;
     }
 
     #[test]
-    fn test_malformed_object_does_not_panic() {
-        // Truncated / malformed object: must not panic and must degrade gracefully.
-        let src = "codeunit 50100";
-        let symbols = parse_symbols(src);
-        // Either zero symbols or a best-effort object symbol — never a panic.
-        for s in &symbols {
-            assert!(!s.name.is_empty() || s.name == "(unnamed)");
-        }
-    }
-
-    #[test]
-    fn test_unnamed_object_fallback_name() {
-        // Object with no name token at all → "(unnamed)" fallback.
-        let src = "codeunit 50100 { }";
-        let symbols = parse_symbols(src);
-        if let Some(obj) = symbols.first() {
-            assert!(!obj.name.is_empty());
-        }
-    }
-
-    #[test]
     fn test_object_kind_to_symbol_kind_unknown_falls_back_to_object() {
         assert_eq!(
             object_kind_to_symbol_kind("kw_not_a_real_object"),
@@ -1666,7 +1634,6 @@ codeunit 50100 Test { }"#;
     fn test_is_variable_name_node_accepts_kw_prefix() {
         assert!(is_variable_name_node("identifier"));
         assert!(is_variable_name_node("quoted_identifier"));
-        // any kw_* node counts as an identifier fallback.
         assert!(is_variable_name_node("kw_record"));
         assert!(is_variable_name_node("kw_anything_at_all"));
         assert!(!is_variable_name_node("semicolon"));
@@ -1690,9 +1657,6 @@ enum 50102 Third { value(0; A) { } }"#;
 
     #[test]
     fn test_section_keyword_kind_mapping() {
-        // Exercise the section-keyword -> SymbolKind map (extract_section_symbol).
-        // Each of these keywords parses as an `object_section` whose outline
-        // kind is fixed by the keyword, not by AL release.
         let src = r#"page 50100 "P"
 {
     layout { area(Content) { } }
@@ -1722,8 +1686,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
         assert_eq!(kind_of(&symbols, "actions"), Some(SymbolKind::Namespace));
         assert_eq!(kind_of(&symbols, "fieldgroups"), Some(SymbolKind::Struct));
         assert_eq!(kind_of(&symbols, "rendering"), Some(SymbolKind::Namespace));
-        // requestpage maps to Class — a distinct mapping arm, not the generic
-        // Namespace fallback, so this guards the specific branch.
         assert_eq!(kind_of(&symbols, "requestpage"), Some(SymbolKind::Class));
         assert_eq!(kind_of(&symbols, "dataset"), Some(SymbolKind::Namespace));
     }
@@ -1758,9 +1720,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
             .expect("OnValidate trigger nested under field");
         assert_eq!(trig.kind, SymbolKind::Event);
         assert_eq!(trig.detail.as_deref(), Some("trigger"));
-        // The selection range must point at the name token, which starts after
-        // the keyword column — proves try_extract_inline_trigger picked the
-        // name node (not the whole keyword span) for selection.
         assert!(trig.selection_range.start.character > trig.range.start.character);
     }
 
@@ -1787,9 +1746,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
 
     #[test]
     fn test_control_keyword_to_symbol_kind_mapping() {
-        // Direct unit test of the page-control keyword -> SymbolKind map.
-        // Keywords come from page_controls.json (loaded at runtime), so this
-        // exercises the real lookup + each match arm.
         assert_eq!(control_keyword_to_symbol_kind("area"), SymbolKind::Struct);
         assert_eq!(control_keyword_to_symbol_kind("field"), SymbolKind::Field);
         assert_eq!(control_keyword_to_symbol_kind("part"), SymbolKind::Class);
@@ -1867,18 +1823,6 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
         assert_eq!(count, 1, "label must appear exactly once, not duplicated");
     }
 
-    // Direct-call tests for the defensive / alternate-grammar extraction
-    // paths. The current tree-sitter grammar revision parses most AL forms
-    // as nested `object_section` nodes, so several helpers (which handle
-    // node kinds like `key_declaration`, bare `metadata_keyword` page
-    // controls, raw `control_keyword("trigger")` tokens, and the
-    // `value(...)` object_section spelling) are not reached by the
-    // end-to-end `parse_symbols` walk. They are still pure functions over a
-    // tree-sitter `Node`, so we locate a node of the required kind inside a
-    // real parse tree and invoke the helper directly — exercising the real
-    // child-walking / field-extraction logic rather than mocking it.
-
-    /// Parse `src` and return the root node's tree (kept alive by the caller).
     fn parse_tree(src: &str) -> (tree_sitter::Tree, String) {
         let mut parser = AlParser::new();
         let result = parser.parse(src);

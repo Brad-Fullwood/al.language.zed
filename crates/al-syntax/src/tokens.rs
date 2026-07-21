@@ -548,8 +548,6 @@ fn classify_key_declaration_name(node: Node, declaration: Node, source: &[u8]) -
 
     let kw = {
         let keyword_node = declaration.child_by_field_name("keyword").or_else(|| {
-            // Fallback: find first keyword/property_keyword child by index
-            // to avoid tree-sitter cursor lifetime issues.
             (0..declaration.child_count())
                 .filter_map(|i| declaration.child(i))
                 .find(|child| {
@@ -562,18 +560,12 @@ fn classify_key_declaration_name(node: Node, declaration: Node, source: &[u8]) -
         keyword_node.utf8_text(source).ok()?.to_lowercase()
     };
 
-    // These keyword names are AL structural declarations driven by the
-    // tree-sitter grammar (`key_declaration` covers table keys, dataitems,
-    // columns, table-elements, etc.). Like `record_op_event_names`, they are
-    // grammar-ABI strings — fixed by the AL grammar revision, not BC release-
-    // to-release. If a future grammar revision adds a new declaration kind
-    // here, fall-through to `TABLE_KEY` is the safe default (an outline entry
-    // still shows up; only its semantic-token highlight class is generic).
     match kw.as_str() {
+        "key" => Some(token_types::TABLE_KEY),
         "dataitem" => Some(token_types::QUERY_DATA_ITEM),
         "column" => Some(token_types::QUERY_COLUMN),
         "tableelement" => Some(token_types::XMLPORT_TABLE_ELEMENT),
-        _ => Some(token_types::TABLE_KEY),
+        _ => None,
     }
 }
 

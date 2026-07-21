@@ -262,10 +262,6 @@ mod tests {
         assert_eq!(metrics[0].name, "ProcessOrder");
     }
 
-    /// Regression: cyclomatic complexity must count `case_branch` arms.
-    /// Before this fix the matcher looked for `case_arm`/`case_element`,
-    /// which the grammar never emits — so case statements added nothing
-    /// to cyclomatic complexity.
     #[test]
     fn case_branch_arms_increment_cyclomatic() {
         // Use begin/end blocks per arm so the grammar produces three distinct

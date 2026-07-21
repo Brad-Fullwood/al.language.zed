@@ -1019,10 +1019,6 @@ mod tests {
         assert_eq!(decl.type_subtype, Some("Item Journal Staging".to_string()));
     }
 
-    // Regression: AL keywords are case-insensitive. A `dataitem` written with
-    // non-standard casing (e.g. `dataItem`) must still resolve. Previously the
-    // short-circuit gate only matched a fixed set of case forms and returned
-    // early for variations like `dataItem(`, silently dropping the variable.
     #[test]
     fn test_resolve_dataitem_variable_nonstandard_casing() {
         let src = r#"report 50201 "Test Report"
