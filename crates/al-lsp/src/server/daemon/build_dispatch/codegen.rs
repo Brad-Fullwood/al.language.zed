@@ -366,48 +366,38 @@ pub(in crate::server::daemon) fn dispatch_generate(
                 .and_then(|v| v.as_str())
                 .unwrap_or("NewTests")
                 .to_string();
-            // The test generator builds `[Test]` stubs from the SUBJECT
-            // codeunit's public methods. Resolve `subject` against the symbol
-            // index as a Codeunit. Previously the `subject` param was ignored
-            // entirely and the subject was mis-sourced from `table` (which is
-            // only ever matched against Tables), so `generate_test_stubs` was
-            // unreachable from `al-explorer generate test --subject`.
-            // A subject is optional — with none we emit a placeholder test —
-            // but if one is named and not found we surface that rather than
-            // silently degrading to the placeholder.
-            let subject_name = params.get("subject").and_then(|v| v.as_str()).unwrap_or("");
-            let subject = if subject_name.is_empty() {
-                None
-            } else {
-                // Workspace codeunits (with their methods) only enter the
-                // SymbolIndex via the call-graph enrichment pass, so build it
-                // first (mirrors the table lookup above).
-                let _ = workspace.get_or_build_call_graph();
-                match workspace
+            let Some(subject_name) = params
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .filter(|name| !name.is_empty())
+            else {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "Test generation requires a subject codeunit",
+                );
+            };
+            let _ = workspace.get_or_build_call_graph();
+            let Some(subject) =
+                workspace
                     .symbols
                     .search(subject_name, 10)
                     .into_iter()
-                    .find(|e| {
-                        e.kind == al_symbols::ObjectKind::Codeunit
-                            && e.name.eq_ignore_ascii_case(subject_name)
-                    }) {
-                    Some(found) => Some((*found).clone()),
-                    None => {
-                        return rpc_error(
-                            id,
-                            error_codes::INVALID_PARAMS,
-                            &format!(
-                                "Subject codeunit '{}' not found in symbol index",
-                                subject_name
-                            ),
-                        );
-                    }
-                }
+                    .find(|entry| {
+                        entry.kind == al_symbols::ObjectKind::Codeunit
+                            && entry.name.eq_ignore_ascii_case(subject_name)
+                    })
+            else {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    &format!("Subject codeunit '{subject_name}' not found in symbol index"),
+                );
             };
             let config = al_analysis::generators::GenerateTestConfig {
                 object_id,
                 test_name,
-                subject,
+                subject: Some((*subject).clone()),
             };
             let code = al_analysis::generators::generate_test(&config);
             Response {
@@ -844,26 +834,16 @@ mod tests {
     }
 
     #[test]
-    fn generate_test_without_subject_emits_placeholder() {
+    fn generate_test_without_subject_is_invalid_params() {
         let ws = empty_ws();
         let resp = dispatch_generate(
             &ws,
             12,
             &serde_json::json!({ "kind": "test", "name": "Empty Tests", "id": 50202 }),
         );
-        assert!(
-            resp.error.is_none(),
-            "no-subject test must succeed: {:?}",
-            resp.error
-        );
-        let code = resp.result.expect("result")["code"]
-            .as_str()
-            .expect("code string")
-            .to_string();
-        assert!(
-            code.contains("Subtype = Test;") && code.contains("[Test]"),
-            "placeholder test must still be a valid Test codeunit: {code}"
-        );
+        let error = resp.error.expect("missing subject must fail");
+        assert_eq!(error.code, error_codes::INVALID_PARAMS);
+        assert!(error.message.contains("requires a subject"));
     }
 
     #[test]

@@ -2,10 +2,8 @@
 //! for the BC debug hub. Split out of the former monolithic `bc_debug.rs`
 //! (pure move, no behavior change).
 
-use serde::Deserialize;
-use tracing::warn;
-
 use crate::dap::{DapError, Result};
+use serde::Deserialize;
 
 // `pub(super)` (rather than private): the struct and its fields are
 // constructed directly (not just deserialized) by sibling modules —
@@ -40,34 +38,15 @@ pub(super) struct SignalRMessage {
 pub(super) fn default_invoke_timeout(target: &str) -> tokio::time::Duration {
     use tokio::time::Duration;
     match target {
-        // Step / continue / break — should respond within a couple of seconds
-        // on a healthy server. Short timeout so a hung server fails fast.
         "Next" | "StepIn" | "StepOut" | "Continue" | "Break" => Duration::from_secs(10),
-        // Connection ping. Should be very fast.
         "IsAlive" => Duration::from_secs(5),
-        // Variable inspection / stack frames — can be slow on deep records
-        // (BC's GetVariables walks the record graph server-side).
-        // `ExpandNode` is the per-row drill-in used by `expand_node`,
-        // `GetWatchNode` by `get_watch_node` — both call `invoke()` with
-        // those exact target strings, so they belong in this 30s bucket
-        // alongside the other variable-walk paths. Previously the table
-        // listed `ExpandVariableTree` / `ExpandLocalsTree` (no caller),
-        // and the real strings fell through to the 60s catch-all below.
         "GetVariables" | "GetStackTrace" | "ExpandGlobals" | "ExpandNode" | "GetWatchNode"
         | "GetSource" => Duration::from_secs(30),
-        // Attach / DebugAdapterConfigurationDone — network setup. Allow a
-        // longer budget for high-latency BC SaaS connections.
         "Attach" | "DebugAdapterConfigurationDone" => Duration::from_secs(120),
-        // Breakpoint operations — usually fast but can serialize behind a
-        // BC compilation step. `UpdateBreakpoint` belongs here too;
-        // previously it fell through to the 60s catch-all.
         "AddBreakpoint" | "RemoveBreakpoint" | "UpdateBreakpoint" | "SetBreakpointResponse" => {
             Duration::from_secs(30)
         }
-        // Teardown — should be quick; if it isn't, we abandon and tear down
-        // the WS connection anyway.
         "StopDebugging" | "TerminateSession" => Duration::from_secs(10),
-        // Unknown / future targets — fall back to the previous global value.
         _ => Duration::from_secs(60),
     }
 }
@@ -117,9 +96,7 @@ pub(super) struct NegotiateConnection {
 ///   - **0** — older protocol: no `connectionToken` is returned and
 ///     `connectionId` doubles as the `?id=` value.
 ///
-/// A missing `negotiateVersion` field is treated as 0 for backward
-/// compatibility (pre-versioning SignalR servers). An unrecognised version is
-/// logged but handled on a best-effort basis (token if present, else id).
+/// A missing `negotiateVersion` field is treated as 0 for pre-versioning servers.
 pub(super) fn resolve_negotiate_connection(
     negotiate: &serde_json::Value,
 ) -> Result<NegotiateConnection> {
@@ -189,25 +166,9 @@ pub(super) fn resolve_negotiate_connection(
                 connection_id,
             })
         }
-        other => {
-            // Unexpected version the BC server claims to speak. Don't hard-fail
-            // — handle best-effort (token if present, else id) and warn so the
-            // mismatch is visible if the debug session misbehaves.
-            warn!(
-                "SignalR negotiate returned unexpected negotiateVersion={other} (client \
-                 requested 1); proceeding best-effort"
-            );
-            let connection_id = connection_id.ok_or_else(|| {
-                DapError::ConnectionFailed(format!(
-                    "SignalR negotiateVersion={other} response has no connectionId field"
-                ))
-            })?;
-            let ws_id = connection_token.unwrap_or_else(|| connection_id.clone());
-            Ok(NegotiateConnection {
-                ws_id,
-                connection_id,
-            })
-        }
+        other => Err(DapError::ConnectionFailed(format!(
+            "SignalR returned unsupported negotiateVersion={other}; expected 0 or 1"
+        ))),
     }
 }
 
@@ -540,17 +501,17 @@ mod tests {
     }
 
     #[test]
-    fn negotiate_unexpected_version_best_effort_uses_token() {
-        // An unexpected negotiateVersion (e.g. a future 2) must not hard-fail;
-        // prefer the token when present.
+    fn negotiate_unexpected_version_errors() {
         let v = serde_json::json!({
             "negotiateVersion": 2,
             "connectionId": "session-abc",
             "connectionToken": "token-xyz",
         });
-        let r = resolve_negotiate_connection(&v).unwrap();
-        assert_eq!(r.ws_id, "token-xyz");
-        assert_eq!(r.connection_id, "session-abc");
+        let error = resolve_negotiate_connection(&v).unwrap_err();
+        assert!(matches!(
+            error,
+            DapError::ConnectionFailed(message) if message.contains("unsupported negotiateVersion=2")
+        ));
     }
 
     #[test]

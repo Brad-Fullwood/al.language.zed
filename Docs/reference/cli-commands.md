@@ -72,7 +72,7 @@ errors as `{ "error": "…" }`). Run with no subcommand on Unix to open the TUI.
 | `fix [file]` | `--dry-run --rule <code>` | Apply fixable diagnostics |
 | `permissions` | `--format al\|xml --name <n> --id <N> --role-id <id>` | Generate permission set |
 | `new <dir>` | `--name --publisher --template <t>` | New project (templates: default, pte, appsource, library, test, copilot, agent, api) |
-| `generate <kind>` | `--id --name --table --page-type --subject` | Generate page/report/test |
+| `generate <kind>` | `--id --name --table --page-type --subject` | Generate page/report/test (`test` requires `--subject`) |
 | `sort-members [file]` | `--all --dry-run` | Canonical member order |
 | `organize-files` | `--dry-run` | Rename `.al` files to `<Type><Id>.<Name>.al` |
 | `add-application-area` | `--value <v> --dry-run` | Add `ApplicationArea` workspace-wide |

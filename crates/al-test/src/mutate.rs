@@ -1287,5 +1287,4 @@ mod tests {
         assert!(s.contains("bad.al"));
         assert!(s.contains("unexpected token"));
     }
-
 }

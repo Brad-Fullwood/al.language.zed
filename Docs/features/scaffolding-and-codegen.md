@@ -79,6 +79,8 @@ al-explorer sort-members [file] [--all] [--dry-run]
 al-explorer organize-files [--dry-run]
 ```
 
+Test generation requires `--subject` so each emitted `[Test]` procedure targets a named codeunit method.
+
 Zed tasks: *AL: New Project*, *AL: Generate Permission Set*, *AL: Organize File Names*, *AL: Sort
 Members*. Scaffolding and permissions are also reachable via LSP `workspace/executeCommand`.
 
