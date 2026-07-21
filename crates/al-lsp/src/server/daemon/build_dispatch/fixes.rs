@@ -53,7 +53,7 @@ pub(in crate::server::daemon) async fn dispatch_lint(
     let Some(uri) = file_uri_from_params(params) else {
         return invalid_params(id);
     };
-    let _text = match require_document_text(workspace, &uri, id) {
+    let _text = match require_document_text(workspace, &uri, id).await {
         Ok(t) => t,
         Err(resp) => return resp,
     };

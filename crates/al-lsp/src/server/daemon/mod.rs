@@ -724,6 +724,25 @@ pub(crate) fn require_project_root(workspace: &Workspace, id: u64) -> Result<Pat
         .ok_or_else(|| rpc_error(id, error_codes::INTERNAL_ERROR, "No project loaded"))
 }
 
+/// Get document text without blocking the async runtime, loading it from disk
+/// when the document store does not already contain the file.
+#[allow(clippy::result_large_err)]
+pub(crate) async fn require_document_text(
+    workspace: &Workspace,
+    uri: &url::Url,
+    id: u64,
+) -> Result<String, Response> {
+    if let Some(text) = workspace.documents.get_text(uri) {
+        return Ok(text);
+    }
+    let path = uri.to_file_path().map_err(|_| file_not_found(id))?;
+    let text = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|_| file_not_found(id))?;
+    workspace.documents.open(uri.clone(), text.clone());
+    Ok(text)
+}
+
 // Err is a ready-to-send JSON-RPC `Response` (cold path); see require_project_root.
 #[allow(clippy::result_large_err)]
 pub(crate) fn parse_object_kind(
@@ -737,21 +756,6 @@ pub(crate) fn parse_object_kind(
             &format!("Unknown object kind: {kind_str}"),
         )
     })
-}
-
-/// Get document text, loading from disk if needed. Returns the text or a file-not-found Response.
-// Err is a ready-to-send JSON-RPC `Response` (cold path); see require_project_root.
-#[allow(clippy::result_large_err)]
-pub(crate) fn require_document_text(
-    workspace: &Workspace,
-    uri: &url::Url,
-    id: u64,
-) -> Result<String, Response> {
-    ensure_document(workspace, uri);
-    workspace
-        .documents
-        .get_text(uri)
-        .ok_or_else(|| file_not_found(id))
 }
 
 /// Ensure a file is loaded in the document store. If not found, read from disk.
@@ -1133,7 +1137,7 @@ mod tests {
         // ensure_document uses block_in_place, which requires a multi-thread
         // runtime context.
         let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-        let text = rt.block_on(async { require_document_text(&ws, &uri, 1) });
+        let text = rt.block_on(async { require_document_text(&ws, &uri, 1).await });
         assert_eq!(text.unwrap(), "codeunit 50000 Foo {}");
         assert_eq!(
             ws.documents.get_text(&uri).as_deref(),
@@ -1146,7 +1150,7 @@ mod tests {
         let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let uri = url::Url::parse("file:///no/such/al-file-xyz.al").unwrap();
         let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-        let err = rt.block_on(async { require_document_text(&ws, &uri, 6).unwrap_err() });
+        let err = rt.block_on(async { require_document_text(&ws, &uri, 6).await.unwrap_err() });
         assert_eq!(err.id, 6);
         let rpc = err.error.expect("must carry an RpcError");
         assert_eq!(rpc.code, error_codes::FILE_NOT_FOUND);
