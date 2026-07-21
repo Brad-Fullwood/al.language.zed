@@ -102,8 +102,8 @@ fn break_location_from_args(arguments: &Option<Vec<serde_json::Value>>) -> Optio
 ///
 /// BC sends the fatal message as the first element of the `arguments` array.
 /// When that is unavailable, collapsing every failure into the opaque string
-/// `"unknown"` makes production troubleshooting of BC fatal errors very hard
-/// (F-OPEN-138). Instead, distinguish the three distinct failure shapes so the
+/// `"unknown"` makes production troubleshooting of BC fatal errors very hard.
+/// Distinguish the three failure shapes so the
 /// log line tells the operator *why* no message was extracted:
 ///
 /// - `arguments` field absent entirely,

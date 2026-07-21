@@ -84,7 +84,7 @@ pub struct EvalResult {
     pub type_name: String,
 }
 
-/// A recorded breakpoint hit (for debug history — T405).
+/// A recorded breakpoint hit stored in debug history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BreakpointHit {

@@ -117,7 +117,7 @@ impl NativeDebugSession {
         Ok(results)
     }
 
-    /// F-014: drain any server-push events that arrived since the last
+    /// drain any server-push events that arrived since the last
     /// daemon command and update local state (history of breakpoint hits)
     /// before stateful queries run. Without this, `state()` sees
     /// `is_stopped == false` and an empty `history` even though a Break
@@ -220,7 +220,7 @@ impl NativeDebugSession {
 
     /// Continue execution after a breakpoint (BreakpointExitReason=0).
     pub async fn continue_exec(&mut self) -> Result<DebugState> {
-        // F-014: drain pending events so any Break that fired between the
+        // drain pending events so any Break that fired between the
         // user's last command and `continue` is recorded in history before
         // we tell BC to resume.
         self.drain_events().await;
@@ -362,8 +362,8 @@ fn parse_bc_variables(json: &serde_json::Value) -> Vec<Variable> {
         .collect()
 }
 
-/// F-014: render a SystemTime as a UTC ISO-8601 timestamp without pulling in
-/// chrono (al-core deliberately avoids adding new deps). Resolution is
+/// render a SystemTime as a UTC ISO-8601 timestamp without pulling in
+/// chrono. Resolution is
 /// seconds — fine-grained ordering inside a single second is preserved by
 /// the BreakpointHit::seq counter.
 fn format_event_timestamp(t: std::time::SystemTime) -> String {
@@ -1047,7 +1047,7 @@ mod native_session_tests {
         assert!(st.location.is_none());
 
         let hist = nds.history(None);
-        assert_eq!(hist.len(), 1, "F-014: Break recorded before resume");
+        assert_eq!(hist.len(), 1, "Break recorded before resume");
         assert_eq!(hist[0].location.line, 12);
 
         let resume = fake
@@ -1089,7 +1089,7 @@ mod native_session_tests {
 
     #[tokio::test]
     async fn step_drains_pending_break_before_advancing() {
-        // F-014 symmetry with continue: a pending Break is recorded before step.
+        // symmetry with continue: a pending Break is recorded before step.
         let (mut nds, fake) = session("c");
         fake.push_callback(
             "Break",
@@ -1100,7 +1100,7 @@ mod native_session_tests {
         nds.step("over").await.unwrap();
 
         let hist = nds.history(None);
-        assert_eq!(hist.len(), 1, "F-014: Break recorded before step");
+        assert_eq!(hist.len(), 1, "Break recorded before step");
         assert_eq!(hist[0].location.line, 8);
     }
 

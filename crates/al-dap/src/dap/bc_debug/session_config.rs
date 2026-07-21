@@ -130,7 +130,7 @@ impl BcDebugConfig {
     }
 
     /// Build the base URL prefix for on-prem: `{server}:{port}/{instance}`.
-    /// Uses the same pattern as `al-core::launch::BcServerConfig::dev_packages_url`.
+    /// Uses the same pattern as the BC server client.
     pub(crate) fn onprem_base(&self) -> String {
         let server = self.server.as_deref().unwrap_or("http://localhost");
         let instance = self.server_instance.as_deref().unwrap_or("BC");
@@ -140,10 +140,8 @@ impl BcDebugConfig {
 
     pub fn base_url(&self) -> String {
         if self.environment_type.eq_ignore_ascii_case("OnPrem") {
-            // Fix #3: include port in on-prem URL
             format!("{}/dev", self.onprem_base())
         } else {
-            // Fix #2: cloud URL must include tenant before environment name.
             // URL-encode tenant and environment name so values containing special
             // characters (spaces, dots, slashes) produce valid URLs.
             let tenant = percent_encode_url(&self.tenant);
@@ -154,10 +152,8 @@ impl BcDebugConfig {
 
     pub fn debug_hub_url(&self) -> String {
         if self.environment_type.eq_ignore_ascii_case("OnPrem") {
-            // Fix #3: include port in on-prem URL
             format!("{}/dev/DebuggerHub", self.onprem_base())
         } else {
-            // Fix #2: cloud URL must include tenant before environment name.
             // URL-encode tenant and environment name (same reason as base_url).
             let tenant = percent_encode_url(&self.tenant);
             let env = percent_encode_url(self.environment_name.as_deref().unwrap_or("sandbox"));
@@ -191,7 +187,7 @@ mod tests {
 
     #[test]
     fn cloud_base_url_includes_tenant() {
-        // Fix #2: cloud URL must include tenant before environment name
+        // Cloud URLs include the tenant before the environment name.
         let cfg = cloud_config("mytenant.onmicrosoft.com", "MySandbox");
         let url = cfg.base_url();
         assert!(
@@ -220,7 +216,7 @@ mod tests {
 
     #[test]
     fn onprem_base_url_includes_port() {
-        // Fix #3: on-prem URL must include port
+        // On-premises URLs include the configured port.
         let cfg = onprem_config("http://erp.example.com", "BC240", 7050);
         let url = cfg.base_url();
         assert!(

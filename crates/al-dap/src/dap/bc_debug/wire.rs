@@ -36,7 +36,7 @@ pub(super) struct SignalRMessage {
 ///
 /// A blanket 60 s timeout (the prior default) was too short for slow-network
 /// attach flows and too long for the user to notice that "Step Over" was
-/// silently stuck. F-OPEN-015.
+/// silently stuck.
 pub(super) fn default_invoke_timeout(target: &str) -> tokio::time::Duration {
     use tokio::time::Duration;
     match target {
@@ -108,7 +108,7 @@ pub(super) struct NegotiateConnection {
 }
 
 /// Resolve the WebSocket connection identifiers from a SignalR negotiate
-/// response, validating the version the server negotiated (F-OPEN-137).
+/// response, validating the version the server negotiated.
 ///
 /// The client requests `negotiateVersion=1`. A spec-compliant server echoes
 /// the version it actually agreed to via the `negotiateVersion` field:
@@ -215,7 +215,7 @@ pub(super) fn resolve_negotiate_connection(
 /// JSON response body with a `<redacted>` placeholder before logging or
 /// surfacing in errors. Falls back to the original text if the body is not
 /// valid JSON or has no such field.
-/// Validate the SignalR handshake response (F-OPEN-016).
+/// Validate the SignalR handshake response.
 ///
 /// After the client sends `{"protocol":"json","version":1}`, a spec-compliant
 /// SignalR server replies with one of:
@@ -227,7 +227,7 @@ pub(super) fn resolve_negotiate_connection(
 /// fell through silently and the session limped on against an adapter that
 /// would misbehave on every later invoke. This surfaces the rejection loudly
 /// as a `ConnectionFailed`, which is exactly the "version-detection /
-/// capability probe should fail loudly" guarantee F-OPEN-016 asks for.
+/// capability probe should fail loudly" guarantee.
 ///
 /// A frame that does not parse as JSON, or that parses but carries no `error`
 /// field, is treated as accepted (`Ok(())`): some servers send the success
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn invoke_timeout_expand_node_uses_variable_bucket() {
-        // F-OPEN-246 regression: `expand_node` calls invoke("ExpandNode"),
+        // `expand_node` calls invoke("ExpandNode"),
         // `get_watch_node` calls invoke("GetWatchNode"). Previously the
         // table listed `ExpandVariableTree` / `ExpandLocalsTree` (no real
         // caller); the actual strings fell through to the 60s catch-all.
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn invoke_timeout_update_breakpoint_uses_breakpoint_bucket() {
-        // F-OPEN-246 regression: `UpdateBreakpoint` is a real invoke target
+        // `UpdateBreakpoint` is a real invoke target
         // (alongside AddBreakpoint / RemoveBreakpoint / SetBreakpointResponse)
         // and must use the 30s breakpoint-operations budget rather than the
         // 60s unknown-target fallback.
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn invoke_timeout_dead_entries_are_gone() {
-        // F-OPEN-246 regression: the old table had entries for
+        // The old table had entries for
         // `ExpandVariableTree` and `ExpandLocalsTree` that no caller ever
         // produced. Those strings should now fall through to the 60s
         // catch-all (since they are unreachable by the codebase). This
@@ -414,7 +414,7 @@ mod tests {
     fn handshake_error_field_fails_loudly() {
         // The protocol/version-mismatch signal: a non-empty `error` must
         // surface as a ConnectionFailed carrying the server's reason, instead
-        // of falling through silently (F-OPEN-016).
+        // of falling through silently.
         let res = validate_signalr_handshake_response(
             r#"{"error":"Requested protocol version is not supported"}"#,
         );

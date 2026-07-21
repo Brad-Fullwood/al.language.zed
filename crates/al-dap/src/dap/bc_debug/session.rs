@@ -24,7 +24,7 @@ const PENDING_EVENT_CAPACITY: usize = 64;
 /// Capacity of the SignalR event channel that the reader task forwards
 /// every server-push message into. A misbehaving (or malicious) BC server
 /// flooding the daemon used to grow this channel unboundedly, since the
-/// previous channel was `mpsc::unbounded_channel`. F-OPEN-017.
+/// previous channel was `mpsc::unbounded_channel`.
 ///
 /// 4096 messages × ~few-KB-each = ~MB-scale bound. Variable-expansion
 /// responses can be large (deep AL records); Break / step-complete events
@@ -60,7 +60,7 @@ impl BcDebugSession {
     pub async fn connect(config: &BcDebugConfig, access_token: &str) -> Result<Self> {
         if config.accept_invalid_certs {
             // Match the warn-on-construction parity from BcClient::new at
-            // bc_client.rs:99 (T035). Without this the DAP path silently
+            // bc_client.rs:99. Without this the DAP path silently
             // disables TLS certificate validation when launch.json sets
             // accept_invalid_certs=true.
             al_bc::http_auth::warn_insecure_tls("DAP SignalR debug");
@@ -110,8 +110,8 @@ impl BcDebugSession {
         })?;
 
         // Resolve the WebSocket connection identifier from the negotiate
-        // response, validating the version the server actually negotiated
-        // (F-OPEN-137). We request `negotiateVersion=1`; a spec-compliant
+        // response, validating the version the server actually negotiated.
+        // We request `negotiateVersion=1`; a spec-compliant
         // server echoes the version it agreed to and, for v1, returns a
         // `connectionToken` distinct from `connectionId`. A server that
         // negotiates down to v0 returns no `connectionToken` and the
@@ -164,7 +164,7 @@ impl BcDebugSession {
         // Read handshake response. A SignalR server signals a
         // protocol/version mismatch here via `{"error":...}`; validate it so a
         // rejected handshake fails loudly instead of limping on against an
-        // adapter that will misbehave on every later invoke (F-OPEN-016).
+        // adapter that will misbehave on every later invoke.
         if let Some(msg) = ws_source.next().await {
             let msg = msg.map_err(|e| DapError::ConnectionFailed(format!("WS read error: {e}")))?;
             debug!("SignalR handshake response: {:?}", msg);
@@ -182,7 +182,7 @@ impl BcDebugSession {
         // Deep-but-bounded event channel. Break events take a dedicated
         // unbounded path below to preserve the "Break must never be lost"
         // invariant; everything else drops with a warn on overflow so a
-        // hostile or misbehaving server can't OOM the daemon. F-OPEN-017.
+        // hostile or misbehaving server can't OOM the daemon.
         let (event_tx, event_rx) = mpsc::channel::<SignalRMessage>(EVENT_CHANNEL_CAPACITY);
         // Dedicated channel for Break/Detached/FatalError notifications.
         // Using an unbounded channel ensures events buffered before wait_for_break_event
@@ -237,43 +237,36 @@ impl BcDebugSession {
                             );
                             // Notify wait_for_break_event before forwarding the full
                             // message so it can unblock immediately on Break/end events.
-                            // The break_event_tx.send(...) result is intentionally
-                            // logged-on-drop rather than collapsed into a match guard:
-                            // putting a side-effecting send() in a pattern guard would
-                            // be unusual and harder to reason about than the explicit
-                            // if-let-err shape here.
-                            #[allow(clippy::collapsible_match)]
-                            if msg.type_ == 1 {
-                                match msg.target.as_deref() {
-                                    Some("Break") => {
-                                        if break_event_tx.send(true).is_err() {
-                                            tracing::debug!(
-                                                target = "Break",
-                                                "break_event_tx receiver dropped — \
-                                                 wait_for_break_event listener has gone"
-                                            );
-                                        }
+                            match (msg.type_, msg.target.as_deref()) {
+                                (1, Some("Break")) => {
+                                    if break_event_tx.send(true).is_err() {
+                                        tracing::debug!(
+                                            target = "Break",
+                                            "break_event_tx receiver dropped — \
+                                             wait_for_break_event listener has gone"
+                                        );
                                     }
-                                    Some(
-                                        "OnDetachedFromConnection" | "OnFatalDebuggerException",
-                                    ) => {
-                                        if break_event_tx.send(false).is_err() {
-                                            tracing::debug!(
-                                                target = "Detached/Fatal",
-                                                "break_event_tx receiver dropped — \
-                                                 session-end notification not delivered"
-                                            );
-                                        }
-                                    }
-                                    _ => {}
                                 }
+                                (
+                                    1,
+                                    Some("OnDetachedFromConnection" | "OnFatalDebuggerException"),
+                                ) => {
+                                    if break_event_tx.send(false).is_err() {
+                                        tracing::debug!(
+                                            target = "Detached/Fatal",
+                                            "break_event_tx receiver dropped — \
+                                             session-end notification not delivered"
+                                        );
+                                    }
+                                }
+                                _ => {}
                             }
                             // try_send so a full channel drops the message
                             // with a warn instead of awaiting (which would
                             // hold up the WS reader task and back-pressure
                             // the BC server). The dedicated break-event
                             // channel above carries the don't-lose-this
-                            // signal separately. F-OPEN-017.
+                            // signal separately.
                             if let Err(e) = event_tx.try_send(msg) {
                                 match e {
                                     tokio::sync::mpsc::error::TrySendError::Full(_) => {
@@ -656,8 +649,6 @@ impl BcDebugSession {
     ///   - `SourcePosition` — `{Line, Column}`
     ///   - `DisplayName` — human-readable frame name
     ///
-    /// TODO: Verify exact hub method name and signature from EditorServices.Protocol.dll.
-    ///       Current best guess based on EditorServices protocol reverse-engineering.
     pub async fn get_call_stack(&self) -> Result<serde_json::Value> {
         let result = self.invoke("GetStackTrace", vec![]).await?;
         Ok(result.unwrap_or(serde_json::json!([])))
