@@ -310,14 +310,9 @@ dependencies = [
 name = "al-snapshot"
 version = "0.1.0"
 dependencies = [
- "al-dap",
- "al-syntax",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.18",
- "tokio",
- "tracing",
 ]
 
 [[package]]

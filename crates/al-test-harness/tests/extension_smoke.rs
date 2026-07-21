@@ -50,7 +50,7 @@ const EXPECTED_SUBCOMMANDS: &[&str] = &[
     "xlf refresh",
     "xlf untranslated",
     "test-snapshot diff",
-    "test-snapshot replay",
+    "test-snapshot validate",
     "impact",
 ];
 

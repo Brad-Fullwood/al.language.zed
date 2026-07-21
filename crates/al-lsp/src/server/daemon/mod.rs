@@ -527,11 +527,8 @@ pub(crate) async fn dispatch_request(
         }
         "tests.affected" => build_dispatch::dispatch_tests_affected(workspace, id, &params),
         "tests.classify" => build_dispatch::dispatch_tests_classify(workspace, id),
-        "tests.snapshot_record" => {
-            build_dispatch::dispatch_tests_snapshot_record(workspace, id, &params).await
-        }
-        "tests.snapshot_replay" => {
-            build_dispatch::dispatch_tests_snapshot_replay(workspace, id, &params).await
+        "tests.snapshot_validate" => {
+            build_dispatch::dispatch_tests_snapshot_validate(id, &params).await
         }
         "tests.snapshot_diff" => build_dispatch::dispatch_tests_snapshot_diff(id, &params).await,
         "tests.mutate" => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
