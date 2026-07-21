@@ -52,9 +52,8 @@ fn tui_object_browser_lists_fixture_objects() {
 
     // Re-render the accumulated stream *while still in the alternate screen*
     // (al-explorer emits "leave alternate screen" on quit, which restores the
-    // empty primary buffer). A fixed sleep is flaky — the daemon cold-start
-    // varies, and the workspace package no longer sorts first (it sits after the
-    // built-in "Runtime" package), so the object browser defaults to Runtime.
+    // empty primary buffer). A fixed sleep is flaky because daemon cold-start
+    // time varies.
     let render = |buf: &Arc<Mutex<Vec<u8>>>| -> String {
         let bytes = buf.lock().unwrap().clone();
         let mut parser = vt100::Parser::new(rows, cols, 0);
@@ -73,26 +72,17 @@ fn tui_object_browser_lists_fixture_objects() {
         s
     };
 
-    // 1. Wait for the daemon to return packages (the "workspace" package proves
-    //    the project loaded). The rendered screen from this poll isn't used
-    //    directly -- it's superseded by step 3's poll -- so it's only kept
-    //    around as a synchronization point.
+    // Package names are sorted and the first package is selected when loading
+    // completes. The fixture's `(workspace)` package sorts first, so no input is
+    // needed; sending Down here would move the selection to `Runtime`.
     let _ = poll(&buf, "workspace", 15);
-    // 2. Select the workspace package: Down enters the Packages pane, Down moves
-    //    to the next package. From the default (Runtime selected) this lands on
-    //    workspace; if workspace is the only package, the move wraps back to it.
-    let down = b"\x1b[B";
-    for _ in 0..2 {
-        let _ = writer.write_all(down);
-        let _ = writer.flush();
-        thread::sleep(Duration::from_millis(400));
-    }
-    // 3. Wait for a workspace object's details to render. The details pane shows
-    //    "Package: workspace" for any selected workspace object — robust to which
-    //    object-kind tab happens to be active (the list is kind-gated).
+
+    // Wait for a workspace object's details to render. The details pane shows
+    // "Package: (workspace)" for any selected workspace object, regardless of
+    // which object-kind tab is active.
     let screen = {
-        let s = poll(&buf, "Package: workspace", 6);
-        if s.contains("Package: workspace") {
+        let s = poll(&buf, "Package: (workspace)", 6);
+        if s.contains("Package: (workspace)") {
             s
         } else {
             render(&buf)
@@ -111,7 +101,7 @@ fn tui_object_browser_lists_fixture_objects() {
         "TUI mode bar not rendered (TUI may not have started).\n--- screen ---\n{screen}"
     );
     assert!(
-        screen.contains("Package: workspace"),
+        screen.contains("Package: (workspace)"),
         "TUI did not render a workspace object after selecting the workspace package.\n--- screen ---\n{screen}"
     );
 }
