@@ -71,7 +71,7 @@ pub(crate) async fn run_alc_with_timeout(
 /// Settings from `AlConfig` that map directly onto extra `alc` command-line
 /// flags. Constructed by the daemon build dispatchers from the workspace
 /// config and passed into [`compile_project_with_analyzers`] so they reach
-/// the real compiler instead of being parsed-and-ignored (gaps A2–A4).
+/// the real compiler instead of being parsed and ignored.
 ///
 /// Defaults to "no extra flags" so [`compile_project`] and the publish path
 /// keep their prior behaviour.
@@ -999,12 +999,9 @@ Build failed.";
         assert_eq!(err.to_string(), "alc compile timed out after 42 seconds");
     }
 
-    // ---- A2–A4: CompilationConfigOptions -> alc args -----------------------
-    // needsAltoolForLiveE2e=false — pure arg-vector construction, no subprocess.
-
     #[test]
     fn config_options_default_produces_no_extra_flags() {
-        // A2–A4 regression: an unset config must not inject any alc flags, so
+        // An unset config must not inject any alc flags, so
         // the baseline `/project /out /analyzer` invocation is unchanged.
         let opts = CompilationConfigOptions::default();
         assert!(
@@ -1016,7 +1013,7 @@ Build failed.";
 
     #[test]
     fn config_options_compilation_options_passed_verbatim() {
-        // A2: al.compilationOptions entries reach alc unmodified, in order.
+        // al.compilationOptions entries reach alc unmodified and in order.
         let opts = CompilationConfigOptions {
             compilation_options: vec!["/nowarn:AL0432".to_string(), "/target:Cloud".to_string()],
             ..Default::default()
@@ -1027,7 +1024,7 @@ Build failed.";
 
     #[test]
     fn config_options_incremental_build_flag() {
-        // A3: al.incrementalBuild emits /incrementalbuild only when enabled.
+        // al.incrementalBuild emits /incrementalbuild only when enabled.
         let on = CompilationConfigOptions {
             incremental_build: true,
             ..Default::default()
@@ -1042,7 +1039,7 @@ Build failed.";
 
     #[test]
     fn config_options_ruleset_requires_enable_flag() {
-        // A4: ruleSetPath emits /ruleset:<path> only when external rulesets
+        // ruleSetPath emits /ruleset:<path> only when external rulesets
         // are enabled; otherwise the path is ignored (the toggle takes effect).
         let enabled = CompilationConfigOptions {
             enable_external_rulesets: true,
@@ -1070,7 +1067,7 @@ Build failed.";
 
     #[test]
     fn config_options_assembly_probing_paths_one_arg_each() {
-        // A4: each assemblyProbingPaths entry becomes its own flag.
+        // Each assemblyProbingPaths entry becomes its own flag.
         let opts = CompilationConfigOptions {
             assembly_probing_paths: vec![PathBuf::from("/path1"), PathBuf::from("/path2")],
             ..Default::default()
@@ -1082,7 +1079,7 @@ Build failed.";
 
     #[test]
     fn config_options_output_analyzer_statistics_flag() {
-        // A4: al.outputAnalyzerStatistics emits /outputanalyzerstatistics.
+        // al.outputAnalyzerStatistics emits /outputanalyzerstatistics.
         let opts = CompilationConfigOptions {
             output_analyzer_statistics: true,
             ..Default::default()
@@ -1118,7 +1115,6 @@ Build failed.";
         );
     }
 
-    // ── BuildService (gap B2) ────────────────────────────────────────────────
     #[test]
     fn build_backend_from_use_official_compiler() {
         assert_eq!(
