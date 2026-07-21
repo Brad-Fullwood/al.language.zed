@@ -312,7 +312,7 @@ pub(super) fn dispatch_search(
     let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
     const MAX_SEARCH_RESULTS: usize = 500_000;
     let limit = limit.min(MAX_SEARCH_RESULTS);
-    // FB-1: `summary: true` strips member arrays (methods/fields/controls/
+    // `summary: true` strips member arrays (methods/fields/controls/
     // enum values/keys/properties/variables) from the response. A full dump
     // of a real workspace is ~60 MB of JSON and took seconds at every TUI
     // start; the browser list only needs identity fields and fetches
@@ -334,11 +334,14 @@ pub(super) fn dispatch_search(
                     "extends": e.extends,
                 }))
             } else {
-                serde_json::to_value(e.as_ref()).ok() // SILENT: serialization of valid structs should not fail
+                Some(
+                    serde_json::to_value(e.as_ref())
+                        .expect("symbol entries must be JSON serializable"),
+                )
             }
         })
         .collect();
-    // Workspace file objects — use al-core search to avoid duplicating the filter logic.
+    // Use the shared search implementation for workspace file objects.
     let remaining = limit.saturating_sub(value.len());
     let ws_results = al_analysis::queries::search::workspace_search(workspace, query, remaining);
     for r in ws_results {
@@ -416,7 +419,7 @@ pub(super) fn dispatch_object(
     let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    // `kind` is optional (audit 2026-06-12): editor tasks only have the
+    // `kind` is optional: editor tasks only have the
     // symbol under the cursor. When omitted, resolve by name — unambiguous
     // single-kind matches proceed; multi-kind matches get an actionable
     // error listing the candidates.
@@ -434,7 +437,9 @@ pub(super) fn dispatch_object(
     let mut matches: Vec<serde_json::Value> = candidates
         .iter()
         .filter(|e| e.kind == kind)
-        .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail
+        .map(|e| {
+            serde_json::to_value(e.as_ref()).expect("symbol entries must be JSON serializable")
+        })
         .collect();
     let name_lower = name.to_lowercase();
     let kind_lower = kind.to_string().to_lowercase();
@@ -473,7 +478,7 @@ pub(super) fn dispatch_object(
 /// Workspace objects are indexed in `workspace.symbols` (package `"workspace"`)
 /// AND in `file_index.object_info` (package `"(workspace)"`), so the naive
 /// merge in `dispatch_search`/`dispatch_object`/`dispatch_by_id` listed each
-/// workspace object twice (audit 2026-06-20). Object IDs are unique across an
+/// workspace object twice. Object IDs are unique across an
 /// app plus its dependencies, so `(kind, id, name)` identifies an object
 /// regardless of which index produced it. The first occurrence — the richer
 /// symbol-index entry, which carries members — wins.
@@ -533,9 +538,11 @@ pub(super) fn dispatch_by_id(
     let results = workspace.symbols.get_by_id(kind, obj_id);
     let mut value: Vec<serde_json::Value> = results
         .iter()
-        .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail
+        .map(|e| {
+            serde_json::to_value(e.as_ref()).expect("symbol entries must be JSON serializable")
+        })
         .collect();
-    // Workspace file objects (F-OPEN-268) — same merge as dispatch_object.
+    // Workspace file objects — same merge as dispatch_object.
     let kind_lower = kind.to_string().to_lowercase();
     for entry in workspace.file_index.object_info.iter() {
         let info = entry.value();
@@ -572,7 +579,7 @@ pub(super) fn dispatch_events(
     let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    // F-OPEN-268: workspace methods (with their [IntegrationEvent]/
+    // workspace methods (with their [IntegrationEvent]/
     // [EventSubscriber] attributes) only enter the SymbolIndex via the
     // call-graph enrichment pass — trigger the cached build before querying
     // so the user's own publishers are visible, not just package symbols.
@@ -611,7 +618,7 @@ pub(super) fn dispatch_subscribers(
     let Some(event) = params.get("event").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    // F-OPEN-268: see dispatch_events — workspace subscribers need the
+    // see dispatch_events — workspace subscribers need the
     // enrichment pass too.
     let _ = workspace.get_or_build_call_graph();
     let results = workspace.symbols.get_events(event);
@@ -644,7 +651,7 @@ pub(super) fn dispatch_composed(
     let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    // `kind` is optional (audit 2026-06-12): the Zed task only has the
+    // `kind` is optional: the Zed task only has the
     // symbol under the cursor.
     let kind = match params.get("kind").and_then(|v| v.as_str()) {
         Some(kind_str) => match super::parse_object_kind(id, kind_str) {
@@ -656,7 +663,7 @@ pub(super) fn dispatch_composed(
             Err(resp) => return resp,
         },
     };
-    // F-OPEN-268: composition must see workspace extensions/bases as well —
+    // composition must see workspace extensions/bases as well —
     // they enter the SymbolIndex via the enrichment pass.
     let _ = workspace.get_or_build_call_graph();
     match workspace.symbols.get_composed_cached(kind, name) {
@@ -682,7 +689,7 @@ pub(super) fn dispatch_composed(
 }
 
 pub(super) fn dispatch_packages(workspace: &Workspace, id: u64) -> Response {
-    // F-OPEN-069: recover from a poisoned lock via the workspace.rs-wide
+    // recover from a poisoned lock via the workspace.rs-wide
     // pattern (`unwrap_or_else(|e| e.into_inner())`). A single poisoned
     // lock no longer permanently bricks this endpoint; the stale data
     // visible after recovery is the same data the panicking writer was
@@ -776,7 +783,7 @@ mod tests {
 
     #[test]
     fn dedup_objects_by_identity_drops_same_object_from_two_indices() {
-        // Regression (audit 2026-06-20): workspace objects appear in both the
+        // Regression: workspace objects appear in both the
         // symbol index (package "workspace") and the file index (package
         // "(workspace)"), so the merged search/object/by-id result listed each
         // one twice. (kind, id, name) identifies an object regardless of which
@@ -906,7 +913,7 @@ mod tests {
         );
     }
 
-    /// F-OPEN-268: `by-id` must find workspace source objects, not only .app
+    /// `by-id` must find workspace source objects, not only .app
     /// package symbols. `object` (lookup by name) already merges the workspace
     /// file index; `by-id codeunit 50100` returned "No Codeunit with id 50100"
     /// for an object that `object codeunit "Hello World"` found.
@@ -944,8 +951,8 @@ mod tests {
         assert_eq!(arr[0]["package"], WORKSPACE_PACKAGE);
     }
 
-    /// F-OPEN-268: `events` must surface WORKSPACE event publishers, not only
-    /// .app package symbols. Workspace methods only enter the SymbolIndex via
+    /// `events` must surface WORKSPACE event publishers, not only
+    /// package symbols. Workspace methods only enter the SymbolIndex via
     /// the call-graph enrichment pass — which nothing on the events path
     /// triggered, so `al-explorer events OnBeforeProcess` missed publishers
     /// defined in the user's own project.
@@ -975,10 +982,10 @@ mod tests {
         );
     }
 
-    /// F-OPEN-268: `composed` must merge a WORKSPACE base table with its
+    /// `composed` must merge a WORKSPACE base table with its
     /// WORKSPACE extension — previously it returned "No Table named ... or no
     /// extensions found" because neither object was in the SymbolIndex.
-    /// Audit 2026-06-12: the Zed task only has the symbol under the cursor,
+    /// the Zed task only has the symbol under the cursor,
     /// so `composed` must resolve the kind from a bare name when it is
     /// unambiguous, and explain itself when it is not.
     #[test]
@@ -1069,7 +1076,7 @@ mod tests {
         );
     }
 
-    /// F-OPEN-268 guard: an id that matches nothing still errors.
+    /// guard: an id that matches nothing still errors.
     #[test]
     fn dispatch_by_id_unknown_id_still_errors() {
         let ws = al_workspace::Workspace::new();

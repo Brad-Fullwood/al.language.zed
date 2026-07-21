@@ -188,7 +188,7 @@ async fn main() {
     }
 
     if args.iter().any(|a| a == "--official-lsp") {
-        // Official-LSP delegation (F-OPEN-260): hand the entire stdio LSP
+        // Official-LSP delegation: hand the entire stdio LSP
         // session to Microsoft's `launchlspserver` (ALTool v17+), discovered
         // via the existing toolchain. The native server remains the default;
         // this mode is opt-in (`al.useOfficialLsp` in Zed settings).

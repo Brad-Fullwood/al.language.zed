@@ -3,7 +3,7 @@ use tower_lsp::lsp_types::*;
 use super::formatting;
 use super::AlServer;
 
-// T028: handle_document_symbol inlined in lsp::document_symbol with
+// handle_document_symbol inlined in lsp::document_symbol with
 // spawn_blocking wrapper — see crates/al-lsp/src/server/lsp.rs.
 
 pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<FoldingRange>> {
@@ -11,7 +11,7 @@ pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<F
         .map(|ranges| ranges.into_iter().map(Into::into).collect())
 }
 
-// T028: handle_semantic_tokens inlined in lsp::semantic_tokens_full with
+// handle_semantic_tokens inlined in lsp::semantic_tokens_full with
 // spawn_blocking wrapper — see crates/al-lsp/src/server/lsp.rs.
 
 pub(crate) fn handle_signature_help(
@@ -76,7 +76,7 @@ pub(crate) fn handle_code_action(
         {
             actions.push(core_action_to_lsp(entry, Some(diag)));
         }
-        // F-044: AL0185 (and similar "Type … not found") namespace
+        // AL0185 (and similar "Type … not found") namespace
         // quick-fix lives in `namespace_quick_fix_for_diagnostic` but
         // wasn't wired into the LSP code-action surface. Plumb it
         // through so the user sees the suggested namespace `using`
@@ -128,7 +128,7 @@ pub(crate) fn handle_code_action(
         command: Some(Command {
             title: "AL: Lint File".to_string(),
             command: "al.lintFile".to_string(),
-            arguments: serde_json::to_value(uri).ok().map(|v| vec![v]), // SILENT: serialization of valid structs should not fail
+            arguments: serde_json::to_value(uri).ok().map(|v| vec![v]),
         }),
         ..Default::default()
     }));

@@ -44,7 +44,7 @@ pub(crate) fn handle_formatting(
 /// Delegates to `al_syntax::format_range` which formats the full document
 /// for correct indent context, then returns edits covering only the selected lines.
 ///
-/// **By design (F-OPEN-112):** because the indent of a line in AL depends on the
+/// **By design:** because the indent of a line in AL depends on the
 /// enclosing block structure, the indent emitted for the *selected* lines is
 /// derived from a whole-document formatter pass. The selection's own indent is
 /// therefore corrected relative to its true block depth, which can differ from

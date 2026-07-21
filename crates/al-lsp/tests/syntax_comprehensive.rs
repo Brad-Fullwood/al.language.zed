@@ -919,7 +919,7 @@ fn full_pipeline_all_fixtures() {
 }
 
 // ---------------------------------------------------------------------------
-// T071: deeply-nested AL coverage
+// deeply-nested AL coverage
 //
 // Page extension with 3-deep nested action groups, action triggers carrying
 // var sections, and a top-level page trigger. Previously there was no
@@ -1008,7 +1008,7 @@ fn t071_format_deeply_nested_does_not_collapse() {
     }
 }
 
-/// T071 negative: a deeply-nested pageext with a missing closing `}` must
+/// negative: a deeply-nested pageext with a missing closing `}` must
 /// surface a parse error rather than silently accepting a truncated tree.
 #[test]
 fn t071_parse_deeply_nested_truncated_reports_errors() {

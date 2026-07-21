@@ -54,7 +54,7 @@ pub(in crate::server::daemon) async fn dispatch_compile(
         // Microsoft `dotnet alc` subprocess. The native emitter does no semantic
         // analysis, so structured diagnostics come from the LSP, not this step.
         if !use_official_compiler {
-            // B2: route through the shared build service (native backend).
+            // Route through the shared build service.
             let compile_result = al_compile::build(al_compile::BuildRequest {
                 project_root: &project_root,
                 backend: al_compile::BuildBackend::Native,
@@ -88,7 +88,7 @@ pub(in crate::server::daemon) async fn dispatch_compile(
         );
         // The toolchain is only required for this opt-in Microsoft `dotnet alc`
         // path; acquire it lazily here so a native compile (the default,
-        // handled above) never contends with it (audit 2026-06-20).
+        // handled above) never contends with it.
         let tc = match workspace.toolchain.try_read() {
             Ok(guard) => guard.clone(),
             Err(_) => return Err((error_codes::INTERNAL_ERROR, ERR_INITIALIZING.to_string())),
@@ -101,7 +101,7 @@ pub(in crate::server::daemon) async fn dispatch_compile(
                     .to_string(),
             ));
         };
-        // A2–A4: honour the configured compilation options on the official
+        // Honour the configured compilation options on the official
         // `al.compile` path too (not just packaging). Snapshot the config once
         // so a concurrent update can't cause this to silently fall back to
         // defaults (dropping configured flags) mid-request.
@@ -115,7 +115,7 @@ pub(in crate::server::daemon) async fn dispatch_compile(
             output_analyzer_statistics: cfg.output_analyzer_statistics,
         };
         drop(cfg);
-        // B2: route through the shared build service (alc backend). Infra
+        // Route through the shared build service. Infrastructure
         // failures (no toolchain, missing app.json, alc spawn) propagate as Err
         // → INTERNAL/CODE_ANALYSIS error; a compile that ran with error
         // diagnostics comes back as Ok(success:false).
@@ -177,7 +177,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
     id: u64,
 ) -> Response {
     let project = match workspace.project.try_read() {
-        // SILENT: avoid RwLock poison panic per CLAUDE.md
+        // Recover from RwLock poison.
         Ok(guard) => guard.clone(),
         Err(_) => {
             return Response {
@@ -213,7 +213,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
     // `al.useOfficialCompiler: true` opts into Microsoft's `dotnet alc`.
     let use_official_compiler = workspace.config.read().await.use_official_compiler;
     if !use_official_compiler {
-        // B2: route through the shared build service (native backend).
+        // Route through the shared build service.
         let compile_result = match al_compile::build(al_compile::BuildRequest {
             project_root: &project_root,
             backend: al_compile::BuildBackend::Native,
@@ -259,7 +259,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
          `dotnet alc` subprocess instead of the native `.app` emitter"
     );
     let tc = match workspace.toolchain.try_read() {
-        // SILENT: avoid RwLock poison panic per CLAUDE.md
+        // Recover from RwLock poison.
         Ok(guard) => guard.clone(),
         Err(_) => {
             return Response {
@@ -292,7 +292,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
     // snapshot, so a concurrent config update can't cause this request to
     // silently fall back to defaults (dropping configured flags or enabling
     // the full MS analyzer set) mid-request.
-    // A2–A4: compilationOptions / incrementalBuild / enableExternalRulesets /
+    // compilationOptions / incrementalBuild / enableExternalRulesets /
     // ruleSetPath / assemblyProbingPaths / outputAnalyzerStatistics were parsed
     // into AlConfig but never read — extract them here and thread them into the
     // alc invocation via CompilationConfigOptions.
@@ -316,7 +316,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
         Some(code_analyzers)
     };
 
-    // B2: route through the shared build service (alc backend). Infra failures
+    // Route through the shared build service. Infrastructure failures
     // propagate as Err → INTERNAL_ERROR; a compile that ran (even with error
     // diagnostics) is an Ok(CompileResult) serialized verbatim.
     match al_compile::build(al_compile::BuildRequest {
@@ -331,7 +331,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
     {
         Ok(result) => Response {
             id,
-            // SILENT: serialization of valid struct should not fail
+            // Serialization is infallible for valid values.
             result: Some(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)),
             error: None,
             ..Default::default()

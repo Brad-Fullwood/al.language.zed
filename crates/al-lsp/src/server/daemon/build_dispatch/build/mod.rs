@@ -16,7 +16,7 @@ pub(in crate::server::daemon) use source_lookup::{
     dispatch_event_source, dispatch_location, dispatch_source,
 };
 
-// F-011: re-exported at the `build` module's own root so `fixes.rs`'s direct
+// re-exported at the `build` module's own root so `fixes.rs`'s direct
 // `use super::build::write_al_file_and_refresh;` import keeps resolving
 // unchanged after `build.rs` became this directory module.
 // (`rename_al_file_and_refresh` doesn't need a root re-export — `organize.rs`,

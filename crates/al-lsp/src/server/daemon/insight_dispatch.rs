@@ -22,12 +22,12 @@ pub(super) fn dispatch_trace(
     let max_depth = params.get("depth").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
     let max_depth = max_depth.min(50);
 
-    // F-OPEN-269: serve the WORKSPACE-ENRICHED graph (packages + workspace
+    // serve the WORKSPACE-ENRICHED graph (packages + workspace
     // objects/procedures/calls), not the package-only one. The enriched build
     // is cached; the returned call-graph read guard is held only while serving.
     let (graph, _cg_guard) = workspace.get_or_build_call_graph();
     let steps = al_insight::search::trace_event(&graph, event_name, max_depth);
-    // SILENT: serialization of valid Vec<TraceStep> should not fail
+    // TraceStep serialization is infallible for valid values.
     let value = serde_json::to_value(&steps).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -40,7 +40,7 @@ pub(super) fn dispatch_trace(
 pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
     let (graph, _cg_guard) = workspace.get_or_build_call_graph();
     let entry_points = al_insight::search::find_entry_points(&graph);
-    // SILENT: serialization of valid Vec<&InsightNode> should not fail
+    // InsightNode serialization is infallible for valid values.
     let value = serde_json::to_value(&entry_points).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -94,7 +94,7 @@ pub(super) fn dispatch_graph_export(
         }
         _ => {
             let json = al_insight::search::export_json(&graph);
-            // SILENT: serialization of valid GraphJson should not fail
+            // GraphJson serialization is infallible for valid values.
             let value = serde_json::to_value(&json).unwrap_or(serde_json::Value::Null);
             Response {
                 id,
@@ -121,7 +121,7 @@ pub(super) fn dispatch_insight_stats(workspace: &Workspace, id: u64) -> Response
 
 pub(super) fn dispatch_dead_code(workspace: &Workspace, id: u64) -> Response {
     let unused = al_analysis::queries::dead_code::dead_code(workspace);
-    // SILENT: serialization of valid Vec<DeadCodeEntry> should not fail
+    // DeadCodeEntry serialization is infallible for valid values.
     let value = serde_json::to_value(&unused).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -131,12 +131,12 @@ pub(super) fn dispatch_dead_code(workspace: &Workspace, id: u64) -> Response {
     }
 }
 
-/// Native semantic workspace checks (gap C8): duplicate object ids, ids outside
+/// Native semantic workspace checks duplicate object ids, ids outside
 /// the declared `app.json` idRanges, and duplicate object names. Additive and
 /// entirely separate from the `diagnostics`/`lint` paths — emits `AL-NC*` codes.
 pub(super) fn dispatch_native_check(workspace: &Workspace, id: u64) -> Response {
     let findings = al_analysis::queries::native_check::native_semantic_checks(workspace);
-    // SILENT: serialization of valid Vec<NativeFinding> should not fail
+    // NativeFinding serialization is infallible for valid values.
     let value = serde_json::to_value(&findings).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -201,7 +201,7 @@ pub(super) fn dispatch_suggest_event(
         };
 
     let result = al_analysis::queries::suggest_event::suggest_event(workspace, &query);
-    // SILENT: serialization of valid SuggestEventResult should not fail
+    // SuggestEventResult serialization is infallible for valid values.
     let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -250,7 +250,7 @@ pub(super) fn dispatch_trace_chain(
     let max_depth = (params.get("depth").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(50);
 
     // Enriched graph (workspace SubscribesTo + call edges) — same rationale as
-    // dispatch_trace (F-OPEN-269). get_or_build_call_graph builds and returns
+    // dispatch_trace. get_or_build_call_graph builds and returns
     // the CallGraph that trace_event_chain needs in addition to the InsightGraph.
     let (insight, cg_guard) = workspace.get_or_build_call_graph();
     let chain = match cg_guard.as_ref() {
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(value.get("edges").and_then(|v| v.as_u64()), Some(0));
     }
 
-    /// F-OPEN-269: the insight dispatchers must serve the WORKSPACE-ENRICHED
+    /// the insight dispatchers must serve the WORKSPACE-ENRICHED
     /// graph. They used the package-only builder, so on a workspace-only
     /// project `insight-stats` reported 0 useful nodes and `trace`/
     /// `entrypoints`/the TUI Events+CallGraph views were empty.
@@ -470,7 +470,7 @@ mod tests {
         );
     }
 
-    /// F-OPEN-269 companion: entrypoints must include workspace procedures
+    /// companion: entrypoints must include workspace procedures
     /// with no incoming calls.
     #[test]
     fn dispatch_entrypoints_includes_workspace_procedures() {

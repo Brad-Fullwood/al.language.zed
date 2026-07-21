@@ -25,7 +25,7 @@ pub(super) const ERR_NO_PROJECT: &str = "No project loaded";
 /// `minTokens` duplicate-detection threshold at 10k so a hostile or
 /// fat-fingered client can't (a) push the threshold above any real
 /// procedure (effectively disabling detection) or (b) drive the
-/// scan loop into pathological territory. F-OPEN-007.
+/// scan loop into pathological territory.
 const MAX_DUPLICATES_MIN_TOKENS: u64 = 10_000;
 
 fn clamp_min_tokens(t: Option<u64>) -> usize {
@@ -35,7 +35,7 @@ fn clamp_min_tokens(t: Option<u64>) -> usize {
 /// Clamp the duplicate-detection `minSimilarity` ratio to `[0.0, 1.0]`.
 /// NaN / ±inf fall back to the default (0.8) so a hostile or garbage
 /// value can't disable the filter or cause downstream comparison
-/// surprises. F-OPEN-007.
+/// surprises.
 fn clamp_min_similarity(s: Option<f64>) -> f32 {
     let raw = s.unwrap_or(0.8);
     if raw.is_finite() {
@@ -130,7 +130,7 @@ pub(super) fn dispatch_deps_graph(
 /// array. Each element is deserialized as a [`SymbolEntry`]; malformed entries
 /// are skipped (logged at WARN) rather than failing the whole request, and an
 /// absent/non-array field yields an empty baseline so the call stays backward-
-/// compatible (A5/A6). The expected shape matches the wire form produced by
+/// compatible. The expected shape matches the wire form produced by
 /// the `symbols` daemon method (and by `analyze_breaking_changes` callers).
 fn baseline_symbols_from_params(params: &serde_json::Value) -> Vec<al_symbols::SymbolEntry> {
     let Some(arr) = params.get("baselineSymbols").and_then(|v| v.as_array()) else {
@@ -157,7 +157,7 @@ pub(super) fn dispatch_breaking_changes(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    // A5: callers supply the previous version's symbols in
+    // Callers supply the previous version's symbols in
     // `params.baselineSymbols`; an absent baseline finds every current symbol
     // as new (the pre-fix behaviour). Populating it lets removals/changes be
     // reported against a real previous version.
@@ -184,7 +184,7 @@ pub(super) fn dispatch_find_duplicates(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    // F-OPEN-007: bound user-supplied numeric params at the daemon boundary.
+    // bound user-supplied numeric params at the daemon boundary.
     let min_tokens = clamp_min_tokens(params.get("minTokens").and_then(|v| v.as_u64()));
     let min_similarity = clamp_min_similarity(params.get("minSimilarity").and_then(|v| v.as_f64()));
     let duplicates =
@@ -203,7 +203,7 @@ pub(super) fn dispatch_upgrade_report(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    // A6: callers supply the previous version's symbols in
+    // Callers supply the previous version's symbols in
     // `params.baselineSymbols` (e.g. extracted from a previous `.app`). An
     // absent baseline finds all current symbols as new/changed; populating it
     // produces a real upgrade-impact report against the previous version.
@@ -328,7 +328,7 @@ mod tests {
     }
 
     // =======================================================================
-    // A5/A6: breaking-change & upgrade baseline plumbing.
+    // Breaking-change and upgrade baseline plumbing.
     //
     // These exercise the real `dispatch_breaking_changes` /
     // `dispatch_upgrade_report` against a SYNTHETIC in-memory baseline supplied
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn breaking_changes_detects_removed_object_from_baseline() {
-        // A5: baseline has an object the current workspace no longer contains.
+        // The baseline has an object the current workspace no longer contains.
         let ws = empty_ws(); // current symbol set is empty
         let baseline = vec![codeunit("Old CU", vec![])];
         let resp = dispatch_breaking_changes(&ws, 2, &params_with_baseline(&baseline));
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn breaking_changes_detects_removed_procedure_from_baseline() {
-        // A5: object survives but a public procedure was removed.
+        // The object survives but a public procedure was removed.
         let ws = empty_ws();
         ws.symbols
             .add_entries_owned(vec![codeunit("My CU", vec![])]);
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn breaking_changes_identical_baseline_reports_nothing() {
-        // A5: an identical baseline produces no breaking changes.
+        // An identical baseline produces no breaking changes.
         let entry = codeunit("Stable CU", vec![public_method("DoWork")]);
         let ws = empty_ws();
         ws.symbols.add_entries_owned(vec![entry.clone()]);
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn upgrade_report_detects_removed_object_from_baseline() {
-        // A6: removed object surfaces as a BreakingChange upgrade issue.
+        // A removed object surfaces as a BreakingChange upgrade issue.
         let ws = empty_ws(); // current empty
         let baseline = vec![codeunit("Legacy CU", vec![])];
         let resp = dispatch_upgrade_report(&ws, 5, &params_with_baseline(&baseline));
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn upgrade_report_identical_baseline_reports_nothing() {
-        // A6: identical baseline => no upgrade issues.
+        // An identical baseline produces no upgrade issues.
         let entry = codeunit("Stable CU", vec![public_method("DoWork")]);
         let ws = empty_ws();
         ws.symbols.add_entries_owned(vec![entry.clone()]);

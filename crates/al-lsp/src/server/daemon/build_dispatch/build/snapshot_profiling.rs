@@ -64,34 +64,35 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
             }
         }
 
-        "list" => {
-            match al_bc::snapshot::list_snapshots(&config).await {
-                Ok(snapshots) => {
-                    let items: Vec<serde_json::Value> = snapshots
-                        .iter()
-                        .filter_map(|s| serde_json::to_value(s).ok()) // SILENT: serialization of valid structs should not fail
-                        .collect();
-                    Response {
-                        id,
-                        result: Some(serde_json::json!({
-                            "cmd": "list",
-                            "snapshots": items,
-                        })),
-                        error: None,
-                        ..Default::default()
-                    }
-                }
-                Err(e) => Response {
+        "list" => match al_bc::snapshot::list_snapshots(&config).await {
+            Ok(snapshots) => {
+                let items: Vec<serde_json::Value> = snapshots
+                    .iter()
+                    .map(|snapshot| {
+                        serde_json::to_value(snapshot)
+                            .expect("snapshot metadata must be JSON serializable")
+                    })
+                    .collect();
+                Response {
                     id,
-                    result: None,
-                    error: Some(RpcError {
-                        code: error_codes::INTERNAL_ERROR,
-                        message: format!("snapshot list failed: {e}"),
-                    }),
+                    result: Some(serde_json::json!({
+                        "cmd": "list",
+                        "snapshots": items,
+                    })),
+                    error: None,
                     ..Default::default()
-                },
+                }
             }
-        }
+            Err(e) => Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("snapshot list failed: {e}"),
+                }),
+                ..Default::default()
+            },
+        },
 
         "download" => {
             let snapshot_id = match params.get("snapshotId").and_then(|v| v.as_str()) {
@@ -274,7 +275,10 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
                     let hotspots: Vec<serde_json::Value> = result
                         .hotspots
                         .iter()
-                        .filter_map(|h| serde_json::to_value(h).ok()) // SILENT: serialization of valid structs should not fail
+                        .map(|hotspot| {
+                            serde_json::to_value(hotspot)
+                                .expect("profiling hotspots must be JSON serializable")
+                        })
                         .collect();
                     Response {
                         id,

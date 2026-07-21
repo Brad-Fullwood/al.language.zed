@@ -1,6 +1,4 @@
-// Reproduces: p1-1-test-engine-skeleton — al_test module does not exist;
-// TestStatus / TestMethodResult / TestCodeunitResult / TestRunnerError are not yet at
-// crate::test_engine::result; Workspace::test_results field is absent.
+// Compile-time guards for the canonical test-engine types and workspace state.
 
 use al_test::result::{TestCodeunitResult, TestMethodResult, TestRunnerError, TestStatus};
 use al_workspace::Workspace;

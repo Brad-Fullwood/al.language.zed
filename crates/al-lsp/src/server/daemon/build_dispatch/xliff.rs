@@ -104,7 +104,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
             .unwrap_or_else(|| xlf_path.with_extension("g.xlf"))
     };
 
-    // F-OPEN-045: refuse to load either .xlf past the 64 MB cap.
+    // refuse to load either .xlf past the 64 MB cap.
     for (label, p) in [
         ("generated", generated_path.as_path()),
         ("lang", xlf_path.as_path()),
@@ -198,7 +198,7 @@ pub(in crate::server::daemon) fn dispatch_xlf_untranslated(
             "'xlf' must be an absolute path",
         );
     }
-    // F-OPEN-045: refuse to load .xlf files past the 64 MB cap. Real BC
+    // refuse to load .xlf files past the 64 MB cap. Real BC
     // translation files are tiny; anything larger is a misconfigured or
     // hostile input we shouldn't even start to parse.
     if matches!(
@@ -270,7 +270,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
         );
     }
 
-    // F-OPEN-045: refuse to load .xlf files past the 64 MB cap.
+    // refuse to load .xlf files past the 64 MB cap.
     if matches!(
         al_analysis::xliff::xlf_exceeds_cap(std::path::Path::new(xlf_path)),
         Some(true)
@@ -298,7 +298,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
     let units_map = al_analysis::xliff::parse_xliff(&xlf_content);
     let all_units: Vec<al_analysis::xliff::TranslationUnit> = units_map.into_values().collect();
     let untranslated = al_analysis::xliff::find_untranslated(&all_units);
-    // C13: mine this file's already-translated units as a translation memory so
+    // Mine this file's translated units as a translation memory so
     // suggestions prefer existing project translations (tm-exact/tm-fuzzy) over
     // bare symbol-name matching. `from_units` filters to trustworthy pairs.
     let memory: Vec<&al_analysis::xliff::TranslationUnit> = all_units.iter().collect();

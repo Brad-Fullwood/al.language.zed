@@ -1,14 +1,11 @@
-// Architecture boundary tests for al-core.
+// Architecture boundary tests for the transport-agnostic core crates.
 //
-// al-core must NOT embed tower_lsp types in its core data structures —
-// the dependency must flow downward only (al-lsp → al-core, not al-core → tower_lsp
-// data structures).
+// Core data structures must not depend on tower_lsp types. The dependency
+// flows from al-lsp into the core crates, never the reverse.
 
 use std::fs;
 
-/// Reproduces: ccf4330ce2668b75 — CachedProcedureInfo embeds tower_lsp::lsp_types::Range
-/// directly inside al-core's file_index.rs, violating the "no LSP types in al-core
-/// core data structures" rule from CLAUDE.md.
+/// CachedProcedureInfo must not embed tower_lsp::lsp_types::Range.
 #[test]
 fn test_cached_procedure_info_does_not_embed_tower_lsp_range() {
     let source = fs::read_to_string(concat!(
@@ -26,7 +23,7 @@ fn test_cached_procedure_info_does_not_embed_tower_lsp_range() {
     assert!(
         !has_violation,
         "CachedProcedureInfo in file_index.rs still has a field typed \
-         `tower_lsp::lsp_types::Range`. al-core data structures must not \
+         `tower_lsp::lsp_types::Range`. Core data structures must not \
          embed tower_lsp types. Replace with a crate-local range type \
          (e.g., `al_analysis::queries::Range` or a plain `[u32; 4]`)."
     );
@@ -46,9 +43,7 @@ fn test_file_index_source_is_readable() {
     );
 }
 
-/// Reproduces: eb12bf9fb43d529d — FileIndex.file_symbols and get_cached_symbols use
-/// tower_lsp::lsp_types::DocumentSymbol as the stored/returned type inside al-core,
-/// violating the dependency-direction rule (al-core must not embed LSP wire types).
+/// FileIndex storage and accessors must not expose LSP wire types.
 #[test]
 fn test_file_index_does_not_embed_tower_lsp_document_symbol() {
     let source = fs::read_to_string(concat!(
@@ -66,7 +61,7 @@ fn test_file_index_does_not_embed_tower_lsp_document_symbol() {
         !field_violation,
         "FileIndex.file_symbols in file_index.rs stores \
          `tower_lsp::lsp_types::DocumentSymbol` — an LSP wire type — directly \
-         inside al-core. Replace with a crate-local `AlDocumentSymbol` type and \
+         inside al-source. Replace with a crate-local `AlDocumentSymbol` type and \
          convert to DocumentSymbol at the al-lsp boundary."
     );
 
@@ -81,9 +76,7 @@ fn test_file_index_does_not_embed_tower_lsp_document_symbol() {
     );
 }
 
-/// Reproduces: ef9c083a9859bf71 — Three private helpers in resolution.rs return
-/// `Vec<tower_lsp::lsp_types::CompletionItem>` directly from al-core, violating the
-/// CLAUDE.md rule that al-core query/resolution helpers must not return LSP wire types.
+/// Resolution helpers must return transport-agnostic completion candidates.
 /// The helpers `completion_items_for_receiver`, `enum_completion_items`, and
 /// `workspace_field_items` must return a crate-local `CompletionCandidate` type instead.
 ///
@@ -124,7 +117,7 @@ fn test_resolution_helpers_do_not_return_tower_lsp_completion_item() {
         assert!(
             !violation,
             "resolution.rs: `fn {helper}` has `tower_lsp::lsp_types::CompletionItem` in its \
-             return type — an LSP wire type must not appear in al-core helper signatures. \
+             return type — an LSP wire type must not appear in core helper signatures. \
              Define a crate-local `CompletionCandidate` struct and convert at the al-lsp boundary."
         );
     }
@@ -143,8 +136,7 @@ fn test_resolution_source_is_readable() {
     );
 }
 
-/// Reproduces: ca6efab0bb29e004 — `document_symbols()` in queries/symbols.rs
-/// previously returned `tower_lsp::lsp_types::DocumentSymbolResponse`. Query
+/// `document_symbols()` previously returned an LSP response type. Query
 /// functions must return transport-agnostic types.
 #[test]
 fn test_document_symbols_does_not_return_tower_lsp_response() {
@@ -165,8 +157,7 @@ fn test_document_symbols_does_not_return_tower_lsp_response() {
     );
 }
 
-/// Reproduces: b0842b450dc4f630 — `folding_ranges()` previously returned
-/// `Vec<tower_lsp::lsp_types::FoldingRange>`. Query functions must return
+/// `folding_ranges()` must return
 /// transport-agnostic types.
 #[test]
 fn test_folding_ranges_does_not_return_tower_lsp_folding_range() {
@@ -187,8 +178,7 @@ fn test_folding_ranges_does_not_return_tower_lsp_folding_range() {
     );
 }
 
-/// Reproduces: fdd0e58a6cd9865c — `inlay_hints()` previously returned
-/// `Option<Vec<tower_lsp::lsp_types::InlayHint>>`. Query functions must
+/// `inlay_hints()` must return
 /// return transport-agnostic types.
 #[test]
 fn test_inlay_hints_does_not_return_tower_lsp_inlay_hint() {
@@ -209,8 +199,7 @@ fn test_inlay_hints_does_not_return_tower_lsp_inlay_hint() {
     );
 }
 
-/// Reproduces: 785dc67b07d290a2 — `WorkspaceChildSearchResult` previously
-/// stored `tower_lsp::lsp_types::SymbolKind` and `tower_lsp::lsp_types::Range`
+/// `WorkspaceChildSearchResult` must not store LSP `SymbolKind` or `Range`
 /// in its public fields. Search result types must use transport-agnostic
 /// types.
 #[test]
@@ -241,8 +230,7 @@ fn test_workspace_child_search_result_does_not_embed_tower_lsp_types() {
     );
 }
 
-/// Reproduces: spec-concurrency-003 / T005 — `get_or_build_insight_graph`
-/// in `workspace.rs` must use double-checked locking that mirrors
+/// `get_or_build_insight_graph` must use double-checked locking that mirrors
 /// `get_or_build_call_graph`: take the write lock first, re-check inside
 /// the guard, then build INSIDE the lock wrapped in `block_in_place` so
 /// the tokio worker is yielded to the blocking pool. The earlier "build
@@ -341,8 +329,8 @@ fn test_get_or_build_call_graph_uses_build_coordination_mutex() {
     );
 }
 
-/// Reproduces: 2e506b918924b167 — `register_procedures_from_tree` in
-/// `insight/calls.rs` was a self-recursive tree-sitter walker. Same risk
+/// `register_procedures_from_tree` must not recursively walk tree-sitter
+/// nodes. It has the same risk
 /// as collect_call_sites_from_block: must be iterative.
 #[test]
 fn test_register_procedures_from_tree_is_iterative() {
@@ -362,14 +350,12 @@ fn test_register_procedures_from_tree_is_iterative() {
     assert!(
         !after_decl.contains("register_procedures_from_tree("),
         "register_procedures_from_tree in insight/calls.rs is recursive. \
-         CLAUDE.md requires iterative tree-sitter traversal — rewrite using \
+         use iterative tree-sitter traversal with \
          an explicit `Vec<Node>` stack."
     );
 }
 
-/// Reproduces: 27f075b6af883ba3 — `collect_call_sites_from_block` in
-/// `insight/calls.rs` was a self-recursive tree-sitter walker. CLAUDE.md
-/// requires iterative traversal (explicit stack) for tree-sitter nodes to
+/// `collect_call_sites_from_block` must use an explicit stack to
 /// avoid stack overflow on deeply nested AL.
 #[test]
 fn test_collect_call_sites_from_block_is_iterative() {
@@ -392,7 +378,7 @@ fn test_collect_call_sites_from_block_is_iterative() {
     assert!(
         !after_decl.contains("collect_call_sites_from_block("),
         "collect_call_sites_from_block in insight/calls.rs is recursive. \
-         CLAUDE.md requires iterative tree-sitter traversal — rewrite using \
+         use iterative tree-sitter traversal with \
          an explicit `Vec<Node>` stack."
     );
 }

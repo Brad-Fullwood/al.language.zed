@@ -11,8 +11,8 @@ pub(in crate::server::daemon) async fn dispatch_clear_cache(id: u64) -> Response
         .unwrap_or_else(|| PathBuf::from("/tmp/al-lsp/index"));
 
     // Use tokio::fs to keep the daemon dispatch task on its async runtime
-    // instead of parking the worker on synchronous std::fs (T027 /
-    // spec-concurrency-001). On a large index this can be many MB of
+    // instead of parking the worker on synchronous std::fs. On a large index
+    // this can involve many MB of
     // file handles; doing it synchronously held the worker thread for
     // the duration and starved other dispatch handlers.
     let existed = tokio::fs::try_exists(&cache_dir).await.unwrap_or(false);
@@ -62,7 +62,7 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
             for tenant in &tenants {
                 // Keyring-aware: cached_token_expiry checks the OS keyring first,
                 // then the legacy file, so status is correct after a token has
-                // migrated off plaintext disk (S1).
+                // migrated off plaintext disk.
                 match al_symbols::oauth::cached_token_expiry(tenant) {
                     Some(expires_at) => {
                         let now = std::time::SystemTime::now()
@@ -139,7 +139,7 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
             // callback, not inside it. If `acquire_token` is ever refactored
             // to invoke the callback from a spawned task or across an await
             // point, switch this to `tokio::sync::Mutex` (and make the
-            // callback itself async). See F-OPEN-006.
+            // callback itself async).
             let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
             let msgs_clone = messages.clone();
 
@@ -251,8 +251,8 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
 
     let _ = project;
 
-    // Audit 2026-06-12: don't re-download dependencies already satisfied in
-    // .alpackages. The resolver fetched app.json MINIMUM versions — pulling
+    // don't re-download dependencies already satisfied in
+    // package cache. The resolver fetched app.json MINIMUM versions — pulling
     // OLDER duplicates of Microsoft/vendor apps next to the installed newer
     // ones (polluting the package folder) and failing outright on vendor
     // apps that aren't on the public feeds even though their .app was
@@ -323,7 +323,7 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
                     })
                     .collect()
             } else {
-                // F-OPEN-259: honor al.nugetFeeds / al.useOnlyCustomFeeds /
+                // honor al.nugetFeeds / al.useOnlyCustomFeeds /
                 // al.symbolsCountryRegion on the daemon path too.
                 let (nuget_feeds, country) = {
                     let cfg = workspace.config.read().await;
@@ -372,7 +372,7 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
         .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("error"))
         .count();
 
-    // F-009: refresh the workspace symbol indexes so the freshly-downloaded
+    // refresh the workspace symbol indexes so the freshly-downloaded
     // packages become visible to hover/completion/definition without
     // requiring a daemon restart. Mirrors the LSP-side
     // `download_symbols_command` reload sequence in

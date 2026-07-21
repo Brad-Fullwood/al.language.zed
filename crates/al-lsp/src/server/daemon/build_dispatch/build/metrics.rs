@@ -1,4 +1,4 @@
-// Metrics: cyclomatic/cognitive complexity per procedure (T1802)
+// Metrics: cyclomatic/cognitive complexity per procedure
 
 use al_protocol::jsonrpc::Response;
 use al_workspace::Workspace;

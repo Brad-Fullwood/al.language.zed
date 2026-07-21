@@ -74,7 +74,7 @@ fn missing_cmd(id: u64, msg: &str) -> Response {
     Response::error(id, al_protocol::jsonrpc::error_codes::INVALID_PARAMS, msg)
 }
 
-/// F-016: resolve `(objectType, objectId)` from the workspace file_index for
+/// Resolve `(objectType, objectId)` from the workspace file index for
 /// a given file path, so daemon breakpoints land at the correct BC object
 /// instead of `(0, 0)`. Returns `None` when the file isn't indexed yet — the
 /// caller must then either supply the metadata explicitly or surface an error.
@@ -83,8 +83,7 @@ fn resolve_object_metadata(workspace: &Workspace, file: &str) -> Option<(i32, i3
     // The CLI sends `file` as a `file://` URI (via `file_to_uri`); internal
     // callers may pass a plain filesystem path. `file_index.object_info` is
     // keyed by plain paths, so `PathBuf::from("file:///…")` never matched and
-    // every CLI breakpoint failed with "file is not indexed" (audit
-    // 2026-06-20). Accept both forms.
+    // every CLI breakpoint failed with "file is not indexed". Accept both forms.
     let path = url::Url::parse(file)
         .ok()
         .filter(|u| u.scheme() == "file")
@@ -98,7 +97,7 @@ fn resolve_object_metadata(workspace: &Workspace, file: &str) -> Option<(i32, i3
     Some((kind_to_object_type(&info.kind), id))
 }
 
-/// F-015: when a config name is supplied, it MUST match exactly. Falling
+/// When a config name is supplied, it must match exactly. Falling
 /// back to the first config silently masks typos (and could route to the
 /// wrong BC environment). Only fall back to the first config when no name
 /// was supplied. Extracted for unit-testability — the surrounding
@@ -190,7 +189,7 @@ pub(super) async fn dispatch_debug(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            // Fix #4: look up config from project debug file if a config name is given,
+            // Look up the named config in the project's debug configuration.
             // or fall back to parsing full DAP args from params for backward compat.
             let config = if params.get("config").is_some() || params.get("server").is_none() {
                 match resolve_debug_config(workspace, params) {
@@ -277,7 +276,7 @@ pub(super) async fn dispatch_debug(
                 .and_then(|v| v.as_str())
                 .map(String::from);
 
-            // F-016: prefer caller-supplied objectType/objectId; otherwise
+            // Prefer caller-supplied objectType/objectId; otherwise
             // resolve from the workspace file_index. Defaulting to (0, 0)
             // routes the breakpoint at the wrong object — BC accepts the
             // request but never hits the line.
@@ -482,7 +481,7 @@ pub(super) async fn dispatch_debug(
             let mut guard = workspace.debug_session.lock().await;
             match guard.as_mut() {
                 // No active session: say so instead of claiming a stop
-                // happened (audit 2026-06-12 — `debug stop` printed
+                // happened (`debug stop` printed
                 // "Debug session stopped." on a machine with no session).
                 None => Response {
                     id,
@@ -563,7 +562,7 @@ mod pick_named_config_tests {
 
     #[test]
     fn unknown_name_is_not_found_no_fallback() {
-        // Negative (the F-015 invariant): a typo in the config name MUST
+        // Negative (the invariant): a typo in the config name MUST
         // surface as an error, NOT silently route to the first config.
         let configs = vec![cfg("alpha"), cfg("beta")];
         let err = pick_named_config(&configs, Some("alfa")).expect_err("typo must error");
@@ -593,7 +592,7 @@ mod resolve_object_metadata_tests {
         let (obj_type, obj_id) = resolve_object_metadata(&ws, "/tmp/SomeCodeunit.al")
             .expect("indexed file should resolve");
         // codeunit kind → bc_object_type::CODEUNIT (don't pin the exact int —
-        // assert it's non-zero, which is the F-016 invariant).
+        // assert it's non-zero, which is the invariant).
         assert!(
             obj_type > 0,
             "object_type should be non-zero, got {obj_type}"
@@ -799,7 +798,7 @@ mod dispatch_debug_tests {
     async fn stop_without_session_is_idempotent_and_honest() {
         // Stopping when nothing is running is NOT an error — but it must
         // SAY no session was active rather than claim a stop happened
-        // (audit 2026-06-12: `debug stop` printed "Debug session stopped."
+        // (`debug stop` printed "Debug session stopped."
         // on a machine that never started one).
         let ws = Workspace::new();
         let r = dispatch_debug(&ws, 15, &json!({"cmd": "stop"})).await;
