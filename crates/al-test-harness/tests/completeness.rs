@@ -1,16 +1,4 @@
-//! Completeness tests — ensure every LSP capability the server declares is functional
-//! and produces correct, well-formed responses that Zed can consume.
-//!
-//! These tests go beyond "does not crash" to validate:
-//! - Diagnostic ranges are valid (Zed uses them for underlines)
-//! - Completion items have kind, detail, and insertText
-//! - Semantic token types match the declared legend
-//! - Cross-file interactions work after edits
-//! - Workspace state is consistent after file close
-//! - Dot-access completion triggers work
-//! - Signature help triggers work at ( and , positions
-//!
-//! Run with: cargo test -p al-test-harness --test completeness -- --test-threads=1
+//! Response-shape and state-transition tests for declared LSP capabilities.
 
 use al_test_harness::*;
 
@@ -330,8 +318,8 @@ async fn test_completeness_d01_cross_file_hover_after_edit() {
     );
     client.change_file("src/helper.al", &edited_helper).await;
 
-    let _hover = client.hover("src/caller.al", 4, 20).await;
-    // May or may not resolve — key thing is no crash and server is responsive
+    let hover = client.hover("src/caller.al", 4, 20).await;
+    assert!(hover.is_some(), "cross-file hover disappeared after edit");
     let symbols = client.workspace_symbol("Helper CU").await;
     assert!(
         !symbols.is_empty(),
@@ -374,18 +362,14 @@ async fn test_completeness_d02_workspace_symbols_reflect_edits() {
         .await;
 
     let syms_new = client.workspace_symbol("Changed Name").await;
-    // The workspace symbol search scans open documents
-    // At minimum, the old name should no longer match the edited document
     let syms_old = client.workspace_symbol("Original Name").await;
-    // One of these assertions should hold (depends on how quickly the index updates)
-    let found_new = !syms_new.is_empty();
-    let lost_old = syms_old.iter().all(|s| {
-        s.get("name").and_then(|n| n.as_str()) != Some("Original Name")
-            || s.get("location").is_none()
-    });
+    assert!(!syms_new.is_empty(), "changed object name was not indexed");
     assert!(
-        found_new || lost_old,
-        "workspace symbols should update after edit: new={syms_new:?}, old={syms_old:?}"
+        syms_old.iter().all(|s| {
+            s.get("name").and_then(|n| n.as_str()) != Some("Original Name")
+                || s.get("location").is_none()
+        }),
+        "stale object name remained indexed: {syms_old:?}"
     );
 
     client.shutdown().await;

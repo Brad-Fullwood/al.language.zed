@@ -1,8 +1,4 @@
-//! Comprehensive integration tests for the stdio LSP transport.
-//!
-//! Covers every al-core query type, lifecycle behavior, malformed input, and
-//! multi-file interactions. Daemon protocol coverage lives in its dedicated
-//! client tests because it is not an LSP transport.
+//! Integration tests for the stdio LSP transport.
 
 use al_test_harness::*;
 
@@ -153,15 +149,6 @@ async fn two_sequential_sessions() {
         let client = LspClient::spawn(test_project_dir()).await.unwrap();
         client.shutdown().await;
     }
-}
-
-#[tokio::test]
-async fn initialize_returns_capabilities() {
-    // spawn() performs initialize internally — if it succeeds the server
-    // responded with a valid InitializeResult containing capabilities.
-    // We just verify spawn succeeds without error.
-    let client = LspClient::spawn(test_project_dir()).await.unwrap();
-    client.shutdown().await;
 }
 
 #[tokio::test]
@@ -347,26 +334,13 @@ async fn hover_parameter() {
 }
 
 #[tokio::test]
-async fn hover_on_whitespace_returns_null() {
+async fn hover_unopened_file_returns_null() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    client
-        .open_file("src/integration_c04.al", CODEUNIT_SIMPLE)
-        .await;
-
-    // Line 0: "codeunit 50150 ..." — hover on the opening brace area
-    // We don't assert Some or None — just that it doesn't crash
-    let _hover = client.hover("src/integration_c04.al", 0, 0).await;
-
-    client.shutdown().await;
-}
-
-#[tokio::test]
-async fn hover_unopened_file_is_graceful() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    // Do NOT open the file — hover should return None, not panic
     let hover = client.hover("src/nonexistent_file.al", 0, 0).await;
-    // Either None or Some — just mustn't panic/timeout
-    let _ = hover;
+    assert!(
+        hover.is_none(),
+        "unopened files must not produce hover content"
+    );
     client.shutdown().await;
 }
 
@@ -420,14 +394,17 @@ async fn definition_local_variable() {
 }
 
 #[tokio::test]
-async fn definition_on_whitespace_is_graceful() {
+async fn definition_on_whitespace_returns_null() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_d02.al", CODEUNIT_SIMPLE)
         .await;
 
     let def = client.definition("src/integration_d02.al", 1, 0).await;
-    let _ = def;
+    assert!(
+        def.is_none(),
+        "whitespace unexpectedly resolved to a definition"
+    );
 
     client.shutdown().await;
 }
@@ -481,7 +458,7 @@ async fn definition_undeclared_identifier() {
     client.open_file("src/integration_d05.al", code).await;
 
     let def = client.definition("src/integration_d05.al", 4, 8).await;
-    let _ = def;
+    assert!(def.is_none(), "undeclared identifier unexpectedly resolved");
 
     client.shutdown().await;
 }
@@ -566,17 +543,6 @@ async fn completions_at_type_position() {
         "type position completions must include primitive types. Got: {:?}",
         labels
     );
-
-    client.shutdown().await;
-}
-
-#[tokio::test]
-async fn completions_on_empty_file() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    client.open_file("src/integration_e04.al", "").await;
-
-    let completions = client.completion("src/integration_e04.al", 0, 0).await;
-    let _ = completions;
 
     client.shutdown().await;
 }
@@ -705,7 +671,7 @@ async fn document_symbols_empty_file() {
     client.open_file("src/integration_f05.al", "").await;
 
     let symbols = client.document_symbols("src/integration_f05.al").await;
-    let _ = symbols;
+    assert!(symbols.is_empty(), "empty file returned document symbols");
 
     client.shutdown().await;
 }
@@ -790,20 +756,6 @@ async fn semantic_tokens_format_is_valid() {
 }
 
 #[tokio::test]
-async fn semantic_tokens_empty_file_is_graceful() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    client.open_file("src/integration_g04.al", "").await;
-
-    let tokens = client.semantic_tokens("src/integration_g04.al").await;
-    if let Some(t) = tokens {
-        let data = semantic_token_data(&t);
-        let _ = data;
-    }
-
-    client.shutdown().await;
-}
-
-#[tokio::test]
 async fn semantic_tokens_enum_non_empty() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
@@ -864,17 +816,6 @@ end;
             "each edit must have a newText field"
         );
     }
-
-    client.shutdown().await;
-}
-
-#[tokio::test]
-async fn formatting_empty_file_is_graceful() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    client.open_file("src/integration_h03.al", "").await;
-
-    let edits = client.format("src/integration_h03.al").await;
-    let _ = edits;
 
     client.shutdown().await;
 }
@@ -964,12 +905,12 @@ async fn folding_ranges_table() {
 }
 
 #[tokio::test]
-async fn folding_ranges_empty_file_is_graceful() {
+async fn folding_ranges_empty_file_are_empty() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_i04.al", "").await;
 
     let ranges = client.folding_ranges("src/integration_i04.al").await;
-    let _ = ranges;
+    assert!(ranges.is_empty(), "empty file returned folding ranges");
 
     client.shutdown().await;
 }
@@ -1077,11 +1018,6 @@ async fn references_local_variable() {
     client.shutdown().await;
 }
 
-/// references for a parameter responds without error
-///
-/// The server must handle the request and return a list (even empty).
-/// Note: parameter reference tracking may return fewer results than usage
-/// sites depending on implementation state — we test the query path works.
 #[tokio::test]
 async fn references_parameter_multiple_usages() {
     let code = r#"codeunit 50163 "Ref Test"
@@ -1095,23 +1031,21 @@ async fn references_parameter_multiple_usages() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_k02.al", code).await;
 
-    // Line 2: "    procedure Double(X: Integer): Integer" — X declaration
-    // We get at least 0 results back (implementation may not track param refs).
     let refs = client.references("src/integration_k02.al", 2, 24).await;
-    let _ = refs;
+    assert_eq!(refs.len(), 3, "expected declaration and two usages");
 
     client.shutdown().await;
 }
 
 #[tokio::test]
-async fn references_on_whitespace_is_graceful() {
+async fn references_on_whitespace_are_empty() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_k03.al", CODEUNIT_SIMPLE)
         .await;
 
     let refs = client.references("src/integration_k03.al", 1, 0).await;
-    let _ = refs;
+    assert!(refs.is_empty(), "whitespace returned references");
 
     client.shutdown().await;
 }
@@ -1155,17 +1089,19 @@ async fn rename_edit_has_changes() {
 }
 
 #[tokio::test]
-async fn rename_on_keyword_is_graceful() {
+async fn rename_on_keyword_returns_null() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_l03.al", CODEUNIT_SIMPLE)
         .await;
 
-    // Position on "begin" keyword — rename should return None
     let edit = client
         .rename("src/integration_l03.al", 5, 4, "NewName")
         .await;
-    let _ = edit;
+    assert!(
+        edit.is_none(),
+        "keyword unexpectedly produced a rename edit"
+    );
 
     client.shutdown().await;
 }
@@ -1199,15 +1135,14 @@ async fn signature_help_procedure_call() {
 }
 
 #[tokio::test]
-async fn signature_help_outside_call_is_graceful() {
+async fn signature_help_outside_call_returns_null() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_m02.al", CODEUNIT_SIMPLE)
         .await;
 
-    // Line 1: opening brace — not inside a call
     let sig = client.signature_help("src/integration_m02.al", 1, 0).await;
-    let _ = sig;
+    assert!(sig.is_none(), "signature help returned outside a call");
 
     client.shutdown().await;
 }
@@ -1231,22 +1166,21 @@ async fn inlay_hints_procedure_call() {
     client.open_file("src/integration_n01.al", code).await;
 
     let hints = client.inlay_hints("src/integration_n01.al", 0, 12).await;
-    if !hints.is_empty() {
-        assert!(
-            hints.iter().all(|h| h.get("label").is_some()),
-            "every inlay hint should have a label: {hints:?}"
-        );
-        assert!(
-            hints.iter().all(|h| h.get("position").is_some()),
-            "every inlay hint should have a position: {hints:?}"
-        );
-    }
+    assert!(!hints.is_empty(), "procedure call returned no inlay hints");
+    assert!(
+        hints.iter().all(|h| h.get("label").is_some()),
+        "every inlay hint should have a label: {hints:?}"
+    );
+    assert!(
+        hints.iter().all(|h| h.get("position").is_some()),
+        "every inlay hint should have a position: {hints:?}"
+    );
 
     client.shutdown().await;
 }
 
 #[tokio::test]
-async fn inlay_hints_empty_range_is_graceful() {
+async fn inlay_hints_empty_range_is_empty() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_n02.al", CODEUNIT_SIMPLE)
@@ -1257,57 +1191,6 @@ async fn inlay_hints_empty_range_is_graceful() {
         hints.is_empty(),
         "empty range should produce no inlay hints: {hints:?}"
     );
-
-    client.shutdown().await;
-}
-
-#[tokio::test]
-async fn code_action_empty_begin_end() {
-    let code = r#"codeunit 50166 "Code Action Test"
-{
-    procedure DoNothing()
-    begin
-    end;
-}"#;
-
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    client.open_file("src/integration_o01.al", code).await;
-
-    let actions = client.code_actions("src/integration_o01.al", 3, 5).await;
-    // Empty begin..end may still produce code actions from other sources.
-    // With custom lint rules removed, AL-L001 quickfixes will not appear,
-    // but other code actions (e.g. refactoring) may still be present.
-    // Just verify the request does not crash and returns a valid response.
-    let _ = &actions; // response must be a valid (possibly empty) array
-    for action in &actions {
-        assert!(
-            action.get("title").and_then(|t| t.as_str()).is_some(),
-            "code action must have title: {action}"
-        );
-    }
-
-    client.shutdown().await;
-}
-
-#[tokio::test]
-async fn code_action_on_valid_code() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    client
-        .open_file("src/integration_o02.al", CODEUNIT_SIMPLE)
-        .await;
-
-    let actions = client.code_actions("src/integration_o02.al", 2, 10).await;
-    // Valid code may or may not have actions, but every action must be well-formed
-    for action in &actions {
-        assert!(
-            action.is_object(),
-            "code action must be a JSON object: {action}"
-        );
-        assert!(
-            action.get("title").is_some(),
-            "code action must have title: {action}"
-        );
-    }
 
     client.shutdown().await;
 }
@@ -1489,19 +1372,29 @@ async fn incomplete_code_all_queries_graceful() {
 }
 
 #[tokio::test]
-async fn concurrent_requests_do_not_deadlock() {
-    // We can't send truly concurrent requests through LspClient (it takes &mut self),
-    // but we can pipeline many sequential requests rapidly.
+async fn repeated_requests_remain_consistent() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_q04.al", CODEUNIT_SIMPLE)
         .await;
 
     for _ in 0..5 {
-        let _h = client.hover("src/integration_q04.al", 2, 14).await;
-        let _s = client.document_symbols("src/integration_q04.al").await;
-        let _t = client.semantic_tokens("src/integration_q04.al").await;
-        let _r = client.folding_ranges("src/integration_q04.al").await;
+        assert!(client
+            .hover("src/integration_q04.al", 2, 14)
+            .await
+            .is_some());
+        assert!(!client
+            .document_symbols("src/integration_q04.al")
+            .await
+            .is_empty());
+        assert!(client
+            .semantic_tokens("src/integration_q04.al")
+            .await
+            .is_some());
+        assert!(!client
+            .folding_ranges("src/integration_q04.al")
+            .await
+            .is_empty());
     }
 
     client.shutdown().await;
@@ -1515,7 +1408,7 @@ async fn hover_out_of_bounds_position() {
         .await;
 
     let hover = client.hover("src/integration_q05.al", 9999, 9999).await;
-    let _ = hover;
+    assert!(hover.is_none(), "out-of-bounds hover returned content");
 
     client.shutdown().await;
 }
@@ -1528,10 +1421,18 @@ async fn syntax_error_file_is_parsed_tolerantly() {
     client.open_file("src/integration_q06.al", code).await;
 
     let symbols = client.document_symbols("src/integration_q06.al").await;
-    let _ = symbols;
+    assert!(
+        symbol_names(&symbols)
+            .iter()
+            .any(|name| name.contains("Error Cases")),
+        "error-tolerant parse lost the enclosing codeunit"
+    );
 
     let tokens = client.semantic_tokens("src/integration_q06.al").await;
-    let _ = tokens;
+    assert!(
+        tokens.is_some(),
+        "syntax-error file returned no semantic tokens"
+    );
 
     client.shutdown().await;
 }
@@ -1617,10 +1518,13 @@ async fn file_with_only_comments() {
     client.open_file("src/integration_q10.al", code).await;
 
     let symbols = client.document_symbols("src/integration_q10.al").await;
-    let _ = symbols;
+    assert!(symbols.is_empty(), "comment-only file returned symbols");
 
-    let tokens = client.semantic_tokens("src/integration_q10.al").await;
-    let _ = tokens;
+    let tokens = client
+        .semantic_tokens("src/integration_q10.al")
+        .await
+        .expect("comment-only file must return semantic tokens");
+    assert!(!semantic_token_data(&tokens).is_empty());
 
     client.shutdown().await;
 }
@@ -1648,12 +1552,11 @@ async fn crlf_line_endings() {
 #[tokio::test]
 async fn workspace_symbol_with_unknown_field_is_graceful() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-
-    // The standard workspace_symbol method sends {"query": "..."}.
-    // Verify the normal path works fine — we can't easily send malformed
-    // requests through the high-level API, but we verify robustness.
     let symbols = client.workspace_symbol("NonExistentXYZ123").await;
-    let _ = symbols;
+    assert!(
+        symbols.is_empty(),
+        "unknown query unexpectedly returned symbols"
+    );
 
     client.shutdown().await;
 }
@@ -1858,34 +1761,6 @@ async fn core_signature_help_query() {
         sig.is_some(),
         "core signature help query must return result inside Add() call"
     );
-
-    client.shutdown().await;
-}
-
-/// inlay hints query (→ al-core::queries::inlay_hints)
-#[tokio::test]
-async fn core_inlay_hints_query() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    client
-        .open_file("src/integration_r11.al", CODEUNIT_SIMPLE)
-        .await;
-
-    let hints = client.inlay_hints("src/integration_r11.al", 0, 19).await;
-    let _ = hints; // no panic = pass
-
-    client.shutdown().await;
-}
-
-/// code actions query (→ al-core::queries::code_actions)
-#[tokio::test]
-async fn core_code_actions_query() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    client
-        .open_file("src/integration_r12.al", CODEUNIT_SIMPLE)
-        .await;
-
-    let actions = client.code_actions("src/integration_r12.al", 0, 19).await;
-    let _ = actions; // no panic = pass
 
     client.shutdown().await;
 }

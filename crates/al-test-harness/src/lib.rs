@@ -131,6 +131,16 @@ enum Lifecycle {
 
 type Writer = Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
 
+fn response_array(method: &str, result: Value) -> Vec<Value> {
+    if result.is_null() {
+        return Vec::new();
+    }
+    result
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| panic!("{method} returned an invalid response: {result}"))
+}
+
 pub struct LspClient {
     writer: Option<Writer>,
     lifecycle: Lifecycle,
@@ -595,7 +605,7 @@ impl LspClient {
             .request("textDocument/references", params)
             .await
             .expect("references request failed");
-        result.as_array().cloned().unwrap_or_default()
+        response_array("textDocument/references", result)
     }
 
     pub async fn document_symbols(&mut self, relative_path: &str) -> Vec<Value> {
@@ -606,7 +616,7 @@ impl LspClient {
             .request("textDocument/documentSymbol", params)
             .await
             .expect("documentSymbol request failed");
-        result.as_array().cloned().unwrap_or_default()
+        response_array("textDocument/documentSymbol", result)
     }
 
     pub async fn semantic_tokens(&mut self, relative_path: &str) -> Option<Value> {
@@ -632,7 +642,7 @@ impl LspClient {
             .request("textDocument/foldingRange", params)
             .await
             .expect("foldingRange request failed");
-        result.as_array().cloned().unwrap_or_default()
+        response_array("textDocument/foldingRange", result)
     }
 
     pub async fn format(&mut self, relative_path: &str) -> Vec<Value> {
@@ -646,7 +656,7 @@ impl LspClient {
             .request("textDocument/formatting", params)
             .await
             .expect("formatting request failed");
-        result.as_array().cloned().unwrap_or_default()
+        response_array("textDocument/formatting", result)
     }
 
     pub async fn signature_help(
@@ -672,11 +682,6 @@ impl LspClient {
         }
     }
 
-    /// Exercises the `textDocument/codeLens` path through the real
-    /// `al-lsp` binary with a live `DocumentStore` + (optional) test-result
-    /// store, so the wire format and end-to-end shape of the response are
-    /// observed by tests rather than just the inline unit-tests in
-    /// `al-core::queries::code_lens`.
     pub async fn code_lens(&mut self, relative_path: &str) -> Vec<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({
@@ -687,7 +692,7 @@ impl LspClient {
             .request("textDocument/codeLens", params)
             .await
             .expect("codeLens request failed");
-        result.as_array().cloned().unwrap_or_default()
+        response_array("textDocument/codeLens", result)
     }
 
     pub async fn code_actions(
@@ -710,7 +715,7 @@ impl LspClient {
             .request("textDocument/codeAction", params)
             .await
             .expect("codeAction request failed");
-        result.as_array().cloned().unwrap_or_default()
+        response_array("textDocument/codeAction", result)
     }
 
     pub async fn inlay_hints(
@@ -732,7 +737,7 @@ impl LspClient {
             .request("textDocument/inlayHint", params)
             .await
             .expect("inlayHint request failed");
-        result.as_array().cloned().unwrap_or_default()
+        response_array("textDocument/inlayHint", result)
     }
 
     pub async fn rename(
@@ -767,7 +772,7 @@ impl LspClient {
             .request("workspace/symbol", params)
             .await
             .expect("workspace/symbol request failed");
-        result.as_array().cloned().unwrap_or_default()
+        response_array("workspace/symbol", result)
     }
 
     /// Includes notifications buffered by internal waits (e.g. `open_file`).
@@ -783,11 +788,14 @@ impl LspClient {
         let mut result: HashMap<String, Vec<Value>> = HashMap::new();
         for (method, params) in self.drain_notifications() {
             if method == "textDocument/publishDiagnostics" {
-                let uri = params["uri"].as_str().unwrap_or("").to_string();
+                let uri = params["uri"]
+                    .as_str()
+                    .expect("publishDiagnostics missing uri")
+                    .to_string();
                 let diags = params["diagnostics"]
                     .as_array()
                     .cloned()
-                    .unwrap_or_default();
+                    .expect("publishDiagnostics missing diagnostics array");
                 result.insert(uri, diags);
             }
         }
@@ -807,19 +815,7 @@ impl LspClient {
     }
 }
 
-/// Best-effort orphan-cleanup hook.
-///
-/// `shutdown()` is the graceful path and should be called from every test that
-/// reaches its happy ending. When a test panics or returns early, however,
-/// `Drop` runs first and we still need to reap the child — otherwise the
-/// `al-lsp` process leaks past the test boundary, which has bitten us before
-/// in CI when tests left orphans that consumed sockets and confused later
-/// runs in the same process group.
-///
-/// `start_kill()` is sync (no `await`) and only signals SIGKILL; it does NOT
-/// wait for reap. The kernel reaps the orphan via the tokio reactor that the
-/// `Child` was created with. If `shutdown()` already consumed `self`, this
-/// `Drop` does not run; if it didn't, we send SIGKILL here as a safety net.
+/// Terminates the child when a test exits without calling `shutdown()`.
 impl Drop for LspClient {
     fn drop(&mut self) {
         let Lifecycle::Stdio(child) = &mut self.lifecycle;
@@ -1058,11 +1054,7 @@ pub async fn read_loop(
 
 /// Per-request timeout, configurable via `AL_TEST_REQUEST_TIMEOUT_MS`.
 ///
-/// Defaults to 10 s. Under load (debug builds in CI, debugger attached,
-/// running with sanitisers) individual queries can exceed 10 s and a test
-/// will see `None`/`[]` instead of the real response. Tests that exercise
-/// slow code paths (`completion`, `references` over a large workspace,
-/// `formatting` on big files) should bump this.
+/// Defaults to 10 s.
 fn request_timeout() -> tokio::time::Duration {
     let ms = std::env::var("AL_TEST_REQUEST_TIMEOUT_MS")
         .ok()

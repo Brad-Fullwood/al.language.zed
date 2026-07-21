@@ -480,12 +480,10 @@ async fn test_fixture_formatting_all_files() {
 
     for file in &files {
         let path = test_project_dir().join(file);
-        if path.exists() {
-            let content = std::fs::read_to_string(&path).unwrap();
-            client.open_file(file, &content).await;
-            let _edits = client.format(file).await;
-            // No crash = success
-        }
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        client.open_file(file, &content).await;
+        client.format(file).await;
     }
 
     client.shutdown().await;
@@ -503,19 +501,18 @@ async fn test_fixture_folding_all_files() {
 
     for (file, min_folds) in &files {
         let path = test_project_dir().join(file);
-        if path.exists() {
-            let content = std::fs::read_to_string(&path).unwrap();
-            client.open_file(file, &content).await;
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        client.open_file(file, &content).await;
 
-            let ranges = client.folding_ranges(file).await;
-            assert!(
-                ranges.len() >= *min_folds,
-                "File {} should have at least {} folds. Got: {}",
-                file,
-                min_folds,
-                ranges.len()
-            );
-        }
+        let ranges = client.folding_ranges(file).await;
+        assert!(
+            ranges.len() >= *min_folds,
+            "File {} should have at least {} folds. Got: {}",
+            file,
+            min_folds,
+            ranges.len()
+        );
     }
 
     client.shutdown().await;

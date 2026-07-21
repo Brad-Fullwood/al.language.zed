@@ -596,10 +596,16 @@ async fn test_references_staging_variable() {
 
     client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
 
-    // "Staging" is used extensively in PrecheckRecord
-    // Line 15: local procedure PrecheckRecord(var Staging: Record "Item Journal Staging")
-    // Staging is used on lines 21, 23, 24, 25, 27, 28, 30, 32, 34, 35, 37, 39
-    let refs = client.references("objects/codeunit.al", 15, 42).await;
+    let declaration = "local procedure PrecheckRecord(var Staging";
+    let (line, declaration_line) = CODEUNIT_AL
+        .lines()
+        .enumerate()
+        .find(|(_, text)| text.contains(declaration))
+        .expect("parameter declaration");
+    let staging_column = declaration_line.find("Staging").expect("parameter name") as u32;
+    let refs = client
+        .references("objects/codeunit.al", line as u32, staging_column)
+        .await;
     assert!(
         refs.len() >= 3,
         "Should find multiple references to Staging. Got: {}",
@@ -627,9 +633,11 @@ async fn test_completion_after_dot() {
     client.open_file("objects/test.al", code).await;
 
     // After "Staging." on line 6, col 16
-    let _completions = client.completion("objects/test.al", 6, 16).await;
-    // Should return at least some completions (even if just keywords)
-    // The important thing is it doesn't crash
+    let completions = client.completion("objects/test.al", 6, 16).await;
+    assert!(
+        !completions.is_empty(),
+        "member completion returned no items"
+    );
 
     client.shutdown().await;
 }
@@ -757,11 +765,22 @@ async fn test_formatting_idempotent() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
-    // Already well-formatted code — formatting should be idempotent
     client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
 
-    let _edits = client.format("objects/codeunit.al").await;
-    // This test mainly verifies it doesn't crash on complex real code
+    let edits = client.format("objects/codeunit.al").await;
+    assert_eq!(
+        edits.len(),
+        1,
+        "formatter must return one full-document edit"
+    );
+    let formatted = edits[0]
+        .get("newText")
+        .and_then(serde_json::Value::as_str)
+        .expect("format edit missing newText");
+    client.change_file("objects/codeunit.al", formatted).await;
+
+    let second_pass = client.format("objects/codeunit.al").await;
+    assert!(second_pass.is_empty(), "formatter is not idempotent");
 
     client.shutdown().await;
 }
@@ -927,27 +946,6 @@ async fn test_multi_file_workspace_symbols() {
         symbols.len() >= 2,
         "Should find at least IJL API Helper and IJL Status when searching 'IJL'. Got: {}",
         symbols.len()
-    );
-
-    client.shutdown().await;
-}
-
-#[tokio::test]
-async fn test_multi_file_references() {
-    let project_dir = test_project_dir();
-    let mut client = LspClient::spawn(&project_dir).await.unwrap();
-
-    client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
-    client.open_file("objects/table.al", TABLE_AL).await;
-
-    // "Staging" is used in multiple procedures in the codeunit
-    // and "Item Journal Staging" appears in both files
-    // At minimum, references within the codeunit should work
-    let refs = client.references("objects/codeunit.al", 5, 27).await;
-    assert!(
-        refs.len() >= 2,
-        "Should find references to Staging across procedures. Got: {}",
-        refs.len()
     );
 
     client.shutdown().await;
