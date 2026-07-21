@@ -1,9 +1,7 @@
-//! T052: $/cancelRequest regression tests.
+//! `$/cancelRequest` regression tests.
 //!
 //! These tests exercise tower-lsp 0.20's automatic $/cancelRequest handling
-//! plus the al-core spawn_blocking wraps added under T028 (acd547e, 2466093)
-//! that make the heavy synchronous queries (references, document_symbol,
-//! semantic_tokens) cancel-friendly.
+//! and verify that synchronous queries remain responsive around cancellation.
 //!
 //! Run with:
 //!   cargo test -p al-test-harness --test cancellation
@@ -29,8 +27,7 @@ codeunit 50100 "Cancellation Test"
 }
 "#;
 
-/// T052: send $/cancelRequest for a non-existent id; the server must
-/// gracefully ignore it (no panic, no protocol break).
+/// A cancellation for an unknown request ID must not disrupt the server.
 #[tokio::test]
 async fn cancel_non_existent_id_is_silently_ignored() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -50,7 +47,7 @@ async fn cancel_non_existent_id_is_silently_ignored() {
     client.shutdown().await;
 }
 
-/// T052: send $/cancelRequest BEFORE issuing the request with the matching id.
+/// Send $/cancelRequest before issuing the request with the matching ID.
 /// Per tower-lsp 0.20 the cancel notification is queued; the next-issued
 /// request with the matching id may resolve with a cancellation error or with
 /// the result if the cancel was processed too late. Either is acceptable —

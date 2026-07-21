@@ -89,8 +89,8 @@ async fn test_document_symbols_codeunit() {
         names
     );
 
-    // T071 absence assertion: a codeunit-only file should NOT surface
-    // unrelated AL object names from elsewhere in the workspace. This
+    // A codeunit-only file must not surface unrelated AL object names from
+    // elsewhere in the workspace. This
     // guards against a regression where document_symbols accidentally
     // returns workspace-wide symbols for the active file.
     let unrelated = ["Sales Order Pageext", "test_table_field"];

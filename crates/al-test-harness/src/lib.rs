@@ -6,8 +6,7 @@
 //! # Transport
 //!
 //! Stdio only — `LspClient::spawn` launches al-lsp as a child process. The
-//! harness previously advertised a Unix-socket transport, but al-lsp's daemon
-//! mode speaks a different (non-LSP) line-delimited JSON-RPC protocol via
+//! daemon mode speaks a different line-delimited JSON-RPC protocol via
 //! [`al_protocol::DaemonClient`], so the two transports cannot share a
 //! single client. Tests that need to exercise the daemon should drive
 //! `DaemonClient` directly.
@@ -125,9 +124,7 @@ pub fn al_explorer_binary() -> PathBuf {
     workspace_binary("al-explorer")
 }
 
-/// Stdio mode owns a child process. (Previously also tracked a Daemon
-/// variant for Unix-socket transport — removed alongside `connect()` because
-/// al-lsp's daemon mode speaks a different protocol; see crate docs.)
+/// Stdio mode owns the language-server child process.
 enum Lifecycle {
     Stdio(Child),
 }
@@ -868,8 +865,6 @@ impl LspClient {
         format!("file://{}", encoded)
     }
 
-    // (helper for F-023; see request() below)
-
     async fn request(
         &mut self,
         method: &str,
@@ -887,11 +882,8 @@ impl LspClient {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
-        // F-023: ensure the pending entry is removed on EVERY exit path
-        // (write failure, timeout, channel close, LSP error). The previous
-        // code only removed it via the read_loop's response path, so a
-        // timeout left the oneshot Sender wedged in the map and the map
-        // grew unboundedly across long-running test runs.
+        // Remove the pending entry on every exit path, including write failure,
+        // timeout, channel close, and LSP error.
         let pending_ref = self.pending.clone();
         let cleanup = scopeguard_remove(pending_ref, id);
 

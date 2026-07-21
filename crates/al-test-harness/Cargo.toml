@@ -16,7 +16,7 @@ toml = "0.8"
 
 [dev-dependencies]
 # TUI smoke test: drive al-explorer in a PTY and render the screen with a
-# vt100 parser (the Rust replacement for the former tui.py).
+# vt100 parser for the TUI smoke test.
 portable-pty = "0.9"
 vt100 = "0.15"
 # emit-differential test: read .app (NAVX header + zip) entries to compare the

@@ -1,7 +1,5 @@
-//! Black-box smoke test for the MCP server surface (`al-lsp mcp`) — the tools
-//! Zed's agent panel talks to. This is the only Rust coverage of the MCP
-//! transport (the crate's `LspClient` covers LSP; this fills the gap that the
-//! former Node `mcp_probe.mjs` covered).
+//! Black-box smoke tests for the MCP server surface (`al-lsp mcp`) used by
+//! Zed's agent panel.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -85,8 +83,7 @@ async fn mcp_initialize_and_list_tools() {
         .iter()
         .filter_map(|t| t["name"].as_str().map(str::to_string))
         .collect();
-    // The official-surface staples plus this project's broadened agent tools
-    // (C1: suggest-event, test-classify, test-coverage, dependency-graph).
+    // The official-surface staples plus this project's agent tools.
     for expected in [
         "al_build",
         "al_symbolsearch",
@@ -102,7 +99,7 @@ async fn mcp_initialize_and_list_tools() {
         );
     }
 
-    // C2: every advertised tool must carry a non-empty description and a
+    // Every advertised tool must carry a non-empty description and a
     // well-formed JSON Schema whose `required` fields are all declared in
     // `properties` (else an agent cannot satisfy the contract).
     for t in tool_objs {
@@ -146,7 +143,7 @@ fn decision_runs_locally(decision: &str) -> bool {
     decision == "interp"
 }
 
-/// C2 routing detail: the `al_testclassify` tool must surface, per discovered
+/// The `al_testclassify` tool must surface, per discovered
 /// test, whether it runs locally vs needs BC. The bundled fixture ships a
 /// pure-logic test codeunit (`PureLogicTest.Codeunit.al`), so at least one
 /// method must classify as locally runnable.

@@ -1,7 +1,7 @@
 //! Performance tests — measure latency of key LSP queries against the real
 //! AL test project to verify they meet latency budgets.
 //!
-//! Targets (T803):
+//! Latency budgets:
 //! - hover: <10ms
 //! - completions: <20ms
 //! - definition: <10ms
@@ -16,9 +16,7 @@
 //!      `AL_TEST_PROJECT_PATH=/path/to/project \
 //!         cargo test -p al-test-harness --test performance -- --ignored`
 //!
-//! T071 doc-fix: previously the file header said `cargo test -p al-test-harness`
-//! would run these — that was wrong; without the env var the fixture
-//! resolution panics, and without `--ignored` the tests are skipped.
+//! Both the environment variable and `--ignored` flag are required.
 
 use al_test_harness::*;
 use std::path::PathBuf;

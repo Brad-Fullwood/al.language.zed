@@ -1,4 +1,4 @@
-//! C5 — "extension smoke" coverage for the Zed UX surface added in C4/C5.
+//! Smoke coverage for the Zed extension's command-line integration.
 //!
 //! Scope (honest): these are **wiring** tests. They prove that
 //!   * the `al-explorer` / `al-lsp` binaries the extension drives resolve to
@@ -6,7 +6,7 @@
 //!   * the daemon / language-server startup path comes up offline (no Business
 //!     Central server) and answers,
 //!   * the MCP transport (`al-lsp mcp`) responds to `tools/list`, and
-//!   * every `al-explorer` task in `.zed/tasks.json` (the C4 task definitions)
+//!   * every `al-explorer` task in `.zed/tasks.json`
 //!     names a **real** subcommand — verified by `al-explorer <sub> --help`
 //!     exiting 0, which fails loudly if a task references an invented command.
 //!
@@ -42,9 +42,9 @@ fn zed_tasks_path() -> PathBuf {
     workspace_root().join(".zed/tasks.json")
 }
 
-/// The C4 flows that MUST stay wired (subcommand chain → task). If a task is
+/// The flows that must stay wired from subcommand chain to task. If a task is
 /// dropped or renamed this list catches it.
-const EXPECTED_C4_SUBCOMMANDS: &[&str] = &[
+const EXPECTED_SUBCOMMANDS: &[&str] = &[
     "test-affected",
     "deps-graph",
     "xlf refresh",
@@ -278,10 +278,10 @@ fn zed_tasks_map_to_real_subcommands() {
         covered.insert(chain.join(" "));
     }
 
-    for expected in EXPECTED_C4_SUBCOMMANDS {
+    for expected in EXPECTED_SUBCOMMANDS {
         assert!(
             covered.contains(*expected),
-            "expected C4 task for `al-explorer {expected}` not found; covered = {covered:?}"
+            "expected task for `al-explorer {expected}` not found; covered = {covered:?}"
         );
     }
 }
