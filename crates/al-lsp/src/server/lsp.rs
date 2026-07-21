@@ -619,18 +619,15 @@ impl LanguageServer for AlServer {
         al_workspace::on_document_close(&self.workspace, &uri);
 
         if let Ok(path) = uri.to_file_path() {
-            match tokio::fs::read_to_string(&path).await {
-                Ok(text) => {
-                    self.workspace.file_index.add_file(path, text);
-                }
-                Err(_) => {
-                    self.workspace.file_index.remove_file(&path);
-                }
+            // Don't remove from file_index if project-scoped diagnostics — the file still exists
+            let scope = self.workspace.config.read().await.diagnostics_scope;
+            if scope != al_project::config::DiagnosticsScope::Project {
+                self.workspace.file_index.remove_file(&path);
+                self.client.publish_diagnostics(uri, vec![], None).await;
             }
+        } else {
+            self.client.publish_diagnostics(uri, vec![], None).await;
         }
-
-        let _publish_guard = self.workspace.diagnostics_publish_lock.lock().await;
-        self.client.publish_diagnostics(uri, vec![], None).await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {

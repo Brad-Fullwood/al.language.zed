@@ -128,8 +128,6 @@ pub struct Workspace {
     /// tasks (daemon dispatchers, code-lens queries) can share the underlying
     /// store cheaply without cloning records.
     pub test_results: std::sync::RwLock<Option<std::sync::Arc<crate::TestResultStore>>>,
-    /// Orders project-wide diagnostic publication against document teardown.
-    pub diagnostics_publish_lock: tokio::sync::Mutex<()>,
     /// Set of file paths that received `al-compiler` diagnostics in the
     /// most recent `al.compile` run. Used by the LSP `al.compile` handler
     /// to clear stale diagnostics: any file in this set absent from the
@@ -163,7 +161,6 @@ impl Workspace {
             dependency_source_index: std::sync::RwLock::new(None),
             profiler_session: std::sync::RwLock::new(None),
             test_results: std::sync::RwLock::new(None),
-            diagnostics_publish_lock: tokio::sync::Mutex::new(()),
             last_compile_affected: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
