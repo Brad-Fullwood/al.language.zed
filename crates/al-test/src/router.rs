@@ -76,7 +76,7 @@ impl RoutingDecision {
     /// Only [`RoutingDecision::Interp`] runs locally. `InterpRecord` *names* a
     /// future "interpreter + mock record store" backend that is not wired yet,
     /// so it — like `LiveBc` and `Snapshot` — is sent to live BC by the runner.
-    /// This is the single source of truth for the A9 honesty note.
+    /// This is the single source of truth for backend availability.
     pub fn runs_locally(self) -> bool {
         matches!(self, RoutingDecision::Interp)
     }
@@ -129,8 +129,8 @@ pub struct ClassifyResult {
 /// to silent-wrong interpreter execution).
 ///
 /// This is routing policy rather than language-definition data: a conservative
-/// disqualifier set that
-/// classifies whether an AL test can run in our pure interpreter or has
+/// disqualifier set classifies whether an AL test can run in our pure
+/// interpreter or has
 /// to escalate to LiveBc. Failure mode is over-routing (run on LiveBc
 /// when the interpreter would have sufficed), not silent-wrong results.
 /// Migrating it to a JSON config file would be a configuration burden
@@ -305,8 +305,8 @@ fn classify_body(body_text: &str) -> (RoutingDecision, Vec<RoutingReason>) {
 /// Classify every discovered test in the workspace.
 ///
 /// Source for each procedure body is read from the cached parse tree.
-/// Cross-codeunit reachability is intentionally limited: the
-/// router only inspects the test procedure body itself plus a single
+/// Cross-codeunit reachability is intentionally limited: the router only
+/// inspects the test procedure body itself plus a single
 /// hop of textual matches. It errs toward `LiveBc` when deeper reachability is
 /// unknown.
 pub fn classify_all(workspace: &Workspace) -> Vec<ClassifyResult> {
@@ -340,8 +340,8 @@ pub fn classify_codeunits(
             }
             continue;
         };
-        // T051: classify each proc against ITS body, not the whole-codeunit
-        // text. Pre-T051 a mixed-concern codeunit (one DB-touching test +
+        // Classify each procedure against its own body, not the whole codeunit.
+        // A mixed-concern codeunit (one DB-touching test plus
         // one pure-record test) routed every method to LiveBc because the
         // worst pattern in any procedure dragged the rest with it.
         // Falls back to whole-text classification only when we cannot
@@ -454,14 +454,11 @@ mod tests {
         let body = "procedure T() begin Customer.Insert(true); Commit; end;";
         let (decision, reasons) = classify_body(body);
         assert_eq!(decision, RoutingDecision::LiveBc);
-        // Both Insert (InterpRecord) and Commit (LiveBc) reasons recorded.
         assert!(reasons.len() >= 2);
     }
 
     #[test]
     fn codeunit_run_forces_live_bc_even_with_literal_id() {
-        // Negative for the optimistic path — even Codeunit.Run(MyId) routes
-        // to LiveBc because the body of MyId may touch the DB.
         let body = "procedure T() begin Codeunit.Run(50100); end;";
         let (decision, _reasons) = classify_body(body);
         assert_eq!(decision, RoutingDecision::LiveBc);
@@ -488,9 +485,6 @@ mod tests {
 
     #[test]
     fn unknown_pattern_stays_interp() {
-        // Negative: a procedure referencing nothing on our list stays
-        // interp. (Note: this is precisely the "false-positive routing
-        // is OK, false-negative is not" rule from the design doc.)
         let body = "procedure T() var x: Integer; begin x := 1 + 2; end;";
         let (decision, _reasons) = classify_body(body);
         assert_eq!(decision, RoutingDecision::Interp);
@@ -498,7 +492,6 @@ mod tests {
 
     #[test]
     fn case_insensitive_matching() {
-        // AL is case-insensitive; the classifier must be too.
         let body = "procedure T() begin CUSTOMER.INSERT(TRUE); end;";
         let (decision, _) = classify_body(body);
         assert_eq!(decision, RoutingDecision::InterpRecord);
@@ -526,7 +519,6 @@ mod tests {
 
     #[test]
     fn as_str_is_stable() {
-        // Wire-format freeze: these strings are part of the contract.
         assert_eq!(RoutingDecision::Interp.as_str(), "interp");
         assert_eq!(RoutingDecision::InterpRecord.as_str(), "interpRecord");
         assert_eq!(RoutingDecision::LiveBc.as_str(), "liveBc");
@@ -535,8 +527,6 @@ mod tests {
 
     #[test]
     fn only_interp_runs_locally() {
-        // A9: the honesty guard. `InterpRecord` *sounds* local but isn't yet —
-        // it, like LiveBc/Snapshot, currently goes to live BC.
         assert!(RoutingDecision::Interp.runs_locally());
         assert!(!RoutingDecision::InterpRecord.runs_locally());
         assert!(!RoutingDecision::LiveBc.runs_locally());
@@ -545,8 +535,6 @@ mod tests {
 
     #[test]
     fn interp_record_execution_note_says_live_bc() {
-        // A9: the InterpRecord note must make the live-BC routing explicit so
-        // the class name ("…Record" → "runs locally") cannot mislead.
         let note = RoutingDecision::InterpRecord.execution_note();
         assert!(
             note.contains("live BC"),
@@ -556,17 +544,16 @@ mod tests {
             note.contains("not wired"),
             "InterpRecord note must flag the missing local backend, got: {note:?}"
         );
-        // Only the pure-interpreter class describes itself as local.
         assert!(RoutingDecision::Interp.execution_note().contains("locally"));
         assert!(RoutingDecision::LiveBc.execution_note().contains("live BC"));
     }
 }
 
-/// B7 end-to-end through the test-engine entry point: changing a helper's file
+/// End-to-end through the test-engine entry point: changing a helper's file
 /// must select the test that calls it via call-graph reachability, and report
 /// `CallGraph` mode. (Exhaustive cases live in `al_analysis::queries::tests`.)
 #[cfg(test)]
-mod b7_affected_smoke {
+mod affected_smoke {
     use super::{affected_tests_detailed, AffectedMode};
     use al_workspace::Workspace;
     use std::path::PathBuf;

@@ -119,7 +119,7 @@ pub fn write_cobertura<W: Write>(report: &CoverageReport, out: W) -> Result<(), 
 
     writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
 
-    // A11: make the nature of this report unambiguous. This is STATIC
+    // Make the nature of this report unambiguous. This is static
     // call-graph coverage, not dynamic executed-line/branch coverage. `hits=1`
     // means a procedure is statically reachable from a [Test]; `hits=0` means
     // it is not. `line`/`number` are declaration sites, not executed
@@ -140,7 +140,7 @@ pub fn write_cobertura<W: Write>(report: &CoverageReport, out: W) -> Result<(), 
     coverage_start.push_attribute(("lines-covered", covered_count.to_string().as_str()));
     coverage_start.push_attribute(("lines-valid", total.to_string().as_str()));
     // Non-standard but inert attribute that flags the coverage semantics for
-    // any consumer (or human) inspecting the file (A11).
+    // any consumer inspecting the file.
     coverage_start.push_attribute(("coverage-mode", "static-call-graph"));
     writer.write_event(Event::Start(coverage_start))?;
 
@@ -198,7 +198,7 @@ pub fn write_cobertura<W: Write>(report: &CoverageReport, out: W) -> Result<(), 
     Ok(())
 }
 
-/// Cobertura serializer for **dynamic** executed-line/branch coverage (gap C9).
+/// Cobertura serializer for **dynamic** executed-line and branch coverage.
 ///
 /// Unlike [`write_cobertura`] above — which emits STATIC call-graph reachability
 /// (`hits=1` == reachable from a `[Test]`, `number` == declaration line) — this
@@ -247,7 +247,7 @@ pub fn write_cobertura_dynamic<W: Write>(
     let mut writer = Writer::new(out);
     writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
 
-    // C9: make the nature of this report unambiguous. This is DYNAMIC
+    // Make the nature of this report unambiguous. This is dynamic
     // executed-line/branch coverage from the interpreter — `hits` means the line
     // actually ran, `number` is the executed statement line. (XML comments may
     // not contain "--", so none appears here.)
@@ -265,7 +265,7 @@ pub fn write_cobertura_dynamic<W: Write>(
     coverage_start.push_attribute(("timestamp", timestamp.as_str()));
     coverage_start.push_attribute(("lines-covered", lines_covered.to_string().as_str()));
     coverage_start.push_attribute(("lines-valid", lines_covered.to_string().as_str()));
-    // Non-standard but inert attribute that flags the coverage semantics (C9).
+    // Non-standard but inert attribute that flags the coverage semantics.
     coverage_start.push_attribute(("coverage-mode", "dynamic-executed-lines"));
     writer.write_event(Event::Start(coverage_start))?;
 
@@ -410,7 +410,6 @@ mod tests {
         let xml = run_cobertura(&report);
         assert_well_formed_xml(&xml);
 
-        // line-rate = 2 / (2 + 1) ≈ 0.6667
         assert!(
             xml.contains("line-rate=\"0.6"),
             "Expected line-rate around 0.6667 for 2/3 coverage, got:\n{xml}"
@@ -436,9 +435,6 @@ mod tests {
 
     #[test]
     fn test_cobertura_labeled_static_call_graph_coverage() {
-        // A11: the output must unambiguously declare itself as STATIC
-        // call-graph coverage (not dynamic executed-line coverage) AND stay
-        // well-formed Cobertura XML.
         let report = CoverageReport {
             coverage: vec![TestCoverageEntry {
                 codeunit: "TestCU".to_string(),
@@ -455,12 +451,10 @@ mod tests {
         let xml = run_cobertura(&report);
         assert_well_formed_xml(&xml);
 
-        // Machine-readable flag on the root element.
         assert!(
             xml.contains(r#"coverage-mode="static-call-graph""#),
             "Expected coverage-mode=\"static-call-graph\" attribute, got:\n{xml}"
         );
-        // Human-readable XML comment that spells out the semantics.
         assert!(
             xml.contains("<!--") && xml.contains("STATIC call-graph coverage"),
             "Expected a leading XML comment labeling static call-graph coverage, got:\n{xml}"
@@ -469,8 +463,6 @@ mod tests {
             xml.contains("NOT dynamic executed-line"),
             "Comment must warn it is not dynamic executed-line coverage, got:\n{xml}"
         );
-        // The comment must precede the <coverage> element so it is the first
-        // thing a reader sees.
         let comment_pos = xml.find("<!--").expect("comment present");
         let coverage_pos = xml.find("<coverage").expect("coverage element present");
         assert!(
@@ -481,8 +473,6 @@ mod tests {
 
     #[test]
     fn test_cobertura_label_present_on_empty_report() {
-        // The labeling must be emitted even when there is nothing to report,
-        // so an empty file is never mistaken for "0% executed-line coverage".
         let report = CoverageReport {
             coverage: Vec::new(),
             untested: Vec::new(),
@@ -491,7 +481,6 @@ mod tests {
         assert_well_formed_xml(&xml);
         assert!(xml.contains(r#"coverage-mode="static-call-graph""#));
         assert!(xml.contains("STATIC call-graph coverage"));
-        // The comment body must never contain the XML-illegal "--" sequence.
         if let Some(start) = xml.find("<!--") {
             let body = &xml[start + 4..];
             let end = body.find("-->").expect("comment is closed");
@@ -525,8 +514,6 @@ mod tests {
         );
     }
 
-    // ---- Dynamic (executed-line) Cobertura path (gap C9) ----
-
     use al_runtime::interpreter::coverage::{BranchCoverage, FileCoverage};
 
     fn run_cobertura_dynamic(report: &DynamicCoverageReport) -> String {
@@ -537,10 +524,6 @@ mod tests {
 
     #[test]
     fn dynamic_cobertura_emits_executed_lines_and_dynamic_mode_label() {
-        // gap C9: a dynamic report must produce a well-formed Cobertura document
-        // whose lines are executed statements (hits=1) and whose mode is clearly
-        // labeled as dynamic executed-line coverage — distinct from the static
-        // call-graph path so the two can never be confused.
         let report = DynamicCoverageReport {
             files: vec![FileCoverage {
                 file: "src/MyCodeunit.al".to_string(),
@@ -555,7 +538,6 @@ mod tests {
         let xml = run_cobertura_dynamic(&report);
         assert_well_formed_xml(&xml);
 
-        // Machine-readable mode flag — and it must NOT be the static label.
         assert!(
             xml.contains(r#"coverage-mode="dynamic-executed-lines""#),
             "expected dynamic mode attribute, got:\n{xml}"
@@ -564,7 +546,6 @@ mod tests {
             !xml.contains("static-call-graph"),
             "dynamic doc must not carry the static-call-graph label, got:\n{xml}"
         );
-        // Human-readable comment that spells out the semantics, before <coverage>.
         let comment_pos = xml.find("<!--").expect("comment present");
         let coverage_pos = xml.find("<coverage").expect("coverage element present");
         assert!(
@@ -576,10 +557,8 @@ mod tests {
             "comment must label dynamic executed-line coverage, got:\n{xml}"
         );
 
-        // Executed lines are present as hits=1 statements.
         assert!(xml.contains(r#"number="10""#) && xml.contains(r#"hits="1""#));
         assert!(xml.contains(r#"number="13""#));
-        // The if/case head line is flagged as a branch with condition coverage.
         assert!(
             xml.contains(r#"branch="true""#) && xml.contains("condition-coverage"),
             "branch line must report condition coverage, got:\n{xml}"
@@ -589,14 +568,11 @@ mod tests {
 
     #[test]
     fn dynamic_cobertura_empty_report_is_valid_and_labeled() {
-        // An empty dynamic report must still be valid XML and labeled dynamic, so
-        // it is never mistaken for a static report or a 0% static run.
         let report = DynamicCoverageReport::default();
         let xml = run_cobertura_dynamic(&report);
         assert_well_formed_xml(&xml);
         assert!(xml.contains(r#"coverage-mode="dynamic-executed-lines""#));
         assert!(xml.contains(r#"line-rate="0.0""#));
-        // Comment body must never contain the XML-illegal "--" sequence.
         if let Some(start) = xml.find("<!--") {
             let body = &xml[start + 4..];
             let end = body.find("-->").expect("comment is closed");

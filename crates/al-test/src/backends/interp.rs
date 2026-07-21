@@ -38,7 +38,7 @@ use al_workspace::Workspace;
 /// or any other DB-level feature should be routed to `LiveBcMode` by the
 /// router; `InterpMode` simply propagates the `Eval::Error` they produce.
 ///
-/// ## Dynamic coverage (gap C9)
+/// ## Dynamic coverage
 ///
 /// Construct with [`InterpMode::with_coverage`] to additionally collect
 /// *dynamic* statement/branch coverage while the tests run (the default
@@ -67,7 +67,7 @@ impl InterpMode {
     }
 
     /// Construct a backend in "dynamic coverage" mode: runs tests *and* records
-    /// which source lines/branches each executes (gap C9). Read the result with
+    /// which source lines and branches each executes. Read the result with
     /// [`InterpMode::coverage_report`] after `run` completes.
     pub fn with_coverage(workspace: Arc<Workspace>) -> Self {
         Self {
@@ -295,7 +295,7 @@ fn run_codeunit_interp(
         let duration_ms = start.elapsed().as_millis() as u64;
 
         // Merge this test's dynamic coverage into the run-wide aggregate (gap
-        // C9). Only present when coverage collection is enabled.
+        // Only present when coverage collection is enabled.
         if let Some(test_cov) = test_coverage {
             if let Ok(mut agg) = coverage.lock() {
                 agg.merge(&test_cov);
@@ -307,7 +307,7 @@ fn run_codeunit_interp(
             status: match &result {
                 Eval::Normal(_) | Eval::Exit(_) => TestStatus::Pass,
                 // A break/continue that unwound out of the whole test body
-                // escaped all loops — a runtime error, so the test fails (C24).
+                // escaped all loops, which is a runtime error, so the test fails.
                 Eval::Error(_) | Eval::Break | Eval::Continue => TestStatus::Fail,
             },
             error: match &result {
@@ -337,8 +337,8 @@ fn run_codeunit_interp(
 
 /// Run one test procedure. Returns its `Eval` result plus, when
 /// `collect_coverage` is set, the dynamic statement/branch coverage it produced
-/// (gap C9). The coverage `Option` is `None` when collection is disabled —
-/// keeping the static-only path zero-cost and unchanged.
+/// The coverage `Option` is `None` when collection is disabled, keeping the
+/// static-only path zero-cost and unchanged.
 fn run_procedure_interp(
     workspace: &Workspace,
     cu: Option<&TestCodeunit>,
@@ -405,7 +405,7 @@ fn run_procedure_interp(
 
     let mut stack = ScopeStack::new();
     let mut frame = CallFrame::new(codeunit_name, proc_name);
-    // C29: bind the test method's own locals to defaults, exactly as
+    // Bind the test method's own locals to defaults, exactly as
     // workspace-procedure dispatch does — BC zero-initializes every local, so a
     // test that reads a local before assigning it must not error.
     al_runtime::interpreter::dispatch::bind_procedure_locals(proc_node, source, &mut frame);
@@ -424,7 +424,7 @@ fn run_procedure_interp(
         ast_depth: 0,
         deadline: Some(std::time::Instant::now() + timeout_dur),
         cancel: None,
-        // Dynamic coverage (gap C9): attach a collector only when requested,
+        // Attach a dynamic-coverage collector only when requested,
         // seeded with this codeunit's file so its statements attribute there.
         coverage: collect_coverage.then(|| {
             let mut cov = Coverage::new();
@@ -444,7 +444,7 @@ fn run_procedure_interp(
 /// `begin_end_block` whose enclosing `procedure_declaration` has the given name.
 /// Find the `procedure_declaration` node for `proc_name`. Returns the whole
 /// declaration (not just its body) so the caller can both bind the procedure's
-/// locals (C29) and locate its `begin_end_block` via [`procedure_body`].
+/// locals and locate its `begin_end_block` via [`procedure_body`].
 fn find_procedure_node<'a>(root: Node<'a>, source: &[u8], proc_name: &str) -> Option<Node<'a>> {
     let mut stack_nodes = vec![root];
     while let Some(current) = stack_nodes.pop() {
@@ -534,9 +534,6 @@ mod tests {
 
     #[tokio::test]
     async fn dynamic_mode_reports_executed_lines_and_branches() {
-        // gap C9: running a test in dynamic-coverage mode produces a per-file
-        // report whose executed lines include the taken branch and exclude the
-        // not-taken one, with a recorded branch decision.
         let source = r#"codeunit 50110 "Cov Tests"
 {
     Subtype = Test;
@@ -571,7 +568,6 @@ mod tests {
 
         let events = collect_events(&session, tests, RunOptions::default()).await;
 
-        // The test must actually have run and passed for coverage to be valid.
         let passed = events.iter().any(|e| {
             matches!(e, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
         });
@@ -606,12 +602,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn c29_uninitialized_local_zero_inits_instead_of_erroring() {
-        // BC zero-initializes every local. A [Test] body that reads a local
-        // before assigning it must not fail with "unbound identifier" — the
-        // test-runner path must bind locals to defaults just like workspace
-        // dispatch does. Here `t` defaults to an empty Text, so `'x' + t + 'y'`
-        // is 'xy' and the test passes; before the fix it errored.
+    async fn uninitialized_local_uses_default_value() {
         let source = r#"codeunit 50120 "Uninit Tests"
 {
     Subtype = Test;
@@ -651,8 +642,6 @@ mod tests {
 
     #[tokio::test]
     async fn static_mode_collects_no_dynamic_coverage() {
-        // The default (static) backend must not collect dynamic coverage — the
-        // report stays empty, proving coverage is opt-in and static is intact.
         let source = r#"codeunit 50111 "Plain Tests"
 {
     Subtype = Test;
@@ -724,14 +713,12 @@ mod tests {
             method_name: Some("TestProc".to_string()),
         }];
         let events = collect_events(&session, tests, RunOptions::default()).await;
-        // Must end with SessionComplete.
         let last = events.last().expect("must have at least one event");
         assert!(
             matches!(last, TestEvent::SessionComplete { .. }),
             "last event must be SessionComplete; got {:?}",
             last
         );
-        // Must contain a CaseResult with Fail status.
         let fail_result = events.iter().find(|e| matches!(e, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Fail));
         assert!(
             fail_result.is_some(),
@@ -748,7 +735,6 @@ mod tests {
     [Test]
     procedure TestAssertEqual()
     begin
-        // Assert.AreEqual is a Library Assert stub — should pass.
     end;
 }
 "#;
@@ -790,9 +776,6 @@ mod tests {
                 );
             }
             None => {
-                // If we can't parse the file (no file_index API), we accept a
-                // Fail with a clear diagnostic message — the infrastructure test
-                // still verifies the session doesn't panic.
                 let session_complete = events
                     .iter()
                     .find(|e| matches!(e, TestEvent::SessionComplete { .. }));
@@ -804,9 +787,6 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_test_ids_deduplicated() {
-        // Regression: the same TestId passed twice must run the procedure once
-        // and report total=1 (not 2). Previously each duplicate ran the
-        // interpreter and `from_methods` counted it, inflating the tally.
         let source = r#"codeunit 50103 "Dup Tests"
 {
     Subtype = Test;
@@ -852,12 +832,6 @@ mod tests {
 
     #[tokio::test]
     async fn failing_assert_are_equal_emits_fail_with_expected_in_error() {
-        // We can't easily inject AL source with Assert calls into the file_index
-        // without a real parse. Instead, we test the dispatch path directly via
-        // the dispatch module, then verify that a test procedure that raises an
-        // error via Error() results in a Fail CaseResult.
-        //
-        // We use a workspace with a file that calls Error().
         let source = r#"codeunit 50102 "Fail Tests"
 {
     Subtype = Test;
@@ -899,8 +873,6 @@ mod tests {
 
         match case_result {
             Some(TestEvent::CaseResult { result, .. }) => {
-                // Either the interpreter ran and got Fail, or the file lookup
-                // failed (also Fail). Either way the status must be Fail.
                 assert_eq!(
                     result.status,
                     TestStatus::Fail,
@@ -909,8 +881,6 @@ mod tests {
                 );
             }
             None => {
-                // Acceptable fallback: no CaseResult means the codeunit wasn't
-                // found (empty workspace file_index). Verify session still ends.
                 assert!(
                     events
                         .iter()
