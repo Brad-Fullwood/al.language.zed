@@ -373,6 +373,9 @@ impl<'a> TypeResolver<'a> {
             let result = node.children(&mut cursor).any(|c| c.kind() == "kw_var");
             result
         };
+        let range = self
+            .exact_declaration_name_range(node, &name)
+            .unwrap_or_else(|| name_node.range());
 
         Some(VariableDecl {
             name,
@@ -385,7 +388,43 @@ impl<'a> TypeResolver<'a> {
             // the whole parameter range therefore gave declaration and usage
             // sites different binding keys and filtered every usage out of
             // find-references. Anchor the resolved declaration at its name.
-            range: name_node.range(),
+            range,
+        })
+    }
+
+    /// Return the narrow identifier span for a declaration name.
+    ///
+    /// Some parser builds expose the `parameter` field range as the complete
+    /// `var Name: Type` clause even though its text helper yields `Name`. Using
+    /// that broad range makes go-to-definition land on `var` and gives the
+    /// declaration and its uses different canonical binding keys. Resolve the
+    /// concrete identifier descendant and prefer the earliest shortest match;
+    /// that also avoids selecting a same-named subtype later in the clause.
+    fn exact_declaration_name_range(
+        &self,
+        declaration: Node<'a>,
+        name: &str,
+    ) -> Option<tree_sitter::Range> {
+        let mut matches = Vec::new();
+        let mut stack = vec![declaration];
+        while let Some(node) = stack.pop() {
+            if matches!(
+                node.kind(),
+                "identifier" | "quoted_identifier" | "name" | "name_or_keyword"
+            ) && self
+                .node_text_clean(node)
+                .is_some_and(|text| text.eq_ignore_ascii_case(name))
+            {
+                matches.push(node.range());
+            }
+            let mut cursor = node.walk();
+            stack.extend(node.named_children(&mut cursor));
+        }
+        matches.into_iter().min_by_key(|range| {
+            (
+                range.end_byte.saturating_sub(range.start_byte),
+                range.start_byte,
+            )
         })
     }
 
@@ -790,6 +829,7 @@ mod tests {
         assert_eq!(decl.type_subtype, Some("Sales Header".to_string()));
         assert!(decl.is_var);
         assert_eq!(decl.scope, VariableScope::Parameter);
+        assert_eq!(decl.range.start_point.column, 30);
 
         let result = resolver.resolve_type(
             "LineNo",

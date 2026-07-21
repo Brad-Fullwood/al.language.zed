@@ -117,22 +117,6 @@ mod tests {
         let workspace = Workspace::new();
         workspace.documents.open(uri.clone(), source.to_string());
 
-        let (parsed_text, parsed_tree) =
-            al_source::parsing::get_or_parse(&workspace.documents, &uri).unwrap();
-        let resolved = al_syntax::TypeResolver::new(&parsed_tree, &parsed_text)
-            .resolve_type(
-                "Staging",
-                al_syntax::SyntaxPosition {
-                    line: 4,
-                    character: 11,
-                },
-            )
-            .unwrap();
-        eprintln!(
-            "resolved name/scope/range: {:?} {:?} {:?}",
-            resolved.name, resolved.scope, resolved.range
-        );
-
         let declaration = decl_loc(
             &workspace,
             &uri,
