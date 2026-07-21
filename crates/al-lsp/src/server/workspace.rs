@@ -284,6 +284,7 @@ pub(crate) async fn initialize_workspace(
         if config.enable_native_lint
             && config.diagnostics_scope == al_project::config::DiagnosticsScope::Project
         {
+            let _publish_guard = workspace.diagnostics_publish_lock.lock().await;
             let project_root = workspace
                 .project
                 .read()
@@ -304,6 +305,9 @@ pub(crate) async fn initialize_workspace(
                     tokio::task::yield_now().await;
                 }
                 if let Ok(uri) = url::Url::from_file_path(&path) {
+                    if !workspace.documents.contains(&uri) && !path.is_file() {
+                        continue;
+                    }
                     if !diagnostics.is_empty() {
                         let lsp_diags = diagnostics
                             .iter()
