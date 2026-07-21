@@ -92,8 +92,46 @@ fn spawn_signal_handlers() {
     });
 }
 
+#[cfg(not(windows))]
 #[tokio::main]
 async fn main() {
+    run().await;
+}
+
+#[cfg(windows)]
+fn main() {
+    // Windows reserves a much smaller stack for the process main thread than
+    // the other supported platforms. The server's async entry future is large
+    // enough to exhaust that reserve during daemon/MCP startup, after the pipe
+    // has been created but before requests can be served. Build and drive the
+    // Tokio runtime from an explicitly sized thread so every binary mode has
+    // the same usable startup stack as Linux and macOS.
+    let handle = match std::thread::Builder::new()
+        .name("al-lsp-main".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap_or_else(|error| {
+                    eprintln!("al-lsp: failed to create async runtime: {error}");
+                    std::process::exit(1);
+                });
+            runtime.block_on(run());
+        }) {
+        Ok(handle) => handle,
+        Err(error) => {
+            eprintln!("al-lsp: failed to start server thread: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(payload) = handle.join() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+async fn run() {
     let log_dir = log_dir();
 
     let log_path = log_dir.join("al-lsp.log");
