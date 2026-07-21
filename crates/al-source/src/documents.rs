@@ -549,9 +549,6 @@ mod tests {
 
     #[test]
     fn test_close_evicts_parse_lock() {
-        // Regression: parse_locks must not grow unbounded over a long-running
-        // daemon's lifetime. Opening and closing distinct files should leave the
-        // lock map empty, not accumulate one stale entry per file ever opened.
         let store = DocumentStore::new();
         assert_eq!(store.parse_locks_len(), 0);
 
@@ -578,10 +575,6 @@ mod tests {
 
     #[test]
     fn test_tree_cache_evicts_lru_when_over_cap() {
-        // A long-running daemon may open and parse many
-        // distinct files without ever closing them. The tree cache must not
-        // grow without bound — once it exceeds the cap, the least-recently-used
-        // trees are evicted so memory stays bounded.
         let store = DocumentStore::new();
         store.set_max_cached_trees(Some(4));
 
@@ -1170,10 +1163,6 @@ mod tests {
 
     #[test]
     fn apply_changes_skips_backward_range_and_logs() {
-        // Negative regression: a malformed TextChange with end before start
-        // should be skipped (not panic, not silently apply garbage). The
-        // doc version still bumps because subsequent valid changes in the
-        // same batch should still take effect; only THIS change is dropped.
         let store = DocumentStore::new();
         let uri = test_uri("backward");
         store.open(uri.clone(), "hello\n".to_string());
@@ -1205,10 +1194,6 @@ mod tests {
 
     #[test]
     fn apply_changes_skips_out_of_bounds_range_and_logs() {
-        // Negative regression: range pointing past EOF must be skipped, not
-        // panicked over. The Ropey `remove` would itself accept an invalid
-        // index path, but `position_to_offset` returns None for
-        // out-of-bounds lines, which gets caught here.
         let store = DocumentStore::new();
         let uri = test_uri("oob");
         store.open(uri.clone(), "abc\n".to_string());
