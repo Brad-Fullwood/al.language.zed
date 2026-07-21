@@ -1031,7 +1031,7 @@ async fn references_parameter_multiple_usages() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_k02.al", code).await;
 
-    let refs = client.references("src/integration_k02.al", 2, 24).await;
+    let refs = client.references("src/integration_k02.al", 2, 21).await;
     assert_eq!(refs.len(), 3, "expected declaration and two usages");
 
     client.shutdown().await;
