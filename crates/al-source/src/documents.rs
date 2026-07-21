@@ -247,7 +247,7 @@ impl DocumentStore {
         self.docs.get(uri).map(|d| d.text_cache.as_ref().clone())
     }
 
-    /// Return the document text as a cheaply-cloneable `Arc<String>` (ISSUE-142 fix).
+    /// Return the document text as a cheaply-cloneable `Arc<String>`.
     ///
     /// Cloning the returned `Arc` is a pointer copy -- no string allocation.
     /// Use this on hot query paths to avoid deep-copying large file content.
@@ -278,7 +278,6 @@ impl DocumentStore {
     }
 
     /// The last client-supplied LSP version for `uri`, or `None` if not open.
-    /// Used by the `did_change` out-of-order-delivery guard (C4).
     pub fn get_client_version(&self, uri: &Url) -> Option<i32> {
         self.docs.get(uri).map(|d| d.client_version)
     }
@@ -326,9 +325,9 @@ impl DocumentStore {
     /// concurrent `did_change` notification (tower-lsp can interleave handlers
     /// under load) can run its own `apply_changes` between this call's mutation
     /// and the subsequent read, so the text/version handed to the diagnostics
-    /// task belongs to a *later* keystroke than the one that scheduled it
-    /// (F-OPEN-054). Returning the pair from inside the `get_mut` borrow closes
-    /// that window — the returned text and version are always mutually
+    /// task belongs to a later keystroke than the one that scheduled it.
+    /// Returning the pair from inside the `get_mut` borrow closes that window:
+    /// the returned text and version are always mutually
     /// consistent and reflect exactly the changes this call applied.
     ///
     /// Returns `None` only if the document is not open.
@@ -349,9 +348,8 @@ impl DocumentStore {
                             doc.text.insert(s, &change.text);
                         }
                         // Backward range (end < start). Silently dropping the
-                        // change would mean the editor and server diverge with
-                        // no obvious cause. Log a warn so the bug surfaces in
-                        // daemon logs and skip this change. F-OPEN-(docstore-audit-2).
+                        // change would make the editor and server diverge. Log
+                        // the malformed input and skip it.
                         (Some(s), Some(e)) => {
                             tracing::warn!(
                                 uri = %uri,
@@ -377,20 +375,15 @@ impl DocumentStore {
                         }
                     }
                 } else if self.exceeds_cap(uri, change.text.len()) {
-                    // F-OPEN-042: an oversized full-document replacement is
-                    // skipped rather than ingested. Like the malformed-range
-                    // case above, the prior text is left intact; the editor
-                    // should resync on the next edit.
+                    // Leave the prior text intact after an oversized
+                    // full-document replacement; the editor should resync on
+                    // the next edit.
                 } else {
                     doc.text = Rope::from_str(&change.text);
                 }
             }
-            // C7: the range-edit path above bypasses the size cap that `open`
-            // and full-document replacement enforce, so a document could grow
-            // unbounded through incremental inserts. Re-check the total size
-            // after applying the batch and warn when it exceeds the cap
-            // (matching the F-OPEN-042 intent; mid-stream range edits are not
-            // rolled back).
+            // Incremental inserts cannot be rejected up front based on their
+            // final size, so warn when the completed batch exceeds the cap.
             let cap = self
                 .max_doc_bytes
                 .load(std::sync::atomic::Ordering::Relaxed);

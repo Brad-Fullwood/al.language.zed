@@ -26,42 +26,22 @@ pub fn get_or_parse(
         return None;
     };
 
-    // Fast-path cache check before acquiring the parse lock.
-    //
-    // `get_cached_tree` validates the cached entry against the *live* document
-    // version, not our captured `version`. If `apply_changes` ran after we read
-    // `text` (advancing the document to a newer version) and another thread
-    // already parsed that newer version, the live-version check would pass and
-    // we'd return that newer tree paired with our *older* `text` — a mismatched
-    // (old-text, new-tree) pair. Guard against that by also requiring the cached
-    // tree's version to equal the version we captured `text` at.
+    // Match the captured version, not only the live document version, so a
+    // concurrent edit cannot pair older text with a newer tree.
     if let Some(cached) = documents.get_cached_tree_at_version(uri, version) {
         tracing::trace!(uri = %uri, version, "get_or_parse: cache hit (fast path)");
         return Some((text, cached));
     }
 
-    // Cache miss — serialize the parse for this URI. Without this, a burst of
-    // LSP requests on a keystroke (hover + completion + semantic-tokens fire
-    // together) would all miss the cache, race into `parse_quick`, and each
-    // pay the 30-50 ms parse cost on a large AL file. With the lock the first
-    // request parses; the rest find the cache populated by the re-check below.
-    //
-    // Correctness: the cache invariant is enforced by `get_cached_tree`
-    // (it compares the stored version against the live `doc.version`). If
-    // `apply_changes` runs between our `get_version` call and the `cache_tree`
-    // write, our stored entry is under the old version and the next reader's
-    // version-check will reject it. This means we may briefly waste a parse,
-    // but never serve a stale tree.
+    // Serialize cache misses per URI so concurrent LSP requests do not all
+    // parse the same document version.
     let lock = documents.parse_lock(uri);
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
 
-    // Re-fetch text + version atomically under the lock in case the document
-    // changed while we were waiting. (Cheap — Arc<String> clone + i32 copy.)
+    // The document may have changed while this request waited for the lock.
     let (text, version) = documents.get_text_and_version(uri)?;
 
-    // Re-check the cache after acquiring the lock — another waiter may have
-    // populated it while we were blocked. Match against the version we just
-    // captured `text` at, so we never pair stale text with a newer tree.
+    // Another waiter may have populated the cache while this request blocked.
     if let Some(cached) = documents.get_cached_tree_at_version(uri, version) {
         tracing::trace!(uri = %uri, version, "get_or_parse: cache hit (post-lock)");
         return Some((text, cached));
@@ -121,15 +101,8 @@ mod tests {
 
     #[test]
     fn test_concurrent_get_or_parse_does_not_double_parse() {
-        // Regression: hover + completion + semantic-tokens fire near-
-        // simultaneously on a keystroke. Without per-URI parse-lock
-        // serialisation, each would miss the cache, race into parse_quick,
-        // and pay the 30-50 ms cost N times. With the lock, the first
-        // request parses; the rest find the cache populated.
         let store = std::sync::Arc::new(DocumentStore::new());
         let uri = test_uri("concurrent");
-        // A non-trivial source so the cost gap is visible enough to be
-        // measurable, though we assert on cache-hits not timing.
         let src = "codeunit 50100 Concurrent { procedure Foo() begin end; }\n".repeat(50);
         store.open(uri.clone(), src);
 
@@ -151,11 +124,6 @@ mod tests {
 
     #[test]
     fn test_cache_at_version_rejects_version_skew() {
-        // Regression for the get_or_parse TOCTOU race: a tree cached for a newer
-        // document version must NOT be served to a caller that captured text at
-        // an older version, even though the cached tree matches the *live*
-        // version. Otherwise the caller pairs old text with a new tree and
-        // indexes text.as_bytes() with mismatched node ranges.
         let store = DocumentStore::new();
         let uri = test_uri("skew");
         store.open(uri.clone(), "codeunit 50100 A { }".to_string());
@@ -175,7 +143,6 @@ mod tests {
         let new_tree = AlParser::parse_quick("codeunit 50100 B { } // longer").tree;
         store.cache_tree(&uri, new_version, new_tree);
 
-        // The live-version-only check would (incorrectly) hand back the new tree.
         assert!(store.get_cached_tree(&uri).is_some());
 
         assert!(

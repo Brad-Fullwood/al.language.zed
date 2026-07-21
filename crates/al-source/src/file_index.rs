@@ -17,7 +17,7 @@ const MAX_DEPTH: usize = 10;
 /// Real AL source files are KB-scale; a multi-megabyte `.al` is almost
 /// certainly a build artifact, generated blob, or adversarial input. Reading
 /// it would pin its full contents in the in-memory `files` map. `scan` and
-/// `incremental_scan` skip (and log) any file larger than this (F-OPEN-019).
+/// `incremental_scan` skip and log larger files.
 pub const MAX_AL_FILE_BYTES: u64 = 50 * 1024 * 1024; // 50 MiB
 
 /// Snapshot of file metadata used for change detection.
@@ -74,7 +74,7 @@ pub struct CachedObjectInfo {
 /// One owner of an object name: the declaring file plus the object kind
 /// (`"table"`, `"page"`, …). AL object names are unique only *within* a kind,
 /// so a name maps to a list of these — a table `Customer` and a page `Customer`
-/// are distinct owners that must not collapse onto one another (C22).
+/// are distinct owners that must not collapse onto one another.
 #[derive(Debug, Clone)]
 pub struct ObjectEntry {
     pub kind: String,
@@ -96,26 +96,21 @@ pub struct FileIndex {
     /// Lowercase object name → the list of owners (one per object kind) that
     /// declare it. Keyed by name only, but multi-valued and kind-tagged so
     /// same-named objects of different kinds coexist and a removal of one can
-    /// never strand another (C22). Internal: invariant-coupled to
-    /// `path_to_object`; mutate only via the impl methods (T004). Read via
+    /// never strand another. Invariant-coupled to `path_to_object`; mutate only
+    /// via the impl methods. Read via
     /// `object_path` / `object_path_of_kind` / `object_count`.
     pub objects: DashMap<String, Vec<ObjectEntry>>,
     /// File path → lowercase object name (reverse index for O(1) cleanup).
-    /// Internal: invariant-coupled to `objects` (T004).
+    /// Invariant-coupled to `objects`.
     pub(crate) path_to_object: DashMap<PathBuf, String>,
     /// File path → (mtime, size) snapshot taken at last index time.
-    /// Internal: only used by `incremental_scan` to detect changed files (T004).
+    /// Used by `incremental_scan` to detect changed files.
     pub(crate) file_metadata: DashMap<PathBuf, FileMetadata>,
     /// File path → cached object declaration metadata (avoids re-parsing for workspace/symbol).
     /// Public — al-lsp's DAP path needs object_id ↔ file_path lookups.
     pub object_info: DashMap<PathBuf, CachedObjectInfo>,
-    /// File path → cached parse tree (avoids re-parsing for cross-file queries).
-    /// Internal: invariant-coupled to `files` content; mutate only via impl methods (T004).
-    /// Parsed files as a **coherent** `(text, tree)` pair, stored under one
-    /// `Arc` so a single `get` always returns matching text and tree. This is
-    /// the atomically-consistent source for `get_cached_parse` (C13); the tree
-    /// is stored here once (not duplicated), only the cheap text is also kept in
-    /// `files` for text-only readers.
+    /// Parsed files stored as coherent `(text, tree)` pairs. Mutate only via the
+    /// implementation methods to keep this cache consistent with `files`.
     pub(crate) file_trees: DashMap<PathBuf, std::sync::Arc<(String, tree_sitter::Tree)>>,
     /// File path → cached document symbols (avoids re-extracting for cross-file queries).
     pub(crate) file_symbols: DashMap<PathBuf, Vec<al_syntax::types::SyntaxDocumentSymbol>>,
@@ -153,9 +148,7 @@ impl FileIndex {
     ///
     /// The `(text, tree)` pair is stored under a single `Arc` in `file_trees`,
     /// so one `get` returns a mutually-consistent pair from the same indexing
-    /// pass — no torn read is possible even when a concurrent re-index keeps the
-    /// byte length identical (the previous length-based coherence check could
-    /// be defeated by an equal-length edit; C13).
+    /// pass, so a concurrent re-index cannot produce a torn read.
     pub fn get_cached_parse(&self, path: &Path) -> Option<(String, tree_sitter::Tree)> {
         let pair = self.file_trees.get(path)?.value().clone();
         Some((pair.0.clone(), pair.1.clone()))
@@ -181,9 +174,7 @@ impl FileIndex {
     /// Skips hidden directories, `node_modules`, and `.alpackages`.
     /// On a re-scan, files that were previously indexed but no longer
     /// exist on disk are removed from every index (primary + secondary
-    /// object-name / object-id / procedure maps). F-010: a stale
-    /// re-scan was leaving deleted AL objects discoverable by go-to-
-    /// definition, workspace symbols, and code actions.
+    /// object-name / object-id / procedure maps).
     /// Returns the number of files freshly indexed (not the resulting
     /// total — call [`len`] for that).
     pub fn scan(&self, root: &Path) -> usize {
