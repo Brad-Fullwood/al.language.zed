@@ -1,8 +1,4 @@
 //! In-memory cache over builtin types.
-//!
-//! The bridge *lifecycle* orchestration (lazy startup, crash/restart, shutdown)
-//! lives one tier up, in the workspace layer, because it operates on the
-//! `Workspace` hub. This module holds only the tier-0 `SemanticCache`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

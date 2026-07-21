@@ -3,10 +3,8 @@
 //! Loads the CLR directly into the Rust process, compiles and loads the
 //! bridge DLL, and exposes JSON-in/JSON-out communication with CodeAnalysis.
 //!
-//! When the `semantic` Cargo feature is disabled (e.g. in CI environments
-//! without .NET SDK or network access), `DotNetHost` is a no-op stub that
-//! always returns `SemanticError::NotInitialized`.  All other al-core
-//! functionality (syntax, symbols, LSP transport) continues to work.
+//! When the `semantic` Cargo feature is disabled, host construction returns
+//! [`SemanticError::NotInitialized`].
 
 #[cfg(feature = "semantic")]
 use std::ffi::c_int;
@@ -49,8 +47,7 @@ pub(crate) struct DotNetHost {
     free_buffer_fn: FreeBufferFn,
 }
 
-/// Stub host used when the `semantic` Cargo feature is disabled.
-/// All methods return `SemanticError::NotInitialized`.
+/// Disabled-feature implementation of the host.
 #[cfg(not(feature = "semantic"))]
 pub(crate) struct DotNetHost;
 
@@ -286,7 +283,6 @@ fn check_bridge_pair(dll: PathBuf, config: PathBuf) -> Option<(PathBuf, PathBuf)
 /// 1. `OUT_DIR` from build.rs (compiled alongside the Rust binary)
 /// 2. Next to the current executable (deployed)
 /// 3. `AL_BRIDGE_DIR` environment variable
-/// 4. Compile the bridge on-the-fly from source (development mode)
 pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
     if let Some(out_dir) = option_env!("OUT_DIR") {
         let bridge_dir = PathBuf::from(out_dir).join("bridge");
@@ -324,58 +320,15 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
             debug!(path = %pair.0.display(), "Found bridge DLL from AL_BRIDGE_DIR");
             return Ok(pair);
         }
-    }
-
-    if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
-        let bridge_proj = PathBuf::from(manifest_dir)
-            .join("bridge")
-            .join("AlBridge.csproj");
-        if bridge_proj.is_file() {
-            debug!(project = %bridge_proj.display(), "Compiling bridge DLL from source");
-            return compile_bridge_from_source(&bridge_proj);
-        }
+        return Err(SemanticError::HostInit(format!(
+            "AL_BRIDGE_DIR '{}' does not contain AlBridge.dll and AlBridge.runtimeconfig.json",
+            bridge_dir.display()
+        )));
     }
 
     Err(SemanticError::HostInit(
         "Could not find AlBridge.dll. Set AL_BRIDGE_DIR or ensure bridge/ is compiled.".into(),
     ))
-}
-
-/// Compile the bridge DLL from its .csproj and return the output paths.
-///
-/// Uses `dotnet build --output <dir>` so the produced DLL lands in a
-/// deterministic directory regardless of the project's `<TargetFramework>`
-/// value. Previously the output path was assembled from a hardcoded
-/// `bin/Release/net8.0/` triple, so bumping the bridge's TFM to `net9.0`
-/// (or later) silently broke the dev fallback with a misleading
-/// "Bridge built but output not found" error.
-fn compile_bridge_from_source(csproj: &Path) -> Result<(PathBuf, PathBuf), SemanticError> {
-    let output_dir = csproj
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("bin")
-        .join("Release")
-        .join("rust-out");
-
-    let status = std::process::Command::new("dotnet")
-        .args(["build", "-c", "Release", "--nologo", "-v", "q", "--output"])
-        .arg(&output_dir)
-        .arg(csproj)
-        .status()
-        .map_err(|e| SemanticError::HostInit(format!("Failed to run dotnet build: {e}")))?;
-
-    if !status.success() {
-        return Err(SemanticError::HostInit("dotnet build failed".into()));
-    }
-
-    let dll = output_dir.join("AlBridge.dll");
-    let config = output_dir.join("AlBridge.runtimeconfig.json");
-    check_bridge_pair(dll, config).ok_or_else(|| {
-        SemanticError::HostInit(format!(
-            "Bridge built but output not found at {}",
-            output_dir.display()
-        ))
-    })
 }
 
 #[cfg(feature = "semantic")]
@@ -391,12 +344,7 @@ mod tests {
 
     #[test]
     fn test_find_bridge_returns_error_when_not_found() {
-        // Clear env so strategy 3 doesn't fire
         std::env::remove_var("AL_BRIDGE_DIR");
-        // This should fail gracefully (not panic) when bridge isn't available.
-        // In dev mode the source project may be present, causing strategy 4 to
-        // attempt `dotnet build`; without .NET installed that also returns Err.
-        // Either way it must not panic.
         let result = find_bridge_dll();
         match result {
             Ok((dll, config)) => {
@@ -495,9 +443,8 @@ mod tests {
 
     /// Serialized because it mutates a process-global env var that other tests also read.
     ///
-    /// Strategies 1 (OUT_DIR) and 2 (next to the test exe) run before strategy 3, and the
-    /// unit-test build may bake a real bridge into OUT_DIR. So we assert that both resolved
-    /// files exist, not that they equal our temp dir.
+    /// Earlier locations may contain a bridge baked into the test build, so the
+    /// assertion checks the resolved pair rather than requiring the temp path.
     #[test]
     #[serial]
     fn test_find_bridge_dll_uses_al_bridge_dir() {
@@ -529,9 +476,7 @@ mod tests {
     }
 
     /// `AL_BRIDGE_DIR` set to a directory that is missing the config file must
-    /// NOT resolve via strategy 3 (the pair check fails). It then falls
-    /// through to strategy 4 / the final error, so the result must not be the
-    /// half-populated temp dir.
+    /// not resolve to the half-populated directory.
     #[test]
     #[serial]
     fn test_find_bridge_dll_al_bridge_dir_incomplete_does_not_resolve() {
@@ -550,13 +495,8 @@ mod tests {
             None => std::env::remove_var("AL_BRIDGE_DIR"),
         }
 
-        // Whatever happens downstream, strategy 3 must not have returned our
-        // incomplete temp dir's DLL.
         if let Ok((got_dll, _)) = result {
-            assert_ne!(
-                got_dll, dll,
-                "incomplete AL_BRIDGE_DIR must not resolve via strategy 3"
-            );
+            assert_ne!(got_dll, dll, "incomplete AL_BRIDGE_DIR must not resolve");
         }
     }
 }
