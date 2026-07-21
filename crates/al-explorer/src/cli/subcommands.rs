@@ -9,29 +9,10 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum TestSnapshotCommands {
-    /// Record breakpoint state while a test runs against live BC.
-    Record {
-        /// Test codeunit ID.
-        codeunit_id: i32,
-        /// Exact [Test] procedure name.
-        method: String,
-        /// Breakpoint as FILE:LINE; repeat for multiple breakpoints.
-        #[arg(long = "breakpoint", required = true)]
-        breakpoints: Vec<String>,
-        /// Snapshot output path, relative to the project root.
-        #[arg(short, long)]
-        output: Option<String>,
-        /// Launch configuration name (uses first config if omitted).
-        #[arg(long)]
-        config: Option<String>,
-    },
-    /// Replay a snapshot against a fresh live-BC test run.
-    Replay {
+    /// Validate a snapshot file and show its metadata.
+    Validate {
         /// Path to the .snap.json file
         path: String,
-        /// Launch configuration name (uses first config if omitted).
-        #[arg(long)]
-        config: Option<String>,
     },
     /// Compare two snapshot files and show field-level divergences.
     Diff {
