@@ -189,6 +189,14 @@ impl SymbolIndex {
             })
             .collect();
 
+        if !paths.is_empty() && parsed.is_empty() {
+            warn!(
+                attempted = paths.len(),
+                "All replacement symbol packages failed to load; keeping the previous index generation"
+            );
+            return Vec::new();
+        }
+
         self.clear_loaded_packages();
         let mut results = Vec::with_capacity(parsed.len());
         for (path, pkg, from_cache) in parsed {
@@ -1179,5 +1187,28 @@ mod tests {
         assert_eq!(index.get_by_name("Second Table").len(), 1);
         assert!(index.app_path("First").is_none());
         assert_eq!(index.app_path("Second").as_deref(), Some(second.as_path()));
+    }
+
+    #[test]
+    fn replacement_keeps_previous_generation_when_every_new_file_is_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid = dir.path().join("Valid.app");
+        let invalid = dir.path().join("Invalid.app");
+        std::fs::write(&valid, build_app("Keep", 50_001, "Keep Table")).unwrap();
+        std::fs::write(&invalid, b"not an app").unwrap();
+        let cache = crate::cache::SymbolCache::at(dir.path().join("cache"));
+        let index = SymbolIndex::new();
+        assert_eq!(
+            index
+                .load_packages_cached(std::slice::from_ref(&valid), &cache)
+                .len(),
+            1
+        );
+
+        let loaded = index.replace_packages_cached(std::slice::from_ref(&invalid), &cache);
+
+        assert!(loaded.is_empty());
+        assert!(index.find_by_name("Keep Table").is_some());
+        assert_eq!(index.app_path("Keep").as_deref(), Some(valid.as_path()));
     }
 }

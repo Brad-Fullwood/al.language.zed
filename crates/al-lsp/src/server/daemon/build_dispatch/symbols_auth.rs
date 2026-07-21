@@ -431,11 +431,35 @@ fn refresh_workspace_after_download(workspace: &Workspace, result: &[serde_json:
         return 0;
     }
     let cache = al_symbols::cache::SymbolCache::default_location();
-    let loaded = workspace
-        .symbols
-        .load_packages_cached(&downloaded_paths, &cache);
+    let load = || {
+        workspace
+            .symbols
+            .load_packages_cached(&downloaded_paths, &cache)
+    };
+    let loaded = match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(load)
+        }
+        _ => load(),
+    };
     workspace.symbols.load_runtime_enums();
     workspace.invalidate_insight_graph();
+    let mut package_info = workspace
+        .package_info
+        .write()
+        .unwrap_or_else(|error| error.into_inner());
+    for package in &loaded {
+        package_info.retain(|existing| {
+            !(existing.name.eq_ignore_ascii_case(&package.name)
+                && existing.publisher.eq_ignore_ascii_case(&package.publisher))
+        });
+        package_info.push(al_workspace::PackageInfo {
+            name: package.name.clone(),
+            publisher: package.publisher.clone(),
+            version: package.version.clone(),
+            object_count: package.object_count,
+        });
+    }
     loaded.len()
 }
 

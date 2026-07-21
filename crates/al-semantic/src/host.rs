@@ -26,6 +26,8 @@ type InitFn = unsafe extern "system" fn(*const u8, c_int) -> c_int;
 type HandleRequestFn = unsafe extern "system" fn(*const u8, c_int, *mut c_int) -> *mut u8;
 #[cfg(feature = "semantic")]
 type FreeBufferFn = unsafe extern "system" fn(*mut u8);
+#[cfg(feature = "semantic")]
+type GetLastErrorFn = unsafe extern "system" fn(*mut c_int) -> *mut u8;
 
 /// Defensive upper bound on a single bridge response, in bytes. A buggy or
 /// misbehaving bridge could report a `response_len` larger than the buffer it
@@ -107,6 +109,13 @@ impl DotNetHost {
             )
             .map_err(|e| SemanticError::HostInit(format!("Failed to get FreeBuffer: {e}")))?;
 
+        let get_last_error_fn: GetLastErrorFn = *fn_loader
+            .get_function_with_unmanaged_callers_only::<GetLastErrorFn>(
+                type_name,
+                pdcstr!("GetLastError"),
+            )
+            .map_err(|e| SemanticError::HostInit(format!("Failed to get GetLastError: {e}")))?;
+
         let ca_path = code_analysis_path.to_str().ok_or_else(|| {
             SemanticError::HostInit(format!(
                 "CodeAnalysis path is not valid UTF-8: {}",
@@ -128,9 +137,28 @@ impl DotNetHost {
         let result = unsafe { init_fn(ca_bytes.as_ptr(), ca_len) };
 
         if result != 0 {
+            let mut error_len: c_int = 0;
+            // SAFETY: the delegate comes from the same loaded bridge assembly;
+            // error_len is a valid out pointer. The returned allocation is
+            // released with that assembly's FreeBuffer delegate below.
+            let error_ptr = unsafe { get_last_error_fn(&mut error_len) };
+            let detail = if !error_ptr.is_null() && (1..=1024 * 1024).contains(&error_len) {
+                // SAFETY: GetLastError reports the exact allocation length and
+                // keeps the buffer alive until FreeBuffer is called.
+                let bytes =
+                    unsafe { std::slice::from_raw_parts(error_ptr, error_len as usize).to_vec() };
+                String::from_utf8(bytes)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+            } else {
+                "bridge did not return initialization details".to_string()
+            };
+            if !error_ptr.is_null() {
+                // SAFETY: error_ptr was allocated by GetLastError in this bridge.
+                unsafe { free_buffer_fn(error_ptr) };
+            }
             return Err(SemanticError::HostInit(format!(
-                "Bridge Init failed with code {result} (CodeAnalysis path: {})",
-                code_analysis_path.display()
+                "Bridge Init failed with code {result}: {detail} (CodeAnalysis path: {})",
+                code_analysis_path.display(),
             )));
         }
 
@@ -415,6 +443,28 @@ mod tests {
         {
             // nothing to assert — real impl tested via integration tests with .NET
         }
+    }
+
+    #[cfg(feature = "semantic")]
+    #[test]
+    #[serial]
+    fn test_init_failure_surfaces_managed_exception_detail() {
+        let (bridge_dll, runtime_config) = find_bridge_dll().expect("test bridge should be built");
+        let dir = tempfile::tempdir().unwrap();
+        let invalid = dir.path().join("Microsoft.Dynamics.Nav.CodeAnalysis.dll");
+        std::fs::write(&invalid, b"not a managed assembly").unwrap();
+
+        let error = match DotNetHost::new(&bridge_dll, &runtime_config, &invalid) {
+            Ok(_) => panic!("invalid CodeAnalysis assembly must not initialize"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Bridge Init failed"), "{error}");
+        assert!(
+            error.contains("BadImageFormat")
+                || error.contains("image")
+                || error.contains("assembly"),
+            "managed exception detail should be preserved: {error}"
+        );
     }
 
     #[test]

@@ -682,20 +682,26 @@ impl LanguageServer for AlServer {
                 .await
                 {
                     Ok(loaded) => {
-                        let package_info = loaded
-                            .iter()
-                            .map(|package| al_workspace::PackageInfo {
-                                name: package.name.clone(),
-                                publisher: package.publisher.clone(),
-                                version: package.version.clone(),
-                                object_count: package.object_count,
-                            })
-                            .collect();
-                        *self
-                            .workspace
-                            .package_info
-                            .write()
-                            .unwrap_or_else(|error| error.into_inner()) = package_info;
+                        // An all-invalid non-empty replacement deliberately
+                        // preserves the previous symbol generation. Preserve
+                        // its package metadata too; an explicitly empty path
+                        // list still clears both.
+                        if attempted == 0 || !loaded.is_empty() {
+                            let package_info = loaded
+                                .iter()
+                                .map(|package| al_workspace::PackageInfo {
+                                    name: package.name.clone(),
+                                    publisher: package.publisher.clone(),
+                                    version: package.version.clone(),
+                                    object_count: package.object_count,
+                                })
+                                .collect();
+                            *self
+                                .workspace
+                                .package_info
+                                .write()
+                                .unwrap_or_else(|error| error.into_inner()) = package_info;
+                        }
                         tracing::info!(
                             attempted,
                             loaded = loaded.len(),

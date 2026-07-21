@@ -116,9 +116,11 @@ pub(crate) async fn initialize_workspace(
             let mut loaded_packages = Vec::new();
             if !project.packages.is_empty() {
                 let cache = al_symbols::cache::SymbolCache::default_location();
-                loaded_packages = workspace
-                    .symbols
-                    .load_packages_cached(&project.packages, &cache);
+                loaded_packages = tokio::task::block_in_place(|| {
+                    workspace
+                        .symbols
+                        .load_packages_cached(&project.packages, &cache)
+                });
                 info!(
                     loaded = loaded_packages.len(),
                     total_symbols = workspace.symbols.len(),
@@ -127,6 +129,7 @@ pub(crate) async fn initialize_workspace(
                 workspace.invalidate_insight_graph();
             }
             workspace.symbols.load_runtime_enums();
+            set_package_info(&workspace, &loaded_packages);
 
             // Signal readiness. For warm starts the package symbol index is
             // already populated above; for cold starts (no cached packages
@@ -152,7 +155,9 @@ pub(crate) async fn initialize_workspace(
                         project.packages.extend(downloaded.iter().cloned());
 
                         let cache = al_symbols::cache::SymbolCache::default_location();
-                        let loaded = workspace.symbols.load_packages_cached(&downloaded, &cache);
+                        let loaded = tokio::task::block_in_place(|| {
+                            workspace.symbols.load_packages_cached(&downloaded, &cache)
+                        });
                         info!(
                             loaded = loaded.len(),
                             total_symbols = workspace.symbols.len(),
@@ -160,6 +165,13 @@ pub(crate) async fn initialize_workspace(
                         );
                         workspace.symbols.load_runtime_enums();
                         workspace.invalidate_insight_graph();
+
+                        for package in loaded {
+                            loaded_packages.retain(|existing| {
+                                !existing.app_id.eq_ignore_ascii_case(&package.app_id)
+                            });
+                            loaded_packages.push(package);
+                        }
 
                         // Re-scan all configured folders so the stored
                         // project keeps pre-existing/local packages as well
@@ -170,6 +182,7 @@ pub(crate) async fn initialize_workspace(
             }
 
             log_source_availability(&project.packages);
+            set_package_info(&workspace, &loaded_packages);
 
             *workspace.project.write().await = Some(project.clone());
         }
@@ -344,6 +357,22 @@ fn missing_dependencies(
         })
         .cloned()
         .collect()
+}
+
+fn set_package_info(workspace: &Workspace, packages: &[al_symbols::model::SymbolPackage]) {
+    let info = packages
+        .iter()
+        .map(|package| al_workspace::PackageInfo {
+            name: package.name.clone(),
+            publisher: package.publisher.clone(),
+            version: package.version.clone(),
+            object_count: package.object_count,
+        })
+        .collect();
+    *workspace
+        .package_info
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = info;
 }
 
 fn missing_dependencies_in_paths(
@@ -690,13 +719,16 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
 
     // Reload symbol index (with cache for fast subsequent starts)
     let cache = al_symbols::cache::SymbolCache::default_location();
-    let loaded = server
-        .workspace
-        .symbols
-        .load_packages_cached(&packages, &cache);
+    let loaded = tokio::task::block_in_place(|| {
+        server
+            .workspace
+            .symbols
+            .load_packages_cached(&packages, &cache)
+    });
     server.workspace.symbols.load_runtime_enums();
     // Package changes invalidate the insight graph.
     server.workspace.invalidate_insight_graph();
+    merge_package_info(&server.workspace, &loaded);
     info!(
         loaded = loaded.len(),
         total_symbols = server.workspace.symbols.len(),
@@ -720,6 +752,25 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
             ),
         )
         .await;
+}
+
+fn merge_package_info(workspace: &Workspace, packages: &[al_symbols::model::SymbolPackage]) {
+    let mut info = workspace
+        .package_info
+        .write()
+        .unwrap_or_else(|error| error.into_inner());
+    for package in packages {
+        info.retain(|existing| {
+            !(existing.name.eq_ignore_ascii_case(&package.name)
+                && existing.publisher.eq_ignore_ascii_case(&package.publisher))
+        });
+        info.push(al_workspace::PackageInfo {
+            name: package.name.clone(),
+            publisher: package.publisher.clone(),
+            version: package.version.clone(),
+            object_count: package.object_count,
+        });
+    }
 }
 
 /// Handle workspace/symbol request.

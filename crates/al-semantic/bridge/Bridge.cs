@@ -180,6 +180,21 @@ public static class Bridge
                 JsonOpts);
         }
 
+        return AllocateResponse(responseBytes, responseLen);
+    }
+
+    /// <summary>Return the detailed exception captured by the last failed Init.</summary>
+    [UnmanagedCallersOnly]
+    public static unsafe byte* GetLastError(int* responseLen)
+    {
+        if (responseLen == null) return null;
+        *responseLen = 0;
+        var bytes = Encoding.UTF8.GetBytes(_lastInitError ?? "Unknown bridge initialization failure.");
+        return AllocateResponse(bytes, responseLen);
+    }
+
+    private static unsafe byte* AllocateResponse(byte[] responseBytes, int* responseLen)
+    {
         byte* ptr = null;
         try
         {

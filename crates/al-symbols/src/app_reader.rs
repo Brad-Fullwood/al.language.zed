@@ -3,7 +3,7 @@
 //! AL `.app` files have a NAVX header followed by a ZIP archive containing
 //! `SymbolReference.json` (public API symbols) and `NavxManifest.xml` (metadata).
 
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Seek};
 use thiserror::Error;
 use zip::ZipArchive;
 
@@ -106,15 +106,20 @@ pub fn read_app_manifest_file(path: &std::path::Path) -> Result<NavxManifest, Ap
     if file_size > MAX_APP_FILE_SIZE {
         return Err(AppReaderError::TooLarge(file_size));
     }
-    let data = std::fs::read(path)?;
-    if data.len() < MIN_HEADER_SIZE {
-        return Err(AppReaderError::TooSmall(data.len()));
+    if file_size < MIN_HEADER_SIZE as u64 {
+        return Err(AppReaderError::TooSmall(file_size as usize));
     }
-    if &data[0..4] != NAVX_MAGIC {
+    let mut file = std::fs::File::open(path)?;
+    let mut magic = [0u8; MIN_HEADER_SIZE];
+    file.read_exact(&mut magic)?;
+    if &magic != NAVX_MAGIC {
         return Err(AppReaderError::NotNavx);
     }
-    let zip_offset = find_zip_offset(&data).ok_or(AppReaderError::NoZipSignature)?;
-    let mut archive = ZipArchive::new(Cursor::new(&data[zip_offset..]))?;
+    file.rewind()?;
+    // zip supports self-extracting/prefixed archives and infers the NAVX
+    // prefix from the central directory, so dependency checks can read only
+    // the small manifest entry instead of allocating the entire .app.
+    let mut archive = ZipArchive::new(file)?;
     if archive.len() > MAX_ARCHIVE_ENTRIES {
         return Err(AppReaderError::TooManyEntries(archive.len()));
     }
@@ -147,7 +152,9 @@ pub(crate) fn find_zip_offset(data: &[u8]) -> Option<usize> {
     None
 }
 
-fn read_manifest(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<NavxManifest, AppReaderError> {
+fn read_manifest<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+) -> Result<NavxManifest, AppReaderError> {
     let manifest_name =
         find_file_in_archive(archive, "NavxManifest.xml").ok_or(AppReaderError::NoManifest)?;
 
@@ -181,7 +188,7 @@ fn read_manifest(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<NavxManifest
 }
 
 fn read_symbol_reference(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    archive: &mut ZipArchive<impl Read + Seek>,
     package_name: &str,
 ) -> Result<Vec<super::model::SymbolEntry>, AppReaderError> {
     let sr_name = find_file_in_archive(archive, "SymbolReference.json")
@@ -246,7 +253,10 @@ fn has_only_json_padding(bytes: &[u8]) -> bool {
 /// `archive.by_index(i)` calls in a tight loop until they exceed the
 /// 200 MB outer cap on file *size* (which says nothing about entry
 /// count). Higher than realistic BC packages by ~10x.
-fn find_file_in_archive(archive: &mut ZipArchive<Cursor<&[u8]>>, target: &str) -> Option<String> {
+fn find_file_in_archive<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    target: &str,
+) -> Option<String> {
     let target_lower = target.to_lowercase();
     let entries = archive.len();
     if entries > MAX_ARCHIVE_ENTRIES {
