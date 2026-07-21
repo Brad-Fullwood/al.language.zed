@@ -121,7 +121,7 @@ pub struct Workspace {
     /// most recent `al.compile` run. Used by the LSP `al.compile` handler
     /// to clear stale diagnostics: any file in this set absent from the
     /// new compile result needs an empty (or syntax-only) republish so
-    /// the editor squiggles disappear after a clean rebuild. F-008.
+    /// the editor squiggles disappear after a clean rebuild.
     pub last_compile_affected: tokio::sync::Mutex<std::collections::HashSet<String>>,
 }
 
