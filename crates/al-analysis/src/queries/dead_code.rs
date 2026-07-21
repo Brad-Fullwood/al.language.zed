@@ -537,10 +537,9 @@ fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
         }
         // Inline-comment scan: walk left-to-right toggling the flag for any
         // /* and */ openers/closers on this line. We deliberately don't
-        // try to handle */ inside string literals — a malicious-looking
-        // file with `Message('*/')` would just cause a (rare) false miss
-        // of one field, which is strictly safer than the false-positive
-        // we were producing .
+        // handle */ inside string literals. A file with `Message('*/')` may
+        // cause a false negative, which is safer than reporting a false
+        // positive.
         let after_initial = &line[search_from..];
         if let Some(open) = after_initial.find("/*") {
             in_block_comment = true;

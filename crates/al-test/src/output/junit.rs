@@ -184,7 +184,6 @@ mod tests {
 
     #[test]
     fn test_junit_empty_suite_emits_zero_count() {
-        // Reproduces: p1-3-junit-cobertura — to_junit_string(&[]) must emit valid XML with tests="0"
         let xml = run_junit(&[]);
         assert_well_formed_xml(&xml);
         assert!(
@@ -199,7 +198,6 @@ mod tests {
 
     #[test]
     fn test_junit_all_pass_codeunit() {
-        // Reproduces: p1-3-junit-cobertura — three passing methods → 3 <testcase>, no <failure>, no <skipped>
         let cu = TestCodeunitResult::from_methods(
             "MyTests".to_string(),
             50100,
@@ -230,7 +228,6 @@ mod tests {
 
     #[test]
     fn test_junit_all_fail_codeunit() {
-        // Reproduces: p1-3-junit-cobertura — three failing methods → 3 <testcase>, each with <failure> containing the error
         let cu = TestCodeunitResult::from_methods(
             "FailTests".to_string(),
             50101,
@@ -268,7 +265,6 @@ mod tests {
 
     #[test]
     fn test_junit_mixed_pass_fail_skip() {
-        // Reproduces: p1-3-junit-cobertura — one pass, one fail, one skip → counts and child elements correct
         let cu = TestCodeunitResult::from_methods(
             "MixedTests".to_string(),
             50102,
@@ -307,8 +303,7 @@ mod tests {
 
     #[test]
     fn test_junit_special_chars_escaped() {
-        // Reproduces: p1-3-junit-cobertura — error messages with <, >, &, ", ' must be escaped
-        // so the output parses as well-formed XML and the round-tripped text equals the original.
+        // The output must remain well-formed XML and preserve the original text.
         let raw_error = r#"Error: x < 10 && y > 0; msg="it's broken" & done"#;
         let cu = TestCodeunitResult::from_methods(
             "EscapeTests".to_string(),
@@ -370,8 +365,6 @@ mod tests {
 
     #[test]
     fn test_junit_oversized_message_truncated() {
-        // Reproduces: p1-3-junit-cobertura — error message of 100_000 chars must be truncated
-        // to MAX_FAILURE_BODY_BYTES (4096) to keep output bounded.
         let huge_error = "X".repeat(100_000);
         let cu = TestCodeunitResult::from_methods(
             "TruncTests".to_string(),

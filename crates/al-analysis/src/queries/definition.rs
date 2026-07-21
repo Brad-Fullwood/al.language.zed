@@ -466,9 +466,8 @@ mod tests {
     fn unquoted_record_type_resolves_to_table_not_page_or_self() {
         // `c: Record Customer` — the subtype is an unquoted single word, and a
         // same-named page is indexed last. Go-to-definition must resolve to the
-        // TABLE (kind-correct, /) regardless of where in the
-        // token the cursor sits, and must never return the cursor's own usage
-        //.
+        // table regardless of where in the token the cursor sits, and must
+        // never return the cursor's own usage.
         let ws = Workspace::new();
         let table_path = std::path::PathBuf::from("/ws/Customer.Table.al");
         let page_path = std::path::PathBuf::from("/ws/Customer.Page.al");

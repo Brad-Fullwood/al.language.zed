@@ -1417,8 +1417,8 @@ fn parse_field_line(trimmed: &str) -> Option<(&str, &str)> {
     Some((name_part, ty))
 }
 
-/// Every `field(id; "Name"; Type ...)` declaration node in `tree`. Tree-based
-///: a field is a node whose text begins with `field(` — so two `field(...)`
+/// Every `field(id; "Name"; Type ...)` declaration node in `tree`. A field is
+/// a node whose text begins with `field(`, so two `field(...)`
 /// on one line each resolve independently, unlike the old per-line text scan
 /// which only ever saw the first. We stop descending once matched (the paren
 /// child text begins with `(`, not `field(`, so it isn't double-counted).

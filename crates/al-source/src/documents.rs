@@ -441,8 +441,8 @@ impl DocumentStore {
         }
     }
 
-    /// Bounded by [`set_max_cached_trees`](Self::set_max_cached_trees)
-    ///: after inserting, the least-recently-used trees are evicted
+    /// Bounded by [`set_max_cached_trees`](Self::set_max_cached_trees): after
+    /// inserting, the least-recently-used trees are evicted
     /// if the cache exceeds its cap, so a long-running daemon that opens many
     /// files cannot accumulate parse trees without limit.
     pub fn cache_tree(&self, uri: &Url, version: i32, tree: tree_sitter::Tree) {
@@ -983,8 +983,7 @@ mod tests {
         // Clamped result must point to the end of the VISIBLE text on line 0
         // (char offset 5, just after 'hello'), BEFORE the trailing '\n' — LSP
         // clamps an over-EOL character to the line length, not past the
-        // terminator. Landing at 6 would swallow the newline and merge lines
-        //.
+        // terminator. Landing at 6 would swallow the newline and merge lines.
         assert_eq!(off, Some(5));
     }
 
