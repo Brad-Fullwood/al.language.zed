@@ -461,7 +461,7 @@ impl SymbolIndex {
 
     /// Remove all entries whose `package` field matches `package_name` (case-insensitive).
     ///
-    /// Used to clear previously registered workspace entries before re-adding them,
+    /// Clears registered workspace entries before re-adding them,
     /// preventing duplicates when the call graph is rebuilt.
     ///
     /// Every secondary index that stores `Vec<Arc<SymbolEntry>>` must be passed
