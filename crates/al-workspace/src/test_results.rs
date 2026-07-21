@@ -422,20 +422,25 @@ mod tests {
 
     #[test]
     fn canonical_path_uses_xdg_data_home() {
-        let prev_xdg = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: tests run on a single thread by default in cargo test
-        // unless --test-threads is set; this is acceptable for the unit.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        struct RestoreEnv(Option<std::ffi::OsString>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                unsafe {
+                    match self.0.take() {
+                        Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                        None => std::env::remove_var("XDG_DATA_HOME"),
+                    }
+                }
+            }
+        }
+        let _restore = RestoreEnv(std::env::var_os("XDG_DATA_HOME"));
         unsafe {
             std::env::set_var("XDG_DATA_HOME", "/tmp/al-lsp-test-xdg");
         }
         let p = canonical_path_for(std::path::Path::new("/projects/foo")).unwrap();
         assert!(p.starts_with("/tmp/al-lsp-test-xdg/al-lsp/"));
         assert!(p.ends_with("test-results.json"));
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-                None => std::env::remove_var("XDG_DATA_HOME"),
-            }
-        }
     }
 }
