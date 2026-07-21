@@ -1,20 +1,12 @@
 //! Build script: auto-detect which `zed_extension_api` line the build resolves
 //! to, and enable the `zed_api_0_8` cfg when it is 0.8.0 or newer.
 //!
-//! WHY: the settings-schema `Extension` methods
+//! The settings-schema `Extension` methods
 //! (`language_server_workspace_configuration_schema` /
 //! `language_server_initialization_options_schema`) — which drive
 //! settings.json autocomplete + validation for the AL settings block — exist
-//! only on the unreleased 0.8.x API (zed git `main`). The committed/published
-//! build pins released 0.7.0 so it loads on Stable Zed and is accepted by the
-//! extension registry (guarded by `committed_api_target_is_released`).
-//!
-//! `scripts/use-api.sh dev` swaps the dep to git-main 0.8.0; this script then
-//! sees 0.8 in `Cargo.lock` and lights up the `#[cfg(zed_api_0_8)]` methods
-//! in `src/lib.rs` — with NO source edit and NO extra `--features` flag, so even
-//! Zed's own plain `cargo build` for a dev extension picks the right path purely
-//! from the resolved dependency version. On 0.7 the cfg stays off and the schema
-//! methods compile out, leaving the released build byte-for-byte unchanged.
+//! only on API 0.8 and newer. The resolved dependency version controls whether
+//! those methods are compiled.
 
 use std::path::Path;
 
@@ -24,7 +16,8 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(zed_api_0_8)");
 
     // The root package is the workspace root, so Cargo.lock sits next to this.
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("Cargo must provide CARGO_MANIFEST_DIR to build scripts");
     let lock_path = Path::new(&manifest_dir).join("Cargo.lock");
     println!("cargo:rerun-if-changed={}", lock_path.display());
 
@@ -35,9 +28,12 @@ fn main() {
 
 /// Return true if the `zed_extension_api` version resolved in `Cargo.lock` is
 /// 0.8.0 or newer (the API line that exposes the settings-schema methods).
-/// A missing or unparseable lock is treated as Stable (cfg off).
 fn api_supports_schema(lock_path: &Path) -> bool {
     let Ok(lock) = std::fs::read_to_string(lock_path) else {
+        println!(
+            "cargo:warning=unable to read {}; settings schema API detection is disabled",
+            lock_path.display()
+        );
         return false;
     };
 

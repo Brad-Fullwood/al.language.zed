@@ -25,9 +25,8 @@ pub fn apply_al_settings_to_config(
     let mut result = config.clone();
 
     for (key, value) in settings_obj {
-        // F-027: Accept the nested wrapper shape { "al": { ... } } by merging
-        // its children directly. Without this, a natural Zed settings nest
-        // would be wrapped a second time as init_options.al.al.<child>.
+        // Zed settings may wrap AL options in an `al` object. Merge its
+        // children at the same level as dotted and unprefixed settings.
         if key == "al" {
             if let Some(nested) = value.as_object() {
                 for (child_key, child_value) in nested {
@@ -95,7 +94,7 @@ fn set_nested_value_inner(
     set_nested_value_inner(child, &path[1..], value, depth + 1);
 }
 
-/// Resolve the al-lsp launch arguments from user settings (F-OPEN-260).
+/// Resolve the al-lsp launch arguments from user settings.
 ///
 /// Priority:
 /// 1. An explicit `binary.arguments` override always wins (power users).

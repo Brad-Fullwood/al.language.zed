@@ -1,4 +1,4 @@
-//! Regression guard for the new-user binary-resolution path.
+//! Consistency guards for binary resolution, packaging, and settings.
 //!
 //! Step 4 of `find_or_download_binary` calls `latest_github_release(GITHUB_REPO, …)`.
 //! If `GITHUB_REPO` does not name the repository that actually publishes the
@@ -6,9 +6,8 @@
 //! user's language server never spawns (they have no user-config path, no
 //! cache, and no `al-lsp` on `$PATH` on first install).
 //!
-//! This previously regressed: the constant said `Brad-Fullwood/zed-al` while
-//! the real repository is `Brad-Fullwood/al.language.zed`. These tests pin the
-//! constant to the manifest so code and packaging can never silently drift.
+//! The tests pin release lookup to the manifest so code and packaging cannot
+//! drift independently.
 
 use crate::{release_lookup_failure_message, spawn_failure_message, GITHUB_REPO};
 use zed_extension_api as zed;
@@ -210,7 +209,7 @@ fn asset_not_found_is_actionable() {
     );
 }
 
-/// F-OPEN-256: the COMMITTED state must always target a RELEASED extension API.
+/// the COMMITTED state must always target a RELEASED extension API.
 ///
 /// Unreleased APIs (git `main`) load only on Dev/Nightly Zed; on Stable/Preview
 /// the extension silently fails to load and `al-lsp` never spawns. This trap
@@ -326,7 +325,6 @@ fn unreleased_api_channel_requirement_is_documented() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Settings-schema completeness guards.
 //
 // schemas/settings.json is the published source of truth for the AL settings
@@ -335,8 +333,7 @@ fn unreleased_api_channel_requirement_is_documented() {
 // the server actually reads: list a key the server ignores and autocomplete
 // suggests dead settings; omit a key the server reads and users get no help for
 // settings that matter. These tests pin schema ↔ code together so it cannot
-// silently drift (it already had — 7 keys were missing before this guard).
-// ---------------------------------------------------------------------------
+// silently drift.
 
 /// Convert a Rust `snake_case` field name to the `camelCase` key serde emits
 /// (`AlConfig` derives `#[serde(rename_all = "camelCase")]`).
@@ -359,7 +356,7 @@ fn snake_to_camel(s: &str) -> String {
 /// The `camelCase` field names of `AlConfig`, parsed from al-project's `config.rs`
 /// source — the authoritative list of settings the server reads. Parsed from
 /// source (not imported) because this WASM extension crate does not depend on
-/// al-core.
+/// al-project.
 fn al_config_camel_fields() -> Vec<String> {
     let src = include_str!("../crates/al-project/src/config.rs");
     let start = src

@@ -66,7 +66,6 @@ fn manual_install_hint(os: zed::Os) -> String {
 /// for the current platform. Includes the expected asset name, the releases
 /// page to download from manually, and a copy-paste Zed settings snippet so a
 /// new user whose language server fails to spawn knows exactly what to do
-/// (addresses the #1 new-user failure mode — see ecosystem-roadmap.md QW3).
 fn spawn_failure_message(os: zed::Os, asset_name: &str) -> String {
     format!(
         "Could not find an al-lsp release asset named '{asset_name}' for this platform. {}",
@@ -138,7 +137,7 @@ fn merge_json_inner(base: &Value, overrides: &Value, depth: u32) -> Value {
 }
 
 impl AlExtension {
-    /// Resolve the al-lsp binary path using the priority chain from ISSUE-069:
+    /// Resolve the al-lsp binary path in priority order:
     /// 1. User-configured explicit path (settings override)
     /// 2. Locally installed binary (extension work dir, previously downloaded)
     /// 3. PATH lookup (dev builds, `cargo install`, system installs)
@@ -187,15 +186,8 @@ impl AlExtension {
         )
         .map_err(|e| release_lookup_failure_message(os, &e))?;
 
-        // Release asset naming. Unix targets ship a gzip tarball
-        // (`al-<os>-<arch>.tar.gz`); Windows ships a zip
-        // (`al-windows-<arch>.zip`) because the Windows release packages only
-        // the portable `al-lsp` binary (the Unix-only `al-explorer` daemon
-        // client is not built for Windows — see the daemon module's
-        // `#[cfg(not(unix))]` stub and ecosystem-roadmap.md item 8). These
-        // strings MUST stay in lockstep with the asset names produced by
-        // `.github/workflows/release.yml`; the `release_asset_names_match`
-        // repo-consistency test guards against drift.
+        // Unix release assets are gzip archives; Windows uses zip. These names
+        // must match the release workflow's artifact matrix.
         let arch_name = match arch {
             zed::Architecture::Aarch64 => "aarch64",
             // The 0.8+ API dropped the 32-bit `X86` variant; this arm only
@@ -251,24 +243,16 @@ impl AlExtension {
                 );
             }
 
-            // TLS / integrity: zed::download_file uses Zed's host HTTP
-            // client, which forces rustls-with-platform-verifier (validates
-            // against the OS root-CA store). For an even stronger guarantee
-            // we could SHA-verify against `asset.digest` returned by the
-            // GitHub API, but the WASM extension has no easy hashing
-            // primitive and trusting platform TLS is already strong. See
-            // F-OPEN-008.
+            // Zed's host HTTP client validates the connection against the
+            // platform trust store.
             zed::download_file(&asset.download_url, &version_dir, archive_type)
                 .map_err(|e| format!("Failed to download al-lsp: {e}"))?;
 
             zed::make_file_executable(&binary_path)
                 .map_err(|e| format!("Failed to make al-lsp executable: {e}"))?;
 
-            // Remove old version directories, guarded to only clean up al-lsp-* dirs.
-            // T055: `fs::remove_dir_all` errors are intentionally swallowed — the
-            // Zed WASM extension sandbox has no usable logging path, and stale
-            // version dirs are best-effort cleanup (a leftover dir is at worst
-            // wasted disk space, never a correctness issue).
+            // Stale release directories are best-effort cleanup: the WASM
+            // extension has no logging surface, and failure only wastes space.
             if fs::metadata(&version_dir).is_ok_and(|m| m.is_dir()) {
                 if let Ok(entries) = fs::read_dir(".") {
                     for entry in entries.flatten() {
@@ -301,8 +285,7 @@ impl zed::Extension for AlExtension {
     ) -> Result<zed::Command> {
         let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
 
-        // Launch arguments: explicit binary.arguments override > the
-        // al.useOfficialLsp delegation toggle (F-OPEN-260) > native --stdio.
+        // Explicit binary arguments take precedence over the backend setting.
         let user_args = settings::resolve_server_args(
             settings
                 .binary
@@ -368,7 +351,7 @@ impl zed::Extension for AlExtension {
     // the 0.8.x+ extension API, so they are gated behind the `zed_api_0_8` cfg
     // that `build.rs` sets when Cargo.lock resolves zed_extension_api to 0.8.0+
     // (via `scripts/use-api.sh dev`). On the committed/published 0.7.0 build
-    // (F-OPEN-256: loads on Stable Zed, accepted by the registry) the cfg is off
+    // (loads on Stable Zed, accepted by the registry) the cfg is off
     // and these compile out — same artifact as before. Schema content lives in
     // schemas/settings.json; see `al_settings_schema`.
     #[cfg(zed_api_0_8)]

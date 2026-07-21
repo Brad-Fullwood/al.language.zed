@@ -26,16 +26,8 @@ build = "build.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-# ⚠️ API CHANNEL — READ BEFORE CHANGING.
-# The COMMITTED state must always pin a RELEASED zed_extension_api (crates.io
-# version, currently 0.7.0). Released APIs load on ALL Zed channels (Stable,
-# Preview, Dev, Nightly) and are required by the extension registry. A git/main
-# pin is an UNRELEASED API: it loads only on Dev/Nightly Zed and SILENTLY FAILS
-# on Stable ("unreleased versions of the extension API can only be used on
-# development builds of Zed") — that trap shipped four times before the
-# `committed_api_target_is_released` guard test was added. For local experiments
-# against git main use `scripts/use-api.sh dev`, and run
-# `scripts/use-api.sh stable` before committing.
+# The registry requires a released API. Git revisions load only in Zed
+# Dev/Nightly; use scripts/use-api.sh for local API experiments.
 zed_extension_api = "0.7.0"
 serde_json = "1.0"
 

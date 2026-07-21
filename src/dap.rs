@@ -19,39 +19,25 @@ pub fn build_dap_binary(
 ) -> zed::Result<zed::DebugAdapterBinary> {
     let workspace_path = worktree.root_path();
 
-    // Silently defaulting to {} on a parse failure was masking malformed
-    // launch.json from the user (T073). The WASM extension can't `tracing::`
-    // — it has no host I/O — but it CAN return a structured error so Zed
-    // surfaces a real diagnostic in the debugger panel instead of starting
-    // up against an empty config and producing confusing downstream errors.
-    let config_json: Value = match serde_json::from_str(&config.config) {
-        Ok(v) => v,
-        Err(e) => {
-            return Err(format!(
-                "AL DAP: failed to parse debug task configuration as JSON: {e}. \
-                 Check the launch.json entry for syntax errors."
-            ));
-        }
-    };
-    // If the parsed JSON isn't an object we still want to keep going (an
-    // empty Object is a valid no-customisation case), but flatten any
-    // unexpected shape to {} rather than letting `.get(...)` accesses
-    // misbehave on an array/string root.
-    let config_json = if config_json.is_object() {
-        config_json
-    } else {
-        json!({})
-    };
+    let config_json: Value = serde_json::from_str(&config.config).map_err(|e| {
+        format!(
+            "AL DAP: failed to parse debug task configuration as JSON: {e}. \
+             Check the launch.json entry for syntax errors."
+        )
+    })?;
+    if !config_json.is_object() {
+        return Err("AL DAP: debug task configuration must be a JSON object".to_string());
+    }
 
     let request_type = config_json
         .get("request")
         .and_then(|r| r.as_str())
         .unwrap_or("launch");
 
-    let request = if request_type == "attach" {
-        zed::StartDebuggingRequestArgumentsRequest::Attach
-    } else {
-        zed::StartDebuggingRequestArgumentsRequest::Launch
+    let request = match request_type {
+        "attach" => zed::StartDebuggingRequestArgumentsRequest::Attach,
+        "launch" => zed::StartDebuggingRequestArgumentsRequest::Launch,
+        other => return Err(format!("AL DAP: unsupported request type `{other}`")),
     };
 
     let backend_flag = crate::settings::resolve_dap_backend_flag(user_settings);
@@ -88,7 +74,8 @@ pub fn dap_request_kind(config: Value) -> zed::Result<zed::StartDebuggingRequest
 
     match request {
         "attach" => Ok(zed::StartDebuggingRequestArgumentsRequest::Attach),
-        _ => Ok(zed::StartDebuggingRequestArgumentsRequest::Launch),
+        "launch" => Ok(zed::StartDebuggingRequestArgumentsRequest::Launch),
+        other => Err(format!("AL DAP: unsupported request type `{other}`")),
     }
 }
 
@@ -120,11 +107,8 @@ pub fn dap_config_to_scenario(config: zed::DebugConfig) -> zed::Result<zed::Debu
         }
     }
 
-    // Attach configurations connect to an already-running BC session, so
-    // running `compile` first is wasted work that can fail or mutate project
-    // state for unrelated reasons (F-034). Only emit the build step for
-    // launch/publish flows. Repository-owned CLI is `al-explorer`, not `al`
-    // (Microsoft now owns the latter — see F-005).
+    // Attach configurations connect to an existing BC session and must not
+    // compile or publish the project first.
     let build = if is_attach {
         None
     } else {
