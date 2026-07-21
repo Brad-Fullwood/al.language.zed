@@ -242,7 +242,7 @@ fn eval_postfix(
             .collect()
     };
     if !scope_members.is_empty() {
-        return eval_scope_access(node, &scope_members, source);
+        return eval_scope_access(node, &scope_members, source, ctx);
     }
 
     // Record field read: `Rec."Field"` (a `member_suffix`, not a call) where the
@@ -268,10 +268,14 @@ fn eval_postfix(
 ///   * `Enum::"Type"::"Value"` → primary is the `Enum` keyword; the first
 ///     scope suffix names the type, the last names the member.
 ///
-/// The interpreter has no enum symbol table (it is BC-free), so the member
-/// **ordinal is not resolved** — it is recorded as `0`. The type and member
-/// names are preserved so the value formats and round-trips correctly.
-fn eval_scope_access(node: Node<'_>, scope_members: &[Node<'_>], source: &[u8]) -> Eval {
+/// Workspace enum declarations are resolved through the same source catalog as
+/// procedure dispatch, preserving explicit (including sparse) ordinals.
+fn eval_scope_access(
+    node: Node<'_>,
+    scope_members: &[Node<'_>],
+    source: &[u8],
+    ctx: &DispatchCtx,
+) -> Eval {
     let member_name = |n: Node<'_>| -> Option<String> {
         n.child_by_field_name("member")
             .or_else(|| n.named_child(0))
@@ -304,11 +308,37 @@ fn eval_scope_access(node: Node<'_>, scope_members: &[Node<'_>], source: &[u8]) 
         (primary_text, member)
     };
 
+    let ordinal = resolve_workspace_enum_ordinal(ctx, &type_name, &member).unwrap_or(0);
     Eval::Normal(Value::Option {
         type_name,
         member,
-        ordinal: 0,
+        ordinal,
     })
+}
+
+fn resolve_workspace_enum_ordinal(ctx: &DispatchCtx, type_name: &str, member: &str) -> Option<i64> {
+    let path = ctx.source.find_by_object_name(type_name)?;
+    let (text, tree) = ctx.source.get_cached_parse(&path)?;
+    let bytes = text.as_bytes();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "enum_value_declaration" {
+            let name = node
+                .child_by_field_name("name")
+                .and_then(|name| name.utf8_text(bytes).ok())
+                .map(|name| name.trim().trim_matches('"'));
+            if name.is_some_and(|name| name.eq_ignore_ascii_case(member)) {
+                return node
+                    .child_by_field_name("id")
+                    .and_then(|id| id.utf8_text(bytes).ok())
+                    .and_then(|id| id.trim().parse::<i64>().ok());
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    None
 }
 
 /// Evaluate an AL date literal (`20240701D`, `0D`) into a `Value::Date`.
@@ -831,6 +861,25 @@ mod tests {
                 panic!("expected a depth-cap error, got break/continue")
             }
         }
+    }
+
+    #[test]
+    fn workspace_enum_member_preserves_declared_ordinal() {
+        let source = Arc::new(MockSource::new());
+        source.file_index.add_file(
+            std::path::PathBuf::from("/tmp/RunState.Enum.al"),
+            r#"enum 50100 "Run State"
+{
+    value(0; Unknown) { }
+    value(17; Running) { }
+}"#
+            .to_string(),
+        );
+        let ctx = DispatchCtx::new_pure(source);
+        assert_eq!(
+            resolve_workspace_enum_ordinal(&ctx, "Run State", "Running"),
+            Some(17)
+        );
     }
 
     #[test]

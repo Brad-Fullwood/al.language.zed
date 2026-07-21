@@ -150,12 +150,14 @@ AL_TOOL_PATH=<ext>/bin/linux AL_PACKAGE_CACHE_PATH=<project>/.alpackages \
 cargo test -p al-semantic --all-features
 cargo test -p al-workspace
 cargo test -p al-analysis
+cargo test -p al-test
 cargo test -p al-lsp --lib --features semantic
 ```
 
 Do not treat a bridge-only pass as complete: the consumer finish gate catches drift in lifecycle,
-hover/completion, diagnostics, daemon routing, and semantic feature wiring. The package-backed live
-contract and all four consumer commands above were last run successfully on 2026-07-21.
+hover/completion, diagnostics, test routing/runtime, daemon routing, and semantic feature wiring. The
+package-backed live contract and all five consumer commands above were last run successfully on
+2026-07-21.
 
 Reminder: a plain `cargo build --workspace` links `al-lsp` against the **no-op
 semantic stub** and rewrites `target/debug/al-lsp`; only a `--features semantic`

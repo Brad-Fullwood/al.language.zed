@@ -459,12 +459,12 @@ fn classify_procedure_ast(
             }
         } else if node.kind() == "postfix_expression" {
             classify_call(
+                workspace,
                 &resolver,
                 node,
                 bytes,
                 &location.file,
-                decision,
-                reasons,
+                (decision, reasons),
                 reachable,
             );
         } else if node.kind() == "attribute" || node.kind() == "attribute_list" {
@@ -543,15 +543,19 @@ fn classify_type_reference(
             );
             return;
         };
-        let local = workspace
-            .file_index
-            .object_path_of_kind(&table, &["table"])
-            .is_some();
-        let (floor, message) = if local {
-            (
-                RoutingDecision::InterpRecord,
-                format!("uses workspace record table '{table}'"),
-            )
+        let local_path = workspace.file_index.object_path_of_kind(&table, &["table"]);
+        let (floor, message) = if let Some(path) = local_path {
+            if let Some(capability) = table_platform_capability(workspace, &path) {
+                (
+                    RoutingDecision::LiveBc,
+                    format!("record table '{table}' {capability}"),
+                )
+            } else {
+                (
+                    RoutingDecision::InterpRecord,
+                    format!("uses workspace record table '{table}'"),
+                )
+            }
         } else {
             (
                 RoutingDecision::LiveBc,
@@ -561,6 +565,27 @@ fn classify_type_reference(
         promote(
             decision, reasons, floor, &message, file, type_node, reachable,
         );
+    } else if kind_lower == "enum" {
+        let local = subtype.as_deref().is_some_and(|name| {
+            workspace
+                .file_index
+                .object_path_of_kind(name, &["enum"])
+                .is_some()
+        });
+        if !local {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!(
+                    "uses enum '{}' without a workspace declaration for ordinal resolution",
+                    subtype.unwrap_or_default()
+                ),
+                file,
+                type_node,
+                reachable,
+            );
+        }
     } else if matches!(kind_lower.as_str(), "page" | "report" | "xmlport" | "query") {
         promote(
             decision,
@@ -574,15 +599,45 @@ fn classify_type_reference(
     }
 }
 
+fn table_platform_capability(
+    workspace: &Workspace,
+    path: &std::path::Path,
+) -> Option<&'static str> {
+    let (text, tree) = workspace.file_index.get_cached_parse(path)?;
+    let bytes = text.as_bytes();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "trigger_declaration" {
+            return Some("declares triggers that require BC execution");
+        }
+        if matches!(node.kind(), "property" | "property_assignment") {
+            let property = node.utf8_text(bytes).unwrap_or("").to_ascii_lowercase();
+            if property.contains("fieldclass") && property.contains("flowfilter") {
+                return Some("declares FlowFilter fields that require BC execution");
+            }
+            if property.contains("calcformula") && property.contains("linked(") {
+                return Some("uses a Linked CalcFormula that requires BC execution");
+            }
+            if property.trim_start().starts_with("permissions") {
+                return Some("declares permission behavior that requires BC execution");
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    None
+}
+
 fn classify_call(
+    workspace: &Workspace,
     resolver: &al_syntax::TypeResolver<'_>,
     node: tree_sitter::Node<'_>,
     source: &[u8],
     file: &std::path::Path,
-    decision: &mut RoutingDecision,
-    reasons: &mut Vec<RoutingReason>,
+    outcome: (&mut RoutingDecision, &mut Vec<RoutingReason>),
     reachable: bool,
 ) {
+    let (decision, reasons) = outcome;
     let mut cursor = node.walk();
     let children: Vec<_> = node.named_children(&mut cursor).collect();
     let (Some(primary), Some(suffix)) = (children.first().copied(), children.last().copied())
@@ -624,6 +679,37 @@ fn classify_call(
                 reasons,
                 RoutingDecision::LiveBc,
                 &format!("calls platform operation {receiver}"),
+                file,
+                primary,
+                reachable,
+            );
+        }
+        return;
+    }
+
+    if suffix.kind() == "scope_suffix" {
+        let enum_type = if receiver.eq_ignore_ascii_case("enum") {
+            children
+                .get(1)
+                .and_then(|scope| scope.child_by_field_name("member"))
+                .and_then(|member| member.utf8_text(source).ok())
+                .unwrap_or("")
+                .trim_matches('"')
+        } else {
+            receiver
+        };
+        if workspace
+            .file_index
+            .object_path_of_kind(enum_type, &["enum"])
+            .is_none()
+        {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!(
+                    "uses enum '{enum_type}' without a workspace declaration for ordinal resolution"
+                ),
                 file,
                 primary,
                 reachable,

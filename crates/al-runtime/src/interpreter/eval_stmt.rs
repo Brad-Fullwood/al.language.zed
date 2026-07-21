@@ -725,6 +725,22 @@ pub(crate) fn eval_call(
     // We handle both by inspecting child kinds.
     let (receiver, proc_name, args_node) = extract_call_parts(node, source);
 
+    // MaxStrLen is defined by the argument's declared Text[N]/Code[N] type,
+    // not its current contents. Preserve that lvalue metadata before normal
+    // argument evaluation erases the distinction.
+    if receiver.is_none() && proc_name.eq_ignore_ascii_case("MaxStrLen") {
+        if let Some(arguments) = args_node {
+            let argument_nodes = arg_expr_nodes(arguments);
+            if argument_nodes.len() == 1 {
+                if let Some(name) = simple_lvalue_name(argument_nodes[0], source) {
+                    if let Some(length) = stack.declared_text_length(&name) {
+                        return Eval::Normal(Value::Integer(length as i64));
+                    }
+                }
+            }
+        }
+    }
+
     // A method call on a bound variable routes by the variable's value kind:
     //   * `Value::Record`   → in-memory MockRecord operations.
     //   * `Value::List`     → List of [T] member calls.

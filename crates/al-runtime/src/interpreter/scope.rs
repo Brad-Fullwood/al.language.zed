@@ -19,6 +19,10 @@ pub struct CallFrame {
     pub object: String,
     /// Locally-bound variables (parameters + `var` section).
     pub locals: HashMap<String, Value>,
+    /// Declared capacities for Text[N]/Code[N] variables. Runtime string
+    /// values intentionally remain plain strings; MaxStrLen consults this
+    /// parallel type metadata through the scope stack.
+    pub declared_text_lengths: HashMap<String, usize>,
     /// Slot for the procedure return value, populated on `exit(value)`
     /// or by assigning to the procedure name.
     pub return_slot: Option<Value>,
@@ -33,6 +37,7 @@ impl CallFrame {
             procedure: procedure.into(),
             object: object.into(),
             locals: HashMap::new(),
+            declared_text_lengths: HashMap::new(),
             return_slot: None,
             call_site: None,
         }
@@ -49,6 +54,11 @@ impl CallFrame {
 
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
         self.locals.get_mut(&name.to_ascii_lowercase())
+    }
+
+    pub fn bind_declared_text_length(&mut self, name: &str, length: usize) {
+        self.declared_text_lengths
+            .insert(name.to_ascii_lowercase(), length);
     }
 }
 
@@ -128,6 +138,14 @@ impl ScopeStack {
             }
         }
         None
+    }
+
+    pub fn declared_text_length(&self, name: &str) -> Option<usize> {
+        let key = name.to_ascii_lowercase();
+        self.frames
+            .iter()
+            .rev()
+            .find_map(|frame| frame.declared_text_lengths.get(&key).copied())
     }
 
     pub fn stack_trace(&self) -> Vec<String> {

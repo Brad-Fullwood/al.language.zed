@@ -137,9 +137,9 @@ automatically. To control it:
   loads the real Microsoft DLL and verifies initialization/health, compiler semantic diagnostics,
   unsaved-buffer type lookup, invalid-position rejection, member completion, shipped CodeCop loading,
   built-ins, and error codes. Set `AL_PACKAGE_CACHE_PATH` as well to exercise package-reference loading.
-- `cargo test -p al-workspace`, `cargo test -p al-analysis`, and
+- `cargo test -p al-workspace`, `cargo test -p al-analysis`, `cargo test -p al-test`, and
   `cargo test -p al-lsp --lib --features semantic` are the consumer finish gate. They prove that the
-  lifecycle, hover/completion, diagnostics, and semantic-enabled LSP wiring compile and pass together;
-  a passing bridge-only test is not considered sufficient.
+  lifecycle, hover/completion, diagnostics, test routing/runtime, and semantic-enabled LSP wiring
+  compile and pass together; a passing bridge-only test is not considered sufficient.
 
 The full finish gate and the package-backed live contract were last run successfully on 2026-07-21.

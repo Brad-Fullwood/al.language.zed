@@ -412,6 +412,9 @@ fn dispatch_workspace_procedure(
             // Integer literal and vice versa, matching BC's fixed parameter types.
             let val = coerce_int_width(val, &param.type_name);
             frame.bind(&param.name, val);
+            if let Some(length) = declared_text_length(&param.type_name) {
+                frame.bind_declared_text_length(&param.name, length);
+            }
         }
         // Bind the procedure's local `var` section to default values so a
         // variable can be read before its first assignment. Handles
@@ -722,10 +725,24 @@ fn bind_regular_var_decl(reg: tree_sitter::Node<'_>, source: &[u8], frame: &mut 
     };
 
     for name in names {
+        if let Some(length) = declared_text_length(&type_text) {
+            frame.bind_declared_text_length(&name, length);
+        }
         if frame.get(&name).is_none() {
             frame.bind(&name, default.clone());
         }
     }
+}
+
+fn declared_text_length(type_text: &str) -> Option<usize> {
+    let trimmed = type_text.trim();
+    let base = trimmed.split('[').next()?.trim();
+    if !matches!(base.to_ascii_lowercase().as_str(), "text" | "code") {
+        return None;
+    }
+    let start = trimmed.find('[')? + 1;
+    let end = trimmed[start..].find(']')? + start;
+    trimmed[start..end].trim().parse().ok()
 }
 
 /// Check whether a `Value` matches the declared AL type name.

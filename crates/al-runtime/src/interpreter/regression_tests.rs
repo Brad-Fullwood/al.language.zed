@@ -438,6 +438,47 @@ mod tests {
     }
 
     #[test]
+    fn maxstrlen_uses_declared_capacity_not_current_contents() {
+        let source = r#"codeunit 50100 "Regression"
+{
+    procedure Test()
+    var
+        Capacity: Integer;
+        Value: Text[42];
+    begin
+        Value := 'short';
+        Capacity := MaxStrLen(Value);
+    end;
+}"#;
+        let parsed = al_syntax::parser::AlParser::parse_quick(source);
+        let root = parsed.tree.root_node();
+        let bytes = source.as_bytes();
+        let body = find_proc_body(root, bytes).expect("body");
+        let mut procedures = vec![root];
+        let mut procedure = None;
+        while let Some(node) = procedures.pop() {
+            if node.kind() == "procedure_declaration" {
+                procedure = Some(node);
+                break;
+            }
+            let mut cursor = node.walk();
+            procedures.extend(node.named_children(&mut cursor));
+        }
+        let mut frame = CallFrame::new("Regression", "Test");
+        crate::interpreter::dispatch::bind_procedure_locals(
+            procedure.expect("procedure"),
+            bytes,
+            &mut frame,
+        );
+        let mut stack = ScopeStack::new();
+        stack.push(frame);
+        let mut ctx = ctx();
+        let result = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
+        assert!(matches!(result, Eval::Normal(_)), "got {result:?}");
+        assert_eq!(stack.lookup("Capacity"), Some(&Value::Integer(42)));
+    }
+
+    #[test]
     fn asserterror_catches_missing_procedure() {
         let (eval, _) = run_stmt("asserterror SomeUnimplementedCU.DoSomething();");
         assert!(
@@ -448,7 +489,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "multi-arm CASE without begin/end is parsed as one arm; requires a tree-sitter-al grammar fix"]
     fn case_matches_integer_literal() {
         let wrapper = r#"codeunit 50100 "Regression"
 {
