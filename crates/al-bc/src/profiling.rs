@@ -381,8 +381,8 @@ pub fn analyze_profile(
             Some((id, self_ms))
         })
         .collect();
-    // Total time = self + Σ descendants, rolled up over the call tree (B14
-    // follow-up). Keyed by node id; nodes outside the map fall back to self time.
+    // Total time = self + Σ descendants, rolled up over the call tree.
+    // Nodes outside the map fall back to self time.
     let total_by_node = aggregate_total_time_ms(&nodes, &self_ms_by_node);
 
     let mut hotspots: Vec<Hotspot> = nodes
