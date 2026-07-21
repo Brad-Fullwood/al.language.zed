@@ -1,4 +1,4 @@
-//! Static-analysis router — Phase 2.
+//! Static-analysis router for selecting an AL test backend.
 //!
 //! Decides which `TestSession` backend a discovered test should run on:
 //! the local Rust interpreter, the interpreter + mock record store, or
@@ -13,10 +13,10 @@
 //! plus its own AST and looks for disqualifying signals:
 //!
 //! * Record CRUD (`Insert`/`Modify`/`Delete`/`Validate`) — needs the
-//!   mock record store (Phase 3).
+//!   mock record store.
 //! * `HttpClient`-typed variables, `Page.RunModal`, `TestPage`, `Report`
-//!   construction, `XmlPort` use — needs Phase 3+ mocks.
-//! * `Commit` / `Rollback` — transaction semantics — Phase 3+.
+//!   construction, `XmlPort` use — requires mocks not currently available.
+//! * `Commit` / `Rollback` — requires transaction semantics.
 //! * `Codeunit.Run` / `CODEUNIT.RUN` — polymorphic dispatch; even with
 //!   a literal argument, the called codeunit's body may touch DB.
 //! * Event subscribers whose source body is in workspace are followed;
@@ -27,8 +27,6 @@
 use al_analysis::queries::tests::TestCodeunit;
 use al_workspace::Workspace;
 
-// --- Affected-test selection (gap B7) -------------------------------------
-//
 // "Which tests must I re-run after changing these files?" is answered by
 // **call-graph reachability**: a test is affected iff it transitively calls a
 // procedure/event of a changed object (not merely because its own file
@@ -49,15 +47,15 @@ pub enum RoutingDecision {
     Interp,
     /// DB-touching test. The name describes the *intended* future backend
     /// (interpreter + mock record store), but that backend is **not wired
-    /// yet** (Phase 3): the runner currently routes these tests to **live
+    /// yet**: the runner currently routes these tests to **live
     /// BC** — it does NOT run them locally. See
     /// [`RoutingDecision::execution_note`] and
-    /// [`RoutingDecision::runs_locally`]. (Gap A9.)
+    /// [`RoutingDecision::runs_locally`].
     InterpRecord,
     /// Anything risky / not yet supported — runs against live BC.
     LiveBc,
     /// Replays a previously-captured snapshot if one exists, else falls
-    /// back to `LiveBc`. Phase 4 will use this; Phase 2 never returns it.
+    /// back to `LiveBc`.
     Snapshot,
 }
 
@@ -86,7 +84,7 @@ impl RoutingDecision {
     /// One-line, user-facing description of where a test with this decision
     /// *actually* runs today — not where the class name implies it will run
     /// once the remaining backends land. Surfaced by `al-explorer
-    /// test-classify` so the routing surface stays honest (gap A9).
+    /// test-classify` so the routing surface stays honest.
     pub fn execution_note(self) -> &'static str {
         match self {
             RoutingDecision::Interp => "runs locally on the Rust interpreter",
@@ -130,11 +128,8 @@ pub struct ClassifyResult {
 /// *safe* (more conservative). Removing one is *dangerous* (could lead
 /// to silent-wrong interpreter execution).
 ///
-/// **Intentionally hardcoded** (T030 / d669c87f30f07df3 review note).
-/// CLAUDE.md's "no hardcoded AL values" rule targets language-definition
-/// data — keywords, builtin types, object kinds — which evolve with each
-/// BC release and *must* come from `LanguageData`. This list is **test
-/// routing infrastructure**: a conservative disqualifier set that
+/// This is routing policy rather than language-definition data: a conservative
+/// disqualifier set that
 /// classifies whether an AL test can run in our pure interpreter or has
 /// to escalate to LiveBc. Failure mode is over-routing (run on LiveBc
 /// when the interpreter would have sufficed), not silent-wrong results.
@@ -310,11 +305,10 @@ fn classify_body(body_text: &str) -> (RoutingDecision, Vec<RoutingReason>) {
 /// Classify every discovered test in the workspace.
 ///
 /// Source for each procedure body is read from the cached parse tree.
-/// Cross-codeunit reachability is intentionally limited in Phase 2: the
+/// Cross-codeunit reachability is intentionally limited: the
 /// router only inspects the test procedure body itself plus a single
-/// hop of textual matches. Reach analysis through `CallGraph` is a
-/// Phase 3 enhancement (the conservative discipline means we err on the
-/// side of `LiveBc` until the deeper analysis lands).
+/// hop of textual matches. It errs toward `LiveBc` when deeper reachability is
+/// unknown.
 pub fn classify_all(workspace: &Workspace) -> Vec<ClassifyResult> {
     let codeunits = al_analysis::queries::tests::discover_tests(workspace);
     classify_codeunits(workspace, &codeunits)

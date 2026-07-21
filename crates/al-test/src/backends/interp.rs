@@ -1,5 +1,5 @@
 //! Interpreter backend — runs AL test procedures through the pure-Rust
-//! tree-walking interpreter (Phase 2).
+//! tree-walking interpreter.
 //!
 //! `InterpMode` implements `TestSession`. For each `TestId` it:
 //!  1. Discovers the test procedure in the workspace via
@@ -34,7 +34,7 @@ use al_workspace::Workspace;
 
 /// Interpreter backend: runs test procedures without a live BC server.
 ///
-/// Phase 2 scope: pure-logic tests only. Tests that touch records, HTTP,
+/// Pure-logic tests only. Tests that touch records, HTTP,
 /// or any other DB-level feature should be routed to `LiveBcMode` by the
 /// router; `InterpMode` simply propagates the `Eval::Error` they produce.
 ///
@@ -280,9 +280,7 @@ fn run_codeunit_interp(
         };
         events.push(TestEvent::CaseStarted { id: id.clone() });
 
-        // Reset thread-local stub state so this test starts from a
-        // clean LCG seed + empty LibraryVariableStorage queue, even if
-        // the previous test on this thread mutated them. F-OPEN-032.
+        // Do not leak stateful test-library stubs between test methods.
         al_runtime::stubs::reset_thread_local_state();
 
         let start = Instant::now();
@@ -414,7 +412,7 @@ fn run_procedure_interp(
     stack.push(frame);
 
     let proc_source: Arc<dyn al_types::ProcedureSource> = workspace.file_index.clone();
-    // F-OPEN-015b: thread the timeout down to the interpreter so a runaway
+    // Thread the timeout down to the interpreter so a runaway
     // `while true do …` test fails with a clear "deadline exceeded" error
     // instead of pinning the spawned blocking thread until the daemon
     // shuts down.

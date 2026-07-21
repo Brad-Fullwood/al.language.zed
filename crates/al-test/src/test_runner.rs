@@ -138,7 +138,7 @@ impl TestRunnerClient {
             });
         }
 
-        // Content-Length-capped read (F-OPEN-044). BC test-run responses
+        // Cap reads based on Content-Length. BC test-run responses
         // are typically a few KB; 16 MB is a defence-in-depth bound.
         let raw: DevTestRunResponse = al_bc::bc_client::read_json_body_capped(response)
             .await
@@ -182,7 +182,7 @@ impl TestRunnerClient {
             });
         }
 
-        // Content-Length-capped read (F-OPEN-044).
+        // Cap reads based on Content-Length.
         let raw: DevTestListResponse = al_bc::bc_client::read_json_body_capped(response)
             .await
             .map_err(|e| TestRunnerError::ServerError {

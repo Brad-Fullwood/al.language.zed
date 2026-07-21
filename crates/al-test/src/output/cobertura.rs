@@ -11,12 +11,11 @@
 //! * Each package: `<classes><class name=... filename=... line-rate=...>`
 //! * Each class: `<lines><line number=N hits=H/></lines>`
 //!
-//! Phase-1 simplification: a single synthetic package `"al"` containing one
+//! Static reports use a single synthetic package `"al"` containing one
 //! `<class>` per AL object that contributes a covered or untested procedure.
-//! `hits=1` for covered procedures, `hits=0` for untested. Phase 3 will
-//! refine to per-statement coverage when the interpreter emits dynamic hits.
+//! `hits=1` for covered procedures and `hits=0` for untested procedures.
 //!
-//! ## A11 — this is STATIC call-graph coverage, not executed-line coverage
+//! ## Static call-graph coverage is not executed-line coverage
 //!
 //! Cobertura is normally read as *dynamic* line/branch coverage produced by an
 //! instrumented run. This serializer emits no such thing: `hits` reflects
@@ -175,7 +174,7 @@ pub fn write_cobertura<W: Write>(report: &CoverageReport, out: W) -> Result<(), 
         class_start.push_attribute(("complexity", "0"));
         writer.write_event(Event::Start(class_start))?;
 
-        // <methods/> — empty in Phase 1.
+        // Procedure-level reports do not include method metadata.
         writer.write_event(Event::Empty(BytesStart::new("methods")))?;
 
         writer.write_event(Event::Start(BytesStart::new("lines")))?;
