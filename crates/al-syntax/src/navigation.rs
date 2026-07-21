@@ -195,11 +195,7 @@ pub fn find_variable_references(tree: &Tree, text: &str, name: &str) -> Vec<tree
 ///
 /// In AL a subscriber names its target event with a *string literal* — e.g.
 /// `[EventSubscriber(ObjectType::Codeunit, "Pub", 'OnFooEvent', '', false, false)]`
-/// — not an identifier. `find_variable_references` only matches
-/// `identifier`/`quoted_identifier`/`name` nodes, so `references` (and anything
-/// built on it) silently missed every subscriber of an event: asking for
-/// references to an event surfaced only its declaration and `Raise` call sites,
-/// never the subscribers that consume it.
+/// — not an identifier.
 ///
 /// Scope is deliberately narrow to avoid false positives: only the event-name
 /// argument (the 3rd positional argument, mirroring
@@ -301,8 +297,6 @@ pub fn find_call_references(tree: &Tree, text: &str, name: &str) -> usize {
 /// excluded). Names are lowercased so callers can do case-insensitive
 /// membership checks without per-query allocation.
 ///
-/// Used by `dead_code` to fold an O(F²·P) cross-file scan into O(F·N) +
-/// O(P) hash lookups.
 pub fn collect_call_site_names(tree: &Tree, text: &str) -> std::collections::HashSet<String> {
     let root = tree.root_node();
     let source = text.as_bytes();
@@ -320,11 +314,6 @@ pub fn collect_call_site_names(tree: &Tree, text: &str) -> std::collections::Has
 }
 
 /// Count call-site references to `target_name` in the AST rooted at `root`.
-///
-/// The `_recursive` suffix is historical — the actual traversal is iterative
-/// (delegated to `walk_tree`) and bounded by the AST depth. AL parse trees
-/// reach at most ~30 levels deep for procedures + nested expressions, so
-/// stack usage is constant w.r.t. document size.
 fn count_call_refs_iterative(root: Node, source: &[u8], target_name: &str, count: &mut usize) {
     walk_tree(root, &mut |node| {
         if matches!(node.kind(), "identifier" | "quoted_identifier") {
@@ -481,46 +470,6 @@ fn check_is_local(node: Node, source: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::AlParser;
-
-    #[test]
-    fn test_debug_tree_structure() {
-        let src = r#"codeunit 50100 "My Codeunit"
-{
-}"#;
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let root = result.tree.root_node();
-        // The previous version used a self-recursive `dump()` helper. The
-        // iterative form avoids the only recursive walker
-        // remaining in al-core. The Vec stack here is bounded by tree
-        // depth; AL parses cap at ~30 levels even for nested begin/end.
-        let mut stack: Vec<(tree_sitter::Node, usize)> = vec![(root, 0)];
-        while let Some((node, depth)) = stack.pop() {
-            let indent = "  ".repeat(depth);
-            let text = node.utf8_text(src.as_bytes()).unwrap_or("??");
-            let short = if text.len() > 50 { &text[..50] } else { text };
-            eprintln!(
-                "{}{} [{}] field={:?} text={:?}",
-                indent,
-                node.kind(),
-                node.id(),
-                node.parent().and_then(|p| {
-                    (0..p.child_count()).find_map(|i| {
-                        p.field_name_for_child(i as u32)
-                            .filter(|_| p.child(i).map(|c| c.id()) == Some(node.id()))
-                    })
-                }),
-                short
-            );
-            // Push children in reverse so iteration order matches the
-            // original recursive depth-first left-to-right walk.
-            let mut cursor = node.walk();
-            let children: Vec<_> = node.children(&mut cursor).collect();
-            for child in children.into_iter().rev() {
-                stack.push((child, depth + 1));
-            }
-        }
-    }
 
     #[test]
     fn find_variable_references_returns_each_span_once() {

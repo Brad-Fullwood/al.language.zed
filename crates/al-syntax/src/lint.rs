@@ -226,11 +226,10 @@ fn scan_procedure_for_find_in_loop(
 
 /// AL-NL002: table field with no `DataClassification` property.
 ///
-/// Ported from al-analysis's `audit.rs::scan_table_fields` field-block
-/// brace-depth tracker. Only runs when the file's object declaration is a
+/// Only runs when the file's object declaration is a
 /// table or tableextension; a table-level default `DataClassification`
 /// (outside any `field(...) { }` block) does not suppress this per-field
-/// check, matching the existing `audit-data` report's semantics.
+/// check.
 fn lint_missing_data_classification(tree: &Tree, text: &str, out: &mut Vec<LintDiagnostic>) {
     let Some(obj_info) = crate::find_object_declaration(tree, text) else {
         return;
