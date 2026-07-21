@@ -900,43 +900,472 @@ pub(in crate::server::daemon) fn dispatch_tests_classify(
     }
 }
 
-pub(in crate::server::daemon) async fn dispatch_tests_snapshot_validate(
+struct TriggeredSnapshotSession {
+    debugger: al_snapshot::bc_debug_bridge::BcDebugSessionAdapter,
+    trigger: tokio::sync::Mutex<Option<SnapshotTestTrigger>>,
+    run: tokio::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>,
+}
+
+struct SnapshotTestTrigger {
+    config: al_bc::launch::BcServerConfig,
+    access_token: String,
+    codeunit_id: i32,
+    codeunit_name: String,
+    method_name: String,
+}
+
+impl TriggeredSnapshotSession {
+    fn new(
+        debugger: al_snapshot::bc_debug_bridge::BcDebugSessionAdapter,
+        trigger: SnapshotTestTrigger,
+    ) -> Self {
+        Self {
+            debugger,
+            trigger: tokio::sync::Mutex::new(Some(trigger)),
+            run: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn finish_test_run(&self) -> Result<(), String> {
+        let Some(handle) = self.run.lock().await.take() else {
+            return Err("snapshot test run was never started".to_string());
+        };
+        handle
+            .await
+            .map_err(|error| format!("snapshot test task failed: {error}"))?
+    }
+}
+
+impl al_snapshot::DebuggerSession for TriggeredSnapshotSession {
+    async fn add_breakpoint(
+        &self,
+        file: &str,
+        line: u32,
+    ) -> Result<u32, al_snapshot::ReplayerError> {
+        self.debugger.add_breakpoint(file, line).await
+    }
+
+    async fn configuration_done(&self) -> Result<(), al_snapshot::ReplayerError> {
+        self.debugger.configuration_done().await?;
+        let Some(trigger) = self.trigger.lock().await.take() else {
+            return Err(al_snapshot::ReplayerError::Session(
+                "snapshot test was already triggered".to_string(),
+            ));
+        };
+        let handle = tokio::spawn(async move {
+            let client = al_test::test_runner::TestRunnerClient::new(&trigger.config)
+                .with_bearer_token(trigger.access_token);
+            let result = client
+                .run_codeunit(
+                    trigger.codeunit_id,
+                    &trigger.codeunit_name,
+                    Some(&trigger.method_name),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            if let Some(failed) = result
+                .methods
+                .iter()
+                .find(|method| method.status == al_test::result::TestStatus::Fail)
+            {
+                return Err(format!(
+                    "test '{}' failed while recording snapshot: {}",
+                    failed.name,
+                    failed.error.as_deref().unwrap_or("unknown test failure")
+                ));
+            }
+            Ok(())
+        });
+        *self.run.lock().await = Some(handle);
+        Ok(())
+    }
+
+    async fn wait_for_break(&self) -> Result<bool, al_snapshot::ReplayerError> {
+        self.debugger.wait_for_break().await
+    }
+
+    async fn get_variables(&self) -> Result<serde_json::Value, al_snapshot::ReplayerError> {
+        self.debugger.get_variables().await
+    }
+
+    async fn continue_execution(&self) -> Result<(), al_snapshot::ReplayerError> {
+        self.debugger.continue_execution().await
+    }
+}
+
+fn snapshot_server_config(
+    workspace: &Workspace,
+    params: &serde_json::Value,
+) -> Result<al_bc::launch::BcServerConfig, String> {
+    let root = workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|project| project.as_ref().map(|project| project.root.clone()))
+        .ok_or_else(|| "No active project".to_string())?;
+    let launch = al_bc::launch::find_launch_config(&root).ok_or_else(|| {
+        "No debug configuration found in project (.zed/debug.json or .vscode/launch.json)"
+            .to_string()
+    })?;
+    let requested = params.get("config").and_then(|value| value.as_str());
+    super::super::debug_dispatch::pick_named_config(&launch.configs, requested).cloned()
+}
+
+async fn snapshot_access_token(
+    config: &al_dap::dap::bc_debug::BcDebugConfig,
+    params: &serde_json::Value,
+) -> Result<String, String> {
+    if let Some(token) = params.get("accessToken").and_then(|value| value.as_str()) {
+        return Ok(token.to_string());
+    }
+    if !super::super::debug_dispatch::debug_uses_oauth(config) {
+        return Ok(String::new());
+    }
+    al_symbols::oauth::acquire_token(&reqwest::Client::new(), &config.tenant, |message| {
+        tracing::info!("snapshot authentication: {message}");
+    })
+    .await
+    .map_err(|error| format!("snapshot authentication failed: {error}"))
+}
+
+fn parse_snapshot_breakpoints(params: &serde_json::Value) -> Result<Vec<(String, u32)>, String> {
+    let items = params
+        .get("breakpoints")
+        .and_then(|value| value.as_array())
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| "Missing or empty 'breakpoints' array".to_string())?;
+    items
+        .iter()
+        .map(|item| {
+            let file = item
+                .get("file")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| "each breakpoint requires a 'file' path".to_string())?;
+            let line = item
+                .get("line")
+                .and_then(|value| value.as_u64())
+                .and_then(|line| u32::try_from(line).ok())
+                .filter(|line| *line > 0)
+                .ok_or_else(|| "each breakpoint requires a positive u32 'line'".to_string())?;
+            Ok((file.to_string(), line))
+        })
+        .collect()
+}
+
+pub(in crate::server::daemon) async fn dispatch_tests_snapshot_record(
+    workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let path = match params.get("snapshotPath").and_then(|value| value.as_str()) {
-        Some(path) => path,
-        None => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'snapshotPath'"),
+    let codeunit_id = match params.get("codeunitId").and_then(|v| v.as_i64()) {
+        Some(n) => match i32::try_from(n) {
+            Ok(v) => v,
+            Err(_) => {
+                return rpc_error(id, error_codes::INVALID_PARAMS, "codeunitId out of range");
+            }
+        },
+        None => {
+            return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'codeunitId'");
+        }
     };
-    let bytes = match tokio::fs::read(path).await {
-        Ok(bytes) => bytes,
-        Err(error) => {
+    let method_name = match params.get("methodName").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => {
+            return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'methodName'");
+        }
+    };
+    let breakpoints = match parse_snapshot_breakpoints(params) {
+        Ok(breakpoints) => breakpoints,
+        Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
+    };
+    let project_root = match workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|project| project.as_ref().map(|project| project.root.clone()))
+    {
+        Some(root) => root,
+        None => return rpc_error(id, error_codes::INVALID_PARAMS, "No active project"),
+    };
+    let output_requested = params
+        .get("outputPath")
+        .and_then(|value| value.as_str())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(format!(
+                ".al-test-snapshots/{codeunit_id}-{}.snap.json",
+                method_name.replace(['/', '\\', ' '], "-")
+            ))
+        });
+    let Some(output_path) = resolve_output_path_within_project(&output_requested, &project_root)
+    else {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "outputPath must stay within the active project",
+        );
+    };
+    let server_config = match snapshot_server_config(workspace, params) {
+        Ok(config) => config,
+        Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
+    };
+    let mut debug_config =
+        match super::super::debug_dispatch::resolve_debug_config(workspace, params) {
+            Ok(config) => config,
+            Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
+        };
+    debug_config.break_on_next = Some("WebServiceClient".to_string());
+    let access_token = match snapshot_access_token(&debug_config, params).await {
+        Ok(token) => token,
+        Err(error) => return rpc_error(id, error_codes::INTERNAL_ERROR, &error),
+    };
+    let codeunit_name = al_analysis::queries::tests::discover_tests(workspace)
+        .into_iter()
+        .find(|codeunit| codeunit.id == codeunit_id)
+        .map(|codeunit| codeunit.name)
+        .unwrap_or_else(|| format!("codeunit_{codeunit_id}"));
+
+    let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+    let mut source_files: Vec<&str> = breakpoints.iter().map(|(file, _)| file.as_str()).collect();
+    source_files.sort_unstable();
+    source_files.dedup();
+    for file in source_files {
+        match tokio::fs::read(file).await {
+            Ok(bytes) => sha2::Digest::update(&mut hasher, bytes),
+            Err(error) => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    &format!("cannot read breakpoint source '{file}': {error}"),
+                );
+            }
+        }
+    }
+    let source_hash = format!("{:x}", sha2::Digest::finalize(hasher));
+    let run_id = params
+        .get("runId")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+                .to_string()
+        });
+    let bc_version = params
+        .get("bcVersion")
+        .and_then(|value| value.as_str())
+        .unwrap_or("live")
+        .to_string();
+
+    let debug_session =
+        match al_dap::dap::bc_debug::BcDebugSession::connect(&debug_config, &access_token).await {
+            Ok(session) => std::sync::Arc::new(session),
+            Err(error) => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("snapshot debug connection failed: {error}"),
+                );
+            }
+        };
+    if let Err(error) = debug_session.attach(&debug_config).await {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("snapshot debug attach failed: {error}"),
+        );
+    }
+    let session = TriggeredSnapshotSession::new(
+        al_snapshot::bc_debug_bridge::BcDebugSessionAdapter::new(debug_session, debug_config),
+        SnapshotTestTrigger {
+            config: server_config,
+            access_token,
+            codeunit_id,
+            codeunit_name,
+            method_name: method_name.clone(),
+        },
+    );
+    let recorder = al_snapshot::SnapshotRecorder::new(run_id, bc_version, source_hash);
+    let timeout = std::time::Duration::from_millis(
+        params
+            .get("timeoutMs")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(300_000)
+            .min(MAX_TIMEOUT_MS),
+    );
+    let snapshot = match tokio::time::timeout(
+        timeout,
+        recorder.record(&session, breakpoints, codeunit_id, &method_name),
+    )
+    .await
+    {
+        Ok(Ok(snapshot)) => snapshot,
+        Ok(Err(error)) => {
             return rpc_error(
                 id,
                 error_codes::INTERNAL_ERROR,
-                &format!("read snapshot failed: {error}"),
+                &format!("snapshot recording failed: {error}"),
             );
         }
-    };
-    let snapshot = match al_snapshot::deserialize_snapshot(&bytes) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
+        Err(_) => {
             return rpc_error(
                 id,
-                error_codes::INVALID_PARAMS,
-                &format!("snapshot parse failed: {error}"),
-            );
+                error_codes::INTERNAL_ERROR,
+                "snapshot recording timed out",
+            )
         }
     };
-
+    if let Err(error) = session.finish_test_run().await {
+        return rpc_error(id, error_codes::INTERNAL_ERROR, &error);
+    }
+    let bytes = match al_snapshot::serialize_snapshot(&snapshot) {
+        Ok(bytes) => bytes,
+        Err(error) => return rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
+    };
+    if let Some(parent) = output_path.parent() {
+        if let Err(error) = tokio::fs::create_dir_all(parent).await {
+            return rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string());
+        }
+    }
+    if let Err(error) = tokio::fs::write(&output_path, bytes).await {
+        return rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string());
+    }
     Response {
         id,
         result: Some(serde_json::json!({
-            "valid": true,
+            "snapshotPath": output_path,
+            "sampleCount": snapshot.samples.len(),
+            "codeunitId": codeunit_id,
+            "methodName": method_name,
+            "sourceHash": snapshot.source_hash,
+        })),
+        error: None,
+        ..Default::default()
+    }
+}
+
+pub(in crate::server::daemon) async fn dispatch_tests_snapshot_replay(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let path = match params.get("snapshotPath").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => {
+            return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'snapshotPath'");
+        }
+    };
+    let bytes = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(e) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("read snapshot failed: {e}"),
+            );
+        }
+    };
+    let snapshot = match al_snapshot::format::deserialize_snapshot(&bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!("snapshot parse failed: {e}"),
+            );
+        }
+    };
+    if snapshot.samples.is_empty() {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "snapshot has no samples to replay against live BC",
+        );
+    }
+    let server_config = match snapshot_server_config(workspace, params) {
+        Ok(config) => config,
+        Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
+    };
+    let mut debug_config =
+        match super::super::debug_dispatch::resolve_debug_config(workspace, params) {
+            Ok(config) => config,
+            Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
+        };
+    debug_config.break_on_next = Some("WebServiceClient".to_string());
+    let access_token = match snapshot_access_token(&debug_config, params).await {
+        Ok(token) => token,
+        Err(error) => return rpc_error(id, error_codes::INTERNAL_ERROR, &error),
+    };
+    let codeunit_name = al_analysis::queries::tests::discover_tests(workspace)
+        .into_iter()
+        .find(|codeunit| codeunit.id == snapshot.codeunit_id)
+        .map(|codeunit| codeunit.name)
+        .unwrap_or_else(|| format!("codeunit_{}", snapshot.codeunit_id));
+    let debug_session =
+        match al_dap::dap::bc_debug::BcDebugSession::connect(&debug_config, &access_token).await {
+            Ok(session) => std::sync::Arc::new(session),
+            Err(error) => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("snapshot replay debug connection failed: {error}"),
+                );
+            }
+        };
+    if let Err(error) = debug_session.attach(&debug_config).await {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("snapshot replay debug attach failed: {error}"),
+        );
+    }
+    let session = TriggeredSnapshotSession::new(
+        al_snapshot::bc_debug_bridge::BcDebugSessionAdapter::new(debug_session, debug_config),
+        SnapshotTestTrigger {
+            config: server_config,
+            access_token,
+            codeunit_id: snapshot.codeunit_id,
+            codeunit_name,
+            method_name: snapshot.method_name.clone(),
+        },
+    );
+    let timeout = std::time::Duration::from_millis(
+        params
+            .get("timeoutMs")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(300_000)
+            .min(MAX_TIMEOUT_MS),
+    );
+    let verdict = match tokio::time::timeout(
+        timeout,
+        al_snapshot::SnapshotReplayer::new().replay_via_dap(&snapshot, &session),
+    )
+    .await
+    {
+        Ok(Ok(verdict)) => verdict,
+        Ok(Err(error)) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("snapshot replay failed: {error}"),
+            );
+        }
+        Err(_) => return rpc_error(id, error_codes::INTERNAL_ERROR, "snapshot replay timed out"),
+    };
+    if let Err(error) = session.finish_test_run().await {
+        return rpc_error(id, error_codes::INTERNAL_ERROR, &error);
+    }
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "verdict": verdict,
             "sampleCount": snapshot.samples.len(),
             "codeunitId": snapshot.codeunit_id,
             "methodName": snapshot.method_name,
             "bcVersion": snapshot.bc_version,
+            "live": true,
         })),
         error: None,
         ..Default::default()
@@ -2168,16 +2597,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_validate_missing_path_is_invalid_params() {
-        let resp = dispatch_tests_snapshot_validate(1, &serde_json::json!({})).await;
+    async fn snapshot_replay_missing_path_is_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_tests_snapshot_replay(&ws, 1, &serde_json::json!({})).await;
         let err = resp.error.expect("err");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("snapshotPath"));
     }
 
     #[tokio::test]
-    async fn snapshot_validate_unreadable_path_is_internal_error() {
-        let resp = dispatch_tests_snapshot_validate(
+    async fn snapshot_replay_unreadable_path_is_internal_error() {
+        let ws = empty_ws();
+        let resp = dispatch_tests_snapshot_replay(
+            &ws,
             2,
             &serde_json::json!({ "snapshotPath": "/nonexistent/snap.bin" }),
         )

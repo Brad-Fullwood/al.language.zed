@@ -70,9 +70,9 @@
     "reveal": "always"
   },
   {
-    "label": "AL: Validate test snapshot (current .snap.json)",
+    "label": "AL: Test snapshot replay (current .snap.json)",
     "command": "al-explorer",
-    "args": ["test-snapshot", "validate", "$ZED_FILE"],
+    "args": ["test-snapshot", "replay", "$ZED_FILE"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "reveal": "always"
   },
