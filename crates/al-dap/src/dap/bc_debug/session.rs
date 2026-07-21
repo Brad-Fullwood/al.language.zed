@@ -237,29 +237,20 @@ impl BcDebugSession {
                             );
                             // Notify wait_for_break_event before forwarding the full
                             // message so it can unblock immediately on Break/end events.
-                            match (msg.type_, msg.target.as_deref()) {
-                                (1, Some("Break")) => {
-                                    if break_event_tx.send(true).is_err() {
-                                        tracing::debug!(
-                                            target = "Break",
-                                            "break_event_tx receiver dropped — \
-                                             wait_for_break_event listener has gone"
-                                        );
-                                    }
-                                }
+                            let break_state = match (msg.type_, msg.target.as_deref()) {
+                                (1, Some("Break")) => Some(true),
                                 (
                                     1,
                                     Some("OnDetachedFromConnection" | "OnFatalDebuggerException"),
-                                ) => {
-                                    if break_event_tx.send(false).is_err() {
-                                        tracing::debug!(
-                                            target = "Detached/Fatal",
-                                            "break_event_tx receiver dropped — \
-                                             session-end notification not delivered"
-                                        );
-                                    }
-                                }
-                                _ => {}
+                                ) => Some(false),
+                                _ => None,
+                            };
+                            if break_state
+                                .is_some_and(|is_break| break_event_tx.send(is_break).is_err())
+                            {
+                                tracing::debug!(
+                                    "break_event_tx receiver dropped; event not delivered"
+                                );
                             }
                             // try_send so a full channel drops the message
                             // with a warn instead of awaiting (which would
