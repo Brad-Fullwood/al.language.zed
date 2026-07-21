@@ -232,7 +232,7 @@ impl FileIndex {
                 }
             };
             // Skip oversized .al files before reading them into memory
-            // (F-OPEN-019). We already have the size from the metadata read,
+            // before reading them into memory. We already have the size from metadata,
             // so no extra syscall is needed here.
             if current_meta.size > MAX_AL_FILE_BYTES {
                 tracing::warn!(
@@ -326,7 +326,7 @@ impl FileIndex {
     /// Snapshot the per-path procedure-name list as it currently stands in
     /// the index. Used to detect topology changes between two consecutive
     /// indexings of the same file: if the post-edit set equals the pre-edit
-    /// set, only the call-edge cache needs to be invalidated. F-OPEN-066.
+    /// set, only the call-edge cache needs to be invalidated.
     pub fn procedures_snapshot(&self, path: &Path) -> Vec<String> {
         self.path_to_procedures
             .get(path)
@@ -346,12 +346,12 @@ impl FileIndex {
     /// would leave the index in a split state — e.g. `file_trees` populated
     /// but `files` missing the text. Tree-sitter parsing and symbol
     /// extraction are well-tested and don't panic on real inputs, so this is
-    /// latent (F-OPEN-077). Any future contributor adding a new map mutation
+    /// latent. Any future contributor adding a new map mutation
     /// here should consider widening the window or grouping mutations into
     /// a single transactional helper if the cost becomes meaningful.
     fn index_from_result(&self, path: PathBuf, content: String, tree: &tree_sitter::Tree) {
         // Cache the (text, tree) pair atomically under one Arc so a concurrent
-        // reader can never observe a torn text/tree combination (C13).
+        // reader can never observe a torn text/tree combination.
         self.file_trees.insert(
             path.clone(),
             std::sync::Arc::new((content.clone(), tree.clone())),
@@ -361,7 +361,7 @@ impl FileIndex {
             let kind = obj_info.kind.clone();
             // Record this owner under its name, replacing any prior entry from
             // this same path (re-index) or of the same kind (redefinition) —
-            // owners of *other* kinds are preserved so they never collapse (C22).
+            // owners of *other* kinds are preserved so they never collapse.
             {
                 let mut owners = self.objects.entry(obj_name.clone()).or_default();
                 owners.retain(|e| e.path != path && !e.kind.eq_ignore_ascii_case(&kind));
@@ -436,7 +436,7 @@ impl FileIndex {
     }
 
     /// Drop only the owner declared by `path`, keeping same-named owners of
-    /// other kinds (C22). A table `Foo` and a page `Foo` are separate entries
+    /// other kinds. A table `Foo` and a page `Foo` are separate entries
     /// under `objects["foo"]`, so removing the table's file leaves the page
     /// findable. The key is removed only when its last owner is gone.
     fn remove_owned_object_mapping(&self, obj_name: &str, path: &Path) {
@@ -461,7 +461,7 @@ impl FileIndex {
 
     /// The owner of `name` whose kind is one of `kinds` (case-insensitive) —
     /// e.g. resolving `Enum Foo` passes `["enum", "enumextension"]` so a
-    /// same-named table can never win (C22).
+    /// same-named table can never win.
     pub fn object_path_of_kind(&self, name: &str, kinds: &[&str]) -> Option<PathBuf> {
         self.objects.get(&name.to_lowercase()).and_then(|owners| {
             owners
@@ -546,7 +546,7 @@ impl FileIndex {
                     // Per-entry errors (e.g. permission denied on a specific
                     // child) are surfaced rather than silently dropped by the
                     // old `flatten()`, so unreadable parts of the workspace are
-                    // observable in the logs (F-OPEN-018).
+                    // observable in the logs.
                     tracing::debug!(error = %e, dir = %dir.display(), "skipping directory entry due to error");
                     continue;
                 }
@@ -555,7 +555,7 @@ impl FileIndex {
 
             // Use the cached file type from the directory read instead of
             // `path.is_dir()`, which would issue a fresh `stat()` syscall per
-            // entry (F-OPEN-017). Fall back to `false` (treat as a file) on
+            // entry. Fall back to `false` (treat as a file) on
             // error; a genuinely unreadable entry will fail later on read.
             let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
 
@@ -596,7 +596,7 @@ impl Default for FileIndex {
 /// Returns `true` if the `.al` file at `path` is larger than
 /// [`MAX_AL_FILE_BYTES`] and should be skipped. Logs a warning when it is.
 /// On metadata-read failure returns `false` so the caller proceeds to its
-/// own read (which will then surface the I/O error). (F-OPEN-019)
+/// own read (which will then surface the I/O error).
 fn al_file_exceeds_cap(path: &Path) -> bool {
     match std::fs::metadata(path) {
         Ok(meta) if meta.len() > MAX_AL_FILE_BYTES => {
@@ -808,7 +808,7 @@ mod tests {
         assert!(index.get_content(&path).is_none());
     }
 
-    /// F-040 / C22 positive: when two files share an object name (table Foo,
+    /// positive: when two files share an object name (table Foo,
     /// page Foo) they are distinct kind-tagged owners, so removing one file
     /// must NOT drop the other file's mapping.
     #[test]
@@ -822,7 +822,7 @@ mod tests {
             r#"table 50100 "Foo" { fields { } }"#.to_string(),
         );
         // The page is a separate owner under objects["foo"]; it no longer
-        // overwrites the table (C22), and both are indexed.
+        // overwrites the table, and both are indexed.
         index.add_file(
             page_path.clone(),
             r#"page 50100 "Foo" { layout { } actions { } }"#.to_string(),
@@ -841,7 +841,7 @@ mod tests {
         );
     }
 
-    /// C22: a table and a page sharing a name are kind-addressable regardless
+    /// a table and a page sharing a name are kind-addressable regardless
     /// of index order — a `Record Foo` reference (kind "table") never resolves
     /// to the page, and deleting the page leaves the table resolvable.
     #[test]
@@ -907,7 +907,7 @@ mod tests {
         );
     }
 
-    /// C22: three objects (table, page, codeunit) sharing a name all coexist
+    /// three objects (table, page, codeunit) sharing a name all coexist
     /// and are independently kind-addressable.
     #[test]
     fn three_kinds_same_name_coexist() {
@@ -939,7 +939,7 @@ mod tests {
         assert!(index.object_path_of_kind("foo", &["enum"]).is_none());
     }
 
-    /// C22: re-indexing a file whose object was renamed drops the old name and
+    /// re-indexing a file whose object was renamed drops the old name and
     /// registers the new one — no stale owner strands behind (via the
     /// path_to_object cleanup that runs before every re-index).
     #[test]
@@ -1114,7 +1114,7 @@ mod tests {
     /// index. Previously `scan` only added/updated entries, leaving
     /// deleted AL objects discoverable by go-to-definition.
     #[test]
-    fn f010_scan_removes_files_deleted_between_scans() {
+    fn scan_removes_files_deleted_between_scans() {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
@@ -1143,7 +1143,7 @@ mod tests {
     /// not remove anything. Confirms the deletion sweep is gated on
     /// "not on disk this scan", not on "older than this scan".
     #[test]
-    fn f010_scan_does_not_remove_files_still_present() {
+    fn scan_preserves_files_still_present() {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
@@ -1339,8 +1339,8 @@ mod tests {
     }
 
     #[test]
-    fn c13_equal_length_reindex_returns_coherent_new_pair() {
-        // C13: an edit that keeps the byte length identical (renaming one
+    fn equal_length_reindex_returns_coherent_new_pair() {
+        // an edit that keeps the byte length identical (renaming one
         // identifier character — common) previously defeated the length-based
         // coherence check, which could pair stale text with a fresh tree. With
         // the atomic (text, tree) pair, get_cached_parse returns the re-indexed
