@@ -604,7 +604,7 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
     let prev_sibling = prev_named_sibling(paren_block)?;
     let kw = prev_sibling.utf8_text(source).ok()?;
 
-    // F-OPEN-tokens-1: avoid per-token `to_lowercase()` allocation by using
+    // avoid per-token `to_lowercase()` allocation by using
     // `eq_ignore_ascii_case` against literal table entries. AL keywords are
     // ASCII so the check is exact. Same grammar-fixity rationale as
     // `classify_key_declaration_name` above.

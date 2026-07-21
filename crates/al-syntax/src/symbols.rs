@@ -730,8 +730,8 @@ fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymb
         .map(|p| ts_range_to_lsp(&p.range(), source))
         .unwrap_or(ts_range_to_lsp(&kw_node.range(), source));
 
-    // Extract children from the body braced_block. F-OPEN-102:
-    // extract_section_body_children folds in the raw-trigger pass inline
+    // Extract children from the body braced_block. The helper folds in the
+    // raw-trigger pass inline
     // (recognises `trigger OnFoo()` patterns parsed as control_keyword +
     // identifier rather than a trigger_declaration node).
     let mut nested = Vec::new();
@@ -873,7 +873,7 @@ fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> 
                     // Use index-based child access to avoid iterator borrow issues.
                     let raw = child.utf8_text(source).unwrap_or("");
                     let mut resolved = raw.to_string();
-                    // F-OPEN-101: also capture the inner identifier's RANGE
+                    // also capture the inner identifier's RANGE
                     // so the selection_range points at just the name, not the
                     // enclosing wrapper (e.g. parenthesized_block). Without
                     // this the outline's "go to definition" target was the
@@ -1038,7 +1038,7 @@ fn collect_variable_name_nodes(
 }
 
 fn is_variable_name_node(kind: &str) -> bool {
-    // F-OPEN-103: accept any `kw_*` node as an identifier fallback, not just
+    // accept any `kw_*` node as an identifier fallback, not just
     // the single `kw_function` we hardcoded before. AL grammar sometimes
     // tokenises identifier-positioned reserved words (e.g. `record`, `query`,
     // `trigger`) as their dedicated `kw_*` nodes when they appear inside
@@ -1093,7 +1093,7 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
         }
 
         let line_no = node.start_position().row as u32 + offset as u32;
-        // F-OPEN-syntax-symbols-1: skip this entry if we can't locate the
+        // skip this entry if we can't locate the
         // identifier within the source line. `unwrap_or_default()` was
         // producing a (0, 0) range at column 0 — visually wrong for the
         // outline. Real ASCII identifiers always match; this guard handles
@@ -1666,7 +1666,7 @@ codeunit 50100 Test { }"#;
     fn test_is_variable_name_node_accepts_kw_prefix() {
         assert!(is_variable_name_node("identifier"));
         assert!(is_variable_name_node("quoted_identifier"));
-        // F-OPEN-103: any kw_* node counts as an identifier fallback.
+        // any kw_* node counts as an identifier fallback.
         assert!(is_variable_name_node("kw_record"));
         assert!(is_variable_name_node("kw_anything_at_all"));
         assert!(!is_variable_name_node("semicolon"));

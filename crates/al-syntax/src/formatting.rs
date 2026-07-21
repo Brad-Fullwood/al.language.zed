@@ -110,7 +110,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // Track unclosed parentheses for multi-line call continuation
     let mut paren_depth: i32 = 0;
 
-    // FB-18: multi-line property assignments (`Permissions = tabledata A = rm,`)
+    // multi-line property assignments (`Permissions = tabledata A = rm,`)
     // continue on following lines until the terminating `;`. Continuation
     // lines are indented one level past the opener instead of being
     // collapsed to the property's own level.
@@ -167,7 +167,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             in_var_section = false;
         }
 
-        // FB-18: an OBJECT-level `var` section has no closing `begin` — it
+        // an OBJECT-level `var` section has no closing `begin` — it
         // ends at the next member declaration: an attribute line
         // (`[EventSubscriber(...)]`) or a procedure/trigger header.
         // Previously the next member stayed at variable indentation
@@ -275,7 +275,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         for _ in 0..indent_level {
             result.push_str(&indent_str);
         }
-        // F-OPEN-110: apply keyword casing transformation. Skips work entirely
+        // apply keyword casing transformation. Skips work entirely
         // for Preserve (no allocation). For Lower/Upper, walks the line and
         // case-folds only AL keyword tokens (matched via word boundaries +
         // language_data lookup) — keeps identifiers and string literals
@@ -309,7 +309,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             continue;
         }
 
-        // FB-18: property-assignment continuations. A non-comment line that
+        // property-assignment continuations. A non-comment line that
         // ends with `,` outside any parens starts (or stays in) a
         // continuation — the following line(s) indent one extra level until
         // the `;` terminator. Trailing commas outside parens are not valid
@@ -1534,7 +1534,7 @@ end;
 
     #[test]
     fn test_format_range_last_line_no_trailing_newline() {
-        // F-OPEN-112: when the selection ends on the document's final line and
+        // when the selection ends on the document's final line and
         // the document has no trailing newline, the emitted edit must NOT append
         // a spurious trailing newline.
         let input = "codeunit 50100 Test\n{\n    procedure X()\n    begin\n    end;\n        }";
@@ -1692,10 +1692,10 @@ codeunit 50100 Test
     }
 
     #[test]
-    fn c14_comment_ending_in_begin_does_not_corrupt_var_section() {
+    fn comment_ending_in_begin_does_not_corrupt_var_section() {
         // A `// … begin` comment tail on a var line must not trip the
         // var-section/block `ends_with("begin")` transition and dedent the rest
-        // of the file (C14).
+        // of the file.
         let input = "\
 codeunit 50100 Test
 {
@@ -1726,9 +1726,9 @@ codeunit 50100 Test
     }
 
     #[test]
-    fn c14_quoted_case_label_with_semicolon_indents_as_label() {
+    fn quoted_case_label_with_semicolon_indents_as_label() {
         // A quoted case label whose text contains `;` (`'a;b':`) must be treated
-        // as a label, so its body is indented one level deeper (C14).
+        // as a label, so its body is indented one level deeper.
         let input = "\
 codeunit 50100 Test
 {
@@ -1749,7 +1749,7 @@ codeunit 50100 Test
         assert_eq!(fmt(&out), out, "must be idempotent");
     }
 
-    // F-OPEN-110: KeywordCasing wiring
+    // KeywordCasing wiring
 
     #[test]
     fn keyword_casing_preserve_is_identity() {
@@ -1830,7 +1830,7 @@ codeunit 50100 Test
         assert_eq!(lowered, "Error('a''b') end", "got: {lowered}");
     }
 
-    // F-OPEN-113: multi-line paren continuation idempotency
+    // multi-line paren continuation idempotency
 
     #[test]
     fn test_multiline_paren_call_is_idempotent() {
@@ -1877,13 +1877,13 @@ codeunit 50100 Test
         assert_eq!(pass1, pass2);
     }
 
-    /// FB-18 regression (found on a real customer codeunit): an object-level
+    /// regression (found on a real customer codeunit): an object-level
     /// `var` section is not closed by `begin` — the next member's attribute
     /// and procedure header must dedent back to member level, and a
     /// multi-line `Permissions = …,` property keeps its continuation line
     /// indented past the opener instead of collapsing to property level.
     #[test]
-    fn fb18_attribute_after_object_var_and_property_continuation() {
+    fn attribute_after_object_var_and_property_continuation() {
         let input = r#"codeunit 50104 "AUK Data Management Event Subs"
 {
     InherentPermissions = x;
@@ -2308,7 +2308,7 @@ table 50100 Test
     }
 
     #[test]
-    fn a13_all_options_together_are_idempotent() {
+    fn all_options_together_are_idempotent() {
         // Combined run exercises pass ordering and cross-pass idempotency.
         let input = "\
 table 50100 Test

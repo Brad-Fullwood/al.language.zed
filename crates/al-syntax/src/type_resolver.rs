@@ -591,7 +591,7 @@ impl<'a> TypeResolver<'a> {
             Err(_) => return,
         };
 
-        // F-OPEN-105 short-circuit: most AL files don't contain `dataitem`
+        // short-circuit: most AL files don't contain `dataitem`
         // (only Report and Query objects use it). Skip the line-starts
         // scan entirely when the keyword isn't present. AL keywords are
         // case-insensitive, so we scan case-insensitively for `dataitem(` —
