@@ -577,7 +577,7 @@ mod tests {
 
     #[test]
     fn default_has_at_least_20_settings() {
-        // T601 pass criteria: 20+ settings
+        // Keep the public configuration surface covered as fields are added.
         let config = AlConfig::default();
         let json = serde_json::to_value(&config).unwrap();
         let obj = json.as_object().unwrap();
@@ -602,8 +602,8 @@ mod tests {
 
     #[test]
     fn merge_max_document_size_bytes() {
-        // F-OPEN-042: the per-document size cap is config-driven, defaults to
-        // None (unbounded), accepts an unsigned integer, and supports null reset.
+        // The per-document size cap defaults to unbounded, accepts an unsigned
+        // integer, and supports a null reset.
         let mut config = AlConfig::default();
         assert_eq!(config.max_document_size_bytes, None);
 
