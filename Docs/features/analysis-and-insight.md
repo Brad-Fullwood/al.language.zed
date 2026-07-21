@@ -3,10 +3,8 @@
 **Modules:** `crates/al-insight/src/` (graph engine) + analysis queries in
 `crates/al-analysis/src/queries/` · **Status:** ✅ shipped (a few items phase-gated, noted inline)
 
-This is the largest source of "things Microsoft's extension doesn't ship." It is a graph-based code
-analysis engine plus a suite of specialized analyses, all available through the shared daemon from
-the CLI (with `--json`) and MCP; Zed reaches the same implementations through tasks and editor
-actions. Everything is deterministic — results are sorted so CI output is stable across runs.
+The graph-based analysis engine is available through the shared daemon, `al-explorer --json`, MCP,
+and selected Zed tasks. Results are sorted so CI output remains stable across runs.
 
 ## The insight graph (`insight/`)
 
@@ -21,12 +19,10 @@ both package symbols and your code contribute.
 | Helpers | `analysis.rs` | table-impact, TableRelation parsing, record-type matching |
 | Discovery | `discovery.rs` | full publisher/subscriber map + orphan subscribers |
 
-Key correctness work baked in: record operations like `Rec.Insert(true)` are parsed into
-`OnBefore/OnAfterInsertEvent` trigger edges (non-literal args over-approximate to "fires",
-F-OPEN-087); member calls resolve the variable's declared object type before lookup (F-OPEN-084);
-workspace subscribers are wired to events post-build so traces can descend (FB-8); event-chain
-traversal has cycle detection plus a 10,000-node global bound; and results are sorted by node id for
-determinism.
+Record operations such as `Rec.Insert(true)` produce `OnBefore/OnAfterInsertEvent` trigger edges;
+non-literal trigger arguments are conservatively treated as firing the trigger. Member calls resolve
+the receiver's declared object type before lookup, and workspace subscribers are connected after the
+graph is built. Event traversal detects cycles and enforces a 10,000-node global bound.
 
 ## Analysis catalog
 
@@ -45,7 +41,7 @@ determinism.
 | **Upgrade report** | `queries/upgrade.rs` | Breaking changes + data-migration hints + obsolete-symbol warnings, with guidance. |
 | **Obsolescence** | `queries/obsolescence.rs` | Inventory of `[Obsolete]` symbols with state/reason/tag and caller counts. |
 | **Data-classification audit** | `queries/audit.rs` | GDPR posture: every table field's `DataClassification` and a risk level. |
-| **Permission audit** | `queries/audit.rs` | Permission-set coverage: which tables/pages/codeunits/reports are (un)covered by the workspace's permission sets, and by which set. |
+| **Permission audit** | `queries/audit.rs` | Permission-set coverage plus unused object grants (`overBroad`) and granted I/M/D rights without a corresponding observed write (`overGrantedRights`). |
 | **Dependency graph** | `queries/deps.rs` | Full transitive dependency tree from `app.json` + packages; version-conflict and missing-dependency detection; DOT export. |
 | **Duplicates** | (daemon `duplicates`) | Repeated AL code blocks (configurable min tokens/similarity, clamped to safe bounds). |
 | **Profiler hints** | `queries/profiler_hints.rs` | Map `.alcpuprofile` (Chrome DevTools) hotspots to AL procedure declaration lines. |
@@ -54,16 +50,17 @@ determinism.
 
 ### How a few of these work (highlights)
 
-- **Dead code** builds workspace-global call-name / member-access sets once (O(F), fixing an earlier
-  O(F²·P)), then checks each file in parallel (rayon). It is quote- and comment-aware so
+- **Dead code** builds workspace-global call-name and member-access sets once, then checks each file
+  in parallel. It is quote- and comment-aware so
   `Message('FindFirst()')` and fields inside `/* */` don't create false positives, and it excludes
   event publishers (they're entry points).
 - **SQL scan** is a quote-aware text state machine tracking loop nesting and per-loop `begin..end`
-  depth (ISSUE-145), clearing the "unfiltered" flag on `SetRange`/`SetFilter` before a `FindSet`.
+  depth. It clears the "unfiltered" flag on `SetRange`/`SetFilter` before a `FindSet`.
 - **Breaking changes** diffs `(kind, name)` maps of a baseline vs current `SymbolEntry` set, comparing
   public methods, fields, and enum values.
-- **Profiler hints** parse the Chrome profile, skip synthetic nodes (`(root)`/`(idle)`/GC), and map
-  function names to workspace procedure declaration lines (≈1 ms per sample).
+- **Profiler analysis** parses Chrome profiles, skips synthetic nodes (`(root)`/`(idle)`/GC),
+  aggregates sampled `timeDeltas`, and rolls total time up the call tree. The `profiler-hints`
+  command maps supplied procedure hotspots to workspace declarations.
 
 ## Microsoft comparison
 
@@ -86,9 +83,8 @@ determinism.
 These analyses share one graph and one set of parse trees, so adding a new question is cheap and
 every answer is fast. Because they live in `queries/`/`insight/` (transport-agnostic), each is a CLI
 subcommand with `--json` and a daemon method — which means you can gate a build on "no new dead code"
-or "no SQL anti-patterns" in CI, and an AI agent can call the same analysis through MCP. Microsoft's
-equivalents, where they exist at all, are locked inside the VS Code extension and not scriptable.
-Determinism (sorted output) makes them safe to diff in CI.
+or "no SQL anti-patterns" in CI, and MCP clients can call the same analyses. Deterministic output
+makes results safe to diff in CI.
 
 ## How to use
 
@@ -100,10 +96,11 @@ al-explorer trace <event> [--depth N] [--tree]   al-explorer subscribers <event>
 al-explorer suggest-event --object|--procedure|--table|--field|--event <x>
 al-explorer entrypoints      al-explorer intercept      al-explorer graph --format json|dot
 al-explorer sql-scan         al-explorer arch-lint      al-explorer duplicates
-al-explorer breaking         al-explorer upgrade        al-explorer obsolete
+al-explorer breaking --baseline-app <old.app>
+al-explorer upgrade --baseline-app <old.app>             al-explorer obsolete
 al-explorer audit-data       al-explorer permission-audit
 al-explorer deps             al-explorer deps-graph     al-explorer metrics [--all]
-al-explorer profiler-hints <file>
+al-explorer profiler-hints [Object.Procedure ...]
 al-explorer add-application-area | add-tooltips | add-data-classification [--dry-run]
 ```
 
@@ -113,16 +110,14 @@ agent workflows also have descriptive aliases such as `al_impact`, `al_deadcode`
 an MCP allow-list. The TUI surfaces event chains, call-graph/impact, and profiler views interactively
 (see [cli-and-tui](./cli-and-tui.md)).
 
-## Limitations & roadmap
+## Limitations
 
-- 🟡 **Breaking-change/upgrade baseline is not wired** — `breaking`/`upgrade` run against an *empty*
-  baseline today and therefore report no changes; the previous-version diff source still needs
-  connecting.
-- 🟡 **Permission audit** reports coverage (covered/uncovered by set), not yet over-broad permissions
-  vs. actual usage.
-- Package-only call sites cannot be recovered (no source bodies in `.app` symbols).
-- `arch_lint` rule patterns are intentionally narrow (no regex) and `builtin_rules()` is currently
-  empty/extensible.
-- Profiler self-time is approximate (hit-count ≈ ms; `timeDeltas` aggregation is a TODO).
-- `ROADMAP.md` directions: wire baselines for breaking/upgrade, make affected-test detection
-  graph-based, and upgrade coverage toward dynamic statement/branch coverage.
+- `breaking` and `upgrade` require `--baseline-app <old.app>` for a cross-version result. Without a
+  baseline they explicitly report that the comparison was not evaluated.
+- Package-only call sites cannot be recovered because `.app` symbols do not contain method bodies.
+- Architecture rules use literal case-insensitive pattern matching rather than regular expressions.
+  Four conservative table/page layering rules are enabled by default; `.alarch.json` adds
+  project-specific rules.
+- Permission over-grant analysis cannot prove dynamic `RecordRef`/`FieldRef` writes, unresolved
+  interface dispatch, or writes inside dependency packages without source bodies.
+- Profiler data without `samples` and `timeDeltas` falls back to the legacy hit-count estimate.

@@ -3,8 +3,8 @@
 **Module:** `crates/al-analysis/src/queries/code_actions/` · **Status:** ✅ shipped
 
 Code actions are the quick fixes and source-level refactorings offered in the editor (and via
-`al-explorer fix`). They are gated by `al.enableCodeActions` (default true; VS Code parity,
-F-OPEN-266). The module splits into two paths in `code_actions/mod.rs`:
+`al-explorer fix`). They are gated by `al.enableCodeActions` (default true). The module splits into
+two paths in `code_actions/mod.rs`:
 
 - **`source_actions()`** — diagnostic-independent refactorings (offered any time).
 - **`quick_fix_for_diagnostic()`** — fixes tied to a specific diagnostic code.
@@ -22,7 +22,7 @@ Each action is a `CodeActionEntry { title, kind, edit, is_preferred }` where `ki
 | **Add parentheses** | `add_parens.rs` | `Commit;` → `Commit();` for bare calls (detects `identifier;` with no `(`, `:=`). |
 | **Move ToolTip to table field** | `events.rs` | Moves a page field's `ToolTip` down to the underlying table field. |
 | **Convert event subscriber** | `events.rs` | Migrates old-style event subscriber declarations to the modern attribute syntax. |
-| **Make method local** | `make_local.rs` | Adds `local` when a workspace-wide scan finds no external callers. Conservative (F-043): any literal `name(` match in another file suppresses the action — a false negative is preferred to silently breaking a caller. |
+| **Make method local** | `make_local.rs` | Adds `local` when a workspace-wide scan finds no external callers. Any literal `name(` match in another file suppresses the action, preferring a false negative to silently breaking a caller. |
 | **Eliminate `with`** | `with_elimination.rs` | Expands `with Rec do begin X := Y end` into qualified `Rec.X := Rec.Y` (AA0205 compliance), resolving the record's table fields via the type resolver + symbol index. |
 | **Convert `if` to `case`** | `if_to_case.rs` | Converts an `if`/`else if` chain (≥3 branches comparing the same variable) into a `case` statement. |
 | **Add doc comment** | `doc_region.rs` | Generates an XML doc skeleton (`/// <summary>` + `<param>` per parameter + `<returns>`), skipping if docs already exist. |

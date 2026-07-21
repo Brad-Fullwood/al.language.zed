@@ -19,8 +19,8 @@ discover [Test] tests ──► router classifies each test ──► backend ex
 - **InterpRecord** tests run locally with an isolated in-memory database when every referenced table
   is defined in the workspace and every operation is in the supported record subset.
 - **LiveBc** runs HTTP/UI/report/session/transaction/package-table and other platform tests against BC.
-- **Snapshot** represents replay from captured state; file replay/diff exists, while the daemon's live
-  record/replay path remains incomplete.
+- **Snapshot files** can be validated or compared. Live capture is not exposed through the test
+  command surface.
 
 ## The interpreter (`crates/al-runtime`)
 
@@ -113,7 +113,8 @@ al-explorer test-run-all [--parallel] [--timeout-ms N] [--coverage]
     [--junit-out P] [--cobertura-out P] [--filter G]
 al-explorer test-coverage        al-explorer test-classify    al-explorer test-results
 al-explorer test-affected <files...>    al-explorer test-mutate [--files ...] [--parallel]
-al-explorer test-snapshot record|replay|diff ...
+al-explorer test-snapshot replay <path>
+al-explorer test-snapshot diff <before> <after>
 ```
 
 MCP `al_runtests` maps to `tests.run_auto`: pure logic and supported workspace records run locally;
@@ -127,8 +128,8 @@ only the remaining tests require a launch configuration and live BC.
 - Record execution requires workspace table definitions. Field/table triggers, FlowFilters, Linked
   formulas, transactions, permissions, locking, RecordRef/FieldRef, and unlisted APIs are not emulated.
 - Only `[Test]` procedures execute locally; test lifecycle and handler semantics are not modelled.
-- Snapshot file load/diff is available and a live BC debug adapter exists, but the daemon's live
-  snapshot record/replay commands are not connected end to end.
+- Snapshot validation and diff operate on existing files. Capturing test snapshots from a live BC
+  session is not exposed by the CLI or daemon.
 - Remaining fidelity gaps include the tree-sitter multi-arm CASE grammar issue, unresolved enum
   ordinals, and exact declared-length semantics for MaxStrLen.
 

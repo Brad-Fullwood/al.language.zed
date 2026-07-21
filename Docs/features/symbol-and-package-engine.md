@@ -39,9 +39,8 @@ generation deterministically instead of racing duplicate entries into secondary 
 stable and relevance-ranked (exact name, prefix, then substring), with synthetic pseudo-types kept
 out of user-facing results; bounded searches retain only the requested best candidates rather than
 sorting every match. A pre-computed 30-entry default-completions slice answers the "blank completion
-at top level" path in O(1) (ISSUE-162). On package removal, all secondary indexes are pruned in
-lockstep (the "T049"
-discipline), source/path caches are removed, and affected composed views are invalidated, so a hot
+at top level" path in O(1). On package removal, all secondary indexes are pruned in lockstep,
+source/path caches are removed, and affected composed views are invalidated, so a hot
 reload cannot serve stale or dangling data. Synthetic pseudo-enums (generated for Option-typed
 fields, id = -1) are excluded from id-based lookups, search, and default completion.
 
@@ -72,10 +71,9 @@ payloads (the Base Application alone is ~6 MB).
 
 `get_composed(kind, name)` returns a `ComposedObject` merging a base object with every applicable
 extension — fields (sorted by id, deduped), methods, controls, and enum values (sorted by ordinal).
-It is cycle-safe by construction (it only walks base → extensions, never extension → extension,
-F-OPEN-038) and cached with per-name invalidation. Field conflicts are rejected by either ID or name;
+It is cycle-safe by construction because it only walks base → extensions, never extension →
+extension, and is cached with per-name invalidation. Field conflicts are rejected by either ID or name;
 enum conflicts by either ordinal or name. Concurrent cache misses converge on one shared result.
-Composing 15 extensions runs in <5 ms.
 
 ### Source navigation (`source_index.rs`, `virtual_file.rs`)
 
@@ -85,7 +83,7 @@ to map (kind, id) / (kind, name) → internal ZIP path (with double-checked per-
 mtime+size staleness). `virtual_file` then either extracts the embedded `.al` source or, when the
 package ships no source, **renders an outline** (fields, methods, keys, enum values, properties) as a
 read-only virtual file and locates the member's range so the editor can jump to it. Cache files are
-regenerated when either the `.app` or the `al-lsp` binary is newer (F-041), and temp+rename
+regenerated when either the `.app` or the `al-lsp` binary is newer, and temp+rename
 publication ensures a simultaneous navigation request never sees a partially-written file. Source
 archive indexing is canonical-path deduped and bounded by package size, entry count, and a 32 MiB
 per-source extraction limit.
@@ -106,12 +104,11 @@ Two download backends:
   with four-request concurrency, same-package request dedupe, bounded retry/backoff for transient
   transport/429/502/503/504 failures, and a 200 MiB streaming cap. It verifies NAVX plus manifest
   identity/minimum-version before atomically publishing a publisher/name/version-qualified filename.
-  It caches the access token in an `RwLock` and clears it on 401/403 to recover from stale tokens
-  (F-OPEN-013).
+  It caches the access token in an `RwLock` and clears it on 401/403 before retrying.
 - **OAuth (`oauth.rs`):** Microsoft Entra authorization-code flow with **PKCE** (browser → localhost
   redirect) and a **device-code** fallback for headless environments, with disk-cached refresh
   tokens, tenant/GUID validation, env-var overrides (`BC_CLIENT_ID`/`BC_ACCESS_TOKEN`/`BC_TENANT`),
-  and **zeroized** token memory on drop (F-OPEN-010).
+  and **zeroized** token memory on drop.
 
 Freshly downloaded symbols are loaded into the workspace **without a daemon restart**.
 
@@ -168,7 +165,7 @@ Dependency acquisition checks each loaded package's manifest GUID and minimum ve
 cached package therefore cannot suppress downloads for unrelated missing dependencies, and a package
 with the right filename but the wrong identity/version does not count as satisfied.
 
-## Limitations & roadmap
+## Limitations
 
 - `.app` symbols expose the **public API declaration, not call-site bodies**. A package entry carries
   an object's signatures, fields, keys, enum values and properties, but procedure *bodies* are
@@ -180,10 +177,5 @@ with the right filename but the wrong identity/version does not count as satisfi
     body means an empty method.
   - The `source` query (`al-explorer source` / daemon `source`) returns the same outline with a
     structured `note` — *"Rendered from symbol metadata … no implementation bodies"*.
-  - Cross-package "who calls this" cannot be recovered from package symbols alone; workspace source
-    fills this in (affected-test selection treats `.app`-only declarations as having no call sites —
-    see gap B7).
-- `ROADMAP.md` (Symbol And Package Engine): turn the existing deterministic synthetic cold/warm
-  benchmarks into a CI regression gate with committed `.app` fixtures, add byte-level memory
-  accounting, and distinguish embedded source vs generated outline vs metadata-only in all
-  user-facing output.
+  - Cross-package "who calls this" cannot be recovered from package symbols alone. Workspace source
+    fills this in; affected-test selection treats `.app`-only declarations as having no call sites.

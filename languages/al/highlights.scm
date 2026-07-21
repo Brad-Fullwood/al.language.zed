@@ -230,7 +230,7 @@
 (object_keyword) @keyword
 (type_keyword) @type.builtin
 (metadata_keyword) @keyword
-(property_keyword) @operator
+(property_keyword) @keyword
 (keyword) @keyword
 ; CRITICAL: control_keyword for keywords inside nested blocks (page triggers, etc.)
 (control_keyword) @keyword.control

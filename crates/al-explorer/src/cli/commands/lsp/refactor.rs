@@ -143,7 +143,7 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
     use crate::cli::TestSnapshotCommands;
 
     match subcmd {
-        TestSnapshotCommands::Replay { path } => {
+        TestSnapshotCommands::Validate { path } => {
             let abs_path = match std::path::Path::new(path).canonicalize() {
                 Ok(p) => p,
                 Err(e) => {
@@ -154,45 +154,16 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            client.set_read_timeout(std::time::Duration::from_secs(120));
+            client.set_request_timeout(std::time::Duration::from_secs(120));
             let params = serde_json::json!({
                 "snapshotPath": abs_path.display().to_string(),
             });
-            match client.request("tests.snapshot_replay", Some(params)) {
+            match client.request("tests.snapshot_validate", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
                     } else {
-                        // `verdict` is the serialized `ReplayVerdict` enum,
-                        // an object `{"kind":"match"}` or `{"kind":"diverged",
-                        // "divergences":[…]}` — not a bare string. The previous
-                        // `as_str() == "Match"` check never matched, so a
-                        // successful replay always printed "[FAIL]". Divergence
-                        // fields are `field_path` /
-                        // `old_value` / `new_value`.
-                        let verdict = result.get("verdict");
-                        let kind = verdict
-                            .and_then(|v| v.get("kind"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        if kind == "match" {
-                            println!("[PASS] Snapshot matches baseline.");
-                        } else {
-                            println!("[FAIL] Snapshot diverged from baseline:");
-                            if let Some(divs) = verdict
-                                .and_then(|v| v.get("divergences"))
-                                .and_then(|v| v.as_array())
-                            {
-                                for d in divs {
-                                    let field =
-                                        d.get("field_path").and_then(|v| v.as_str()).unwrap_or("?");
-                                    let old = d.get("old_value").cloned().unwrap_or_default();
-                                    let new = d.get("new_value").cloned().unwrap_or_default();
-                                    println!("  {field}: baseline={old}, replay={new}");
-                                }
-                            }
-                            return ExitCode::FAILURE;
-                        }
+                        println!("[PASS] Snapshot file is valid.");
                     }
                     ExitCode::SUCCESS
                 }

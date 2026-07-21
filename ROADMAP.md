@@ -18,7 +18,8 @@ Automated in `scripts/check-release-hygiene.sh` and `.github/workflows/release.y
 
 - `extension.toml` `[grammars.al].rev` must equal the superproject gitlink for `tree-sitter-al`.
 - `git submodule status --recursive` must be clean; leading `+`, missing submodules, and conflicts are release blockers.
-- `extension.toml`, root `Cargo.toml`, workspace crate versions, `Cargo.lock`, and the release tag must align.
+- Product versions in `extension.toml`, root `Cargo.toml`, `al-lsp`, `Cargo.lock`, and the release tag
+  must align. Library crates retain independent semantic versions.
 - Required generated grammar/query/data/theme artifacts must exist, and generator-input changes across a release diff require generated-output changes.
 - `languages/al` is regenerated from `al-gen --zed-language-only` and compared in CI/release hygiene.
 - The tag workflow waits for green `CI` on the exact commit being released before building artifacts.
@@ -27,7 +28,8 @@ Automated in `scripts/check-release-hygiene.sh` and `.github/workflows/release.y
 Remaining release hygiene improvements:
 
 - Add a fully reproducible generated-artifact regeneration job once the Microsoft AL extension and `tree-sitter` inputs are installable in CI without brittle marketplace assumptions.
-- Add a dedicated release dry-run command that runs local tests, `scripts/check-release-hygiene.sh --regenerate`, and package smoke checks in one place.
+- Make full grammar regeneration and the external repository corpus reproducible in CI when the
+  Microsoft AL extension inputs can be installed reliably.
 
 ## Architecture Unification
 
@@ -39,7 +41,7 @@ The current architecture is powerful but still split across separate entrypoints
 - Bring analyzer-backed Microsoft compiler results and native emitter results into one deterministic artifact and diagnostics pipeline where that makes sense.
 - Wire ruleset, assembly probing, analyzer statistics, and external ruleset settings through the build and semantic paths or mark them clearly as parsed-only.
 - Decide whether LSP execute commands should call the daemon dispatcher, a shared service layer, or remain direct LSP handlers. Document and test the boundary.
-- Add optional toolchain overrides where they genuinely help reproducibility, including a custom `dotnet` executable path if the project wants to support nonstandard environments.
+- Consider exposing the existing `AL_DOTNET_PATH` environment override as an `al.*` editor setting.
 
 ## Native App Emission
 
@@ -48,7 +50,8 @@ The project now has a production-wired pure-Rust verifier and `.app` emitter. Sy
 - Extend native verification into procedure-body expression, overload, control-flow, event, permission, and analyzer semantics while keeping Microsoft compatibility checks explicit.
 - Expand fixture coverage beyond the current ALC-matching project to more object kinds, resource combinations, dependencies, profiles, permissions, reports, translations, control add-ins, and extension-heavy packages.
 - Differential-test emitted packages against local `alc` output for every supported fixture and keep the intentional deltas documented.
-- Validate natively emitted `.app` packages against a live BC tenant before removing fallback paths or broadening compatibility claims.
+- Expand live-tenant validation across dependency-heavy and resource-heavy `.app` projects before
+  reducing compatibility paths.
 - Keep `al.useOfficialCompiler` explicit and tested so Microsoft `alc` remains available for semantic validation, analyzer behavior, and compatibility triage.
 
 ## Native Test Runtime
@@ -59,7 +62,8 @@ The native AL test runner now executes pure-logic and supported workspace-record
 - Add support for test lifecycle procedures where appropriate, while keeping `[Test]` discovery semantics explicit.
 - Replace pattern-based routing with deeper AST/call-graph classification where feasible.
 - Extend dynamic coverage beyond statements/two-way decisions where the additional signal is trustworthy.
-- Wire snapshot record/replay to the live BC bridge, or clearly split "snapshot file diff" from "live snapshot replay" commands.
+- Add live snapshot capture only when it can be implemented end to end; keep existing file validation
+  and diff commands distinct from that future surface.
 - Expand mutation testing beyond the current starter mutators and make survival causes explicit when no interpreter-runnable tests cover a mutant.
 - Keep live BC fallback for platform behavior that should not be guessed locally.
 
@@ -111,8 +115,10 @@ surface.
 
 Zed should feel first-class, not merely compatible.
 
-- Add tasks for CLI workflows that are currently missing from `languages/al/tasks.json`: affected tests, snapshot diff/replay, `deps-graph`, XLIFF refresh/untranslated/suggest, and table impact.
-- Revisit CodeLens command handling: either implement the emitted IDs through execute commands or route them to supported editor/task flows.
+- Keep generated Zed tasks synchronized with real CLI commands and add new tasks only where editor
+  variables can supply every required argument.
+- Keep the wired `al.findReferences`, `al.showProfiler`, and `al.runTest` CodeLens command contracts
+  covered by integration tests.
 - Restore settings schema registration when the required Zed extension API is released on the stable registry.
 - Keep snippets, debug schemas, and settings docs aligned with fields actually consumed by the native adapter/server.
 - Add practical Zed smoke tests for binary download, LSP startup, DAP startup, MCP context server startup, and task execution.
@@ -136,8 +142,9 @@ The Zed language package now has a single generator-owned source of truth.
 - Keep all `languages/al` files generated. Canonical query files are copied from `tree-sitter-al/queries`; Zed-specific language metadata is generated from `tree-sitter-al/generator/tools/al-gen/templates/zed-language`.
 - Use `make language` after changing Zed language templates or canonical query outputs. Release hygiene runs the same lightweight generation path and fails on drift.
 - Do not add hand-maintained files under `languages/al`. The generator rejects unknown files in that directory.
-- Document `al-gen` versus `al-extract` ownership for `tree-sitter-al/data/*.json`.
-- Make theme generation reproducible and validated.
+- Keep `al-gen` versus `al-extract` ownership for `tree-sitter-al/data/*.json` documented in
+  `CONTRIBUTING.md` and the grammar repository.
+- Keep theme generation reproducible and validated through full grammar regeneration.
 - Keep `extension.toml` grammar rev, submodule gitlink, and generated query compatibility tied together by CI.
 
 ## Documentation Debt
@@ -146,16 +153,7 @@ The README should stay high-signal and factual. Detailed operating docs should l
 
 - Keep README focused on project identity, architecture, feature surfaces, install, and development.
 - Keep `ROADMAP.md` for incomplete work and future goals.
-- Keep settings details in `docs/settings.md` and examples in `examples/zed-settings.jsonc`.
-- Add a tester guide with minimal reproducible report templates for Zed, CLI, MCP, DAP, tests, and symbols.
-- Add architecture diagrams once entrypoint boundaries stabilize.
-
-## Suggested Agent Workflow
-
-When assigning agents to this repo:
-
-1. Give each agent a narrow surface area and a concrete success condition.
-2. Require code evidence for every README/schema/settings claim.
-3. Prefer adding tests or release guards with each implementation.
-4. Keep generated files generated; edit source generators or templates first.
-5. Do not tag a release until submodule, versions, README, schemas, and CI are aligned.
+- Keep settings details in `Docs/reference/settings.md` and examples in
+  `examples/zed-settings.jsonc`.
+- Keep the architecture and testing guides synchronized with real Cargo dependencies, command
+  registrations, and CI behavior.

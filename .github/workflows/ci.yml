@@ -30,10 +30,6 @@ jobs:
           submodules: recursive
 
       - name: Install Rust stable
-        # Tracks dtolnay/rust-toolchain's `stable` branch. A pinned commit SHA was
-        # used previously but the action force-pushes that branch, orphaning the
-        # SHA and breaking every run with "unable to resolve action". The branch
-        # ref is the action author's documented, stable entry point.
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -64,26 +60,17 @@ jobs:
       - name: Test
         run: cargo test --workspace --exclude zed-al
         env:
-          # zed_simulation.rs now runs unconditionally against the bundled
-          # fixture (data/test_al_project) and no longer reads this var.
-          # data_driven.rs / performance.rs still gate on it (real-project-only
-          # assertions that don't fit the bundled fixture) and silently skip
-          # when absent — acceptable in CI.
+          # Optional real-project tests treat an empty value as unset.
           AL_TEST_PROJECT_PATH: ""
 
       - name: Clippy
-        # --all-targets so lints in test/example/bench code are caught too, not
-        # just the default lib/bin targets.
         run: cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
 
       - name: Formatting check
         run: cargo fmt --all -- --check
 
   cargo-deny:
-    # Enforces the deny.toml at repo root: license allow-list, banned crates,
-    # advisory-DB review, source allow-list. Was previously only documentation
-    # — wired into CI per T054 / spec-arch-005. Linux only because cargo-deny
-    # itself is fast and platform-independent on the workspace metadata.
+    # Enforces the deny.toml license, advisory, source, and banned-crate policy.
     name: Dependency policy (cargo-deny)
     runs-on: ubuntu-latest
     steps:
@@ -92,14 +79,8 @@ jobs:
         with:
           submodules: recursive
       - name: Run cargo-deny
-        # v2.0.20: the older pin shipped a cargo-deny that cannot parse
-        # `edition = "2024"` (used by crates/al-explorer) and failed with
-        # "feature `edition2024` is required". Bumped to a release whose
-        # bundled cargo-deny understands the 2024 edition.
         uses: EmbarkStudios/cargo-deny-action@8a45e1c7c9a95dfae3276e89a553705e40ae45a2 # v2.0.20
         with:
-          # Default args (`check`) runs all four checks: advisories, bans,
-          # licenses, sources — same as the local invocation contract.
           arguments: --workspace --exclude zed-al
 
   wasm:
@@ -131,16 +112,10 @@ jobs:
       - name: Build zed-al WASM extension
         run: cargo build -p zed-al --target wasm32-wasip1 --release
 
-      # The main `ci` job excludes zed-al (it targets wasm), so the WASM
-      # crate's host-runnable unit tests — including the repo-slug guard that
-      # keeps GITHUB_REPO in sync with extension.toml so the LSP download
-      # never points at the wrong repository — are exercised here on the host.
+      # zed-al is excluded from the native workspace job, so run its host tests here.
       - name: Test zed-al (host)
         run: cargo test -p zed-al
 
-      # Fail the build if the al-lsp download target (GITHUB_REPO in src/lib.rs)
-      # drifts from extension.toml / the git remote. A mismatch silently breaks
-      # binary resolution for every new user (latest_github_release -> not found).
       - name: Check repository slug consistency
         run: ./scripts/check-repo-consistency.sh
 
@@ -151,11 +126,7 @@ jobs:
         run: ./scripts/check-release-hygiene.sh
 
   windows-native:
-    # Build both native binaries on Windows so named-pipe transport and the
-    # Windows Credential Manager dependency cannot regress unnoticed. With
-    # default features (no `--features semantic`), build.rs skips the .NET
-    # bridge when dotnet is absent,
-    # so no SDK is needed; the semantic path stays gated by release.yml.
+    # Default features do not require the .NET semantic bridge.
     name: Windows native build
     runs-on: windows-latest
     steps:

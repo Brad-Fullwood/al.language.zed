@@ -35,14 +35,14 @@ Each feature below names the query module that implements the (transport-agnosti
 | **Completion** | `queries/completions.rs` | Context-driven (member / enum `::` / type `:` / default). Member completion via `resolution::resolve_expression_type` + builtin methods; type position offers builtin types + workspace tables/enums/codeunits/interfaces (capped). Has a cached "blank completion at top level" fast path. Falls back to the bridge (`completions_at`). |
 | **Go to definition** | `queries/definition.rs` | Member → receiver type → member def; object name → workspace or package symbol; local var; same-file procedure. Can synthesize a **virtual file** to navigate into `.app` package symbols. |
 | **Find references** | `queries/references.rs` | Current-file variable refs + event-subscriber string-literal refs + all workspace files. Dedups exact spans. Runs on `spawn_blocking` for cancellation on large files. |
-| **Rename / prepare rename** | `queries/rename.rs` | Produces a `WorkspaceEdit`. Local variables/parameters are renamed **only within their procedure** (F-038) to avoid clobbering same-named identifiers elsewhere; cross-file symbols rename workspace-wide. Preserves `"quoted"` identifiers. |
+| **Rename / prepare rename** | `queries/rename.rs` | Produces a `WorkspaceEdit`. Local variables/parameters are renamed only within their procedure to avoid clobbering same-named identifiers elsewhere; cross-file symbols rename workspace-wide. Preserves `"quoted"` identifiers. |
 | **Document symbols** | `queries/symbols.rs` (+ `syntax/symbols.rs`) | Hierarchical outline (object → procedures/triggers/events/fields/keys/enum values/controls). |
 | **Workspace symbols** | `queries/search.rs` | Case-insensitive substring search across objects and child members. |
 | **Semantic tokens** | `queries/semantic_tokens.rs` (+ `syntax/tokens.rs`) | Full-document, delta-encoded; `spawn_blocking`. |
 | **Inlay hints** | `queries/inlay_hints.rs` | Parameter-name hints at call sites (default on) and return-type hints on procedures (default off), with type-aware overload resolution. Uses cached doc symbols where available. |
 | **CodeLens** | `queries/code_lens.rs` | Reference-count lenses on procedures/triggers/events; profiler lenses (`⏱ Xms · N calls`) when an `.alcpuprofile` is loaded; test status lenses (NotRun/Running/Pass/Fail/Skip) on `[Test]` procedures, carrying a `TestTarget`. |
 | **Signature help** | `queries/signature.rs` | Parameter list with active-parameter highlight; overload picked by parameter count, widest as fallback. Bridge-backed `signature_help_full`. |
-| **Formatting / range formatting** | `queries/format.rs` (+ `syntax/formatting.rs`) | Loads `.alformat.json`; range formatting uses whole-document indent context (F-OPEN-112). |
+| **Formatting / range formatting** | `queries/format.rs` (+ `syntax/formatting.rs`) | Loads `.alformat.json`; range formatting uses whole-document indent context. |
 | **Folding** | `queries/folding.rs` (+ `syntax/folding.rs`) | Blocks, procedures, comment runs. |
 | **Diagnostics** | `queries/diagnostics.rs` + `server/diagnostics.rs` | Two-phase (below). |
 
@@ -51,7 +51,7 @@ Each feature below names the query module that implements the (transport-agnosti
 `server/diagnostics.rs` runs diagnostics in two phases:
 
 1. **Phase 1 (instant):** tree-sitter parse errors, published immediately on open and on a **400 ms
-   debounce** after edits (ISSUE-025). Debouncing exists so the slow semantic bridge can never block
+   debounce** after edits. Debouncing exists so the slow semantic bridge can never block
    hover/completion.
 2. **Phase 2 (async):** the .NET CodeAnalysis bridge (`analyze`) for compiler-grade diagnostics,
    gated by `al.enableCodeAnalysis` / `al.backgroundCodeAnalysis` / `al.diagnosticsTrigger` /
@@ -59,17 +59,17 @@ Each feature below names the query module that implements the (transport-agnosti
 
 Both push (`publishDiagnostics`) and pull (`textDocument/diagnostic`) flows are supported; pull
 computes both phases synchronously. Diagnostic messages are enriched with descriptions from the
-bridge's error-code catalog. Virtual symbol-cache files are skipped (ISSUE-072).
+bridge's error-code catalog. Virtual symbol-cache files are skipped.
 
 ### Document lifecycle correctness
 
-`did_change` applies edits and reads text under a single write lock (TOCTOU guard, ISSUE-054), warns
-on out-of-order versions rather than erroring (ISSUE-053), and cancels stale debounced diagnostics.
+`did_change` applies edits and reads text under a single write lock, warns on out-of-order versions
+rather than erroring, and cancels stale debounced diagnostics.
 `did_close` aborts pending diagnostics and clears state. `did_save` always re-publishes.
 
 ## LSP execute commands
 
-Handled in `server/commands.rs` (each in its own function, not a monster match — F-OPEN-264):
+Handled in `server/commands.rs`:
 
 | Command | Effect |
 | --- | --- |
@@ -85,8 +85,9 @@ Handled in `server/commands.rs` (each in its own function, not a monster match �
 
 ### CodeLens command IDs
 
-CodeLens entries emit these IDs (distinct from execute commands above): `al.findReferences`,
-`al.showProfiler`, `al.runTest`. See the roadmap note below.
+CodeLens entries invoke `al.findReferences`, `al.showProfiler`, and `al.runTest`. All three are
+registered execute commands and reuse the same reference, profiler, and test services as the other
+entry points.
 
 ## Microsoft comparison
 
@@ -107,7 +108,7 @@ delegation. See [semantic-bridge](./semantic-bridge.md).
 Native parsing + a cached workspace model means most language requests are answered from in-memory
 indexes without a compiler round-trip, and the slow compiler-grade work (the bridge) is debounced and
 isolated so it never blocks typing. The transport-boundary rule means the very same query code serves
-the editor, the CLI (`al-explorer hover/definition/references/...`), and AI agents — one
+the editor, the CLI (`al-explorer hover/definition/references/...`), and MCP clients — one
 implementation, no drift.
 
 ## How to use
@@ -123,11 +124,9 @@ From MCP, `al_call` exposes the daemon equivalents (`hover`, `definition`, `refe
 
 ## Limitations & roadmap
 
-- Workspace-wide diagnostics are not provided (`workspaceDiagnostics: false`); diagnostics are
-  per-document pull/push.
-- 🟡 **CodeLens command IDs** (`al.findReferences`, `al.showProfiler`, `al.runTest`) are emitted but
-  not all are wired through execute commands yet. `ROADMAP.md` (Zed UX) calls for implementing or
-  re-routing them.
+- `workspace/diagnostic` reports syntax diagnostics for every indexed workspace file and semantic
+  diagnostics for open documents. Running the bridge across every unopened file remains optional
+  future work because it requires a compiler round-trip per file.
 - References/subscribers over `.app` dependencies are limited because package symbols carry public
   API metadata, not call-site bodies.
 - Settings-schema autocomplete only lights up on Zed 0.8+ extension API (see the

@@ -37,7 +37,7 @@
         "al.inlayHints.parameterNames": true,
         "al.inlayHints.returnTypes": false,
 
-        // ── Native lint (reserved — parsed but currently inert) ──
+        // ── Native lint ──
         "al.enableNativeLint": true,
         "al.nativeLintRules": {},
 
@@ -51,6 +51,7 @@
         // ── Compiler ──
         "al.compilationOptions": [],
         "al.incrementalBuild": false,
+        "al.useOfficialCompiler": false,
 
         // ── Debug adapter (EditorServices.Host) ──
         "al.editorServicesPath": null, // auto-discovered when null
@@ -65,8 +66,9 @@
         // ── Resource limits ──
         "al.maxDocumentSizeBytes": null, // null = no cap
 
-        // ── Escape hatch ──
-        "al.useOfficialLsp": false // true delegates to Microsoft's official AL LSP (needs ALTool v17+)
+        // ── Escape hatches ──
+        "al.useOfficialLsp": false, // true delegates to Microsoft's official AL LSP (needs ALTool v17+)
+        "al.useOfficialDap": false // true uses Microsoft EditorServices.Host for debugging
       }
     },
 

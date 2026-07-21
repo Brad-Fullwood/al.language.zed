@@ -9,7 +9,8 @@ real output (or inspect the screenshot), not just an exit code.
 | Parser / symbols / semantic / formatting / lint / metrics in a single crate | `cargo test -p <crate>` |
 | Anything crossing crates, or `al-lsp` LSP/daemon/MCP protocol behavior | crate unit tests **plus** the native harness: `cargo test -p al-test-harness` |
 | `al-explorer` CLI / TUI | `cargo test -p al-test-harness --test cli_smoke --test tui_smoke` |
-| tree-sitter grammar, `languages/al/*.scm`, `extension.toml`, language-server wiring, in-editor behavior | GUI e2e: `crates/al-test-harness/editor-e2e/drive.sh` — **open the screenshot** |
+| tree-sitter grammar or generator | Grammar crate/generator tests, fixture build, and `tree-sitter-al/tests/run_repo_tests.sh` |
+| `languages/al/*.scm`, `extension.toml`, language-server wiring, in-editor behavior | GUI e2e: `crates/al-test-harness/editor-e2e/drive.sh` — **open the screenshot** |
 | Native `.app` emit / `alc` / live semantic bridge | env-gated harness tests with `AL_TOOL_PATH=…` (see below) |
 | Generated artifacts (`languages/al`, grammar, themes) | `make repro-artifacts` (and `scripts/check-release-hygiene.sh`) |
 | Anything you intend to release | `make release-dryrun` |
@@ -21,10 +22,11 @@ cargo test -p al-syntax          # one crate
 cargo test --workspace --exclude zed-al   # whole engine (zed-al is a wasm-only cdylib)
 ```
 
-`zed-al` is excluded because it is a `wasm32-wasip1` `cdylib`; build it with
-`make wasm`, not `cargo test`. Unit tests prove a module in isolation; they do
-**not** prove the behavior survives the real binary's transport — that is what
-the native harness is for.
+`zed-al` is excluded from the native workspace command because its release
+artifact targets `wasm32-wasip1`. Run its host-side unit tests with
+`cargo test -p zed-al`, then build the actual extension with `make wasm`. Unit
+tests do not prove the behavior survives the real binary transport; that is what
+the native harness covers.
 
 ## 2. Native harness — the real binaries (`al-test-harness`)
 
@@ -130,6 +132,23 @@ from their sources with **no diff**:
 `scripts/check-release-hygiene.sh` independently enforces that `languages/al` is
 current (it runs the generator and fails on any diff), and that the generated
 grammar/query/data/theme artifacts exist — `make release-dryrun` calls it.
+
+`make repro-artifacts` is deliberately narrower than full grammar regeneration.
+After changing grammar or generator inputs, additionally run:
+
+```bash
+cd tree-sitter-al
+cargo test --all-targets
+cargo test --manifest-path generator/Cargo.toml --all-targets
+tree-sitter generate
+tree-sitter build -o target/al-parser.so
+tests/run_repo_tests.sh
+```
+
+The repository suite clones the repositories configured in
+`tests/test_repos.toml` and reports the parse rate. Record the tested repository
+revisions and the per-repository results. The corpus measures compatibility; it
+does not replace focused valid/invalid fixtures or editor inspection.
 
 ## 6. Release dry-run
 

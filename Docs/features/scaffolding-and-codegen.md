@@ -56,7 +56,7 @@ catalog). See the [CLI reference](../reference/cli-commands.md).
 | Aspect | This project | Microsoft AL extension |
 | --- | --- | --- |
 | New project | ✅ + Copilot/Agent/API templates | ✅ (`AL: Go!`, fewer templates) |
-| Page/report/test generators | ✅ in code (CLI entrypoint pending) | partial (snippets, some wizards) |
+| Page/report/test generators | ✅ CLI and daemon | partial (snippets, some wizards) |
 | Permission-set generation | ✅ (AL + XML, from objects) | ❌ (manual / generated permission set object) |
 
 Permission-set generation in particular is a native feature with no direct counterpart in the official
@@ -88,4 +88,7 @@ MCP reaches the same dispatcher operations through `al_call`: `newProject`, `per
 
 ## Limitations & roadmap
 
-- Templates are a fixed set; custom templates aren't supported yet.
+- User templates are loaded from `AL_TEMPLATES_DIR`,
+  `$XDG_CONFIG_HOME/al/templates`, or `~/.config/al/templates`. Each template directory contains
+  `template.json` and a `files/` tree. File names and contents support project placeholders;
+  traversal and symlink escapes are rejected.

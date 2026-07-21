@@ -11,10 +11,10 @@ There are three benchmark targets:
 |-------|-------|-----------|
 | `al-syntax` | `parser` | `parse`, `parse_incremental`, `format_al` (keystroke path) |
 | `al-test` | `interpreter` | arithmetic / string ops / record CRUD / filters / router classify |
-| `al-lsp` | `perf` | **symbol & insight engine** — cold load, warm lookup, completion, impact, trace (C6) |
+| `al-lsp` | `perf` | symbol and insight engine — cold load, warm lookup, completion, impact, trace |
 
-This note focuses on the `al-lsp perf` bench (gap **C6**). The other two are
-documented in their bench file headers.
+This note focuses on the `al-lsp perf` bench. The other two are documented in their bench file
+headers.
 
 ## Running
 
@@ -47,10 +47,6 @@ previous one) and every table relates to `BenchTable0`, so the `impact` and
 `trace` queries against object 0 exercise a realistic fan-in. To grow the
 workload, bump the SCALE constants — the generator is a pure function of them.
 
-> The bench can instead be pointed at a committed fixture
-> (`crates/al-test-harness/data/test_al_project`); the synthetic generator is
-> used by default because it is self-contained (no filesystem) and scalable.
-
 | Benchmark id | Hot path |
 |--------------|----------|
 | `symbols/cold_load_parse_index` | Parse SymbolReference JSON + index it (workspace-open cost) |
@@ -80,12 +76,11 @@ On a re-run Criterion appends `change: [...] (p = ...)` and flags
 
 ### The memory metric
 
-These are **time** benchmarks; Criterion does not measure memory. To answer the
-C6 "+ memory data" ask honestly, the bench prints one extra line to stderr
-exactly once per run, before the timings:
+These are time benchmarks; Criterion does not measure memory. The bench prints one additional line
+to stderr exactly once per run, before the timings:
 
 ```
-[C6 MEMORY] indexed_symbols=642 serialized_bytes=… bytes_per_symbol=… insight_nodes=… insight_edges=…
+[MEMORY] indexed_symbols=642 serialized_bytes=… bytes_per_symbol=… insight_nodes=… insight_edges=…
 ```
 
 - `indexed_symbols` — number of entries in the index (`SymbolIndex::len`).

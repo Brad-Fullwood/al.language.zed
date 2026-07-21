@@ -29,7 +29,7 @@ symbols, folding, formatting, and analysis all consume. It is transport-agnostic
 
 ### Parser (`parser.rs`)
 
-`AlParser` links the compiled C grammar via `extern "C" { fn tree_sitter_al() -> Language; }` and
+`AlParser` loads the grammar through the Rust binding's `tree_sitter_al::LANGUAGE` constant and
 offers three entry points:
 
 - `parse(text)` — full parse → `ParseResult`.
@@ -117,7 +117,7 @@ keyword/type/builtin lists from a single source of truth.
 ## Why this approach
 
 A tree-sitter front end gives error-resilient, incremental parsing that runs in-process in Rust on
-every surface — the editor, the CLI, CI, and AI tools — instead of being locked behind a .NET
+every surface — the editor, the CLI, CI, and MCP tools — instead of being locked behind a .NET
 language server. Driving the vocabulary from generated JSON data (rather than hard-coded lists) keeps
 the parser and the analysis layer in sync with the grammar and avoids the classic "the highlighter
 and the analyzer disagree about what a keyword is" drift.

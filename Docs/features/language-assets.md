@@ -9,8 +9,9 @@ files, snippets, themes, and JSON schemas for project files.
 > ⚠️ **Generated, do not hand-edit.** Everything in `languages/al/` is generated output (canonical
 > `.scm` queries are copied from `tree-sitter-al/queries`; Zed-specific config/tasks/runnables/etc.
 > come from generator templates), and `themes/bc-themes.json` is generated from Business Central VS
-> Code theme data. Edit the generators/templates and run `make language`, not these files. The
-> generator rejects unknown files under `languages/al/`.
+> Code theme data. Edit the generators or templates. Run `make language` for `languages/al/`, and
+> run `make grammar` for grammar data or themes. The generator rejects unknown files under
+> `languages/al/`.
 
 ## `languages/al/`
 
@@ -75,9 +76,9 @@ keeps Zed's parse view in sync with the native parser.
 ## How to use
 
 These load automatically when the extension is installed. To get project-file autocomplete/validation,
-add the `json.schemas` block from `examples/zed-settings.jsonc`. To regenerate after changing
-templates/queries: `make language` (fast path, no Microsoft AL extension or tree-sitter CLI required)
-or `make grammar` (full grammar regeneration).
+add the `json.schemas` block from `examples/zed-settings.jsonc`. Use `make language` after changing
+Zed templates or canonical queries. Use `make grammar` after changing grammar, extracted language
+data, or theme inputs; it requires the Microsoft AL extension and tree-sitter CLI.
 
 ## Limitations & roadmap
 

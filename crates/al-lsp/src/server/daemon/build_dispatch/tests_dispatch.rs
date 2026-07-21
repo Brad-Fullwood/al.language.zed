@@ -900,48 +900,7 @@ pub(in crate::server::daemon) fn dispatch_tests_classify(
     }
 }
 
-pub(in crate::server::daemon) async fn dispatch_tests_snapshot_record(
-    workspace: &Workspace,
-    id: u64,
-    params: &serde_json::Value,
-) -> Response {
-    let _ = workspace;
-    let codeunit_id = match params.get("codeunitId").and_then(|v| v.as_i64()) {
-        Some(n) => match i32::try_from(n) {
-            Ok(v) => v,
-            Err(_) => {
-                return rpc_error(id, error_codes::INVALID_PARAMS, "codeunitId out of range");
-            }
-        },
-        None => {
-            return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'codeunitId'");
-        }
-    };
-    let _method_name = match params.get("methodName").and_then(|v| v.as_str()) {
-        Some(s) => s.to_string(),
-        None => {
-            return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'methodName'");
-        }
-    };
-    let breakpoints = params.get("breakpoints").and_then(|v| v.as_array());
-    if breakpoints.is_none_or(|a| a.is_empty()) {
-        return rpc_error(
-            id,
-            error_codes::INVALID_PARAMS,
-            "Missing or empty 'breakpoints' array",
-        );
-    }
-    rpc_error(
-        id,
-        error_codes::INTERNAL_ERROR,
-        &format!(
-            "tests.snapshot_record (codeunit {codeunit_id}): live-BC bridge not yet wired \
-             — see test_snapshots::bc_debug_bridge"
-        ),
-    )
-}
-
-pub(in crate::server::daemon) async fn dispatch_tests_snapshot_replay(
+pub(in crate::server::daemon) async fn dispatch_tests_snapshot_validate(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
@@ -971,14 +930,10 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_replay(
             );
         }
     };
-    // No live observation yet — emit an info-only "Match" verdict so the
-    // caller can confirm the snapshot loads. Real verification arrives
-    // when the BC bridge is wired (see bc_debug_bridge.rs).
-    let verdict = al_snapshot::replayer::ReplayVerdict::Match;
     Response {
         id,
         result: Some(serde_json::json!({
-            "verdict": verdict,
+            "valid": true,
             "sampleCount": snapshot.samples.len(),
             "codeunitId": snapshot.codeunit_id,
             "methodName": snapshot.method_name,
@@ -2204,16 +2159,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_replay_missing_path_is_invalid_params() {
-        let resp = dispatch_tests_snapshot_replay(1, &serde_json::json!({})).await;
+    async fn snapshot_validate_missing_path_is_invalid_params() {
+        let resp = dispatch_tests_snapshot_validate(1, &serde_json::json!({})).await;
         let err = resp.error.expect("err");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("snapshotPath"));
     }
 
     #[tokio::test]
-    async fn snapshot_replay_unreadable_path_is_internal_error() {
-        let resp = dispatch_tests_snapshot_replay(
+    async fn snapshot_validate_unreadable_path_is_internal_error() {
+        let resp = dispatch_tests_snapshot_validate(
             2,
             &serde_json::json!({ "snapshotPath": "/nonexistent/snap.bin" }),
         )

@@ -46,5 +46,6 @@ dispatcher used by `al-explorer` and Zed tasks.
   `al_symbolsearch`, `al_getdiagnostics`, `al_runtests`); the rest are project-specific analyses.
 - MCP is platform-independent stdio on Linux, macOS, and Windows. The Zed context server requires
   `al-lsp` on `PATH` (`make install`); it does not use the LSP/DAP auto-download path at this scope.
-- Dedicated aliases may be added for discovery and richer schemas, but every shared operation is
-  already callable through `al_call`, including XLIFF, package inspection, and code actions.
+- Dedicated aliases may be added for discovery and richer schemas, but every daemon operation is
+  already callable through `al_call`, including XLIFF and code actions. Low-level package inspection
+  remains a library API rather than a daemon method.

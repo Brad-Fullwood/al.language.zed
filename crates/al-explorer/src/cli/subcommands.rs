@@ -10,7 +10,7 @@ use clap::Subcommand;
 #[derive(Subcommand)]
 pub enum TestSnapshotCommands {
     /// Validate and summarize a snapshot file.
-    Replay {
+    Validate {
         /// Path to the .snap.json file
         path: String,
     },

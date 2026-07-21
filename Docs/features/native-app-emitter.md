@@ -4,16 +4,14 @@
 `publish.rs`, `toolchain.rs`, `launch.rs`, `config.rs` · **Status:** ✅ shipped (verified native
 build is the default); `alc` compatibility/fallback retained
 
-This is one of the project's headline differentiators: a **pure-Rust compiler back end** that
-produces a deployable Business Central `.app` package directly from source — no `alc`, no .NET
-runtime, no C# bridge. It is the default for daemon `compile`, LSP `al.compile`, publish, and native
-DAP launch. Microsoft's `alc` remains available as an explicit fallback for full compile-time
-semantic validation.
+The pure-Rust compiler back end produces a Business Central `.app` directly from source without
+`alc`, .NET, or the C# bridge. It is the default for daemon `compile`, LSP `al.compile`, publish, and
+native DAP launch. Microsoft's `alc` remains available for full compiler semantics and compatibility
+validation.
 
-> **Verified native builds.** Fast packaging alone is not called “compile”. The default native path
-> parses and verifies the project, returns structured file/range diagnostics, rejects definite
-> errors, reopens the produced package, and atomically replaces the previous artifact only after all
-> checks pass. None of those checks requires Microsoft tooling.
+The default native path parses and verifies the project, returns structured file/range diagnostics,
+rejects blocking errors, reopens the produced package, and atomically replaces the previous artifact
+only after all checks pass. These checks do not require Microsoft tooling.
 
 ## What an `.app` is, and what the emitter produces
 
@@ -36,25 +34,25 @@ native emitter builds all of this from `app.json` + source + referenced package 
 | Assemble | `assemble.rs` | Generate OPC parts, implicit entitlements (Table→TableData RIMD + Execute; others→Execute), XLIFF (FNV name-hash trans-unit IDs), then write the package. |
 | Write package | `package.rs` | Build the 40-byte NAVX header (magic, format v2, random GUID, ZIP length) + Deflated ZIP. |
 
-### Byte-for-byte `alc` compatibility
+### `alc` compatibility
 
-The hard part of emitting a valid `.app` is matching `alc`'s `SymbolReference.json` exactly —
-including method-ID hashes, JSON key ordering, and group emission order. The emitter goes to
-considerable lengths:
+Compatibility depends heavily on the shape and identifiers in `SymbolReference.json`:
 
 - `method_id.rs` reproduces `alc`'s FNV-1 hash over **UTF-16LE** method names plus Microsoft's
   `Hash.Combine` (`((h<<5)+h+(h>>27))^h2`) and the system-codeunit positive-range adjustment.
 - `serde_json` is configured with `preserve_order` so `Map` keeps insertion order and reproduces
   `alc`'s key ordering.
-- The emit test suite compares native output against ALC-shaped fixtures, including **byte-identical
-  `SymbolReference.json` golden coverage** for the supported project fixture.
+- A focused golden fixture checks serialized `SymbolReference.json` bytes. The live differential
+  corpus compares parsed JSON values because archive metadata and output ordering are not a general
+  byte-for-byte package contract.
 - `.app` selection prefers the manifest-derived `{publisher}_{name}_{version}.app` name.
 
 ## Build orchestration (`crates/al-compile/src/lib.rs`, `toolchain.rs`)
 
 `al-compile` wraps the Microsoft `dotnet alc` path for when it is requested: it runs the compiler in a
-per-invocation temp dir (atomic rename of the `.app` into the project root, F-OPEN-058), is async,
-cancellable, timeout-aware (`AL_COMPILE_TIMEOUT_SECS`, default 600 s), and `kill_on_drop`. Compiler
+per-invocation temporary directory and moves the completed `.app` into the project root. It is
+asynchronous, cancellable, timeout-aware (`AL_COMPILE_TIMEOUT_SECS`, default 600 s), and
+`kill_on_drop`. Compiler
 output is normalized into structured diagnostics. `toolchain.rs` discovers ALTool/`alc.dll`,
 CodeAnalysis, the analyzer DLLs, and `.NET`, sets `DOTNET_ROLL_FORWARD=Major` so net8.0 tools run on
 newer runtimes, and locates `altool` for official-LSP delegation.
@@ -119,13 +117,13 @@ If `--validate` is requested but Microsoft tooling is unavailable, the command f
 not silently downgrade. This keeps Microsoft tooling an oracle and compatibility safety net rather
 than an architectural dependency.
 
-### Performance contract
+### Performance measurement
 
 Verification parses each file once and package assembly reuses that tree-derived model. Referenced
 package symbols remain cached in-process by `.alpackages` fingerprint, preserving the dominant warm
-build optimization. Benchmarks must report verification separately from emission and include cold,
-warm-unchanged and one-file-edit cases; the historical figures below predate the verification gate
-and must be refreshed before being presented as verified-build measurements.
+build optimization. Comparative benchmarks must report verification separately from emission and
+include cold, warm-unchanged, and one-file-edit cases. Previous measurements predate the current
+verification pipeline and are not presented as current performance results.
 
 ## Publish (`publish.rs`, `launch.rs`, `bc_client.rs`)
 
@@ -139,20 +137,10 @@ publishes a stale `.app`.
 
 ## Benchmarks
 
-From `BENCHMARKS.md` (13th-gen i5, identical `.alpackages`, native release build vs `alc` 17.0):
-
-| Project | Objects | Native (median) | `alc` (median) | Speedup |
-| --- | --: | --: | --: | --: |
-| small | 2 | **329 ms** | 3,720 ms | **11.3×** |
-| medium | 40 | **416 ms** | 4,152 ms | **10.0×** |
-| large | 200 | **385 ms** | 4,473 ms | **11.6×** |
-| xl | 800 | **458 ms** | 5,567 ms | **12.2×** |
-
-The *emit itself* is tiny (~2 ms for 2 objects, ~80 ms for 800); the flat ~330–460 ms floor is
-loading the referenced symbols (the 6 MB Base App), which is **cached in-process** keyed on a
-fingerprint of the `.app` files. In the long-running daemon (compile-on-save), the first build is
-~10–12× faster than `alc` and **every subsequent warm build is ~60–465× faster** (~8 ms for small,
-~90 ms for xl).
+[`BENCHMARKS.md`](../../BENCHMARKS.md) records the status of comparative measurements.
+[`Docs/benchmarks.md`](../benchmarks.md) documents the deterministic Criterion benchmarks used for
+native parser, interpreter, symbol-index, graph, and completion regressions. No current native-versus-
+`alc` speed ratio is claimed until the verified build pipeline is rerun under controlled conditions.
 
 > **Coverage boundary.** The native verifier rejects syntax, project/declaration integrity and the
 > declared-symbol binding errors listed above. It does not yet reproduce every Microsoft expression,
@@ -164,12 +152,12 @@ fingerprint of the `.app` files. In the long-running daemon (compile-on-save), t
 
 | Aspect | This project | Microsoft `alc` |
 | --- | --- | --- |
-| Implementation | pure Rust, instant startup | .NET app (CLR startup + JIT per invocation) |
+| Implementation | pure Rust | .NET application |
 | Work performed | parse → native verify → emit → package integrity check | parse → bind → type-check → emit |
-| Speed (historical emit-only benchmark) | 10–12× faster cold, 60–465× warm; verified-build refresh required | baseline |
+| Comparative performance | Current verified-pipeline measurement pending | Current verified-pipeline measurement pending |
 | Build-time validation | **yes** — shipped native syntax/project/declaration/declared-binding checks | **yes** — authoritative Microsoft semantics |
 | Optional parity | `pack-native --validate` runs native first, then `alc` | reference |
-| Output fidelity | byte-identical `SymbolReference.json` on the supported fixture | reference |
+| Output fidelity | Semantic `SymbolReference.json` parity on the live corpus; focused byte-level golden fixture | reference |
 | Availability | default; runs anywhere | `al.useOfficialCompiler: true` |
 
 ## Why this approach
@@ -191,18 +179,16 @@ in-process caches should make repeated verified builds reproducible and near-ins
   `package`, are available through `al_call`.
 - **Force Microsoft `alc`:** set `al.useOfficialCompiler: true`.
 
-## Limitations & roadmap
+## Limitations
 
-- ✅ Native verification is wired into every native build surface and invalid projects cannot replace
+- Native verification is wired into every native build surface and invalid projects cannot replace
   the last good artifact.
-- 🟡 Expand from declared-symbol binding into procedure-body expression/overload/control-flow checks;
+- Native verification does not yet cover every procedure-body expression, overload, or control-flow
+  rule;
   keep native verification and authoritative Microsoft compatibility results distinguishable.
-- 🟡 Control-property type inference and page-customization bindings against base-app symbols need
+- Control-property type inference and page-customization bindings against base-app symbols need
   broader differential coverage; `DocComments.xml` is emitted and covered by current fixtures.
-- 🟡 Compile-capable paths share the core build service and verifier, but cancellation/configuration
+- Compile-capable paths share the core build service and verifier, but cancellation/configuration
   policy and workspace-only graph diagnostics still need one uniform request abstraction.
-- `ROADMAP.md` (Native App Emission): expand fixtures across more object kinds/resources/dependencies/
-  profiles/permissions/reports/translations/control add-ins; differential-test against `alc` for
-  every fixture; expand invalid expression/overload/control-flow fixtures; benchmark verified
-  cold/warm/one-file-edit builds; validate emitted packages against a live BC tenant before
-  broadening claims.
+- Comparative performance and live-tenant compatibility need to be rerun against the current
+  verifier before publishing quantitative claims.

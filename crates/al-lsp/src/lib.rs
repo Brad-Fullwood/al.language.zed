@@ -3,12 +3,9 @@
 //! The engine itself is split across standalone crates (`al-syntax`,
 //! `al-symbols`, `al-semantic`, `al-analysis`, `al-insight`, `al-emit`,
 //! `al-compile`, `al-runtime`, `al-workspace`, `al-project`, `al-bc`,
-//! `al-source`, `al-dap`, `al-publish` — see `Docs/01-architecture.md` for the
-//! full layering). This crate hosts the `al-lsp` binary
-//! (`src/bin/al-lsp.rs`) and depends on those crates directly by their real
-//! names (`al_syntax::…`, `al_symbols::…`, `al_compile::…`, …); it no longer
-//! re-exports them under pre-split module names. `al-explorer` talks to this
-//! binary through the daemon over `al-protocol`.
+//! `al-source`, `al-dap`, and `al-publish`; see `Docs/architecture.md` for the
+//! full layering. This crate hosts the `al-lsp` binary, while `al-explorer`
+//! communicates with it through the `al-protocol` daemon transport.
 
 pub mod semantic;
 pub mod server;

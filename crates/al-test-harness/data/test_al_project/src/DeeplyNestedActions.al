@@ -1,7 +1,4 @@
-// T071 fixture: deeply-nested AL — page extension with nested action groups,
-// part actions, and triggers. Exercises the `actions { area { group { group { ... } } } }`
-// hierarchy that previously had no fixture coverage. Used by parser /
-// definition / completion smoke tests under crates/al-test-harness/tests.
+// Exercises nested action groups, part actions, and triggers.
 pageextension 50101 "Sales Order Pageext" extends "Sales Order"
 {
     actions
