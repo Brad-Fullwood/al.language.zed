@@ -862,46 +862,6 @@ pub(in crate::server::daemon) fn dispatch_tests_classify(
         ..Default::default()
     }
 }
-pub(in crate::server::daemon) async fn dispatch_tests_snapshot_record(
-    workspace: &Workspace,
-    id: u64,
-    params: &serde_json::Value,
-) -> Response {
-    let _ = workspace;
-    let codeunit_id = match params.get("codeunitId").and_then(|v| v.as_i64()) {
-        Some(n) => match i32::try_from(n) {
-            Ok(v) => v,
-            Err(_) => {
-                return rpc_error(id, error_codes::INVALID_PARAMS, "codeunitId out of range");
-            }
-        },
-        None => {
-            return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'codeunitId'");
-        }
-    };
-    let _method_name = match params.get("methodName").and_then(|v| v.as_str()) {
-        Some(s) => s.to_string(),
-        None => {
-            return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'methodName'");
-        }
-    };
-    let breakpoints = params.get("breakpoints").and_then(|v| v.as_array());
-    if breakpoints.is_none_or(|a| a.is_empty()) {
-        return rpc_error(
-            id,
-            error_codes::INVALID_PARAMS,
-            "Missing or empty 'breakpoints' array",
-        );
-    }
-    rpc_error(
-        id,
-        error_codes::INTERNAL_ERROR,
-        &format!(
-            "tests.snapshot_record (codeunit {codeunit_id}): live-BC bridge not yet wired \
-             — see test_snapshots::bc_debug_bridge"
-        ),
-    )
-}
 pub(in crate::server::daemon) async fn dispatch_tests_snapshot_replay(
     id: u64,
     params: &serde_json::Value,
@@ -2050,65 +2010,6 @@ mod tests {
             r["affected"].as_array().expect("array").is_empty(),
             "empty changedFiles must yield empty affected"
         );
-    }
-
-    #[tokio::test]
-    async fn snapshot_record_missing_codeunit_is_invalid_params() {
-        let ws = empty_ws();
-        let resp = dispatch_tests_snapshot_record(&ws, 1, &serde_json::json!({})).await;
-        let err = resp.error.expect("err");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("codeunitId"));
-    }
-
-    #[tokio::test]
-    async fn snapshot_record_rejects_out_of_range_codeunit() {
-        let ws = empty_ws();
-        let resp = dispatch_tests_snapshot_record(
-            &ws,
-            2,
-            &serde_json::json!({ "codeunitId": (i32::MAX as i64) + 1 }),
-        )
-        .await;
-        let err = resp.error.expect("err");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("out of range"));
-    }
-
-    #[tokio::test]
-    async fn snapshot_record_missing_breakpoints_is_invalid_params() {
-        // Past codeunitId + methodName validation, an empty breakpoints array
-        // must still be rejected — proving the guard fires, not the BC stub.
-        let ws = empty_ws();
-        let resp = dispatch_tests_snapshot_record(
-            &ws,
-            3,
-            &serde_json::json!({ "codeunitId": 50100, "methodName": "T", "breakpoints": [] }),
-        )
-        .await;
-        let err = resp.error.expect("err");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("breakpoints"));
-    }
-
-    #[tokio::test]
-    async fn snapshot_record_fully_valid_reaches_not_wired_stub() {
-        // All params valid → the dispatcher reaches the documented
-        // "not yet wired" INTERNAL_ERROR rather than an INVALID_PARAMS.
-        let ws = empty_ws();
-        let resp = dispatch_tests_snapshot_record(
-            &ws,
-            4,
-            &serde_json::json!({
-                "codeunitId": 50100,
-                "methodName": "T",
-                "breakpoints": [{ "file": "a.al", "line": 1 }],
-            }),
-        )
-        .await;
-        let err = resp.error.expect("err");
-        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
-        assert!(err.message.contains("not yet wired"));
     }
 
     #[tokio::test]

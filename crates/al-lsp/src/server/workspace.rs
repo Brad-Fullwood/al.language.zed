@@ -1175,9 +1175,6 @@ mod tests {
         assert_eq!(DownloadSource::NuGet.display_name(), "NuGet");
     }
 
-    /// (`al.nugetFeeds` / `al.useOnlyCustomFeeds` parity):
-    /// custom feeds take priority; defaults are appended unless the
-    /// only-custom flag is set.
     #[test]
     fn effective_feeds_honor_custom_and_only_flags() {
         let mut cfg = al_project::config::AlConfig::default();

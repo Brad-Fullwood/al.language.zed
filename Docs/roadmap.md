@@ -39,7 +39,7 @@ drift checks.
 - 🟡 Replace pattern-based routing with AST/call-graph classification; make affected-test detection
   graph-based.
 - 🟡 Upgrade static Cobertura-shaped coverage toward dynamic statement/procedure coverage.
-- 🟡 Wire snapshot record/replay to the live BC bridge (or clearly split file-diff vs live-replay).
+- 🟡 Add a live BC snapshot record/replay workflow; the current CLI only validates and compares files.
 - 🟡 Expand mutation testing beyond the starter mutators; make survival causes explicit.
 
 ### Native lint & diagnostics → [parsing-and-syntax](./features/parsing-and-syntax.md)

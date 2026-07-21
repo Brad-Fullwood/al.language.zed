@@ -122,7 +122,7 @@ errors as `{ "error": "…" }`). Run with no subcommand on Unix to open the TUI.
 | `test-affected <files…>` | — | Tests affected by changed files |
 | `test-results` | `--codeunit --method` | Persisted result history |
 | `test-mutate` | `--files … --parallel --timeout-ms N` | Mutation testing |
-| `test-snapshot` | `record <codeunit> --method --breakpoint F:L · replay <path> · diff <a> <b>` | Snapshot record/replay/diff |
+| `test-snapshot` | `replay <path> · diff <a> <b>` | Validate or compare snapshot files |
 
 ## Translation
 

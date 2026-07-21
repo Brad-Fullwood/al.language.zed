@@ -1879,11 +1879,6 @@ mod tests {
     use super::*;
     use al_symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
 
-    /// in the current grammar `[IntegrationEvent(...)]` parses as a
-    /// PRECEDING SIBLING of `procedure_declaration`, not a child. The method
-    /// extractor only walked children, so every workspace method reached the
-    /// SymbolIndex with zero attributes — making `events`/`subscribers` (and
-    /// insight Publishes edges) blind to workspace event publishers.
     #[test]
     fn extract_methods_captures_preceding_sibling_attributes() {
         let source = r#"codeunit 50101 "Test Event Publisher"
@@ -1929,10 +1924,6 @@ mod tests {
         );
     }
 
-    /// workspace TABLES must reach the SymbolIndex with their
-    /// FIELDS, so `generate page --table <workspace table>` can scaffold real
-    /// field controls (the primary scaffolding use case). Previously the
-    /// enrichment only extracted methods, leaving workspace tables hollow.
     #[test]
     fn workspace_enrichment_extracts_table_fields() {
         let source = r#"table 50100 "Test Customer"
@@ -1960,8 +1951,6 @@ mod tests {
         assert_eq!(fields[1].type_name, "Text[100]");
     }
 
-    /// the enrichment must populate `extends` for extension
-    /// objects so workspace extensions participate in composition.
     #[test]
     fn extends_target_extracted_from_extension_header() {
         let source = r#"tableextension 50100 "Test Customer Ext" extends "Test Customer"
@@ -2360,11 +2349,6 @@ mod tests {
         assert_eq!(score, 0, "Empty codeunit should have fanout score 0");
     }
 
-    /// regression: a workspace subscriber to a workspace event must be
-    /// reachable from `trace_event` — i.e. `register_workspace_nodes` must
-    /// produce the `SubscribesTo` EDGE, not just the Subscriber node.
-    /// Before the fix, `trace` printed `[origin]` lines and nothing else on
-    /// every real project.
     #[test]
     fn workspace_subscriber_appears_in_event_trace() {
         let publisher = r#"codeunit 50100 "Trace Publisher"
@@ -2412,10 +2396,6 @@ mod tests {
         );
     }
 
-    /// follow-on: subscribers to platform-implicit events (table
-    /// trigger events like OnAfterInsertEvent, never declared in AL) get a
-    /// synthesized Event node under the target object so the chain stays
-    /// traceable.
     #[test]
     fn implicit_table_event_subscriber_is_traceable() {
         let table = r#"table 50100 "Trace Table"

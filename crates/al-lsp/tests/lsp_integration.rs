@@ -1391,15 +1391,6 @@ fn suggest_event_integration_procedure_query() {
     assert!(result.integration_points.is_empty());
 }
 
-/// Real-world test: scan actual test project workspace files, build the full
-/// insight + call graph pipeline, and query for integration points.
-///
-/// Uses crates/al-test-harness/data/test_al_project/ which has:
-/// - CodeunitWithEvents.al: codeunit 50101 "Test Event Publisher" with
-///   OnBeforeProcess (IntegrationEvent, var params) and OnAfterProcess,
-///   plus DoProcess which calls both events.
-/// - MultiProcedure.al: codeunit 50104 with CallsOthers() calling SimpleProc(),
-///   WithReturn(), WithParams(), MultiReturn().
 #[test]
 fn suggest_event_real_workspace_files() {
     use al_analysis::queries::suggest_event::*;

@@ -80,8 +80,6 @@ mod tests {
         Workspace::new()
     }
 
-    /// positive: write_al_file_and_refresh writes to disk AND
-    /// updates documents + file_index + invalidates insight graph.
     #[test]
     fn write_helper_refreshes_documents_and_file_index() {
         let ws = empty_ws();
@@ -102,8 +100,6 @@ mod tests {
         );
     }
 
-    /// positive: rename_al_file_and_refresh moves the file on disk
-    /// AND drops the old file_index entry while adding the new one.
     #[test]
     fn rename_helper_refreshes_file_index_for_old_and_new_paths() {
         let ws = empty_ws();
@@ -130,9 +126,6 @@ mod tests {
         );
     }
 
-    /// negative: write_al_file_and_refresh propagates I/O errors
-    /// instead of silently succeeding. A path under a non-existent
-    /// directory must surface the underlying io::Error.
     #[test]
     fn write_helper_returns_io_error_for_unwritable_path() {
         let ws = empty_ws();

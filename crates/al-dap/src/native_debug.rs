@@ -439,16 +439,8 @@ mod timestamp_tests {
         assert!(s.starts_with("19") || s.starts_with("20"));
     }
 
-    /// Exact-value tests. The original suite only pinned the ISO-8601 *shape*
-    /// (out of caution that the hand-rolled calendar math might be off-by-one).
-    /// It isn't — these values were cross-checked against Python's `datetime`.
-    /// Pinning the real rendered string is a far stronger guard: it catches a
-    /// silently wrong date (e.g. an off-by-one in `days_to_civil` or a broken
-    /// h/m/s split) that the shape test would wave through.
     #[test]
     fn known_seconds_render_exact_date_and_time() {
-        // Non-zero hour/min/sec exercises the full hms decomposition, not just
-        // the all-zero epoch case.
         let t = UNIX_EPOCH + Duration::from_secs(1_778_160_318);
         assert_eq!(format_event_timestamp(t), "2026-05-07T13:25:18Z");
     }

@@ -1,13 +1,8 @@
-//! AL CLI mode — thin JSON-RPC client for the al-lsp daemon.
+//! CLI client for the al-lsp daemon.
 //!
 //! All business logic lives in the daemon. This module parses CLI arguments,
 //! connects to the daemon, sends JSON-RPC requests, and formats responses for
-//! human or `--json` output. Folded into al-explorer in stage 8 of the crate
-//! consolidation; previously the standalone `al-cli` crate.
-//!
-//! The argument types (`Cli`, `Commands`, and the nested subcommand enums) live
-//! in the `args` and `subcommands` submodules and are re-exported here; this
-//! file keeps the command routing (`run`).
+//! human or `--json` output.
 
 // edition 2024 turns collapsible_if into a hard error; the migrated code
 // pre-dates that and the patterns are intentional for readability.
@@ -26,8 +21,6 @@ use clap::CommandFactory;
 use clap_complete::generate;
 
 use commands::{build, debug, insight, lsp};
-
-// Entry point — invoked from al-explorer's main when CLI args are present.
 
 pub fn run(cli: Cli) -> ExitCode {
     match cli.command {

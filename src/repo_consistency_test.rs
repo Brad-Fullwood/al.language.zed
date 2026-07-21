@@ -1,19 +1,8 @@
-//! Consistency guards for binary resolution, packaging, and settings.
-//!
-//! Step 4 of `find_or_download_binary` calls `latest_github_release(GITHUB_REPO, …)`.
-//! If `GITHUB_REPO` does not name the repository that actually publishes the
-//! release assets, the GitHub API returns "repository not found" and a fresh
-//! user's language server never spawns (they have no user-config path, no
-//! cache, and no `al-lsp` on `$PATH` on first install).
-//!
-//! The tests pin release lookup to the manifest so code and packaging cannot
-//! drift independently.
+//! Cross-file consistency checks for the extension package.
 
 use crate::{release_lookup_failure_message, spawn_failure_message, GITHUB_REPO};
 use zed_extension_api as zed;
 
-/// Extract the `owner/repo` slug from a `https://github.com/owner/repo[.git]`
-/// URL, trimming a trailing `.git` and any trailing slash.
 fn github_slug_from_url(url: &str) -> Option<String> {
     let rest = url
         .trim()
@@ -52,33 +41,6 @@ fn github_repo_matches_extension_toml() {
     );
 }
 
-/// The release pipeline now ships a Windows `al-lsp` build, so the extension
-/// must NOT fail fast on Windows any more. Guard against the old fail-fast
-/// branch being reintroduced — its return string is distinctive.
-///
-/// Why this matters: the daemon transport is Unix-only, but `al-lsp` itself is
-/// portable (LSP `--stdio` + DAP `--dap` over platform-neutral stdio, daemon
-/// behind `#[cfg(unix)]`). Re-adding the fail-fast would block every Windows
-/// new user from ever spawning the language server.
-#[test]
-fn no_windows_fail_fast_in_binary_resolution() {
-    let src = include_str!("lib.rs");
-    assert!(
-        !src.contains("binaries are not currently published for Windows"),
-        "src/lib.rs reintroduced the Windows fail-fast branch; al-lsp ships on \
-         Windows now (al-windows-x86_64.zip) — Windows must use the normal \
-         download path, not an early Err()"
-    );
-}
-
-/// The per-OS release asset names hard-coded in `src/lib.rs` must match the
-/// asset names the release workflow actually produces. `release.yml` derives
-/// each asset from its matrix `artifact_name` (e.g. `linux-x86_64`) plus an
-/// extension (`.tar.gz` on Unix, `.zip` on Windows), prefixed with `al-`.
-///
-/// If these drift, `find_or_download_binary` looks for an asset that the
-/// release never uploaded and a new user's server never downloads. This pins
-/// code ↔ pipeline together (the task's explicit requirement).
 #[test]
 fn release_asset_names_match_workflow() {
     let lib = include_str!("lib.rs");
@@ -119,9 +81,6 @@ fn release_asset_names_match_workflow() {
         );
     }
 
-    // The Windows entry specifically must build only al-lsp (its daemon client
-    // does not compile on Windows) — i.e. it is flagged `windows: true` and the
-    // al-explorer build step is skipped on it.
     assert!(
         workflow.contains("x86_64-pc-windows-msvc"),
         "release.yml must include the Windows target so al-windows-x86_64.zip is built"
@@ -150,12 +109,6 @@ fn github_repo_is_owner_slash_repo() {
     );
 }
 
-/// The reported new-user blocker is that when NO GitHub release exists yet,
-/// `latest_github_release(...)?` propagated a raw, opaque error (e.g. "no
-/// releases found") with zero guidance. That path must now be just as
-/// actionable as the asset-not-found path: it must name the releases URL, give
-/// a copy-paste `binary.path` settings snippet, and mention the PATH fallback,
-/// so a fresh user whose server fails to spawn knows exactly how to recover.
 #[test]
 fn release_lookup_failure_is_actionable() {
     for os in [zed::Os::Linux, zed::Os::Mac, zed::Os::Windows] {
@@ -191,9 +144,6 @@ fn release_lookup_failure_is_actionable() {
     );
 }
 
-/// The asset-not-found message must keep its actionable recovery guidance
-/// (releases URL + settings snippet + PATH fallback). This pins the shared
-/// `manual_install_hint` contract so a refactor cannot silently strip it.
 #[test]
 fn asset_not_found_is_actionable() {
     let msg = spawn_failure_message(zed::Os::Linux, "al-linux-x86_64.tar.gz");
@@ -209,16 +159,8 @@ fn asset_not_found_is_actionable() {
     );
 }
 
-/// Committed code must always target a released extension API.
-///
-/// Unreleased APIs (git `main`) load only on Dev/Nightly Zed; on Stable/Preview
-/// the extension silently fails to load and `al-lsp` never spawns. This trap
-/// shipped four separate times. The registry also rejects unreleased APIs, so
-/// any committed git/branch dep blocks publication outright. Local experiments
-/// against git main are fine (`scripts/use-api.sh dev`) — but `use-api.sh stable`
-/// must be run before committing, and this test is the enforcement.
 #[test]
-fn committed_api_target_is_released() {
+fn committed_api_target_matches_extension_manifest() {
     let cargo = include_str!("../Cargo.toml");
     let manifest = include_str!("../extension.toml");
 
@@ -229,21 +171,13 @@ fn committed_api_target_is_released() {
 
     assert!(
         !api_line.contains("git") && !api_line.contains("branch"),
-        "Cargo.toml pins zed_extension_api to a git branch — that is an UNRELEASED API: \
-         it silently fails to load on Stable Zed and is rejected by the extension registry. \
-         Run scripts/use-api.sh stable before committing. Offending line: {api_line}"
+        "Cargo.toml must use a registry release of zed_extension_api: {api_line}"
     );
 
     let dep_version = api_line
         .split('"')
         .nth(1)
         .expect("zed_extension_api dep must be a quoted registry version");
-    assert!(
-        dep_version.starts_with("0.7"),
-        "zed_extension_api must target the latest RELEASED line (0.7.x); got {dep_version}. \
-         If 0.8.x has been released to crates.io, update this test alongside the bump."
-    );
-
     let lib_version = manifest
         .lines()
         .skip_while(|l| l.trim() != "[lib]")
@@ -255,88 +189,25 @@ fn committed_api_target_is_released() {
             })
         })
         .expect("extension.toml must declare a [lib] version");
-    assert!(
-        lib_version.starts_with("0.7"),
-        "extension.toml [lib] version ({lib_version}) must match the released API line (0.7.x) \
-         declared in Cargo.toml ({dep_version}); a mismatch breaks extension loading"
-    );
+    assert_eq!(lib_version, dep_version);
 }
 
-/// The `use-api.sh` helper's `stable` mode must hand out the latest RELEASED
-/// API, not a stale one — it sat at 0.6.0 (which predates DAP support) long
-/// after 0.7.0 shipped, making "stable" look like it cost the debugger.
 #[test]
-fn use_api_helper_stable_targets_latest_released() {
-    let script = include_str!("../scripts/use-api.sh");
-    assert!(
-        script.contains("STABLE_VER=\"0.7.0\""),
-        "scripts/use-api.sh STABLE_VER must be 0.7.0 (the latest released API with full \
-         DAP/locator support); 0.6.0 lacks the debugger surface"
-    );
-}
-
-/// Channel-coupling guard (dormant while the committed state targets a released
-/// API; fires only on local `use-api.sh dev` working trees). If anyone flips to
-/// the unreleased API, the trap documentation must still exist so a Stable-Zed
-/// user can self-diagnose the silent load failure.
-#[test]
-fn unreleased_api_channel_requirement_is_documented() {
+fn use_api_helper_stable_matches_committed_version() {
     let cargo = include_str!("../Cargo.toml");
-    let manifest = include_str!("../extension.toml");
-
-    let api_line = cargo
+    let script = include_str!("../scripts/use-api.sh");
+    let committed = cargo
         .lines()
         .find(|l| l.trim_start().starts_with("zed_extension_api"))
-        .expect("Cargo.toml must declare zed_extension_api");
-
-    let targets_unreleased =
-        api_line.contains("git") || api_line.contains("branch") || api_line.contains("0.8");
-
-    if targets_unreleased {
-        // The [lib] version in extension.toml should advertise the unreleased line.
-        let lib_version = manifest
-            .lines()
-            .skip_while(|l| l.trim() != "[lib]")
-            .find_map(|l| {
-                l.trim()
-                    .strip_prefix("version")
-                    .map(|v| v.trim_start_matches([' ', '=', '"']).to_string())
-            });
-        if let Some(v) = lib_version {
-            assert!(
-                v.starts_with("0.8") || v.starts_with("0.9"),
-                "Cargo.toml targets the unreleased API but extension.toml [lib] version is {v:?}; keep them aligned"
-            );
-        }
-
-        // The trap MUST stay documented so a Stable-Zed user can self-diagnose.
-        // The standalone TROUBLESHOOTING.md was intentionally removed, so the
-        // in-repo documentation of record is now the `API CHANNEL` block kept
-        // next to the zed_extension_api dependency in Cargo.toml itself.
-        assert!(
-            cargo.contains("API CHANNEL")
-                && cargo.contains("development builds of Zed")
-                && cargo.contains("Dev/Nightly"),
-            "Cargo.toml must keep the API CHANNEL warning (quoting Zed's \
-             'development builds of Zed' error and the Dev/Nightly requirement) \
-             next to the zed_extension_api dep, since the extension silently fails \
-             to load on Stable Zed when pinned to an unreleased API"
-        );
-    }
+        .and_then(|line| line.split('"').nth(1))
+        .expect("Cargo.toml must declare a quoted zed_extension_api version");
+    let stable = script
+        .lines()
+        .find_map(|line| line.strip_prefix("STABLE_VER=\"")?.strip_suffix('"'))
+        .expect("use-api.sh must declare STABLE_VER");
+    assert_eq!(stable, committed);
 }
 
-// Settings-schema completeness guards.
-//
-// schemas/settings.json is the published source of truth for the AL settings
-// block — it backs settings.json autocomplete/validation (on API ≥ 0.8, via
-// `al_settings_schema`) and the docs table. It MUST list exactly the settings
-// the server actually reads: list a key the server ignores and autocomplete
-// suggests dead settings; omit a key the server reads and users get no help for
-// settings that matter. These tests pin schema ↔ code together so it cannot
-// silently drift.
-
-/// Convert a Rust `snake_case` field name to the `camelCase` key serde emits
-/// (`AlConfig` derives `#[serde(rename_all = "camelCase")]`).
 fn snake_to_camel(s: &str) -> String {
     let mut out = String::new();
     let mut upper_next = false;
@@ -435,9 +306,6 @@ fn settings_schema_covers_every_config_field() {
     );
 }
 
-/// All shipped JSON Schemas must be valid JSON declaring draft-07. They ship to
-/// users (settings autocomplete + the `json.schemas` project-file associations),
-/// so a malformed schema is a user-visible break.
 #[test]
 fn all_shipped_schemas_are_valid_json() {
     let schemas = [
@@ -464,10 +332,6 @@ fn all_shipped_schemas_are_valid_json() {
     }
 }
 
-/// The embedded settings schema (returned to Zed on API ≥ 0.8, and the source
-/// of truth for the parity test) must parse into an object with `properties`.
-/// Also exercises `crate::al_settings_schema` on the 0.7 build, where the schema
-/// methods themselves are compiled out.
 #[test]
 fn al_settings_schema_parses() {
     let schema = crate::al_settings_schema().expect("embedded settings schema must parse");

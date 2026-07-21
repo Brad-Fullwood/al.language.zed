@@ -1,24 +1,4 @@
-//! End-to-end integration test for the snapshot record→serialize→deserialize→replay→diff cycle.
-//!
-//! Uses a `FakeSession` (mock `DebuggerSession`) that emits scripted Break events
-//! with synthetic variable values.  No live BC instance is required.
-//!
-//! # Test plan
-//!
-//! ## Positive cases
-//! - `e2e_clean_replay`: record a snapshot with two breakpoints, serialize it,
-//!   deserialize it, replay with identical synthetic variables, assert `Match`.
-//! - `e2e_multi_bp_clean_replay`: two distinct breakpoints, correct ordering.
-//! - `e2e_empty_session_clean_replay`: session with no Break events → empty
-//!   snapshot round-trips cleanly and replays as `Match`.
-//!
-//! ## Negative cases
-//! - `e2e_injected_divergence_detected`: mutate one field in the replayed
-//!   variable state → assert `Diverged` with the expected `field_path`.
-//! - `e2e_missing_sample_on_replay_detected`: replay session fires fewer Break
-//!   events than recorded → assert `Diverged` (missing sample).
-//! - `e2e_extra_sample_on_replay_detected`: replay session fires more Break
-//!   events than recorded → assert `Diverged` (extra sample).
+//! Snapshot recording and replay integration tests using a scripted debug session.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -29,14 +9,8 @@ use al_snapshot::{
     SnapshotReplayer,
 };
 
-/// A fake debug session that emits a predetermined sequence of variable payloads
-/// when Break events are requested, then terminates.
 struct FakeSession {
-    /// Remaining variable payloads; each entry represents one Break event.
-    /// `wait_for_break` returns `true` and `get_variables` returns the front
-    /// value, until the deque is exhausted.
     events: Arc<Mutex<VecDeque<serde_json::Value>>>,
-    /// Auto-incrementing breakpoint ID counter.
     next_bp_id: Arc<Mutex<u32>>,
 }
 

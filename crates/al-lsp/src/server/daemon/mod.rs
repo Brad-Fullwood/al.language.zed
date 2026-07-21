@@ -1,35 +1,7 @@
-//! Daemon mode — JSON-RPC server over Unix socket.
-//!
-//! `al-lsp daemon --project /path/to/project` starts a daemon that:
-//! - Listens on a deterministic Unix socket path
-//! - Initializes a Workspace for the given project
-//! - Accepts JSON-RPC requests and routes them to core queries
-//! - Auto-shuts down after 30 minutes of idle
-//!
-//! # Platform support
-//!
-//! The daemon transport is **Unix-only**: it binds an `AF_UNIX` socket
-//! (`tokio::net::UnixListener`) and its client (`al_protocol::client`,
-//! also `#[cfg(unix)]`) connects over `std::os::unix::net::UnixStream`.
-//! Windows has no equivalent here, so the socket-bound transport
-//! (`run_daemon`, `handle_connection`, the `SocketCleanup` guard) is
-//! gated behind `#[cfg(unix)]`. On Windows, [`run_daemon`]
-//! returns an explanatory error.
-//!
-//! Crucially, the request-dispatch logic (`dispatch_request` and the
-//! `*_dispatch` submodules) and the framing helper (`read_bounded_line`)
-//! are **platform-independent** and compile everywhere — this is what lets
-//! the `al-lsp` binary build for `x86_64-pc-windows-msvc` so the Zed
-//! extension can ship a Windows asset while only LSP (`--stdio`) and DAP
-//! (`--dap`) modes are wired up there.
+//! JSON-RPC daemon over a Unix domain socket.
 
-// The request-dispatch machinery below (these submodules, `dispatch_request`,
-// and the `extract_*`/`require_*` helpers) is pure logic over `Workspace` and
-// compiles on every platform. It is, however, only *reachable* through the
-// Unix-only socket transport (`run_daemon` → `handle_connection`). On non-Unix
-// targets that transport is unavailable, leaving this surface unreferenced, so we
-// allow dead code there rather than fragmenting every helper with `#[cfg]`.
-// `al-lsp` still ships on Windows for its portable LSP/DAP modes.
+// Dispatch stays platform-neutral because Windows builds still provide stdio
+// LSP and DAP modes; only the socket transport is Unix-specific.
 #![cfg_attr(not(unix), allow(dead_code))]
 
 mod build_dispatch;
@@ -49,6 +21,7 @@ use al_protocol::jsonrpc::{error_codes, Request, Response, RpcError};
 #[cfg(unix)]
 use al_protocol::socket_path;
 use al_workspace::Workspace;
+use serde::Serialize;
 use tokio::io::AsyncBufReadExt;
 #[cfg(unix)]
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -402,15 +375,6 @@ async fn handle_connection(
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
-    // previously a 50 ms ring-buffer dedup over hover / completions /
-    // signatureHelp / inlayHints replied to repeat requests with `null` /
-    // `[]`. Editors that legitimately re-issue these (debounce flush, retry
-    // after typing, parallel daemon clients) saw missing-info flicker.
-    // Removed entirely — real coalescing requires keeping the request IDs
-    // around to replay the completed result, and the workload here is small
-    // enough that running the dispatch twice is cheaper than the
-    // correctness debt.
-
     while let Some(line) = read_bounded_line(&mut reader, MAX_MESSAGE_SIZE).await? {
         let line = line.trim();
         if line.is_empty() {
@@ -575,9 +539,6 @@ pub(crate) async fn dispatch_request(
         }
         "tests.affected" => build_dispatch::dispatch_tests_affected(workspace, id, &params),
         "tests.classify" => build_dispatch::dispatch_tests_classify(workspace, id),
-        "tests.snapshot_record" => {
-            build_dispatch::dispatch_tests_snapshot_record(workspace, id, &params).await
-        }
         "tests.snapshot_replay" => {
             build_dispatch::dispatch_tests_snapshot_replay(id, &params).await
         }
@@ -712,6 +673,25 @@ pub(crate) fn invalid_params(id: u64) -> Response {
             message: "Missing or invalid parameters".to_string(),
         }),
         ..Default::default()
+    }
+}
+
+pub(crate) fn serialized_response<T: Serialize>(id: u64, value: &T, method: &str) -> Response {
+    match serde_json::to_value(value) {
+        Ok(value) => Response {
+            id,
+            result: Some(value),
+            error: None,
+            ..Default::default()
+        },
+        Err(error) => {
+            tracing::error!(method, %error, "failed to serialize daemon response");
+            rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("failed to serialize {method} response: {error}"),
+            )
+        }
     }
 }
 
@@ -1271,11 +1251,6 @@ mod tests {
         assert_eq!(err.message, "boom");
     }
 
-    /// `rules` is a static query (lint rule catalogue) needing no project; it
-    /// must route through `dispatch_request` and return a JSON array result
-    /// with no error. (The catalogue itself is currently empty because all
-    /// diagnostics come from the .NET bridge, but the routing + JSON shape
-    /// are what we pin here.)
     #[tokio::test]
     async fn dispatch_rules_returns_array_result() {
         let ws = std::sync::Arc::new(al_workspace::Workspace::new());
@@ -1300,8 +1275,6 @@ mod tests {
         assert_eq!(arr, Some(vec![]));
     }
 
-    /// `entrypoints` builds the insight graph lazily; on a fresh (empty)
-    /// workspace it must still succeed and return a JSON array.
     #[tokio::test]
     async fn dispatch_entrypoints_succeeds_on_empty_workspace() {
         let ws = std::sync::Arc::new(al_workspace::Workspace::new());
@@ -1312,9 +1285,6 @@ mod tests {
         assert!(resp.result.expect("entrypoints result").is_array());
     }
 
-    /// `hover` requires uri + position; with null params (the default when the
-    /// wire omits `params`) it must route through and surface INVALID_PARAMS,
-    /// proving both the routing entry and the shared `invalid_params` helper.
     #[tokio::test]
     async fn dispatch_hover_without_params_is_invalid_params() {
         let ws = std::sync::Arc::new(al_workspace::Workspace::new());
@@ -1326,9 +1296,6 @@ mod tests {
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
     }
 
-    /// Routing for synchronous LSP methods that also validate params. Each must
-    /// be reachable via `dispatch_request` and return INVALID_PARAMS for the
-    /// empty-params case — this covers a swath of the routing table at once.
     #[tokio::test]
     async fn dispatch_param_validating_methods_route_and_reject_empty_params() {
         let ws = std::sync::Arc::new(al_workspace::Workspace::new());
@@ -1365,8 +1332,6 @@ mod tests {
         }
     }
 
-    /// `object` requires a `kind` param; an unknown kind string must route
-    /// through `parse_object_kind` and surface INVALID_PARAMS naming the input.
     #[tokio::test]
     async fn dispatch_object_with_bad_kind_is_invalid_params() {
         let ws = std::sync::Arc::new(al_workspace::Workspace::new());
@@ -1380,8 +1345,6 @@ mod tests {
         assert!(err.message.contains("notakind"));
     }
 
-    /// The request id must be threaded through to the response for the
-    /// not-found path too — a regression here would mismatch client futures.
     #[tokio::test]
     async fn dispatch_preserves_request_id_on_unknown_method() {
         let ws = std::sync::Arc::new(al_workspace::Workspace::new());

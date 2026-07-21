@@ -499,9 +499,6 @@ mod tests {
         assert!(url.contains("&tenant=default"), "unexpected URL: {url}");
     }
 
-    /// Regression for the OnPrem path-encoding gap: a server instance with
-    /// reserved characters must be percent-encoded in the URL path, matching
-    /// the Cloud path's encoding of tenant/environment.
     #[test]
     fn dev_packages_url_onprem_instance_path_encoded() {
         let mut cfg = onprem_config();

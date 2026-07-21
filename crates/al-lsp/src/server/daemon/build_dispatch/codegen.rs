@@ -713,9 +713,6 @@ mod tests {
         assert!(err.message.contains("NoSuchTable"));
     }
 
-    /// `generate page --table` must work against WORKSPACE tables
-    /// (the primary scaffolding use case), with real field controls from the
-    /// table's field sections — not just .app package tables.
     #[test]
     fn generate_page_scaffolds_workspace_table_with_fields() {
         let ws = empty_ws();
@@ -763,10 +760,6 @@ mod tests {
         );
     }
 
-    /// `generate test --subject <codeunit>` must reach the
-    /// subject-driven stub generator (`generate_test_stubs`) and emit a
-    /// `[Test]` procedure per public method of the named codeunit. Previously
-    /// the `subject` param was ignored, so this path was unreachable.
     #[test]
     fn generate_test_with_subject_codeunit_emits_test_stubs() {
         let ws = empty_ws();
@@ -828,8 +821,6 @@ mod tests {
         );
     }
 
-    /// A named-but-missing subject must surface an error rather than
-    /// silently degrading to the no-subject placeholder.
     #[test]
     fn generate_test_with_unknown_subject_is_invalid_params() {
         let ws = empty_ws();
@@ -852,8 +843,6 @@ mod tests {
         );
     }
 
-    /// With no subject, the test generator still produces a valid
-    /// placeholder test codeunit (no error, contains `[Test]`).
     #[test]
     fn generate_test_without_subject_emits_placeholder() {
         let ws = empty_ws();

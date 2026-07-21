@@ -449,9 +449,6 @@ mod tests {
         assert_eq!(resp["error"]["code"], -32602);
     }
 
-    /// Every registered tool must advertise a well-formed JSON Schema and a
-    /// non-empty description, and every `required` field must actually be
-    /// declared in `properties` (otherwise an agent cannot satisfy it).
     #[test]
     fn every_tool_has_a_valid_schema_and_description() {
         for t in tools() {
@@ -492,8 +489,6 @@ mod tests {
         }
     }
 
-    /// The agent surface (suggest-event, test-classify,
-    /// test-coverage, dependency-graph) is registered and listed.
     #[tokio::test]
     async fn tools_list_includes_the_broadened_agent_surface() {
         let resp = handle_mcp_message(

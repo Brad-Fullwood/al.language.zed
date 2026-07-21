@@ -30,7 +30,7 @@ A complete list lives in the [CLI command reference](../reference/cli-commands.m
 - **Debug/profiling:** `debug {start|breakpoint|state|eval|continue|step|history|stop}`,
   `snapshot {start|list|download}`, `profile {start|stop|analyze}`.
 - **Tests:** `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`,
-  `test-classify`, `test-snapshot {record|replay|diff}`, `test-results`.
+  `test-classify`, `test-snapshot {replay|diff}`, `test-results`.
 - **Translation:** `xlf {generate|refresh|untranslated|suggest}`.
 
 ### `--json` mode

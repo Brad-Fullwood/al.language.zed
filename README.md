@@ -234,7 +234,7 @@ The CLI command surface includes:
 - Tests: `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`, `test-classify`, `test-snapshot`, `test-results`.
 - Translation: `xlf`.
 
-Nested command groups include `debug start|breakpoint|state|eval|continue|step|history|stop`, `snapshot start|list|download`, `profile start|stop|analyze`, `test-snapshot record|replay|diff`, and `xlf generate|refresh|untranslated|suggest`.
+Nested command groups include `debug start|breakpoint|state|eval|continue|step|history|stop`, `snapshot start|list|download`, `profile start|stop|analyze`, `test-snapshot replay|diff`, and `xlf generate|refresh|untranslated|suggest`.
 
 ### Daemon Protocol
 

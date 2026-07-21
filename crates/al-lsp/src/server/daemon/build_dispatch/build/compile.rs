@@ -454,9 +454,6 @@ mod tests {
         );
     }
 
-    /// Native-first compile policy: the default `compile` path uses the pure-Rust
-    /// native `.app` emitter — no C# bridge, no `dotnet alc`. It must succeed and
-    /// produce an `appPath` from project source alone (no bridge available here).
     #[tokio::test]
     async fn compile_uses_native_emitter_without_bridge_or_alc() {
         let ws = empty_ws();

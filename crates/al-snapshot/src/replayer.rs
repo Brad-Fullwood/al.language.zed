@@ -29,8 +29,6 @@ pub enum ReplayerError {
     Io(#[from] std::io::Error),
     #[error("Parse error: {0}")]
     Parse(String),
-    #[error("not yet wired: {0}")]
-    NotYetWired(String),
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

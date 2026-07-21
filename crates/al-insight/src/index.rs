@@ -774,9 +774,6 @@ mod tests {
         assert_eq!(cg.callers_of(c).len(), 1);
     }
 
-    /// Reverse reachability must follow a transitive chain A → B → H and
-    /// must NOT pull in unrelated nodes. Seeding with H returns {H, B, A};
-    /// seeding with an unrelated node U returns only {U}.
     #[test]
     fn reachable_callers_transitive_chain() {
         let index = SymbolIndex::new();

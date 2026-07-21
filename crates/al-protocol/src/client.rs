@@ -498,7 +498,6 @@ mod tests {
         assert!(result.unwrap_err().contains("initializing"));
     }
 
-    /// Connecting to a path that does not exist must return an error, not panic.
     #[test]
     fn test_connect_invalid_path_returns_error() {
         let bogus = std::path::Path::new("/nonexistent/path/that/cannot/be/a.sock");
@@ -507,7 +506,6 @@ mod tests {
         // itself reports a problem — by opening a regular file and trying to use it as a socket.
         let tmp = std::env::temp_dir().join(format!("al-invalid-{}.txt", std::process::id()));
         std::fs::write(&tmp, b"not a socket").expect("test");
-        // UnixStream::connect to a regular file fails on Linux
         let result = UnixStream::connect(&tmp);
         let _ = std::fs::remove_file(&tmp);
         assert!(
@@ -521,12 +519,6 @@ mod tests {
         );
     }
 
-    /// If the server sends a response whose `id` does not match any pending request,
-    /// the mismatched message must not corrupt subsequent responses.
-    ///
-    /// This is tested by building two clients on separate sockets — one whose mock
-    /// server sends back a wrong `id` (id=999 when request id=1) and one that sends
-    /// the correct id — confirming the error path is distinct from the success path.
     #[test]
     fn test_response_id_mismatch_is_still_parsed() {
         fn mock_wrong_id_daemon(sock_path: &Path) -> (UnixListener, std::thread::JoinHandle<()>) {
@@ -565,10 +557,6 @@ mod tests {
         );
     }
 
-    /// A daemon that connects but never reads must not hang the client
-    /// forever. `from_stream` sets a write timeout; once a short timeout is
-    /// applied and the socket send buffer fills, `request` must return a
-    /// bounded error instead of blocking indefinitely.
     #[test]
     fn write_to_nonreading_daemon_times_out() {
         let sock = unique_sock();
@@ -592,9 +580,6 @@ mod tests {
         );
         client.set_write_timeout(Duration::from_millis(200));
 
-        // Send large payloads until a write fails. With a bounded write
-        // timeout this terminates quickly; without it (the bug), the loop
-        // would block forever on a full send buffer.
         let big = serde_json::json!({ "blob": "x".repeat(64 * 1024) });
         let mut err = None;
         for _ in 0..2000 {
@@ -619,10 +604,8 @@ mod tests {
         assert_eq!(result.as_deref(), Some("hello world"));
     }
 
-    /// Reject a line before the buffer grows beyond the configured cap.
     #[test]
     fn bounded_read_rejects_line_exceeding_cap() {
-        // 100 bytes, no newline; cap is 5 bytes.
         let payload = [b'X'; 100];
         let mut reader = std::io::BufReader::new(&payload[..]);
         let err = read_bounded_line(&mut reader, 5, None).expect_err("must reject oversized line");
@@ -638,10 +621,6 @@ mod tests {
         assert!(result.is_none());
     }
 
-    /// A stream that ends mid-UTF-8-sequence at EOF
-    /// (e.g. the daemon dies after writing the lead byte `0xC3` of `é`)
-    /// must surface an `InvalidData` error, never panic or silently
-    /// truncate. The buffered bytes go through `String::from_utf8`.
     #[test]
     fn bounded_read_rejects_incomplete_utf8_at_eof() {
         // 0xC3 is a 2-byte-sequence lead byte; no continuation, no newline.
@@ -652,9 +631,6 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
-    /// The newline-terminated path also
-    /// runs through `String::from_utf8`, so an incomplete sequence right
-    /// before the `\n` must likewise yield `InvalidData`.
     #[test]
     fn bounded_read_rejects_incomplete_utf8_before_newline() {
         // Lead byte 0xC3 followed immediately by the newline terminator.
@@ -665,10 +641,6 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
-    /// The client's `read_bounded_line` returns an empty `String`
-    /// for a bare `\n` line (the daemon skips these, but the client must
-    /// not panic). `read_response` then surfaces a graceful parse error
-    /// for the empty payload rather than corrupting the stream.
     #[test]
     fn empty_line_yields_empty_string_then_graceful_parse_error() {
         let payload: &[u8] = b"\n";
@@ -676,9 +648,6 @@ mod tests {
         let result = read_bounded_line(&mut reader, 64, None).expect("bare newline must not error");
         assert_eq!(result.as_deref(), Some(""));
 
-        // A mock daemon that replies with a blank line before the real
-        // response would make the client see an empty payload. Confirm the
-        // client turns that into a graceful Err, never a panic.
         let sock = unique_sock();
         fn mock_blank_then_ok(sock_path: &Path) -> (UnixListener, std::thread::JoinHandle<()>) {
             let listener = UnixListener::bind(sock_path).expect("test");
@@ -719,7 +688,6 @@ mod tests {
         }
     }
 
-    /// A concurrent acquirer must not start a second daemon.
     #[test]
     fn spawn_lock_second_acquirer_is_contended() {
         let sock = unique_sock();
@@ -747,10 +715,6 @@ mod tests {
         }
     }
 
-    /// STALE_LOCK_AGE must comfortably exceed the
-    /// daemon-spawn wait window, otherwise a slow but live spawn
-    /// would be incorrectly classified as stale and clobbered.
-    /// `wait_for_daemon` polls 50 × 100ms = 5s.
     #[test]
     fn stale_lock_age_exceeds_spawn_wait_window() {
         assert!(
@@ -759,9 +723,7 @@ mod tests {
         );
     }
 
-    /// `find_al_lsp_binary` and these tests mutate the process-global `PATH`
-    /// env var, which cannot run concurrently with other env-reading tests.
-    /// Serialise them on a local mutex (no extra dev-dependency needed).
+    // Serializes tests that mutate the process-wide PATH.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn unique_dir(tag: &str) -> PathBuf {
@@ -776,15 +738,10 @@ mod tests {
         dir
     }
 
-    /// `find_al_lsp_binary` must locate an `al-lsp` file living in a PATH
-    /// directory when none sits next to the current exe. This exercises the
-    /// PATH-search branch (lines 344-351) and the success return.
     #[test]
     fn find_al_lsp_binary_locates_in_path() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Guard: if the test runner's own dir happens to hold an `al-lsp`,
-        // the next-to-exe branch wins first and this test is moot. Skip then.
         if let Ok(exe) = std::env::current_exe() {
             if exe.parent().map(|d| d.join("al-lsp").exists()) == Some(true) {
                 return;
@@ -812,9 +769,6 @@ mod tests {
         );
     }
 
-    /// Negative: with an empty PATH and no `al-lsp` beside the exe,
-    /// `find_al_lsp_binary` returns the documented not-found error
-    /// (line 352) rather than panicking.
     #[test]
     fn find_al_lsp_binary_missing_returns_error() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -842,9 +796,6 @@ mod tests {
         );
     }
 
-    /// A non-file entry named `al-lsp` on PATH (here: a *directory*) must be
-    /// skipped — `is_file()` guards against treating a directory as the
-    /// binary. The search then falls through to the not-found error.
     #[test]
     fn find_al_lsp_binary_skips_non_file_on_path() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -871,10 +822,6 @@ mod tests {
         assert!(err.contains("Cannot find al-lsp binary"), "got: {err}");
     }
 
-    /// A `.lock` file older than `STALE_LOCK_AGE`
-    /// is treated as a crashed spawner — it is removed and the caller
-    /// re-acquires `Acquired`. Exercises the stale branch (lines 109-122)
-    /// that the existing fast-path tests never reach.
     #[test]
     fn stale_lock_is_reclaimed() {
         let sock = unique_sock();
@@ -905,10 +852,6 @@ mod tests {
         }
     }
 
-    /// A *fresh* lock (mtime ~now) must NOT be treated as stale — a
-    /// concurrent caller sees `Contended`. This is the complement of the
-    /// stale-recovery test and guards against an over-eager staleness check
-    /// clobbering a live spawner's lock.
     #[test]
     fn fresh_lock_is_not_reclaimed() {
         let sock = unique_sock();
@@ -930,9 +873,6 @@ mod tests {
         );
     }
 
-    /// `from_stream` installs the short poll-interval socket timeout, and
-    /// `set_read_timeout` (the legacy name) now adjusts the per-request
-    /// deadline rather than the socket option — the socket keeps polling.
     #[test]
     fn set_read_timeout_adjusts_request_deadline_not_socket() {
         let sock = unique_sock();
@@ -960,11 +900,6 @@ mod tests {
         );
     }
 
-    /// A daemon that takes longer than one socket poll
-    /// interval to respond must NOT surface EAGAIN — the client keeps
-    /// polling until the request deadline and then returns the real
-    /// response. (Previously `download-symbols` & co. died at 30s with
-    /// "Resource temporarily unavailable (os error 11)".)
     #[test]
     fn slow_daemon_response_survives_socket_poll_timeouts() {
         let sock = unique_sock();
@@ -1001,8 +936,6 @@ mod tests {
         );
     }
 
-    /// When the request deadline itself expires, the error message must be
-    /// actionable — naming the timeout — not a raw EAGAIN.
     #[test]
     fn request_deadline_expiry_yields_actionable_error() {
         let sock = unique_sock();

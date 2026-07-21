@@ -487,11 +487,6 @@ mod tests {
         );
     }
 
-    /// Successful results with non-existent paths must not panic and must
-    /// return 0 loaded — load_packages_cached gracefully ignores missing
-    /// files. Verifies the wire-up reaches load_packages_cached without
-    /// crashing on bogus input (the regression mode of the original bug
-    /// was that this code path was never reached at all).
     #[test]
     fn refresh_after_download_attempts_load_for_ok_paths() {
         let ws = empty_ws();

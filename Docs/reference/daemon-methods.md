@@ -21,8 +21,8 @@ Zed tasks all route here. Transport and lifecycle: [daemon-protocol](../features
 XLIFF: `xlf.generate`, `xlf.refresh`, `xlf.untranslated`, `xlf.suggest`.
 
 Tests: `tests.discover`, `tests.run`, `tests.coverage`, `tests.run_batch`, `tests.run_auto`,
-`tests.last_results`, `tests.affected`, `tests.classify`, `tests.snapshot_record`,
-`tests.snapshot_replay`, `tests.snapshot_diff`, `tests.mutate`.
+`tests.last_results`, `tests.affected`, `tests.classify`, `tests.snapshot_replay`,
+`tests.snapshot_diff`, `tests.mutate`.
 
 ## Insight (`insight_dispatch.rs`)
 

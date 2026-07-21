@@ -113,7 +113,7 @@ al-explorer test-run <id> [--method <m>] [--config <name>]   # single codeunit (
 al-explorer test-run-all [--parallel] [--timeout-ms N] [--junit-out P] [--cobertura-out P] [--filter G]
 al-explorer test-coverage         al-explorer test-classify    al-explorer test-results
 al-explorer test-affected <files...>     al-explorer test-mutate [--files ...] [--parallel]
-al-explorer test-snapshot record|replay|diff ...
+al-explorer test-snapshot replay|diff ...
 ```
 
 MCP: `al_runtests` → `tests.run_auto` (router decides per test; pure-logic runs locally, the rest need
@@ -132,4 +132,4 @@ BC config). The TUI test runner (F5) discovers, runs, and shows pass/fail with e
   builtins (`MaxStrLen`, `CreateDateTime`, `CurrentDateTime`).
 - `ROADMAP.md` (Native Test Runtime) lays out the phase plan: wire real procedure dispatch, make
   `InterpRecord` executable, connect `MockRecord`/FlowFields, AST/call-graph routing, graph-based
-  affected tests, dynamic coverage, and live snapshot record/replay.
+  affected tests, dynamic coverage, and a live snapshot workflow.
