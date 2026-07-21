@@ -324,20 +324,17 @@ pub(super) fn dispatch_search(
     let results = workspace.symbols.search(query, limit);
     let mut value: Vec<serde_json::Value> = results
         .iter()
-        .filter_map(|e| {
+        .map(|e| {
             if summary {
-                Some(serde_json::json!({
+                serde_json::json!({
                     "kind": e.kind,
                     "id": e.id,
                     "name": e.name,
                     "package": e.package,
                     "extends": e.extends,
-                }))
+                })
             } else {
-                Some(
-                    serde_json::to_value(e.as_ref())
-                        .expect("symbol entries must be JSON serializable"),
-                )
+                serde_json::to_value(e.as_ref()).expect("symbol entries must be JSON serializable")
             }
         })
         .collect();
