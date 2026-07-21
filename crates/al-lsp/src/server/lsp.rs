@@ -276,6 +276,7 @@ impl AlServer {
                 tracing::debug!(uri = %uri, "debounced diagnostics: document no longer open, skipping publish");
                 return;
             }
+            let document_version = workspace.documents.get_client_version(&uri);
             // Read config here (not at schedule time) so only the task that
             // survives the debounce pays the clone — keystrokes that abort the
             // previous task before its sleep elapses never clone AlConfig. The
@@ -298,7 +299,9 @@ impl AlServer {
                     return;
                 }
             };
-            client.publish_diagnostics(uri, lsp_diags, None).await;
+            client
+                .publish_diagnostics(uri, lsp_diags, document_version)
+                .await;
         });
 
         *guard = Some(handle);
