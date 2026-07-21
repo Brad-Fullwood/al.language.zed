@@ -31,14 +31,9 @@ pub fn socket_path_with_runtime_dir(
     project_root: &Path,
     runtime_dir: impl AsRef<str>,
 ) -> Option<PathBuf> {
-    // canonicalize() resolves symlinks and ensures every (different real
-    // path, different alias) maps to a unique hash. If it fails — usually
-    // because the project hasn't been created yet — fall back to the
-    // ABSOLUTE path, never the relative input directly. Using an
-    // unsanitised `project_root` here would let two callers reach the
-    // same socket via different relative paths and accidentally share a
-    // daemon, or in a worst case let a local attacker pre-create
-    // `./.sock` and intercept JSON-RPC (T034 / sec-022).
+    // Canonical paths keep aliases on one daemon. For a path that does not yet
+    // exist, hash an absolute path so the socket can never resolve relative to
+    // an attacker-controlled working directory.
     let canonical = project_root.canonicalize().unwrap_or_else(|_| {
         std::env::current_dir()
             .map(|cwd| cwd.join(project_root))
@@ -122,11 +117,6 @@ mod tests {
         assert_eq!(fnv1a64(b""), 0xcbf29ce484222325);
     }
 
-    // Regression test for the "Cannot determine Unix socket path:
-    // XDG_RUNTIME_DIR is not set" failure seen on macOS CI, where
-    // XDG_RUNTIME_DIR is normally unset. Mutates process-global env vars, like
-    // the existing `socket_path_is_deterministic` test in
-    // al-lsp/server/daemon/mod.rs does; accepted here for the same reason.
     #[test]
     fn runtime_dir_falls_back_when_xdg_runtime_dir_unset() {
         // Safety: test-only env mutation; no other test in this crate reads
