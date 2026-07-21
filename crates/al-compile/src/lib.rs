@@ -705,9 +705,7 @@ mod tests {
 
     #[test]
     fn parse_diagnostic_line_with_parens_in_path() {
-        // F-019 regression: a path containing `(` (e.g. a directory called
-        // "Project (Old)") used to make `find('(')` match the wrong
-        // opener and the line was either misparsed or dropped.
+        // The path may contain parentheses before the diagnostic coordinates.
         let line = r#"Project (Old)/src/Foo.al(10,5): error AL0001: Boom"#;
         let diag = parse_diagnostic_line(line).expect("must parse line with parens in path");
         assert_eq!(diag.file, "Project (Old)/src/Foo.al");
@@ -870,11 +868,8 @@ Build failed.";
         );
     }
 
-    /// Regression: concurrent `compile_project()` calls on the SAME project
-    /// root must not collide on the build tmp dir. Previously the dir was keyed
-    /// only by PID, so concurrent tasks in the same process computed identical
-    /// paths and one's cleanup could wipe another's in-flight output. The
-    /// per-invocation counter gives each call its own dir. We use a fake
+    /// Concurrent `compile_project()` calls on the same project root must use
+    /// distinct temporary directories. The test uses a fake
     /// toolchain (alc never actually runs), which exercises the tmp-dir
     /// create/cleanup path on the error return; we then assert no
     /// `.al-build-tmp.*` directories leak.
