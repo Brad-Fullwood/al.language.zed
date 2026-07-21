@@ -1,12 +1,4 @@
-//! SemanticBridge lifecycle orchestration over the `Workspace` hub.
-//!
-//! Owns the bridge initialization, lazy startup, crash detection + restart
-//! (max 3 attempts), and shutdown. The bridge is stored in `Workspace.semantic`.
-//! The bridge/cache *types* live in the `al-semantic` crate; this lifecycle
-//! glue lives in the al-workspace hub crate because it operates on `Workspace`.
-//!
-//! All callers (LSP handlers, daemon dispatchers, DAP) go through these
-//! functions to get a single shared bridge instance.
+//! Semantic bridge initialization, restart, and shutdown.
 
 use std::sync::atomic::Ordering;
 
@@ -15,12 +7,7 @@ use tokio::sync::RwLockReadGuard;
 
 use crate::Workspace;
 
-/// Store builtins in the workspace and build the semantic cache.
-///
-/// This should be called whenever builtins are loaded (from disk cache or bridge).
-/// Both write locks are held simultaneously to make the update atomic — no reader
-/// can observe one written without the other. A double-check on `builtins_guard`
-/// prevents a second concurrent caller from overwriting a just-written value.
+/// Store builtins and rebuild the semantic cache atomically.
 pub fn set_builtins(workspace: &Workspace, builtins: Vec<BuiltinType>, version: &str) {
     let mut builtins_guard = workspace
         .builtins
@@ -103,12 +90,7 @@ pub async fn ensure_builtins_loaded(workspace: &Workspace) {
 
 pub const MAX_RESTARTS: u32 = 3;
 
-/// Shared CLR init logic: spawn_blocking SemanticBridge::new, re-acquire the write
-/// lock, triple-check, and insert. Returns the bridge on success.
-///
-/// Callers must drop any write lock they hold before calling this, and must
-/// have already performed a double-check (lock → is_some → drop) to avoid
-/// redundant inits.
+/// Initialize the CLR outside the workspace lock, then install it if still needed.
 async fn init_bridge_inner(
     workspace: &Workspace,
     toolchain: al_project::toolchain::AlToolchain,
@@ -123,7 +105,6 @@ async fn init_bridge_inner(
 
     let mut write_guard = workspace.semantic.write().await;
 
-    // Triple-check: another task may have init'd while we were in spawn_blocking.
     if write_guard.is_some() {
         return Ok(());
     }
@@ -168,12 +149,10 @@ pub async fn get_or_init_bridge(
     let toolchain = workspace.toolchain.read().await.clone()?;
     let write_guard = workspace.semantic.write().await;
 
-    // Double-check after acquiring write lock (another task may have init'd)
     if write_guard.is_some() {
         return Some(write_guard.downgrade());
     }
 
-    // Release write lock before the shared init helper takes over
     drop(write_guard);
 
     match init_bridge_inner(workspace, toolchain).await {
@@ -201,28 +180,13 @@ pub async fn get_or_init_bridge(
 pub async fn restart_bridge(workspace: &Workspace) -> Result<(), al_project::errors::AlError> {
     use al_project::errors::AlError;
 
-    // Capture the old bridge's timeout cooldown stamp BEFORE dropping it. A
-    // hung CLR call from the old bridge may still be in flight on a
-    // spawn_blocking thread (which keeps the old host's Arc<Mutex> alive); the
-    // new bridge starts with last_timeout_secs = 0 and would otherwise let its
-    // first call bypass the cooldown gate. We carry the stamp forward so the
-    // cooldown contract survives the restart.
+    // Preserve timeout cooldown state across bridge replacement.
     let prior_timeout_secs;
     {
         let old = workspace.semantic.write().await.take();
         prior_timeout_secs = old.as_ref().map(|b| b.last_timeout_secs()).unwrap_or(0);
-        // `drop()` is explicit (over `let _ =`) because the taken
-        // `Option<SemanticBridge>`'s Drop chain runs the CLR teardown via
-        // `DotNetHost::_context: HostfxrContext` — the value MUST be dropped
-        // here, not held in `_`.
         drop(old);
     }
-
-    // Between take() above and re-acquiring the write lock below, another
-    // task could start its own init via get_or_init_bridge. This race is safe:
-    // the triple-check inside init_bridge_inner prevents overwriting a bridge that
-    // was just restored. Worst case is a redundant CLR init (resource waste, not
-    // a correctness bug).
 
     let toolchain = workspace
         .toolchain
@@ -233,13 +197,10 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), al_project::err
 
     let write_guard = workspace.semantic.write().await;
 
-    // Double-check: another task may have re-initialized between our take() and this lock.
-    // Return Ok without burning a restart slot — the bridge is already healthy.
     if write_guard.is_some() {
         return Ok(());
     }
 
-    // All early-return checks passed — now consume a restart slot.
     let count = workspace
         .bridge_restart_count
         .fetch_add(1, Ordering::Relaxed)
@@ -253,7 +214,6 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), al_project::err
 
     tracing::info!(attempt = count, "Restarting semantic bridge");
 
-    // Release write lock before the shared init helper takes over
     drop(write_guard);
 
     match init_bridge_inner(workspace, toolchain).await {
@@ -264,14 +224,6 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), al_project::err
                 }
             }
             tracing::info!(attempt = count, "Semantic bridge restarted successfully");
-            // A successful restart proves the bridge can start cleanly again;
-            // reset the counter so future, well-spaced crashes don't gradually
-            // exhaust the 3-restart cap over a long-running daemon session.
-            //
-            // Thrash protection is preserved: if the freshly restarted bridge
-            // crashes on its very next request, `restart_bridge` will run again
-            // and fetch_add back to 1. Three *consecutive* failed restarts
-            // (each ending in a crash before reset) still trip the cap.
             workspace.bridge_restart_count.store(0, Ordering::Relaxed);
             Ok(())
         }
@@ -279,12 +231,7 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), al_project::err
     }
 }
 
-/// Shut down the bridge, releasing the .NET CLR.
-///
-/// The taken `Option<SemanticBridge>` is dropped explicitly so the CLR
-/// teardown (via `DotNetHost::_context: HostfxrContext`) actually runs;
-/// `let _ = …take()` would have the same runtime effect but trips
-/// `clippy::let_underscore_drop` and obscures the intent.
+/// Shut down the bridge and release the CLR.
 pub async fn shutdown_bridge(workspace: &Workspace) {
     drop(workspace.semantic.write().await.take());
 }
