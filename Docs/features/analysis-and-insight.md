@@ -4,9 +4,9 @@
 `crates/al-analysis/src/queries/` · **Status:** ✅ shipped (a few items phase-gated, noted inline)
 
 This is the largest source of "things Microsoft's extension doesn't ship." It is a graph-based code
-analysis engine plus a suite of specialized analyses, all available from the CLI (with `--json`), the
-daemon, Zed tasks, and (a curated subset) MCP. Everything is deterministic — results are sorted so CI
-output is stable across runs.
+analysis engine plus a suite of specialized analyses, all available through the shared daemon from
+the CLI (with `--json`) and MCP; Zed reaches the same implementations through tasks and editor
+actions. Everything is deterministic — results are sorted so CI output is stable across runs.
 
 ## The insight graph (`insight/`)
 
@@ -107,9 +107,11 @@ al-explorer profiler-hints <file>
 al-explorer add-application-area | add-tooltips | add-data-classification [--dry-run]
 ```
 
-MCP exposes a curated subset: `al_impact`, `al_deadcode`, `al_sqlscan`, `al_entrypoints`,
-`al_trace_event` (see [ai-mcp](./ai-mcp.md)). The TUI surfaces event chains, call-graph/impact, and
-profiler views interactively (see [cli-and-tui](./cli-and-tui.md)).
+MCP exposes the complete shared dispatcher through `al_call`, including every analysis above. Common
+agent workflows also have descriptive aliases such as `al_impact`, `al_deadcode`, `al_sqlscan`,
+`al_entrypoints`, and `al_trace_event` (see [ai-mcp](./ai-mcp.md)). The aliases are conveniences, not
+an MCP allow-list. The TUI surfaces event chains, call-graph/impact, and profiler views interactively
+(see [cli-and-tui](./cli-and-tui.md)).
 
 ## Limitations & roadmap
 
@@ -123,5 +125,4 @@ profiler views interactively (see [cli-and-tui](./cli-and-tui.md)).
   empty/extensible.
 - Profiler self-time is approximate (hit-count ≈ ms; `timeDeltas` aggregation is a TODO).
 - `ROADMAP.md` directions: wire baselines for breaking/upgrade, make affected-test detection
-  graph-based, upgrade coverage toward dynamic statement/branch coverage, and add MCP tools for
-  suggest-event/test-classify/coverage/xliff/deps.
+  graph-based, and upgrade coverage toward dynamic statement/branch coverage.

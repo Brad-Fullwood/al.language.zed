@@ -81,17 +81,18 @@ fn find_binary() -> PathBuf {
         .unwrap()
         .to_path_buf();
 
-    let debug_bin = workspace_root.join("target/debug/al-lsp");
+    let binary_name = format!("al-lsp{}", std::env::consts::EXE_SUFFIX);
+    let debug_bin = workspace_root.join("target/debug").join(&binary_name);
     if debug_bin.exists() {
         return debug_bin;
     }
 
-    let release_bin = workspace_root.join("target/release/al-lsp");
+    let release_bin = workspace_root.join("target/release").join(&binary_name);
     if release_bin.exists() {
         return release_bin;
     }
 
-    PathBuf::from("al-lsp")
+    PathBuf::from(binary_name)
 }
 
 /// Locate a built workspace binary by name — `target/debug` then
@@ -104,13 +105,17 @@ pub fn workspace_binary(name: &str) -> PathBuf {
         .parent()
         .unwrap()
         .to_path_buf();
+    let binary_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     for profile in ["debug", "release"] {
-        let candidate = workspace_root.join(format!("target/{profile}/{name}"));
+        let candidate = workspace_root
+            .join("target")
+            .join(profile)
+            .join(&binary_name);
         if candidate.exists() {
             return candidate;
         }
     }
-    PathBuf::from(name)
+    PathBuf::from(binary_name)
 }
 
 /// Path to the built `al-lsp` binary (honors the `AL_LSP_BIN` override used by

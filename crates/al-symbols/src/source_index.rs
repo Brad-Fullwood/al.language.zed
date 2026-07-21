@@ -17,6 +17,9 @@ use zip::ZipArchive;
 use super::model::{ObjectKind, SymbolEntry};
 
 const MAX_HEADER_BYTES: usize = 256 * 1024;
+const MAX_APP_FILE_BYTES: u64 = 200 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES: usize = 200_000;
+const MAX_EXTRACTED_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Cached source index per `.app` file.
 ///
@@ -30,6 +33,7 @@ static SOURCE_BUILD_LOCKS: OnceLock<DashMap<PathBuf, Arc<Mutex<()>>>> = OnceLock
 #[derive(Debug)]
 pub struct AppSourceIndex {
     modified: SystemTime,
+    file_size: u64,
     mmap: Arc<Mmap>,
     zip_offset: usize,
     by_kind_id: HashMap<(ObjectKind, i32), String>,
@@ -39,10 +43,17 @@ pub struct AppSourceIndex {
 impl AppSourceIndex {
     pub fn from_app_path(app_path: &Path) -> io::Result<Self> {
         let file = File::open(app_path)?;
-        let modified = file
-            .metadata()?
-            .modified()
-            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let metadata = file.metadata()?;
+        let file_size = metadata.len();
+        if file_size > MAX_APP_FILE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    ".app is {file_size} bytes; source indexing limit is {MAX_APP_FILE_BYTES} bytes"
+                ),
+            ));
+        }
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         // SAFETY: .app files are opened read-only. memmap2::Mmap uses
         // MAP_SHARED on Linux (not MAP_PRIVATE — earlier comment versions of
         // this file had that wrong), so concurrent file replacement may
@@ -62,6 +73,15 @@ impl AppSourceIndex {
         })?;
 
         let mut archive = ZipArchive::new(Cursor::new(&mmap[zip_offset..]))?;
+        if archive.len() > MAX_ARCHIVE_ENTRIES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    ".app contains {} entries; source indexing limit is {MAX_ARCHIVE_ENTRIES}",
+                    archive.len()
+                ),
+            ));
+        }
         let mut by_kind_id = HashMap::new();
         let mut by_kind_name = HashMap::new();
 
@@ -102,6 +122,7 @@ impl AppSourceIndex {
 
         Ok(Self {
             modified,
+            file_size,
             mmap: Arc::new(mmap),
             zip_offset,
             by_kind_id,
@@ -122,10 +143,24 @@ impl AppSourceIndex {
 
     pub fn extract_source_by_path(&self, zip_path: &str) -> Option<String> {
         let mut archive = ZipArchive::new(Cursor::new(&self.mmap[self.zip_offset..])).ok()?;
-        let mut file = archive.by_name(zip_path).ok()?;
-        let mut content = String::new();
-        file.read_to_string(&mut content).ok()?;
-        Some(content)
+        let file = archive.by_name(zip_path).ok()?;
+        if file.size() > MAX_EXTRACTED_SOURCE_BYTES {
+            tracing::warn!(
+                path = zip_path,
+                size = file.size(),
+                limit = MAX_EXTRACTED_SOURCE_BYTES,
+                "embedded AL source exceeds extraction limit"
+            );
+            return None;
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_EXTRACTED_SOURCE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() as u64 > MAX_EXTRACTED_SOURCE_BYTES {
+            return None;
+        }
+        String::from_utf8(bytes).ok()
     }
 
     pub fn extract_source_for_entry(&self, entry: &SymbolEntry) -> Option<String> {
@@ -141,13 +176,16 @@ impl AppSourceIndex {
 /// is performed so that a thread that lost the race finds the already-built
 /// index and returns it immediately.
 pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
+    let canonical_path = std::fs::canonicalize(app_path)?;
+    let app_path = canonical_path.as_path();
     let cache = SOURCE_INDEX_CACHE.get_or_init(DashMap::new);
 
     let fresh = || {
         let existing = cache.get(app_path)?;
         let meta = std::fs::metadata(app_path).ok()?;
         let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        (existing.modified == modified).then(|| existing.value().clone())
+        (existing.modified == modified && existing.file_size == meta.len())
+            .then(|| existing.value().clone())
     };
 
     if let Some(index) = fresh() {
@@ -572,6 +610,7 @@ mod tests {
 
         AppSourceIndex {
             modified: SystemTime::UNIX_EPOCH,
+            file_size: 1,
             mmap,
             zip_offset: 0,
             by_kind_id,

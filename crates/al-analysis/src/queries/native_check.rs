@@ -1,17 +1,17 @@
 //! Native semantic workspace checks.
 //!
-//! Pure-Rust, bridge-free checks that need only the workspace object index and
-//! the project's `app.json` `idRanges`. They complement the Microsoft
-//! CodeAnalysis bridge, which owns rule-style diagnostics.
+//! Pure-Rust, bridge-free checks over the workspace object index, project
+//! configuration, and loaded standard/third-party symbols. They complement the
+//! optional Microsoft CodeAnalysis bridge.
 //!
 //! ## Codes
 //!
 //! Findings use the `AL-NC###` namespace so they cannot collide with Microsoft
 //! compiler diagnostics (`AL####`).
 //!
-//! This module is wholly separate from the LSP `diagnostics` / `lint` paths; it
-//! is surfaced only via the explicit `al-explorer native-check` command and the
-//! `nativeCheck` daemon RPC. It never injects findings into editor diagnostics.
+//! Findings are shared by LSP diagnostics, CLI/daemon lint, native compile and
+//! package gating, the explicit `al-explorer native-check` command, and the
+//! `nativeCheck` daemon RPC.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -37,6 +37,58 @@ pub const DANGLING_EXTENSION: &str = "AL-NC005";
 /// AL-NC006 — two fields (table) or values (enum) share an ID within one object.
 pub const DUPLICATE_MEMBER_ID: &str = "AL-NC006";
 
+#[derive(Debug, Clone, Copy)]
+pub struct NativeRuleInfo {
+    pub code: &'static str,
+    pub name: &'static str,
+    pub severity: NativeSeverity,
+    pub description: &'static str,
+}
+
+const RULES: &[NativeRuleInfo] = &[
+    NativeRuleInfo {
+        code: DUPLICATE_ID,
+        name: "duplicate-object-id",
+        severity: NativeSeverity::Error,
+        description: "Two workspace objects of the same kind declare the same numeric ID.",
+    },
+    NativeRuleInfo {
+        code: ID_OUT_OF_RANGE,
+        name: "object-id-out-of-range",
+        severity: NativeSeverity::Warning,
+        description: "An object ID is outside every idRange declared in app.json.",
+    },
+    NativeRuleInfo {
+        code: DUPLICATE_NAME,
+        name: "duplicate-object-name",
+        severity: NativeSeverity::Error,
+        description: "Two workspace objects of the same kind declare the same case-insensitive name.",
+    },
+    NativeRuleInfo {
+        code: AFFIX_VIOLATION,
+        name: "mandatory-affix",
+        severity: NativeSeverity::Warning,
+        description: "An object name violates mandatory AppSourceCop prefix, suffix, or affix configuration.",
+    },
+    NativeRuleInfo {
+        code: DANGLING_EXTENSION,
+        name: "dangling-extension-target",
+        severity: NativeSeverity::Warning,
+        description: "An extension target is absent from both workspace and loaded standard/third-party symbols.",
+    },
+    NativeRuleInfo {
+        code: DUPLICATE_MEMBER_ID,
+        name: "duplicate-member-id",
+        severity: NativeSeverity::Error,
+        description: "A table field or enum value ID is duplicated within its declaring object.",
+    },
+];
+
+#[must_use]
+pub fn native_check_rules() -> &'static [NativeRuleInfo] {
+    RULES
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NativeSeverity {
@@ -49,7 +101,7 @@ pub enum NativeSeverity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeFinding {
-    /// `AL-NC###` — distinct from removed native lint (`AL-L*`) and `AL####`.
+    /// `AL-NC###` — distinct from file/graph lint (`AL-NL*`) and Microsoft `AL####`.
     pub code: &'static str,
     pub severity: NativeSeverity,
     pub object_type: String,

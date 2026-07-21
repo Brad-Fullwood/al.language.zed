@@ -520,40 +520,83 @@ fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
     })
 }
 
-/// Compile via the pure-Rust native `.app` emitter — no Microsoft `alc`, no C#
-/// bridge. Emits a deployable `.app` straight from the project source and writes
-/// it to `{publisher}_{name}_{version}.app` in the project root.
-///
-/// The native emitter does no semantic analysis, so it reports no diagnostics
-/// here — type/semantic errors surface through the LSP (which runs continuously),
-/// not through this compile step.
+/// Compile via the verified pure-Rust `.app` pipeline — no Microsoft `alc`, no
+/// C# bridge. Native syntax/project/binding checks run before package assembly;
+/// blocking diagnostics prevent the output file from being replaced.
 pub fn native_compile(project_root: &Path) -> CompileResult {
+    use std::io::Write;
+
     let timestamp = al_emit::now_timestamp();
     let version = concat!("native-emit/", env!("CARGO_PKG_VERSION"));
-    let fail = |msg: String| CompileResult {
+    let fail = |msg: String, diagnostics: Vec<CompileDiagnostic>| CompileResult {
         success: false,
         app_path: None,
-        diagnostics: Vec::new(),
+        diagnostics,
         output: msg,
     };
-    match al_emit::build_app_from_project(project_root, version, &timestamp) {
-        Ok(built) => {
+    match al_emit::build_verified_app_from_project(project_root, version, &timestamp) {
+        Ok(verified) => {
+            let diagnostics = verified
+                .diagnostics
+                .into_iter()
+                .map(|diagnostic| CompileDiagnostic {
+                    file: diagnostic.file,
+                    line: diagnostic.line,
+                    column: diagnostic.column,
+                    severity: match diagnostic.severity {
+                        al_emit::VerificationSeverity::Error => DiagnosticSeverity::Error,
+                        al_emit::VerificationSeverity::Warning => DiagnosticSeverity::Warning,
+                        al_emit::VerificationSeverity::Info => DiagnosticSeverity::Info,
+                    },
+                    code: diagnostic.code.to_string(),
+                    message: diagnostic.message,
+                })
+                .collect::<Vec<_>>();
+            let Some(built) = verified.app else {
+                let error_count = diagnostics
+                    .iter()
+                    .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+                    .count();
+                return fail(
+                    format!("native verification failed with {error_count} error(s)"),
+                    diagnostics,
+                );
+            };
             let out = project_root.join(&built.file_name);
-            match std::fs::write(&out, &built.bytes) {
+            let write_result =
+                tempfile::NamedTempFile::new_in(project_root).and_then(|mut temp| {
+                    temp.write_all(&built.bytes)?;
+                    temp.as_file_mut().sync_all()?;
+                    temp.persist(&out).map(|_| ()).map_err(|error| error.error)
+                });
+            match write_result {
                 Ok(()) => CompileResult {
                     success: true,
                     app_path: Some(out.clone()),
-                    diagnostics: Vec::new(),
+                    diagnostics,
                     output: format!(
-                        "native emitter produced {} ({} bytes)",
+                        "verified native compiler produced {} ({} bytes)",
                         out.display(),
                         built.bytes.len()
                     ),
                 },
-                Err(e) => fail(format!("writing {}: {e}", out.display())),
+                Err(error) => fail(
+                    format!("atomically writing {}: {error}", out.display()),
+                    diagnostics,
+                ),
             }
         }
-        Err(e) => fail(format!("native emit failed: {e}")),
+        Err(error) => fail(
+            format!("native verification failed to run: {error}"),
+            vec![CompileDiagnostic {
+                file: project_root.join("app.json").display().to_string(),
+                line: 1,
+                column: 1,
+                severity: DiagnosticSeverity::Error,
+                code: "ALN0000".to_string(),
+                message: error.to_string(),
+            }],
+        ),
     }
 }
 
@@ -1172,5 +1215,70 @@ Build failed.";
         );
         assert!(result.app_path.is_some());
         assert!(result.diagnostics.is_empty());
+    }
+
+    fn write_native_test_project(dir: &Path, source: &str) {
+        std::fs::write(
+            dir.join("app.json"),
+            r#"{ "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "Verified", "publisher": "T", "version": "1.0.0.0", "runtime": "14.0", "idRanges": [{"from":50100,"to":50149}], "dependencies": [] }"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/C.Codeunit.al"), source).unwrap();
+    }
+
+    #[test]
+    fn native_compile_rejects_syntax_errors_and_preserves_last_good_app() {
+        let dir = tempfile::tempdir().unwrap();
+        write_native_test_project(
+            dir.path(),
+            "codeunit 50100 C { procedure F(): Integer begin exit(1); end; }",
+        );
+        let first = native_compile(dir.path());
+        assert!(first.success, "initial build failed: {}", first.output);
+        let app_path = first.app_path.expect("valid build must produce an app");
+        let last_good = std::fs::read(&app_path).unwrap();
+
+        std::fs::write(
+            dir.path().join("src/C.Codeunit.al"),
+            "codeunit 50100 C { procedure F(): Integer begin if then",
+        )
+        .unwrap();
+        let rejected = native_compile(dir.path());
+        assert!(!rejected.success);
+        assert!(rejected.app_path.is_none());
+        assert!(
+            rejected
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "ALN0001"),
+            "expected native syntax diagnostic, got {:?}",
+            rejected.diagnostics
+        );
+        assert_eq!(
+            std::fs::read(app_path).unwrap(),
+            last_good,
+            "failed verification must preserve the previous artifact"
+        );
+    }
+
+    #[test]
+    fn native_compile_rejects_unknown_declared_object_type() {
+        let dir = tempfile::tempdir().unwrap();
+        write_native_test_project(
+            dir.path(),
+            "codeunit 50100 C { procedure F(Value: Codeunit \"Missing Helper\") begin end; }",
+        );
+        let result = native_compile(dir.path());
+        assert!(!result.success);
+        assert!(result.app_path.is_none());
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "ALN2003"),
+            "expected unresolved type diagnostic, got {:?}",
+            result.diagnostics
+        );
     }
 }

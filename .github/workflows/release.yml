@@ -72,13 +72,8 @@ jobs:
             runner: macos-latest
             artifact_name: macos-aarch64
 
-          # Windows x86_64 — builds ONLY the al-lsp binary. al-explorer's
-          # daemon IPC is an AF_UNIX socket (see F-020/F-021) and does not
-          # compile on Windows, but al-lsp itself is portable: its LSP
-          # (--stdio) and DAP (--dap) modes use platform-neutral stdio, and the
-          # Unix-only daemon transport is behind `#[cfg(unix)]` with a stub on
-          # Windows. This is what Zed actually spawns, so shipping it unblocks
-          # Windows users (ecosystem-roadmap.md item 8 / strategic bet 3b).
+          # Windows x86_64 — both binaries are native. The daemon uses a named
+          # pipe here (Unix-domain sockets remain in use on Linux/macOS).
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             artifact_name: windows-x86_64
@@ -123,9 +118,7 @@ jobs:
       # current crate layout). Build via -p al-lsp / -p al-explorer with
       # explicit --bin.
       #
-      # al-lsp is built on EVERY target (it is what Zed spawns). al-explorer is
-      # built only on Unix targets — its daemon IPC client is AF_UNIX-only and
-      # does not compile on Windows.
+      # Both al-lsp and al-explorer are built on every native target.
       # al-lsp is built with --features semantic so the shipped binary contains
       # the real in-process .NET CLR host (not the no-op stub). build.rs runs
       # `dotnet build` to produce AlBridge.dll alongside it; that DLL is
@@ -135,8 +128,8 @@ jobs:
         if: "!matrix.cross"
         run: cargo build -p al-lsp --bin al-lsp --release --features semantic --target ${{ matrix.target }}
 
-      - name: Build al-explorer binary (native, Unix only)
-        if: "!matrix.cross && !matrix.windows"
+      - name: Build al-explorer binary (native)
+        if: "!matrix.cross"
         run: cargo build -p al-explorer --release --target ${{ matrix.target }}
 
       # For the cross (aarch64) build the bridge DLL cannot be produced inside
@@ -191,9 +184,8 @@ jobs:
           path: al-${{ matrix.artifact_name }}.tar.gz
 
       # ── Package (Windows) ─────────────────────────────────────────────────────
-      # Ships ONLY al-lsp.exe (no al-explorer). Zipped with the binary at the
-      # archive root so it extracts to `<extract-dir>/al-lsp.exe`, matching the
-      # `binary_path` in src/lib.rs. Asset name: al-windows-x86_64.zip.
+      # Ships al-lsp.exe and al-explorer.exe at the archive root. Asset name:
+      # al-windows-x86_64.zip.
       - name: Package artifact (Windows)
         if: matrix.windows
         shell: pwsh
@@ -201,6 +193,7 @@ jobs:
           $binDir = "target/${{ matrix.target }}/release"
           $stage = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP "stage") -Force
           Copy-Item "$binDir/al-lsp.exe" $stage
+          Copy-Item "$binDir/al-explorer.exe" $stage
           # Bundle the platform-agnostic semantic bridge so al-lsp.exe finds it
           # at <exe-dir>\bridge\ on the user's machine (host.rs Strategy 2).
           $bridgeSrc = Get-ChildItem -Path "$binDir/build" -Recurse -Directory -Filter bridge |

@@ -769,28 +769,40 @@ async fn run_interp_tests_against_mutant(
 
     let discovered = al_analysis::queries::tests::discover_tests(workspace);
     let classifications = crate::router::classify_codeunits(workspace, &discovered);
-    let mut all_interp: std::collections::HashMap<i32, bool> = std::collections::HashMap::new();
+    let mut local_capability: std::collections::HashMap<i32, (bool, bool)> =
+        std::collections::HashMap::new();
     for c in &classifications {
-        let is_interp = matches!(c.decision, RoutingDecision::Interp);
-        all_interp
+        let (is_local, needs_records) = match c.decision {
+            RoutingDecision::Interp => (true, false),
+            RoutingDecision::InterpRecord => (true, true),
+            RoutingDecision::LiveBc | RoutingDecision::Snapshot => (false, false),
+        };
+        local_capability
             .entry(c.codeunit_id)
-            .and_modify(|all| *all &= is_interp)
-            .or_insert(is_interp);
+            .and_modify(|state| {
+                state.0 &= is_local;
+                state.1 |= needs_records;
+            })
+            .or_insert((is_local, needs_records));
     }
     let file_by_id: std::collections::HashMap<i32, String> = discovered
         .iter()
         .map(|cu| (cu.id, cu.file.clone()))
         .collect();
-    let tests: Vec<crate::session::TestId> = discovered
+    let local_tests: Vec<crate::session::TestId> = discovered
         .iter()
-        .filter(|cu| all_interp.get(&cu.id).copied().unwrap_or(false))
+        .filter(|cu| {
+            local_capability
+                .get(&cu.id)
+                .is_some_and(|(is_local, _)| *is_local)
+        })
         .map(|cu| crate::session::TestId {
             codeunit_id: cu.id,
             codeunit_name: cu.name.clone(),
             method_name: None,
         })
         .collect();
-    if tests.is_empty() {
+    if local_tests.is_empty() {
         // No interpreter-runnable coverage — the mutant legitimately survives.
         return VariantOutcome {
             variant: variant.clone(),
@@ -800,7 +812,11 @@ async fn run_interp_tests_against_mutant(
         };
     }
 
-    let mode = InterpMode::new(std::sync::Arc::clone(workspace));
+    let (record_tests, pure_tests): (Vec<_>, Vec<_>) = local_tests.into_iter().partition(|test| {
+        local_capability
+            .get(&test.codeunit_id)
+            .is_some_and(|(_, needs_records)| *needs_records)
+    });
     let (tx, mut rx) = tokio::sync::mpsc::channel::<TestEvent>(256);
     let opts = RunOptions {
         // Mutants can turn terminating loops infinite — keep the per-run
@@ -808,7 +824,23 @@ async fn run_interp_tests_against_mutant(
         timeout_ms: Some(5_000),
         ..Default::default()
     };
-    let run_handle = tokio::spawn(async move { mode.run(tests, opts, tx).await });
+    let mut run_handles = Vec::new();
+    if !pure_tests.is_empty() {
+        let mode = InterpMode::new(std::sync::Arc::clone(workspace));
+        let pure_tx = tx.clone();
+        let pure_opts = opts.clone();
+        run_handles.push(tokio::spawn(async move {
+            mode.run(pure_tests, pure_opts, pure_tx).await
+        }));
+    }
+    if !record_tests.is_empty() {
+        let mode = InterpMode::with_records(std::sync::Arc::clone(workspace));
+        let record_tx = tx.clone();
+        run_handles.push(tokio::spawn(async move {
+            mode.run(record_tests, opts, record_tx).await
+        }));
+    }
+    drop(tx);
 
     // `mutate::TestId` (file + procedure) is the report's wire type — distinct
     // from `session::TestId` used to address the run.
@@ -832,13 +864,15 @@ async fn run_interp_tests_against_mutant(
             }
         }
     }
-    if let Err(e) = run_handle.await {
-        return VariantOutcome {
-            variant: variant.clone(),
-            killed: false,
-            killing_test: None,
-            error: Some(format!("interp run panicked: {e}")),
-        };
+    for run_handle in run_handles {
+        if let Err(e) = run_handle.await {
+            return VariantOutcome {
+                variant: variant.clone(),
+                killed: false,
+                killing_test: None,
+                error: Some(format!("interp run panicked: {e}")),
+            };
+        }
     }
 
     VariantOutcome {

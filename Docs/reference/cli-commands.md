@@ -1,11 +1,15 @@
 # CLI Command Reference (`al-explorer`)
 
 Every `al-explorer` subcommand. The global `--json` flag works on all of them (structured stdout;
-errors as `{ "error": "…" }`). Run with no subcommand on Unix to open the TUI. See
+errors as `{ "error": "…" }`). Run with no subcommand to open the TUI. See
 [cli-and-tui](../features/cli-and-tui.md) for behavior and the TUI; this is the lookup table.
 
-> `al-explorer` is Unix-first; on Windows it is a stub. Most commands auto-start the daemon for the
-> current project.
+> `al-explorer` runs on Linux, macOS, and Windows. Most commands auto-start the daemon for the
+> current project using the platform's local IPC transport.
+
+Daemon-backed commands use the same dispatcher as MCP and Zed tasks. From MCP, call the corresponding
+daemon method through `al_call` with the same parameter object; frequently used workflows also have
+named aliases documented in the [MCP tool reference](./mcp-tools.md).
 
 ## Setup & diagnostics
 
@@ -33,7 +37,7 @@ errors as `{ "error": "…" }`). Run with no subcommand on Unix to open the TUI.
 | `subscribers <event>` | — | Subscribers of an event (workspace source) |
 | `event-source` | `--file <p> --line <n>` | Resolve publisher behind an `[EventSubscriber]` |
 | `builtins` | — | Built-in types + method counts |
-| `rules` | — | Native lint rules (currently empty registry) |
+| `rules` | — | Registered native file, project-semantic, and transaction-stack lint rules |
 | `error-codes` | — | AL compiler error codes |
 | `generate-completions` | — | Export completion/symbol data |
 
@@ -59,7 +63,7 @@ errors as `{ "error": "…" }`). Run with no subcommand on Unix to open the TUI.
 | --- | --- | --- |
 | `compile` | `--project <dir>` | Compile (native default; `al.useOfficialCompiler` → `alc`) |
 | `package` | — | Package compiled app into `.app` |
-| `pack-native` | `--project <dir> --out <path>` | Pure-Rust `.app` emit (no compile pass) |
+| `pack-native` | `--project <dir> --out <path> [--validate]` | Verified pure-Rust `.app` build; `--validate` adds an `alc` compatibility gate after native checks |
 | `download-symbols` | `--source server\|nuget` | Download dependency symbols |
 | `authenticate` | — | BC / Entra authentication |
 

@@ -81,7 +81,7 @@
     "al.enableNativeLint": {
       "type": "boolean",
       "default": true,
-      "description": "Enable native AL lint rules (a small starter set: AL-NL001 FindFirst/FindLast in a loop, AL-NL002 table field missing DataClassification). Most AL diagnostics still come from syntax parsing and the semantic CodeAnalysis bridge; native lint is a separate, additive set."
+      "description": "Enable native AL lint and semantic rules: file-local AL-NL001/2, resolved transaction-stack AL-NL003/4, and project/symbol AL-NC001-006 diagnostics. The optional Microsoft CodeAnalysis bridge remains additive for exact analyzer compatibility."
     },
     "al.nativeLintRules": {
       "type": "object",
@@ -89,8 +89,8 @@
         "type": "boolean"
       },
       "default": {},
-      "description": "Per-rule enable/disable overrides for native lint rules. Key is a rule code (e.g. 'AL-NL001'). Only takes effect when al.enableNativeLint is true.",
-      "examples": [{ "AL-NL001": false }]
+      "description": "Per-rule enable/disable overrides for native lint rules. Key is a rule code (for example AL-NL003 or AL-NC005). Only takes effect when al.enableNativeLint is true.",
+      "examples": [{ "AL-NL003": false }]
     },
     "al.packageCachePath": {
       "type": ["string", "null"],
@@ -157,7 +157,7 @@
     "al.useOfficialCompiler": {
       "type": "boolean",
       "default": false,
-      "description": "Escape hatch: compile via Microsoft's `dotnet alc` subprocess instead of the pure-Rust native `.app` emitter. The native emitter is the default for the daemon compile endpoint, `al.compile`, and publish — it produces the `.app` directly with no `alc` and no C# bridge. The native emitter does not run semantic analysis, so type/semantic errors surface through the LSP and Business Central publish validation; set this to `true` to use Microsoft's compiler when you need its full compile-time validation."
+      "description": "Escape hatch: compile via Microsoft's `dotnet alc` subprocess instead of the pure-Rust verified `.app` pipeline. The native default runs syntax, project/dependency, declaration, declared-symbol binding, and package-integrity checks with structured diagnostics and no `alc` or C# bridge. Set this to `true` when exact Microsoft expression/type semantics, analyzers, or compatibility behaviour are required."
     },
     "al.editorServicesPath": {
       "type": ["string", "null"],

@@ -81,22 +81,17 @@ impl SymbolIndex {
     pub fn load_packages(&self, paths: &[impl AsRef<Path> + Sync]) -> Vec<SymbolPackage> {
         use rayon::prelude::*;
 
-        let results: Vec<_> = paths
+        // Parse in parallel, then mutate the shared indexes sequentially. The
+        // old implementation performed remove/add operations from rayon workers,
+        // so duplicate versions of one package could interleave and leave both
+        // copies indexed. Keeping the expensive ZIP/JSON work parallel while
+        // applying results in input order is deterministic and idempotent.
+        let parsed: Vec<_> = paths
             .par_iter()
             .filter_map(|path| {
                 let path = path.as_ref();
                 match app_reader::read_app_file(path) {
-                    Ok(mut pkg) => {
-                        debug!(
-                            name = %pkg.name,
-                            objects = pkg.objects.len(),
-                            "Loaded package"
-                        );
-                        self.app_paths
-                            .insert(pkg.name.to_lowercase(), path.to_path_buf());
-                        self.add_entries_owned(std::mem::take(&mut pkg.objects));
-                        Some(pkg)
-                    }
+                    Ok(pkg) => Some((path.to_path_buf(), pkg)),
                     Err(e) => {
                         warn!(path = %path.display(), error = %e, "Failed to load .app file");
                         None
@@ -105,6 +100,10 @@ impl SymbolIndex {
             })
             .collect();
 
+        let mut results = Vec::with_capacity(parsed.len());
+        for (path, pkg) in parsed {
+            results.push(self.index_loaded_package(pkg, Some(&path), false));
+        }
         results
     }
 
@@ -120,20 +119,17 @@ impl SymbolIndex {
     ) -> Vec<SymbolPackage> {
         use rayon::prelude::*;
 
-        let results: Vec<_> = paths
+        let parsed: Vec<_> = paths
             .par_iter()
             .filter_map(|path| {
                 let path = path.as_ref();
 
-                if let Some(mut pkg) = cache.load(path) {
-                    self.app_paths
-                        .insert(pkg.name.to_lowercase(), path.to_path_buf());
-                    self.add_entries_owned(std::mem::take(&mut pkg.objects));
-                    return Some(pkg);
+                if let Some(pkg) = cache.load(path) {
+                    return Some((path.to_path_buf(), pkg, true));
                 }
 
                 match app_reader::read_app_file(path) {
-                    Ok(mut pkg) => {
+                    Ok(pkg) => {
                         debug!(
                             name = %pkg.name,
                             objects = pkg.objects.len(),
@@ -142,10 +138,7 @@ impl SymbolIndex {
                         if let Err(e) = cache.save(path, &pkg) {
                             warn!(path = %path.display(), error = %e, "Failed to save to cache");
                         }
-                        self.app_paths
-                            .insert(pkg.name.to_lowercase(), path.to_path_buf());
-                        self.add_entries_owned(std::mem::take(&mut pkg.objects));
-                        Some(pkg)
+                        Some((path.to_path_buf(), pkg, false))
                     }
                     Err(e) => {
                         warn!(path = %path.display(), error = %e, "Failed to load .app file");
@@ -155,7 +148,76 @@ impl SymbolIndex {
             })
             .collect();
 
+        let mut results = Vec::with_capacity(parsed.len());
+        for (path, pkg, from_cache) in parsed {
+            results.push(self.index_loaded_package(pkg, Some(&path), from_cache));
+        }
         results
+    }
+
+    /// Replace every file-backed package currently in the index with `paths`.
+    ///
+    /// Parsing completes before the existing generation is removed, so a bad or
+    /// slow package cannot leave the index empty while it is being read. This is
+    /// used when package-path settings change at runtime.
+    pub fn replace_packages_cached(
+        &self,
+        paths: &[impl AsRef<Path> + Sync],
+        cache: &super::cache::SymbolCache,
+    ) -> Vec<SymbolPackage> {
+        use rayon::prelude::*;
+
+        let parsed: Vec<_> = paths
+            .par_iter()
+            .filter_map(|path| {
+                let path = path.as_ref();
+                if let Some(pkg) = cache.load(path) {
+                    return Some((path.to_path_buf(), pkg, true));
+                }
+                match app_reader::read_app_file(path) {
+                    Ok(pkg) => {
+                        if let Err(error) = cache.save(path, &pkg) {
+                            warn!(path = %path.display(), %error, "Failed to save to cache");
+                        }
+                        Some((path.to_path_buf(), pkg, false))
+                    }
+                    Err(error) => {
+                        warn!(path = %path.display(), %error, "Failed to load .app file");
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        self.clear_loaded_packages();
+        let mut results = Vec::with_capacity(parsed.len());
+        for (path, pkg, from_cache) in parsed {
+            results.push(self.index_loaded_package(pkg, Some(&path), from_cache));
+        }
+        results
+    }
+
+    fn index_loaded_package(
+        &self,
+        mut pkg: SymbolPackage,
+        path: Option<&Path>,
+        from_cache: bool,
+    ) -> SymbolPackage {
+        // Re-loading a downloaded or changed package replaces its old symbols
+        // rather than duplicating every object in all secondary indexes.
+        self.remove_package_entries(&pkg.name);
+        if let Some(path) = path {
+            self.app_paths
+                .insert(pkg.name.to_lowercase(), path.to_path_buf());
+        }
+        debug!(
+            name = %pkg.name,
+            objects = pkg.objects.len(),
+            from_cache,
+            "Indexing package"
+        );
+        self.add_entries_owned(std::mem::take(&mut pkg.objects));
+        pkg
     }
 
     pub fn load_package_bytes(
@@ -163,6 +225,7 @@ impl SymbolIndex {
         data: &[u8],
     ) -> Result<SymbolPackage, app_reader::AppReaderError> {
         let pkg = app_reader::read_app_bytes(data)?;
+        self.remove_package_entries(&pkg.name);
         self.add_entries(&pkg.objects);
         Ok(pkg)
     }
@@ -174,7 +237,11 @@ impl SymbolIndex {
 
         let mut entries = Vec::new();
         for re in super::language_data::runtime_enums() {
-            if !self.get_by_name(&re.name).is_empty() {
+            if self
+                .get_by_name(&re.name)
+                .iter()
+                .any(|entry| entry.kind == ObjectKind::Enum)
+            {
                 continue;
             }
             let enum_values: Vec<EnumValueSymbol> = re
@@ -248,6 +315,7 @@ impl SymbolIndex {
     }
 
     pub fn add_entries(&self, entries: &[SymbolEntry]) {
+        self.invalidate_composed_for_entries(entries.iter());
         let new_arcs: Vec<Arc<SymbolEntry>> = entries
             .iter()
             .map(|entry| self.add_arc(Arc::new(entry.clone())))
@@ -257,6 +325,7 @@ impl SymbolIndex {
 
     /// Like `add_entries` but takes owned entries, avoiding the clone into Arc.
     pub fn add_entries_owned(&self, entries: Vec<SymbolEntry>) {
+        self.invalidate_composed_for_entries(entries.iter());
         let new_arcs: Vec<Arc<SymbolEntry>> = entries
             .into_iter()
             .map(|entry| self.add_arc(Arc::new(entry)))
@@ -283,6 +352,9 @@ impl SymbolIndex {
             .write()
             .unwrap_or_else(|e| e.into_inner());
         for arc in new_arcs {
+            if arc.synthetic {
+                continue;
+            }
             if cache.len() >= DEFAULT_COMPLETIONS_CAP {
                 break;
             }
@@ -302,54 +374,61 @@ impl SymbolIndex {
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<SymbolEntry>> {
-        let mut results = Vec::new();
-
-        // Synthetic entries (pseudo-enums fabricated from Option-typed
-        // fields) stay out of user-facing search results — they swamped
-        // real enums with `id: -1` rows. Exact-name lookups
-        // (`get_by_name`) still see them for type resolution.
-        if query.is_empty() {
-            for entry in self.all.iter() {
-                let (arc, _) = entry.value();
-                if arc.synthetic {
-                    continue;
-                }
-                results.push(Arc::clone(arc));
-                if results.len() >= limit {
-                    break;
-                }
-            }
-        } else {
-            let query_lower = query.to_lowercase();
-            for entry in self.all.iter() {
-                let (arc, name_lower) = entry.value();
-                if !arc.synthetic && name_lower.contains(&query_lower) {
-                    results.push(Arc::clone(arc));
-                    if results.len() >= limit {
-                        break;
-                    }
-                }
-            }
+        if limit == 0 {
+            return Vec::new();
         }
 
-        results
+        let query_lower = query.to_lowercase();
+        let mut matches: Vec<(u8, String, usize, Arc<SymbolEntry>)> = self
+            .all
+            .iter()
+            .filter_map(|entry| {
+                let seq = *entry.key();
+                let (arc, name_lower) = entry.value();
+                if arc.synthetic || !name_lower.contains(&query_lower) {
+                    return None;
+                }
+                let rank = if query_lower.is_empty() || *name_lower == query_lower {
+                    0
+                } else if name_lower.starts_with(&query_lower) {
+                    1
+                } else {
+                    2
+                };
+                Some((rank, name_lower.clone(), seq, Arc::clone(arc)))
+            })
+            .collect();
+        matches.sort_unstable_by(|a, b| {
+            (a.0, &a.1, a.3.kind, a.3.id, &a.3.package, a.2).cmp(&(
+                b.0,
+                &b.1,
+                b.3.kind,
+                b.3.id,
+                &b.3.package,
+                b.2,
+            ))
+        });
+        matches.truncate(limit);
+        matches.into_iter().map(|(_, _, _, arc)| arc).collect()
     }
 
     pub fn search_in_package(&self, package_name: &str, query: &str) -> Vec<Arc<SymbolEntry>> {
-        let mut results = Vec::new();
         let query_lower = query.to_lowercase();
-
-        for entry in self.all.iter() {
-            let (arc, name_lower) = entry.value();
-            if !arc.synthetic
-                && arc.package.eq_ignore_ascii_case(package_name)
-                && (query_lower.is_empty() || name_lower.contains(&query_lower))
-            {
-                results.push(Arc::clone(arc));
-            }
-        }
-
-        results
+        let mut results: Vec<(String, usize, Arc<SymbolEntry>)> = self
+            .all
+            .iter()
+            .filter_map(|entry| {
+                let (arc, name_lower) = entry.value();
+                (!arc.synthetic
+                    && arc.package.eq_ignore_ascii_case(package_name)
+                    && name_lower.contains(&query_lower))
+                .then(|| (name_lower.clone(), *entry.key(), Arc::clone(arc)))
+            })
+            .collect();
+        results.sort_unstable_by(|a, b| {
+            (&a.0, a.2.kind, a.2.id, a.1).cmp(&(&b.0, b.2.kind, b.2.id, b.1))
+        });
+        results.into_iter().map(|(_, _, arc)| arc).collect()
     }
 
     pub fn get_by_name(&self, name: &str) -> Vec<Arc<SymbolEntry>> {
@@ -433,10 +512,13 @@ impl SymbolIndex {
         if let Some(cached) = self.composed_cache.get(&key) {
             return Some(Arc::clone(cached.value()));
         }
-        let composed = super::composition::get_composed(self, kind, name)?;
-        let arc = Arc::new(composed);
-        self.composed_cache.insert(key, Arc::clone(&arc));
-        Some(arc)
+        let composed = Arc::new(super::composition::get_composed(self, kind, name)?);
+        Some(Arc::clone(
+            self.composed_cache
+                .entry(key)
+                .or_insert_with(|| Arc::clone(&composed))
+                .value(),
+        ))
     }
 
     /// Invalidate cached composed views for a given object name.
@@ -455,6 +537,25 @@ impl SymbolIndex {
         self.composed_cache.is_empty()
     }
 
+    fn invalidate_composed_for_entries<'a>(&self, entries: impl Iterator<Item = &'a SymbolEntry>) {
+        if self.composed_cache.is_empty() {
+            return;
+        }
+        let affected: std::collections::HashSet<String> = entries
+            .flat_map(|entry| {
+                [
+                    Some(entry.name.to_lowercase()),
+                    entry.extends.as_deref().map(str::to_lowercase),
+                ]
+            })
+            .flatten()
+            .collect();
+        if !affected.is_empty() {
+            self.composed_cache
+                .retain(|(_, name), _| !affected.contains(name));
+        }
+    }
+
     pub fn get_events(&self, query: &str) -> super::events::EventResults {
         super::events::get_events(self, query)
     }
@@ -470,12 +571,30 @@ impl SymbolIndex {
     /// uniform — adding a new secondary index requires adding exactly one
     /// `Self::retain_arcs_not_in(&self.new_index, &ptrs);` line below.
     pub fn remove_package_entries(&self, package_name: &str) {
+        self.remove_packages_named(&std::collections::HashSet::from([
+            package_name.to_lowercase()
+        ]));
+    }
+
+    fn clear_loaded_packages(&self) {
+        let package_names: std::collections::HashSet<String> = self
+            .app_paths
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        self.remove_packages_named(&package_names);
+    }
+
+    fn remove_packages_named(&self, package_names: &std::collections::HashSet<String>) {
+        if package_names.is_empty() {
+            return;
+        }
         let to_remove: Vec<(usize, Arc<SymbolEntry>)> = self
             .all
             .iter()
             .filter_map(|entry| {
                 let (arc, _) = entry.value();
-                if arc.package.eq_ignore_ascii_case(package_name) {
+                if package_names.contains(&arc.package.to_lowercase()) {
                     Some((*entry.key(), Arc::clone(arc)))
                 } else {
                     None
@@ -484,6 +603,11 @@ impl SymbolIndex {
             .collect();
 
         if to_remove.is_empty() {
+            for package_name in package_names {
+                self.app_paths.remove(package_name);
+                self.source_path_cache
+                    .retain(|(package, _, _), _| package != package_name);
+            }
             return;
         }
 
@@ -499,12 +623,36 @@ impl SymbolIndex {
         Self::retain_arcs_not_in(&self.by_kind, &ptrs);
         Self::retain_arcs_not_in(&self.by_extends, &ptrs);
 
-        // Rebuild default_completions — it may reference removed entries.
+        for package_name in package_names {
+            self.app_paths.remove(package_name);
+            self.source_path_cache
+                .retain(|(package, _, _), _| package != package_name);
+        }
+
+        // Package additions/removals can change any composed base-extension
+        // relationship. Clear the small derived cache rather than serving a
+        // stale view after hot symbol reload.
+        self.composed_cache.clear();
+        self.rebuild_default_completions();
+    }
+
+    fn rebuild_default_completions(&self) {
+        let mut remaining: Vec<(usize, Arc<SymbolEntry>)> = self
+            .all
+            .iter()
+            .filter_map(|entry| {
+                let (arc, _) = entry.value();
+                (!arc.synthetic).then(|| (*entry.key(), Arc::clone(arc)))
+            })
+            .collect();
+        remaining.sort_unstable_by_key(|(seq, _)| *seq);
+        remaining.truncate(DEFAULT_COMPLETIONS_CAP);
+
         let mut cache = self
             .default_completions
             .write()
             .unwrap_or_else(|e| e.into_inner());
-        cache.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
+        *cache = remaining.into_iter().map(|(_, arc)| arc).collect();
     }
 
     /// Helper: filter a `DashMap<K, Vec<Arc<SymbolEntry>>>` secondary index
@@ -592,6 +740,27 @@ mod tests {
         let results = index.search("SALES", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "Sales Management");
+    }
+
+    #[test]
+    fn search_ranks_exact_then_prefix_then_substring_deterministically() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_entry(ObjectKind::Table, 1, "My Customer Archive"),
+            make_entry(ObjectKind::Table, 2, "Customer Ledger Entry"),
+            make_entry(ObjectKind::Table, 3, "Customer"),
+        ]);
+
+        let names: Vec<_> = index
+            .search("customer", 3)
+            .into_iter()
+            .map(|entry| entry.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Customer", "Customer Ledger Entry", "My Customer Archive"]
+        );
+        assert!(index.search("customer", 0).is_empty());
     }
 
     #[test]
@@ -782,6 +951,96 @@ mod tests {
     }
 
     #[test]
+    fn removal_clears_path_source_and_composition_caches_and_refills_defaults() {
+        let index = SymbolIndex::new();
+        let mut entries: Vec<_> = (0..40)
+            .map(|i| make_entry(ObjectKind::Table, 50_000 + i, &format!("Table {i:02}")))
+            .collect();
+        for entry in entries.iter_mut().take(10) {
+            entry.package = "Drop".into();
+        }
+        for entry in entries.iter_mut().skip(10) {
+            entry.package = "Keep".into();
+        }
+        index.add_entries(&entries);
+        index
+            .app_paths
+            .insert("drop".into(), "/tmp/drop.app".into());
+        index.cache_source_path(
+            "Drop".into(),
+            ObjectKind::Table,
+            50_000,
+            "src/Drop.al".into(),
+        );
+        let _ = index.get_composed_cached(ObjectKind::Table, "Table 00");
+
+        index.remove_package_entries("DROP");
+
+        assert!(index.app_path("Drop").is_none());
+        assert!(index
+            .get_cached_source_path("Drop", ObjectKind::Table, 50_000)
+            .is_none());
+        assert!(index.is_composed_cache_empty());
+        assert_eq!(index.get_default_completions().len(), 30);
+        assert!(index
+            .get_default_completions()
+            .iter()
+            .all(|entry| entry.package == "Keep"));
+    }
+
+    #[test]
+    fn default_completions_exclude_synthetic_entries() {
+        let index = SymbolIndex::new();
+        let mut synthetic = make_entry(ObjectKind::Enum, -1, "Synthetic Option");
+        synthetic.synthetic = true;
+        index.add_entries(&[synthetic, make_entry(ObjectKind::Table, 1, "Real Table")]);
+
+        let defaults = index.get_default_completions();
+        assert_eq!(defaults.len(), 1);
+        assert_eq!(defaults[0].name, "Real Table");
+    }
+
+    #[test]
+    fn adding_extension_invalidates_cached_composition() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[make_entry(ObjectKind::Table, 18, "Customer")]);
+        let before = index
+            .get_composed_cached(ObjectKind::Table, "Customer")
+            .unwrap();
+        assert!(before.extensions.is_empty());
+
+        index.add_entries(&[make_extension(
+            ObjectKind::TableExtension,
+            50_100,
+            "Customer Ext",
+            "Customer",
+        )]);
+
+        let after = index
+            .get_composed_cached(ObjectKind::Table, "Customer")
+            .unwrap();
+        assert!(!Arc::ptr_eq(&before, &after));
+        assert_eq!(after.extensions.len(), 1);
+    }
+
+    #[test]
+    fn runtime_enum_is_not_shadowed_by_non_enum_with_same_name() {
+        let index = SymbolIndex::new();
+        let runtime_name = crate::language_data::runtime_enums()[0].name.clone();
+        index.add_entries(&[make_entry(ObjectKind::Table, 50_100, &runtime_name)]);
+
+        index.load_runtime_enums();
+
+        assert!(
+            index
+                .get_by_name(&runtime_name)
+                .iter()
+                .any(|entry| entry.kind == ObjectKind::Enum),
+            "a table name collision must not suppress the compiler runtime enum"
+        );
+    }
+
+    #[test]
     fn index_with_methods_and_fields() {
         let index = SymbolIndex::new();
         let mut entry = make_entry(ObjectKind::Table, 50100, "My Table");
@@ -879,5 +1138,46 @@ mod tests {
             index.app_path("Local Lib").as_deref(),
             Some(app_path.as_path())
         );
+    }
+
+    #[test]
+    fn reloading_same_package_replaces_symbols_instead_of_duplicating() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_path = dir.path().join("Contoso_LocalLib.app");
+        std::fs::write(&app_path, build_app("Local Lib", 50_123, "Old Widget")).unwrap();
+        let index = SymbolIndex::new();
+        assert_eq!(
+            index.load_packages(std::slice::from_ref(&app_path)).len(),
+            1
+        );
+
+        std::fs::write(&app_path, build_app("Local Lib", 50_124, "New Widget")).unwrap();
+        assert_eq!(
+            index.load_packages(std::slice::from_ref(&app_path)).len(),
+            1
+        );
+
+        assert_eq!(index.len(), 1);
+        assert!(index.get_by_name("Old Widget").is_empty());
+        assert_eq!(index.get_by_name("New Widget").len(), 1);
+    }
+
+    #[test]
+    fn replace_packages_removes_paths_no_longer_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("First.app");
+        let second = dir.path().join("Second.app");
+        std::fs::write(&first, build_app("First", 50_001, "First Table")).unwrap();
+        std::fs::write(&second, build_app("Second", 50_002, "Second Table")).unwrap();
+        let cache = crate::cache::SymbolCache::at(dir.path().join("cache"));
+        let index = SymbolIndex::new();
+        index.load_packages_cached(&[first.clone(), second.clone()], &cache);
+
+        index.replace_packages_cached(std::slice::from_ref(&second), &cache);
+
+        assert!(index.get_by_name("First Table").is_empty());
+        assert_eq!(index.get_by_name("Second Table").len(), 1);
+        assert!(index.app_path("First").is_none());
+        assert_eq!(index.app_path("Second").as_deref(), Some(second.as_path()));
     }
 }

@@ -1,5 +1,5 @@
 > **HISTORICAL — the split described here has landed.** `al-core` no longer exists; the workspace
-> is now the layered crates this document proposed (see `Docs/01-architecture.md` for the current
+> is now the layered crates this document proposed (see `Docs/architecture.md` for the current
 > state and `Docs/architecture.md` for the generated dependency graph). Kept for the historical
 > rationale behind the current layering, not as a description of anything still in progress.
 >

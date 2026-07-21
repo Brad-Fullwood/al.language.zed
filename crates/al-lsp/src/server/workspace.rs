@@ -87,6 +87,8 @@ pub(crate) async fn initialize_workspace(
 
     match al_project::project::find_project(&workspace_root) {
         Ok(mut project) => {
+            let symbol_config = workspace.config.read().await.clone();
+            project.apply_symbol_settings(&symbol_config);
             info!(
                 name = %project.app_json.name,
                 packages = project.packages.len(),
@@ -111,19 +113,20 @@ pub(crate) async fn initialize_workspace(
             // before user interaction so a missing-dependencies dialog
             // doesn't strand the editor — but warm starts no longer race
             // package symbol load against the first hover/completion.
+            let mut loaded_packages = Vec::new();
             if !project.packages.is_empty() {
                 let cache = al_symbols::cache::SymbolCache::default_location();
-                let loaded = workspace
+                loaded_packages = workspace
                     .symbols
                     .load_packages_cached(&project.packages, &cache);
                 info!(
-                    loaded = loaded.len(),
+                    loaded = loaded_packages.len(),
                     total_symbols = workspace.symbols.len(),
                     "Loaded symbol packages (pre-ready)"
                 );
-                workspace.symbols.load_runtime_enums();
                 workspace.invalidate_insight_graph();
             }
+            workspace.symbols.load_runtime_enums();
 
             // Signal readiness. For warm starts the package symbol index is
             // already populated above; for cold starts (no cached packages
@@ -132,37 +135,36 @@ pub(crate) async fn initialize_workspace(
             ready_flag.store(true, Ordering::Release);
             init_notify.notify_waiters();
 
-            if project.packages.is_empty() {
-                let deps = project.all_dependencies();
-                if !deps.is_empty() {
-                    let has_server = !project.server_configs.is_empty();
-                    if let Some(source) =
-                        prompt_download_symbols(&client, deps.len(), has_server).await
-                    {
-                        let downloaded = match source {
-                            DownloadSource::Server => {
-                                download_symbols_from_server(&project, &deps, &client).await
-                            }
-                            DownloadSource::NuGet => {
-                                download_packages_nuget(&workspace, &deps, &project.packages_dir)
-                                    .await
-                            }
-                        };
-                        if !downloaded.is_empty() {
-                            project.packages = downloaded;
-
-                            let cache = al_symbols::cache::SymbolCache::default_location();
-                            let loaded = workspace
-                                .symbols
-                                .load_packages_cached(&project.packages, &cache);
-                            info!(
-                                loaded = loaded.len(),
-                                total_symbols = workspace.symbols.len(),
-                                "Loaded symbol packages (post-download)"
-                            );
-                            workspace.symbols.load_runtime_enums();
-                            workspace.invalidate_insight_graph();
+            let deps = missing_dependencies(&project.all_dependencies(), &loaded_packages);
+            if !deps.is_empty() {
+                let has_server = !project.server_configs.is_empty();
+                if let Some(source) = prompt_download_symbols(&client, deps.len(), has_server).await
+                {
+                    let downloaded = match source {
+                        DownloadSource::Server => {
+                            download_symbols_from_server(&project, &deps, &client).await
                         }
+                        DownloadSource::NuGet => {
+                            download_packages_nuget(&workspace, &deps, &project.packages_dir).await
+                        }
+                    };
+                    if !downloaded.is_empty() {
+                        project.packages.extend(downloaded.iter().cloned());
+
+                        let cache = al_symbols::cache::SymbolCache::default_location();
+                        let loaded = workspace.symbols.load_packages_cached(&downloaded, &cache);
+                        info!(
+                            loaded = loaded.len(),
+                            total_symbols = workspace.symbols.len(),
+                            "Loaded symbol packages (post-download)"
+                        );
+                        workspace.symbols.load_runtime_enums();
+                        workspace.invalidate_insight_graph();
+
+                        // Re-scan all configured folders so the stored
+                        // project keeps pre-existing/local packages as well
+                        // as the newly downloaded files.
+                        project.apply_symbol_settings(&symbol_config);
                     }
                 }
             }
@@ -265,48 +267,28 @@ pub(crate) async fn initialize_workspace(
     // Project-scoped diagnostics: lint ALL .al files at startup.
     // Our native lint is fast enough to run on the entire project.
     {
-        let config = workspace.config.read().await;
+        let config = workspace.config.read().await.clone();
         if config.enable_native_lint
             && config.diagnostics_scope == al_project::config::DiagnosticsScope::Project
         {
-            // Snapshot lint config fields before iterating so we don't hold the
-            // RwLock read guard across `client.publish_diagnostics().await`.
-            let lint_overrides = config.native_lint_rules.clone();
-            drop(config);
-            let file_paths: Vec<std::path::PathBuf> = workspace
-                .file_index
-                .files
-                .iter()
-                .map(|entry| entry.key().clone())
-                .collect();
-            let file_count = file_paths.len();
-            let is_lint_enabled = |code: &str| *lint_overrides.get(code).unwrap_or(&true);
-            for (i, path) in file_paths.into_iter().enumerate() {
+            // Compute the same combined syntax/file/project/call-graph result
+            // used by pull diagnostics and CLI lint. Running the workspace
+            // semantic pass once avoids rebuilding it independently per file.
+            let results = al_analysis::queries::diagnostics::workspace_syntax_diagnostics(
+                &workspace, &config,
+            );
+            let file_count = results.len();
+            for (i, (path, diagnostics)) in results.into_iter().enumerate() {
                 if i > 0 && i % 10 == 0 {
                     tokio::task::yield_now().await;
                 }
                 if let Ok(uri) = url::Url::from_file_path(&path) {
-                    // Use cached parse tree from file_index instead of re-parsing.
-                    if let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) {
-                        let source = text.as_bytes();
-                        let errors = al_syntax::AlParser::errors_from_tree(&tree);
-                        let mut lsp_diags = Vec::new();
-                        for err in &errors {
-                            lsp_diags.push(crate::server::diagnostics::syntax_error_to_diagnostic(
-                                err, source,
-                            ));
-                        }
-                        let lint_result = al_syntax::lint(&tree, &text);
-                        for lint in &lint_result {
-                            if is_lint_enabled(&lint.code) {
-                                lsp_diags.push(crate::server::diagnostics::lint_to_diagnostic(
-                                    lint, source,
-                                ));
-                            }
-                        }
-                        if !lsp_diags.is_empty() {
-                            client.publish_diagnostics(uri, lsp_diags, None).await;
-                        }
+                    if !diagnostics.is_empty() {
+                        let lsp_diags = diagnostics
+                            .iter()
+                            .map(crate::server::diagnostics::syntax_diag_to_lsp)
+                            .collect();
+                        client.publish_diagnostics(uri, lsp_diags, None).await;
                     }
                 }
             }
@@ -347,6 +329,41 @@ async fn load_caches_from_disk(workspace: &Workspace, version: &str) {
             }
         }
     }
+}
+
+fn missing_dependencies(
+    dependencies: &[al_project::project::AppDependency],
+    packages: &[al_symbols::model::SymbolPackage],
+) -> Vec<al_project::project::AppDependency> {
+    dependencies
+        .iter()
+        .filter(|dependency| {
+            !packages
+                .iter()
+                .any(|package| package.satisfies_dependency(dependency))
+        })
+        .cloned()
+        .collect()
+}
+
+fn missing_dependencies_in_paths(
+    dependencies: &[al_project::project::AppDependency],
+    package_paths: &[PathBuf],
+) -> Vec<al_project::project::AppDependency> {
+    let manifests: Vec<_> = package_paths
+        .iter()
+        .filter_map(|path| al_symbols::app_reader::read_app_manifest_file(path).ok())
+        .collect();
+    dependencies
+        .iter()
+        .filter(|dependency| {
+            !manifests.iter().any(|manifest| {
+                manifest.app_id.eq_ignore_ascii_case(&dependency.id)
+                    && al_symbols::model::version_at_least(&manifest.version, &dependency.version)
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 /// Log which loaded packages lack `.al` source files.
@@ -621,12 +638,18 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         return;
     };
 
-    let deps = project.all_dependencies();
+    let all_dependencies = project.all_dependencies();
+    let deps = tokio::task::block_in_place(|| {
+        missing_dependencies_in_paths(&all_dependencies, &project.packages)
+    });
     if deps.is_empty() {
-        info!("No dependencies to download");
+        info!("All symbol dependencies are already satisfied");
         server
             .client
-            .show_message(MessageType::INFO, "No dependencies to download")
+            .show_message(
+                MessageType::INFO,
+                "All symbol dependencies are already satisfied",
+            )
             .await;
         return;
     }
@@ -680,6 +703,10 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         source = source_name,
         "Reloaded symbol packages after download"
     );
+    let symbol_config = server.workspace.config.read().await.clone();
+    if let Some(project) = server.workspace.project.write().await.as_mut() {
+        project.apply_symbol_settings(&symbol_config);
+    }
 
     server
         .client
@@ -1173,6 +1200,51 @@ mod tests {
     fn download_source_display_names() {
         assert_eq!(DownloadSource::Server.display_name(), "BC server");
         assert_eq!(DownloadSource::NuGet.display_name(), "NuGet");
+    }
+
+    #[test]
+    fn dependency_check_does_not_treat_one_cached_package_as_all_dependencies() {
+        let dependencies = vec![
+            al_project::project::AppDependency {
+                id: "app-a".into(),
+                name: "A".into(),
+                publisher: "P".into(),
+                version: "1.0.0.0".into(),
+            },
+            al_project::project::AppDependency {
+                id: "app-b".into(),
+                name: "B".into(),
+                publisher: "P".into(),
+                version: "1.0.0.0".into(),
+            },
+        ];
+        let packages = vec![al_symbols::model::SymbolPackage {
+            app_id: "APP-A".into(),
+            name: "A".into(),
+            publisher: "P".into(),
+            version: "1.2.0.0".into(),
+            objects: vec![],
+            object_count: 0,
+        }];
+
+        let missing = missing_dependencies(&dependencies, &packages);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].id, "app-b");
+    }
+
+    #[test]
+    fn dependency_check_requires_minimum_version() {
+        assert!(al_symbols::model::version_at_least(
+            "27.4.10.0",
+            "27.3.999.0"
+        ));
+        assert!(al_symbols::model::version_at_least("27.3", "27.3.0.0"));
+        assert!(!al_symbols::model::version_at_least(
+            "26.9.999.0",
+            "27.0.0.0"
+        ));
+        assert!(!al_symbols::model::version_at_least("preview", "27.0.0.0"));
+        assert!(al_symbols::model::version_at_least("preview", "PREVIEW"));
     }
 
     /// (`al.nugetFeeds` / `al.useOnlyCustomFeeds` parity):

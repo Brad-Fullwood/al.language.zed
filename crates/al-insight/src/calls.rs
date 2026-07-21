@@ -694,13 +694,14 @@ pub fn populate_call_edges_for_procedure(
     // when the variable name happened to equal a real object name.
     let object_var_types = extract_procedure_object_var_types(tree, source, procedure_name);
 
-    let caller_key = NodeKey::Procedure(
-        object_kind,
-        object_name.to_lowercase(),
-        procedure_name.to_lowercase(),
-    );
-
-    let caller_id = match CallGraph::node_id_for(insight, &caller_key) {
+    // A callable workspace member can be represented by three graph node
+    // variants. Event publishers and subscribers used to be registered as
+    // `Event` / `Subscriber`, but this resolver looked only for `Procedure`.
+    // Their bodies consequently had no outgoing edges: calls made by an event
+    // subscriber disappeared from every transitive analysis. Resolve the
+    // actual callable node so transaction lint, affected tests, coverage, and
+    // event tracing all see the complete stack.
+    let caller_id = match callable_node_id(insight, object_kind, object_name, procedure_name) {
         Some(id) => id,
         None => return,
     };
@@ -797,6 +798,11 @@ pub fn populate_call_edges_for_procedure(
                     );
                     if let Some(event_id) = CallGraph::node_id_for(insight, &event_key) {
                         call_graph.add_trigger(caller_id, event_id);
+                        // Record-trigger events execute subscribers just like
+                        // explicitly published events. Previously the graph
+                        // stopped at the implicit OnBefore/OnAfter event node,
+                        // dropping the rest of the event stack.
+                        link_event_subscribers(caller_id, event_id, call_graph);
                     }
                 }
             }
@@ -816,6 +822,28 @@ pub fn populate_call_edges_for_procedure(
             }
         }
     }
+}
+
+/// Resolve the graph node that owns a callable AL member body.
+///
+/// Regular procedures/triggers, event publishers, and event subscribers are
+/// deliberately distinct insight nodes, but all three can contain executable
+/// AL and therefore need call edges.
+fn callable_node_id(
+    insight: &InsightGraph,
+    object_kind: ObjectKind,
+    object_name: &str,
+    procedure_name: &str,
+) -> Option<NodeId> {
+    let object = object_name.to_lowercase();
+    let member = procedure_name.to_lowercase();
+    [
+        NodeKey::Procedure(object_kind, object.clone(), member.clone()),
+        NodeKey::Subscriber(object_kind, object.clone(), member.clone()),
+        NodeKey::Event(object_kind, object, member),
+    ]
+    .iter()
+    .find_map(|key| CallGraph::node_id_for(insight, key))
 }
 
 /// Add over-approximated `caller → subscriber` edges for an event publish site.
@@ -1731,9 +1759,7 @@ pub fn populate_workspace_call_edges(
 
         let procedures = collect_procedure_names_from_tree(tree.root_node(), source.as_bytes());
         for proc_name in procedures {
-            let proc_key =
-                NodeKey::Procedure(ok, info.name.to_lowercase(), proc_name.to_lowercase());
-            if let Some(proc_id) = CallGraph::node_id_for(insight, &proc_key) {
+            if let Some(proc_id) = callable_node_id(insight, ok, &info.name, &proc_name) {
                 if call_graph.resolution_state(proc_id) == EdgeResolutionState::Unresolved {
                     call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolving);
 
@@ -1793,9 +1819,7 @@ pub fn resolve_all_workspace_call_edges(
 
         let procedures = collect_procedure_names_from_tree(tree.root_node(), source.as_bytes());
         for proc_name in procedures {
-            let proc_key =
-                NodeKey::Procedure(ok, info.name.to_lowercase(), proc_name.to_lowercase());
-            if let Some(proc_id) = CallGraph::node_id_for(insight, &proc_key) {
+            if let Some(proc_id) = callable_node_id(insight, ok, &info.name, &proc_name) {
                 if call_graph.resolution_state(proc_id) != EdgeResolutionState::Resolved {
                     populate_call_edges_for_procedure(
                         &tree, &source, ok, &info.name, &proc_name, symbols, insight, call_graph,

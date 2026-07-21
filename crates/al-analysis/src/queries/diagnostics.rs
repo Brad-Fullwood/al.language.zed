@@ -1,4 +1,4 @@
-//! Transport-agnostic syntax diagnostics query.
+//! Transport-agnostic syntax and native semantic diagnostics query.
 //!
 //! Consolidates the parse+lint+config-filter pattern that was previously
 //! duplicated across `al-lsp/src/server.rs` (schedule_diagnostics) and
@@ -38,10 +38,9 @@ pub struct SyntaxDiagnostic {
 /// to a direct parse on a cache miss so callers that pre-populate the store
 /// (e.g. `did_open` / `did_change`) get a zero-cost cache hit.
 ///
-/// Lint results are filtered by `config.is_lint_rule_enabled`.
-/// `al_syntax::lint()` runs a small native rule set (AL-NL001, AL-NL002) in
-/// addition to the syntax-error pass on the parse tree; most AL diagnostics
-/// still come from the semantic CodeAnalysis bridge, not from native lint.
+/// Lint results are filtered by `config.is_lint_rule_enabled`. The result joins
+/// file-local `al_syntax` rules with project-semantic and resolved
+/// call/event-stack checks from the shared native workspace engine.
 ///
 /// Returns a transport-agnostic `Vec<SyntaxDiagnostic>`. The caller is
 /// responsible for converting to LSP `Diagnostic` values.
@@ -63,7 +62,17 @@ pub fn syntax_diagnostics(
         return Vec::new();
     };
 
-    collect_diagnostics_from_tree(&tree, &text, config)
+    let mut diagnostics = collect_diagnostics_from_tree(&tree, &text, config);
+    if let Ok(path) = uri.to_file_path() {
+        diagnostics.extend(
+            native_workspace_diagnostics(workspace, config)
+                .into_iter()
+                .filter_map(|(finding_path, diagnostic)| {
+                    (finding_path == path).then_some(diagnostic)
+                }),
+        );
+    }
+    diagnostics
 }
 
 /// Compute syntax/lint diagnostics for every indexed workspace file.
@@ -86,7 +95,7 @@ pub fn workspace_syntax_diagnostics(
     workspace: &Workspace,
     config: &AlConfig,
 ) -> Vec<(std::path::PathBuf, Vec<SyntaxDiagnostic>)> {
-    workspace
+    let mut results: Vec<_> = workspace
         .file_index
         .iter_parsed()
         .into_iter()
@@ -94,7 +103,120 @@ pub fn workspace_syntax_diagnostics(
             let diags = collect_diagnostics_from_tree(&tree, &text, config);
             (path, diags)
         })
-        .collect()
+        .collect();
+
+    let mut native_by_file: std::collections::HashMap<std::path::PathBuf, Vec<SyntaxDiagnostic>> =
+        std::collections::HashMap::new();
+    for (path, diagnostic) in native_workspace_diagnostics(workspace, config) {
+        native_by_file.entry(path).or_default().push(diagnostic);
+    }
+    for (path, diagnostics) in &mut results {
+        if let Some(mut native) = native_by_file.remove(path) {
+            diagnostics.append(&mut native);
+        }
+    }
+    // A semantic finding should normally point at an indexed file already in
+    // `results`; retain it even if a concurrently removed parse entry made the
+    // local syntax pass miss that path.
+    results.extend(native_by_file);
+    results
+}
+
+/// Compute every native workspace-level semantic/transaction diagnostic.
+///
+/// This is the bridge-free validation layer shared by editor diagnostics and
+/// native build gating. It combines object/project checks (`AL-NC*`) with the
+/// resolved call/event-stack transaction rules (`AL-NL003/4`).
+#[must_use]
+pub fn native_workspace_diagnostics(
+    workspace: &Workspace,
+    config: &AlConfig,
+) -> Vec<(std::path::PathBuf, SyntaxDiagnostic)> {
+    if !config.enable_native_lint {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+    for finding in super::native_check::native_semantic_checks(workspace) {
+        if !config.is_lint_rule_enabled(finding.code) {
+            continue;
+        }
+        let Some(path) = finding.file.as_deref().map(std::path::PathBuf::from) else {
+            continue;
+        };
+        let range = workspace
+            .file_index
+            .object_info
+            .get(&path)
+            .and_then(|info| {
+                workspace
+                    .file_index
+                    .get_cached_parse(&path)
+                    .map(|(text, _)| ts_range_to_query_range(info.range, text.as_bytes()))
+            })
+            .unwrap_or_default();
+        let severity = match finding.severity {
+            super::native_check::NativeSeverity::Error => SyntaxDiagnosticSeverity::Error,
+            super::native_check::NativeSeverity::Warning => SyntaxDiagnosticSeverity::Warning,
+        };
+        diagnostics.push((
+            path,
+            SyntaxDiagnostic {
+                message: finding.message,
+                range,
+                severity,
+                code: finding.code.to_string(),
+                source: "al-native".to_string(),
+            },
+        ));
+    }
+
+    let transaction_rules_enabled = [
+        super::transaction_lint::COMMIT_AFTER_DATABASE_CHANGE,
+        super::transaction_lint::DATABASE_WRITE_IN_TRY_STACK,
+    ]
+    .iter()
+    .any(|code| config.is_lint_rule_enabled(code));
+    if transaction_rules_enabled {
+        for finding in super::transaction_lint::transaction_lints(workspace) {
+            if !config.is_lint_rule_enabled(finding.code) {
+                continue;
+            }
+            let severity = match finding.severity {
+                super::transaction_lint::WorkspaceLintSeverity::Error => {
+                    SyntaxDiagnosticSeverity::Error
+                }
+                super::transaction_lint::WorkspaceLintSeverity::Warning => {
+                    SyntaxDiagnosticSeverity::Warning
+                }
+                super::transaction_lint::WorkspaceLintSeverity::Info => {
+                    SyntaxDiagnosticSeverity::Info
+                }
+                super::transaction_lint::WorkspaceLintSeverity::Hint => {
+                    SyntaxDiagnosticSeverity::Hint
+                }
+            };
+            diagnostics.push((
+                finding.file,
+                SyntaxDiagnostic {
+                    message: finding.message,
+                    range: finding.range,
+                    severity,
+                    code: finding.code.to_string(),
+                    source: "al-native".to_string(),
+                },
+            ));
+        }
+    }
+
+    diagnostics.sort_by(|(path_a, a), (path_b, b)| {
+        path_a
+            .cmp(path_b)
+            .then(a.range.start.line.cmp(&b.range.start.line))
+            .then(a.range.start.character.cmp(&b.range.start.character))
+            .then(a.code.cmp(&b.code))
+    });
+    diagnostics
 }
 
 fn collect_diagnostics_from_tree(
@@ -281,6 +403,58 @@ mod tests {
             "expected no diagnostics for a clean file, got: {:?}",
             entry.1.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn workspace_diagnostics_include_native_semantic_errors() {
+        let ws = Workspace::new();
+        let first = r#"codeunit 50100 "First" { }"#;
+        let second = r#"codeunit 50100 "Second" { }"#;
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/First.al"),
+            first.to_string(),
+        );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Second.al"),
+            second.to_string(),
+        );
+
+        let diagnostics = native_workspace_diagnostics(&ws, &AlConfig::default());
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|(_, diagnostic)| diagnostic.code == "AL-NC001")
+                .count(),
+            2,
+            "both duplicate declarations must receive a compile/editor diagnostic"
+        );
+        assert!(diagnostics.iter().all(|(_, diagnostic)| {
+            diagnostic.code != "AL-NC001" || diagnostic.severity == SyntaxDiagnosticSeverity::Error
+        }));
+    }
+
+    #[test]
+    fn native_lint_master_toggle_suppresses_workspace_rules() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Try.al"),
+            r#"codeunit 50100 "Try"
+{
+    [TryFunction]
+    procedure Write()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.Modify();
+    end;
+}"#
+            .to_string(),
+        );
+        let config = AlConfig {
+            enable_native_lint: false,
+            ..AlConfig::default()
+        };
+        assert!(native_workspace_diagnostics(&ws, &config).is_empty());
     }
 
     #[test]

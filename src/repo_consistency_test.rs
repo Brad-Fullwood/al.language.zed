@@ -56,10 +56,9 @@ fn github_repo_matches_extension_toml() {
 /// must NOT fail fast on Windows any more. Guard against the old fail-fast
 /// branch being reintroduced — its return string is distinctive.
 ///
-/// Why this matters: the daemon transport is Unix-only, but `al-lsp` itself is
-/// portable (LSP `--stdio` + DAP `--dap` over platform-neutral stdio, daemon
-/// behind `#[cfg(unix)]`). Re-adding the fail-fast would block every Windows
-/// new user from ever spawning the language server.
+/// Why this matters: both native binaries and all transports are supported on
+/// Windows. Re-adding the fail-fast would block every Windows new user from
+/// ever spawning the language server.
 #[test]
 fn no_windows_fail_fast_in_binary_resolution() {
     let src = include_str!("lib.rs");
@@ -119,16 +118,38 @@ fn release_asset_names_match_workflow() {
         );
     }
 
-    // The Windows entry specifically must build only al-lsp (its daemon client
-    // does not compile on Windows) — i.e. it is flagged `windows: true` and the
-    // al-explorer build step is skipped on it.
+    // The Windows entry must build and package al-explorer alongside al-lsp.
     assert!(
         workflow.contains("x86_64-pc-windows-msvc"),
         "release.yml must include the Windows target so al-windows-x86_64.zip is built"
     );
     assert!(
-        workflow.contains("!matrix.windows"),
-        "release.yml must skip al-explorer on the Windows matrix entry (Unix-only client)"
+        workflow.contains("Copy-Item \"$binDir/al-explorer.exe\" $stage"),
+        "release.yml must package al-explorer.exe in the Windows archive"
+    );
+    assert!(
+        workflow.contains("- name: Build al-explorer binary (native)")
+            && workflow.contains("if: \"!matrix.cross\""),
+        "release.yml must build al-explorer on every native target, including Windows"
+    );
+}
+
+/// Windows support is only credible if CI runs the real daemon/client path on
+/// a Windows host. A cross-compile alone cannot catch named-pipe runtime bugs.
+#[test]
+fn windows_ci_exercises_named_pipe_daemon_end_to_end() {
+    let workflow = include_str!("../.github/workflows/ci.yml");
+    assert!(
+        workflow.contains("windows-native:"),
+        "ci.yml must retain a native Windows job"
+    );
+    assert!(
+        workflow.contains("cargo build -p al-lsp -p al-explorer"),
+        "Windows CI must build both native binaries"
+    );
+    assert!(
+        workflow.contains("cargo test -p al-test-harness --test cli_smoke --test extension_smoke"),
+        "Windows CI must run the daemon auto-start and CLI round-trip smoke tests"
     );
 }
 

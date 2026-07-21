@@ -6,7 +6,7 @@
 //! interface. Other kinds (page/report/xmlport/query/extensions) extend the
 //! same machinery and are tracked follow-up.
 
-use tree_sitter::Node;
+use tree_sitter::{Node, Tree};
 
 use al_symbols::model::{
     AttributeSymbol, EnumValueSymbol, FieldSymbol, KeySymbol, MethodSymbol, ObjectKind,
@@ -118,8 +118,18 @@ pub struct EmitObject {
 /// in-`.app` archive path recorded on each object (e.g. `src/Lib.al`).
 pub fn extract_objects(source: &str, source_file: &str) -> Vec<EmitObject> {
     let result = AlParser::parse_quick(source);
+    extract_objects_from_tree(source, source_file, &result.tree)
+}
+
+/// Extract top-level objects from an existing parse tree.
+///
+/// The verified build path parses every file once, checks that tree for syntax
+/// errors, then passes the same snapshot here. Keeping this entry point avoids
+/// paying for a second parse and, more importantly, prevents verification and
+/// emission from observing different source snapshots.
+pub fn extract_objects_from_tree(source: &str, source_file: &str, tree: &Tree) -> Vec<EmitObject> {
     let src = source.as_bytes();
-    let root = result.tree.root_node();
+    let root = tree.root_node();
     let mut out = Vec::new();
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {

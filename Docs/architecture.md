@@ -1,7 +1,6 @@
 # Architecture diagrams — crates & request flow
 
-Visual companion to the prose in [01 — Architecture](./01-architecture.md). Every
-edge below is **derived from the real `crates/*/Cargo.toml` `[dependencies]`
+Every edge below is **derived from the real `crates/*/Cargo.toml` `[dependencies]`
 tables** (direct Cargo path-dependencies) — nothing is invented. `default`,
 optional, dev-only and external edges are called out where they differ from a
 plain production dependency. The crate-layering intent is described in
@@ -221,8 +220,9 @@ flowchart TD
 
   subgraph Proc["al-lsp process (transports)"]
     lsp_srv["LSP server (stdio)"]
-    daemon["daemon (Unix socket JSON-RPC)"]
+    daemon["daemon transport (local IPC JSON-RPC)"]
     mcp["MCP server (al-tools, stdio)"]
+    dispatcher["shared command dispatcher"]
     dap["native DAP adapter"]
   end
 
@@ -242,19 +242,21 @@ flowchart TD
 
   zed_editor -->|LSP over stdio| lsp_srv
   zed_editor -->|DAP| dap
-  cli -->|Unix socket JSON-RPC| daemon
+  cli -->|Unix socket / named pipe JSON-RPC| daemon
   ci -->|CLI / JSON-RPC| daemon
   agent -->|MCP stdio| mcp
 
   lsp_srv --> analysis
-  daemon --> analysis
-  mcp --> analysis
+  daemon --> dispatcher
+  mcp -->|named aliases or al_call| dispatcher
+  dispatcher --> analysis
 
   analysis --> ws
   ws --> symbols
   analysis --> build
-  daemon --> build
+  dispatcher --> build
   analysis --> test
+  dispatcher --> test
 
   analysis -.->|--features semantic| semantic
   ws -.->|--features semantic| semantic
@@ -264,11 +266,11 @@ flowchart TD
   dap --> bc
 ```
 
-The takeaway matches [00 — Overview](./00-overview.md): the four client
-transports are thin shells over one engine. `al-analysis` answers queries
-against the `al-workspace` state hub; the Microsoft `.NET CodeAnalysis` bridge
-and the BC Dev API are reached only on the dashed/optional edges, which is why
-native parse / symbols / analysis all work with no Microsoft toolchain present.
+The four client transports are thin shells over one engine. CLI requests enter through the local IPC
+daemon transport, while MCP calls the same command dispatcher in-process; `al_call` makes every
+dispatcher method available and named tools are discovery shortcuts. `al-analysis` answers queries
+against the `al-workspace` state hub; the Microsoft `.NET CodeAnalysis` bridge and the BC Dev API are
+reached only on the dashed/optional edges, which is why native parse / symbols / analysis all work
+with no Microsoft toolchain present.
 
-See [testing-guide.md](./testing-guide.md) for how to verify each of these
-layers, and [01 — Architecture](./01-architecture.md) for the per-crate prose.
+See [testing-guide.md](./testing-guide.md) for how to verify each of these layers.

@@ -59,13 +59,15 @@ al-explorer xlf untranslated <lang.xlf>
 al-explorer xlf suggest <lang.xlf>              # symbol-name match suggestions
 ```
 
-These are CLI/daemon workflows. Zed currently exposes XLIFF **generation** as a task; MCP does not
-expose XLIFF tools yet.
+These are shared daemon workflows. The CLI exposes dedicated `xlf` subcommands, Zed currently exposes
+XLIFF **generation** as a task, and MCP can invoke every XLIFF method through `al_call` (for example,
+`method: "xlf.refresh"`).
 
 ## Limitations & roadmap
 
 - 🟡 `suggest` does workspace symbol-name/field matching only; machine-translation / translation-
   memory backends are a future enhancement.
-- Zed exposes generation only; refresh/untranslated/suggest are CLI/daemon.
-- `ROADMAP.md` lists XLIFF refresh/untranslated/suggest as Zed-task and MCP-tool candidates, and
-  workspace-symbol-backed translation suggestion as a future capability.
+- Zed exposes generation only; refresh/untranslated/suggest are available through the CLI and MCP's
+  complete dispatcher bridge.
+- `ROADMAP.md` lists XLIFF refresh/untranslated/suggest as Zed-task candidates; dedicated MCP aliases
+  remain optional discoverability improvements because `al_call` already provides full access.

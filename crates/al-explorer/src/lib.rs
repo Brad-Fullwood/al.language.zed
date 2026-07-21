@@ -4,31 +4,21 @@
 // table noticeably less skimmable. The expanded form is intentional.
 #![allow(clippy::collapsible_match)]
 
-#[cfg(unix)]
 pub mod cli;
-#[cfg(unix)]
 pub mod types;
-#[cfg(unix)]
 pub mod views;
 
-#[cfg(unix)]
 mod app;
-#[cfg(unix)]
 mod tui;
 
 // The TUI `App` lives in `app` but several `views` modules (and the unit tests
 // below) refer to it as `crate::App`; re-export it at the crate root so those
 // paths keep resolving unchanged.
-#[cfg(unix)]
 pub(crate) use app::App;
 
-#[cfg(unix)]
 use al_protocol::DaemonClient;
-#[cfg(unix)]
 use ratatui::style::{Color, Modifier, Style};
-#[cfg(unix)]
 use ratatui::widgets::ListState;
-#[cfg(unix)]
 use types::SymbolEntry;
 
 /// Upper bound on the length (in bytes) of any single-line text input field
@@ -37,10 +27,8 @@ use types::SymbolEntry;
 /// these `String`s without limit — for `search_query` that also re-filters the
 /// whole symbol set on every keystroke — eventually exhausting memory. No real
 /// query or path approaches this length.
-#[cfg(unix)]
 pub(crate) const MAX_INPUT_LEN: usize = 4096;
 
-#[cfg(unix)]
 /// Advance a wrap-around list index forward by one.
 ///
 /// Returns the next index (wrapping from the last item back to 0).
@@ -54,7 +42,6 @@ pub(crate) fn wrap_next(current: Option<usize>, len: usize) -> usize {
     }
 }
 
-#[cfg(unix)]
 /// Retreat a wrap-around list index backward by one.
 ///
 /// Returns the previous index (wrapping from 0 to the last item).
@@ -67,7 +54,6 @@ pub(crate) fn wrap_prev(current: Option<usize>, len: usize) -> usize {
     }
 }
 
-#[cfg(unix)]
 pub(crate) fn ensure_daemon_client(
     client: &mut Option<DaemonClient>,
     project_root: &std::path::Path,
@@ -81,7 +67,6 @@ pub(crate) fn ensure_daemon_client(
     }
 }
 
-#[cfg(unix)]
 pub(crate) fn advance_list_selection(list_state: &mut ListState, len: usize, forward: bool) {
     if len == 0 {
         return;
@@ -96,7 +81,6 @@ pub(crate) fn advance_list_selection(list_state: &mut ListState, len: usize, for
 
 /// Highlight style for a focused text input (bold yellow) vs. unfocused
 /// (dark gray).
-#[cfg(unix)]
 pub(crate) fn input_focused_style(is_focused: bool) -> Style {
     if is_focused {
         Style::default()
@@ -108,7 +92,6 @@ pub(crate) fn input_focused_style(is_focused: bool) -> Style {
 }
 
 /// Highlight style for the active pane (bold yellow) vs. inactive (dark gray).
-#[cfg(unix)]
 pub(crate) fn pane_style(is_active: bool) -> Style {
     if is_active {
         Style::default()
@@ -119,7 +102,6 @@ pub(crate) fn pane_style(is_active: bool) -> Style {
     }
 }
 
-#[cfg(unix)]
 #[derive(PartialEq, Clone, Copy)]
 pub(crate) enum ViewMode {
     ObjectBrowser,
@@ -129,7 +111,6 @@ pub(crate) enum ViewMode {
     TestRunner,
 }
 
-#[cfg(unix)]
 #[derive(PartialEq, Clone, Copy)]
 pub(crate) enum ActivePane {
     Search,
@@ -138,14 +119,12 @@ pub(crate) enum ActivePane {
     Details,
 }
 
-#[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClickTarget {
     Objects,
     Details,
 }
 
-#[cfg(unix)]
 #[derive(Debug, Clone)]
 pub(crate) struct DetailTarget {
     pub(crate) name: String,
@@ -153,7 +132,6 @@ pub(crate) struct DetailTarget {
 
 /// Object ID for display: `None` when the kind has no developer-visible ID
 /// in AL syntax, or when the entry carries a sentinel/synthetic ID (≤ 0).
-#[cfg(unix)]
 pub(crate) fn display_object_id(entry: &SymbolEntry) -> Option<i32> {
     if entry.kind.has_numeric_id() && entry.id > 0 {
         Some(entry.id)
@@ -162,7 +140,6 @@ pub(crate) fn display_object_id(entry: &SymbolEntry) -> Option<i32> {
     }
 }
 
-#[cfg(unix)]
 pub(crate) fn truncate_with_ellipsis(s: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -179,7 +156,6 @@ pub(crate) fn truncate_with_ellipsis(s: &str, width: usize) -> String {
     out
 }
 
-#[cfg(unix)]
 pub(crate) fn pad_center(s: String, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -187,43 +163,6 @@ pub(crate) fn pad_center(s: String, width: usize) -> String {
     format!("{:^width$}", s, width = width)
 }
 
-/// The actionable message shown when `al-explorer` is invoked on a platform
-/// without Unix-domain-socket support (i.e. Windows).
-///
-/// `al-explorer` drives the `al-lsp` daemon over an `AF_UNIX` socket
-/// (`al_protocol::DaemonClient` and `al_protocol::client` are both
-/// `#[cfg(unix)]`), so the whole TUI/CLI is Unix-only. There is **no Windows
-/// transport** — this is graceful gating and honest messaging only, not a port.
-/// The Zed extension does not need al-explorer: it spawns the portable `al-lsp`
-/// server directly over stdio.
-///
-#[cfg(any(test, not(unix)))]
-pub(crate) fn unsupported_platform_message() -> &'static str {
-    "al-explorer is not available on Windows.\n\
-     \n\
-     The al-explorer daemon uses Unix domain sockets (AF_UNIX) to talk to the \
-     al-lsp language server, and those exist only on Unix-like systems (Linux, \
-     macOS). A Windows transport is not implemented.\n\
-     \n\
-     What still works on Windows: the AL language server (al-lsp) itself — \
-     parsing, symbols, the full LSP surface, formatting, and linting — over \
-     stdio, which is all the Zed extension needs to edit AL. You do not need \
-     al-explorer."
-}
-
-// al-explorer talks to the al-lsp daemon over a Unix-domain socket
-// (`al_protocol::DaemonClient` is `#[cfg(unix)]`), so the whole binary is
-// Unix-only. The Zed extension does NOT need al-explorer — it spawns the
-// portable `al-lsp` server directly — so on non-Unix targets we compile a small
-// unsupported-platform entry point that exits with an actionable message. This
-// is what keeps `cargo build --workspace` (and the Windows release job) green.
-#[cfg(not(unix))]
-pub fn run() -> std::process::ExitCode {
-    eprintln!("{}", unsupported_platform_message());
-    std::process::ExitCode::FAILURE
-}
-
-#[cfg(unix)]
 pub fn run() -> std::process::ExitCode {
     use clap::Parser;
     use std::process::ExitCode;
@@ -243,7 +182,7 @@ pub fn run() -> std::process::ExitCode {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::views::call_graph::handle_call_graph_key;
@@ -348,50 +287,5 @@ mod tests {
         app.update_objects_list(true);
         assert_eq!(app.current_objects.len(), 1);
         assert_eq!(app.current_objects[0].name, "Vendor");
-    }
-}
-
-// Platform-gating tests. Unlike the `#[cfg(all(test, unix))]` module above
-// (which pulls in the Unix-only TUI `views`), this module is platform-
-// independent so it runs on every host — including Linux/CI here — and pins the
-// wording of the Windows "not available" message that the `#[cfg(not(unix))]`
-// non-Unix `run()` prints. That function is gated by construction (only compiled
-// on non-Unix), so this is the layer we can actually exercise on Linux.
-#[cfg(test)]
-mod platform_tests {
-    use super::unsupported_platform_message;
-
-    #[test]
-    fn unsupported_platform_message_names_cause_and_alternative() {
-        let msg = unsupported_platform_message();
-        // Names the gated component and the root cause (Unix-domain sockets).
-        assert!(
-            msg.contains("al-explorer"),
-            "message must name the unavailable tool: {msg}"
-        );
-        assert!(
-            msg.contains("Unix domain socket"),
-            "message must explain the Unix-domain-socket cause: {msg}"
-        );
-        assert!(
-            msg.contains("Windows"),
-            "message must name the unsupported platform: {msg}"
-        );
-        // Points at the alternative that does work everywhere.
-        assert!(
-            msg.contains("al-lsp"),
-            "message must point at the al-lsp alternative: {msg}"
-        );
-    }
-
-    #[test]
-    fn unsupported_platform_message_lists_what_still_works() {
-        let msg = unsupported_platform_message().to_lowercase();
-        for capability in ["parsing", "symbols", "lsp", "formatting", "linting"] {
-            assert!(
-                msg.contains(capability),
-                "message should reassure that `{capability}` still works on Windows"
-            );
-        }
     }
 }

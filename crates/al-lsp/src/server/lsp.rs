@@ -638,10 +638,19 @@ impl LanguageServer for AlServer {
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         tracing::info!("did_change_configuration");
         let al_settings = extract_al_settings(params.settings);
-        let (unknown, cap) = {
+        let (unknown, cap, symbol_paths_changed, symbol_config) = {
             let mut config = self.workspace.config.write().await;
+            let old_cache_path = config.package_cache_path.clone();
+            let old_local_paths = config.app_local_folder_paths.clone();
             let unknown = config.merge(&al_settings);
-            (unknown, config.max_document_size_bytes)
+            let changed = old_cache_path != config.package_cache_path
+                || old_local_paths != config.app_local_folder_paths;
+            (
+                unknown,
+                config.max_document_size_bytes,
+                changed,
+                config.clone(),
+            )
         };
         if !unknown.is_empty() {
             let msg = format!("Unknown AL settings: {}", unknown.join(", "));
@@ -649,6 +658,74 @@ impl LanguageServer for AlServer {
         }
         // re-apply the per-document size cap after a config change.
         self.workspace.documents.set_max_doc_bytes(cap);
+
+        if symbol_paths_changed {
+            let package_paths = {
+                let mut project = self.workspace.project.write().await;
+                project.as_mut().map(|project| {
+                    project.apply_symbol_settings(&symbol_config);
+                    project.packages.clone()
+                })
+            };
+            if let Some(package_paths) = package_paths {
+                let attempted = package_paths.len();
+                let workspace = Arc::clone(&self.workspace);
+                match tokio::task::spawn_blocking(move || {
+                    let cache = al_symbols::cache::SymbolCache::default_location();
+                    let loaded = workspace
+                        .symbols
+                        .replace_packages_cached(&package_paths, &cache);
+                    workspace.symbols.load_runtime_enums();
+                    workspace.invalidate_insight_graph();
+                    loaded
+                })
+                .await
+                {
+                    Ok(loaded) => {
+                        let package_info = loaded
+                            .iter()
+                            .map(|package| al_workspace::PackageInfo {
+                                name: package.name.clone(),
+                                publisher: package.publisher.clone(),
+                                version: package.version.clone(),
+                                object_count: package.object_count,
+                            })
+                            .collect();
+                        *self
+                            .workspace
+                            .package_info
+                            .write()
+                            .unwrap_or_else(|error| error.into_inner()) = package_info;
+                        tracing::info!(
+                            attempted,
+                            loaded = loaded.len(),
+                            symbols = self.workspace.symbols.len(),
+                            "reloaded symbol packages after configuration change"
+                        );
+                        if loaded.len() < attempted {
+                            self.client
+                                .show_message(
+                                    MessageType::WARNING,
+                                    format!(
+                                        "Loaded {}/{} configured symbol packages; see the AL language-server log for rejected files.",
+                                        loaded.len(), attempted
+                                    ),
+                                )
+                                .await;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "symbol package reload task failed");
+                        self.client
+                            .show_message(
+                                MessageType::ERROR,
+                                format!("Failed to reload symbol packages: {error}"),
+                            )
+                            .await;
+                    }
+                }
+            }
+        }
         tracing::info!("Configuration updated");
     }
 
@@ -1574,6 +1651,8 @@ mod workspace_diagnostic_tests {
     const BAD_SRC: &str = "codeunit 50100 Test\n{\n    procedure Broken(\n    begin\n    end;\n}\n";
     const GOOD_SRC: &str =
         "codeunit 50100 MyCodeunit\n{\n    trigger OnRun()\n    begin\n    end;\n}\n";
+    const GOOD_BG_SRC: &str =
+        "codeunit 50101 OtherCodeunit\n{\n    trigger OnRun()\n    begin\n    end;\n}\n";
 
     fn new_ready_server() -> LspService<AlServer> {
         let (service, _socket) = LspService::new(AlServer::new);
@@ -1688,7 +1767,7 @@ mod workspace_diagnostic_tests {
         al_workspace::on_document_change(&server.workspace, &open_uri, GOOD_SRC);
         // A second clean file that is only indexed, never opened.
         let bg_uri = Url::parse("file:///proj/BgGood.al").expect("valid uri");
-        al_workspace::on_document_change(&server.workspace, &bg_uri, GOOD_SRC);
+        al_workspace::on_document_change(&server.workspace, &bg_uri, GOOD_BG_SRC);
 
         let result = server
             .workspace_diagnostic(ws_diag_params())

@@ -35,16 +35,23 @@ impl SemanticCache {
 
     pub fn build(builtins: &[BuiltinType], version: String) -> Self {
         let mut types = HashMap::with_capacity(builtins.len());
-        let mut method_index: HashMap<String, Vec<(String, usize)>> = HashMap::new();
         for bt in builtins {
             let type_key = bt.name.to_lowercase();
+            // CodeAnalysis catalogs are expected to be unique
+            // case-insensitively. If a future toolchain returns duplicates,
+            // use the last complete entry and build indexes only after
+            // deduplication so they cannot point into a replaced value.
+            types.insert(type_key, bt.clone());
+        }
+
+        let mut method_index: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+        for (type_key, bt) in &types {
             for (i, method) in bt.methods.iter().enumerate() {
                 method_index
                     .entry(method.name.to_lowercase())
                     .or_default()
                     .push((type_key.clone(), i));
             }
-            types.insert(type_key, bt.clone());
         }
         Self {
             types,

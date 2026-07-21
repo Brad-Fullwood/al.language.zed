@@ -1,36 +1,17 @@
-//! Daemon mode — JSON-RPC server over Unix socket.
+//! Daemon mode — JSON-RPC server over local IPC.
 //!
 //! `al-lsp daemon --project /path/to/project` starts a daemon that:
-//! - Listens on a deterministic Unix socket path
+//! - Listens on a deterministic local endpoint
 //! - Initializes a Workspace for the given project
 //! - Accepts JSON-RPC requests and routes them to core queries
 //! - Auto-shuts down after 30 minutes of idle
 //!
 //! # Platform support
 //!
-//! The daemon transport is **Unix-only**: it binds an `AF_UNIX` socket
-//! (`tokio::net::UnixListener`) and its client (`al_protocol::client`,
-//! also `#[cfg(unix)]`) connects over `std::os::unix::net::UnixStream`.
-//! Windows has no equivalent here, so the socket-bound transport
-//! (`run_daemon`, `handle_connection`, the `SocketCleanup` guard) is
-//! gated behind `#[cfg(unix)]`. On Windows, [`run_daemon`]
-//! returns an explanatory error.
-//!
-//! Crucially, the request-dispatch logic (`dispatch_request` and the
-//! `*_dispatch` submodules) and the framing helper (`read_bounded_line`)
-//! are **platform-independent** and compile everywhere — this is what lets
-//! the `al-lsp` binary build for `x86_64-pc-windows-msvc` so the Zed
-//! extension can ship a Windows asset while only LSP (`--stdio`) and DAP
-//! (`--dap`) modes are wired up there.
-
-// The request-dispatch machinery below (these submodules, `dispatch_request`,
-// and the `extract_*`/`require_*` helpers) is pure logic over `Workspace` and
-// compiles on every platform. It is, however, only *reachable* through the
-// Unix-only socket transport (`run_daemon` → `handle_connection`). On non-Unix
-// targets that transport is unavailable, leaving this surface unreferenced, so we
-// allow dead code there rather than fragmenting every helper with `#[cfg]`.
-// `al-lsp` still ships on Windows for its portable LSP/DAP modes.
-#![cfg_attr(not(unix), allow(dead_code))]
+//! The transport uses Unix-domain sockets on Linux/macOS and Windows named
+//! pipes on Windows through the same `interprocess::local_socket` API. The
+//! newline-delimited JSON-RPC framing and request dispatch are identical on
+//! every platform.
 
 mod build_dispatch;
 mod debug_dispatch;
@@ -38,24 +19,19 @@ mod insight_dispatch;
 mod lsp_dispatch;
 
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(unix)]
 use std::sync::Arc;
-#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use al_protocol::jsonrpc::{error_codes, Request, Response, RpcError};
-#[cfg(unix)]
 use al_protocol::socket_path;
 use al_workspace::Workspace;
-use tokio::io::AsyncBufReadExt;
-#[cfg(unix)]
-use tokio::io::{AsyncWriteExt, BufReader};
-#[cfg(unix)]
-use tokio::net::UnixListener;
+use interprocess::local_socket::{
+    tokio::{prelude::*, Stream as LocalSocketStream},
+    GenericFilePath, ListenerOptions, ToFsName,
+};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
-#[cfg(unix)]
 use tokio::sync::Semaphore;
 
 /// Process-start `Instant` used as the epoch for `last_activity` millis.
@@ -64,11 +40,9 @@ use tokio::sync::Semaphore;
 /// base and store millis-since-base in `AtomicU64`. The base is initialised
 /// the first time `now_activity_ms` is called and lives for the process
 /// lifetime (lazy `OnceLock`).
-#[cfg(unix)]
 static DAEMON_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 /// Millis since the daemon epoch — monotonic, atomic-storable.
-#[cfg(unix)]
 fn now_activity_ms() -> u64 {
     let epoch = DAEMON_EPOCH.get_or_init(Instant::now);
     Instant::now().duration_since(*epoch).as_millis() as u64
@@ -95,32 +69,11 @@ impl Drop for SocketCleanup {
     }
 }
 
-#[cfg(unix)]
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
-#[cfg(unix)]
 const MAX_CONNECTIONS: usize = 64;
-#[cfg(unix)]
 const ACCEPT_BACKOFF_START: Duration = Duration::from_millis(10);
-#[cfg(unix)]
 const ACCEPT_BACKOFF_CAP: Duration = Duration::from_secs(5);
-
-/// Return an unsupported-platform error for daemon mode on Windows.
-///
-/// The daemon's IPC transport is an `AF_UNIX` socket, which has no Windows
-/// equivalent here, and its only client (`al-explorer` via
-/// `al_protocol::client`) is itself `#[cfg(unix)]`. Rather than fail to
-/// compile, `al-lsp` builds on Windows while its portable LSP (`--stdio`) and
-/// DAP (`--dap`) modes remain available.
-#[cfg(not(unix))]
-pub async fn run_daemon(_project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    Err(
-        "Daemon mode is not supported on this platform: it requires a Unix \
-         domain socket (AF_UNIX), which al-lsp only wires up on Unix targets. \
-         Use LSP mode (--stdio) or DAP mode (--dap) instead."
-            .into(),
-    )
-}
 
 /// Create `dir` (and parents) restricted to the owner (0o700).
 ///
@@ -138,34 +91,48 @@ fn ensure_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 
-#[cfg(unix)]
 pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let sock_path = socket_path(&project_root).ok_or(
-        "Cannot determine Unix socket path: XDG_RUNTIME_DIR is not set and no secure runtime directory is available"
+    let endpoint = socket_path(&project_root).ok_or(
+        "Cannot determine a local daemon endpoint: no per-user runtime directory is available",
     )?;
 
+    #[cfg(unix)]
     // Ensure parent directory exists, owner-only (0o700). The socket file is
     // already 0o600 below, but the containing dir defaulted to the process
     // umask (often 0o755) — world-readable, leaking the socket filename (a hash
     // of the project path) to other users on a shared host. See ensure_private_dir.
-    if let Some(parent) = sock_path.parent() {
+    if let Some(parent) = endpoint.parent() {
         ensure_private_dir(parent)?;
     }
 
-    let _ = tokio::fs::remove_file(&sock_path).await;
+    #[cfg(unix)]
+    let _ = tokio::fs::remove_file(&endpoint).await;
 
-    let listener = UnixListener::bind(&sock_path)?;
+    let name = endpoint.as_path().to_fs_name::<GenericFilePath>()?;
+    let listener = ListenerOptions::new().name(name).create_tokio()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600))?;
     }
-    tracing::info!(path = %sock_path.display(), project = %project_root.display(), "daemon: listening");
+    tracing::info!(endpoint = %endpoint.display(), project = %project_root.display(), "daemon: listening");
 
-    let _ = SOCKET_PATH.set(sock_path.clone());
+    #[cfg(unix)]
+    let _ = SOCKET_PATH.set(endpoint.clone());
+    #[cfg(unix)]
     let _cleanup = SocketCleanup;
 
     let workspace = Arc::new(Workspace::new());
+
+    // CLI/TUI daemon clients do not send LSP initializationOptions. Honour the
+    // persisted config so symbol cache/local-folder settings have the same
+    // effect outside an editor session.
+    if let Some(settings_path) = al_project::config::AlConfig::default_settings_path() {
+        if let Some(config) = al_project::config::AlConfig::load(&settings_path) {
+            *workspace.config.write().await = config;
+            tracing::info!(path = %settings_path.display(), "daemon: loaded persisted settings");
+        }
+    }
 
     let _ = workspace.notify_sink.set(std::sync::Arc::new(|msg: &str| {
         tracing::warn!("daemon: {msg}");
@@ -227,11 +194,8 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
         use tokio::signal::unix::{signal, SignalKind};
         signal(SignalKind::terminate()).ok()
     };
-    #[cfg(unix)]
-    let mut sigint = {
-        use tokio::signal::unix::{signal, SignalKind};
-        signal(SignalKind::interrupt()).ok()
-    };
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
 
     let mut accept_backoff = ACCEPT_BACKOFF_START;
     loop {
@@ -244,24 +208,13 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                 None => std::future::pending::<()>().await,
             }
         };
-        #[cfg(unix)]
-        let sigint_fut = async {
-            match sigint.as_mut() {
-                Some(s) => {
-                    s.recv().await;
-                }
-                None => std::future::pending::<()>().await,
-            }
-        };
         #[cfg(not(unix))]
         let sigterm_fut = std::future::pending::<()>();
-        #[cfg(not(unix))]
-        let sigint_fut = std::future::pending::<()>();
 
         tokio::select! {
             accept_result = listener.accept() => {
                 match accept_result {
-                    Ok((stream, _addr)) => {
+                    Ok(stream) => {
                         accept_backoff = ACCEPT_BACKOFF_START;
 
                         // Bump the idle timer *before* spawning the connection
@@ -308,8 +261,8 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                 tracing::info!("daemon: received SIGTERM — shutting down gracefully");
                 break;
             }
-            _ = sigint_fut => {
-                tracing::info!("daemon: received SIGINT — shutting down gracefully");
+            _ = &mut ctrl_c => {
+                tracing::info!("daemon: received Ctrl-C — shutting down gracefully");
                 break;
             }
         }
@@ -392,14 +345,13 @@ async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
     }
 }
 
-#[cfg(unix)]
 async fn handle_connection(
-    stream: tokio::net::UnixStream,
+    stream: LocalSocketStream,
     workspace: Arc<Workspace>,
     last_activity: Arc<AtomicU64>,
     shutdown: Arc<Notify>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (reader, mut writer) = stream.into_split();
+    let (reader, mut writer) = stream.split();
     let mut reader = BufReader::new(reader);
 
     // previously a 50 ms ring-buffer dedup over hover / completions /
@@ -810,18 +762,6 @@ pub(crate) fn file_uri_from_params(params: &serde_json::Value) -> Option<url::Ur
         return url::Url::from_file_path(canon).ok();
     }
     None
-}
-
-pub(crate) fn lint_diag_to_json(d: &al_syntax::LintDiagnostic) -> serde_json::Value {
-    serde_json::json!({
-        "code": d.code,
-        "message": d.message,
-        "severity": d.severity.to_string(),
-        "line": d.range.start_point.row + 1,
-        "column": d.range.start_point.column + 1,
-        "endLine": d.range.end_point.row + 1,
-        "endColumn": d.range.end_point.column + 1,
-    })
 }
 
 pub(crate) async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path) {
@@ -1392,33 +1332,5 @@ mod tests {
             resp.error.expect("unknown must error").code,
             error_codes::METHOD_NOT_FOUND
         );
-    }
-
-    #[test]
-    fn lint_diag_to_json_uses_one_based_positions() {
-        use al_syntax::{LintDiagnostic, LintSeverity};
-        use tree_sitter::{Point, Range};
-        let diag = LintDiagnostic {
-            code: "AL0001".to_string(),
-            message: "bad thing".to_string(),
-            severity: LintSeverity::Warning,
-            range: Range {
-                start_byte: 0,
-                end_byte: 5,
-                start_point: Point { row: 4, column: 2 },
-                end_point: Point { row: 4, column: 7 },
-            },
-        };
-        let json = super::lint_diag_to_json(&diag);
-        assert_eq!(json.get("code").and_then(|v| v.as_str()), Some("AL0001"));
-        assert_eq!(
-            json.get("message").and_then(|v| v.as_str()),
-            Some("bad thing")
-        );
-        // tree-sitter rows/columns are 0-based; the wire format is 1-based.
-        assert_eq!(json.get("line").and_then(|v| v.as_u64()), Some(5));
-        assert_eq!(json.get("column").and_then(|v| v.as_u64()), Some(3));
-        assert_eq!(json.get("endLine").and_then(|v| v.as_u64()), Some(5));
-        assert_eq!(json.get("endColumn").and_then(|v| v.as_u64()), Some(8));
     }
 }

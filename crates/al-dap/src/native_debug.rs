@@ -43,7 +43,14 @@ impl NativeDebugSession {
         let session = BcDebugSession::connect(&config, access_token).await?;
 
         session.attach(&config).await?;
-        session.configuration_done(&config).await?;
+        // Match the editor-facing DAP adapter: a successful Attach establishes
+        // the usable debug session. Some current BC cloud tenants reject both
+        // known DebugAdapterConfigurationDone signatures even though the
+        // attached session remains valid, so this compatibility call must not
+        // turn a successful attach into a failed MCP/CLI start.
+        if let Err(error) = session.configuration_done(&config).await {
+            warn!(%error, "configurationDone rejected after successful attach; continuing");
+        }
 
         info!(connection_id = %session.connection_id, "Native debug session started");
 
@@ -195,8 +202,52 @@ impl NativeDebugSession {
         })
     }
 
+    /// Return the BC call stack for the current stop. This keeps the native BC
+    /// wire fields intact and adds `frameId` (the zero-based array index) so an
+    /// agent can feed a selected frame straight into variables/globals/expand
+    /// or eval without reverse-engineering the DAP frontend's mapping.
+    pub async fn stack(&mut self) -> Result<serde_json::Value> {
+        self.drain_events().await;
+        let mut frames = self.session.get_call_stack().await?;
+        if let Some(array) = frames.as_array_mut() {
+            for (frame_id, frame) in array.iter_mut().enumerate() {
+                if let Some(object) = frame.as_object_mut() {
+                    object.insert("frameId".to_string(), serde_json::json!(frame_id));
+                }
+            }
+        }
+        Ok(frames)
+    }
+
+    /// Return locals for a specific BC stack frame.
+    pub async fn variables(&mut self, frame_id: i64) -> Result<Vec<Variable>> {
+        self.drain_events().await;
+        let value = self.session.get_variables(frame_id).await?;
+        Ok(parse_bc_variables(&value))
+    }
+
+    /// Return globals for a specific BC stack frame.
+    pub async fn globals(&mut self, frame_id: i64) -> Result<Vec<Variable>> {
+        self.drain_events().await;
+        let value = self.session.get_globals(frame_id).await?;
+        Ok(parse_bc_variables(&value))
+    }
+
+    /// Expand a structured variable path for a specific BC stack frame.
+    pub async fn expand(&mut self, frame_id: i64, path: &str) -> Result<Vec<Variable>> {
+        self.drain_events().await;
+        let value = self.session.expand_node(frame_id, path).await?;
+        Ok(parse_bc_variables(&value))
+    }
+
     pub async fn eval(&self, expr: &str) -> Result<EvalResult> {
-        let result = self.session.evaluate(0, expr).await?;
+        self.eval_at(0, expr).await
+    }
+
+    /// Evaluate in an explicit BC stack frame. `eval()` remains the frame-zero
+    /// convenience used by existing CLI callers.
+    pub async fn eval_at(&self, frame_id: i64, expr: &str) -> Result<EvalResult> {
+        let result = self.session.evaluate(frame_id, expr).await?;
 
         let value = result
             .get("Value")
@@ -985,6 +1036,64 @@ mod native_session_tests {
         let hist = nds.history(None);
         assert_eq!(hist.len(), 1, "buffered Break flushed by next drain");
         assert_eq!(hist[0].location.line, 5);
+    }
+
+    #[tokio::test]
+    async fn agent_inspection_methods_forward_frame_and_path() {
+        let (mut nds, fake) = session("inspect");
+        fake.reply_ok(
+            "GetStackTrace",
+            json!([{ "DisplayName": "OnRun", "SourcePosition": { "Line": 12 } }]),
+        );
+        fake.reply_ok(
+            "GetVariables",
+            json!([{ "Name": "LocalValue", "Value": "1", "TypeName": "Integer" }]),
+        );
+        fake.reply_ok(
+            "ExpandGlobals",
+            json!([{ "Name": "GlobalValue", "Value": "2", "TypeName": "Integer" }]),
+        );
+        fake.reply_ok(
+            "ExpandNode",
+            json!([{ "Name": "No.", "Value": "10000", "TypeName": "Code[20]" }]),
+        );
+
+        let stack = nds.stack().await.unwrap();
+        assert_eq!(stack[0]["DisplayName"], "OnRun");
+        assert_eq!(stack[0]["frameId"], 0);
+
+        let locals = nds.variables(7).await.unwrap();
+        assert_eq!(locals[0].name, "LocalValue");
+        let globals = nds.globals(7).await.unwrap();
+        assert_eq!(globals[0].name, "GlobalValue");
+        let fields = nds.expand(7, "Customer").await.unwrap();
+        assert_eq!(fields[0].name, "No.");
+
+        let sent = fake.sent_frames();
+        assert_eq!(sent[0]["target"], "GetStackTrace");
+        assert_eq!(sent[1]["target"], "GetVariables");
+        assert_eq!(sent[1]["arguments"][0], 7);
+        assert_eq!(sent[2]["target"], "ExpandGlobals");
+        assert_eq!(sent[2]["arguments"][0], 7);
+        assert_eq!(sent[3]["target"], "ExpandNode");
+        assert_eq!(sent[3]["arguments"][0], 7);
+        assert_eq!(sent[3]["arguments"][1], "Customer");
+    }
+
+    #[tokio::test]
+    async fn eval_at_forwards_selected_frame() {
+        let (nds, fake) = session("eval-frame");
+        fake.reply_ok(
+            "GetWatchNode",
+            json!({ "Value": "42", "TypeName": "Integer" }),
+        );
+
+        let result = nds.eval_at(9, "LineNo").await.unwrap();
+        assert_eq!(result.result, "42");
+        let sent = fake.sent_frames();
+        assert_eq!(sent[0]["target"], "GetWatchNode");
+        assert_eq!(sent[0]["arguments"][0], 9);
+        assert_eq!(sent[0]["arguments"][1], "LineNo");
     }
 
     #[tokio::test]

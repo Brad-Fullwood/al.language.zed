@@ -29,7 +29,7 @@ files, snippets, themes, and JSON schemas for project files.
 | `injections.scm` | language injection points |
 | `overrides.scm` | tree-sitter quirk overrides |
 | `semantic_token_rules.json` | maps the LSP semantic token types (from `al-lsp`) to Zed theme classes (e.g. `builtinType→@type.builtin`, `tableField→@property`, `excludedCode→@comment.unused`) |
-| `tasks.json` | ~55 AL project tasks (see [02-zed-extension](../02-zed-extension.md)) |
+| `tasks.json` | ~55 AL project tasks (see the generated [task catalog](../../languages/al/tasks.json)) |
 
 ## Snippets
 

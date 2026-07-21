@@ -1,12 +1,12 @@
 # CLI & TUI (`al-explorer`)
 
-**Crate:** `crates/al-explorer` · **Status:** ✅ shipped (Unix-first)
+**Crate:** `crates/al-explorer` · **Status:** ✅ shipped (Linux, macOS, Windows)
 
 `al-explorer` is the terminal companion to `al-lsp`. It has two modes selected at startup
 (`main.rs`): with a subcommand it is a **JSON-RPC CLI** client of the daemon (with a global `--json`
-flag for scripts/CI); with no subcommand on Unix it opens an interactive **TUI**. It is Unix-first —
-its daemon IPC uses Unix domain sockets, so on Windows it compiles to a stub that exits with a helpful
-message.
+flag for scripts/CI); with no subcommand it opens an interactive **TUI**. Its local daemon IPC uses
+Unix-domain sockets on Linux/macOS and Windows named pipes, with the same JSON-RPC protocol on every
+platform.
 
 The CLI auto-starts the daemon if it isn't running (`DaemonClient::connect`), so most commands "just
 work" from a project directory.
@@ -62,30 +62,31 @@ TUI renders immediately with a "Loading workspace…" status while symbols load 
 
 `languages/al/tasks.json` exposes ~55 tasks that shell out to these commands, using `$ZED_FILE`,
 `$ZED_SYMBOL`, and `$ZED_ROW` substitutions. The *AL: Open Object Explorer* task launches the TUI in a
-new terminal. The full task table is in [02-zed-extension](../02-zed-extension.md) and the
-[CLI reference](../reference/cli-commands.md).
+new terminal. The generated task definitions are in [languages/al/tasks.json](../../languages/al/tasks.json),
+with their underlying commands documented in the [CLI reference](../reference/cli-commands.md).
 
 ## Microsoft comparison
 
 There is no terminal companion in Microsoft's AL tooling — everything is VS Code UI. `al-explorer`
 makes the *entire* engine scriptable (a JSON-RPC CLI for every analysis and LSP query) and adds an
-interactive symbol/event/impact/profiler/test TUI that runs over SSH and in any terminal. The
-trade-off is that it is Unix-only.
+interactive symbol/event/impact/profiler/test TUI that runs over SSH and in any terminal.
 
 ## Why this approach
 
 A long-lived daemon plus a thin CLI means the expensive work (indexing packages, building graphs) is
 paid once and reused across many fast commands — ideal for both interactive terminal use and CI loops.
-Sharing the daemon dispatcher with MCP and Zed tasks guarantees one set of answers everywhere. The TUI
-exists because some questions (browsing objects, following event chains) are inherently interactive and
-benefit from a fast, keyboard-driven UI that doesn't need the editor open.
+Sharing the daemon dispatcher with MCP and Zed tasks guarantees one set of answers everywhere. MCP's
+`al_call` exposes that complete dispatcher, so named aliases improve discovery without defining a
+smaller agent-only feature set. The TUI exists because some questions (browsing objects, following
+event chains) are inherently interactive and benefit from a fast, keyboard-driven UI that doesn't
+need the editor open.
 
 ## How to use
 
 ```
 cd my-al-project
 al-explorer doctor              # check setup
-al-explorer                     # open the TUI (Unix)
+al-explorer                     # open the TUI
 al-explorer search Customer --json
 al-explorer impact "Sales-Post.PostDocument"
 al-explorer test-run-all --junit-out results.xml
@@ -93,7 +94,7 @@ al-explorer test-run-all --junit-out results.xml
 
 ## Limitations & roadmap
 
-- ⛔ Windows: stub only (Unix sockets). Zed tasks are therefore effectively Unix-only.
+- Windows uses a per-user named pipe; Linux and macOS use owner-only Unix-domain sockets.
 - Some CLI workflows aren't yet Zed tasks (affected tests, snapshot diff/replay, `deps-graph`, XLIFF
   refresh/untranslated/suggest, table impact) — see `ROADMAP.md` (Zed UX).
 - Event-subscriber/call-site coverage in the CLI/TUI is workspace-source-only (package `.app` symbols

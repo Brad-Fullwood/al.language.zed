@@ -1,0 +1,30 @@
+[
+  {
+    "method": "al/setActiveWorkspace",
+    "kind": "request",
+    "timeout": 300,
+    "params": {
+      "currentWorkspaceFolderPath": "__ROOT_PATH__",
+      "settings": {
+        "workspacePath": "__ROOT_PATH__",
+        "alResourceConfigurationSettings": {
+          "assemblyProbingPaths": [],
+          "codeAnalyzers": [],
+          "enableCodeAnalysis": false,
+          "backgroundCodeAnalysis": true,
+          "packageCachePaths": ["__ALPACKAGES__"],
+          "ruleSetPath": null,
+          "enableCodeActions": true,
+          "incrementalBuild": false,
+          "outputAnalyzerStatistics": false,
+          "enableExternalRulesets": false
+        },
+        "setActiveWorkspaceOptions": {
+          "activeWorkspaceFolderPath": "__ROOT_PATH__",
+          "workspaceFolders": ["__ROOT_PATH__"]
+        },
+        "expectedProjectReferenceDefinitions": []
+      }
+    }
+  }
+]

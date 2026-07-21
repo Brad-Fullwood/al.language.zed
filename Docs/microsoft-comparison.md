@@ -82,7 +82,7 @@ delegate by design)
 | Scriptable CLI (`--json`) for every query/analysis | ✅ `al-explorer` | ❌ |
 | Interactive terminal TUI | ✅ (5 views) | ❌ |
 | Shared daemon (JSON-RPC) | ✅ | ❌ |
-| MCP server for AI agents | ✅ `al-tools` (names mirror MS surface + extras) | ✅ AL agent tools |
+| MCP server for AI agents | ✅ complete shared dispatcher via `al_call`, plus Microsoft-compatible and project-specific named aliases | ✅ AL agent tools |
 | Project/object scaffolding | ✅ (+ Copilot/Agent/API templates) | ✅ (fewer templates) |
 | Permission-set generation | ✅ (AL + XML) | ❌ |
 | XLIFF generate/refresh/untranslated | ✅ (suggest is a stub) | partial (3rd-party common) |

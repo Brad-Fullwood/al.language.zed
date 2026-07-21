@@ -85,6 +85,8 @@ async fn mcp_initialize_and_list_tools() {
         .collect();
     // The official-surface staples plus this project's agent tools.
     for expected in [
+        "al_call",
+        "al_debug",
         "al_build",
         "al_symbolsearch",
         "al_deadcode",
@@ -131,6 +133,101 @@ async fn mcp_initialize_and_list_tools() {
             );
         }
     }
+
+    child.start_kill().ok();
+}
+
+/// The generic bridge is what makes the complete dispatcher available to MCP
+/// without requiring every method to gain a second, hand-maintained registry
+/// entry. Exercise a method that intentionally has no named MCP alias.
+#[tokio::test]
+async fn mcp_al_call_reaches_the_complete_dispatcher() {
+    let mut child = Command::new(al_lsp_binary())
+        .arg("mcp")
+        .arg("--project")
+        .arg(test_project_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn `al-lsp mcp`");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "smoke", "version": "0"}}
+        }),
+    )
+    .await;
+    let _ = read_until_id(&mut reader, 1).await;
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {
+                "name": "al_call",
+                "arguments": {"method": "rules", "params": {}}
+            }
+        }),
+    )
+    .await;
+    let resp = read_until_id(&mut reader, 3).await;
+    assert_eq!(resp["result"]["isError"], false, "al_call errored: {resp}");
+
+    child.start_kill().ok();
+}
+
+/// Prove that an MCP client can drive the stateful debug dispatcher through
+/// the real stdio server. `stop` is deterministic without a live BC instance;
+/// the live operations use this same tool and retained Workspace session.
+#[tokio::test]
+async fn mcp_al_debug_reaches_the_debug_control_plane() {
+    let mut child = Command::new(al_lsp_binary())
+        .arg("mcp")
+        .arg("--project")
+        .arg(test_project_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn `al-lsp mcp`");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "smoke", "version": "0"}}
+        }),
+    )
+    .await;
+    let _ = read_until_id(&mut reader, 1).await;
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "al_debug", "arguments": {"cmd": "stop"}}
+        }),
+    )
+    .await;
+    let resp = read_until_id(&mut reader, 4).await;
+    assert_eq!(resp["result"]["isError"], false, "al_debug errored: {resp}");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("debug text content");
+    let payload: Value = serde_json::from_str(text).expect("debug output is JSON");
+    assert_eq!(payload["cmd"], "stop");
+    assert_eq!(payload["status"], "no active debug session");
 
     child.start_kill().ok();
 }

@@ -35,6 +35,12 @@ type FreeBufferFn = unsafe extern "system" fn(*mut u8);
 #[cfg(feature = "semantic")]
 const MAX_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
 
+/// Mirrors the managed-side request cap. Document text is limited to 16 MiB;
+/// the extra headroom covers JSON escaping, paths, and analyzer names without
+/// allowing an arbitrary multi-gigabyte allocation at the FFI boundary.
+#[cfg(feature = "semantic")]
+const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
+
 /// In-process .NET host wrapping the bridge DLL.
 ///
 /// Thread-safe: the .NET runtime is initialized once and function pointers
@@ -101,7 +107,12 @@ impl DotNetHost {
             )
             .map_err(|e| SemanticError::HostInit(format!("Failed to get FreeBuffer: {e}")))?;
 
-        let ca_path = code_analysis_path.to_string_lossy();
+        let ca_path = code_analysis_path.to_str().ok_or_else(|| {
+            SemanticError::HostInit(format!(
+                "CodeAnalysis path is not valid UTF-8: {}",
+                code_analysis_path.display()
+            ))
+        })?;
         let ca_bytes = ca_path.as_bytes();
         let ca_len = c_int::try_from(ca_bytes.len()).map_err(|_| {
             SemanticError::HostInit(format!(
@@ -152,6 +163,12 @@ impl DotNetHost {
         let request_bytes = serde_json::to_vec(&request)
             .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
 
+        if request_bytes.len() > MAX_REQUEST_BYTES {
+            return Err(SemanticError::SerializationError(format!(
+                "Request payload is too large ({} bytes, max {MAX_REQUEST_BYTES})",
+                request_bytes.len()
+            )));
+        }
         let request_len = c_int::try_from(request_bytes.len()).map_err(|_| {
             SemanticError::SerializationError(format!(
                 "Request payload is too large ({} bytes, max {})",
@@ -233,8 +250,23 @@ impl DotNetHost {
             SemanticError::SerializationError(format!("Failed to parse bridge response: {e}"))
         })?;
 
-        if let Some(error) = response.get("error") {
-            let code = error.get("code").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
+        let response_object = response.as_object().ok_or_else(|| {
+            SemanticError::SerializationError("Bridge response root is not an object".to_string())
+        })?;
+        let result = response_object.get("result");
+        let error = response_object.get("error");
+        if result.is_some() == error.is_some() {
+            return Err(SemanticError::SerializationError(
+                "Bridge response must contain exactly one of 'result' or 'error'".to_string(),
+            ));
+        }
+
+        if let Some(error) = error {
+            let code = error
+                .get("code")
+                .and_then(|v| v.as_i64())
+                .and_then(|v| i32::try_from(v).ok())
+                .unwrap_or(-1);
             let message = error
                 .get("message")
                 .and_then(|v| v.as_str())
@@ -243,10 +275,7 @@ impl DotNetHost {
             return Err(SemanticError::RpcError { code, message });
         }
 
-        Ok(response
-            .get("result")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null))
+        Ok(result.cloned().unwrap_or(serde_json::Value::Null))
     }
 }
 
@@ -280,18 +309,22 @@ fn check_bridge_pair(dll: PathBuf, config: PathBuf) -> Option<(PathBuf, PathBuf)
 /// Locate the bridge DLL and runtime config.
 ///
 /// Search order:
-/// 1. `OUT_DIR` from build.rs (compiled alongside the Rust binary)
+/// 1. `AL_BRIDGE_DIR` environment variable (explicit operator override)
 /// 2. Next to the current executable (deployed)
-/// 3. `AL_BRIDGE_DIR` environment variable
+/// 3. `OUT_DIR` from build.rs (development build artifact)
 pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
-    if let Some(out_dir) = option_env!("OUT_DIR") {
-        let bridge_dir = PathBuf::from(out_dir).join("bridge");
+    if let Ok(dir) = std::env::var("AL_BRIDGE_DIR") {
+        let bridge_dir = PathBuf::from(&dir);
         let dll = bridge_dir.join("AlBridge.dll");
         let config = bridge_dir.join("AlBridge.runtimeconfig.json");
         if let Some(pair) = check_bridge_pair(dll, config) {
-            debug!(path = %pair.0.display(), "Found bridge DLL from OUT_DIR");
+            debug!(path = %pair.0.display(), "Found bridge DLL from AL_BRIDGE_DIR");
             return Ok(pair);
         }
+        return Err(SemanticError::HostInit(format!(
+            "AL_BRIDGE_DIR '{}' does not contain AlBridge.dll and AlBridge.runtimeconfig.json",
+            bridge_dir.display()
+        )));
     }
 
     if let Ok(exe) = std::env::current_exe() {
@@ -312,18 +345,14 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
         }
     }
 
-    if let Ok(dir) = std::env::var("AL_BRIDGE_DIR") {
-        let bridge_dir = PathBuf::from(&dir);
+    if let Some(out_dir) = option_env!("OUT_DIR") {
+        let bridge_dir = PathBuf::from(out_dir).join("bridge");
         let dll = bridge_dir.join("AlBridge.dll");
         let config = bridge_dir.join("AlBridge.runtimeconfig.json");
         if let Some(pair) = check_bridge_pair(dll, config) {
-            debug!(path = %pair.0.display(), "Found bridge DLL from AL_BRIDGE_DIR");
+            debug!(path = %pair.0.display(), "Found bridge DLL from OUT_DIR");
             return Ok(pair);
         }
-        return Err(SemanticError::HostInit(format!(
-            "AL_BRIDGE_DIR '{}' does not contain AlBridge.dll and AlBridge.runtimeconfig.json",
-            bridge_dir.display()
-        )));
     }
 
     Err(SemanticError::HostInit(
@@ -343,9 +372,14 @@ mod tests {
     use serial_test::serial;
 
     #[test]
+    #[serial]
     fn test_find_bridge_returns_error_when_not_found() {
+        let prev = std::env::var_os("AL_BRIDGE_DIR");
         std::env::remove_var("AL_BRIDGE_DIR");
         let result = find_bridge_dll();
+        if let Some(value) = prev {
+            std::env::set_var("AL_BRIDGE_DIR", value);
+        }
         match result {
             Ok((dll, config)) => {
                 assert!(dll.is_file());
@@ -443,8 +477,7 @@ mod tests {
 
     /// Serialized because it mutates a process-global env var that other tests also read.
     ///
-    /// Earlier locations may contain a bridge baked into the test build, so the
-    /// assertion checks the resolved pair rather than requiring the temp path.
+    /// The explicit environment override has highest precedence.
     #[test]
     #[serial]
     fn test_find_bridge_dll_uses_al_bridge_dir() {
@@ -466,13 +499,8 @@ mod tests {
         }
 
         let (got_dll, got_config) = result.expect("a valid bridge pair should resolve");
-        // Whichever strategy won, the contract is that both returned paths
-        // are real files.
-        assert!(got_dll.is_file(), "resolved DLL must exist: {got_dll:?}");
-        assert!(
-            got_config.is_file(),
-            "resolved config must exist: {got_config:?}"
-        );
+        assert_eq!(got_dll, dll);
+        assert_eq!(got_config, config);
     }
 
     /// `AL_BRIDGE_DIR` set to a directory that is missing the config file must
@@ -495,8 +523,9 @@ mod tests {
             None => std::env::remove_var("AL_BRIDGE_DIR"),
         }
 
-        if let Ok((got_dll, _)) = result {
-            assert_ne!(got_dll, dll, "incomplete AL_BRIDGE_DIR must not resolve");
-        }
+        assert!(
+            result.is_err(),
+            "an invalid explicit override must fail closed"
+        );
     }
 }

@@ -1,11 +1,13 @@
 # Daemon Protocol
 
 **Modules:** `crates/al-lsp/src/server/daemon/` + `crates/al-protocol/` · **Status:** ✅ shipped
-(Unix-only)
+(Linux, macOS, and Windows)
 
-`al-lsp daemon --project <path>` is the shared backend that the CLI, the MCP bridge, and Zed tasks all
-talk to. It is a JSON-RPC 2.0 server over a Unix domain socket. (The editor LSP path does **not** use
-the daemon — it uses LSP handlers directly. See [01-architecture](../01-architecture.md).)
+`al-lsp daemon --project <path>` is the shared backend whose dispatcher is reused by the CLI, the MCP
+bridge, and Zed tasks. Daemon mode serves JSON-RPC 2.0 over a Unix-domain socket on Linux/macOS and a
+named pipe on Windows; MCP mode calls that same dispatcher in-process over stdio. (The editor LSP
+path does **not** use the daemon — it uses LSP handlers directly. See
+[architecture](../architecture.md).)
 
 ## Transport (`al-protocol/`)
 
@@ -34,7 +36,8 @@ focused submodules:
   (`mod.rs`, `build.rs`, `codegen.rs`, `symbols_auth.rs`, `tests_dispatch.rs`, `fixes.rs`, `xliff.rs`).
 - `insight_dispatch.rs` — trace, traceChain, entrypoints, graphExport, insightStats, deadCode, impact,
   tableImpact, suggestEvent, eventMap.
-- `debug_dispatch.rs` — `debug` session control (start, set_breakpoint, continue, step…).
+- `debug_dispatch.rs` — stateful `debug` session control (start, breakpoint, stack/variables/globals,
+  expand/eval, continue/step, history, stop), used by both CLI and MCP `al_debug`.
 
 The complete method list is in the [daemon method reference](../reference/daemon-methods.md). Notable
 hardening: duplicate-detection `minTokens`/`minSimilarity` are clamped to safe ranges (F-OPEN-007);
@@ -44,9 +47,11 @@ serialized explicitly (F-017).
 ## One dispatcher, three front ends
 
 This is the architectural point of the daemon: **CLI, MCP, and Zed tasks converge here.** `al-explorer`
-sends these methods directly; `server/mcp.rs` maps each MCP tool to one of these method names; Zed
-tasks shell out to `al-explorer`. There is therefore exactly one implementation of each operation, and
-its answer is identical regardless of who asked.
+sends these methods directly; MCP's `al_call` forwards any method and parameter object to the same
+dispatcher, with named aliases for common agent workflows; Zed tasks shell out to `al-explorer`.
+There is therefore exactly one implementation of each operation, and its answer is identical
+regardless of who asked. The generic MCP bridge also prevents a new dispatcher method from becoming
+CLI-only because somebody forgot a second registration.
 
 ## Microsoft comparison
 
@@ -59,8 +64,8 @@ scriptable JSON-RPC API, which is what makes CI integration and AI tooling possi
 A persistent daemon amortizes the expensive indexing/graph-building work across many cheap requests,
 which is what makes both the CLI and the TUI feel instant after the first call. Centralizing dispatch
 guarantees consistency across surfaces and gives one place to enforce limits (concurrency, request
-size, idle shutdown) and one place to add a new capability that immediately becomes available to CLI,
-MCP, and tasks.
+size, idle shutdown) and one place to add a new capability. MCP receives it immediately through
+`al_call`; CLI commands and Zed task shortcuts can then add purpose-built argument UX where useful.
 
 ## How to use
 
@@ -74,7 +79,8 @@ Then any `al-explorer <command>` in that project connects to it (auto-starting i
 
 ## Limitations & roadmap
 
-- ⛔ Unix-only (Unix domain sockets); Windows returns a stub error.
+- Local-only transport on every supported platform: Unix-domain sockets on Linux/macOS and named
+  pipes on Windows.
 - `ROADMAP.md` (Architecture Unification) calls for deciding whether LSP execute commands should call
   the daemon dispatcher, a shared service layer, or remain direct LSP handlers — and documenting/
   testing that boundary — plus unifying compile behavior across daemon `compile`/`package`, LSP

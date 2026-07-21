@@ -72,7 +72,7 @@ impl AlProject {
                 (BUSINESS_FOUNDATION_APP_ID, "Business Foundation"),
                 (SYSTEM_APPLICATION_APP_ID, "System Application"),
             ] {
-                if !deps.iter().any(|d| d.id == id) {
+                if !deps.iter().any(|d| d.id.eq_ignore_ascii_case(id)) {
                     deps.push(AppDependency {
                         id: id.to_string(),
                         name: name.to_string(),
@@ -83,7 +83,11 @@ impl AlProject {
             }
         }
 
-        if self.app_json.platform.is_some() && !deps.iter().any(|d| d.id == SYSTEM_APP_ID) {
+        if self.app_json.platform.is_some()
+            && !deps
+                .iter()
+                .any(|d| d.id.eq_ignore_ascii_case(SYSTEM_APP_ID))
+        {
             let platform_version = self
                 .app_json
                 .application
@@ -100,6 +104,38 @@ impl AlProject {
         }
 
         deps
+    }
+
+    /// Apply the symbol-package paths from the merged workspace configuration.
+    ///
+    /// Relative paths are resolved from the directory containing `app.json`,
+    /// matching how AL project settings are normally interpreted. The package
+    /// cache is searched first, followed by `appLocalFolderPaths`; when the same
+    /// package version appears in more than one folder, the earlier folder wins.
+    pub fn apply_symbol_settings(&mut self, config: &crate::config::AlConfig) {
+        self.packages_dir = config
+            .package_cache_path
+            .as_deref()
+            .map(|path| resolve_project_path(&self.root, path))
+            .unwrap_or_else(|| self.root.join(".alpackages"));
+
+        let mut folders = Vec::with_capacity(1 + config.app_local_folder_paths.len());
+        folders.push(self.packages_dir.clone());
+        folders.extend(
+            config
+                .app_local_folder_paths
+                .iter()
+                .map(|path| resolve_project_path(&self.root, path)),
+        );
+        self.packages = scan_package_folders(&folders);
+    }
+}
+
+fn resolve_project_path(project_root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
     }
 }
 
@@ -199,22 +235,49 @@ fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
 }
 
 fn scan_packages(packages_dir: &Path) -> Vec<PathBuf> {
-    if !packages_dir.is_dir() {
-        return Vec::new();
+    scan_package_folders(&[packages_dir.to_path_buf()])
+}
+
+/// Scan the configured package folders in priority order.
+///
+/// Directory iteration is sorted within each folder for deterministic startup.
+/// Exact duplicate filenames are kept from the first (highest-priority) folder,
+/// then versioned package filenames are collapsed to their newest version.
+fn scan_package_folders(folders: &[PathBuf]) -> Vec<PathBuf> {
+    let mut packages = Vec::new();
+    let mut seen_filenames = std::collections::HashSet::new();
+
+    for folder in folders {
+        if !folder.is_dir() {
+            tracing::debug!(path = %folder.display(), "symbol package folder does not exist; skipping");
+            continue;
+        }
+
+        let mut folder_packages: Vec<PathBuf> = std::fs::read_dir(folder)
+            .into_iter()
+            .flat_map(|entries| entries.into_iter())
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+            })
+            .collect();
+        folder_packages.sort();
+
+        for path in folder_packages {
+            let filename = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            if seen_filenames.insert(filename) {
+                packages.push(path);
+            }
+        }
     }
 
-    let mut packages: Vec<PathBuf> = std::fs::read_dir(packages_dir)
-        .into_iter()
-        .flat_map(|entries| entries.into_iter())
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
-        })
-        .collect();
-
-    packages.sort();
     dedup_package_versions(packages)
 }
 
@@ -360,6 +423,7 @@ mod dedup_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AlConfig;
     use std::path::PathBuf;
 
     #[test]
@@ -452,6 +516,98 @@ mod tests {
             server_configs: vec![],
         };
         assert!(project.all_dependencies().len() >= 5);
+    }
+
+    #[test]
+    fn symbol_settings_resolve_relative_paths_and_scan_all_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let cache = root.join("custom-cache");
+        let local = root.join("vendor-symbols");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(cache.join("Microsoft_System_27.0.0.0.app"), b"cache").unwrap();
+        std::fs::write(local.join("Vendor_Library_1.0.0.0.APP"), b"local").unwrap();
+
+        let mut project = AlProject {
+            root: root.clone(),
+            app_json: AppManifest {
+                id: "00000000-0000-0000-0000-000000000000".into(),
+                name: "Test".into(),
+                publisher: "Test".into(),
+                version: "1.0.0.0".into(),
+                dependencies: vec![],
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: root.join(".alpackages"),
+            packages: vec![],
+            server_configs: vec![],
+        };
+        let config = AlConfig {
+            package_cache_path: Some(PathBuf::from("custom-cache")),
+            app_local_folder_paths: vec![PathBuf::from("vendor-symbols")],
+            ..AlConfig::default()
+        };
+
+        project.apply_symbol_settings(&config);
+
+        assert_eq!(project.packages_dir, cache);
+        assert_eq!(project.packages.len(), 2);
+        assert!(project.packages.iter().any(|path| path.starts_with(&local)));
+    }
+
+    #[test]
+    fn symbol_settings_prefer_newest_version_across_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let primary = root.join(".alpackages");
+        let local = root.join("local");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(primary.join("Vendor_App_1.0.0.0.app"), b"old").unwrap();
+        let newest = local.join("Vendor_App_2.0.0.0.app");
+        std::fs::write(&newest, b"new").unwrap();
+
+        let mut project = AlProject {
+            root: root.to_path_buf(),
+            app_json: AppManifest {
+                id: String::new(),
+                name: "Test".into(),
+                publisher: "Test".into(),
+                version: "1.0.0.0".into(),
+                dependencies: vec![],
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: primary,
+            packages: vec![],
+            server_configs: vec![],
+        };
+        project.apply_symbol_settings(&AlConfig {
+            app_local_folder_paths: vec![local],
+            ..AlConfig::default()
+        });
+
+        assert_eq!(project.packages, vec![newest]);
+    }
+
+    #[test]
+    fn package_cache_wins_for_identical_filename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let primary = root.join(".alpackages");
+        let local = root.join("local");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        let primary_app = primary.join("Vendor_App_1.0.0.0.app");
+        std::fs::write(&primary_app, b"primary").unwrap();
+        std::fs::write(local.join("Vendor_App_1.0.0.0.app"), b"duplicate").unwrap();
+
+        let result = scan_package_folders(&[primary, local]);
+        assert_eq!(result, vec![primary_app]);
     }
 
     fn tempdir() -> PathBuf {

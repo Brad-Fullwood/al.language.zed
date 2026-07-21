@@ -19,7 +19,9 @@ const MIN_HEADER_SIZE: usize = 4;
 
 /// Maximum .app file size accepted (200 MB). Files larger than this are rejected
 /// before reading to prevent excessive memory use or decompression bombs.
-const MAX_APP_FILE_SIZE: u64 = 200 * 1024 * 1024;
+pub(crate) const MAX_APP_FILE_SIZE: u64 = 200 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_ARCHIVE_ENTRIES: usize = 200_000;
 
 #[derive(Debug, Error)]
 pub enum AppReaderError {
@@ -29,6 +31,12 @@ pub enum AppReaderError {
     TooSmall(usize),
     #[error(".app file too large ({0} bytes, limit is 200 MB)")]
     TooLarge(u64),
+    #[error("Archive entry {name} is too large ({size} bytes, limit is {limit} bytes)")]
+    EntryTooLarge { name: String, size: u64, limit: u64 },
+    #[error("Archive contains too many entries ({0}, limit is 200000)")]
+    TooManyEntries(usize),
+    #[error("Archive expands to too much data ({size} bytes, limit is {limit} bytes)")]
+    ArchiveExpandedTooLarge { size: u64, limit: u64 },
     #[error("ZIP signature not found after NAVX header")]
     NoZipSignature,
     #[error("ZIP error: {0}")]
@@ -46,6 +54,9 @@ pub enum AppReaderError {
 }
 
 pub fn read_app_bytes(data: &[u8]) -> Result<SymbolPackage, AppReaderError> {
+    if data.len() as u64 > MAX_APP_FILE_SIZE {
+        return Err(AppReaderError::TooLarge(data.len() as u64));
+    }
     if data.len() < MIN_HEADER_SIZE {
         return Err(AppReaderError::TooSmall(data.len()));
     }
@@ -60,6 +71,9 @@ pub fn read_app_bytes(data: &[u8]) -> Result<SymbolPackage, AppReaderError> {
 
     let cursor = Cursor::new(zip_data);
     let mut archive = ZipArchive::new(cursor)?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(AppReaderError::TooManyEntries(archive.len()));
+    }
 
     let manifest = read_manifest(&mut archive)?;
 
@@ -84,15 +98,49 @@ pub fn read_app_file(path: &std::path::Path) -> Result<SymbolPackage, AppReaderE
     read_app_bytes(&data)
 }
 
+/// Read only package identity/version metadata without parsing
+/// `SymbolReference.json`. Useful for dependency-satisfaction checks where
+/// inflating a multi-megabyte symbol payload would be wasted work.
+pub fn read_app_manifest_file(path: &std::path::Path) -> Result<NavxManifest, AppReaderError> {
+    let file_size = std::fs::metadata(path)?.len();
+    if file_size > MAX_APP_FILE_SIZE {
+        return Err(AppReaderError::TooLarge(file_size));
+    }
+    let data = std::fs::read(path)?;
+    if data.len() < MIN_HEADER_SIZE {
+        return Err(AppReaderError::TooSmall(data.len()));
+    }
+    if &data[0..4] != NAVX_MAGIC {
+        return Err(AppReaderError::NotNavx);
+    }
+    let zip_offset = find_zip_offset(&data).ok_or(AppReaderError::NoZipSignature)?;
+    let mut archive = ZipArchive::new(Cursor::new(&data[zip_offset..]))?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(AppReaderError::TooManyEntries(archive.len()));
+    }
+    read_manifest(&mut archive)
+}
+
 pub(crate) fn find_zip_offset(data: &[u8]) -> Option<usize> {
+    fn is_valid_zip(data: &[u8], offset: usize) -> bool {
+        ZipArchive::new(Cursor::new(&data[offset..])).is_ok()
+    }
+
     // The standard NAVX header is 40 bytes. Check there first (common case O(1)).
     const STANDARD_HEADER: usize = 40;
-    if data.len() > STANDARD_HEADER + 3 && &data[STANDARD_HEADER..STANDARD_HEADER + 4] == ZIP_MAGIC
+    if data.len() > STANDARD_HEADER + 3
+        && &data[STANDARD_HEADER..STANDARD_HEADER + 4] == ZIP_MAGIC
+        && is_valid_zip(data, STANDARD_HEADER)
     {
         return Some(STANDARD_HEADER);
     }
-    for i in MIN_HEADER_SIZE..data.len().saturating_sub(3) {
-        if &data[i..i + 4] == ZIP_MAGIC {
+    // NAVX headers are tiny (40 bytes in current packages). A bounded fallback
+    // supports historical/variable headers without scanning an entire 200 MB
+    // package or accepting a coincidental PK signature inside header data.
+    const MAX_NAVX_HEADER_BYTES: usize = 1024 * 1024;
+    let search_end = data.len().min(MAX_NAVX_HEADER_BYTES).saturating_sub(3);
+    for i in MIN_HEADER_SIZE..search_end {
+        if &data[i..i + 4] == ZIP_MAGIC && is_valid_zip(data, i) {
             return Some(i);
         }
     }
@@ -104,9 +152,23 @@ fn read_manifest(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<NavxManifest
         find_file_in_archive(archive, "NavxManifest.xml").ok_or(AppReaderError::NoManifest)?;
 
     let file = archive.by_name(&manifest_name)?;
+    if file.size() > MAX_MANIFEST_BYTES {
+        return Err(AppReaderError::EntryTooLarge {
+            name: manifest_name,
+            size: file.size(),
+            limit: MAX_MANIFEST_BYTES,
+        });
+    }
     let mut xml_bytes = Vec::new();
-    // 1 MB limit guards against decompression bombs in the manifest.
-    file.take(1_048_576).read_to_end(&mut xml_bytes)?;
+    file.take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut xml_bytes)?;
+    if xml_bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(AppReaderError::EntryTooLarge {
+            name: manifest_name,
+            size: xml_bytes.len() as u64,
+            limit: MAX_MANIFEST_BYTES,
+        });
+    }
 
     // BC's `.app` toolchain inconsistently emits a UTF-8 BOM in the
     // manifest XML (consistent only in SymbolReference.json). When present,
@@ -126,10 +188,25 @@ fn read_symbol_reference(
         .ok_or(AppReaderError::NoSymbolReference)?;
 
     let file = archive.by_name(&sr_name)?;
+    if file.size() > MAX_APP_FILE_SIZE {
+        return Err(AppReaderError::EntryTooLarge {
+            name: sr_name,
+            size: file.size(),
+            limit: MAX_APP_FILE_SIZE,
+        });
+    }
     let mut json_bytes = Vec::new();
     // Cap matches the outer .app file limit; protects against decompression
     // bombs even when callers feed read_app_bytes directly with un-capped input.
-    file.take(MAX_APP_FILE_SIZE).read_to_end(&mut json_bytes)?;
+    file.take(MAX_APP_FILE_SIZE + 1)
+        .read_to_end(&mut json_bytes)?;
+    if json_bytes.len() as u64 > MAX_APP_FILE_SIZE {
+        return Err(AppReaderError::EntryTooLarge {
+            name: sr_name,
+            size: json_bytes.len() as u64,
+            limit: MAX_APP_FILE_SIZE,
+        });
+    }
 
     let sr = parse_symbol_reference_json(&json_bytes)?;
     Ok(sr.into_entries(package_name))
@@ -169,8 +246,6 @@ fn has_only_json_padding(bytes: &[u8]) -> bool {
 /// `archive.by_index(i)` calls in a tight loop until they exceed the
 /// 200 MB outer cap on file *size* (which says nothing about entry
 /// count). Higher than realistic BC packages by ~10x.
-const MAX_ARCHIVE_ENTRIES: usize = 200_000;
-
 fn find_file_in_archive(archive: &mut ZipArchive<Cursor<&[u8]>>, target: &str) -> Option<String> {
     let target_lower = target.to_lowercase();
     let entries = archive.len();
@@ -282,6 +357,18 @@ mod tests {
     }
 
     #[test]
+    fn manifest_only_read_does_not_parse_symbol_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ManifestOnly.app");
+        std::fs::write(&path, make_test_app(&test_manifest(), "not-json")).unwrap();
+
+        let manifest = read_app_manifest_file(&path).expect("manifest should still be readable");
+        assert_eq!(manifest.app_id, "test-app-id-1234");
+        assert_eq!(manifest.version, "1.0.0.0");
+        assert!(matches!(read_app_file(&path), Err(AppReaderError::Json(_))));
+    }
+
+    #[test]
     fn detect_navx_magic() {
         let data = make_test_app(&test_manifest(), &test_symbols());
         assert_eq!(&data[0..4], b"NAVX");
@@ -375,6 +462,31 @@ mod tests {
 
         let pkg = read_app_bytes(&data).unwrap();
         assert_eq!(pkg.name, "Test App");
+    }
+
+    #[test]
+    fn false_zip_signature_inside_navx_header_is_ignored() {
+        let valid = make_test_app(&test_manifest(), &test_symbols());
+        let mut data = Vec::new();
+        data.extend_from_slice(b"NAVX");
+        data.extend_from_slice(b"junkPK\x03\x04not-a-zip");
+        data.resize(64, 0);
+        data.extend_from_slice(&valid[40..]);
+
+        let pkg = read_app_bytes(&data).expect("reader must continue past false PK signature");
+        assert_eq!(pkg.name, "Test App");
+    }
+
+    #[test]
+    fn oversized_manifest_is_rejected_before_parsing() {
+        let oversized = " ".repeat((MAX_MANIFEST_BYTES + 1) as usize);
+        let data = make_test_app(&oversized, &test_symbols());
+
+        let err = read_app_bytes(&data).expect_err("oversized manifest must be refused");
+        assert!(
+            matches!(err, AppReaderError::EntryTooLarge { ref name, .. } if name == "NavxManifest.xml"),
+            "got {err:?}"
+        );
     }
 
     #[test]

@@ -13,6 +13,24 @@ use serde::{Deserialize, Serialize};
 
 use super::host::DotNetHost;
 
+static NEXT_BRIDGE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn global_call_gate() -> Arc<tokio::sync::Semaphore> {
+    static GATE: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    Arc::clone(GATE.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1))))
+}
+
+fn monotonic_secs() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    // Zero is reserved for "no timeout". A monotonic process-relative clock
+    // cannot jump backwards when the system clock is adjusted.
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs()
+        + 1
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyzeRequest {
@@ -170,6 +188,53 @@ fn check_text_size(text: Option<&str>) -> Result<(), SemanticError> {
     Ok(())
 }
 
+fn path_as_utf8(path: &Path) -> Result<&str, SemanticError> {
+    path.to_str().ok_or_else(|| {
+        SemanticError::SerializationError(format!(
+            "Bridge paths must be valid UTF-8: {}",
+            path.display()
+        ))
+    })
+}
+
+fn validate_builtins(types: &[BuiltinType]) -> Result<(), SemanticError> {
+    if types.is_empty() {
+        return Err(SemanticError::SerializationError(
+            "Bridge returned an empty built-in type catalog".to_string(),
+        ));
+    }
+    let mut names = std::collections::HashSet::with_capacity(types.len());
+    for ty in types {
+        let name = ty.name.trim();
+        if name.is_empty() || !names.insert(name.to_lowercase()) {
+            return Err(SemanticError::SerializationError(format!(
+                "Bridge returned an invalid or duplicate built-in type name: {:?}",
+                ty.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_error_codes(codes: &[ErrorCodeInfo]) -> Result<(), SemanticError> {
+    if codes.is_empty() {
+        return Err(SemanticError::SerializationError(
+            "Bridge returned an empty error-code catalog".to_string(),
+        ));
+    }
+    let mut names = std::collections::HashSet::with_capacity(codes.len());
+    for code in codes {
+        let id = code.code.trim();
+        if id.is_empty() || !names.insert(id.to_ascii_uppercase()) {
+            return Err(SemanticError::SerializationError(format!(
+                "Bridge returned an invalid or duplicate error code: {:?}",
+                code.code
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Async bridge to the .NET CodeAnalysis API.
 ///
 /// Uses in-process .NET hosting via `netcorehost`. The .NET runtime is loaded
@@ -181,8 +246,14 @@ fn check_text_size(text: Option<&str>) -> Result<(), SemanticError> {
 /// response buffer is shared, so only one call may be in flight at a time.
 pub struct SemanticBridge {
     host: Arc<std::sync::Mutex<DotNetHost>>,
+    /// Prevents timed-out callers from accumulating abandoned blocking tasks
+    /// behind the host mutex. The permit moves into the blocking closure and is
+    /// released only when the CLR call actually returns.
+    call_gate: Arc<tokio::sync::Semaphore>,
     version: String,
-    /// Unix timestamp (seconds) when the most recent timeout fired, or 0 if
+    generation: u64,
+    /// Monotonic process-relative timestamp (seconds) when the most recent
+    /// timeout fired, or 0 if
     /// no timeout has occurred. Combined with `TIMEOUT_COOLDOWN`, this drives
     /// the retry-after-cooldown behaviour: a single transient timeout no
     /// longer permanently disables semantic analysis for the rest of the
@@ -206,7 +277,7 @@ const TIMEOUT_COOLDOWN: Duration = Duration::from_secs(60);
 /// so the advance-only semantics can be unit-tested without loading the CLR.
 fn seed_timeout_stamp(stamp: &std::sync::atomic::AtomicU64, secs: u64) {
     if secs != 0 {
-        stamp.store(secs, std::sync::atomic::Ordering::Relaxed);
+        stamp.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -225,7 +296,7 @@ enum CooldownDecision {
 /// Pure cooldown-gate decision over the serializing mutex.
 ///
 /// `last_timeout_secs` is the atomic stamp (0 = no recent timeout). `now` is
-/// the current Unix time in seconds, `cooldown` the cooldown window. The lock
+/// the current monotonic process time in seconds, `cooldown` the cooldown window. The lock
 /// is probed via `try_lock()` only once the cooldown has elapsed. As a side
 /// effect this updates `last_timeout_secs` exactly as the inline logic did:
 /// cleared to 0 when the lock is free (recovered), re-stamped to `now` when
@@ -233,6 +304,7 @@ enum CooldownDecision {
 fn cooldown_gate<T>(
     last_timeout_secs: &std::sync::atomic::AtomicU64,
     host: &std::sync::Mutex<T>,
+    call_gate: &tokio::sync::Semaphore,
     now: u64,
     cooldown: Duration,
     method: &str,
@@ -254,15 +326,32 @@ fn cooldown_gate<T>(
         ));
     }
     match host.try_lock() {
-        Ok(_guard) => {
-            last_timeout_secs.store(0, std::sync::atomic::Ordering::Relaxed);
-            tracing::info!(
-                method,
-                elapsed,
-                "semantic bridge: cooldown elapsed, lock free — resuming"
-            );
-            CooldownDecision::Proceed
-        }
+        Ok(_guard) => match call_gate.try_acquire() {
+            Ok(permit) => {
+                drop(permit);
+                last_timeout_secs.store(0, std::sync::atomic::Ordering::Relaxed);
+                tracing::info!(
+                    method,
+                    elapsed,
+                    "semantic bridge: cooldown elapsed, bridge idle — resuming"
+                );
+                CooldownDecision::Proceed
+            }
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                last_timeout_secs.store(now, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(
+                    method,
+                    elapsed,
+                    "semantic bridge: older generation still in flight — extending cooldown"
+                );
+                CooldownDecision::ShortCircuit(SemanticError::Cooldown(
+                    "hung call from this or an older bridge generation is still in flight",
+                ))
+            }
+            Err(tokio::sync::TryAcquireError::Closed) => CooldownDecision::ShortCircuit(
+                SemanticError::HostInit("semantic bridge call gate was closed".to_string()),
+            ),
+        },
         Err(std::sync::TryLockError::WouldBlock) => {
             last_timeout_secs.store(now, std::sync::atomic::Ordering::Relaxed);
             tracing::warn!(
@@ -298,7 +387,9 @@ impl SemanticBridge {
 
         Ok(Self {
             host: Arc::new(std::sync::Mutex::new(host)),
+            call_gate: global_call_gate(),
             version: version.to_string(),
+            generation: NEXT_BRIDGE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             last_timeout_secs: std::sync::atomic::AtomicU64::new(0),
         })
     }
@@ -307,7 +398,14 @@ impl SemanticBridge {
         &self.version
     }
 
-    /// The Unix-seconds stamp of the most recent timeout (0 = none). Used by
+    /// Process-local identity used to ensure a late failure from an older
+    /// in-flight call cannot tear down a bridge that another task has already
+    /// replaced.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The monotonic process-seconds stamp of the most recent timeout (0 = none). Used by
     /// `restart_bridge` to carry the cooldown window across a bridge restart:
     /// a fresh `SemanticBridge` starts with `last_timeout_secs = 0`, but a
     /// hung CLR call from the old bridge may still be in flight (its
@@ -356,13 +454,11 @@ impl SemanticBridge {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, SemanticError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = monotonic_secs();
         match cooldown_gate(
             &self.last_timeout_secs,
             &self.host,
+            &self.call_gate,
             now,
             TIMEOUT_COOLDOWN,
             method,
@@ -371,28 +467,35 @@ impl SemanticBridge {
             CooldownDecision::ShortCircuit(err) => return Err(err),
         }
 
-        let host = self.host.clone();
+        let host = Arc::clone(&self.host);
+        let call_gate = Arc::clone(&self.call_gate);
         let method = method.to_string();
 
-        let result = tokio::time::timeout(
-            DEFAULT_TIMEOUT,
+        let operation = async move {
+            let permit = call_gate.acquire_owned().await.map_err(|_| {
+                SemanticError::HostInit("semantic bridge call gate was closed".to_string())
+            })?;
             tokio::task::spawn_blocking(move || {
+                // Keep the async permit alive in the blocking task. If the
+                // outer timeout drops its JoinHandle, the in-flight call still
+                // owns the only permit and later callers cannot queue another
+                // abandoned CLR invocation behind it.
+                let _permit = permit;
                 let mut guard = host.lock().map_err(|_| SemanticError::Poisoned)?;
                 guard.call(&method, params)
-            }),
-        )
-        .await;
+            })
+            .await
+            .map_err(|join_err| {
+                SemanticError::HostInit(format!("Bridge call panicked: {join_err}"))
+            })?
+        };
+
+        let result = tokio::time::timeout(DEFAULT_TIMEOUT, operation).await;
 
         match result {
-            Ok(Ok(inner)) => inner,
-            Ok(Err(join_err)) => Err(SemanticError::HostInit(format!(
-                "Bridge call panicked: {join_err}"
-            ))),
+            Ok(inner) => inner,
             Err(_) => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
+                let now = monotonic_secs();
                 self.last_timeout_secs
                     .store(now, std::sync::atomic::Ordering::Relaxed);
                 Err(SemanticError::Timeout(DEFAULT_TIMEOUT))
@@ -430,6 +533,20 @@ impl SemanticBridge {
         pos: (u32, u32),
         text: Option<&str>,
     ) -> Result<Option<TypeInfo>, SemanticError> {
+        self.type_at_with_package_cache(file, pos, text, None).await
+    }
+
+    /// Resolve a type using the current editor buffer and project package
+    /// cache. Supplying the package cache lets CodeAnalysis bind symbols from
+    /// dependencies instead of constructing an isolated one-file compilation.
+    pub async fn type_at_with_package_cache(
+        &self,
+        file: &Path,
+        pos: (u32, u32),
+        text: Option<&str>,
+        package_cache: Option<&Path>,
+    ) -> Result<Option<TypeInfo>, SemanticError> {
+        let file = path_as_utf8(file)?;
         let mut params = serde_json::json!({
             "file": file,
             "line": pos.0,
@@ -438,6 +555,9 @@ impl SemanticBridge {
         check_text_size(text)?;
         if let Some(t) = text {
             params["text"] = serde_json::Value::String(t.to_string());
+        }
+        if let Some(cache) = package_cache {
+            params["packageCache"] = serde_json::Value::String(path_as_utf8(cache)?.to_string());
         }
         let result = self.call("typeAt", params).await?;
         if result.is_null() {
@@ -461,6 +581,20 @@ impl SemanticBridge {
         pos: (u32, u32),
         text: Option<&str>,
     ) -> Result<Vec<CompletionItem>, SemanticError> {
+        self.completions_at_with_package_cache(file, pos, text, None)
+            .await
+    }
+
+    /// Completion lookup with dependency symbols available from the project
+    /// package cache.
+    pub async fn completions_at_with_package_cache(
+        &self,
+        file: &Path,
+        pos: (u32, u32),
+        text: Option<&str>,
+        package_cache: Option<&Path>,
+    ) -> Result<Vec<CompletionItem>, SemanticError> {
+        let file = path_as_utf8(file)?;
         let mut params = serde_json::json!({
             "file": file,
             "line": pos.0,
@@ -469,6 +603,9 @@ impl SemanticBridge {
         check_text_size(text)?;
         if let Some(t) = text {
             params["text"] = serde_json::Value::String(t.to_string());
+        }
+        if let Some(cache) = package_cache {
+            params["packageCache"] = serde_json::Value::String(path_as_utf8(cache)?.to_string());
         }
         let result = self.call("completions", params).await?;
         Self::parse_response(result)
@@ -479,11 +616,15 @@ impl SemanticBridge {
     /// Checks disk cache first. On cache miss, calls the bridge and caches the result.
     pub async fn builtin_types(&self) -> Result<Vec<BuiltinType>, SemanticError> {
         if let Some(cached) = super::cache::read_builtins(&self.version) {
-            return Ok(cached);
+            if validate_builtins(&cached).is_ok() {
+                return Ok(cached);
+            }
+            tracing::warn!("Ignoring invalid semantic builtins cache");
         }
 
         let result = self.call("builtins", serde_json::Value::Null).await?;
         let types: Vec<BuiltinType> = Self::parse_response(result)?;
+        validate_builtins(&types)?;
 
         super::cache::write_builtins(&self.version, &types);
 
@@ -496,43 +637,53 @@ impl SemanticBridge {
 
         if !live {
             if let Some(cached) = super::cache::read_error_codes(&self.version) {
-                return Ok(cached);
+                if validate_error_codes(&cached).is_ok() {
+                    return Ok(cached);
+                }
+                tracing::warn!("Ignoring invalid semantic error-code cache");
             }
         }
 
         let result = self.call("errorCodes", serde_json::Value::Null).await?;
         let codes: Vec<ErrorCodeInfo> = Self::parse_response(result)?;
+        validate_error_codes(&codes)?;
 
         super::cache::write_error_codes(&self.version, &codes);
 
         Ok(codes)
     }
 
-    /// Compile an AL project using alc (the Microsoft AL compiler).
+    /// Legacy bridge-compile entry point retained for source compatibility.
     ///
-    /// This invokes alc as a subprocess via the .NET bridge, parses the SARIF
-    /// error log for structured diagnostics, and returns the path to the .app file.
+    /// Compilation is owned by `al-compile`; allowing this in-process bridge to
+    /// spawn a 120-second child compiler would violate the bridge's 30-second
+    /// timeout/cooldown contract. The method therefore fails closed.
+    #[deprecated(note = "use the al-compile crate; bridge compile is disabled")]
     pub async fn compile(
         &self,
-        project: &Path,
-        alc_path: Option<&Path>,
-        package_cache: Option<&Path>,
+        _project: &Path,
+        _alc_path: Option<&Path>,
+        _package_cache: Option<&Path>,
     ) -> Result<CompileResult, SemanticError> {
-        let mut params = serde_json::json!({ "project": project });
-        if let Some(alc) = alc_path {
-            params["alcPath"] = serde_json::Value::String(alc.to_string_lossy().into_owned());
-        }
-        if let Some(pkg) = package_cache {
-            params["packageCachePath"] =
-                serde_json::Value::String(pkg.to_string_lossy().into_owned());
-        }
-        let result = self.call("compile", params).await?;
-        Self::parse_response(result)
+        Err(SemanticError::RpcError {
+            code: -32601,
+            message: "Bridge compile is retired; use the al-compile backend".to_string(),
+        })
     }
 
     pub async fn ping(&self) -> Result<(), SemanticError> {
-        let _ = self.call("ping", serde_json::Value::Null).await?;
-        Ok(())
+        let result = self.call("ping", serde_json::Value::Null).await?;
+        let status = result.get("status").and_then(serde_json::Value::as_str);
+        let initialized = result
+            .get("initialized")
+            .and_then(serde_json::Value::as_bool);
+        if status == Some("ok") && initialized == Some(true) {
+            Ok(())
+        } else {
+            Err(SemanticError::SerializationError(format!(
+                "Bridge ping returned an unhealthy response: {result}"
+            )))
+        }
     }
 }
 
@@ -843,7 +994,8 @@ mod tests {
     fn test_cooldown_gate_no_prior_timeout_proceeds() {
         let stamp = AtomicU64::new(0);
         let host = Mutex::new(());
-        let decision = cooldown_gate(&stamp, &host, 1_000, COOLDOWN, "typeAt");
+        let gate = tokio::sync::Semaphore::new(1);
+        let decision = cooldown_gate(&stamp, &host, &gate, 1_000, COOLDOWN, "typeAt");
         assert!(matches!(decision, CooldownDecision::Proceed));
         assert_eq!(stamp.load(Ordering::Relaxed), 0);
     }
@@ -857,7 +1009,8 @@ mod tests {
         let stamp = AtomicU64::new(1_000);
         let host = Mutex::new(());
         let _held = host.lock().unwrap();
-        let decision = cooldown_gate(&stamp, &host, 1_010, COOLDOWN, "typeAt");
+        let gate = tokio::sync::Semaphore::new(1);
+        let decision = cooldown_gate(&stamp, &host, &gate, 1_010, COOLDOWN, "typeAt");
         match decision {
             CooldownDecision::ShortCircuit(SemanticError::Cooldown(msg)) => {
                 assert_eq!(msg, "cooldown window after timeout");
@@ -871,9 +1024,28 @@ mod tests {
     fn test_cooldown_gate_elapsed_lock_free_resumes_and_clears() {
         let stamp = AtomicU64::new(1_000);
         let host = Mutex::new(());
-        let decision = cooldown_gate(&stamp, &host, 1_070, COOLDOWN, "typeAt");
+        let gate = tokio::sync::Semaphore::new(1);
+        let decision = cooldown_gate(&stamp, &host, &gate, 1_070, COOLDOWN, "typeAt");
         assert!(matches!(decision, CooldownDecision::Proceed));
         assert_eq!(stamp.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_cooldown_gate_blocks_call_from_older_generation() {
+        let stamp = AtomicU64::new(1_000);
+        let host = Mutex::new(());
+        let gate = tokio::sync::Semaphore::new(1);
+        let _older_call = gate.try_acquire().unwrap();
+        let now = 1_070;
+
+        let decision = cooldown_gate(&stamp, &host, &gate, now, COOLDOWN, "typeAt");
+        match decision {
+            CooldownDecision::ShortCircuit(SemanticError::Cooldown(msg)) => {
+                assert!(msg.contains("older bridge generation"));
+            }
+            other => panic!("expected cross-generation Cooldown, got {other:?}"),
+        }
+        assert_eq!(stamp.load(Ordering::Relaxed), now);
     }
 
     #[test]
@@ -882,7 +1054,8 @@ mod tests {
         let host = Mutex::new(());
         let _held = host.lock().unwrap();
         let now = 1_070;
-        let decision = cooldown_gate(&stamp, &host, now, COOLDOWN, "typeAt");
+        let gate = tokio::sync::Semaphore::new(1);
+        let decision = cooldown_gate(&stamp, &host, &gate, now, COOLDOWN, "typeAt");
         match decision {
             CooldownDecision::ShortCircuit(SemanticError::Cooldown(msg)) => {
                 assert_eq!(msg, "hung call still holding the lock");
@@ -902,7 +1075,8 @@ mod tests {
         });
         assert!(host.is_poisoned(), "mutex should be poisoned by the panic");
         let now = 1_070;
-        let decision = cooldown_gate(&stamp, &host, now, COOLDOWN, "typeAt");
+        let gate = tokio::sync::Semaphore::new(1);
+        let decision = cooldown_gate(&stamp, &host, &gate, now, COOLDOWN, "typeAt");
         assert!(matches!(
             decision,
             CooldownDecision::ShortCircuit(SemanticError::Poisoned)
@@ -921,14 +1095,16 @@ mod tests {
 
         {
             let _held = host.lock().unwrap();
-            let d1 = cooldown_gate(&stamp, &host, 1_070, COOLDOWN, "typeAt");
+            let gate = tokio::sync::Semaphore::new(1);
+            let d1 = cooldown_gate(&stamp, &host, &gate, 1_070, COOLDOWN, "typeAt");
             assert!(matches!(d1, CooldownDecision::ShortCircuit(_)));
             assert_eq!(stamp.load(Ordering::Relaxed), 1_070);
 
-            let d2 = cooldown_gate(&stamp, &host, 1_100, COOLDOWN, "typeAt");
+            let d2 = cooldown_gate(&stamp, &host, &gate, 1_100, COOLDOWN, "typeAt");
             assert!(matches!(d2, CooldownDecision::ShortCircuit(_)));
         }
-        let d3 = cooldown_gate(&stamp, &host, 1_140, COOLDOWN, "typeAt");
+        let gate = tokio::sync::Semaphore::new(1);
+        let d3 = cooldown_gate(&stamp, &host, &gate, 1_140, COOLDOWN, "typeAt");
         assert!(matches!(d3, CooldownDecision::Proceed));
         assert_eq!(stamp.load(Ordering::Relaxed), 0);
     }
@@ -954,14 +1130,13 @@ mod tests {
     }
 
     #[test]
-    fn test_seed_timeout_stamp_only_advances_via_caller_guard() {
-        // The free function itself unconditionally stores a non-zero value;
-        // restart_bridge only calls it with the prior stamp, so the net effect
-        // is "carry forward the prior cooldown". Document that a non-zero seed
-        // overwrites whatever was there (the new bridge starts at 0 anyway).
-        let new_bridge = AtomicU64::new(0);
-        seed_timeout_stamp(&new_bridge, 1_234);
-        assert_eq!(new_bridge.load(Ordering::Relaxed), 1_234);
+    fn test_seed_timeout_stamp_never_moves_backwards() {
+        let stamp = AtomicU64::new(2_000);
+        seed_timeout_stamp(&stamp, 1_234);
+        assert_eq!(stamp.load(Ordering::Relaxed), 2_000);
+
+        seed_timeout_stamp(&stamp, 2_500);
+        assert_eq!(stamp.load(Ordering::Relaxed), 2_500);
     }
 
     #[test]

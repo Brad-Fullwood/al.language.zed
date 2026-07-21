@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 al-symbols = { path = "../al-symbols", version = "0.1.0" }
 al-syntax = { path = "../al-syntax", version = "0.1.0" }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 zip = { workspace = true }

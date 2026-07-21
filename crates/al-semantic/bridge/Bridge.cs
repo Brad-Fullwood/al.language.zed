@@ -15,7 +15,12 @@ namespace AlBridge;
 
 public static class Bridge
 {
+    private const int MaxRequestBytes = 32 * 1024 * 1024;
+    private const int MaxResponseBytes = 256 * 1024 * 1024;
+    private static readonly object InitLock = new();
+    private static readonly object RequestLock = new();
     private static CodeAnalysisBridge? _bridge;
+    private static string? _codeAnalysisPath;
     /// <summary>
     /// Captured exception message from the last failed <c>Init</c> attempt,
     /// returned through <c>HandleRequest</c> so the Rust side has something
@@ -26,7 +31,10 @@ public static class Bridge
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        // The response envelope must retain `result: null`; omitting it makes a
+        // legitimate "no type at this position" response indistinguishable
+        // from a malformed envelope with neither result nor error.
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never,
         WriteIndented = false,
     };
 
@@ -38,32 +46,59 @@ public static class Bridge
     [UnmanagedCallersOnly]
     public static unsafe int Init(byte* pathPtr, int pathLen)
     {
+        ResolveEventHandler? resolver = null;
         try
         {
-            var path = Encoding.UTF8.GetString(pathPtr, pathLen);
-            if (!File.Exists(path)) return -1;
+            if (pathPtr == null || pathLen <= 0 || pathLen > MaxRequestBytes)
+                throw new ArgumentOutOfRangeException(nameof(pathLen), "CodeAnalysis path length is invalid.");
 
-            var alExtDir = Path.GetDirectoryName(path) ?? ".";
+            var path = new UTF8Encoding(false, true).GetString(pathPtr, pathLen);
+            path = Path.GetFullPath(path);
+            if (!File.Exists(path))
+                throw new FileNotFoundException("CodeAnalysis assembly was not found.", path);
 
-            AppDomain.CurrentDomain.AssemblyResolve += (_, args) =>
+            lock (InitLock)
             {
-                var name = new AssemblyName(args.Name);
-                var candidate = Path.Combine(alExtDir, name.Name + ".dll");
-                if (File.Exists(candidate))
+                if (_bridge is not null)
                 {
-                    try { return Assembly.LoadFrom(candidate); }
-                    catch { /* fall through */ }
+                    if (string.Equals(_codeAnalysisPath, path, StringComparison.Ordinal)) return 0;
+                    throw new InvalidOperationException(
+                        $"AlBridge is already initialized for '{_codeAnalysisPath}'. " +
+                        "A process can host only one AL CodeAnalysis toolchain.");
                 }
-                return null;
-            };
 
-            var asm = Assembly.LoadFrom(path);
-            _bridge = new CodeAnalysisBridge(asm, alExtDir);
-            _lastInitError = null;
-            return 0;
+                var alExtDir = Path.GetDirectoryName(path)
+                    ?? throw new InvalidOperationException("CodeAnalysis assembly has no parent directory.");
+
+                resolver = (_, args) =>
+                {
+                    var name = new AssemblyName(args.Name);
+                    var candidates = new[]
+                    {
+                        Path.Combine(alExtDir, name.Name + ".dll"),
+                        Path.Combine(alExtDir, "..", "Analyzers", name.Name + ".dll"),
+                    };
+                    foreach (var candidate in candidates)
+                    {
+                        if (!File.Exists(candidate)) continue;
+                        try { return Assembly.LoadFrom(candidate); }
+                        catch { /* try the next probing location */ }
+                    }
+                    return null;
+                };
+                AppDomain.CurrentDomain.AssemblyResolve += resolver;
+
+                var asm = Assembly.LoadFrom(path);
+                var bridge = new CodeAnalysisBridge(asm, alExtDir);
+                _bridge = bridge;
+                _codeAnalysisPath = path;
+                _lastInitError = null;
+                return 0;
+            }
         }
         catch (Exception ex)
         {
+            if (resolver != null) AppDomain.CurrentDomain.AssemblyResolve -= resolver;
             // Capture the exception so HandleRequest can surface it back to
             // Rust on the next call. Previously the catch was bare and the
             // caller saw only "code -2", which made remote diagnosis of a
@@ -80,41 +115,50 @@ public static class Bridge
     [UnmanagedCallersOnly]
     public static unsafe byte* HandleRequest(byte* requestPtr, int requestLen, int* responseLen)
     {
+        if (responseLen == null) return null;
+        *responseLen = 0;
         byte[] responseBytes;
         try
         {
-            var json = Encoding.UTF8.GetString(requestPtr, requestLen);
-            var doc = JsonDocument.Parse(json);
-            var method = doc.RootElement.GetProperty("method").GetString() ?? "";
-            doc.RootElement.TryGetProperty("params", out var prms);
-
-            // Reject calls that arrive before a successful Init. Without this
-            // explicit guard the `_bridge?.Handle*` calls below silently return
-            // null and the caller sees `{ "result": null }` — indistinguishable
-            // from "no results for this query". Surface the original init error
-            // (if any) so the daemon can log a real reason.
-            if (method != "ping" && _bridge is null)
+            if (requestPtr == null || requestLen <= 0 || requestLen > MaxRequestBytes)
+                throw new ArgumentOutOfRangeException(nameof(requestLen), "Bridge request length is invalid.");
+            var json = new UTF8Encoding(false, true).GetString(requestPtr, requestLen);
+            lock (RequestLock)
             {
-                throw new InvalidOperationException(
-                    _lastInitError is null
-                        ? "AlBridge: Init was never called or has not completed."
-                        : $"AlBridge: Init failed previously: {_lastInitError}");
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                    throw new JsonException("Bridge request root must be an object.");
+                var method = doc.RootElement.GetProperty("method").GetString() ?? "";
+                if (string.IsNullOrWhiteSpace(method)) throw new JsonException("Bridge method is required.");
+                doc.RootElement.TryGetProperty("params", out var prms);
+
+                // Reject calls that arrive before a successful Init. Without this
+                // explicit guard the `_bridge?.Handle*` calls below silently return
+                // null and the caller sees `{ "result": null }` — indistinguishable
+                // from "no results for this query". Surface the original init error
+                // (if any) so the daemon can log a real reason.
+                if (method != "ping" && _bridge is null)
+                {
+                    throw new InvalidOperationException(
+                        _lastInitError is null
+                            ? "AlBridge: Init was never called or has not completed."
+                            : $"AlBridge: Init failed previously: {_lastInitError}");
+                }
+
+                object? result = method switch
+                {
+                    "ping" => new { status = "ok", initialized = _bridge is not null },
+                    "analyze" => _bridge?.HandleAnalyze(prms),
+                    "builtins" => _bridge?.HandleBuiltins(),
+                    "typeAt" => _bridge?.HandleTypeAt(prms),
+                    "completions" => _bridge?.HandleCompletions(prms),
+                    "errorCodes" => _bridge?.HandleErrorCodes(),
+                    _ => throw new Exception($"Unknown method: {method}"),
+                };
+
+                responseBytes = JsonSerializer.SerializeToUtf8Bytes(
+                    new { result }, JsonOpts);
             }
-
-            object? result = method switch
-            {
-                "ping" => new { status = "ok", initialized = _bridge is not null },
-                "analyze" => _bridge?.HandleAnalyze(prms),
-                "builtins" => _bridge?.HandleBuiltins(),
-                "typeAt" => _bridge?.HandleTypeAt(prms),
-                "completions" => _bridge?.HandleCompletions(prms),
-                "errorCodes" => _bridge?.HandleErrorCodes(),
-                "compile" => _bridge?.HandleCompile(prms),
-                _ => throw new Exception($"Unknown method: {method}"),
-            };
-
-            responseBytes = JsonSerializer.SerializeToUtf8Bytes(
-                new { result }, JsonOpts);
         }
         catch (Exception ex)
         {
@@ -129,10 +173,28 @@ public static class Bridge
                 new { error = new { code = -1, message } }, JsonOpts);
         }
 
-        var ptr = (byte*)Marshal.AllocCoTaskMem(responseBytes.Length);
-        Marshal.Copy(responseBytes, 0, (nint)ptr, responseBytes.Length);
-        *responseLen = responseBytes.Length;
-        return ptr;
+        if (responseBytes.Length > MaxResponseBytes)
+        {
+            responseBytes = JsonSerializer.SerializeToUtf8Bytes(
+                new { error = new { code = -1, message = $"Bridge response exceeded {MaxResponseBytes} bytes." } },
+                JsonOpts);
+        }
+
+        byte* ptr = null;
+        try
+        {
+            ptr = (byte*)Marshal.AllocCoTaskMem(responseBytes.Length);
+            if (ptr == null) return null;
+            Marshal.Copy(responseBytes, 0, (nint)ptr, responseBytes.Length);
+            *responseLen = responseBytes.Length;
+            return ptr;
+        }
+        catch
+        {
+            if (ptr != null) Marshal.FreeCoTaskMem((nint)ptr);
+            *responseLen = 0;
+            return null;
+        }
     }
 
     [UnmanagedCallersOnly]
@@ -177,6 +239,17 @@ internal class CodeAnalysisBridge
             BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
             ?? _syntaxTreeType?.GetMethod("GetRoot",
                 BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null);
+
+        var missing = new List<string>();
+        if (_syntaxTreeType == null) missing.Add("SyntaxTree");
+        if (_sourceTextType == null) missing.Add("SourceText");
+        if (_compilationType == null) missing.Add("Compilation");
+        if (_parseObjectTextMethod == null) missing.Add("SyntaxTree.ParseObjectText");
+        if (_sourceTextFromStringMethod == null) missing.Add("SourceText.From(string)");
+        if (_getCompilationUnitRootMethod == null) missing.Add("SyntaxTree.GetCompilationUnitRoot/GetRoot");
+        if (missing.Count > 0)
+            throw new MissingMemberException(
+                $"The CodeAnalysis assembly is incompatible; missing required API(s): {string.Join(", ", missing)}");
     }
 
     private Type? F(string name) { try { return _asm.GetType(name); } catch { return null; } }
@@ -198,25 +271,25 @@ internal class CodeAnalysisBridge
         if (prms.TryGetProperty("packageCache", out var p)) pkgCache = p.GetString() ?? "";
         if (string.IsNullOrEmpty(pkgCache) && prms.TryGetProperty("package_cache", out var p2)) pkgCache = p2.GetString() ?? "";
 
-        var tree = ParseSource(source, file);
-        if (tree == null) return Array.Empty<object>();
+        var tree = ParseSource(source, file)
+            ?? throw new InvalidOperationException("CodeAnalysis returned no syntax tree.");
 
-        var diags = ExtractDiagnostics(tree, file);
+        // Compilation diagnostics include syntax, binding, and type checking.
+        // Returning only SyntaxTree.GetDiagnostics here would make this bridge
+        // look healthy while silently omitting the compiler semantics it exists
+        // to provide.
+        var comp = CreateCompilation(new[] { tree }, pkgCache)
+            ?? throw new InvalidOperationException("Could not create an AL compilation for semantic analysis.");
+        var diags = ExtractDiagnostics(comp, file);
 
-        if (analyzers.Count > 0 && _compilationType != null)
-        {
-            try
-            {
-                var comp = CreateCompilation(new[] { tree }, pkgCache);
-                if (comp != null) diags.AddRange(RunAnalyzers(comp, analyzers));
-            }
-            catch { /* syntax diags still returned */ }
-        }
+        if (analyzers.Count > 0) diags.AddRange(RunAnalyzers(comp, analyzers));
         return diags;
     }
 
     public object? HandleBuiltins()
     {
+        if (_navTypeKindEnum?.IsEnum != true)
+            throw new MissingMemberException("CodeAnalysis does not expose the NavTypeKind catalog.");
         var types = new Dictionary<string, BTypeInfo>(StringComparer.OrdinalIgnoreCase);
 
         if (_navTypeKindEnum?.IsEnum == true)
@@ -246,6 +319,7 @@ internal class CodeAnalysisBridge
         var file = prms.GetProperty("file").GetString() ?? "";
         var line = prms.GetProperty("line").GetUInt32();
         var col = prms.GetProperty("column").GetUInt32();
+        var pkgCache = GetOptionalString(prms, "packageCache");
 
         // F-037: prefer caller-supplied unsaved text over disk so hover
         // reflects the editor buffer, not the last-saved file. Disk read is
@@ -260,16 +334,20 @@ internal class CodeAnalysisBridge
             if (!File.Exists(file)) return null;
             source = File.ReadAllText(file);
         }
-        var tree = ParseSource(source, file);
-        if (tree == null) return null;
+        var tree = ParseSource(source, file)
+            ?? throw new InvalidOperationException("CodeAnalysis returned no syntax tree.");
 
         var root = _getCompilationUnitRootMethod?.Invoke(tree, null);
         if (root == null) return null;
 
         int offset = LineColToOffset(source, (int)line, (int)col);
-        if (offset < 0) return null;
+        if (offset < 0 || offset == source.Length) return null;
 
-        var findToken = root.GetType().GetMethod("FindToken", BindingFlags.Instance | BindingFlags.Public);
+        var findToken = root.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(m => m.Name == "FindToken")
+            .Where(m => m.GetParameters().Length >= 1 && m.GetParameters()[0].ParameterType == typeof(int))
+            .OrderBy(m => m.GetParameters().Length)
+            .FirstOrDefault();
         if (findToken == null) return null;
 
         var fp = findToken.GetParameters();
@@ -279,31 +357,19 @@ internal class CodeAnalysisBridge
         if (token == null) return null;
 
         var tt = token.GetType();
-        var tokenText = token.ToString() ?? "";
-        var parentKind = Prop(tt.GetProperty("Parent")?.GetValue(token), "Kind")?.ToString() ?? "";
 
-        string typeName = tokenText, typeKind = parentKind;
-        string? doc = null;
-
-        if (_compilationType != null)
-        {
-            try
-            {
-                var comp = CreateCompilation(new[] { tree }, "");
-                if (comp != null)
-                {
-                    var getSM = comp.GetType().GetMethod("GetSemanticModel", BindingFlags.Instance | BindingFlags.Public);
-                    var sm = getSM?.Invoke(comp, new[] { tree });
-                    if (sm != null)
-                    {
-                        var (rn, rk, _) = ExtractFromSemanticModel(sm, offset);
-                        if (!string.IsNullOrEmpty(rn)) { typeName = rn; typeKind = rk; }
-                    }
-                }
-            }
-            catch { /* fall back to syntactic info */ }
-        }
-
+        var comp = CreateCompilation(new[] { tree }, pkgCache)
+            ?? throw new InvalidOperationException("Could not create an AL compilation for type lookup.");
+        var getSM = comp.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(m => m.Name == "GetSemanticModel")
+            .Where(m => m.GetParameters().Length >= 1 && m.GetParameters()[0].ParameterType.IsAssignableFrom(tree.GetType()))
+            .OrderBy(m => m.GetParameters().Length)
+            .FirstOrDefault();
+        var sm = getSM?.Invoke(comp, MakeArgs(getSM.GetParameters(), tree))
+            ?? throw new MissingMemberException("CodeAnalysis does not expose a semantic model.");
+        var node = tt.GetProperty("Parent", BindingFlags.Instance | BindingFlags.Public)?.GetValue(token);
+        var (typeName, typeKind, doc) = ExtractFromSemanticModel(sm, node);
+        if (string.IsNullOrEmpty(typeName)) return null;
         return new { name = typeName, kind = typeKind, documentation = doc };
     }
 
@@ -312,6 +378,7 @@ internal class CodeAnalysisBridge
         var file = prms.GetProperty("file").GetString() ?? "";
         var line = prms.GetProperty("line").GetUInt32();
         var col = prms.GetProperty("column").GetUInt32();
+        var pkgCache = GetOptionalString(prms, "packageCache");
 
         // F-037: prefer caller-supplied unsaved text over disk; see
         // HandleTypeAt for the same fallback contract.
@@ -325,32 +392,59 @@ internal class CodeAnalysisBridge
             if (!File.Exists(file)) return Array.Empty<object>();
             source = File.ReadAllText(file);
         }
-        var tree = ParseSource(source, file);
-        if (tree == null) return Array.Empty<object>();
-
-        if (_compilationType == null) return Array.Empty<object>();
-        var comp = CreateCompilation(new[] { tree }, "");
-        if (comp == null) return Array.Empty<object>();
-
-        var getSM = comp.GetType().GetMethod("GetSemanticModel", BindingFlags.Instance | BindingFlags.Public);
-        var sm = getSM?.Invoke(comp, new[] { tree });
-        if (sm == null) return Array.Empty<object>();
-
         int offset = LineColToOffset(source, (int)line, (int)col);
         if (offset < 0) return Array.Empty<object>();
 
-        return ExtractCompletions(sm, offset);
+        // A completion request commonly arrives immediately after a trailing
+        // dot. Insert a synthetic missing-member name after the cursor so the
+        // parser builds a complete member-access node and the semantic model
+        // can still bind the receiver. Text before the cursor (and therefore
+        // the requested UTF-16 offset) is unchanged.
+        var analysisSource = source;
+        if (offset > 0 && source[offset - 1] == '.')
+            analysisSource = source.Insert(offset, "__AlBridgeCompletionProbe;");
+
+        var lookupOffset = offset;
+        var lineStart = offset == 0 ? 0 : source.LastIndexOf('\n', offset - 1);
+        lineStart = lineStart < 0 ? 0 : lineStart + 1;
+        var dot = offset > lineStart ? source.LastIndexOf('.', offset - 1, offset - lineStart) : -1;
+        if (dot > lineStart)
+        {
+            var suffix = source.AsSpan(dot + 1, offset - dot - 1);
+            if (suffix.IsEmpty || suffix.ToString().All(c => char.IsLetterOrDigit(c) || c is '_' or '"'))
+                lookupOffset = dot;
+        }
+
+        var tree = ParseSource(analysisSource, file)
+            ?? throw new InvalidOperationException("CodeAnalysis returned no syntax tree.");
+
+        var comp = CreateCompilation(new[] { tree }, pkgCache)
+            ?? throw new InvalidOperationException("Could not create an AL compilation for completion lookup.");
+
+        var getSM = comp.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(m => m.Name == "GetSemanticModel")
+            .Where(m => m.GetParameters().Length >= 1 && m.GetParameters()[0].ParameterType.IsAssignableFrom(tree.GetType()))
+            .OrderBy(m => m.GetParameters().Length)
+            .FirstOrDefault();
+        var sm = getSM?.Invoke(comp, MakeArgs(getSM.GetParameters(), tree));
+        if (sm == null) return Array.Empty<object>();
+
+        var root = _getCompilationUnitRootMethod?.Invoke(tree, null)
+            ?? throw new MissingMemberException("CodeAnalysis returned no compilation-unit root.");
+
+        return ExtractCompletions(comp, sm, root, lookupOffset);
     }
 
     public object? HandleErrorCodes()
     {
         var results = new List<object>();
-        if (_errorCodeEnum == null || _navDiagnosticInfoType == null) return results;
+        if (_errorCodeEnum?.IsEnum != true)
+            throw new MissingMemberException("CodeAnalysis does not expose the ErrorCode catalog.");
 
-        var ctor = _navDiagnosticInfoType.GetConstructor(
+        var ctor = _navDiagnosticInfoType?.GetConstructor(
             BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
             null, new[] { _errorCodeEnum }, null);
-        var descProp = _navDiagnosticInfoType.GetProperty("Descriptor",
+        var descProp = _navDiagnosticInfoType?.GetProperty("Descriptor",
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 
         if (ctor == null || descProp == null)
@@ -686,31 +780,43 @@ internal class CodeAnalysisBridge
 
     private object TryAddRefs(object comp, string pkgCache)
     {
-        try
+        var loaderType = F("Microsoft.Dynamics.Nav.CodeAnalysis.CommandLine.LocalCacheSymbolReferenceLoader")
+            ?? FT("Microsoft.Dynamics.Nav.CodeAnalysis")
+                .FirstOrDefault(t => t.Name == "LocalCacheSymbolReferenceLoader")
+            ?? throw new MissingMemberException("CodeAnalysis does not expose LocalCacheSymbolReferenceLoader.");
+
+        object? loader = null;
+        Exception? lastError = null;
+        foreach (var ctor in loaderType.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
         {
-            var loaderType = F("Microsoft.Dynamics.Nav.CodeAnalysis.CommandLine.LocalCacheSymbolReferenceLoader");
-            if (loaderType == null) return comp;
-
-            object? loader = null;
-            foreach (var ctor in loaderType.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+            try
             {
-                try
+                var pars = ctor.GetParameters();
+                var args = new object?[pars.Length];
+                for (int i = 0; i < pars.Length; i++)
                 {
-                    var pars = ctor.GetParameters();
-                    var args = new object?[pars.Length];
-                    args[0] = new List<string> { pkgCache };
-                    for (int i = 1; i < pars.Length; i++) args[i] = pars[i].HasDefaultValue ? pars[i].DefaultValue : null;
-                    loader = ctor.Invoke(args);
-                    break;
+                    var pt = pars[i].ParameterType;
+                    if (pt.IsAssignableFrom(typeof(List<string>))) args[i] = new List<string> { pkgCache };
+                    else if (pt == typeof(string[])) args[i] = new[] { pkgCache };
+                    else if (pt == typeof(string)) args[i] = pkgCache;
+                    else if (pars[i].HasDefaultValue) args[i] = pars[i].DefaultValue;
+                    else if (!pt.IsValueType) args[i] = null;
+                    else args[i] = Activator.CreateInstance(pt);
                 }
-                catch { continue; }
+                loader = ctor.Invoke(args);
+                if (loader != null) break;
             }
-            if (loader == null) return comp;
-
-            var withRef = comp.GetType().GetMethod("WithReferenceLoader", BindingFlags.Instance | BindingFlags.Public);
-            return withRef?.Invoke(comp, new[] { loader }) ?? comp;
+            catch (Exception ex) { lastError = ex; }
         }
-        catch { return comp; }
+        if (loader == null)
+            throw new InvalidOperationException("No compatible symbol-reference loader constructor succeeded.", lastError);
+
+        var withRef = comp.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(m => m.Name == "WithReferenceLoader" && m.GetParameters().Length >= 1)
+            .FirstOrDefault(m => m.GetParameters()[0].ParameterType.IsAssignableFrom(loader.GetType()))
+            ?? throw new MissingMethodException("CodeAnalysis compilation has no compatible WithReferenceLoader method.");
+        return withRef.Invoke(comp, MakeArgs(withRef.GetParameters(), loader))
+            ?? throw new InvalidOperationException("WithReferenceLoader returned no compilation.");
     }
 
     private List<object> ExtractDiagnostics(object src, string defaultFile)
@@ -813,27 +919,32 @@ internal class CodeAnalysisBridge
     private List<object> RunAnalyzers(object comp, List<string> names)
     {
         var results = new List<object>();
-        if (_diagnosticAnalyzerType == null) return results;
+        if (_diagnosticAnalyzerType == null)
+            throw new MissingMemberException("CodeAnalysis does not expose DiagnosticAnalyzer.");
 
         foreach (var name in names)
         {
-            var dllPath = ResolveAnalyzerPath(name);
-            if (dllPath == null) continue;
+            var dllPath = ResolveAnalyzerPath(name)
+                ?? throw new FileNotFoundException($"Requested analyzer '{name}' could not be resolved.");
             try
             {
                 var aAsm = Assembly.LoadFrom(dllPath);
-                foreach (var at in aAsm.GetTypes().Where(t => !t.IsAbstract && _diagnosticAnalyzerType.IsAssignableFrom(t)))
+                var analyzerTypes = aAsm.GetTypes()
+                    .Where(t => !t.IsAbstract && _diagnosticAnalyzerType.IsAssignableFrom(t))
+                    .ToArray();
+                if (analyzerTypes.Length == 0)
+                    throw new InvalidOperationException($"'{dllPath}' contains no AL diagnostic analyzers.");
+                foreach (var at in analyzerTypes)
                 {
-                    try
-                    {
-                        var analyzer = Activator.CreateInstance(at);
-                        if (analyzer == null) continue;
-                        results.AddRange(RunSingleAnalyzer(comp, analyzer));
-                    }
-                    catch { /* skip */ }
+                    var analyzer = Activator.CreateInstance(at)
+                        ?? throw new InvalidOperationException($"Could not construct analyzer '{at.FullName}'.");
+                    results.AddRange(RunSingleAnalyzer(comp, analyzer));
                 }
             }
-            catch { /* skip */ }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Analyzer '{name}' failed: {ex.Message}", ex);
+            }
         }
         return results;
     }
@@ -842,67 +953,77 @@ internal class CodeAnalysisBridge
     {
         var results = new List<object>();
         var cwaType = F("Microsoft.Dynamics.Nav.CodeAnalysis.Diagnostics.CompilationWithAnalyzers");
-        if (cwaType == null) { results.AddRange(ExtractDiagnostics(comp, "")); return results; }
+        if (cwaType == null)
+            throw new MissingMemberException("CodeAnalysis does not expose CompilationWithAnalyzers.");
 
-        try
+        var immCreate = typeof(ImmutableArray).GetMethods(BindingFlags.Static | BindingFlags.Public)
+            .FirstOrDefault(m => m.Name == "Create" && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.IsArray)
+            ?? throw new MissingMemberException("ImmutableArray.Create<T>(T[]) was not found.");
+        if (_diagnosticAnalyzerType == null)
+            throw new MissingMemberException("CodeAnalysis does not expose DiagnosticAnalyzer.");
+
+        var gc = immCreate.MakeGenericMethod(_diagnosticAnalyzerType);
+        var arr = Array.CreateInstance(_diagnosticAnalyzerType, 1);
+        arr.SetValue(analyzer, 0);
+        var immAnalyzers = gc.Invoke(null, new object[] { arr });
+
+        Exception? lastError = null;
+        foreach (var ctor in cwaType.GetConstructors(BindingFlags.Public | BindingFlags.Instance))
         {
-            var immCreate = typeof(ImmutableArray).GetMethods(BindingFlags.Static | BindingFlags.Public)
-                .FirstOrDefault(m => m.Name == "Create" && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.IsArray);
-            if (immCreate == null || _diagnosticAnalyzerType == null) return results;
-
-            var gc = immCreate.MakeGenericMethod(_diagnosticAnalyzerType);
-            var arr = Array.CreateInstance(_diagnosticAnalyzerType, 1);
-            arr.SetValue(analyzer, 0);
-            var immAnalyzers = gc.Invoke(null, new object[] { arr });
-
-            foreach (var ctor in cwaType.GetConstructors(BindingFlags.Public | BindingFlags.Instance))
+            try
             {
-                try
+                var pars = ctor.GetParameters();
+                var args = new object?[pars.Length];
+                for (int i = 0; i < pars.Length; i++)
                 {
-                    var pars = ctor.GetParameters();
-                    var args = new object?[pars.Length];
-                    for (int i = 0; i < pars.Length; i++)
-                    {
-                        if (pars[i].ParameterType == _compilationType) args[i] = comp;
-                        else if (pars[i].ParameterType.Name.Contains("ImmutableArray")) args[i] = immAnalyzers;
-                        else if (pars[i].HasDefaultValue) args[i] = pars[i].DefaultValue;
-                        else args[i] = null;
-                    }
-                    var cwa = ctor.Invoke(args);
-                    var getDiags = cwaType.GetMethod("GetAnalyzerDiagnosticsAsync",
-                        BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
-                        ?? cwaType.GetMethod("GetAllDiagnosticsAsync",
-                            BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null);
-                    if (getDiags != null)
-                    {
-                        var task = getDiags.Invoke(cwa, null);
-                        task?.GetType().GetMethod("Wait", BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)?.Invoke(task, null);
-                        var diagResult = task?.GetType().GetProperty("Result")?.GetValue(task);
-                        if (diagResult is System.Collections.IEnumerable en)
-                            foreach (var d in en) { if (d != null) try { results.Add(ConvertDiag(d, "")); } catch { } }
-                    }
-                    return results;
+                    if (pars[i].ParameterType == _compilationType) args[i] = comp;
+                    else if (pars[i].ParameterType.Name.Contains("ImmutableArray")) args[i] = immAnalyzers;
+                    else if (pars[i].HasDefaultValue) args[i] = pars[i].DefaultValue;
+                    else args[i] = null;
                 }
-                catch { continue; }
+                var cwa = ctor.Invoke(args);
+                var getDiags = cwaType.GetMethod("GetAnalyzerDiagnosticsAsync",
+                    BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
+                    ?? cwaType.GetMethod("GetAllDiagnosticsAsync",
+                        BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
+                    ?? throw new MissingMethodException("No analyzer diagnostics method was found.");
+                var task = getDiags.Invoke(cwa, null)
+                    ?? throw new InvalidOperationException("Analyzer diagnostics returned no task.");
+                task.GetType().GetMethod("Wait", BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
+                    ?.Invoke(task, null);
+                var diagResult = task.GetType().GetProperty("Result")?.GetValue(task);
+                if (diagResult is not System.Collections.IEnumerable en)
+                    throw new InvalidOperationException("Analyzer diagnostics returned an unexpected result.");
+                foreach (var d in en)
+                    if (d != null) results.Add(ConvertDiag(d, ""));
+                return results;
             }
+            catch (Exception ex) { lastError = ex; }
         }
-        catch { /* fallback */ }
-
-        results.AddRange(ExtractDiagnostics(comp, ""));
-        return results;
+        throw new InvalidOperationException(
+            "No compatible CompilationWithAnalyzers constructor succeeded.", lastError);
     }
 
     private string? ResolveAnalyzerPath(string name)
     {
         if (File.Exists(name)) return name;
+        var normalized = name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+            ? name[..^4]
+            : name;
+        var productName = normalized.Equals("PerTenantCop", StringComparison.OrdinalIgnoreCase)
+            ? "PerTenantExtensionCop"
+            : normalized;
         var candidates = new[]
         {
-            Path.Combine(_alExtDir, $"Microsoft.Dynamics.Nav.Analyzers.{name}.dll"),
-            Path.Combine(_alExtDir, $"{name}.dll"),
-            Path.Combine(_alExtDir, "Analyzers", $"Microsoft.Dynamics.Nav.Analyzers.{name}.dll"),
-            Path.Combine(_alExtDir, "Analyzers", $"{name}.dll"),
+            Path.Combine(_alExtDir, $"Microsoft.Dynamics.Nav.{productName}.dll"),
+            Path.Combine(_alExtDir, $"Microsoft.Dynamics.Nav.Analyzers.{productName}.dll"),
+            Path.Combine(_alExtDir, $"{productName}.dll"),
+            Path.Combine(_alExtDir, "Analyzers", $"Microsoft.Dynamics.Nav.{productName}.dll"),
+            Path.Combine(_alExtDir, "Analyzers", $"{productName}.dll"),
+            Path.Combine(_alExtDir, "..", "Analyzers", $"Microsoft.Dynamics.Nav.{productName}.dll"),
+            Path.Combine(_alExtDir, "..", "Analyzers", $"{productName}.dll"),
         };
-        return candidates.FirstOrDefault(File.Exists);
+        return candidates.Select(Path.GetFullPath).FirstOrDefault(File.Exists);
     }
 
     private void ExtractMethodsFromTypeSymbols(Dictionary<string, BTypeInfo> types)
@@ -1013,53 +1134,125 @@ internal class CodeAnalysisBridge
             ti.Methods.Add(new BMethodInfo { Name = name, Params = parms, ReturnType = retType });
     }
 
-    private object ExtractCompletions(object sm, int pos)
+    private object ExtractCompletions(object comp, object sm, object root, int pos)
     {
         var results = new List<object>();
-        var lookup = sm.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
-            .FirstOrDefault(m => m.Name is "LookupSymbols" or "GetCompletionSymbols");
-        if (lookup == null) return results;
+        if (pos == 0) return results;
+        var findToken = root.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(m => m.Name == "FindToken")
+            .Where(m => m.GetParameters().Length >= 1 && m.GetParameters()[0].ParameterType == typeof(int))
+            .OrderBy(m => m.GetParameters().Length)
+            .FirstOrDefault()
+            ?? throw new MissingMethodException("CodeAnalysis syntax root exposes no FindToken(int) method.");
+        var tokenPos = pos - 1;
+        var token = findToken.Invoke(root, MakeArgs(findToken.GetParameters(), tokenPos));
+        if (token?.ToString() == "." && tokenPos > 0)
+            token = findToken.Invoke(root, MakeArgs(findToken.GetParameters(), tokenPos - 1));
+        var node = token == null ? null : Prop(token, "Parent");
+        var type = FindSemanticType(sm, node);
+        if (type == null)
+            throw new InvalidOperationException(
+                $"CodeAnalysis could not bind completion receiver token '{token}' ({Prop(node, "Kind")}).");
 
-        try
+        var navKind = Prop(type, "NavTypeKind");
+        if (navKind != null)
         {
-            var syms = lookup.Invoke(sm, MakeArgs(lookup.GetParameters(), pos));
-            if (syms is System.Collections.IEnumerable en)
-                foreach (var s in en)
-                {
-                    if (s == null) continue;
-                    var st = s.GetType();
-                    var n = Prop<string>(s, st, "Name") ?? "";
-                    if (!string.IsNullOrEmpty(n))
-                        results.Add(new { label = n, kind = MapKind(Prop(s, st, "Kind")?.ToString() ?? ""), detail = (string?)null, documentation = (string?)null });
-                }
+            var getBuiltinType = comp.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                .Where(m => m.Name is "GetTypeByNavTypeKind" or "GetBuiltInType" or "GetSpecialType")
+                .FirstOrDefault(m => m.GetParameters().Length >= 1
+                    && m.GetParameters()[0].ParameterType.IsAssignableFrom(navKind.GetType()));
+            type = getBuiltinType?.Invoke(comp, MakeArgs(getBuiltinType.GetParameters(), navKind)) ?? type;
         }
-        catch { /* skip */ }
+
+        var getMembers = type.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(m => m.Name == "GetMembers" && m.GetParameters().All(p => p.HasDefaultValue))
+            .OrderBy(m => m.GetParameters().Length)
+            .FirstOrDefault();
+        object? members = getMembers?.Invoke(type, getMembers.GetParameters().Select(p => p.DefaultValue).ToArray())
+            ?? type.GetType().GetProperty("Members", BindingFlags.Instance | BindingFlags.Public)?.GetValue(type);
+        if (members is not System.Collections.IEnumerable || !((System.Collections.IEnumerable)members).Cast<object?>().Any())
+        {
+            var getBinder = sm.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(m => m.Name is "GetEnclosingBinder" or "GetLookupBinder")
+                .Where(m => m.GetParameters().Length >= 1 && m.GetParameters()[0].ParameterType == typeof(int))
+                .OrderBy(m => m.GetParameters().Length)
+                .FirstOrDefault();
+            var binder = getBinder?.Invoke(sm, MakeArgs(getBinder.GetParameters(), pos));
+            var binderMemberLookup = binder?.GetType()
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .FirstOrDefault(m => m.Name == "GetMemberSymbolsFromType"
+                    && m.GetParameters().Length == 1
+                    && m.GetParameters()[0].ParameterType.IsAssignableFrom(type.GetType()));
+            var binderMembers = binderMemberLookup?.Invoke(binder, new[] { type });
+            if (binderMembers is System.Collections.IEnumerable binderEnumerable
+                && binderEnumerable.Cast<object?>().Any())
+                members = binderMembers;
+        }
+        if (members is not System.Collections.IEnumerable en)
+            throw new MissingMemberException("Resolved CodeAnalysis type exposes no member collection.");
+        foreach (var s in en)
+        {
+            if (s == null) continue;
+            var st = s.GetType();
+            var n = Prop<string>(s, st, "Name") ?? "";
+            if (!string.IsNullOrEmpty(n))
+                results.Add(new { label = n, kind = MapKind(Prop(s, st, "Kind")?.ToString() ?? ""), detail = (string?)null, documentation = (string?)null });
+        }
+        if (results.Count == 0)
+            throw new InvalidOperationException(
+                $"CodeAnalysis returned no members for type '{Prop<string>(type, type.GetType(), "Name")}' " +
+                $"({type.GetType().FullName}, NavTypeKind={Prop(type, "NavTypeKind")}).");
         return results;
     }
 
-    private (string, string, string?) ExtractFromSemanticModel(object sm, int pos)
+    private (string, string, string?) ExtractFromSemanticModel(object sm, object? node)
     {
+        var nestedType = FindSemanticType(sm, node);
+        if (nestedType == null) return ("", "", null);
+        var name = Prop<string>(nestedType, nestedType.GetType(), "Name") ?? "";
+        var kind = Prop(nestedType, nestedType.GetType(), "NavTypeKind")?.ToString()
+            ?? Prop(nestedType, nestedType.GetType(), "Kind")?.ToString()
+            ?? "Unknown";
+        return (name, kind, null);
+    }
+
+    private object? FindSemanticType(object sm, object? node)
+    {
+        if (node == null) return null;
         var smt = sm.GetType();
-        var gti = smt.GetMethods(BindingFlags.Instance | BindingFlags.Public).FirstOrDefault(m => m.Name == "GetTypeInfo" && m.GetParameters().Length >= 1);
-        if (gti != null)
+        var semanticMethods = smt.GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(m => m.Name is "GetTypeInfo" or "GetSymbolInfo")
+            .ToArray();
+        if (semanticMethods.Length == 0)
+            throw new MissingMethodException("CodeAnalysis semantic model exposes no type or symbol lookup method.");
+        for (var current = node; current != null; current = Prop(current, "Parent"))
         {
-            try
+            foreach (var methodName in new[] { "GetTypeInfo", "GetSymbolInfo" })
             {
-                var r = gti.Invoke(sm, MakeArgs(gti.GetParameters(), pos));
-                if (r != null)
+                var methods = semanticMethods
+                    .Where(m => m.Name == methodName && m.GetParameters().Length >= 1)
+                    .Where(m => m.GetParameters()[0].ParameterType.IsAssignableFrom(current.GetType()));
+                foreach (var method in methods)
                 {
-                    var ts = r.GetType().GetProperty("Type")?.GetValue(r);
-                    if (ts != null)
+                    try
                     {
-                        var n = Prop<string>(ts, ts.GetType(), "Name") ?? "";
-                        var k = Prop(ts, ts.GetType(), "NavTypeKind")?.ToString() ?? "Unknown";
-                        return (n, k, null);
+                        var result = method.Invoke(sm, MakeArgs(method.GetParameters(), current));
+                        if (result == null) continue;
+                        var symbolOrType = Prop(result, "Type")
+                            ?? Prop(result, "ConvertedType")
+                            ?? Prop(result, "Symbol");
+                        if (symbolOrType == null) continue;
+                        var nestedType = Prop(symbolOrType, "Type")
+                            ?? Prop(symbolOrType, "ReturnType")
+                            ?? symbolOrType;
+                        var name = Prop<string>(nestedType, nestedType.GetType(), "Name") ?? "";
+                        if (!string.IsNullOrEmpty(name)) return nestedType;
                     }
+                    catch { /* try another overload / ancestor node */ }
                 }
             }
-            catch { /* fall through */ }
         }
-        return ("", "", null);
+        return null;
     }
 
     private MethodInfo? ResolveSourceTextFrom()
@@ -1086,12 +1279,28 @@ internal class CodeAnalysisBridge
 
     private static int LineColToOffset(string s, int line, int col)
     {
-        int cur = 0, off = 0;
-        while (off < s.Length && cur < line) { if (s[off] == '\n') cur++; off++; }
-        return cur == line ? Math.Min(off + col, s.Length - 1) : -1;
+        if (line < 0 || col < 0) return -1;
+
+        int currentLine = 0;
+        int lineStart = 0;
+        while (currentLine < line)
+        {
+            int newline = s.IndexOf('\n', lineStart);
+            if (newline < 0) return -1;
+            lineStart = newline + 1;
+            currentLine++;
+        }
+
+        int lineEnd = s.IndexOf('\n', lineStart);
+        if (lineEnd < 0) lineEnd = s.Length;
+        if (lineEnd > lineStart && s[lineEnd - 1] == '\r') lineEnd--;
+
+        int lineLength = lineEnd - lineStart;
+        if (col > lineLength) return -1;
+        return lineStart + col;
     }
 
-    private static object?[] MakeArgs(ParameterInfo[] pars, int firstArg)
+    private static object?[] MakeArgs(ParameterInfo[] pars, object? firstArg)
     {
         var args = new object?[pars.Length];
         args[0] = firstArg;
@@ -1110,6 +1319,13 @@ internal class CodeAnalysisBridge
             else args[i] = null;
         }
         return args;
+    }
+
+    private static string GetOptionalString(JsonElement prms, string name)
+    {
+        return prms.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? ""
+            : "";
     }
 
     private static T? Prop<T>(object obj, Type t, string name)

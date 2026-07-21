@@ -367,6 +367,7 @@ pub async fn hover_full(
 
     let guard = al_workspace::get_or_init_bridge(workspace).await?;
     let bridge = guard.as_ref()?;
+    let bridge_generation = bridge.generation();
     let path = uri.to_file_path().ok()?;
     // F-036: bridge `typeAt` consumes 0-based (line, column) — its C#
     // `LineColToOffset` walks `cur < line` newlines from the start of the
@@ -378,10 +379,42 @@ pub async fn hover_full(
     // same source as the rest of the LSP query path, so behaviour stays
     // consistent for open vs unopened files.
     let unsaved_text = workspace.documents.get_text(uri);
-    let info = match bridge.type_at(&path, pos, unsaved_text.as_deref()).await {
+    let configured_package_cache = workspace.config.read().await.package_cache_path.clone();
+    let package_cache = match configured_package_cache {
+        Some(path) => Some(path),
+        None => workspace
+            .project
+            .read()
+            .await
+            .as_ref()
+            .map(|project| project.packages_dir.clone()),
+    };
+    let info = match bridge
+        .type_at_with_package_cache(
+            &path,
+            pos,
+            unsaved_text.as_deref(),
+            package_cache.as_deref(),
+        )
+        .await
+    {
         Ok(v) => v?,
         Err(e) => {
             tracing::debug!(error = %e, "hover_full: bridge error");
+            let restart = matches!(
+                e,
+                al_semantic::SemanticError::Timeout(_)
+                    | al_semantic::SemanticError::Poisoned
+                    | al_semantic::SemanticError::HostInit(_)
+            );
+            drop(guard);
+            if restart {
+                if let Err(restart_error) =
+                    al_workspace::restart_bridge_if_current(workspace, bridge_generation).await
+                {
+                    tracing::warn!(error = %restart_error, "hover_full: bridge restart failed");
+                }
+            }
             return None;
         }
     };

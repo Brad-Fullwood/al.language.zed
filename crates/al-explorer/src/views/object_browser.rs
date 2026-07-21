@@ -1,5 +1,3 @@
-#![cfg(unix)]
-
 use crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::{
     Frame,

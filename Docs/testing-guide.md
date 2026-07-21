@@ -99,10 +99,14 @@ AL_TOOL_PATH=<ext>/bin/linux cargo test -p al-test-harness --test emit_different
 # pack-native --validate refuses to emit a semantically-invalid .app (alc oracle).
 AL_TOOL_PATH=<ext>/bin/linux cargo test -p al-test-harness --test pack_native_validate
 
-# Live in-process .NET CodeAnalysis bridge. Also needs an al-lsp built
-# --features semantic on disk at target/debug.
-AL_TOOL_PATH=<ext>/bin/linux cargo build -p al-lsp --bin al-lsp --features semantic
-AL_TOOL_PATH=<ext>/bin/linux cargo test  -p al-test-harness --test semantic_bridge
+# Live in-process .NET CodeAnalysis contract: compiler diagnostics, type lookup,
+# completion, CodeCop, builtins, error codes, and FFI health.
+AL_TOOL_PATH=<ext>/bin/linux \
+  cargo test -p al-semantic --features semantic --test live_bridge
+
+# Optional: also exercise dependency-reference loading.
+AL_TOOL_PATH=<ext>/bin/linux AL_PACKAGE_CACHE_PATH=<project>/.alpackages \
+  cargo test -p al-semantic --features semantic --test live_bridge
 ```
 
 Reminder: a plain `cargo build --workspace` links `al-lsp` against the **no-op

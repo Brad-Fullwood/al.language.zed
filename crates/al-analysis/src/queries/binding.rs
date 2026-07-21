@@ -52,7 +52,13 @@ pub(crate) fn enclosing_declaration_name(
     uri: &Url,
     pos: Position,
 ) -> Option<BindKey> {
-    let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, uri)?;
+    let (text, tree) =
+        al_source::parsing::get_or_parse(&workspace.documents, uri).or_else(|| {
+            uri.to_file_path()
+                .ok()
+                .and_then(|path| workspace.file_index.get_cached_parse(&path))
+                .map(|(text, tree)| (text.into(), tree))
+        })?;
     let node = al_syntax::find_node_at_position(&tree, &text, pos.into())?;
     let mut cur = Some(node);
     while let Some(n) = cur {
@@ -91,4 +97,68 @@ pub(crate) fn enclosing_declaration_name(
         cur = n.parent();
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn var_parameter_and_receiver_uses_share_one_binding() {
+        let uri = Url::parse("file:///test/parameter_binding.al").unwrap();
+        let source = r#"codeunit 50100 "Refs"
+{
+    procedure Process(var Staging: Record Customer)
+    begin
+        if Staging.FindSet() then
+            Staging.Modify();
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace.documents.open(uri.clone(), source.to_string());
+
+        let (parsed_text, parsed_tree) =
+            al_source::parsing::get_or_parse(&workspace.documents, &uri).unwrap();
+        let resolved = al_syntax::TypeResolver::new(&parsed_tree, &parsed_text)
+            .resolve_type(
+                "Staging",
+                al_syntax::SyntaxPosition {
+                    line: 4,
+                    character: 11,
+                },
+            )
+            .unwrap();
+        eprintln!(
+            "resolved name/scope/range: {:?} {:?} {:?}",
+            resolved.name, resolved.scope, resolved.range
+        );
+
+        let declaration = decl_loc(
+            &workspace,
+            &uri,
+            Position {
+                line: 2,
+                character: 26,
+            },
+        );
+        let first_use = decl_loc(
+            &workspace,
+            &uri,
+            Position {
+                line: 4,
+                character: 11,
+            },
+        );
+        let second_use = decl_loc(
+            &workspace,
+            &uri,
+            Position {
+                line: 5,
+                character: 12,
+            },
+        );
+
+        assert_eq!(first_use, declaration);
+        assert_eq!(second_use, declaration);
+    }
 }

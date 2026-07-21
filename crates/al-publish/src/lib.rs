@@ -246,8 +246,8 @@ async fn do_standard_publish(
 /// Native-first: the default path is the pure-Rust native `.app` emitter — no
 /// Microsoft `alc`, no C# bridge. `al.useOfficialCompiler: true` opts into
 /// Microsoft's `dotnet alc` subprocess instead (logged at WARN as the non-native
-/// path). The native emitter does no semantic validation; the LSP supplies
-/// diagnostics, and the BC server validates on publish.
+/// path). The native path performs syntax/project/binding verification itself
+/// and refuses to produce an artifact when it reports blocking diagnostics.
 async fn run_compile(
     workspace: &Workspace,
     project_root: &Path,
@@ -255,11 +255,7 @@ async fn run_compile(
     let use_official_compiler = workspace.config.read().await.use_official_compiler;
 
     if !use_official_compiler {
-        let result = al_compile::native_compile(project_root);
-        if !result.success {
-            return Err(PublishError::Build(result.output));
-        }
-        return Ok(result);
+        return Ok(al_compile::native_compile(project_root));
     }
 
     // Use blocking .read().await rather than try_read() — try_read() maps both

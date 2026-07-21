@@ -1,7 +1,7 @@
 # Scaffolding & Code Generation
 
 **Modules:** `crates/al-analysis/src/scaffold.rs`, `generators.rs`, `permissions.rs` ·
-**Status:** ✅ shipped (object generators not yet exposed as commands)
+**Status:** ✅ shipped
 
 The toolchain can create whole AL projects, generate common objects from existing symbols, and emit
 permission sets — all natively, with consistent identifier escaping and atomic writes.
@@ -81,9 +81,9 @@ al-explorer organize-files [--dry-run]
 
 Zed tasks: *AL: New Project*, *AL: Generate Permission Set*, *AL: Organize File Names*, *AL: Sort
 Members*. Scaffolding and permissions are also reachable via LSP `workspace/executeCommand`.
+MCP reaches the same dispatcher operations through `al_call`: `newProject`, `permissions`, `generate`,
+`sortMembers`, and `organizeFiles`.
 
 ## Limitations & roadmap
 
-- 🟡 The page/report/test generators exist in `generators.rs` but are **not yet wired to a CLI/LSP
-  command** (`al-explorer generate` covers the exposed kinds).
 - Templates are a fixed set; custom templates aren't supported yet.

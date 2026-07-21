@@ -1,9 +1,8 @@
 //! Two-phase diagnostics — instant syntax + async analyzer.
 //!
-//! Phase 1 (instant): parse with tree-sitter and collect syntax errors. Native
-//!                     lint rules are not yet implemented — `al_syntax::lint()`
-//!                     returns an empty `Vec` — so this phase only surfaces
-//!                     parse-error diagnostics today.
+//! Phase 1 (instant): parse with tree-sitter and collect syntax, file-local,
+//!                     project-semantic, and resolved call/event-stack native
+//!                     diagnostics.
 //! Phase 2 (async):   send to .NET SemanticBridge for CodeAnalysis diagnostics.
 
 use std::path::PathBuf;
@@ -201,6 +200,7 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
         Some(b) => b,
         None => return vec![],
     };
+    let bridge_generation = bridge.generation();
 
     let file_path = uri
         .to_file_path()
@@ -208,12 +208,19 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
 
     let config_guard = server.workspace.config.read().await;
     let analyzers = config_guard.code_analyzers.clone();
-    let package_cache = if let Some(project) = server.workspace.project.read().await.as_ref() {
-        project.packages_dir.clone()
-    } else {
-        PathBuf::from(".alpackages")
-    };
+    let configured_package_cache = config_guard.package_cache_path.clone();
     drop(config_guard);
+    let package_cache = match configured_package_cache {
+        Some(path) => path,
+        None => server
+            .workspace
+            .project
+            .read()
+            .await
+            .as_ref()
+            .map(|project| project.packages_dir.clone())
+            .unwrap_or_else(|| PathBuf::from(".alpackages")),
+    };
 
     let req = crate::semantic::AnalyzeRequest {
         file: file_path,
@@ -258,11 +265,21 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
                 crate::semantic::SemanticError::Timeout(_)
                     | crate::semantic::SemanticError::Poisoned
             );
+            let should_restart =
+                is_persistent || matches!(&error, crate::semantic::SemanticError::HostInit(_));
+            drop(guard);
+            if should_restart {
+                if let Err(restart_error) =
+                    al_workspace::restart_bridge_if_current(&server.workspace, bridge_generation)
+                        .await
+                {
+                    tracing::warn!(error = %restart_error, "semantic bridge restart failed");
+                }
+            }
             if is_persistent && server.should_report_semantic_failure() {
                 if let Some(sink) = server.workspace.notify_sink.get() {
                     sink(&format!(
-                        "AL semantic analysis is unavailable: {error}. \
-                         Restart the editor to retry."
+                        "AL semantic analysis failed: {error}. The bridge restart path has been invoked."
                     ));
                 }
             }

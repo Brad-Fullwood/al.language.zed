@@ -61,25 +61,56 @@ fn compose(base: Arc<SymbolEntry>, extensions: Vec<Arc<SymbolEntry>>) -> Compose
 
     all_fields.sort_by_key(|f| f.id);
 
-    // Defensive de-duplication. BC validation guarantees field IDs are unique
-    // within a composed object, but a malformed symbol index or a package
-    // conflict (two extensions adding the same field ID) would otherwise surface
-    // the field twice in completions/hover. Drop later duplicates keyed by
-    // (id, lowercased name); the sort above keeps the survivor deterministic.
+    // Defensive de-duplication. AL requires both field IDs and field names to be
+    // unique in a composed object. A malformed/conflicting dependency must not
+    // leak ambiguous fields into completion, hover, or generated outlines. The
+    // stable ID sort keeps the base/first-loaded declaration as the survivor.
     {
         let before = all_fields.len();
-        let mut seen = std::collections::HashSet::new();
-        all_fields.retain(|f| seen.insert((f.id, f.name.to_ascii_lowercase())));
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut seen_names = std::collections::HashSet::new();
+        all_fields.retain(|field| {
+            let name = field.name.to_lowercase();
+            if seen_ids.contains(&field.id) || seen_names.contains(&name) {
+                false
+            } else {
+                seen_ids.insert(field.id);
+                seen_names.insert(name);
+                true
+            }
+        });
         if all_fields.len() != before {
             tracing::warn!(
                 base = %base.name,
                 removed = before - all_fields.len(),
-                "composition: dropped duplicate field(s) with identical (id, name)"
+                "composition: dropped field(s) with duplicate id or name"
             );
         }
     }
 
     all_enum_values.sort_by_key(|v| v.ordinal);
+    {
+        let before = all_enum_values.len();
+        let mut seen_ordinals = std::collections::HashSet::new();
+        let mut seen_names = std::collections::HashSet::new();
+        all_enum_values.retain(|value| {
+            let name = value.name.to_lowercase();
+            if seen_ordinals.contains(&value.ordinal) || seen_names.contains(&name) {
+                false
+            } else {
+                seen_ordinals.insert(value.ordinal);
+                seen_names.insert(name);
+                true
+            }
+        });
+        if all_enum_values.len() != before {
+            tracing::warn!(
+                base = %base.name,
+                removed = before - all_enum_values.len(),
+                "composition: dropped enum value(s) with duplicate ordinal or name"
+            );
+        }
+    }
 
     ComposedObject {
         base,
@@ -297,6 +328,46 @@ mod tests {
     }
 
     #[test]
+    fn compose_rejects_conflicting_field_ids_and_names_independently() {
+        let index = SymbolIndex::new();
+        let field = |id, name: &str| FieldSymbol {
+            id,
+            name: name.into(),
+            type_name: "Text".into(),
+            properties: vec![],
+        };
+        index.add_entries(&[
+            make_table(18, "Customer", vec![field(1, "No.")], Vec::new()),
+            make_table_ext(
+                50_100,
+                "Conflict A",
+                "Customer",
+                vec![field(1, "Different Name")],
+                Vec::new(),
+            ),
+            make_table_ext(
+                50_101,
+                "Conflict B",
+                "Customer",
+                vec![field(50_100, "No.")],
+                Vec::new(),
+            ),
+            make_table_ext(
+                50_102,
+                "Valid",
+                "Customer",
+                vec![field(50_100, "Valid Field")],
+                Vec::new(),
+            ),
+        ]);
+
+        let composed = get_composed(&index, ObjectKind::Table, "Customer").unwrap();
+        assert_eq!(composed.all_fields.len(), 2);
+        assert_eq!(composed.all_fields[0].name, "No.");
+        assert_eq!(composed.all_fields[1].name, "Valid Field");
+    }
+
+    #[test]
     fn compose_keeps_distinct_ids() {
         let index = SymbolIndex::new();
         index.add_entries(&[
@@ -369,6 +440,45 @@ mod tests {
         assert_eq!(composed.all_enum_values.len(), 3);
         assert_eq!(composed.all_enum_values[0].ordinal, 0);
         assert_eq!(composed.all_enum_values[2].ordinal, 10);
+    }
+
+    #[test]
+    fn compose_deduplicates_enum_ordinals_and_names() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_enum(
+                50_100,
+                "Status",
+                vec![EnumValueSymbol {
+                    ordinal: 0,
+                    name: "Open".into(),
+                }],
+            ),
+            make_enum_ext(
+                50_101,
+                "Status Ext",
+                "Status",
+                vec![
+                    EnumValueSymbol {
+                        ordinal: 0,
+                        name: "Duplicate Ordinal".into(),
+                    },
+                    EnumValueSymbol {
+                        ordinal: 10,
+                        name: "open".into(),
+                    },
+                    EnumValueSymbol {
+                        ordinal: 11,
+                        name: "Closed".into(),
+                    },
+                ],
+            ),
+        ]);
+
+        let composed = get_composed(&index, ObjectKind::Enum, "Status").unwrap();
+        assert_eq!(composed.all_enum_values.len(), 2);
+        assert_eq!(composed.all_enum_values[0].name, "Open");
+        assert_eq!(composed.all_enum_values[1].name, "Closed");
     }
 
     #[test]

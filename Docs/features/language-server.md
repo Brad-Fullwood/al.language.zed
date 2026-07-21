@@ -117,6 +117,10 @@ has a CLI equivalent: `al-explorer hover|definition|references|signature|complet
 tokens|rename|hints <file> [pos...]` — see [cli-and-tui](./cli-and-tui.md) and the
 [LSP command reference](../reference/lsp-commands.md).
 
+From MCP, `al_call` exposes the daemon equivalents (`hover`, `definition`, `references`,
+`implementations`, `completions`, `signatureHelp`, `rename`, `documentSymbols`, `foldingRanges`,
+`semanticTokens`, `inlayHints`, and `codeActions`) with the same workspace/query implementation.
+
 ## Limitations & roadmap
 
 - Workspace-wide diagnostics are not provided (`workspaceDiagnostics: false`); diagnostics are
@@ -126,5 +130,5 @@ tokens|rename|hints <file> [pos...]` — see [cli-and-tui](./cli-and-tui.md) and
   re-routing them.
 - References/subscribers over `.app` dependencies are limited because package symbols carry public
   API metadata, not call-site bodies.
-- Settings-schema autocomplete only lights up on Zed 0.8+ extension API (see
-  [02-zed-extension](../02-zed-extension.md)).
+- Settings-schema autocomplete only lights up on Zed 0.8+ extension API (see the
+  [settings reference](../reference/settings.md)).

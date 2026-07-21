@@ -5,17 +5,22 @@
 //! A `.app` is a `NAVX` header followed by an OPC/ZIP archive. Cloud-targeted
 //! packages contain AL source, symbols, and metadata rather than compiled IL.
 
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use zip::ZipArchive;
 
-use super::app_reader::{find_zip_offset, AppReaderError};
+use super::app_reader::{find_zip_offset, AppReaderError, MAX_APP_FILE_SIZE, MAX_ARCHIVE_ENTRIES};
 
 const NAVX_MAGIC: &[u8; 4] = b"NAVX";
 
 /// Max bytes peeked from each entry to classify its content.
 const PEEK_LEN: usize = 8;
+
+/// Extracting all package contents is an explicit inspection operation, but it
+/// still needs a total expansion ceiling: a small ZIP can otherwise fan out to
+/// terabytes even when every individual entry is below the per-entry cap.
+const MAX_TOTAL_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Best-effort classification of a `.app` archive entry from its name + leading
 /// bytes.
@@ -101,6 +106,9 @@ fn strip_bom(bytes: &[u8]) -> &[u8] {
 type AppArchive<'a> = ZipArchive<Cursor<&'a [u8]>>;
 
 fn open_archive(data: &[u8]) -> Result<(usize, AppArchive<'_>), AppReaderError> {
+    if data.len() as u64 > MAX_APP_FILE_SIZE {
+        return Err(AppReaderError::TooLarge(data.len() as u64));
+    }
     if data.len() < 4 {
         return Err(AppReaderError::TooSmall(data.len()));
     }
@@ -109,6 +117,9 @@ fn open_archive(data: &[u8]) -> Result<(usize, AppArchive<'_>), AppReaderError> 
     }
     let offset = find_zip_offset(data).ok_or(AppReaderError::NoZipSignature)?;
     let archive = ZipArchive::new(Cursor::new(&data[offset..]))?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(AppReaderError::TooManyEntries(archive.len()));
+    }
     Ok((offset, archive))
 }
 
@@ -136,6 +147,10 @@ pub fn list_app_entries(data: &[u8]) -> Result<AppContents, AppReaderError> {
 }
 
 pub fn list_app_file(path: &Path) -> Result<AppContents, AppReaderError> {
+    let size = std::fs::metadata(path)?.len();
+    if size > MAX_APP_FILE_SIZE {
+        return Err(AppReaderError::TooLarge(size));
+    }
     let data = std::fs::read(path)?;
     list_app_entries(&data)
 }
@@ -146,6 +161,10 @@ pub fn list_app_file(path: &Path) -> Result<AppContents, AppReaderError> {
 pub fn extract_app(data: &[u8], dest_dir: &Path) -> Result<AppContents, AppReaderError> {
     let (offset, mut archive) = open_archive(data)?;
     let mut entries = Vec::with_capacity(archive.len());
+    let mut total_extracted = 0u64;
+    std::fs::create_dir_all(dest_dir)?;
+    let canonical_dest = std::fs::canonicalize(dest_dir)?;
+
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let name = file.name().to_string();
@@ -155,23 +174,165 @@ pub fn extract_app(data: &[u8], dest_dir: &Path) -> Result<AppContents, AppReade
         };
         let size = file.size();
         let compressed_size = file.compressed_size();
-        let mut bytes = Vec::with_capacity(size as usize);
-        file.read_to_end(&mut bytes)?;
-        if let Some(parent) = rel.parent() {
-            std::fs::create_dir_all(parent)?;
+        if size > MAX_APP_FILE_SIZE {
+            return Err(AppReaderError::EntryTooLarge {
+                name,
+                size,
+                limit: MAX_APP_FILE_SIZE,
+            });
         }
-        std::fs::write(&rel, &bytes)?;
+        total_extracted =
+            total_extracted
+                .checked_add(size)
+                .ok_or(AppReaderError::ArchiveExpandedTooLarge {
+                    size: u64::MAX,
+                    limit: MAX_TOTAL_EXTRACTED_BYTES,
+                })?;
+        if total_extracted > MAX_TOTAL_EXTRACTED_BYTES {
+            return Err(AppReaderError::ArchiveExpandedTooLarge {
+                size: total_extracted,
+                limit: MAX_TOTAL_EXTRACTED_BYTES,
+            });
+        }
+
+        if file.is_dir() {
+            ensure_safe_directory(dest_dir, &rel, &name)?;
+            let canonical = std::fs::canonicalize(&rel)?;
+            if !canonical.starts_with(&canonical_dest) {
+                return Err(unsafe_entry_error(&name));
+            }
+            entries.push(AppEntry {
+                name,
+                size,
+                compressed_size,
+                kind: AppEntryKind::Other,
+            });
+            continue;
+        }
+
+        if let Some(parent) = rel.parent() {
+            ensure_safe_directory(dest_dir, parent, &name)?;
+            // Lexical path checks alone are insufficient when the destination
+            // already contains a symlink. Resolve the parent before writing so
+            // an archive cannot escape through a pre-existing link.
+            let canonical_parent = std::fs::canonicalize(parent)?;
+            if !canonical_parent.starts_with(&canonical_dest) {
+                return Err(unsafe_entry_error(&name));
+            }
+        }
+
+        let tmp_path = extraction_temp_path(&rel);
+        let extraction = (|| -> Result<(AppEntryKind, u64), AppReaderError> {
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)?;
+            let mut head = [0u8; PEEK_LEN];
+            let head_len = file.read(&mut head)?;
+            output.write_all(&head[..head_len])?;
+            let copied = std::io::copy(
+                &mut file.take(MAX_APP_FILE_SIZE.saturating_sub(head_len as u64) + 1),
+                &mut output,
+            )?;
+            let actual_size = head_len as u64 + copied;
+            if actual_size > MAX_APP_FILE_SIZE {
+                return Err(AppReaderError::EntryTooLarge {
+                    name: name.clone(),
+                    size: actual_size,
+                    limit: MAX_APP_FILE_SIZE,
+                });
+            }
+            output.flush()?;
+            output.sync_all()?;
+            Ok((AppEntry::classify(&name, &head[..head_len]), actual_size))
+        })();
+
+        let (kind, actual_size) = match extraction {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(error);
+            }
+        };
+        total_extracted = total_extracted
+            .checked_sub(size)
+            .and_then(|total| total.checked_add(actual_size))
+            .ok_or(AppReaderError::ArchiveExpandedTooLarge {
+                size: u64::MAX,
+                limit: MAX_TOTAL_EXTRACTED_BYTES,
+            })?;
+        if total_extracted > MAX_TOTAL_EXTRACTED_BYTES {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(AppReaderError::ArchiveExpandedTooLarge {
+                size: total_extracted,
+                limit: MAX_TOTAL_EXTRACTED_BYTES,
+            });
+        }
+        if let Err(error) = std::fs::rename(&tmp_path, &rel) {
+            if rel.exists() {
+                std::fs::remove_file(&rel)?;
+                std::fs::rename(&tmp_path, &rel)?;
+            } else {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(error.into());
+            }
+        }
         entries.push(AppEntry {
-            name: name.clone(),
+            name,
             size,
             compressed_size,
-            kind: AppEntry::classify(&name, &bytes[..bytes.len().min(PEEK_LEN)]),
+            kind,
         });
     }
     Ok(AppContents {
         navx_header_len: offset,
         entries,
     })
+}
+
+fn ensure_safe_directory(base: &Path, directory: &Path, entry: &str) -> Result<(), AppReaderError> {
+    let relative = directory
+        .strip_prefix(base)
+        .map_err(|_| unsafe_entry_error(entry))?;
+    let mut current = base.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(unsafe_entry_error(entry));
+        };
+        current.push(part);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(unsafe_entry_error(entry));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&current)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn unsafe_entry_error(name: &str) -> AppReaderError {
+    AppReaderError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("archive entry escapes extraction directory: {name}"),
+    ))
+}
+
+fn extraction_temp_path(target: &Path) -> std::path::PathBuf {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let filename = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("entry");
+    target.with_file_name(format!(
+        ".{filename}.{}.{}.tmp",
+        std::process::id(),
+        sequence
+    ))
 }
 
 /// Join an archive entry name under `base`, rejecting absolute paths and any
@@ -267,5 +428,20 @@ mod tests {
     fn rejects_non_navx() {
         let err = list_app_entries(b"PK\x03\x04not-navx").unwrap_err();
         assert!(matches!(err, AppReaderError::NotNavx));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extraction_rejects_preexisting_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), root.path().join("linked")).unwrap();
+        let data = make_app(&[("linked/escape.al", b"codeunit 50100 Escape { }")]);
+
+        let error = extract_app(&data, root.path()).unwrap_err();
+        assert!(matches!(error, AppReaderError::Io(_)));
+        assert!(!outside.path().join("escape.al").exists());
     }
 }

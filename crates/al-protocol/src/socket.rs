@@ -12,10 +12,13 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// Compute the deterministic Unix socket path for a project root.
+/// Compute the deterministic local IPC endpoint for a project root.
 ///
-/// The path is canonicalized before hashing so that symlinks and relative
-/// paths resolve to the same socket. Format: `$XDG_RUNTIME_DIR/al-lsp/<hash>.sock`.
+/// The project path is canonicalized before hashing so that symlinks and
+/// relative paths resolve to the same endpoint. On Unix the result is
+/// `$XDG_RUNTIME_DIR/al-lsp/<hash>.sock` (with the platform fallbacks described
+/// by [`runtime_dir`]); on Windows it is a named-pipe path of the form
+/// `\\.\pipe\al-lsp-<user-scope-hash>-<project-hash>`.
 ///
 /// If `XDG_RUNTIME_DIR` is unset, falls back (in order) to `/run/user/<uid>`
 /// on Linux, `$TMPDIR` on macOS, and a per-user subdirectory of the system
@@ -40,19 +43,58 @@ pub fn socket_path_with_runtime_dir(
             .unwrap_or_else(|_| project_root.to_path_buf())
     });
     let hash = format!("{:016x}", fnv1a64(canonical.as_os_str().as_encoded_bytes()));
-    Some(PathBuf::from(format!(
-        "{}/al-lsp/{}.sock",
-        runtime_dir.as_ref(),
-        hash
-    )))
+    #[cfg(windows)]
+    {
+        // A per-user runtime directory is folded into the pipe name so two
+        // users opening the same checkout do not contend for one daemon.
+        // Named pipes are kernel objects, not filesystem entries, so the
+        // runtime directory itself is never created or traversed here.
+        let scope_hash = fnv1a64(runtime_dir.as_ref().as_bytes());
+        Some(PathBuf::from(format!(
+            r"\\.\pipe\al-lsp-{scope_hash:016x}-{hash}"
+        )))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(PathBuf::from(format!(
+            "{}/al-lsp/{}.sock",
+            runtime_dir.as_ref(),
+            hash
+        )))
+    }
 }
 
-/// Resolve the runtime directory: prefer `XDG_RUNTIME_DIR`, fall back on Linux
-/// to `/run/user/<uid>` read from `/proc/self/status` (avoids calling `getuid()`
-/// via FFI), fall back on macOS to `$TMPDIR`, and fall back everywhere else to
-/// a per-user subdirectory of the system temp dir. Returns `None` only if none
-/// of these can be determined at all.
+/// Filesystem lock used to serialize daemon auto-start for one project.
+///
+/// The IPC endpoint itself is not a filesystem path on Windows, so the lock
+/// always lives beneath the per-user runtime directory there.
+pub(crate) fn spawn_lock_path(project_root: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let canonical = project_root.canonicalize().unwrap_or_else(|_| {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(project_root))
+                .unwrap_or_else(|_| project_root.to_path_buf())
+        });
+        let hash = fnv1a64(canonical.as_os_str().as_encoded_bytes());
+        Some(
+            PathBuf::from(runtime_dir()?)
+                .join("al-lsp")
+                .join(format!("{hash:016x}.lock")),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        Some(socket_path(project_root)?.with_extension("lock"))
+    }
+}
+
+/// Resolve the runtime directory: prefer `XDG_RUNTIME_DIR` on Unix, fall back
+/// on Linux to `/run/user/<uid>` read from `/proc/self/status` (avoids calling
+/// `getuid()` via FFI), use `$TMPDIR` on macOS, and use `%LOCALAPPDATA%`/`%TEMP%`
+/// on Windows. Returns `None` only if none of these can be determined at all.
 fn runtime_dir() -> Option<String> {
+    #[cfg(unix)]
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
         return Some(dir);
     }
@@ -75,7 +117,7 @@ fn platform_runtime_dir() -> Option<String> {
     None
 }
 
-/// Non-Linux Unix. macOS: the OS already provisions a private, per-user,
+/// Non-Linux platforms. macOS: the OS already provisions a private, per-user,
 /// per-session temp directory in `$TMPDIR` (e.g. `/var/folders/xx/yyyy/T/`) —
 /// the closest equivalent to Linux's `/run/user/<uid>`. `XDG_RUNTIME_DIR` is a
 /// Linux/freedesktop convention that's normally unset on macOS, so relying on
@@ -98,7 +140,15 @@ fn platform_runtime_dir() -> Option<String> {
         }
     }
 
+    #[cfg(windows)]
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("TEMP")) {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir).display().to_string());
+        }
+    }
+
     let user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
         .or_else(|_| std::env::var("LOGNAME"))
         .ok()?;
     if user.is_empty() {
@@ -144,15 +194,24 @@ mod tests {
         let path2 = socket_path_with_runtime_dir(p, "/tmp")
             .expect("socket_path_with_runtime_dir returned None");
         assert_eq!(path1, path2);
+        #[cfg(not(windows))]
         assert!(path1.to_str().expect("valid UTF-8").ends_with(".sock"));
-        let filename = path1
-            .file_name()
-            .expect("has filename")
+        #[cfg(windows)]
+        assert!(path1
             .to_str()
-            .expect("valid UTF-8");
-        let hash_part = filename.strip_suffix(".sock").expect("ends with .sock");
-        assert_eq!(hash_part.len(), 16);
-        assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()));
+            .expect("valid UTF-8")
+            .starts_with(r"\\.\pipe\al-lsp-"));
+        #[cfg(not(windows))]
+        {
+            let filename = path1
+                .file_name()
+                .expect("has filename")
+                .to_str()
+                .expect("valid UTF-8");
+            let hash_part = filename.strip_suffix(".sock").expect("ends with .sock");
+            assert_eq!(hash_part.len(), 16);
+            assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()));
+        }
     }
 
     #[test]
@@ -161,7 +220,10 @@ mod tests {
         let path_a = socket_path_with_runtime_dir(p, "/run/user/1000").expect("returns Some");
         let path_b = socket_path_with_runtime_dir(p, "/run/user/1001").expect("returns Some");
         assert_ne!(path_a, path_b);
-        assert!(path_a.starts_with("/run/user/1000/al-lsp/"));
-        assert!(path_b.starts_with("/run/user/1001/al-lsp/"));
+        #[cfg(not(windows))]
+        {
+            assert!(path_a.starts_with("/run/user/1000/al-lsp/"));
+            assert!(path_b.starts_with("/run/user/1001/al-lsp/"));
+        }
     }
 }

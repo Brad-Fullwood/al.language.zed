@@ -56,6 +56,9 @@ manual editor click.
   Workspace-wide property fixups have dedicated commands — see
   [analysis-and-insight](./analysis-and-insight.md) (bulk fixes) and
   [scaffolding-and-codegen](./scaffolding-and-codegen.md).
+- **MCP:** use `al_call` with `method: "codeActions"` for position-aware suggestions, `method: "fix"`
+  for diagnostic fixes, or the `fix.*` dispatcher methods for workspace property operations. The
+  parameter objects are the same ones accepted by the daemon/CLI path.
 
 ## Limitations & roadmap
 

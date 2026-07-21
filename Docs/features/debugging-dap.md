@@ -1,7 +1,8 @@
 # Debugging (DAP) & Business Central Runtime
 
 **Modules:** `crates/al-dap/src/dap/`, `native_debug.rs`, `bc_client.rs`, `http_auth.rs`,
-`profiling.rs`, `snapshot.rs` + `src/dap.rs` (Zed glue) + `debug_adapter_schemas/al.json` ·
+`profiling.rs`, `snapshot.rs` + `crates/al-lsp/src/server/daemon/debug_dispatch.rs` (CLI/MCP
+control plane) + `src/dap.rs` (Zed glue) + `debug_adapter_schemas/al.json` ·
 **Status:** ✅ shipped (core flow); some schema fields parsed-but-unused
 
 The debugger is a **native Rust Debug Adapter Protocol (DAP) server** that talks directly to a
@@ -9,11 +10,23 @@ Business Central server over SignalR + REST — no Microsoft `EditorServices.Hos
 available as a legacy fallback). Zed launches `al-lsp --dap`; the adapter compiles (natively),
 publishes the `.app`, connects to BC's debug hub, and drives breakpoints/stepping/inspection.
 
+AI control is a primary design goal, not an incidental CLI wrapper. The `al-lsp mcp` server exposes
+the debugger as the first-class `al_debug` MCP tool. An MCP-capable agent can retain a debug session
+across tool calls, attach, set conditional breakpoints, inspect the call stack, locals, globals, and
+structured values, evaluate AL expressions in a selected frame, continue, step in/over/out, inspect
+breakpoint history, and stop the session. MCP does not tunnel opaque DAP frames: both entry points
+share the same native BC debug implementation, so an agent gets structured JSON results and the
+runtime behavior does not fork into a second debugger.
+
 ## Architecture
 
 ```
-Zed ──DAP/stdio──► al-lsp --dap ──SignalR + REST──► Business Central server
-                   (native_dap.rs)                  (/dev/apps, /dev/DebuggerHub)
+Zed ─────── DAP/stdio ──────► native_dap.rs ─────────► BC REST + SignalR
+                                                         (/dev/apps, /dev/DebuggerHub)
+AI agent ── MCP al_debug ───► debug_dispatch.rs
+                                  │
+                                  └── persistent NativeDebugSession ──► BC SignalR
+                                                                      (/dev/DebuggerHub)
 ```
 
 | Layer | File | Role |
@@ -25,6 +38,8 @@ Zed ──DAP/stdio──► al-lsp --dap ──SignalR + REST──► Business
 | Config | `dap/config.rs` | parse launch config (on-prem vs cloud, auth) |
 | JSONC helpers | `dap/json_util.rs` | strip comments/trailing commas from `launch.json` |
 | High-level session | `native_debug.rs` | wrap session, breakpoint registry, 10k-entry hit history |
+| Agent control plane | `server/daemon/debug_dispatch.rs` | stateful structured commands shared by CLI and MCP |
+| MCP tool | `server/mcp.rs` (`al_debug`) | agent-discoverable schema mapped to daemon method `debug` |
 | BC REST | `bc_client.rs` | publish `.app`, RAD delta, status (size caps + secret redaction) |
 | TLS helper | `http_auth.rs` | client builder; warns loudly when cert validation is disabled |
 | Profiling | `profiling.rs` | start/stop CPU profiling, parse `.alcpuprofile` hotspots |
@@ -95,6 +110,47 @@ breakOnError/Next/RecordWrite, environmentType/Name, tenant, server/serverInstan
 launchBrowser, startupObjectType/Id, schemaUpdateMode, dependencyPublishingOption,
 validateServerCertificate). A build step (`al-explorer compile`) is attached to launch flows.
 
+## AI-agent control through MCP
+
+`al_debug` maps directly to daemon method `debug`. The MCP server owns one `Workspace` for its
+lifetime, and that workspace retains the `NativeDebugSession`, so separate `tools/call` requests are
+one continuous debugging session rather than isolated commands.
+
+| `cmd` | Relevant parameters | Agent-visible result/effect |
+| --- | --- | --- |
+| `start` | `config?`, `accessToken?`, or inline BC connection fields | Attach using the named project debug configuration (or the first AL configuration) and retain the session. Agents can instead supply `tenant`/`environmentName` for BC online or `server`/`serverInstance` for on-prem, plus authentication and attach selectors. |
+| `breakpoint` | `file`, `line`, `condition?`, `objectType?`, `objectId?` | Replace the breakpoints for that file and return BC verification details. Object metadata is normally resolved from the workspace index. |
+| `state` | — | Return running/paused status, current location, variables, session ID, and thread ID. Calling it also drains pending BC break events. |
+| `stack` | — | Return the complete BC call-stack payload for the current stop, enriched with a zero-based `frameId` for follow-up inspection. |
+| `variables` | `frameId?` | Return parsed locals for a stack frame (frame 0 by default). |
+| `globals` | `frameId?` | Return parsed globals for a stack frame. |
+| `expand` | `path`, `frameId?` | Expand a structured variable path in a stack frame. |
+| `eval` | `expr`, `frameId?` | Evaluate an AL watch expression in the selected paused frame. |
+| `continue` | — | Resume execution. |
+| `step` | `stepType: over\|in\|out` | Resume with the selected BC step mode. |
+| `history` | `var?` | Return the bounded breakpoint-hit history, optionally filtered by variable name. |
+| `stop` | — | Stop and terminate the BC debug session and clear it from the MCP workspace. |
+
+A typical autonomous loop is `start` → `breakpoint` → poll `state` until paused → inspect `stack`
+and `variables`/`globals` → `eval` and/or `step` → `continue` → `stop`. All results use MCP's normal
+structured tool response and daemon errors are returned with `isError: true`, so agents do not need
+to scrape terminal output.
+
+For BC online and AAD targets, `accessToken` is optional. When it is absent, `al_debug start` uses the
+same keyring-backed OAuth cache and refresh flow as `al-explorer authenticate login`; agents do not
+need to retrieve, print, or relay a bearer token. An explicit token remains available for headless
+automation. A live BC online CDX sandbox test verified the MCP `start` → `state` → `stop` sequence on
+2026-07-21. The tested tenant accepts `Attach` but rejects both known
+`DebugAdapterConfigurationDone` signatures; as in the editor DAP path, that compatibility call is
+warned and treated as non-fatal after a successful attach.
+
+This is a structured agent control plane, not a second wire-level DAP endpoint. Zed's `launch`
+request owns the compile-and-publish convenience flow; `al_debug start` attaches to the configured
+BC debug service. An agent can call `al_build` to produce a fresh artifact, but publishing that
+artifact is not part of `al_debug start` today. The target app must already be published, and the BC
+runtime must be available and authenticated. Connection details can come from `.zed/debug.json`,
+`.vscode/launch.json`, or the inline `al_debug start` arguments.
+
 ## Microsoft comparison
 
 | Aspect | This project | Microsoft AL debugger |
@@ -119,6 +175,9 @@ around it, not a reimplementation of it.
 ## How to use
 
 - **In Zed:** create a debug config from the snippets, then launch/attach from the debugger UI.
+- **From an AI agent:** connect to **AL Tools**, then call `al_debug` with `cmd: "start"` and continue
+  with `breakpoint`, `state`, `stack`, `variables`/`globals`/`expand`, `eval`, `continue`/`step`, and
+  `stop` calls in the same MCP process.
 - **CLI:** `al-explorer debug start|breakpoint|state|eval|continue|step|history|stop`;
   `al-explorer profile start|stop|analyze`; `al-explorer snapshot start|list|download`;
   `al-explorer init-debug` to scaffold `.zed/debug.json`.
@@ -126,8 +185,10 @@ around it, not a reimplementation of it.
 ## Limitations & roadmap
 
 - ❌ No pause, function breakpoints, set-variable, completions, restart, or step-back.
-- 🟡 Structured value expansion is shallow (`variablesReference` is 0; drilling into records isn't
-  wired yet).
+- 🟡 MCP agents can expand values explicitly by `path`; the Zed DAP presentation still returns
+  `variablesReference: 0`, so editor-side click-through drilling into records is not wired yet.
+- MCP exposes structured equivalents of the native runtime control and inspection loop rather than
+  raw DAP request/event frames.
 - ✅ Schema reconciled (gap A7): `sessionId` and `breakOnNext` are now forwarded to the BC `Attach`
   payload; the fields with no native behavior (`useMcpServerForDebugging`, `mcpServicePort`, `userId`,
   `useVsCodeAuthentication`, `primaryTenantDomain`, snapshot/profiling config) were **removed** from

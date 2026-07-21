@@ -250,16 +250,14 @@ fn print_history_row(r: &serde_json::Value) {
 /// Human-readable note clarifying where a test with the given routing decision
 /// **actually executes today** — not where the class name implies.
 ///
-/// `interpRecord` reads like "records run locally", but the
-/// local mock-record backend is not wired yet, so those tests are routed to
-/// live BC by the runner. Keep this wording in lockstep with
+/// Keep this wording in lockstep with
 /// `al_test::router::RoutingDecision::execution_note` (al-explorer talks to the
 /// daemon over JSON-RPC and only sees the decision string, so it cannot call
 /// that method directly).
 fn classify_execution_note(decision: &str) -> &'static str {
     match decision {
         "interp" => "runs locally on the Rust interpreter",
-        "interpRecord" => "routes to live BC (local mock record store not wired yet)",
+        "interpRecord" => "runs locally with the in-memory record runtime",
         "snapshot" => "replays a captured snapshot, else routes to live BC",
         "liveBc" => "routes to live BC",
         _ => "",
@@ -285,8 +283,7 @@ pub fn cmd_test_classify(json: bool) -> ExitCode {
             }
             eprintln!(
                 "Routing class -> where the test actually runs today \
-                 (only `interp` executes locally; `interpRecord` is a \
-                 classification that still routes to live BC):\n"
+                 (`interp` and supported `interpRecord` tests execute locally):\n"
             );
             for c in &classifications {
                 let cu = c
@@ -368,12 +365,12 @@ pub fn cmd_test_run_all(
         Ok(result) => {
             if json {
                 print_json(&result);
-                if let Some(failed) = result
+                let failed = result
                     .get("totals")
                     .and_then(|t| t.get("failed"))
                     .and_then(|v| v.as_u64())
-                    && failed > 0
-                {
+                    .unwrap_or(0);
+                if failed > 0 {
                     return ExitCode::FAILURE;
                 }
                 return ExitCode::SUCCESS;
@@ -429,22 +426,16 @@ mod classify_note_tests {
     use super::classify_execution_note;
 
     #[test]
-    fn interp_record_note_says_live_bc_not_local() {
-        // The surface must not let the `interpRecord` name imply local
-        // execution — the note has to state it routes to live BC.
+    fn interp_record_note_says_local_record_runtime() {
         let note = classify_execution_note("interpRecord");
-        assert!(note.contains("live BC"), "got: {note:?}");
-        assert!(note.contains("not wired"), "got: {note:?}");
-        assert!(
-            !note.contains("locally"),
-            "must not claim local run: {note:?}"
-        );
+        assert!(note.contains("locally"), "got: {note:?}");
+        assert!(note.contains("record"), "got: {note:?}");
     }
 
     #[test]
-    fn interp_note_is_the_only_local_one() {
+    fn both_interpreter_tiers_are_local() {
         assert!(classify_execution_note("interp").contains("locally"));
-        assert!(!classify_execution_note("interpRecord").contains("locally"));
+        assert!(classify_execution_note("interpRecord").contains("locally"));
         assert!(!classify_execution_note("liveBc").contains("locally"));
         assert!(!classify_execution_note("snapshot").contains("locally"));
     }

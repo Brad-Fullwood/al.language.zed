@@ -26,45 +26,53 @@ Legend: ✅ native here · 🟡 partial · 🔷 Microsoft-authoritative (delegat
 | 2 | Outline / document symbols | ✅ native | ✅ compiler-backed | Parity | `cli_smoke::document_symbols`; `LspClient::document_symbols` |
 | 3 | Hover / signature help | ✅ native (+ bridge for deep semantics) | ✅ compiler-backed | Parity (MS deeper on cross-app types) | `LspClient::hover` / `signature_help` |
 | 4 | Completion | ✅ native | ✅ compiler-backed | Parity | `LspClient::completion` |
-| 5 | Diagnostics | ✅ syntax native · 🔷 CodeAnalysis bridge | 🔷 CodeAnalysis | MS authoritative for full semantic set | VS Code badges in gallery; `LspClient::drain_diagnostics` |
+| 5 | Diagnostics | ✅ syntax + native file/project/symbol/call-graph lint · 🔷 optional CodeAnalysis bridge | 🔷 CodeAnalysis | Native transactional analysis here; MS authoritative for analyzer compatibility | `al-explorer rules`; `LspClient::drain_diagnostics` |
 | 6 | Navigation (definition/refs) | ✅ native | ✅ | Parity | `LspClient::definition` / `references` |
 | 7 | Refactor (rename, code actions, **bulk** fixes) | ✅ native + project-wide bulk (`add-application-area`, `add-tooltips`, `add-data-classification`, `sort-members`, `organize-files`) | ✅ per-file code fixes | **Zed**: project-wide bulk ops | `LspClient::rename` / `code_actions`; CLI bulk cmds |
 | 8 | Formatting | ✅ native + configurable `.alformat.json`: `sortProperties`, `maxLineLength` (comma-wrap), `braceStyle`, `blankLinesBetweenProcedures` | ✅ (fixed style, none of those knobs) | **Zed**: more formatter options that actually apply | `cli_smoke::format_check`; `A13-format-showcase.txt`; 19 al-syntax + 5 al-analysis tests |
-| 9 | Build → `.app` | ✅ pure-Rust emitter, 10–12× faster cold / 60–465× warm, semantically-identical `SymbolReference.json` | 🔷 `alc` | **Zed faster**; MS authoritative for semantic validation | `BENCHMARKS.md` |
+| 9 | Build → `.app` | ✅ verified pure-Rust compiler/emitter: syntax, manifest/dependencies, identity/member/type/property binding, symbol-graph checks, and artifact integrity before atomic output | 🔷 `alc` | **Zed faster**; MS remains the compatibility oracle for its complete diagnostic catalogue | `BENCHMARKS.md`; `al-emit::verification`; `al-analysis::queries::native_check` |
 | 10 | Analysis & insight | ✅ dead-code, SQL scan, event-chain trace, impact, arch-lint, obsolescence, data-class audit, dependency graph, duplicates | ❌ (compiler diags + find-refs only) | **Zed, decisively** | `ZED-DIFFERENTIATORS.md` |
 | 11 | Testing | ✅ static discovery + **pure-logic interpreter without a BC server** | ❌ (all tests need BC) | **Zed** for fast inner loop | `cli_smoke::tests_discovery`; `test-classify` |
-| 12 | AI / agent | ✅ MCP server (`al_build`, `al_symbolsearch`, `al_deadcode`, …) in Zed's agent panel | partial (Copilot, no AL tools) | **Zed** | `mcp_stdio` test |
+| 12 | AI / agent | ✅ MCP exposes the complete shared tool catalog through `al_call`, plus discoverable aliases (`al_build`, `al_symbolsearch`, `al_deadcode`, `al_debug`, …) in Zed's agent panel | partial (Copilot, no equivalent project-wide AL tool catalog) | **Zed** | `mcp_stdio` test |
 | 13 | Surfaces / flexibility | ✅ editor **+ CLI + TUI + CI + MCP** | editor only | **Zed**: same engine everywhere | `tui_smoke`; `ZED-DIFFERENTIATORS.md` |
 
-## Honest gaps on the Zed side
+## Former Zed gaps now closed
 
-Observed directly or from the project's own [`gaps-and-future-work.md`](./gaps-and-future-work.md):
+The gaps previously listed here are implemented and regression-tested:
 
-- **Inline reference CodeLens** — VS Code shows "N references" above each member
-  in the gallery shots; this project's CodeLens is partial (gap A8). VS Code edge
-  in that view.
-- **Native lint engine** — **deliberately removed** (the framework types remain,
-  but `lint()` returns empty, and regression tests in `edit_lifecycle.rs` /
-  `e2e.rs` / `completeness.rs` enforce that native lint codes do NOT appear).
-  Diagnostics are produced by the .NET CodeAnalysis bridge by design. (VS Code's
-  CodeCop/AppSourceCop cover this lane; gap A1's "implement a starter set" is a
-  maintainer decision, not pursued here.)
-- **Compile-time semantic validation** — not done natively (delegated).
+- **Inline reference CodeLens** — every procedure/event member receives an
+  actionable `N references` lens. Counts are keyed by the canonical declaration
+  binding, not method-name text, so unrelated `A::Post` and `B::Post` calls do
+  not leak into each other; indexed files need not be open in the editor.
+- **Native lint engine** — file-local rules (`AL-NL001`/`AL-NL002`), native
+  project semantic rules (`AL-NC001`–`AL-NC006`), and resolved transaction rules
+  (`AL-NL003`/`AL-NL004`) are registered, configurable, and emitted through the
+  editor, CLI/daemon, and native build gate. `AL-NL003` follows callers and
+  dependency event symbols to flag `Commit()` after an earlier database change.
+  `AL-NL004` follows the complete call/event stack from `[TryFunction]` and
+  highlights non-temporary record writes that AL will not roll back. Resolution
+  covers ordinary calls, interface dispatch, `Codeunit.Run`, table triggers,
+  event publishers/subscribers, and standard/third-party declarations loaded
+  from `.app` symbols. Dependency packages do not contain executable bodies, so
+  the analyzer never invents side effects it cannot prove; post-write dependency
+  events such as `OnAfterModifyEvent` are recognized as transaction boundaries.
+- **Native compile-time validation** — native compile/package now verifies once
+  from a coherent source snapshot and refuses to replace the last good `.app`
+  on blocking syntax, manifest/dependency, object/member identity, declared-type,
+  property-binding, workspace symbol-graph, or artifact-integrity diagnostics.
+  Output is written atomically only after those checks pass.
 
-(Gap A13 — formatter options — is now **closed**: `sortProperties`,
-`maxLineLength`, `braceStyle`, `blankLinesBetweenProcedures` are implemented and
-tested; see stage 8. Gaps A2–A6 — build-settings passthrough + breaking/upgrade
-baseline — are also wired and unit-tested.)
-
-These are tracked, not hidden — which is the point of shipping the audit.
+Gap A13 (formatter options) and gaps A2–A6 (build-settings passthrough plus
+breaking/upgrade baselines) remain closed as previously documented.
 
 ## Where Microsoft remains the authority (by design)
 
-- **Compile-time semantic validation** — `alc` is the source of truth; this
-  project delegates (`al.useOfficialCompiler` / `al.useOfficialLsp`) and the
-  native `.app` emitter is emit-only (no type-check). Honest and documented.
-- **Full code-fix catalogue & deepest cross-app semantics** — the .NET
-  CodeAnalysis bridge is used where it's authoritative.
+- **Exact Microsoft diagnostic/analyzer compatibility** — the native compiler
+  performs its own validation, while `alc` remains the opt-in compatibility
+  oracle (`al.useOfficialCompiler`) for Microsoft's complete diagnostic set.
+- **Full Microsoft code-fix catalogue and proprietary deepest semantics** — the
+  optional .NET CodeAnalysis bridge remains available where exact Microsoft
+  behavior is required; native lint is additive and independently useful.
 
 ## Why Zed wins on the four axes the goal names
 
@@ -73,7 +81,8 @@ These are tracked, not hidden — which is the point of shipping the audit.
 - **Easier** — one `al-explorer` binary drives parse/lint/build/test/analysis;
   the TUI object browser loads the whole workspace at a keystroke.
 - **More flexible** — the *same engine* runs in the editor (LSP), the terminal
-  (CLI/TUI), CI (exit codes + JUnit/Cobertura), and AI (MCP) — not editor-locked.
+  (CLI/TUI), CI (exit codes + JUnit/Cobertura), and AI (complete dispatcher access through MCP's
+  `al_call`) — not editor-locked.
 - **More options** — an analysis suite (§10) and BC-free testing (§11) with no
   Microsoft equivalent.
 

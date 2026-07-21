@@ -129,23 +129,23 @@ and the analyzer disagree about what a keyword is" drift.
 - **`al-explorer tokens <file>`** — semantic tokens.
 - **`al-explorer metrics <file> [--all] [--threshold-cyclomatic N] [--threshold-cognitive N]`** —
   complexity (Zed task: *AL: Complexity Metrics*).
+- **MCP:** use `al_call` for the matching shared methods (`parse`, `metrics`, `documentSymbols`,
+  `foldingRanges`, and `semanticTokens`).
 - **`al-explorer format <file> [--check] [--all]`** and **`sort-members`** — formatting/sort.
 
 ## Limitations
 
-- ⛔ **Native lint engine is empty.** `lint.rs` defines `LintDiagnostic`/`LintSeverity`/
-  `LintRuleInfo` and the `lint()`/`lint_rules()` entry points, but they return empty — all AL
-  diagnostics today come from syntax parse errors and the semantic bridge. Settings
-  `al.enableNativeLint`/`al.nativeLintRules` are parsed but inert.
+- ✅ **Native lint is active.** File-local `AL-NL001`/`AL-NL002`, project-semantic
+  `AL-NC001`–`AL-NC006`, and resolved transaction-stack `AL-NL003`/`AL-NL004` diagnostics
+  share the editor, CLI/daemon, and native build surfaces. `al.enableNativeLint` and
+  `al.nativeLintRules` are honored.
 - 🟡 Formatter ignores four `FormatOptions` fields (blank lines, max line length, brace style,
   property sort).
 - Complexity does not descend into nested procedures.
 
 ## Roadmap
 
-From `ROADMAP.md` (Native Lint And Diagnostics): implement a high-value native rule set (unsafe
-`FindFirst` in loops, missing `SetLoadFields`, missing `ApplicationArea`/`DataClassification`/
-tooltips, obsolete usage, architecture-layer violations), keep native lint output distinct from
-semantic-compiler diagnostics, add tests proving disabled rules stay disabled, and keep
-`schemas/settings.json` / `docs/settings.md` / README wording in lockstep with actual behavior —
-or rename/remove the inert settings until the engine starts.
+From `ROADMAP.md` (Native Lint And Diagnostics): extend the shipped rule set with missing
+`SetLoadFields`, `ApplicationArea`, tooltips, obsolete usage, and architecture checks; keep native
+lint output distinct from Microsoft analyzer diagnostics, and keep `schemas/settings.json`,
+settings docs, and README wording in lockstep with behavior.

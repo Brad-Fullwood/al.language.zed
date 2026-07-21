@@ -33,22 +33,28 @@ concurrent in-memory maps.
 
 `SymbolIndex` stores shared `Arc<SymbolEntry>` and maintains parallel DashMap secondary indexes:
 by lowercase name, by kind+id, by kind, by extension target (`extends`), and a composed-object cache.
-Common queries become direct map lookups. Packages load in parallel (rayon `par_iter`). A
+Common queries become direct map lookups. Package ZIP/JSON parsing runs in parallel, while the much
+shorter index commit is applied in input order; reloading a package therefore replaces its previous
+generation deterministically instead of racing duplicate entries into secondary indexes. Search is
+stable and relevance-ranked (exact name, prefix, then substring), with synthetic pseudo-types kept
+out of user-facing results. A
 pre-computed 30-entry default-completions slice answers the "blank completion at top level" path in
 O(1) (ISSUE-162). On package removal, all secondary indexes are pruned in lockstep (the "T049"
-discipline) so no dangling `Arc` references remain. Synthetic pseudo-enums (generated for
-Option-typed fields, id = -1) are excluded from id-based lookups and search.
+discipline), source/path caches are removed, and affected composed views are invalidated, so a hot
+reload cannot serve stale or dangling data. Synthetic pseudo-enums (generated for Option-typed
+fields, id = -1) are excluded from id-based lookups, search, and default completion.
 
 ### Reading `.app` (`app_reader.rs`, `manifest.rs`, `app_inspect.rs`)
 
 A `.app` is a NAVX header followed by a ZIP. The reader validates the `NAVX` magic, locates the ZIP
-(fast path at the standard offset, with a linear-scan fallback), and decompresses `NavxManifest.xml`
+(fast path at the standard offset, with a bounded fallback that verifies candidate ZIPs), and decompresses `NavxManifest.xml`
 and `SymbolReference.json` (stripping UTF-8 BOMs, which BC emits inconsistently, and tolerating
 trailing NUL/EOF padding). Nested namespaces are flattened into a flat `Vec<SymbolEntry>`.
 `app_inspect` separately enumerates every archive entry and classifies it (AL source / JSON / XML /
 .NET assembly / other) by name and magic bytes, so you can tell a source-bearing package from a
-symbol-only one. All of this is bounded against decompression bombs: ≤200 MB file/JSON/manifest,
-≤200,000 archive entries, ≤1 GiB total decompressed.
+symbol-only one. The read and extraction paths reject oversized packages/entries and excessive entry
+counts; full extraction is capped at 1 GiB, uses atomic per-file publication, and rejects traversal
+through either archive paths or pre-existing destination symlinks.
 
 ### Caching (`cache.rs`)
 
@@ -64,7 +70,9 @@ payloads (the Base Application alone is ~6 MB).
 `get_composed(kind, name)` returns a `ComposedObject` merging a base object with every applicable
 extension — fields (sorted by id, deduped), methods, controls, and enum values (sorted by ordinal).
 It is cycle-safe by construction (it only walks base → extensions, never extension → extension,
-F-OPEN-038) and cached with per-name invalidation. Composing 15 extensions runs in <5 ms.
+F-OPEN-038) and cached with per-name invalidation. Field conflicts are rejected by either ID or name;
+enum conflicts by either ordinal or name. Concurrent cache misses converge on one shared result.
+Composing 15 extensions runs in <5 ms.
 
 ### Source navigation (`source_index.rs`, `virtual_file.rs`)
 
@@ -73,7 +81,10 @@ to map (kind, id) / (kind, name) → internal ZIP path (with double-checked per-
 mtime-based staleness). `virtual_file` then either extracts the embedded `.al` source or, when the
 package ships no source, **renders an outline** (fields, methods, keys, enum values, properties) as a
 read-only virtual file and locates the member's range so the editor can jump to it. Cache files are
-regenerated when either the `.app` or the `al-lsp` binary is newer (F-041).
+regenerated when either the `.app` or the `al-lsp` binary is newer (F-041), and temp+rename
+publication ensures a simultaneous navigation request never sees a partially-written file. Source
+archive indexing is canonical-path deduped and bounded by package size, entry count, and a 32 MiB
+per-source extraction limit.
 
 ### Symbol acquisition (`nuget.rs`, `bc_server.rs`, `oauth.rs`)
 
@@ -82,11 +93,16 @@ Two download backends:
 - **NuGet (`nuget.rs`):** resolves `app.json` dependencies to NuGet v3 package IDs — including the
   empirically-discovered, inconsistent Microsoft IDs (e.g. `Microsoft.Application.symbols`,
   `Microsoft.BaseApplication.symbols.{GUID}`) and country-specific variants — caches the service
-  index, downloads `.nupkg`s concurrently behind a bounded semaphore, dedupes concurrent requests for
-  the same package via a per-package lock (F-OPEN-019), and extracts the inner `.app`.
+  index, downloads `.nupkg`s concurrently behind a four-request semaphore, dedupes concurrent requests
+  for the same package, retries transient feed failures, and streams through a 200 MiB cap rather than
+  buffering a whole package in RAM. Version resolution is numeric and deterministic; a requested
+  release line never silently falls forward to an unrelated major/minor. The inner `.app` is
+  size-capped, manifest-validated, and atomically published.
 - **BC server (`bc_server.rs`):** GETs `/dev/packages?publisher=…&appName=…&versionText=…` with auth,
-  size-capped at 200 MB, streamed to a temp file then renamed. Caches the access token in an `RwLock`
-  and clears it on 401/403 to recover from stale tokens (F-OPEN-013).
+  with four-request concurrency, same-package request dedupe, bounded retry/backoff for transient
+  transport/429/502/503/504 failures, and a 200 MiB streaming cap. It verifies NAVX and the manifest
+  before atomically publishing a publisher/name/version-qualified filename. It caches the access token
+  in an `RwLock` and clears it on 401/403 to recover from stale tokens (F-OPEN-013).
 - **OAuth (`oauth.rs`):** Microsoft Entra authorization-code flow with **PKCE** (browser → localhost
   redirect) and a **device-code** fallback for headless environments, with disk-cached refresh
   tokens, tenant/GUID validation, env-var overrides (`BC_CLIENT_ID`/`BC_ACCESS_TOKEN`/`BC_TENANT`),
@@ -122,24 +138,28 @@ definitions, event discovery, and impact analysis — so all of those are fast f
   Symbols (Server/NuGet)*); `al-explorer authenticate`; `al-explorer clear-cache`.
 - **LSP execute commands:** `al.downloadSymbols`, `al.downloadSymbolsServer`,
   `al.downloadSymbolsNuget`, `al.clearSymbolCache`.
-- **MCP:** `al_downloadsymbols`, `al_symbolsearch`.
+- **MCP:** named aliases `al_downloadsymbols` and `al_symbolsearch`; all other shared symbol/package
+  methods (`object`, `byId`, `composed`, `packages`, `deps`, events/subscribers, authentication, cache
+  operations, and so on) are available through `al_call`.
 
 ## Symbol sources & `appLocalFolderPaths`
 
 The index loads `.app` packages from three places:
 
-- the project's `.alpackages/` (the default, scanned automatically);
+- the configured `al.packageCachePath` (default `.alpackages/`);
 - packages downloaded on demand via the NuGet / BC-server backends above;
-- any **arbitrary folder** passed to `SymbolIndex::load_packages` — the loader reads a `.app` from any
-  path, indexes its objects, and records the originating path (`app_path`) for navigation.
+- every configured `al.appLocalFolderPaths` directory.
 
 The `al.appLocalFolderPaths` setting — the way the Microsoft AL extension points at extra local `.app`
-folders — is **parsed into `AlConfig`** (`al-project` `config.rs`) **but is not yet wired into symbol
-loading**: nothing reads that field to feed those folders into the index, so setting it today has no
-effect on which packages are resolved. The underlying capability it would drive (loading a `.app` from
-a non-`.alpackages` folder) already works and is regression-tested
-(`al-symbols` `index.rs::load_packages_resolves_app_from_an_arbitrary_local_folder`); only the
-config→loader plumbing is outstanding. Until it lands, place extra packages in `.alpackages/`.
+folders — is applied during LSP, daemon/CLI/TUI, and core-workspace initialization. Relative paths are
+resolved from the directory containing `app.json`; the package cache has first priority, followed by
+local folders in configured order. Scans are deterministic, ignore non-files/non-`.app` entries, and
+keep only the newest version of a package. LSP configuration changes replace the file-backed symbol
+generation in place, reload runtime enums, and invalidate dependent analysis without a restart.
+
+Dependency acquisition checks each loaded package's manifest GUID and minimum version. A single
+cached package therefore cannot suppress downloads for unrelated missing dependencies, and a package
+with the right filename but the wrong identity/version does not count as satisfied.
 
 ## Limitations & roadmap
 
@@ -156,8 +176,6 @@ config→loader plumbing is outstanding. Until it lands, place extra packages in
   - Cross-package "who calls this" cannot be recovered from package symbols alone; workspace source
     fills this in (affected-test selection treats `.app`-only declarations as having no call sites —
     see gap B7).
-- 🟡 BC-server downloads don't yet use the NuGet path's explicit concurrency-limit/dedupe controls.
 - `ROADMAP.md` (Symbol And Package Engine): add benchmark-grade cold/warm load data, make the symbol
-  perf audit CI-deterministic with fixtures, add byte-level memory accounting, distinguish embedded
-  source vs generated outline vs metadata-only in user output, and wire `appLocalFolderPaths` into the
-  loader (it is parsed today; see above).
+  perf audit CI-deterministic with fixtures, add byte-level memory accounting, and distinguish embedded
+  source vs generated outline vs metadata-only in all user-facing output.

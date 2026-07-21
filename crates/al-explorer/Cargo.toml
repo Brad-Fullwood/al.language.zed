@@ -35,3 +35,4 @@ clap = { workspace = true }
 clap_complete = { workspace = true }
 dirs = "6"
 url = "2"
+tempfile = "3"

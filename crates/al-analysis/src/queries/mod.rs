@@ -37,6 +37,7 @@ pub mod symbols;
 pub mod test_coverage;
 pub mod test_diagnostics;
 pub mod tests;
+pub mod transaction_lint;
 pub mod upgrade;
 
 use al_symbols::SymbolEntry;

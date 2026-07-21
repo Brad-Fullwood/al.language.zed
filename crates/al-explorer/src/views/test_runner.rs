@@ -1,5 +1,3 @@
-#![cfg(unix)]
-
 use al_protocol::DaemonClient;
 use crossterm::event::KeyCode;
 use ratatui::{

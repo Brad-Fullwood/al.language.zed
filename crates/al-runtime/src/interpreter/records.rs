@@ -29,6 +29,7 @@ use std::sync::Arc;
 use tree_sitter::Node;
 
 use crate::interpreter::dispatch::DispatchCtx;
+use crate::interpreter::dispatch::DispatchMode;
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::eval_stmt::arg_expr_nodes;
 use crate::interpreter::scope::{Eval, ScopeStack};
@@ -83,6 +84,14 @@ fn err(msg: impl Into<String>) -> Eval {
         error_type: None,
         source: None,
     })
+}
+
+fn records_enabled(ctx: &DispatchCtx) -> bool {
+    matches!(ctx.mode, DispatchMode::WithRecords)
+}
+
+fn records_disabled_error() -> Eval {
+    err("record access is unavailable in pure-logic interpreter mode")
 }
 
 /// Lowercased table-name store key.
@@ -420,6 +429,9 @@ pub(crate) fn dispatch_record_method(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
+    if !records_enabled(ctx) {
+        return records_disabled_error();
+    }
     let nodes: Vec<Node> = args_node.map(arg_expr_nodes).unwrap_or_default();
     let lower = method.to_ascii_lowercase();
 
@@ -602,6 +614,9 @@ pub(crate) fn dispatch_record_method(
 /// A FlowField with a parseable `CalcFormula` is computed on read (auto-calc);
 /// any other field returns its buffer value.
 pub(crate) fn field_get(table_name: &str, field_name: &str, ctx: &mut DispatchCtx) -> Eval {
+    if !records_enabled(ctx) {
+        return records_disabled_error();
+    }
     let key = match ensure_store(ctx, table_name) {
         Ok(k) => k,
         Err(e) => return err(e),
@@ -762,6 +777,9 @@ pub(crate) fn try_field_assign(
         Some(Value::Record(rv)) => rv.table_name.clone(),
         _ => return None,
     };
+    if !records_enabled(ctx) {
+        return Some(records_disabled_error());
+    }
     let key = match ensure_store(ctx, &table_name) {
         Ok(k) => k,
         Err(e) => return Some(err(e)),

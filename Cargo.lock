@@ -133,6 +133,7 @@ dependencies = [
  "al-symbols",
  "al-syntax",
  "getrandom 0.2.17",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
@@ -157,6 +158,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "url",
 ]
@@ -203,6 +205,7 @@ dependencies = [
  "futures",
  "futures-util",
  "getrandom 0.2.17",
+ "interprocess",
  "keyring",
  "memmap2",
  "petgraph",
@@ -250,6 +253,7 @@ dependencies = [
 name = "al-protocol"
 version = "0.2.2"
 dependencies = [
+ "interprocess",
  "serde",
  "serde_json",
 ]
@@ -436,6 +440,7 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -1697,6 +1702,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "doctest-file"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2492,6 +2503,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "interprocess"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "069323743400cb7ab06a8fe5c1ed911d36b6919ec531661d034c89083629595b"
+dependencies = [
+ "doctest-file",
+ "futures-core",
+ "libc",
+ "recvmsg",
+ "tokio",
+ "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3764,6 +3790,12 @@ dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
 ]
+
+[[package]]
+name = "recvmsg"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
 
 [[package]]
 name = "redox_syscall"

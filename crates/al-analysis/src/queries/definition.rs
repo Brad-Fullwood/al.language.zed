@@ -9,7 +9,15 @@ use al_workspace::Workspace;
 
 #[must_use]
 pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Option<Vec<Location>> {
-    let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, uri)?;
+    // Open buffers are authoritative, but cross-workspace callers also resolve
+    // positions in indexed files that have never been opened in the editor.
+    let (text, tree) =
+        al_source::parsing::get_or_parse(&workspace.documents, uri).or_else(|| {
+            uri.to_file_path()
+                .ok()
+                .and_then(|path| workspace.file_index.get_cached_parse(&path))
+                .map(|(text, tree)| (text.into(), tree))
+        })?;
 
     let node = al_syntax::find_node_at_position(&tree, &text, position.into())?;
     let source = text.as_bytes();

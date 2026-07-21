@@ -7,9 +7,13 @@ use std::path::{Path, PathBuf};
 use super::assemble::{assemble_app, SourceFile};
 use super::manifest::AppManifest;
 use super::package::{random_package_guid, EmitError};
-use super::symbol_extract::{extract_objects, EmitObject};
+use super::symbol_extract::{extract_objects_from_tree, EmitObject};
 use super::symbol_reference::{build_symbol_reference, ExternalSymbols, ObjectRef, SymbolRefMeta};
+use super::verification::{
+    verify_artifact, verify_project_objects, VerificationDiagnostic, VerificationSeverity,
+};
 use al_symbols::model::ObjectKind;
+use al_syntax::AlParser;
 
 /// In-process cache of parsed `.alpackages` symbols, keyed on a fingerprint of
 /// the `.app` files (path + mtime + size). Parsing the referenced symbol packages
@@ -87,7 +91,10 @@ fn parse_external_symbols(project_dir: &Path) -> ExternalSymbols {
     let mut table_id_to_name: std::collections::HashMap<i32, String> =
         std::collections::HashMap::new();
     for pkg in &packages {
+        ext.package_ids
+            .insert(pkg.app_id.trim_matches(['{', '}']).to_lowercase());
         for obj in &pkg.objects {
+            ext.object_kinds.insert((obj.kind, obj.name.to_lowercase()));
             ext.resolver
                 .entry(obj.name.to_lowercase())
                 .or_insert_with(|| ObjectRef {
@@ -137,6 +144,24 @@ pub struct BuiltApp {
     pub file_name: String,
 }
 
+/// Result of the native verification-and-emission pipeline.
+///
+/// `app` is absent whenever a blocking diagnostic exists. Warnings remain in
+/// `diagnostics` alongside a successfully built artifact.
+#[derive(Debug, Clone)]
+pub struct VerifiedBuild {
+    pub app: Option<BuiltApp>,
+    pub diagnostics: Vec<VerificationDiagnostic>,
+}
+
+impl VerifiedBuild {
+    pub fn has_errors(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == VerificationSeverity::Error)
+    }
+}
+
 /// Build a deployable `.app` for the project rooted at `project_dir` (must
 /// contain `app.json` and a `src/` tree). `compiler_version` and
 /// `build_timestamp` populate the manifest's `<Build>` element.
@@ -145,6 +170,37 @@ pub fn build_app_from_project(
     compiler_version: &str,
     build_timestamp: &str,
 ) -> Result<BuiltApp, EmitError> {
+    let verified = build_verified_app_from_project(project_dir, compiler_version, build_timestamp)?;
+    verified.app.ok_or_else(|| {
+        let errors = verified
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == VerificationSeverity::Error)
+            .map(|diagnostic| {
+                format!(
+                    "{}:{}:{} {}: {}",
+                    diagnostic.file,
+                    diagnostic.line,
+                    diagnostic.column,
+                    diagnostic.code,
+                    diagnostic.message
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        EmitError::Project(format!("native verification failed: {errors}"))
+    })
+}
+
+/// Verify and build a project using one source snapshot and one parse per file.
+///
+/// Unlike [`build_app_from_project`], this entry point preserves every
+/// structured verification diagnostic for compiler/LSP/CLI callers.
+pub fn build_verified_app_from_project(
+    project_dir: &Path,
+    compiler_version: &str,
+    build_timestamp: &str,
+) -> Result<VerifiedBuild, EmitError> {
     let app_json_path = project_dir.join("app.json");
     let app_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&app_json_path).map_err(|e| {
@@ -184,6 +240,7 @@ pub fn build_app_from_project(
 
     let mut objects: Vec<EmitObject> = Vec::new();
     let mut sources: Vec<SourceFile> = Vec::new();
+    let mut diagnostics: Vec<VerificationDiagnostic> = Vec::new();
     for f in &files {
         let content = std::fs::read_to_string(f)
             .map_err(|e| EmitError::Project(format!("reading {}: {e}", f.display())))?;
@@ -192,10 +249,39 @@ pub fn build_app_from_project(
             .unwrap_or(f)
             .to_string_lossy()
             .replace('\\', "/");
+        let parsed = AlParser::parse_quick(&content);
+        for error in &parsed.errors {
+            diagnostics.push(VerificationDiagnostic {
+                file: rel.clone(),
+                line: error.range.start_point.row.saturating_add(1) as u32,
+                column: error.range.start_point.column.saturating_add(1) as u32,
+                end_line: error.range.end_point.row.saturating_add(1) as u32,
+                end_column: error.range.end_point.column.saturating_add(1) as u32,
+                severity: VerificationSeverity::Error,
+                code: "ALN0001",
+                message: error.message.clone(),
+            });
+        }
         // `ReferenceSourceFileName` is the project-relative path; the in-archive
         // path is `src/<rel>` (alc's `src/` prefix).
-        objects.extend(extract_objects(&content, &rel));
+        objects.extend(extract_objects_from_tree(&content, &rel, &parsed.tree));
         sources.push(SourceFile::from_project_path(&rel, content));
+    }
+
+    let external = load_external_symbols(project_dir);
+    diagnostics.extend(verify_project_objects(
+        &app_json,
+        &objects,
+        external.as_ref(),
+    ));
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == VerificationSeverity::Error)
+    {
+        return Ok(VerifiedBuild {
+            app: None,
+            diagnostics,
+        });
     }
 
     let meta = SymbolRefMeta {
@@ -205,7 +291,6 @@ pub fn build_app_from_project(
         publisher: publisher.clone(),
         version: version.clone(),
     };
-    let external = load_external_symbols(project_dir);
     let symbol_reference = build_symbol_reference(&objects, &meta, external.as_ref());
     let symbol_json = serde_json::to_vec(&symbol_reference)
         .map_err(|e| EmitError::Project(format!("serializing SymbolReference.json: {e}")))?;
@@ -219,6 +304,16 @@ pub fn build_app_from_project(
         random_package_guid()?,
         Some(project_dir),
     )?;
+    diagnostics.extend(verify_artifact(&bytes, sources.len()));
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == VerificationSeverity::Error)
+    {
+        return Ok(VerifiedBuild {
+            app: None,
+            diagnostics,
+        });
+    }
 
     // Sanitize each component so a hostile publisher/name/version (`<`, `>`,
     // `:`, quotes, …) doesn't produce a filename that is invalid on Windows —
@@ -231,7 +326,10 @@ pub fn build_app_from_project(
         sanitize_filename_component(&app_name),
         sanitize_filename_component(&version),
     );
-    Ok(BuiltApp { bytes, file_name })
+    Ok(VerifiedBuild {
+        app: Some(BuiltApp { bytes, file_name }),
+        diagnostics,
+    })
 }
 
 /// Replace characters that are invalid in a Windows filename (the `al-lsp`
@@ -409,5 +507,55 @@ mod tests {
             ts.len() == 20 && ts.ends_with('Z') && ts.contains('T'),
             "got {ts}"
         );
+    }
+
+    #[test]
+    fn verified_build_rejects_duplicate_object_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"Dup",
+                 "publisher":"P", "version":"1.0.0.0", "runtime":"14.0",
+                 "idRanges":[{"from":50100,"to":50149}], "dependencies":[] }"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/A.al"), "codeunit 50100 A { }").unwrap();
+        std::fs::write(dir.path().join("src/B.al"), "codeunit 50100 B { }").unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        assert!(result.app.is_none());
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "ALN1001")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn verified_build_rejects_missing_declared_dependency() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"Deps",
+                 "publisher":"P", "version":"1.0.0.0", "runtime":"14.0",
+                 "idRanges":[{"from":50100,"to":50149}],
+                 "dependencies":[{"id":"bbbbbbbb-1111-2222-3333-444444444444","name":"Missing","publisher":"P","version":"1.0.0.0"}] }"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/A.al"), "codeunit 50100 A { }").unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        assert!(result.app.is_none());
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ALN1007"));
     }
 }

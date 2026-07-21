@@ -1,7 +1,9 @@
 # Daemon Method Reference
 
-JSON-RPC methods dispatched by `al-lsp daemon` (`server/daemon/dispatch_request`). The CLI, MCP, and
-Zed tasks all route here. Transport and lifecycle: [daemon-protocol](../features/daemon-protocol.md).
+JSON-RPC methods handled by `server/daemon/dispatch_request`. The daemon transport, CLI, and Zed tasks
+route here; MCP calls the same dispatcher in-process. Every method below is available through MCP's
+`al_call`, whether or not it also has a named MCP alias. Transport and lifecycle:
+[daemon-protocol](../features/daemon-protocol.md).
 
 ## LSP-style (`lsp_dispatch.rs`)
 
@@ -31,8 +33,11 @@ Tests: `tests.discover`, `tests.run`, `tests.coverage`, `tests.run_batch`, `test
 
 ## Debug (`debug_dispatch.rs`)
 
-`debug` with `params.cmd` ∈ { `start`, `set_breakpoint`, `continue`, `step_over`, `step_into`,
-`step_out`, `state`, `eval`, `history`, `stop` }.
+`debug` with `params.cmd` ∈ { `start`, `breakpoint`, `state`, `stack`, `variables`, `globals`,
+`expand`, `eval`, `continue`, `step`, `history`, `stop` }. Inspection/evaluation commands accept
+`frameId`; `expand` also requires `path`; `step` accepts `stepType: over|in|out`. This stateful method
+backs both the CLI debug commands and the MCP `al_debug` tool; the process must remain alive between
+calls.
 
 ## Conventions & limits
 
@@ -41,8 +46,9 @@ Tests: `tests.discover`, `tests.run`, `tests.coverage`, `tests.run_batch`, `test
 - Hardening: `duplicates` `minTokens`/`minSimilarity` clamped (F-OPEN-007); `graphExport` capped at
   50k nodes+edges; `trace`/`traceChain` depth bounded; 64 MB max request line; ≤64 concurrent
   connections; 30-minute idle shutdown (skipped during an active debug session).
-- Unix-only (Unix domain socket at `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock`).
+- Local-only IPC: Unix-domain socket at `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` (with platform
+  runtime-directory fallbacks) on Linux/macOS; per-user named pipe on Windows.
 
 > The exact parameter shapes for each method are defined at the call sites in
 > `crates/al-lsp/src/server/daemon/` and mirrored by the `al-explorer` CLI argument parsing; the CLI
-> is the most convenient way to invoke any of these.
+> provides dedicated argument UX, while MCP passes the same parameter object through `al_call`.

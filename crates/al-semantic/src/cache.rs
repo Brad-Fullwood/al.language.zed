@@ -3,9 +3,11 @@
 //! Keyed by AL toolchain version. Builtins extraction takes ~500ms via .NET;
 //! with the cache it's <1ms from disk.
 
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use super::{BuiltinType, ErrorCodeInfo};
@@ -16,6 +18,18 @@ use super::{BuiltinType, ErrorCodeInfo};
 /// OS NAME_MAX (typically 255). A pathological caller passing a multi-KB
 /// "version" string could otherwise build a filename the OS rejects.
 const MAX_SANITIZED_VERSION_LEN: usize = 64;
+const CACHE_SCHEMA_VERSION: u32 = 1;
+const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CacheEnvelope<T> {
+    schema_version: u32,
+    toolchain_version: String,
+    kind: String,
+    data: T,
+}
 
 /// Sanitize a version string for use as part of a file name.
 ///
@@ -40,23 +54,46 @@ fn sanitize_version(v: &str) -> String {
 }
 
 fn cache_dir() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("al-lsp")
-        .join("semantic")
+    let root = dirs::cache_dir()
+        .map(|dir| dir.join("al-lsp"))
+        .unwrap_or_else(|| {
+            // If the platform exposes no per-user cache location, use a
+            // process-private temp directory rather than a predictable shared
+            // `/tmp/al-lsp` path that another user could pre-create or symlink.
+            std::env::temp_dir().join(format!("al-lsp-{}", std::process::id()))
+        });
+    root.join("semantic")
 }
 
 fn read_cache<T: DeserializeOwned>(version: &str, name: &str) -> Option<T> {
-    let version = sanitize_version(version);
-    let path = cache_dir().join(format!("{name}-{version}.json"));
-    match std::fs::read_to_string(&path) {
-        Ok(json) => match serde_json::from_str(&json) {
-            Ok(data) => {
+    let safe_version = sanitize_version(version);
+    let path = cache_dir().join(format!("{name}-{safe_version}.json"));
+    let json = match std::fs::metadata(&path) {
+        Ok(metadata) if metadata.len() > MAX_CACHE_BYTES => {
+            warn!(path = %path.display(), bytes = metadata.len(), "Oversized {name} cache, will regenerate");
+            let _ = std::fs::remove_file(&path);
+            return None;
+        }
+        Ok(_) => std::fs::read_to_string(&path),
+        Err(_) => return None,
+    };
+    match json {
+        Ok(json) => match serde_json::from_str::<CacheEnvelope<T>>(&json) {
+            Ok(envelope)
+                if envelope.schema_version == CACHE_SCHEMA_VERSION
+                    && envelope.toolchain_version == version
+                    && envelope.kind == name =>
+            {
                 debug!(version, path = %path.display(), "Loaded {name} from cache");
-                Some(data)
+                Some(envelope.data)
+            }
+            Ok(_) => {
+                warn!(path = %path.display(), "Stale or mismatched {name} cache, will regenerate");
+                let _ = std::fs::remove_file(&path);
+                None
             }
             Err(e) => {
-                warn!(error = %e, "Corrupt {name} cache, will regenerate");
+                warn!(error = %e, path = %path.display(), "Corrupt {name} cache, will regenerate");
                 let _ = std::fs::remove_file(&path);
                 None
             }
@@ -66,7 +103,7 @@ fn read_cache<T: DeserializeOwned>(version: &str, name: &str) -> Option<T> {
 }
 
 fn write_cache<T: Serialize + ?Sized>(version: &str, name: &str, data: &T, count: usize) {
-    let version = sanitize_version(version);
+    let safe_version = sanitize_version(version);
     let dir = cache_dir();
     // On Unix, create with 0o700 (owner-only) to mirror the crate::symbols cache:
     // semantic results may include error messages with file paths from the
@@ -85,14 +122,42 @@ fn write_cache<T: Serialize + ?Sized>(version: &str, name: &str, data: &T, count
         warn!(error = %e, "Failed to create cache directory");
         return;
     }
-    let path = dir.join(format!("{name}-{version}.json"));
-    match serde_json::to_string(data) {
+    #[cfg(unix)]
+    if let Err(e) =
+        std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+    {
+        warn!(error = %e, "Failed to restrict cache directory permissions");
+        return;
+    }
+
+    let path = dir.join(format!("{name}-{safe_version}.json"));
+    let envelope = CacheEnvelope {
+        schema_version: CACHE_SCHEMA_VERSION,
+        toolchain_version: version.to_string(),
+        kind: name.to_string(),
+        data,
+    };
+    match serde_json::to_vec(&envelope) {
         Ok(json) => {
             // Write to a tmp file then atomically rename so concurrent readers
             // never see a partial JSON document (e.g. process killed mid-write).
-            let tmp_path = path.with_extension("json.tmp");
-            if let Err(e) = std::fs::write(&tmp_path, &json) {
+            let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let tmp_path =
+                path.with_extension(format!("json.{}.{}.tmp", std::process::id(), sequence));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let write_result = options.open(&tmp_path).and_then(|mut file| {
+                file.write_all(&json)?;
+                file.sync_all()
+            });
+            if let Err(e) = write_result {
                 warn!(error = %e, "Failed to write {name} cache (tmp)");
+                let _ = std::fs::remove_file(&tmp_path);
                 return;
             }
             if let Err(e) = std::fs::rename(&tmp_path, &path) {
@@ -169,6 +234,31 @@ mod tests {
         let sanitized = sanitize_version(&huge);
         assert_eq!(sanitized.len(), MAX_SANITIZED_VERSION_LEN);
         assert!(sanitized.chars().all(|c| c == 'a'));
+    }
+
+    #[test]
+    fn sanitized_filename_collision_never_returns_wrong_toolchain_data() {
+        let first_version = "collision/version";
+        let second_version = "collision_version";
+        assert_eq!(
+            sanitize_version(first_version),
+            sanitize_version(second_version),
+            "test versions must exercise the same cache filename"
+        );
+
+        let types = vec![BuiltinType {
+            name: "Text".to_string(),
+            methods: Vec::new(),
+            enum_values: Vec::new(),
+        }];
+        write_builtins(first_version, &types);
+        assert!(
+            read_builtins(second_version).is_none(),
+            "the envelope must reject data written for a different raw version"
+        );
+
+        let path = cache_dir().join(format!("builtins-{}.json", sanitize_version(first_version)));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

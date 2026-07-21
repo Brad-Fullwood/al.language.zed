@@ -2,8 +2,8 @@
 //! and field-annotation fixers.
 
 use super::super::{
-    ensure_document, file_not_found, file_uri_from_params, invalid_params, lint_diag_to_json,
-    require_document_text, require_project_root, rpc_error,
+    ensure_document, file_not_found, file_uri_from_params, invalid_params, require_document_text,
+    require_project_root, rpc_error,
 };
 use super::build::write_al_file_and_refresh;
 use al_protocol::jsonrpc::{error_codes, Response};
@@ -17,19 +17,20 @@ pub(in crate::server::daemon) fn dispatch_lint(
     let all = params.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if all {
-        // Lint all workspace files using cached parse trees. Clean files are
-        // included with an empty diagnostics array — previously only dirty
-        // files were returned, so a fully-clean 62-file workspace reported
-        // "0 diagnostics across 0 files", indistinguishable from "scanned
-        // nothing".
+        // Run the same syntax + file-local + symbol-aware workspace rules used
+        // by editor diagnostics. Clean files remain present so "scanned all,
+        // clean" is distinguishable from "scanned nothing".
         let mut results: Vec<serde_json::Value> = Vec::new();
-        for entry in workspace.file_index.files.iter() {
-            let path = entry.key();
-            let Some((content, tree)) = workspace.file_index.get_cached_parse(path) else {
-                continue;
-            };
-            let diagnostics = al_syntax::lint(&tree, &content);
-            let diags: Vec<serde_json::Value> = diagnostics.iter().map(lint_diag_to_json).collect();
+        let config = workspace
+            .config
+            .try_read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        for (path, diagnostics) in
+            al_analysis::queries::diagnostics::workspace_syntax_diagnostics(workspace, &config)
+        {
+            let diags: Vec<serde_json::Value> =
+                diagnostics.iter().map(syntax_diag_to_json).collect();
             results.push(serde_json::json!({
                 "file": path.display().to_string(),
                 "diagnostics": diags,
@@ -46,24 +47,19 @@ pub(in crate::server::daemon) fn dispatch_lint(
     let Some(uri) = file_uri_from_params(params) else {
         return invalid_params(id);
     };
-    let text = match require_document_text(workspace, &uri, id) {
+    let _text = match require_document_text(workspace, &uri, id) {
         Ok(t) => t,
         Err(resp) => return resp,
     };
 
-    let result = al_syntax::AlParser::parse_quick(&text);
-    let mut diagnostics = al_syntax::lint(&result.tree, &text);
-
-    for err in &result.errors {
-        diagnostics.push(al_syntax::LintDiagnostic {
-            code: "parse-error".to_string(),
-            message: err.message.clone(),
-            range: err.range,
-            severity: al_syntax::LintSeverity::Error,
-        });
-    }
-
-    let diags: Vec<serde_json::Value> = diagnostics.iter().map(lint_diag_to_json).collect();
+    let config = workspace
+        .config
+        .try_read()
+        .map(|guard| guard.clone())
+        .unwrap_or_default();
+    let diagnostics =
+        al_analysis::queries::diagnostics::syntax_diagnostics(workspace, &uri, &config);
+    let diags: Vec<serde_json::Value> = diagnostics.iter().map(syntax_diag_to_json).collect();
     Response {
         id,
         result: Some(serde_json::json!(diags)),
@@ -175,7 +171,8 @@ pub(in crate::server::daemon) fn dispatch_fix(
         })
         .collect();
 
-    // No custom lint rules are registered, so no fixes to generate.
+    // Transaction/semantic findings intentionally have no automatic edits:
+    // choosing the correct transaction boundary is a design decision.
     let edits: Vec<serde_json::Value> = Vec::new();
 
     let _ = dry_run;
@@ -194,8 +191,7 @@ pub(in crate::server::daemon) fn dispatch_fix(
     }
 }
 pub(in crate::server::daemon) fn dispatch_rules(id: u64) -> Response {
-    let rules = al_syntax::lint_rules();
-    let value: Vec<serde_json::Value> = rules
+    let mut value: Vec<serde_json::Value> = al_syntax::lint_rules()
         .iter()
         .map(|r| {
             serde_json::json!({
@@ -206,11 +202,70 @@ pub(in crate::server::daemon) fn dispatch_rules(id: u64) -> Response {
             })
         })
         .collect();
+    value.extend(
+        al_analysis::queries::transaction_lint::transaction_lint_rules()
+            .iter()
+            .map(|rule| {
+                serde_json::json!({
+                    "code": rule.code,
+                    "name": rule.name,
+                    "severity": workspace_severity_label(rule.severity),
+                    "description": rule.description,
+                })
+            }),
+    );
+    value.extend(
+        al_analysis::queries::native_check::native_check_rules()
+            .iter()
+            .map(|rule| {
+                serde_json::json!({
+                    "code": rule.code,
+                    "name": rule.name,
+                    "severity": match rule.severity {
+                        al_analysis::queries::native_check::NativeSeverity::Error => "error",
+                        al_analysis::queries::native_check::NativeSeverity::Warning => "warning",
+                    },
+                    "description": rule.description,
+                })
+            }),
+    );
     Response {
         id,
         result: Some(serde_json::json!(value)),
         error: None,
         ..Default::default()
+    }
+}
+
+fn syntax_diag_to_json(
+    diagnostic: &al_analysis::queries::diagnostics::SyntaxDiagnostic,
+) -> serde_json::Value {
+    let severity = match diagnostic.severity {
+        al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Error => "error",
+        al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Warning => "warning",
+        al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Info => "info",
+        al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Hint => "hint",
+    };
+    serde_json::json!({
+        "code": diagnostic.code,
+        "message": diagnostic.message,
+        "severity": severity,
+        "line": diagnostic.range.start.line + 1,
+        "column": diagnostic.range.start.character + 1,
+        "endLine": diagnostic.range.end.line + 1,
+        "endColumn": diagnostic.range.end.character + 1,
+    })
+}
+
+fn workspace_severity_label(
+    severity: al_analysis::queries::transaction_lint::WorkspaceLintSeverity,
+) -> &'static str {
+    use al_analysis::queries::transaction_lint::WorkspaceLintSeverity;
+    match severity {
+        WorkspaceLintSeverity::Error => "error",
+        WorkspaceLintSeverity::Warning => "warning",
+        WorkspaceLintSeverity::Info => "info",
+        WorkspaceLintSeverity::Hint => "hint",
     }
 }
 pub(in crate::server::daemon) fn dispatch_parse(
@@ -429,8 +484,8 @@ mod tests {
         assert!(
             diags
                 .iter()
-                .any(|d| d.get("code") == Some(&serde_json::json!("parse-error"))),
-            "malformed AL must produce a parse-error diagnostic; got {diags:?}"
+                .any(|d| d.get("code") == Some(&serde_json::json!("syntax"))),
+            "malformed AL must produce a syntax diagnostic; got {diags:?}"
         );
     }
 
@@ -511,10 +566,13 @@ mod tests {
             .result
             .and_then(|v| v.as_array().cloned())
             .expect("array");
+        let expected = al_syntax::lint_rules().len()
+            + al_analysis::queries::transaction_lint::transaction_lint_rules().len()
+            + al_analysis::queries::native_check::native_check_rules().len();
         assert_eq!(
             arr.len(),
-            al_syntax::lint_rules().len(),
-            "dispatch_rules length must mirror the lint-rule registry"
+            expected,
+            "dispatch_rules must list every registry"
         );
     }
 

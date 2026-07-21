@@ -34,7 +34,7 @@ Remaining release hygiene improvements:
 The current architecture is powerful but still split across separate entrypoints.
 
 - Unify compile behavior across daemon `compile`, daemon `package`, LSP `al.compile`, publish, and DAP launch.
-  - Current state: daemon `compile`, LSP `al.compile`, publish, and native DAP launch default to the pure-Rust `.app` emitter; `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc`.
+  - Current state: daemon `compile`, LSP `al.compile`, publish, and native DAP launch default to the pure-Rust verified `.app` pipeline with structured diagnostics; `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc`.
   - Current gap: daemon `package` is still the analyzer-backed Microsoft compiler surface, and compile-capable paths do not yet share one service abstraction for artifact selection, diagnostics shape, cancellation, timeout, and final handoff.
 - Bring analyzer-backed Microsoft compiler results and native emitter results into one deterministic artifact and diagnostics pipeline where that makes sense.
 - Wire ruleset, assembly probing, analyzer statistics, and external ruleset settings through the build and semantic paths or mark them clearly as parsed-only.
@@ -43,8 +43,9 @@ The current architecture is powerful but still split across separate entrypoints
 
 ## Native App Emission
 
-The project now has a production-wired pure-Rust `.app` emitter, but it still needs hardening against more real-world app shapes and live Business Central validation.
+The project now has a production-wired pure-Rust verifier and `.app` emitter. Syntax, project/dependency, declaration, declared-symbol binding, and package-integrity failures block atomic artifact handoff without Microsoft tooling. It still needs broader body-level semantic and real-world package coverage.
 
+- Extend native verification into procedure-body expression, overload, control-flow, event, permission, and analyzer semantics while keeping Microsoft compatibility checks explicit.
 - Expand fixture coverage beyond the current ALC-matching project to more object kinds, resource combinations, dependencies, profiles, permissions, reports, translations, control add-ins, and extension-heavy packages.
 - Differential-test emitted packages against local `alc` output for every supported fixture and keep the intentional deltas documented.
 - Validate natively emitted `.app` packages against a live BC tenant before removing fallback paths or broadening compatibility claims.
@@ -52,31 +53,31 @@ The project now has a production-wired pure-Rust `.app` emitter, but it still ne
 
 ## Native Test Runtime
 
-The native AL test runner is one of the project's most important differentiators, but it is still phase-gated.
+The native AL test runner now executes pure-logic and supported workspace-record tests locally. The remaining work improves classification and platform fidelity without weakening the live-BC correctness boundary.
 
-- Wire real workspace procedure dispatch into `InterpMode`; the current backend still uses a placeholder workspace for dispatch.
-- Turn `InterpRecord` from a routing classification into an executable backend.
-- Connect `MockRecord` to interpreter `Value::Record` handles and record method dispatch.
-- Implement FlowField evaluation through the CalcFormula parser and mock record store.
+- Keep the executable `InterpRecord` backend and its enforced PureLogic/WithRecords capability boundary covered end to end.
 - Add support for test lifecycle procedures where appropriate, while keeping `[Test]` discovery semantics explicit.
 - Replace pattern-based routing with deeper AST/call-graph classification where feasible.
-- Make affected-test detection graph-based instead of file-only.
-- Upgrade static Cobertura-shaped coverage toward dynamic statement/procedure coverage from interpreter execution.
+- Extend dynamic coverage beyond statements/two-way decisions where the additional signal is trustworthy.
 - Wire snapshot record/replay to the live BC bridge, or clearly split "snapshot file diff" from "live snapshot replay" commands.
 - Expand mutation testing beyond the current starter mutators and make survival causes explicit when no interpreter-runnable tests cover a mutant.
 - Keep live BC fallback for platform behavior that should not be guessed locally.
 
 ## Native Lint And Diagnostics
 
-A starter native lint rule engine now exists (`al_syntax::lint()`): `AL-NL001` (unsafe `FindFirst`/`FindLast`
-in a loop) and `AL-NL002` (table field missing `DataClassification`). Remaining work to build out the rest
-of the originally-scoped rule set:
+Native diagnostics now combine file-local `AL-NL001`/`AL-NL002`, project and symbol checks
+`AL-NC001` through `AL-NC006`, and resolved transaction-stack rules: `AL-NL003` warns when
+`Commit()` can finalize an earlier database change, while `AL-NL004` highlights writes reached
+from `[TryFunction]`. The transaction pass follows ordinary calls, interface dispatch,
+`Codeunit.Run`, table triggers, events/subscribers, and dependency declarations loaded from
+`.app` symbols. Remaining catalogue work:
 
 - Add the remaining high-value rules: missing `SetLoadFields`, missing `ApplicationArea`, missing tooltips,
   obsolete usage, and architecture-layer violations.
 - Keep semantic compiler diagnostics separate from native lint diagnostics in output so users know the source
-  (already true today — they carry distinct `AL-NL*` codes vs. the bridge's own codes).
-- Add tests that prove disabled native lint rules (`al.nativeLintRules`) stay disabled.
+  (already true today — they carry distinct `AL-NL*`/`AL-NC*` codes vs. the bridge's own codes).
+- Keep the existing master/per-rule disable regressions (`al.enableNativeLint` and
+  `al.nativeLintRules`) covered as the catalogue grows.
 - Keep `schemas/settings.json`, `docs/settings.md`, and README wording in lockstep with actual diagnostics behavior.
 
 ## Symbol And Package Engine
@@ -87,16 +88,21 @@ The symbol engine is a core strength; the next work should make it more complete
 - Make the symbol performance audit deterministic enough to run in CI with fixture `.app` packages.
 - Add byte-level memory accounting for symbol/package/file indexes instead of count-only approximations.
 - Improve source-availability reporting: distinguish embedded source, generated outline, and package metadata-only navigation in user output.
-- Bring BC-server symbol download controls closer to the NuGet path where useful: explicit concurrency limits, same-package dedupe, and clearer retry/error behavior.
-- Expand local package folder support and make `appLocalFolderPaths` visible in docs and tests.
+- Keep both download backends covered for bounded concurrency, same-package dedupe, retry/error behavior, streaming limits, and atomic validated publication.
+- Keep `packageCachePath` / `appLocalFolderPaths` startup and hot-reload behavior covered across LSP and daemon/CLI/TUI entry points.
 - Document and test the limitation that `.app` symbols expose public API metadata, not package call-site bodies.
 
 ## AI And MCP
 
-MCP is a strategic surface. It should expose the workflows that make this project special, with stable schemas.
+MCP is a strategic first-class entry point to the same tools as CLI and Zed, not a curated secondary
+surface.
 
-- Add MCP tools for `suggest-event`, `test-classify`, `test-coverage`, `xlf` workflows, package/dependency inspection, and code-action suggestions.
-- Add schema tests for every MCP tool input/output.
+- Keep the complete shared daemon catalog available through the zero-drift `al_call` bridge. Named
+  aliases such as `al_suggestevent`, `al_testclassify`, `al_testcoverage`, `al_depgraph`, and
+  `al_debug` exist for richer discovery; they must never become an availability allow-list.
+- Add output-schema coverage and optional rich aliases where a dedicated per-operation schema
+  materially improves agent use. Input-schema shape and required-field checks already cover the
+  named registry and `al_call`.
 - Include routing details in `al_runtests` output so agents know which tests ran locally and which required live BC.
 - Add agent-oriented diagnostics that explain missing symbols, missing BC config, missing semantic bridge, and source-unavailable package navigation.
 - Keep tool names compatible with Microsoft's AL agent surface where useful, but expose project-specific strengths unapologetically.
@@ -106,7 +112,6 @@ MCP is a strategic surface. It should expose the workflows that make this projec
 Zed should feel first-class, not merely compatible.
 
 - Add tasks for CLI workflows that are currently missing from `languages/al/tasks.json`: affected tests, snapshot diff/replay, `deps-graph`, XLIFF refresh/untranslated/suggest, and table impact.
-- Decide how to surface CLI-only and Unix-only tasks on Windows so users are not offered workflows that cannot run.
 - Revisit CodeLens command handling: either implement the emitted IDs through execute commands or route them to supported editor/task flows.
 - Restore settings schema registration when the required Zed extension API is released on the stable registry.
 - Keep snippets, debug schemas, and settings docs aligned with fields actually consumed by the native adapter/server.
@@ -116,7 +121,9 @@ Zed should feel first-class, not merely compatible.
 
 The DAP path is promising but still narrower than the schemas/snippets imply.
 
-- Consume or remove unsupported agent/MCP debug fields such as `useMcpServerForDebugging` and `userId`.
+- Keep unsupported Microsoft launch fields out of the DAP schema. Agent control is a separate,
+  shipped surface through stateful MCP `al_debug`; do not reintroduce `useMcpServerForDebugging` as
+  a misleading launch toggle.
 - Verify and harden stack trace, scopes, variables, and evaluate behavior against current BC SignalR/REST contracts.
 - Add explicit tests for launch compile, `.app` selection, publish/deploy, attach, breakpoints, step, continue, evaluate, and disconnect.
 - Bring DAP compile/deploy artifact handling into the shared build service.

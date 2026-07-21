@@ -150,6 +150,11 @@ async fn init_bridge_inner(
 pub async fn get_or_init_bridge(
     workspace: &Workspace,
 ) -> Option<RwLockReadGuard<'_, Option<SemanticBridge>>> {
+    if !workspace.config.read().await.enable_code_analysis {
+        tracing::trace!("Semantic bridge disabled by al.enableCodeAnalysis");
+        return None;
+    }
+
     {
         let guard = workspace.semantic.read().await;
         if guard.is_some() {
@@ -157,7 +162,18 @@ pub async fn get_or_init_bridge(
         }
     }
 
-    if workspace.bridge_restart_count.load(Ordering::Relaxed) > MAX_RESTARTS {
+    let _lifecycle_guard = workspace.semantic_lifecycle_lock.lock().await;
+
+    // Another caller may have initialized while this task waited for the
+    // lifecycle lock.
+    {
+        let guard = workspace.semantic.read().await;
+        if guard.is_some() {
+            return Some(guard);
+        }
+    }
+
+    if workspace.bridge_restart_count.load(Ordering::Relaxed) >= MAX_RESTARTS {
         tracing::warn!(
             "Bridge restart limit ({}) reached, not re-initializing",
             MAX_RESTARTS
@@ -179,12 +195,27 @@ pub async fn get_or_init_bridge(
     match init_bridge_inner(workspace, toolchain).await {
         Ok(()) => {
             tracing::info!("Semantic bridge initialized");
+            workspace.bridge_restart_count.store(0, Ordering::Relaxed);
+            workspace
+                .semantic_init_failure_reported
+                .store(false, Ordering::Relaxed);
             Some(workspace.semantic.read().await)
         }
         Err(e) => {
+            let attempts = workspace
+                .bridge_restart_count
+                .fetch_add(1, Ordering::Relaxed)
+                + 1;
             tracing::warn!(error = %e, "Failed to initialize semantic bridge");
-            if let Some(sink) = workspace.notify_sink.get() {
-                sink(&format!("AL semantic bridge failed to initialize: {e}"));
+            if !workspace
+                .semantic_init_failure_reported
+                .swap(true, Ordering::Relaxed)
+            {
+                if let Some(sink) = workspace.notify_sink.get() {
+                    sink(&format!(
+                        "AL semantic bridge failed to initialize (attempt {attempts}/{MAX_RESTARTS}): {e}"
+                    ));
+                }
             }
             None
         }
@@ -199,7 +230,37 @@ pub async fn get_or_init_bridge(
 /// so `NoToolchain` errors and concurrent-restore early returns do not
 /// consume restart slots.
 pub async fn restart_bridge(workspace: &Workspace) -> Result<(), al_project::errors::AlError> {
+    restart_bridge_inner(workspace, None).await
+}
+
+/// Restart only if the failed caller still refers to the active generation.
+/// A late timeout/error from an old blocking call must not tear down a newer,
+/// healthy bridge installed by another task.
+pub async fn restart_bridge_if_current(
+    workspace: &Workspace,
+    failed_generation: u64,
+) -> Result<(), al_project::errors::AlError> {
+    restart_bridge_inner(workspace, Some(failed_generation)).await
+}
+
+async fn restart_bridge_inner(
+    workspace: &Workspace,
+    expected_generation: Option<u64>,
+) -> Result<(), al_project::errors::AlError> {
     use al_project::errors::AlError;
+
+    let _lifecycle_guard = workspace.semantic_lifecycle_lock.lock().await;
+
+    if let Some(expected) = expected_generation {
+        let current = workspace.semantic.read().await;
+        if current.as_ref().map(SemanticBridge::generation) != Some(expected) {
+            tracing::debug!(
+                expected,
+                "Ignoring failure from a stale semantic bridge generation"
+            );
+            return Ok(());
+        }
+    }
 
     // Capture the old bridge's timeout cooldown stamp BEFORE dropping it. A
     // hung CLR call from the old bridge may still be in flight on a
@@ -273,6 +334,9 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), al_project::err
             // and fetch_add back to 1. Three *consecutive* failed restarts
             // (each ending in a crash before reset) still trip the cap.
             workspace.bridge_restart_count.store(0, Ordering::Relaxed);
+            workspace
+                .semantic_init_failure_reported
+                .store(false, Ordering::Relaxed);
             Ok(())
         }
         Err(e) => Err(e),
@@ -286,6 +350,7 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), al_project::err
 /// `let _ = …take()` would have the same runtime effect but trips
 /// `clippy::let_underscore_drop` and obscures the intent.
 pub async fn shutdown_bridge(workspace: &Workspace) {
+    let _lifecycle_guard = workspace.semantic_lifecycle_lock.lock().await;
     drop(workspace.semantic.write().await.take());
 }
 
@@ -293,6 +358,7 @@ pub async fn shutdown_bridge(workspace: &Workspace) {
 mod tests {
     use super::*;
     use al_semantic::{BuiltinMethod, MethodParameter};
+    use std::path::PathBuf;
 
     fn sample_builtins() -> Vec<BuiltinType> {
         vec![
@@ -440,6 +506,36 @@ mod tests {
         let ws = Workspace::new();
         let result = get_or_init_bridge(&ws).await;
         assert!(result.is_none(), "No toolchain → bridge should be None");
+    }
+
+    #[tokio::test]
+    async fn get_or_init_respects_enable_code_analysis() {
+        use al_project::toolchain::{AlToolchain, AnalyzerPaths};
+
+        let ws = Workspace::new();
+        ws.config.write().await.enable_code_analysis = false;
+        *ws.toolchain.write().await = Some(AlToolchain {
+            alc: "/definitely/missing/alc.dll".into(),
+            aldoc: None,
+            code_analysis: "/definitely/missing/CodeAnalysis.dll".into(),
+            analyzers: AnalyzerPaths {
+                code_cop: PathBuf::new(),
+                app_source_cop: PathBuf::new(),
+                ui_cop: PathBuf::new(),
+                per_tenant_cop: PathBuf::new(),
+                common: PathBuf::new(),
+                custom: Vec::new(),
+            },
+            dotnet_root: PathBuf::new(),
+            version: "disabled-test".to_string(),
+        });
+
+        assert!(get_or_init_bridge(&ws).await.is_none());
+        assert_eq!(
+            ws.bridge_restart_count.load(Ordering::Relaxed),
+            0,
+            "a disabled bridge must not consume initialization attempts"
+        );
     }
 
     #[tokio::test]

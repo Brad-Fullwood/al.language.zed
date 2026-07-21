@@ -35,11 +35,11 @@ Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
 | `al.inlayHints.parameterNames` | boolean | `true` | ✅ |
 | `al.inlayHints.returnTypes` | boolean | `false` | ✅ |
 
-## Native lint (reserved)
+## Native lint
 
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
-| `al.enableNativeLint` | boolean | `true` | ✅ wired (starter set: AL-NL001, AL-NL002) |
+| `al.enableNativeLint` | boolean | `true` | ✅ wired (file, project-semantic, and transaction-stack rules) |
 | `al.nativeLintRules` | object | `{}` | ✅ wired (per-rule override) |
 
 ## Symbols & packages

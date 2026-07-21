@@ -111,11 +111,9 @@ Examples:
         /// Output .app path (default: <project>/output/<publisher>_<name>_<version>.app)
         #[arg(short, long)]
         out: Option<String>,
-        /// Semantically validate with the Microsoft AL compiler (alc) before
-        /// emitting, and refuse to write the .app if it has compile errors.
+        /// Add an authoritative Microsoft AL compiler (alc) compatibility check
+        /// before the always-on native verification and emission.
         /// Requires a discovered toolchain (AL_TOOL_PATH or an installed ALTool).
-        /// Without it, pack-native is emit-only (a parseable-but-invalid program
-        /// would otherwise be packed into an .app the BC server then rejects).
         #[arg(long)]
         validate: bool,
     },
@@ -493,9 +491,9 @@ Examples:
         #[arg(num_args = 1..)]
         files: Vec<String>,
     },
-    /// Show the routing decision for every discovered test. Only the
-    /// `interp` class runs locally; `interpRecord` is a classification that
-    /// still routes to live BC (the local mock record store is not wired yet).
+    /// Show the routing decision for every discovered test. `interp` and
+    /// supported `interpRecord` tests run locally; platform-dependent tests
+    /// route to live BC.
     #[command(name = "test-classify")]
     TestClassify,
     /// Record, replay, or diff test execution snapshots.

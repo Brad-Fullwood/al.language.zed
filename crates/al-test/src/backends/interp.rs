@@ -34,9 +34,10 @@ use al_workspace::Workspace;
 
 /// Interpreter backend: runs test procedures without a live BC server.
 ///
-/// Pure-logic tests only. Tests that touch records, HTTP,
-/// or any other DB-level feature should be routed to `LiveBcMode` by the
-/// router; `InterpMode` simply propagates the `Eval::Error` they produce.
+/// Runs either pure-logic tests or record-backed tests, depending on the
+/// [`DispatchMode`] selected at construction time. Platform-dependent tests
+/// (HTTP, UI, reports, transactions, and similar) must still be routed to
+/// `LiveBcMode`.
 ///
 /// ## Dynamic coverage
 ///
@@ -47,6 +48,10 @@ use al_workspace::Workspace;
 /// read the aggregated, per-file report via [`InterpMode::coverage_report`].
 pub struct InterpMode {
     pub workspace: Arc<Workspace>,
+    /// Interpreter capability boundary for this backend instance. Keeping the
+    /// mode on the session (rather than inferring it while evaluating calls)
+    /// makes the router's decision enforceable at runtime.
+    dispatch_mode: DispatchMode,
     /// When `true`, each test runs with an interpreter coverage collector and
     /// its hits are merged into `coverage`. Off by default (zero-cost).
     collect_coverage: bool,
@@ -61,6 +66,19 @@ impl InterpMode {
     pub fn new(workspace: Arc<Workspace>) -> Self {
         Self {
             workspace,
+            dispatch_mode: DispatchMode::PureLogic,
+            collect_coverage: false,
+            coverage: Arc::new(Mutex::new(Coverage::new())),
+        }
+    }
+
+    /// Construct the executable `InterpRecord` backend. Record variables use
+    /// an isolated in-memory store for each test method; no Business Central
+    /// server is contacted.
+    pub fn with_records(workspace: Arc<Workspace>) -> Self {
+        Self {
+            workspace,
+            dispatch_mode: DispatchMode::WithRecords,
             collect_coverage: false,
             coverage: Arc::new(Mutex::new(Coverage::new())),
         }
@@ -72,9 +90,25 @@ impl InterpMode {
     pub fn with_coverage(workspace: Arc<Workspace>) -> Self {
         Self {
             workspace,
+            dispatch_mode: DispatchMode::PureLogic,
             collect_coverage: true,
             coverage: Arc::new(Mutex::new(Coverage::new())),
         }
+    }
+
+    /// Construct the record-backed interpreter with dynamic coverage enabled.
+    pub fn with_records_and_coverage(workspace: Arc<Workspace>) -> Self {
+        Self {
+            workspace,
+            dispatch_mode: DispatchMode::WithRecords,
+            collect_coverage: true,
+            coverage: Arc::new(Mutex::new(Coverage::new())),
+        }
+    }
+
+    /// Capability boundary enforced by this session.
+    pub fn dispatch_mode(&self) -> DispatchMode {
+        self.dispatch_mode
     }
 
     /// True when this backend is collecting dynamic coverage.
@@ -159,6 +193,7 @@ impl TestSession for InterpMode {
                 let ws = Arc::clone(&self.workspace);
                 let codeunits_clone = codeunits.clone();
                 let collect_coverage = self.collect_coverage;
+                let dispatch_mode = self.dispatch_mode;
                 let coverage = Arc::clone(&self.coverage);
                 join_set.spawn_blocking(move || {
                     run_codeunit_interp(
@@ -168,6 +203,7 @@ impl TestSession for InterpMode {
                         &codeunit_name,
                         &methods,
                         timeout_dur,
+                        dispatch_mode,
                         collect_coverage,
                         &coverage,
                     )
@@ -192,6 +228,7 @@ impl TestSession for InterpMode {
                 let codeunits_clone = codeunits.clone();
                 let name_clone = codeunit_name.clone();
                 let collect_coverage = self.collect_coverage;
+                let dispatch_mode = self.dispatch_mode;
                 let coverage = Arc::clone(&self.coverage);
                 let events = tokio::task::spawn_blocking(move || {
                     run_codeunit_interp(
@@ -201,6 +238,7 @@ impl TestSession for InterpMode {
                         &name_clone,
                         &methods,
                         timeout_dur,
+                        dispatch_mode,
                         collect_coverage,
                         &coverage,
                     )
@@ -244,6 +282,7 @@ fn run_codeunit_interp(
     codeunit_name: &str,
     methods: &[Option<String>],
     timeout_dur: Duration,
+    dispatch_mode: DispatchMode,
     collect_coverage: bool,
     coverage: &Arc<Mutex<Coverage>>,
 ) -> Vec<TestEvent> {
@@ -290,6 +329,7 @@ fn run_codeunit_interp(
             codeunit_name,
             proc_name,
             timeout_dur,
+            dispatch_mode,
             collect_coverage,
         );
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -345,6 +385,7 @@ fn run_procedure_interp(
     codeunit_name: &str,
     proc_name: &str,
     timeout_dur: Duration,
+    dispatch_mode: DispatchMode,
     collect_coverage: bool,
 ) -> (Eval, Option<Coverage>) {
     let cu = match cu {
@@ -357,7 +398,7 @@ fn run_procedure_interp(
                     source: None,
                 }),
                 None,
-            )
+            );
         }
     };
 
@@ -386,7 +427,7 @@ fn run_procedure_interp(
                     source: None,
                 }),
                 None,
-            )
+            );
         }
     };
     let body = match procedure_body(proc_node) {
@@ -399,7 +440,7 @@ fn run_procedure_interp(
                     source: None,
                 }),
                 None,
-            )
+            );
         }
     };
 
@@ -419,7 +460,7 @@ fn run_procedure_interp(
     let mut ctx = DispatchCtx {
         source: proc_source,
         records: HashMap::new(),
-        mode: DispatchMode::PureLogic,
+        mode: dispatch_mode,
         recursion_depth: 0,
         ast_depth: 0,
         deadline: Some(std::time::Instant::now() + timeout_dur),
@@ -599,6 +640,86 @@ mod tests {
             .expect("if branch decision recorded");
         assert_eq!(branch.then_taken, 1);
         assert_eq!(branch.else_taken, 0);
+    }
+
+    #[tokio::test]
+    async fn record_mode_executes_workspace_table_operations_and_pure_mode_rejects_them() {
+        let table_source = r#"table 50130 "Native Entry"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Amount; Integer) { }
+    }
+    keys
+    {
+        key(PK; "No.") { Clustered = true; }
+    }
+}
+"#;
+        let test_source = r#"codeunit 50131 "Record Runtime Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure InsertAndRead()
+    var
+        Entry: Record "Native Entry";
+    begin
+        Entry.Init();
+        Entry."No." := 'A';
+        Entry.Amount := 42;
+        Entry.Insert();
+        Entry.Reset();
+        if Entry.Count() <> 1 then
+            Error('expected one record');
+        if not Entry.Get('A') then
+            Error('record not found');
+        if Entry.Amount <> 42 then
+            Error('amount was %1', Entry.Amount);
+    end;
+}
+"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/NativeEntry.Table.al"),
+            table_source.to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/RecordRuntimeTests.Codeunit.al"),
+            test_source.to_string(),
+        );
+        let workspace = Arc::new(workspace);
+        let target = TestId {
+            codeunit_id: 50131,
+            codeunit_name: "Record Runtime Tests".to_string(),
+            method_name: Some("InsertAndRead".to_string()),
+        };
+
+        let record_events = collect_events(
+            &InterpMode::with_records(Arc::clone(&workspace)),
+            vec![target.clone()],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(record_events.iter().any(|event| {
+            matches!(event, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
+        }), "record-backed interpreter should pass: {record_events:?}");
+
+        let pure_events = collect_events(
+            &InterpMode::new(workspace),
+            vec![target],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(
+            pure_events.iter().any(|event| {
+                matches!(event, TestEvent::CaseResult { result, .. }
+                if result.status == TestStatus::Fail
+                    && result.error.as_deref().is_some_and(|e| e.contains("pure-logic")))
+            }),
+            "pure interpreter must enforce its record boundary: {pure_events:?}"
+        );
     }
 
     #[tokio::test]

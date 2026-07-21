@@ -53,7 +53,7 @@ fn run(files: &[(&str, &str)], object: &str, proc: &str, args: Vec<Value>) -> Ev
         ws.file_index
             .add_file(std::path::PathBuf::from(path), src.to_string());
     }
-    let mut ctx = DispatchCtx::new_pure(ws);
+    let mut ctx = DispatchCtx::new_with_records(ws, Default::default());
     dispatch_call(Some(object), proc, args, &mut ctx)
 }
 

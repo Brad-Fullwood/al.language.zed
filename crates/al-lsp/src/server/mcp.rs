@@ -1,16 +1,17 @@
 //! MCP (Model Context Protocol) server mode — `al-lsp mcp`.
 //!
-//! Exposes a curated set of AL development tools to MCP-compatible agents
+//! Exposes the complete daemon tool surface to MCP-compatible agents
 //! (Claude Code, Zed's agent panel via `context_servers`, custom agents)
 //! over stdio, using newline-delimited JSON-RPC 2.0 per the MCP spec.
 //!
-//! Tool names mirror Microsoft's AL agent tools (`al_build`,
+//! `al_call` is the stable, zero-drift bridge to every daemon method. Named
+//! convenience tools mirror Microsoft's AL agent tools (`al_build`,
 //! `al_symbolsearch`, `al_getdiagnostics`, …) so agents trained on the
 //! official surface transfer, plus this project's differentiators
 //! (dead-code, SQL anti-patterns, event tracing, impact analysis) that the
-//! official tooling does not offer. Tool arguments are forwarded VERBATIM
-//! as daemon-dispatch params — validation happens in the dispatchers,
-//! which already return structured JSON-RPC errors.
+//! official tooling does not offer. Arguments are forwarded VERBATIM as
+//! daemon-dispatch params — validation happens in the dispatchers, which
+//! already return structured JSON-RPC errors.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,10 +44,155 @@ fn obj_schema(props: serde_json::Value, required: &[&str]) -> serde_json::Value 
 fn tools() -> &'static [ToolDef] {
     &[
         ToolDef {
+            name: "al_call",
+            method: "",
+            description: "Call any AL tool exposed by the shared daemon dispatcher. This is the \
+                          complete, zero-drift MCP entry point used for methods that do not have a \
+                          named convenience alias. Args: method (the daemon method name) and params \
+                          (that method's parameter object, default {}). See the daemon method \
+                          reference for the complete method catalog and parameter conventions.",
+            schema: || {
+                obj_schema(
+                    serde_json::json!({
+                        "method": {
+                            "type": "string",
+                            "description": "Daemon method name, for example metrics, xlf.refresh, codeActions, or tests.affected."
+                        },
+                        "params": {
+                            "type": "object",
+                            "description": "Parameters accepted by the selected daemon method. Defaults to an empty object."
+                        }
+                    }),
+                    &["method"],
+                )
+            },
+        },
+        ToolDef {
+            name: "al_debug",
+            method: "debug",
+            description: "Control a persistent native Business Central debug session from an AI \
+                          agent. Use cmd=start to attach using a named .zed/debug.json or \
+                          .vscode/launch.json configuration; then breakpoint, state, stack, \
+                          variables/globals/expand, eval, continue, step, history, and stop. The MCP process keeps the session alive between \
+                          calls and routes commands through the same NativeDebugSession used by the \
+                          CLI debug commands.",
+            schema: || {
+                obj_schema(
+                    serde_json::json!({
+                        "cmd": {
+                            "type": "string",
+                            "enum": ["start", "breakpoint", "state", "stack", "variables", "globals", "expand", "eval", "continue", "step", "history", "stop"],
+                            "description": "Debug operation. A typical agent loop is start, breakpoint, state, eval/step/continue, then stop."
+                        },
+                        "config": {
+                            "type": "string",
+                            "description": "For start: exact debug configuration name. When omitted, use the first AL configuration."
+                        },
+                        "accessToken": {
+                            "type": "string",
+                            "description": "For start: optional BC OAuth bearer token. When omitted for an OAuth target, al_debug acquires or refreshes the token through the shared keyring-backed authentication cache."
+                        },
+                        "server": {
+                            "type": "string",
+                            "description": "For an inline on-prem start: BC server URL. Omit when using a named config or BC online tenant."
+                        },
+                        "serverInstance": {
+                            "type": "string",
+                            "description": "For an inline on-prem start: BC server instance."
+                        },
+                        "port": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535,
+                            "description": "For an inline on-prem start: service port (default 7049)."
+                        },
+                        "tenant": {
+                            "type": "string",
+                            "description": "For an inline start: BC tenant ID or domain. Supplying this selects inline configuration without requiring a server placeholder."
+                        },
+                        "environmentType": {
+                            "type": "string",
+                            "enum": ["Sandbox", "Production", "OnPrem"],
+                            "description": "For an inline start: target environment type."
+                        },
+                        "environmentName": {
+                            "type": "string",
+                            "description": "For an inline BC online start: environment name, such as Sandbox."
+                        },
+                        "authentication": {
+                            "type": "string",
+                            "enum": ["AAD", "MicrosoftEntraID", "UserPassword", "Windows"],
+                            "description": "For an inline start: authentication mode. BC online and AAD targets use the shared OAuth cache when accessToken is omitted."
+                        },
+                        "breakOnError": {
+                            "type": ["boolean", "string"],
+                            "description": "For start: configure breaking on AL errors."
+                        },
+                        "breakOnRecordWrite": {
+                            "type": ["boolean", "string"],
+                            "description": "For start: configure breaking before record writes."
+                        },
+                        "breakOnNext": {
+                            "type": "string",
+                            "description": "For start: attach to the next matching BC client session type, for example WebClient."
+                        },
+                        "sessionId": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "For start: attach to a specific existing BC session instead of breakOnNext."
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": "For breakpoint: AL source path or file URI."
+                        },
+                        "line": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "For breakpoint: source line accepted by the BC debug service."
+                        },
+                        "condition": {
+                            "type": "string",
+                            "description": "For breakpoint: optional AL conditional expression."
+                        },
+                        "objectType": {
+                            "type": "integer",
+                            "description": "For breakpoint: optional BC object type when the file is not in the workspace index."
+                        },
+                        "objectId": {
+                            "type": "integer",
+                            "description": "For breakpoint: optional BC object ID when the file is not in the workspace index."
+                        },
+                        "expr": {
+                            "type": "string",
+                            "description": "For eval: AL watch expression evaluated in the paused frame."
+                        },
+                        "frameId": {
+                            "type": "integer",
+                            "description": "For variables, globals, expand, or eval: BC stack-frame ID; defaults to 0."
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "For expand: structured variable path to expand."
+                        },
+                        "stepType": {
+                            "type": "string",
+                            "enum": ["over", "in", "out"],
+                            "description": "For step: step direction; defaults to over."
+                        },
+                        "var": {
+                            "type": "string",
+                            "description": "For history: optional case-insensitive variable-name filter."
+                        }
+                    }),
+                    &["cmd"],
+                )
+            },
+        },
+        ToolDef {
             name: "al_build",
             method: "compile",
-            description: "Compile the AL project. By default this uses the pure-Rust \
-                          native `.app` emitter with no alc or C# bridge; set \
+            description: "Compile and verify the AL project. By default this uses the pure-Rust \
+                          native syntax/project/binding verifier and `.app` emitter with no alc or C# bridge; set \
                           al.useOfficialCompiler=true to opt into dotnet alc for \
                           Microsoft compiler diagnostics. Returns success, \
                           diagnostics and the .app path.",
@@ -83,9 +229,10 @@ fn tools() -> &'static [ToolDef] {
         ToolDef {
             name: "al_runtests",
             method: "tests.run_auto",
-            description: "Discover and run the project's AL tests. Pure-logic tests run \
-                          on the built-in interpreter (no BC server needed); others need \
-                          a launch config + live BC.",
+            description: "Discover and run the project's AL tests. Pure-logic tests and \
+                          supported workspace-record tests run on the built-in interpreter \
+                          (no BC server needed); platform-dependent tests need a launch \
+                          config + live BC.",
             schema: || obj_schema(serde_json::json!({}), &[]),
         },
         ToolDef {
@@ -185,11 +332,12 @@ fn tools() -> &'static [ToolDef] {
             name: "al_testclassify",
             method: "tests.classify",
             description: "Classify every discovered AL test by WHERE it actually runs \
-                          today. Pure-logic tests run locally on the built-in Rust \
-                          interpreter (no Business Central server); tests that touch the \
-                          database, UI, HTTP or transactions route to live BC. Each entry \
-                          carries a routing `decision` (`interp` = runs locally; \
-                          `interpRecord`/`liveBc`/`snapshot` = needs BC) plus the reasons \
+                          today. Pure-logic and supported workspace-record tests run locally \
+                          on the built-in Rust interpreter (no Business Central server); UI, \
+                          HTTP, transaction, package-table, and unsupported record behavior \
+                          route to live BC. Each entry carries a routing `decision` \
+                          (`interp`/`interpRecord` = runs locally; `liveBc`/`snapshot` = \
+                          needs BC) plus the reasons \
                           that drove it — so an agent can see the local-vs-needs-BC split \
                           before running anything.",
             schema: || obj_schema(serde_json::json!({}), &[]),
@@ -286,8 +434,30 @@ pub(crate) async fn handle_mcp_message(
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
 
+            let (daemon_method, daemon_params) = if tool.name == "al_call" {
+                let Some(method) = arguments.get("method").and_then(|v| v.as_str()) else {
+                    return respond_err(
+                        -32602,
+                        "al_call requires a non-empty `method`".to_string(),
+                    );
+                };
+                if method.trim().is_empty() {
+                    return respond_err(
+                        -32602,
+                        "al_call requires a non-empty `method`".to_string(),
+                    );
+                }
+                let method_params = arguments
+                    .get("params")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                (method, method_params)
+            } else {
+                (tool.method, arguments)
+            };
+
             // Forward to the daemon dispatcher — same logic, different wire.
-            let req = Request::new(0, tool.method, Some(arguments));
+            let req = Request::new(0, daemon_method, Some(daemon_params));
             let resp = super::daemon::dispatch_request(workspace, req, shutdown).await;
 
             let (text, is_error) = match (resp.result, resp.error) {
@@ -380,7 +550,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_exposes_the_curated_registry() {
+    async fn tools_list_exposes_the_registry_and_complete_dispatch_bridge() {
         let resp = handle_mcp_message(
             &ws(),
             &Notify::new(),
@@ -392,12 +562,58 @@ mod tests {
         assert_eq!(list.len(), tools().len());
         let names: Vec<&str> = list.iter().filter_map(|t| t["name"].as_str()).collect();
         for expected in [
+            "al_call",
+            "al_debug",
             "al_build",
             "al_symbolsearch",
             "al_getdiagnostics",
             "al_deadcode",
         ] {
             assert!(names.contains(&expected), "missing {expected}: {names:?}");
+        }
+        let debug = list
+            .iter()
+            .find(|tool| tool["name"] == "al_debug")
+            .expect("al_debug definition");
+        let commands = debug["inputSchema"]["properties"]["cmd"]["enum"]
+            .as_array()
+            .expect("al_debug cmd enum");
+        for command in [
+            "start",
+            "breakpoint",
+            "state",
+            "stack",
+            "variables",
+            "globals",
+            "expand",
+            "eval",
+            "continue",
+            "step",
+            "history",
+            "stop",
+        ] {
+            assert!(
+                commands.iter().any(|value| value == command),
+                "al_debug schema missing {command}"
+            );
+        }
+        let debug_properties = debug["inputSchema"]["properties"]
+            .as_object()
+            .expect("al_debug properties");
+        for property in [
+            "tenant",
+            "environmentName",
+            "server",
+            "accessToken",
+            "breakOnNext",
+            "sessionId",
+            "frameId",
+            "path",
+        ] {
+            assert!(
+                debug_properties.contains_key(property),
+                "al_debug schema missing {property}"
+            );
         }
         for t in list {
             assert!(
@@ -449,6 +665,71 @@ mod tests {
         assert_eq!(resp["error"]["code"], -32602);
     }
 
+    /// Methods do not need a hand-written MCP alias to be available. This
+    /// protects the architectural promise that MCP, CLI and Zed are entry
+    /// points to the same dispatcher rather than separate feature sets.
+    #[tokio::test]
+    async fn al_call_reaches_methods_without_named_aliases() {
+        let resp = handle_mcp_message(
+            &ws(),
+            &Notify::new(),
+            serde_json::json!({
+                "jsonrpc":"2.0","id":5,"method":"tools/call",
+                "params": {
+                    "name": "al_call",
+                    "arguments": {"method": "rules", "params": {}}
+                }
+            }),
+        )
+        .await
+        .expect("response");
+        assert_eq!(resp["result"]["isError"], false, "resp: {resp}");
+    }
+
+    #[tokio::test]
+    async fn al_call_requires_a_method() {
+        let resp = handle_mcp_message(
+            &ws(),
+            &Notify::new(),
+            serde_json::json!({
+                "jsonrpc":"2.0","id":6,"method":"tools/call",
+                "params": {"name": "al_call", "arguments": {}}
+            }),
+        )
+        .await
+        .expect("response");
+        assert_eq!(resp["error"]["code"], -32602, "resp: {resp}");
+    }
+
+    /// `al_debug` must reach the stateful shared debug dispatcher rather than
+    /// merely appearing in `tools/list`. `stop` is intentionally safe without
+    /// a live BC connection and proves the whole MCP call path.
+    #[tokio::test]
+    async fn al_debug_reaches_the_shared_debug_dispatcher() {
+        let resp = handle_mcp_message(
+            &ws(),
+            &Notify::new(),
+            serde_json::json!({
+                "jsonrpc":"2.0","id":7,"method":"tools/call",
+                "params": {
+                    "name": "al_debug",
+                    "arguments": {"cmd": "stop"}
+                }
+            }),
+        )
+        .await
+        .expect("response");
+        assert_eq!(resp["result"]["isError"], false, "resp: {resp}");
+        let payload: serde_json::Value = serde_json::from_str(
+            resp["result"]["content"][0]["text"]
+                .as_str()
+                .expect("text result"),
+        )
+        .expect("debug result JSON");
+        assert_eq!(payload["cmd"], "stop");
+        assert_eq!(payload["status"], "no active debug session");
+    }
+
     /// Every registered tool must advertise a well-formed JSON Schema and a
     /// non-empty description, and every `required` field must actually be
     /// declared in `properties` (otherwise an agent cannot satisfy it).
@@ -457,7 +738,7 @@ mod tests {
         for t in tools() {
             assert!(!t.name.trim().is_empty(), "tool name must be non-empty");
             assert!(
-                !t.method.trim().is_empty(),
+                t.name == "al_call" || !t.method.trim().is_empty(),
                 "{}: method must be non-empty",
                 t.name
             );

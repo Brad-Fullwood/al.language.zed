@@ -10,24 +10,22 @@ use super::{connect, print_json, project_root, report_error, run_command};
 ///
 /// Both `compile` and `package` return the same response shape:
 /// `{ success, appPath?, diagnostics?, output?, backend?, validated? }`.
-/// `backend`/`validated` distinguish the native emitter (parses + packages,
-/// no semantic analysis) from the Microsoft `alc` path (full compiler
-/// validation) — see `al.useOfficialCompiler` — so a successful native emit
-/// is never printed as if it were a validated compile.
+/// `backend`/`verificationLevel` distinguish verified-native builds from the
+/// Microsoft `alc` path — see `al.useOfficialCompiler`.
 fn print_build_result(result: &Value, json: bool) -> ExitCode {
     let success = result
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let validated = result.get("validated").and_then(|v| v.as_bool());
+    let backend = result.get("backend").and_then(|v| v.as_str());
     if json {
         print_json(result);
     } else {
         if success {
-            let label = match validated {
-                Some(true) => "Compilation succeeded (Microsoft alc, validated)",
-                Some(false) => "Native emit succeeded (no compiler validation)",
-                None => "Compilation succeeded",
+            let label = match backend {
+                Some("native") => "Native compilation succeeded (verified)",
+                Some("alc") => "Compilation succeeded (Microsoft alc)",
+                _ => "Compilation succeeded",
             };
             if let Some(path) = result.get("appPath").and_then(|v| v.as_str()) {
                 println!("{label}: {path}");
@@ -109,6 +107,8 @@ pub fn cmd_pack_native(
     validate: bool,
     json: bool,
 ) -> ExitCode {
+    use std::io::Write;
+
     let dir = match project_dir {
         Some(d) => std::path::PathBuf::from(d),
         None => match std::env::current_dir() {
@@ -122,36 +122,80 @@ pub fn cmd_pack_native(
         },
     };
 
-    // The optional semantic validation gate uses the Microsoft compiler as the
-    // gate. A parseable-but-invalid program would otherwise be packed into an
-    // application the BC server then rejects. With --validate, run the Microsoft AL
-    // compiler (alc) as the diagnostic oracle and refuse to emit on errors.
+    // Our native compiler identifies itself in the manifest's <Build>.
+    let compiler_version = concat!("al-explorer/", env!("CARGO_PKG_VERSION"));
+    let timestamp = al_emit::now_timestamp();
+
+    let verified =
+        match al_emit::build_verified_app_from_project(&dir, compiler_version, &timestamp) {
+            Ok(result) => result,
+            Err(e) => return report_error(&format!("native pack failed: {e}"), json),
+        };
+    let diagnostic_values = verified
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            serde_json::to_value(diagnostic).expect("verification diagnostic serializes")
+        })
+        .collect::<Vec<_>>();
+    let Some(built) = verified.app else {
+        if json {
+            print_json(&serde_json::json!({
+                "success": false,
+                "backend": "native",
+                "validated": true,
+                "verificationLevel": "native-syntax-project-binding",
+                "diagnostics": diagnostic_values,
+            }));
+        } else {
+            eprintln!("Native verification failed");
+            for diagnostic in &verified.diagnostics {
+                eprintln!(
+                    "{}:{}:{}: {:?} {}: {}",
+                    diagnostic.file,
+                    diagnostic.line,
+                    diagnostic.column,
+                    diagnostic.severity,
+                    diagnostic.code,
+                    diagnostic.message
+                );
+            }
+        }
+        return ExitCode::FAILURE;
+    };
+
+    // Only start Microsoft's heavier compiler after the native gate passes.
+    // This keeps syntax/project failures fast and makes `--validate` an
+    // explicit compatibility oracle rather than the primary verifier.
     if validate {
         if let Some(code) = validate_with_alc(&dir, json) {
             return code;
         }
     }
 
-    // Our native compiler identifies itself in the manifest's <Build>.
-    let compiler_version = concat!("al-explorer/", env!("CARGO_PKG_VERSION"));
-    let timestamp = al_emit::now_timestamp();
-
-    let built = match al_emit::build_app_from_project(&dir, compiler_version, &timestamp) {
-        Ok(b) => b,
-        Err(e) => return report_error(&format!("native pack failed: {e}"), json),
-    };
-
     let out_path = match out {
         Some(o) => std::path::PathBuf::from(o),
         None => dir.join("output").join(&built.file_name),
     };
-    if let Some(parent) = out_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return report_error(&format!("creating {}: {e}", parent.display()), json);
-        }
+    let parent = out_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        return report_error(&format!("creating {}: {e}", parent.display()), json);
     }
-    if let Err(e) = std::fs::write(&out_path, &built.bytes) {
-        return report_error(&format!("writing {}: {e}", out_path.display()), json);
+    let write_result = tempfile::NamedTempFile::new_in(parent).and_then(|mut temp| {
+        temp.write_all(&built.bytes)?;
+        temp.as_file_mut().sync_all()?;
+        temp.persist(&out_path)
+            .map(|_| ())
+            .map_err(|error| error.error)
+    });
+    if let Err(e) = write_result {
+        return report_error(
+            &format!("atomically writing {}: {e}", out_path.display()),
+            json,
+        );
     }
 
     if json {
@@ -159,10 +203,20 @@ pub fn cmd_pack_native(
             "success": true,
             "appPath": out_path.to_string_lossy(),
             "bytes": built.bytes.len(),
+            "backend": "native",
+            "validated": true,
+            "verificationLevel": "native-syntax-project-binding",
+            "microsoftCompatibilityValidated": validate,
+            "diagnostics": diagnostic_values,
         }));
     } else {
+        let compatibility = if validate {
+            " + Microsoft compatibility check"
+        } else {
+            ""
+        };
         println!(
-            "Native package written: {} ({} bytes)",
+            "Verified native package{compatibility} written: {} ({} bytes)",
             out_path.display(),
             built.bytes.len()
         );
@@ -268,26 +322,7 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
         .filter(|d| d.severity == al_compile::DiagnosticSeverity::Error)
         .count();
 
-    if json {
-        // Map the temp paths back so the user sees their own filenames.
-        let diags: Vec<_> = result
-            .diagnostics
-            .iter()
-            .map(|d| {
-                serde_json::json!({
-                    "file": d.file, "line": d.line, "column": d.column,
-                    "severity": format!("{:?}", d.severity).to_lowercase(),
-                    "code": d.code, "message": d.message,
-                })
-            })
-            .collect();
-        print_json(&serde_json::json!({
-            "validated": true,
-            "success": result.success && errors == 0,
-            "errorCount": errors,
-            "diagnostics": diags,
-        }));
-    } else {
+    if !json {
         for d in &result.diagnostics {
             let sev = format!("{:?}", d.severity).to_lowercase();
             let file = std::path::Path::new(&d.file)
@@ -307,7 +342,29 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
         }
         None
     } else {
-        if !json {
+        if json {
+            let diagnostics: Vec<_> = result
+                .diagnostics
+                .iter()
+                .map(|diagnostic| {
+                    serde_json::json!({
+                        "file": diagnostic.file,
+                        "line": diagnostic.line,
+                        "column": diagnostic.column,
+                        "severity": format!("{:?}", diagnostic.severity).to_lowercase(),
+                        "code": diagnostic.code,
+                        "message": diagnostic.message,
+                    })
+                })
+                .collect();
+            print_json(&serde_json::json!({
+                "validated": true,
+                "validationBackend": "alc",
+                "success": false,
+                "errorCount": errors,
+                "diagnostics": diagnostics,
+            }));
+        } else {
             eprintln!("Validation failed: {errors} error(s) — .app not written.");
         }
         Some(ExitCode::FAILURE)

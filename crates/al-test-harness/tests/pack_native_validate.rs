@@ -1,7 +1,7 @@
 //! `al-explorer pack-native --validate` runs the Microsoft
-//! AL compiler (alc) as a semantic oracle and refuses to emit a .app for a
-//! parseable-but-semantically-invalid program (which the structural emitter
-//! would otherwise happily pack into an .app the BC server then rejects).
+//! AL compiler (alc) as an additional semantic compatibility oracle after the
+//! always-on native syntax/project/binding verifier, and refuses to emit a .app
+//! when either gate reports errors.
 //!
 //! Gated on `AL_TOOL_PATH` pointing at a dir with `alc.dll` + `dotnet` on PATH;
 //! skips cleanly otherwise (the common CI case).

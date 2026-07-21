@@ -256,8 +256,51 @@ pub(super) async fn compile(server: &AlServer) {
         return;
     }
 
-    let result = al_compile::native_compile(&root);
+    let config = server.workspace.config.read().await.clone();
+    let mut workspace_diagnostics = native_workspace_compile_diagnostics(server, &config);
+    let has_errors = workspace_diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == al_compile::DiagnosticSeverity::Error);
+    let mut result = if has_errors {
+        al_compile::CompileResult {
+            success: false,
+            app_path: None,
+            diagnostics: Vec::new(),
+            output: "native workspace semantic validation failed; .app was not emitted".to_string(),
+        }
+    } else {
+        al_compile::native_compile(&root)
+    };
+    result.diagnostics.append(&mut workspace_diagnostics);
     publish_compile_result(server, &root, &result).await;
+}
+
+fn native_workspace_compile_diagnostics(
+    server: &AlServer,
+    config: &al_project::config::AlConfig,
+) -> Vec<al_compile::CompileDiagnostic> {
+    al_analysis::queries::diagnostics::native_workspace_diagnostics(&server.workspace, config)
+        .into_iter()
+        .map(|(path, diagnostic)| al_compile::CompileDiagnostic {
+            file: path.display().to_string(),
+            line: diagnostic.range.start.line + 1,
+            column: diagnostic.range.start.character + 1,
+            severity: match diagnostic.severity {
+                al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Error => {
+                    al_compile::DiagnosticSeverity::Error
+                }
+                al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Warning => {
+                    al_compile::DiagnosticSeverity::Warning
+                }
+                al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Info
+                | al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Hint => {
+                    al_compile::DiagnosticSeverity::Info
+                }
+            },
+            code: diagnostic.code,
+            message: diagnostic.message,
+        })
+        .collect()
 }
 
 /// Convert compiler diagnostics into per-file LSP diagnostics, resolving

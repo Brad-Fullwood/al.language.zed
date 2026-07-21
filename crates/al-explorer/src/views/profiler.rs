@@ -1,5 +1,3 @@
-#![cfg(unix)]
-
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,

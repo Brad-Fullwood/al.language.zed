@@ -42,15 +42,12 @@ pub use al_analysis::queries::tests::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutingDecision {
-    /// Pure-logic — runs on the Rust interpreter alone. This is the **only**
-    /// decision that actually executes locally today.
+    /// Pure-logic — runs on the Rust interpreter alone.
     Interp,
-    /// DB-touching test. The name describes the *intended* future backend
-    /// (interpreter + mock record store), but that backend is **not wired
-    /// yet**: the runner currently routes these tests to **live
-    /// BC** — it does NOT run them locally. See
-    /// [`RoutingDecision::execution_note`] and
-    /// [`RoutingDecision::runs_locally`].
+    /// DB-touching test — runs locally on the interpreter with an isolated
+    /// in-memory record store. Only workspace-defined tables and the supported
+    /// record/FlowField subset are eligible; unsupported platform semantics
+    /// remain `LiveBc`.
     InterpRecord,
     /// Anything risky / not yet supported — runs against live BC.
     LiveBc,
@@ -73,24 +70,22 @@ impl RoutingDecision {
     /// Whether a test with this decision **actually executes locally** today
     /// (pure Rust interpreter, no Business Central server contact).
     ///
-    /// Only [`RoutingDecision::Interp`] runs locally. `InterpRecord` *names* a
-    /// future "interpreter + mock record store" backend that is not wired yet,
-    /// so it — like `LiveBc` and `Snapshot` — is sent to live BC by the runner.
-    /// This is the single source of truth for backend availability.
+    /// Both interpreter tiers run locally; `LiveBc` and `Snapshot` require an
+    /// external or previously captured runtime.
     pub fn runs_locally(self) -> bool {
-        matches!(self, RoutingDecision::Interp)
+        matches!(
+            self,
+            RoutingDecision::Interp | RoutingDecision::InterpRecord
+        )
     }
 
     /// One-line, user-facing description of where a test with this decision
-    /// *actually* runs today — not where the class name implies it will run
-    /// once the remaining backends land. Surfaced by `al-explorer
+    /// *actually* runs today. Surfaced by `al-explorer
     /// test-classify` so the routing surface stays honest.
     pub fn execution_note(self) -> &'static str {
         match self {
             RoutingDecision::Interp => "runs locally on the Rust interpreter",
-            RoutingDecision::InterpRecord => {
-                "routes to live BC (local mock record store not wired yet)"
-            }
+            RoutingDecision::InterpRecord => "runs locally with the in-memory record runtime",
             RoutingDecision::Snapshot => "replays a captured snapshot, else routes to live BC",
             RoutingDecision::LiveBc => "routes to live BC",
         }
@@ -145,7 +140,12 @@ struct DisqualifyingPattern {
 }
 
 const PATTERNS: &[DisqualifyingPattern] = &[
-    // Record CRUD ops — interpreter needs the mock record store.
+    // Supported record operations — interpreter + mock record store.
+    DisqualifyingPattern {
+        needle: ".init(",
+        floor: RoutingDecision::InterpRecord,
+        why: "calls Record.Init",
+    },
     DisqualifyingPattern {
         needle: ".insert(",
         floor: RoutingDecision::InterpRecord,
@@ -163,8 +163,8 @@ const PATTERNS: &[DisqualifyingPattern] = &[
     },
     DisqualifyingPattern {
         needle: ".validate(",
-        floor: RoutingDecision::InterpRecord,
-        why: "calls Record.Validate",
+        floor: RoutingDecision::LiveBc,
+        why: "calls Record.Validate (field triggers require BC)",
     },
     DisqualifyingPattern {
         needle: ".findset",
@@ -188,8 +188,8 @@ const PATTERNS: &[DisqualifyingPattern] = &[
     },
     DisqualifyingPattern {
         needle: ".calcsums(",
-        floor: RoutingDecision::InterpRecord,
-        why: "calls CalcSums (FlowField)",
+        floor: RoutingDecision::LiveBc,
+        why: "calls CalcSums (not supported by native record runtime)",
     },
     DisqualifyingPattern {
         needle: ".setrange(",
@@ -205,6 +205,67 @@ const PATTERNS: &[DisqualifyingPattern] = &[
         needle: ".get(",
         floor: RoutingDecision::InterpRecord,
         why: "calls Record.Get",
+    },
+    DisqualifyingPattern {
+        needle: ".find(",
+        floor: RoutingDecision::InterpRecord,
+        why: "queries a Record",
+    },
+    DisqualifyingPattern {
+        needle: ".next(",
+        floor: RoutingDecision::InterpRecord,
+        why: "advances a Record iterator",
+    },
+    DisqualifyingPattern {
+        needle: ".count(",
+        floor: RoutingDecision::InterpRecord,
+        why: "counts a Record or collection",
+    },
+    DisqualifyingPattern {
+        needle: ".countapprox(",
+        floor: RoutingDecision::InterpRecord,
+        why: "counts a Record",
+    },
+    DisqualifyingPattern {
+        needle: ".isempty(",
+        floor: RoutingDecision::InterpRecord,
+        why: "checks whether a Record is empty",
+    },
+    DisqualifyingPattern {
+        needle: ".reset(",
+        floor: RoutingDecision::InterpRecord,
+        why: "resets a Record",
+    },
+    DisqualifyingPattern {
+        needle: ".setcurrentkey(",
+        floor: RoutingDecision::InterpRecord,
+        why: "sets a Record key",
+    },
+    DisqualifyingPattern {
+        needle: ".deleteall(",
+        floor: RoutingDecision::InterpRecord,
+        why: "deletes filtered Records",
+    },
+    // Record APIs whose platform semantics are not implemented locally.
+    DisqualifyingPattern {
+        needle: "recordref",
+        floor: RoutingDecision::LiveBc,
+        why: "uses RecordRef (not supported by native record runtime)",
+    },
+    DisqualifyingPattern {
+        needle: "fieldref",
+        floor: RoutingDecision::LiveBc,
+        why: "uses FieldRef (not supported by native record runtime)",
+    },
+    DisqualifyingPattern {
+        needle: ".rename(",
+        floor: RoutingDecision::LiveBc,
+        why: "calls Record.Rename (not supported by native record runtime)",
+    },
+    DisqualifyingPattern {
+        needle: ".locktable(",
+        floor: RoutingDecision::LiveBc,
+        why: "calls Record.LockTable (requires BC transaction semantics)",
     },
     // The hard escapes — anything below MUST go to live BC.
     DisqualifyingPattern {
@@ -348,13 +409,15 @@ pub fn classify_codeunits(
         // locate the proc body — same conservative behaviour as before.
         let proc_bodies = extract_procedure_bodies(&tree, &text);
         for proc in &cu.tests {
-            let (decision, reasons) = match proc_bodies
+            let body = match proc_bodies
                 .iter()
                 .find(|(name, _)| name.eq_ignore_ascii_case(&proc.name))
             {
-                Some((_, body)) => classify_body(body),
-                None => classify_body(&text),
+                Some((_, body)) => body.as_str(),
+                None => text.as_str(),
             };
+            let (mut decision, mut reasons) = classify_body(body);
+            classify_record_subtypes(workspace, body, &cu.file, &mut decision, &mut reasons);
             out.push(ClassifyResult {
                 codeunit_id: cu.id,
                 codeunit_name: cu.name.clone(),
@@ -362,6 +425,100 @@ pub fn classify_codeunits(
                 decision,
                 reasons,
             });
+        }
+    }
+    out
+}
+
+/// Promote record-using procedures based on the declared table subtype.
+/// Workspace-defined tables can use the in-memory backend; base-app/package
+/// tables have no local schema/body and must remain on live BC.
+fn classify_record_subtypes(
+    workspace: &Workspace,
+    body: &str,
+    file: &str,
+    decision: &mut RoutingDecision,
+    reasons: &mut Vec<RoutingReason>,
+) {
+    for table in record_subtypes(body) {
+        let workspace_table = workspace
+            .file_index
+            .find_by_object_name(&table)
+            .and_then(|path| {
+                workspace
+                    .file_index
+                    .object_info
+                    .get(&path)
+                    .map(|info| info.kind.eq_ignore_ascii_case("table"))
+            })
+            .unwrap_or(false);
+
+        if workspace_table {
+            *decision = (*decision).max(RoutingDecision::InterpRecord);
+            reasons.push(RoutingReason {
+                message: format!("uses workspace record table '{table}'"),
+                file: Some(file.to_string()),
+                line: None,
+            });
+        } else {
+            *decision = (*decision).max(RoutingDecision::LiveBc);
+            reasons.push(RoutingReason {
+                message: format!(
+                    "uses record table '{table}' without a workspace table definition"
+                ),
+                file: Some(file.to_string()),
+                line: None,
+            });
+        }
+    }
+}
+
+/// Extract `Record <Subtype>` declarations from procedure text. AL table names
+/// containing spaces are quoted; bare names end at whitespace or punctuation.
+/// This deliberately errs toward finding too many declarations because an
+/// unnecessary live-BC route is safer than executing against a missing schema.
+fn record_subtypes(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let lower = line.to_ascii_lowercase();
+        let mut offset = 0;
+        while let Some(found) = lower[offset..].find("record ") {
+            let keyword_start = offset + found;
+            let prefix = &line[..keyword_start];
+            let declaration_prefix = prefix.rfind(':').and_then(|colon| {
+                let between = &prefix[colon + 1..];
+                let names = prefix[..colon].rsplit(';').next().unwrap_or("").trim();
+                (between.trim().is_empty()
+                    && !names.is_empty()
+                    && !names.chars().any(|c| matches!(c, '(' | ')' | '\'' | '=')))
+                .then_some(names)
+            });
+            let start = keyword_start + "record ".len();
+            if declaration_prefix.is_none() {
+                offset = start;
+                continue;
+            }
+            let rest = line[start..].trim_start();
+            let table = if let Some(quoted) = rest.strip_prefix('"') {
+                quoted.find('"').map(|end| quoted[..end].to_string())
+            } else {
+                let end = rest
+                    .find(|c: char| c.is_whitespace() || matches!(c, ';' | ',' | ')' | ']'))
+                    .unwrap_or(rest.len());
+                (end > 0).then(|| rest[..end].to_string())
+            };
+            if let Some(table) = table.filter(|name| !name.is_empty()) {
+                if !out
+                    .iter()
+                    .any(|seen: &String| seen.eq_ignore_ascii_case(&table))
+                {
+                    out.push(table);
+                }
+            }
+            offset = start;
+            if offset >= lower.len() {
+                break;
+            }
         }
     }
     out
@@ -526,26 +683,112 @@ mod tests {
     }
 
     #[test]
-    fn only_interp_runs_locally() {
+    fn both_interpreter_tiers_run_locally() {
         assert!(RoutingDecision::Interp.runs_locally());
-        assert!(!RoutingDecision::InterpRecord.runs_locally());
+        assert!(RoutingDecision::InterpRecord.runs_locally());
         assert!(!RoutingDecision::LiveBc.runs_locally());
         assert!(!RoutingDecision::Snapshot.runs_locally());
     }
 
     #[test]
-    fn interp_record_execution_note_says_live_bc() {
+    fn interp_record_execution_note_says_local_record_runtime() {
         let note = RoutingDecision::InterpRecord.execution_note();
         assert!(
-            note.contains("live BC"),
-            "InterpRecord note must mention live BC, got: {note:?}"
+            note.contains("locally"),
+            "InterpRecord note must mention local execution, got: {note:?}"
         );
         assert!(
-            note.contains("not wired"),
-            "InterpRecord note must flag the missing local backend, got: {note:?}"
+            note.contains("record"),
+            "InterpRecord note must identify the record runtime, got: {note:?}"
         );
         assert!(RoutingDecision::Interp.execution_note().contains("locally"));
         assert!(RoutingDecision::LiveBc.execution_note().contains("live BC"));
+    }
+
+    #[test]
+    fn extracts_quoted_and_bare_record_subtypes() {
+        let body = r#"
+            procedure T()
+            var
+                Customer: Record Customer;
+                Entry: Record "Native Entry";
+            begin
+            end;
+        "#;
+        assert_eq!(
+            record_subtypes(body),
+            vec!["Customer".to_string(), "Native Entry".to_string()]
+        );
+    }
+
+    #[test]
+    fn record_word_in_error_text_is_not_a_table_declaration() {
+        let body = r#"procedure T()
+        begin
+            Error('record not found');
+        end;"#;
+        assert!(record_subtypes(body).is_empty());
+        assert_eq!(classify_body(body).0, RoutingDecision::Interp);
+    }
+
+    #[test]
+    fn workspace_record_table_is_local_but_package_table_requires_live_bc() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/NativeEntry.Table.al"),
+            r#"table 50130 "Native Entry"
+{
+    fields { field(1; "No."; Code[20]) { } }
+    keys { key(PK; "No.") { } }
+}
+"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/RecordTests.Codeunit.al"),
+            r#"codeunit 50131 "Record Tests"
+{
+    Subtype = Test;
+    [Test]
+    procedure WorkspaceRecord()
+    var
+        Entry: Record "Native Entry";
+    begin
+        Entry.Insert();
+    end;
+
+    [Test]
+    procedure PackageRecord()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.Insert();
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let classified = classify_all(&workspace);
+        let local = classified
+            .iter()
+            .find(|result| result.method_name == "WorkspaceRecord")
+            .expect("workspace record classification");
+        assert_eq!(local.decision, RoutingDecision::InterpRecord);
+
+        let package = classified
+            .iter()
+            .find(|result| result.method_name == "PackageRecord")
+            .expect("package record classification");
+        assert_eq!(package.decision, RoutingDecision::LiveBc);
+        assert!(
+            package
+                .reasons
+                .iter()
+                .any(|reason| reason.message.contains("without a workspace table")),
+            "unexpected reasons: {:?}",
+            package.reasons
+        );
     }
 }
 

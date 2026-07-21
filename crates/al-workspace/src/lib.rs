@@ -12,7 +12,7 @@ mod test_results;
 pub use doctor::{doctor, DoctorReport, ProjectInfo, ToolchainInfo};
 pub use semantic_lifecycle::{
     ensure_builtins_loaded, ensure_error_codes_loaded, get_or_init_bridge, restart_bridge,
-    set_builtins, shutdown_bridge,
+    restart_bridge_if_current, set_builtins, shutdown_bridge,
 };
 pub use test_results::TestResultStore;
 
@@ -72,6 +72,9 @@ pub struct Workspace {
     pub project: RwLock<Option<AlProject>>,
     /// .NET semantic bridge for CodeAnalysis features.
     pub semantic: RwLock<Option<al_semantic::SemanticBridge>>,
+    /// Serializes lazy initialization and restart so concurrent requests cannot
+    /// initialize multiple in-process CLR bridge generations.
+    semantic_lifecycle_lock: tokio::sync::Mutex<()>,
     pub file_index: Arc<FileIndex>,
     /// Merged workspace configuration (settings from client + project defaults).
     pub config: RwLock<AlConfig>,
@@ -81,6 +84,8 @@ pub struct Workspace {
     pub error_codes: DashMap<String, String>,
     /// Number of times the semantic bridge has been restarted (capped at MAX_RESTARTS).
     pub bridge_restart_count: std::sync::atomic::AtomicU32,
+    /// One-shot guard for user-visible initialization failure notifications.
+    pub semantic_init_failure_reported: std::sync::atomic::AtomicBool,
     pub package_info: std::sync::RwLock<Vec<PackageInfo>>,
     /// In-memory cache of builtin types indexed by name for O(1) lookups.
     pub semantic_cache: std::sync::RwLock<SemanticCache>,
@@ -133,11 +138,13 @@ impl Workspace {
             toolchain: RwLock::new(None),
             project: RwLock::new(None),
             semantic: RwLock::new(None),
+            semantic_lifecycle_lock: tokio::sync::Mutex::new(()),
             file_index: Arc::new(FileIndex::new()),
             config: RwLock::new(AlConfig::default()),
             builtins: std::sync::RwLock::new(Arc::new(Vec::new())),
             error_codes: DashMap::new(),
             bridge_restart_count: std::sync::atomic::AtomicU32::new(0),
+            semantic_init_failure_reported: std::sync::atomic::AtomicBool::new(false),
             package_info: std::sync::RwLock::new(Vec::new()),
             semantic_cache: std::sync::RwLock::new(SemanticCache::new()),
             debug_session: tokio::sync::Mutex::new(None),
@@ -413,7 +420,9 @@ pub async fn initialize_core_workspace(
     let project_result =
         tokio::task::block_in_place(|| al_project::project::find_project(project_root));
     match project_result {
-        Ok(project) => {
+        Ok(mut project) => {
+            let config = workspace.config.read().await.clone();
+            project.apply_symbol_settings(&config);
             tracing::info!(
                 name = %project.app_json.name,
                 root = %project.root.display(),
@@ -734,6 +743,32 @@ mod workspace_lifecycle_tests {
         dir
     }
 
+    fn build_test_app(name: &str, table_name: &str) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let manifest = format!(
+            r#"<?xml version="1.0"?><Package><App Id="00000000-0000-0000-0000-000000000001" Name="{name}" Publisher="Test" Version="1.0.0.0" /></Package>"#
+        );
+        let symbols = format!(
+            r#"{{"Tables":[{{"Id":50123,"Name":"{table_name}","Fields":[],"Methods":[]}}]}}"#
+        );
+        let mut data = Vec::from(&b"NAVX"[..]);
+        data.resize(40, 0);
+        let mut zip_data = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut zip_data));
+            let options = SimpleFileOptions::default();
+            zip.start_file("NavxManifest.xml", options).unwrap();
+            zip.write_all(manifest.as_bytes()).unwrap();
+            zip.start_file("SymbolReference.json", options).unwrap();
+            zip.write_all(symbols.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        data.extend_from_slice(&zip_data);
+        data
+    }
+
     /// memory_stats reflects the *actual* live state of the workspace, not
     /// constant zeros. After indexing one .al file the workspace_files count
     /// and procedure_index_entries must rise above the empty baseline.
@@ -931,5 +966,43 @@ mod workspace_lifecycle_tests {
             project.app_json.name, "InitTest",
             "the discovered project's manifest name must be stored"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn initialize_core_workspace_loads_configured_local_package_folder() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("localpackages");
+        let local = dir.join("shared-symbols");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(
+            dir.join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000099",
+                "name": "InitTest",
+                "publisher": "Tester",
+                "version": "1.0.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            local.join("Shared.app"),
+            build_test_app("Shared", "Shared Local Table"),
+        )
+        .unwrap();
+        workspace.config.write().await.app_local_folder_paths =
+            vec![std::path::PathBuf::from("shared-symbols")];
+
+        let result = initialize_core_workspace(&workspace, &dir).await;
+
+        assert_eq!(result.package_count, 1);
+        assert_eq!(workspace.symbols.get_by_name("Shared Local Table").len(), 1);
+        let stored = workspace.project.read().await;
+        assert!(stored
+            .as_ref()
+            .unwrap()
+            .packages
+            .iter()
+            .any(|path| path.starts_with(&local)));
     }
 }

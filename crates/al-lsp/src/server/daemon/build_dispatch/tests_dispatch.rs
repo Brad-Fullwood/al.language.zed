@@ -129,33 +129,20 @@ pub(in crate::server::daemon) fn dispatch_tests_coverage(
 /// - `codeunitName` (str): display name for the result. Defaults to the ID as a string.
 /// - `method` (str, optional): run only this test method.
 ///
-/// Launch config is read from the project root (`.vscode/launch.json` or `.zed/debug.json`).
-/// The first config entry is used unless `config` (str) names a specific one.
+/// The normal router selects a local interpreter tier when possible. Only a
+/// LiveBc decision reads launch config from the project root
+/// (`.vscode/launch.json` or `.zed/debug.json`); the first config is used unless
+/// `config` names one explicitly.
 ///
 /// Response includes:
 /// - `result`: `TestCodeunitResult` JSON
 /// - `diagnostics`: array of `TestDiagnostic` for failed/skipped tests
 pub(in crate::server::daemon) async fn dispatch_tests_run(
-    workspace: &Workspace,
+    workspace: &std::sync::Arc<Workspace>,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
     use al_analysis::queries::test_diagnostics::results_to_diagnostics;
-    use al_bc::launch::find_launch_config;
-    use al_test::test_runner::TestRunnerClient;
-
-    let project_root = match workspace
-        .project
-        .read()
-        .await
-        .as_ref()
-        .map(|p| p.root.clone())
-    {
-        Some(root) => root,
-        None => {
-            return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT);
-        }
-    };
 
     let codeunit_id = match params.get("codeunit").and_then(|v| v.as_i64()) {
         Some(n) => match i32::try_from(n) {
@@ -183,89 +170,43 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
         .map(String::from);
     let config_name = params.get("config").and_then(|v| v.as_str());
 
-    let launch_cfg_root = project_root.clone();
-    let launch_cfg_opt =
-        match tokio::task::spawn_blocking(move || find_launch_config(&launch_cfg_root)).await {
-            Ok(opt) => opt,
-            Err(e) => {
-                return rpc_error(
-                    id,
-                    error_codes::INTERNAL_ERROR,
-                    &format!("launch config task failed: {e}"),
-                );
-            }
-        };
-    let launch_cfg = match launch_cfg_opt {
-        Some(cfg) => cfg,
+    // Reuse the batch orchestrator so single-codeunit runs obey exactly the
+    // same Interp / InterpRecord / LiveBc routing contract. This also keeps
+    // persistence and timeout behavior consistent across CLI, TUI, and MCP.
+    let mut batch_params = serde_json::json!({
+        "codeunitIds": [codeunit_id],
+        "codeunitNames": [codeunit_name],
+    });
+    if let Some(method) = method {
+        batch_params["methodNames"] = serde_json::json!([method]);
+    }
+    if let Some(config_name) = config_name {
+        batch_params["config"] = serde_json::Value::String(config_name.to_string());
+    }
+    let batch_response = dispatch_tests_run_batch(workspace, id, &batch_params).await;
+    if batch_response.error.is_some() {
+        return batch_response;
+    }
+    let result = match batch_response
+        .result
+        .as_ref()
+        .and_then(|value| value.get("summaries"))
+        .and_then(|value| value.as_array())
+        .and_then(|summaries| summaries.first())
+        .cloned()
+        .and_then(|value| serde_json::from_value::<al_test::result::TestCodeunitResult>(value).ok())
+    {
+        Some(result) => result,
         None => {
             return rpc_error(
                 id,
                 error_codes::INTERNAL_ERROR,
-                "No launch config found — create .vscode/launch.json or .zed/debug.json",
-            );
-        }
-    };
-
-    let server_config = if let Some(name) = config_name {
-        launch_cfg
-            .configs
-            .iter()
-            .find(|c| c.name.eq_ignore_ascii_case(name))
-    } else {
-        launch_cfg.configs.first()
-    };
-
-    let server_config = match server_config {
-        Some(c) => c,
-        None => {
-            return rpc_error(
-                id,
-                error_codes::INTERNAL_ERROR,
-                "No BC server config found in launch config",
-            );
-        }
-    };
-
-    let client = TestRunnerClient::new(server_config);
-    let run_result = client
-        .run_codeunit(codeunit_id, &codeunit_name, method.as_deref())
-        .await;
-
-    let result = match run_result {
-        Ok(r) => r,
-        Err(e) => {
-            return rpc_error(
-                id,
-                error_codes::INTERNAL_ERROR,
-                &format!("Test run failed: {e}"),
+                "Test run completed without a codeunit summary",
             );
         }
     };
 
     let diagnostics = results_to_diagnostics(std::slice::from_ref(&result), workspace);
-
-    // Persist per-method records so CodeLens / tests.last_results /
-    // test-runner TUI all see the same history regardless of which entry
-    // point the user used. Errors are logged, not propagated — we still
-    // want to return the test result to the caller.
-    if let Err(e) = ensure_result_store(workspace, &project_root).await {
-        tracing::warn!(error = %e, "test_results store init failed; persistence skipped");
-    } else if let Some(store) = workspace.test_results.read().ok().and_then(|g| g.clone()) {
-        for m in &result.methods {
-            let rec = al_test::persistence::TestRunRecord {
-                timestamp: al_test::persistence::now_secs(),
-                codeunit_id: result.id,
-                codeunit_name: result.name.clone(),
-                method_name: m.name.clone(),
-                status: m.status.clone(),
-                duration_ms: m.duration_ms,
-                error: m.error.clone(),
-            };
-            if let Err(e) = store.append(rec).await {
-                tracing::warn!(error = %e, "failed to persist test result");
-            }
-        }
-    }
 
     let result_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
     let diag_json = serde_json::to_value(&diagnostics).unwrap_or(serde_json::json!([]));
@@ -286,6 +227,8 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
 /// Params:
 /// - `codeunitIds`: `[i32]` (required)
 /// - `codeunitNames`: `[str]` (parallel-indexed; falls back to ID-as-string)
+/// - `methodNames`: `[str|null]` (parallel-indexed; omitted/null runs all methods)
+/// - `config`: str (named live-BC launch config; defaults to first)
 /// - `parallel`: bool (default false)
 /// - `timeoutMs`: u64 (default 30_000)
 /// - `junitOut`: str (path to write JUnit XML)
@@ -334,6 +277,11 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+    let methods_arr = params
+        .get("methodNames")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     let mut tests: Vec<TestId> = Vec::with_capacity(codeunit_ids.len());
     for (i, v) in codeunit_ids.iter().enumerate() {
         let cu_id = match v.as_i64() {
@@ -363,7 +311,10 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         tests.push(TestId {
             codeunit_id: cu_id,
             codeunit_name: cu_name,
-            method_name: None,
+            method_name: methods_arr
+                .get(i)
+                .and_then(|v| v.as_str())
+                .map(String::from),
         });
     }
     let opts = RunOptions {
@@ -420,17 +371,38 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
 
     let discovered = al_analysis::queries::tests::discover_tests(workspace);
     let classifications = al_test::router::classify_codeunits(workspace, &discovered);
-    let mut all_interp: std::collections::HashMap<i32, bool> = std::collections::HashMap::new();
+    // A codeunit is executed locally only when every discovered [Test] method
+    // fits one of the native capability tiers. Mixed pure/record codeunits use
+    // the record-enabled interpreter; any LiveBc/Snapshot method keeps the
+    // whole codeunit on the authoritative server so codeunit-level lifecycle
+    // and shared state cannot be split across backends.
+    let mut local_capability: std::collections::HashMap<i32, (bool, bool)> =
+        std::collections::HashMap::new();
     for c in &classifications {
-        let is_interp = matches!(c.decision, RoutingDecision::Interp);
-        all_interp
+        let (is_local, needs_records) = match c.decision {
+            RoutingDecision::Interp => (true, false),
+            RoutingDecision::InterpRecord => (true, true),
+            RoutingDecision::LiveBc | RoutingDecision::Snapshot => (false, false),
+        };
+        local_capability
             .entry(c.codeunit_id)
-            .and_modify(|all| *all &= is_interp)
-            .or_insert(is_interp);
+            .and_modify(|state| {
+                state.0 &= is_local;
+                state.1 |= needs_records;
+            })
+            .or_insert((is_local, needs_records));
     }
-    let (interp_tests, live_tests): (Vec<TestId>, Vec<TestId>) = tests
-        .into_iter()
-        .partition(|t| all_interp.get(&t.codeunit_id).copied().unwrap_or(false));
+    let (local_tests, live_tests): (Vec<TestId>, Vec<TestId>) = tests.into_iter().partition(|t| {
+        local_capability
+            .get(&t.codeunit_id)
+            .is_some_and(|(is_local, _)| *is_local)
+    });
+    let (record_tests, interp_tests): (Vec<TestId>, Vec<TestId>) =
+        local_tests.into_iter().partition(|t| {
+            local_capability
+                .get(&t.codeunit_id)
+                .is_some_and(|(_, needs_records)| *needs_records)
+        });
 
     let server_config = if live_tests.is_empty() {
         None
@@ -445,7 +417,14 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
                 );
             }
         };
-        match launch_cfg.configs.first() {
+        let selected = match params.get("config").and_then(|value| value.as_str()) {
+            Some(name) => launch_cfg
+                .configs
+                .iter()
+                .find(|config| config.name.eq_ignore_ascii_case(name)),
+            None => launch_cfg.configs.first(),
+        };
+        match selected {
             Some(c) => Some(c.clone()),
             None => {
                 return rpc_error(
@@ -462,20 +441,36 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     // When dynamic coverage is requested, hold a handle to the interp
     // backend (behind Arc — `run` takes &self) so we can read its aggregated
     // DynamicCoverageReport once the run completes.
-    let mut interp_mode_for_report: Option<std::sync::Arc<InterpMode>> = None;
+    let mut interp_modes_for_report: Vec<std::sync::Arc<InterpMode>> = Vec::new();
     if !interp_tests.is_empty() {
         let mode = std::sync::Arc::new(if opts.coverage {
             InterpMode::with_coverage(std::sync::Arc::clone(workspace))
         } else {
             InterpMode::new(std::sync::Arc::clone(workspace))
         });
-        interp_mode_for_report = Some(std::sync::Arc::clone(&mode));
+        interp_modes_for_report.push(std::sync::Arc::clone(&mode));
         let tx_interp = tx.clone();
         let opts_for_run = opts.clone();
         let mode_for_run = std::sync::Arc::clone(&mode);
         run_handles.push(tokio::spawn(async move {
             mode_for_run
                 .run(interp_tests, opts_for_run, tx_interp)
+                .await
+        }));
+    }
+    if !record_tests.is_empty() {
+        let mode = std::sync::Arc::new(if opts.coverage {
+            InterpMode::with_records_and_coverage(std::sync::Arc::clone(workspace))
+        } else {
+            InterpMode::with_records(std::sync::Arc::clone(workspace))
+        });
+        interp_modes_for_report.push(std::sync::Arc::clone(&mode));
+        let tx_interp = tx.clone();
+        let opts_for_run = opts.clone();
+        let mode_for_run = std::sync::Arc::clone(&mode);
+        run_handles.push(tokio::spawn(async move {
+            mode_for_run
+                .run(record_tests, opts_for_run, tx_interp)
                 .await
         }));
     }
@@ -515,12 +510,11 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     // dynamic (executed-line) coverage. `None` unless coverage was requested; an
     // empty report when requested but no interp tests ran (e.g. all-live run).
     let dynamic_coverage = if opts.coverage {
-        Some(
-            interp_mode_for_report
-                .as_ref()
-                .map(|m| m.coverage_report())
-                .unwrap_or_default(),
-        )
+        Some(merge_dynamic_coverage_reports(
+            interp_modes_for_report
+                .iter()
+                .map(|mode| mode.coverage_report()),
+        ))
     } else {
         None
     };
@@ -602,6 +596,49 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         result: Some(result_obj),
         error: None,
         ..Default::default()
+    }
+}
+
+/// Merge coverage gathered by the pure and record-enabled interpreter
+/// sessions. A batch may contain both capability tiers, but callers should see
+/// one stable dynamic-coverage report.
+fn merge_dynamic_coverage_reports(
+    reports: impl IntoIterator<Item = al_runtime::interpreter::coverage::DynamicCoverageReport>,
+) -> al_runtime::interpreter::coverage::DynamicCoverageReport {
+    use al_runtime::interpreter::coverage::{BranchCoverage, FileCoverage};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    type BranchTallies = BTreeMap<u32, (u64, u64)>;
+    type FileTallies = (BTreeSet<u32>, BranchTallies);
+    let mut files: BTreeMap<String, FileTallies> = BTreeMap::new();
+    for report in reports {
+        for file in report.files {
+            let entry = files.entry(file.file).or_default();
+            entry.0.extend(file.executed_lines);
+            for branch in file.branches {
+                let tally = entry.1.entry(branch.line).or_default();
+                tally.0 += branch.then_taken;
+                tally.1 += branch.else_taken;
+            }
+        }
+    }
+
+    al_runtime::interpreter::coverage::DynamicCoverageReport {
+        files: files
+            .into_iter()
+            .map(|(file, (executed_lines, branches))| FileCoverage {
+                file,
+                executed_lines: executed_lines.into_iter().collect(),
+                branches: branches
+                    .into_iter()
+                    .map(|(line, (then_taken, else_taken))| BranchCoverage {
+                        line,
+                        then_taken,
+                        else_taken,
+                    })
+                    .collect(),
+            })
+            .collect(),
     }
 }
 
@@ -1330,6 +1367,126 @@ mod tests {
             Some(1),
             "TestFails must fail: {result}"
         );
+    }
+
+    /// Workspace-table tests classified as InterpRecord must execute on the
+    /// in-memory record backend without requiring a BC launch configuration.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_batch_routes_workspace_records_to_local_runtime() {
+        let ws = std::sync::Arc::new(empty_ws());
+        let tmp = tempfile::TempDir::new().unwrap();
+        {
+            let mut guard = ws.project.write().await;
+            *guard = Some(al_project::project::AlProject {
+                root: tmp.path().to_path_buf(),
+                app_json: al_project::project::AppManifest {
+                    id: String::new(),
+                    name: "test".into(),
+                    publisher: "test".into(),
+                    version: "1.0.0.0".into(),
+                    dependencies: Vec::new(),
+                    application: None,
+                    platform: None,
+                    runtime: None,
+                },
+                packages_dir: tmp.path().join(".alpackages"),
+                packages: Vec::new(),
+                server_configs: Vec::new(),
+            });
+        }
+
+        let table_path = tmp.path().join("NativeEntry.Table.al");
+        let table_source = r#"table 50130 "Native Entry"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Amount; Integer) { }
+    }
+    keys
+    {
+        key(PK; "No.") { Clustered = true; }
+    }
+}
+"#;
+        std::fs::write(&table_path, table_source).unwrap();
+        ws.file_index.add_file(table_path, table_source.to_string());
+
+        let test_path = tmp.path().join("NativeRecordTest.Codeunit.al");
+        let test_source = r#"codeunit 50131 "Native Record Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure InsertAndRead()
+    var
+        Entry: Record "Native Entry";
+    begin
+        Entry.Init();
+        Entry."No." := 'A';
+        Entry.Amount := 42;
+        Entry.Insert();
+        if Entry.Count() <> 1 then
+            Error('expected one record');
+        if not Entry.Get('A') then
+            Error('record not found');
+        if Entry.Amount <> 42 then
+            Error('wrong amount');
+    end;
+}
+"#;
+        std::fs::write(&test_path, test_source).unwrap();
+        ws.file_index.add_file(test_path, test_source.to_string());
+
+        let classifications = al_test::router::classify_all(&ws);
+        assert_eq!(
+            classifications.len(),
+            1,
+            "unexpected classifications: {classifications:?}"
+        );
+        assert_eq!(
+            classifications[0].decision,
+            al_test::router::RoutingDecision::InterpRecord,
+            "record test must select the local record backend: {classifications:?}"
+        );
+
+        let resp = dispatch_tests_run_batch(
+            &ws,
+            8,
+            &serde_json::json!({
+                "codeunitIds": [50131],
+                "codeunitNames": ["Native Record Test"],
+            }),
+        )
+        .await;
+        assert!(
+            resp.error.is_none(),
+            "InterpRecord tests must run without a launch config: {:?}",
+            resp.error
+        );
+        let result = resp.result.expect("result");
+        assert_eq!(result["totals"]["total"].as_u64(), Some(1), "{result}");
+        assert_eq!(result["totals"]["passed"].as_u64(), Some(1), "{result}");
+        assert_eq!(result["totals"]["failed"].as_u64(), Some(0), "{result}");
+
+        let single = dispatch_tests_run(
+            &ws,
+            9,
+            &serde_json::json!({
+                "codeunit": 50131,
+                "codeunitName": "Native Record Test",
+                "method": "InsertAndRead",
+            }),
+        )
+        .await;
+        assert!(
+            single.error.is_none(),
+            "single InterpRecord run must use the same local route: {:?}",
+            single.error
+        );
+        let single_result = single.result.expect("single result");
+        assert_eq!(single_result["result"]["total"].as_u64(), Some(1));
+        assert_eq!(single_result["result"]["passed"].as_u64(), Some(1));
     }
 
     /// Build a workspace rooted at `tmp` with no launch config (so interp tests

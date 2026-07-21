@@ -42,32 +42,55 @@ pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::R
         }
     }
 
-    // Use create_new to atomically create the file, avoiding a TOCTOU race.
-    // If another thread/process already created it, AlreadyExists is fine.
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&file_path)
-    {
-        Ok(mut f) => {
-            // When the package ships embedded `.al`, write the real source
-            // (bodies included). Otherwise fall back to the metadata outline,
-            // prefixed with OUTLINE_NOTE so the reader knows the file is
-            // reconstructed from package symbols and carries no implementation
-            // bodies. The note is used only for outlines; real embedded
-            // source already has its bodies.
-            let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
-            let source = extracted.unwrap_or_else(|| render_outline_with_note(entry));
-            f.write_all(source.as_bytes())?;
+    if !file_path.is_file() {
+        // Generate before publishing and rename into place. Creating the final
+        // path first allowed a concurrent navigation request to observe a
+        // partially-written AL file.
+        let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
+        let source = extracted.unwrap_or_else(|| render_outline_with_note(entry));
+        let tmp_path = virtual_file_temp_path(&file_path);
+        let write_result = (|| -> std::io::Result<()> {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)?;
+            file.write_all(source.as_bytes())?;
+            file.flush()?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(error);
         }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Another thread already wrote the file; use what's there.
+        if let Err(error) = fs::rename(&tmp_path, &file_path) {
+            // On Windows rename does not replace an existing destination. If a
+            // racing writer won, its complete file is equally valid.
+            if file_path.is_file() {
+                let _ = fs::remove_file(&tmp_path);
+            } else {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(error);
+            }
         }
-        Err(e) => return Err(e),
     }
 
     enforce_readonly(&file_path);
     Ok(file_path)
+}
+
+fn virtual_file_temp_path(target: &Path) -> PathBuf {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let filename = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("symbol.al");
+    target.with_file_name(format!(
+        ".{filename}.{}.{}.tmp",
+        std::process::id(),
+        sequence
+    ))
 }
 
 /// mtime of the running al-lsp executable, computed once. Cache entries older
@@ -167,6 +190,11 @@ pub fn app_has_source(app_path: &Path) -> bool {
         Ok(f) => f,
         Err(_) => return false,
     };
+    if file.metadata().map_or(true, |metadata| {
+        metadata.len() > super::app_reader::MAX_APP_FILE_SIZE
+    }) {
+        return false;
+    }
     // SAFETY: .app files are opened read-only. Concurrent modification is
     // prevented by the staleness check at the call site (package version
     // comparison via `modified` timestamp). On Linux, MAP_PRIVATE means a
@@ -186,6 +214,9 @@ pub fn app_has_source(app_path: &Path) -> bool {
         Ok(a) => a,
         Err(_) => return false,
     };
+    if archive.len() > super::app_reader::MAX_ARCHIVE_ENTRIES {
+        return false;
+    }
 
     for i in 0..archive.len() {
         if let Ok(entry) = archive.by_index_raw(i) {

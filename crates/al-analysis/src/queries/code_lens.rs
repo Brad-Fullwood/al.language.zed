@@ -121,8 +121,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
     // Build a workspace-wide reference count map in a single pass over all
     // files: O(F + P) instead of O(P * F).
     //
-    // Key: lowercased procedure name (AL identifiers are case-insensitive).
-    // Value: number of distinct (uri, line, col) positions referencing that name.
+    // Key: canonical declaration binding. Value: distinct call-site count.
     let ref_counts = build_reference_counts(workspace, uri);
 
     let mut lenses = Vec::new();
@@ -131,8 +130,12 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
             for child in children {
                 if super::is_procedure_symbol(child.kind.into()) {
                     let name_raw = child.name.trim_matches('"');
-                    let key = name_raw.to_lowercase();
-                    let count = ref_counts.get(&key).copied().unwrap_or(0);
+                    let count = reference_count_for_declaration(
+                        workspace,
+                        uri,
+                        child.selection_range.start.into(),
+                        &ref_counts,
+                    );
                     lenses.push(CodeLensEntry {
                         range: child.selection_range.into(),
                         title: reference_label(count),
@@ -158,8 +161,12 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
         }
         if super::is_procedure_symbol(sym.kind.into()) {
             let name_raw = sym.name.trim_matches('"');
-            let key = name_raw.to_lowercase();
-            let count = ref_counts.get(&key).copied().unwrap_or(0);
+            let count = reference_count_for_declaration(
+                workspace,
+                uri,
+                sym.selection_range.start.into(),
+                &ref_counts,
+            );
             lenses.push(CodeLensEntry {
                 range: sym.selection_range.into(),
                 title: reference_label(count),
@@ -325,15 +332,72 @@ fn reference_label(count: usize) -> String {
     }
 }
 
-/// Build a map of lowercased procedure name → distinct reference count by
+fn reference_count_for_declaration(
+    workspace: &Workspace,
+    uri: &Url,
+    position: super::Position,
+    counts: &HashMap<super::binding::BindKey, usize>,
+) -> usize {
+    let declaration = super::binding::decl_loc(workspace, uri, position);
+    counts.get(&declaration).copied().unwrap_or(0)
+}
+
+/// Build a map of canonical declaration binding → distinct reference count by
 /// scanning every file in the workspace exactly once.
 ///
 /// Complexity: O(F) where F is the number of workspace files (times the work
 /// of walking each file's parse tree).  The caller then does O(P) lookups —
 /// total O(F + P) versus the previous O(P * F).
-fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<String, usize> {
-    // name_lower → set of (uri_string, line, col) to deduplicate locations
-    let mut seen: HashMap<String, std::collections::HashSet<(String, u32, u32)>> = HashMap::new();
+fn build_reference_counts(
+    workspace: &Workspace,
+    current_uri: &Url,
+) -> HashMap<super::binding::BindKey, usize> {
+    type MemberKey = (String, String, String);
+
+    // canonical declaration → set of (uri_string, line, col) occurrences.
+    let mut seen: HashMap<super::binding::BindKey, std::collections::HashSet<(String, u32, u32)>> =
+        HashMap::new();
+    // (object kind, object name, member name) → canonical declaration.
+    // EventSubscriber attributes contain string literals rather than normal
+    // identifier references, so binding them requires the complete workspace
+    // declaration map before reference collection begins.
+    let mut member_bindings: HashMap<MemberKey, super::binding::BindKey> = HashMap::new();
+
+    fn record_member_bindings(
+        workspace: &Workspace,
+        file_uri: &Url,
+        text: &str,
+        tree: &tree_sitter::Tree,
+        member_bindings: &mut HashMap<MemberKey, super::binding::BindKey>,
+    ) {
+        let Some(object) = al_syntax::find_object_declaration(tree, text) else {
+            return;
+        };
+        let source = text.as_bytes();
+        al_syntax::walk_tree(tree.root_node(), &mut |node| {
+            if !matches!(
+                node.kind(),
+                "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
+            ) {
+                return;
+            }
+            let Some(name_node) = node.child_by_field_name("name") else {
+                return;
+            };
+            let Ok(name) = name_node.utf8_text(source) else {
+                return;
+            };
+            let range = al_syntax::ts_range_to_syntax(&name_node.range(), source);
+            member_bindings.insert(
+                (
+                    object.kind.to_lowercase(),
+                    object.name.to_lowercase(),
+                    name.trim_matches('"').to_lowercase(),
+                ),
+                super::binding::decl_loc(workspace, file_uri, range.start.into()),
+            );
+        });
+    }
 
     /// Walk a single file's parse tree once, recording the *name* of every
     /// call site (`Foo()`, `obj.Foo()`, `T::Foo()`) into `seen`.
@@ -353,35 +417,94 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
     /// - scope call `T::Foo()`: `identifier → name → scope_call_suffix`
     ///   as the `member` field.
     fn record_file(
+        workspace: &Workspace,
+        file_uri: &Url,
         uri_str: &str,
         text: &str,
         tree: &tree_sitter::Tree,
-        seen: &mut HashMap<String, std::collections::HashSet<(String, u32, u32)>>,
+        member_bindings: &HashMap<MemberKey, super::binding::BindKey>,
+        seen: &mut HashMap<super::binding::BindKey, std::collections::HashSet<(String, u32, u32)>>,
     ) {
         let source_bytes = text.as_bytes();
         al_syntax::walk_tree(tree.root_node(), &mut |node| {
+            if node.kind() == "attribute" {
+                record_event_subscriber_reference(
+                    node,
+                    uri_str,
+                    source_bytes,
+                    member_bindings,
+                    seen,
+                );
+                return;
+            }
             if !matches!(node.kind(), "identifier" | "quoted_identifier") {
                 return;
             }
             if !is_call_site(node) {
                 return;
             }
-            let Ok(node_text) = node.utf8_text(source_bytes) else {
-                return;
-            };
-            let name_lower = node_text.trim_matches('"').to_lowercase();
-            if name_lower.is_empty() {
-                return;
-            }
             let ts_range = node.range();
             let lsp_range = al_syntax::ts_range_to_syntax(&ts_range, source_bytes);
+            let position: super::Position = lsp_range.start.into();
+            let declaration = super::binding::decl_loc(workspace, file_uri, position);
             let key = (
                 uri_str.to_string(),
                 lsp_range.start.line,
                 lsp_range.start.character,
             );
-            seen.entry(name_lower).or_default().insert(key);
+            seen.entry(declaration).or_default().insert(key);
         });
+    }
+
+    fn record_event_subscriber_reference(
+        node: tree_sitter::Node<'_>,
+        uri_str: &str,
+        source: &[u8],
+        member_bindings: &HashMap<MemberKey, super::binding::BindKey>,
+        seen: &mut HashMap<super::binding::BindKey, std::collections::HashSet<(String, u32, u32)>>,
+    ) {
+        let attr_name = node
+            .child_by_field_name("name")
+            .or_else(|| node.child(0))
+            .and_then(|n| n.utf8_text(source).ok())
+            .unwrap_or("");
+        if !attr_name.trim().eq_ignore_ascii_case("EventSubscriber") {
+            return;
+        }
+        let mut cursor = node.walk();
+        let Some(arg_list) = node
+            .children(&mut cursor)
+            .find(|child| child.kind() == "attribute_argument_list")
+        else {
+            return;
+        };
+        let mut arg_cursor = arg_list.walk();
+        let args: Vec<_> = arg_list
+            .children(&mut arg_cursor)
+            .filter(|child| child.kind() == "attribute_argument")
+            .collect();
+        let (Some(kind_arg), Some(object_arg), Some(event_arg)) =
+            (args.first(), args.get(1), args.get(2))
+        else {
+            return;
+        };
+        let clean = |arg: &tree_sitter::Node<'_>| {
+            arg.utf8_text(source)
+                .ok()
+                .map(al_syntax::clean_attr_arg)
+                .unwrap_or_default()
+                .to_lowercase()
+        };
+        let member_key = (clean(kind_arg), clean(object_arg), clean(event_arg));
+        let Some(declaration) = member_bindings.get(&member_key) else {
+            return;
+        };
+        let range = al_syntax::ts_range_to_syntax(&event_arg.range(), source);
+        seen.entry(declaration.clone()).or_default().insert((
+            uri_str.to_string(),
+            range.start.line,
+            range.start.character,
+        ));
     }
 
     /// Walk parents of an `identifier` / `quoted_identifier` node to decide
@@ -442,13 +565,49 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
 
     if let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, current_uri)
     {
-        let uri_str = current_uri.to_string();
-        record_file(&uri_str, &text, &tree, &mut seen);
+        record_member_bindings(workspace, current_uri, &text, &tree, &mut member_bindings);
     }
 
     let current_path = current_uri.to_file_path().ok();
-    for entry in workspace.file_index.files.iter() {
-        let file_path = entry.key().clone();
+    let file_paths: Vec<std::path::PathBuf> = workspace
+        .file_index
+        .files
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect();
+    for file_path in &file_paths {
+        if current_path.as_ref() == Some(file_path) {
+            continue;
+        }
+        let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(file_path) else {
+            continue;
+        };
+        if let Ok(file_uri) = Url::from_file_path(file_path) {
+            record_member_bindings(
+                workspace,
+                &file_uri,
+                &file_text,
+                &file_tree,
+                &mut member_bindings,
+            );
+        }
+    }
+
+    if let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, current_uri)
+    {
+        let uri_str = current_uri.to_string();
+        record_file(
+            workspace,
+            current_uri,
+            &uri_str,
+            &text,
+            &tree,
+            &member_bindings,
+            &mut seen,
+        );
+    }
+
+    for file_path in file_paths {
         if current_path.as_ref() == Some(&file_path) {
             continue;
         }
@@ -457,7 +616,15 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
         };
         if let Ok(file_uri) = Url::from_file_path(&file_path) {
             let uri_str = file_uri.to_string();
-            record_file(&uri_str, &file_text, &file_tree, &mut seen);
+            record_file(
+                workspace,
+                &file_uri,
+                &uri_str,
+                &file_text,
+                &file_tree,
+                &member_bindings,
+                &mut seen,
+            );
         }
     }
 
@@ -584,6 +751,70 @@ codeunit 50100 MyCodeunit
             "0 references",
             "reference count must not be zero"
         );
+    }
+
+    #[test]
+    fn reference_lens_uses_declaration_binding_not_method_text() {
+        let uri_a = Url::parse("file:///project/A.al").unwrap();
+        let src_a = r#"codeunit 50100 "A"
+{
+    procedure Post()
+    begin
+        Post();
+    end;
+}"#;
+        let src_b = r#"codeunit 50101 "B"
+{
+    procedure Post()
+    begin
+        Post();
+    end;
+}"#;
+        let ws = workspace_with_doc(&uri_a, src_a);
+        // B is deliberately indexed but unopened: cross-workspace CodeLens
+        // must retain binding awareness for background files too.
+        ws.file_index
+            .add_file(std::path::PathBuf::from("/project/B.al"), src_b.to_string());
+
+        let lenses = code_lens(&ws, &uri_a);
+        let post = lenses
+            .iter()
+            .find(|lens| matches!(lens.kind, CodeLensKind::Reference(_)))
+            .expect("Post reference lens");
+        assert_eq!(post.title, "1 reference");
+        assert_eq!(post.kind, CodeLensKind::Reference(1));
+    }
+
+    #[test]
+    fn reference_lens_counts_event_subscriber_attribute() {
+        let publisher_uri = Url::parse("file:///project/Publisher.al").unwrap();
+        let publisher = r#"codeunit 50100 "Publisher"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnAfterPost()
+    begin
+    end;
+}"#;
+        let subscriber = r#"codeunit 50101 "Subscriber"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Publisher", 'OnAfterPost', '', false, false)]
+    local procedure HandleAfterPost()
+    begin
+    end;
+}"#;
+        let ws = workspace_with_doc(&publisher_uri, publisher);
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/project/Subscriber.al"),
+            subscriber.to_string(),
+        );
+
+        let lenses = code_lens(&ws, &publisher_uri);
+        let event = lenses
+            .iter()
+            .find(|lens| matches!(lens.kind, CodeLensKind::Reference(_)))
+            .expect("event reference lens");
+        assert_eq!(event.title, "1 reference");
+        assert_eq!(event.kind, CodeLensKind::Reference(1));
     }
 
     #[test]

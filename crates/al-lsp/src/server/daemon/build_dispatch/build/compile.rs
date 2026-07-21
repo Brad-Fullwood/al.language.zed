@@ -6,6 +6,61 @@ use al_workspace::Workspace;
 
 use crate::server::daemon::build_dispatch::{ERR_INITIALIZING, ERR_NO_PROJECT};
 
+fn diagnostics_json(diagnostics: &[al_compile::CompileDiagnostic]) -> Vec<serde_json::Value> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            serde_json::json!({
+                "file": diagnostic.file,
+                "line": diagnostic.line,
+                "column": diagnostic.column,
+                "endLine": serde_json::Value::Null,
+                "endColumn": serde_json::Value::Null,
+                "severity": diagnostic.severity,
+                "code": diagnostic.code,
+                "message": diagnostic.message,
+            })
+        })
+        .collect()
+}
+
+/// Run the workspace-native semantic and call/event-stack analyzers used by
+/// editor lint. Error-severity findings gate native emission; transaction
+/// warnings are returned alongside the emitter's project/binding diagnostics.
+fn workspace_diagnostics_json(
+    workspace: &Workspace,
+    config: &al_project::config::AlConfig,
+) -> (Vec<serde_json::Value>, bool) {
+    let diagnostics =
+        al_analysis::queries::diagnostics::native_workspace_diagnostics(workspace, config);
+    let has_errors = diagnostics.iter().any(|(_, diagnostic)| {
+        diagnostic.severity == al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Error
+    });
+    let values = diagnostics
+        .into_iter()
+        .map(|(path, diagnostic)| {
+            let severity = match diagnostic.severity {
+                al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Error => "error",
+                al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Warning => "warning",
+                al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Info => "info",
+                al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Hint => "hint",
+            };
+            serde_json::json!({
+                "file": path.display().to_string(),
+                "line": diagnostic.range.start.line + 1,
+                "column": diagnostic.range.start.character + 1,
+                "endLine": diagnostic.range.end.line + 1,
+                "endColumn": diagnostic.range.end.character + 1,
+                "severity": severity,
+                "code": diagnostic.code,
+                "message": diagnostic.message,
+                "source": diagnostic.source,
+            })
+        })
+        .collect();
+    (values, has_errors)
+}
+
 pub(in crate::server::daemon) async fn dispatch_compile(
     workspace: &Workspace,
     id: u64,
@@ -46,14 +101,28 @@ pub(in crate::server::daemon) async fn dispatch_compile(
     // Native-first compile policy. Default keeps compilation on the pure-Rust
     // `.app` emitter; `al.useOfficialCompiler: true` opts into
     // Microsoft's `dotnet alc` subprocess. There is no silent fallback.
-    let use_official_compiler = workspace.config.read().await.use_official_compiler;
+    let config_snapshot = workspace.config.read().await.clone();
+    let use_official_compiler = config_snapshot.use_official_compiler;
 
     let result: Result<serde_json::Value, (i32, String)> = async {
         // Native-first: the pure-Rust native `.app` emitter is the default — no
         // `alc`, no C# bridge. `al.useOfficialCompiler: true` opts into the
-        // Microsoft `dotnet alc` subprocess. The native emitter does no semantic
-        // analysis, so structured diagnostics come from the LSP, not this step.
+        // Microsoft `dotnet alc` subprocess. The native path performs its own
+        // syntax/project/binding verification and returns structured diagnostics.
         if !use_official_compiler {
+            let (workspace_diagnostics, has_workspace_errors) =
+                workspace_diagnostics_json(workspace, &config_snapshot);
+            if has_workspace_errors {
+                return Ok(serde_json::json!({
+                    "success": false,
+                    "diagnostics": workspace_diagnostics,
+                    "appPath": serde_json::Value::Null,
+                    "output": "native workspace semantic validation failed; .app was not emitted",
+                    "backend": "native",
+                    "validated": true,
+                    "verificationLevel": "native-syntax-project-binding-symbol-graph",
+                }));
+            }
             // Route through the shared build service.
             let compile_result = al_compile::build(al_compile::BuildRequest {
                 project_root: &project_root,
@@ -65,18 +134,16 @@ pub(in crate::server::daemon) async fn dispatch_compile(
             })
             .await
             .map_err(|e| (error_codes::CODE_ANALYSIS_ERROR, e.to_string()))?;
+            let mut diagnostics = diagnostics_json(&compile_result.diagnostics);
+            diagnostics.extend(workspace_diagnostics);
             return Ok(serde_json::json!({
                 "success": compile_result.success,
-                "diagnostics": [],
+                "diagnostics": diagnostics,
                 "appPath": compile_result.app_path.as_ref().map(|p| p.display().to_string()),
                 "output": compile_result.output,
-                // Explicit, machine-readable markers so CLI/Zed/MCP output can
-                // never be mistaken for a compiler-validated build: the native
-                // emitter parses and packages but performs no semantic
-                // analysis (no type checks, no unknown-symbol/permission/event
-                // validation). Set al.useOfficialCompiler=true for that.
                 "backend": "native",
-                "validated": false,
+                "validated": true,
+                "verificationLevel": "native-syntax-project-binding-symbol-graph",
             }));
         }
 
@@ -140,17 +207,7 @@ pub(in crate::server::daemon) async fn dispatch_compile(
             .map(|p| p.display().to_string());
         Ok(serde_json::json!({
             "success": compile_result.success,
-            "diagnostics": compile_result.diagnostics.iter().map(|d| serde_json::json!({
-                "file": d.file,
-                "line": d.line,
-                "column": d.column,
-                // alc output carries no end positions; keep the wire shape.
-                "endLine": serde_json::Value::Null,
-                "endColumn": serde_json::Value::Null,
-                "severity": d.severity,
-                "code": d.code,
-                "message": d.message,
-            })).collect::<Vec<_>>(),
+            "diagnostics": diagnostics_json(&compile_result.diagnostics),
             "appPath": app_path,
             "backend": "alc",
             "validated": true,
@@ -211,8 +268,27 @@ pub(in crate::server::daemon) async fn dispatch_package(
     // analyzers — so an unset `al.codeAnalyzers` never silently runs the full
     // Microsoft analyzer set (e.g. AppSourceCop AS0016) and gates packaging.
     // `al.useOfficialCompiler: true` opts into Microsoft's `dotnet alc`.
-    let use_official_compiler = workspace.config.read().await.use_official_compiler;
+    let config_snapshot = workspace.config.read().await.clone();
+    let use_official_compiler = config_snapshot.use_official_compiler;
     if !use_official_compiler {
+        let (workspace_diagnostics, has_workspace_errors) =
+            workspace_diagnostics_json(workspace, &config_snapshot);
+        if has_workspace_errors {
+            return Response {
+                id,
+                result: Some(serde_json::json!({
+                    "success": false,
+                    "diagnostics": workspace_diagnostics,
+                    "appPath": serde_json::Value::Null,
+                    "output": "native workspace semantic validation failed; .app was not emitted",
+                    "backend": "native",
+                    "validated": true,
+                    "verificationLevel": "native-syntax-project-binding-symbol-graph",
+                })),
+                error: None,
+                ..Default::default()
+            };
+        }
         // Route through the shared build service.
         let compile_result = match al_compile::build(al_compile::BuildRequest {
             project_root: &project_root,
@@ -237,15 +313,18 @@ pub(in crate::server::daemon) async fn dispatch_package(
                 };
             }
         };
+        let mut diagnostics = diagnostics_json(&compile_result.diagnostics);
+        diagnostics.extend(workspace_diagnostics);
         return Response {
             id,
             result: Some(serde_json::json!({
                 "success": compile_result.success,
-                "diagnostics": [],
+                "diagnostics": diagnostics,
                 "appPath": compile_result.app_path.as_ref().map(|p| p.display().to_string()),
                 "output": compile_result.output,
                 "backend": "native",
-                "validated": false,
+                "validated": true,
+                "verificationLevel": "native-syntax-project-binding-symbol-graph",
             })),
             error: None,
             ..Default::default()
@@ -448,10 +527,45 @@ mod tests {
         );
         let result = resp.result.expect("native compile must return a result");
         assert_eq!(result["success"], true, "native compile should succeed");
+        assert_eq!(result["validated"], true);
+        assert_eq!(
+            result["verificationLevel"],
+            "native-syntax-project-binding-symbol-graph"
+        );
         assert!(
             result["appPath"].is_string(),
             "native compile should report an appPath, got: {result}"
         );
+    }
+
+    #[tokio::test]
+    async fn compile_reports_native_syntax_diagnostics_and_writes_no_app() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("app.json"),
+            r#"{"id":"aaaaaaaa-1111-2222-3333-444444444444","name":"t","publisher":"p","version":"1.0.0.0","runtime":"14.0","idRanges":[{"from":50100,"to":50149}],"dependencies":[]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("src/Lib.al"),
+            "codeunit 50100 T { procedure P() begin if then",
+        )
+        .unwrap();
+        *ws.project.write().await = Some(make_project(tmp.path()));
+
+        let response = dispatch_compile(&ws, 20).await;
+        assert!(response.error.is_none());
+        let result = response.result.expect("failed compile returns a result");
+        assert_eq!(result["success"], false);
+        assert!(result["appPath"].is_null());
+        assert_eq!(result["backend"], "native");
+        assert!(result["diagnostics"]
+            .as_array()
+            .expect("diagnostics array")
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "ALN0001"));
     }
 
     /// Native-first compile policy: the default `compile` path uses the pure-Rust

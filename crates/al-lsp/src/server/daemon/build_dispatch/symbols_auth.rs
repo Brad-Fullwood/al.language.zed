@@ -248,6 +248,7 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
 
     let dest = project.packages_dir.clone();
     let project_configs = project.server_configs.clone();
+    let configured_packages = project.packages.clone();
 
     let _ = project;
 
@@ -260,18 +261,20 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
     let mut skipped: Vec<serde_json::Value> = Vec::new();
     let all_deps: Vec<al_symbols::nuget::AppDependency> = all_deps
         .into_iter()
-        .filter(|dep| match find_satisfied_package(&dest, dep) {
-            Some(existing) => {
-                skipped.push(serde_json::json!({
-                    "name": dep.name,
-                    "status": "skipped",
-                    "path": existing,
-                    "note": "already present in .alpackages",
-                }));
-                false
-            }
-            None => true,
-        })
+        .filter(
+            |dep| match find_satisfied_package(&configured_packages, dep) {
+                Some(existing) => {
+                    skipped.push(serde_json::json!({
+                        "name": dep.name,
+                        "status": "skipped",
+                        "path": existing,
+                        "note": "already present in a configured symbol folder",
+                    }));
+                    false
+                }
+                None => true,
+            },
+        )
         .collect();
 
     let result: Vec<serde_json::Value> = {
@@ -378,6 +381,12 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
     // `download_symbols_command` reload sequence in
     // `crate::server::workspace::download_symbols_command`.
     let loaded = refresh_workspace_after_download(workspace, &result);
+    if success > 0 {
+        let config = workspace.config.read().await.clone();
+        if let Some(project) = workspace.project.write().await.as_mut() {
+            project.apply_symbol_settings(&config);
+        }
+    }
 
     Response {
         id,
@@ -394,34 +403,16 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
     }
 }
 fn find_satisfied_package(
-    dest: &std::path::Path,
+    package_paths: &[std::path::PathBuf],
     dep: &al_symbols::nuget::AppDependency,
 ) -> Option<String> {
-    fn normalize(s: &str) -> String {
-        s.chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .collect::<String>()
-            .to_lowercase()
-    }
-    let want_full = format!("{}{}", normalize(&dep.publisher), normalize(&dep.name));
-    let want_name = normalize(&dep.name);
-    if want_name.is_empty() {
-        return None;
-    }
-    for entry in std::fs::read_dir(dest).ok()?.flatten() {
-        let fname = entry.file_name().to_string_lossy().into_owned();
-        let Some(stem) = fname.strip_suffix(".app") else {
-            continue;
-        };
-        // `Publisher_Name_1.2.3.4` → compare the prefix; bare stems
-        // (`System`) compare whole.
-        let prefix = match stem.rsplit_once('_') {
-            Some((p, version)) if version.chars().all(|c| c.is_ascii_digit() || c == '.') => p,
-            _ => stem,
-        };
-        let norm = normalize(prefix);
-        if norm == want_full || norm == want_name {
-            return Some(entry.path().display().to_string());
+    for path in package_paths {
+        if let Ok(manifest) = al_symbols::app_reader::read_app_manifest_file(path) {
+            if manifest.app_id.eq_ignore_ascii_case(&dep.id)
+                && al_symbols::model::version_at_least(&manifest.version, &dep.version)
+            {
+                return Some(path.display().to_string());
+            }
         }
     }
     None

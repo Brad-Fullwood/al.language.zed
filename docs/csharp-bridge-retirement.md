@@ -8,9 +8,10 @@ has already been replicated natively, and what must be finished before
 
 The C# bridge means:
 
-- `crates/al-core/bridge/AlBridge.csproj`
-- `crates/al-core/bridge/Bridge.cs`
-- Rust hosting via `crates/al-core/src/semantic/{host,bridge,lifecycle,cache}.rs`
+- `crates/al-semantic/bridge/AlBridge.csproj`
+- `crates/al-semantic/bridge/Bridge.cs`
+- Rust hosting via `crates/al-semantic/src/{host,bridge,lifecycle,cache}.rs`
+- lifecycle orchestration via `crates/al-workspace/src/semantic_lifecycle.rs`
 - build/release/install plumbing that builds and ships `AlBridge.dll`
 
 It does **not** mean every Microsoft dependency. `dotnet alc`, Business Central
@@ -25,7 +26,7 @@ server publish/debug APIs, and official-LSP fallback are separate escape hatches
 | `completions` | `SemanticBridge::completions_at` | `queries/completions.rs` member-access fallback | CodeAnalysis semantic-model member completion. |
 | `builtins` | `SemanticBridge::builtin_types` | LSP startup/cache in `server/lsp.rs` and `semantic/lifecycle.rs` | Extract built-in types, methods, parameters, returns, enum values. |
 | `errorCodes` | `SemanticBridge::error_codes` | `server/lsp.rs`, diagnostics enrichment | Extract compiler error-code messages/severities from CodeAnalysis. |
-| `compile` | `SemanticBridge::compile` | daemon `compile`, publish path | Runs Microsoft `alc` via the C# bridge and maps SARIF/stdout into structured diagnostics. |
+| `compile` | deprecated `SemanticBridge::compile` | none | Retired and fails closed; maintained build paths live in `al-compile`. |
 | `ping`/`Init` | bridge lifecycle | lazy init, health checks | Prove CLR/CodeAnalysis can load and recover from failures. |
 
 ## Already Native Or Mostly Native

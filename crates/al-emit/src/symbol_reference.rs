@@ -51,6 +51,13 @@ pub struct ExternalSymbols {
     pub field_types: std::collections::HashMap<(String, String), String>,
     /// Page name → its SourceTable name.
     pub page_source_tables: std::collections::HashMap<String, String>,
+    /// `(kind, lowercase object name)` for binding checks that must distinguish
+    /// e.g. a table from a page with the same name.
+    pub object_kinds: std::collections::HashSet<(ObjectKind, String)>,
+    /// Lowercase, brace-free app IDs of every successfully loaded dependency
+    /// package. Used to reject an explicitly declared dependency that is absent
+    /// from `.alpackages` instead of emitting against an incomplete symbol set.
+    pub package_ids: std::collections::HashSet<String>,
 }
 
 /// Build the project resolver merged over `external` (referenced-app objects);

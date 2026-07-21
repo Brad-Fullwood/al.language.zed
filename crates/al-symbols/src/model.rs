@@ -336,6 +336,39 @@ pub struct SymbolPackage {
     pub object_count: usize,
 }
 
+impl SymbolPackage {
+    /// Whether this package satisfies an `app.json` dependency.
+    ///
+    /// Dependency versions are minimums in AL. Identity is matched by app GUID,
+    /// never by a potentially ambiguous filename or display name.
+    pub fn satisfies_dependency(&self, dependency: &al_types::AppDependency) -> bool {
+        self.app_id.eq_ignore_ascii_case(&dependency.id)
+            && version_at_least(&self.version, &dependency.version)
+    }
+}
+
+/// Compare dotted numeric BC versions, padding omitted trailing components.
+/// Non-numeric versions are accepted only when they match exactly ignoring case.
+pub fn version_at_least(actual: &str, minimum: &str) -> bool {
+    fn components(version: &str) -> Option<Vec<u64>> {
+        let parts: Option<Vec<u64>> = version
+            .split('.')
+            .map(|part| part.parse::<u64>().ok())
+            .collect();
+        parts.filter(|parts| !parts.is_empty())
+    }
+
+    let (Some(mut actual_parts), Some(mut minimum_parts)) =
+        (components(actual), components(minimum))
+    else {
+        return actual.eq_ignore_ascii_case(minimum);
+    };
+    let width = actual_parts.len().max(minimum_parts.len());
+    actual_parts.resize(width, 0);
+    minimum_parts.resize(width, 0);
+    actual_parts >= minimum_parts
+}
+
 /// Serialized via `serde_json::to_value` in daemon responses. `Arc<SymbolEntry>`
 /// fields are serializable because the workspace `serde` dependency enables the `rc` feature.
 #[derive(Debug, Clone, Serialize)]
@@ -1266,5 +1299,38 @@ mod tests {
         assert_eq!(deserialized.kind, ObjectKind::Enum);
         assert_eq!(deserialized.name, "MyEnum");
         assert_eq!(deserialized.enum_values.len(), 2);
+    }
+
+    #[test]
+    fn package_dependency_matching_uses_guid_and_minimum_version() {
+        let package = SymbolPackage {
+            app_id: "ABC-123".into(),
+            name: "Library".into(),
+            publisher: "Contoso".into(),
+            version: "27.4.10.0".into(),
+            objects: vec![],
+            object_count: 0,
+        };
+        let mut dependency = al_types::AppDependency {
+            id: "abc-123".into(),
+            name: "Renamed Library".into(),
+            publisher: "Different Display Publisher".into(),
+            version: "27.3.999.0".into(),
+        };
+        assert!(package.satisfies_dependency(&dependency));
+
+        dependency.version = "28.0.0.0".into();
+        assert!(!package.satisfies_dependency(&dependency));
+        dependency.version = "27.0.0.0".into();
+        dependency.id = "different-id".into();
+        assert!(!package.satisfies_dependency(&dependency));
+    }
+
+    #[test]
+    fn version_comparison_pads_components_and_handles_non_numeric_values() {
+        assert!(version_at_least("27.3", "27.3.0.0"));
+        assert!(!version_at_least("26.9.999.0", "27.0.0.0"));
+        assert!(version_at_least("preview", "PREVIEW"));
+        assert!(!version_at_least("preview", "27.0.0.0"));
     }
 }

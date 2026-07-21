@@ -8,6 +8,7 @@
 //! using its own `BcServerConfig`. This client handles only HTTP transport and
 //! authentication.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -18,6 +19,8 @@ use super::nuget::AppDependency;
 use super::oauth;
 
 pub use al_types::AuthMethod;
+
+const MAX_PACKAGE_BYTES: u64 = 200 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum BcServerError {
@@ -65,6 +68,12 @@ pub struct BcServerClient {
     /// flag is set, `add_auth` stops honouring the env var and falls through to
     /// the OAuth acquisition flow, which *can* recover.
     stale_env_token: std::sync::atomic::AtomicBool,
+    /// Per-output-path locks prevent duplicate concurrent requests from racing
+    /// writes to the same package file.
+    package_locks: std::sync::Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+    /// Successful downloads in this client session. Checked again after taking
+    /// the per-package lock so concurrent duplicates reuse the first result.
+    completed_downloads: std::sync::Mutex<HashMap<PathBuf, PathBuf>>,
 }
 
 impl BcServerClient {
@@ -98,7 +107,21 @@ impl BcServerClient {
             message_sink,
             cached_token: tokio::sync::RwLock::new(None),
             stale_env_token: std::sync::atomic::AtomicBool::new(false),
+            package_locks: std::sync::Mutex::new(HashMap::new()),
+            completed_downloads: std::sync::Mutex::new(HashMap::new()),
         })
+    }
+
+    fn lock_for(&self, output_path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .package_locks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        Arc::clone(
+            locks
+                .entry(output_path.to_path_buf())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
     }
 
     /// Forget the in-memory cached access token so the next `add_auth` call
@@ -123,16 +146,43 @@ impl BcServerClient {
         dep: &AppDependency,
         dest: &Path,
     ) -> Result<PathBuf, BcServerError> {
+        let output_path = dest.join(package_filename(&dep.publisher, &dep.name, &dep.version));
+        let lock = self.lock_for(&output_path);
+        let _guard = lock.lock().await;
+
+        if let Some(completed) = self
+            .completed_downloads
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&output_path)
+            .filter(|path| path.is_file())
+            .cloned()
+        {
+            debug!(package = %dep.name, path = %completed.display(), "Reusing completed BC package download");
+            return Ok(completed);
+        }
+
+        let downloaded = self
+            .download_one_locked(url, dep, dest, &output_path)
+            .await?;
+        self.completed_downloads
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(output_path, downloaded.clone());
+        Ok(downloaded)
+    }
+
+    async fn download_one_locked(
+        &self,
+        url: &str,
+        dep: &AppDependency,
+        dest: &Path,
+        output_path: &Path,
+    ) -> Result<PathBuf, BcServerError> {
         debug!(url = %url, package = %dep.name, "Downloading from BC server");
-
-        let mut request = self.client.get(url);
-
-        request = self.add_auth(request).await?;
-
-        let response = request.send().await?;
+        let response = self.send_with_retry(url, dep).await?;
         let status = response.status().as_u16();
 
-        const MAX_PACKAGE_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
         match status {
             200 => {
                 if let Some(content_length) = response.content_length() {
@@ -147,34 +197,14 @@ impl BcServerClient {
                         });
                     }
                 }
-                let bytes = response.bytes().await?;
-
-                // Re-check actual size: a server may omit Content-Length or lie
-                // about it; the cap also has to apply to the buffered response.
-                if bytes.len() as u64 > MAX_PACKAGE_BYTES {
-                    return Err(BcServerError::ServerError {
-                        status,
-                        message: format!(
-                            "Package '{name}' body {got} bytes exceeds {max} byte limit",
-                            name = dep.name,
-                            got = bytes.len(),
-                            max = MAX_PACKAGE_BYTES,
-                        ),
-                    });
-                }
-
-                std::fs::create_dir_all(dest)?;
-                let filename = package_filename(&dep.publisher, &dep.name);
-                let out_path = dest.join(&filename);
-
-                std::fs::write(&out_path, &bytes)?;
+                let size = stream_package_to_file(response, dep, dest, output_path).await?;
                 info!(
                     package = %dep.name,
-                    path = %out_path.display(),
-                    size = bytes.len(),
+                    path = %output_path.display(),
+                    size,
                     "Downloaded symbol package from BC server"
                 );
-                Ok(out_path)
+                Ok(output_path.to_path_buf())
             }
             401 | 403 => {
                 // The cached OAuth token (if any) is now known-stale —
@@ -215,20 +245,84 @@ impl BcServerClient {
         }
     }
 
+    async fn send_with_retry(
+        &self,
+        url: &str,
+        dep: &AppDependency,
+    ) -> Result<reqwest::Response, BcServerError> {
+        const MAX_ATTEMPTS: usize = 3;
+        for attempt in 0..MAX_ATTEMPTS {
+            let request = self.add_auth(self.client.get(url)).await?;
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let transient = matches!(status, 429 | 502 | 503 | 504);
+                    if transient && attempt + 1 < MAX_ATTEMPTS {
+                        let retry_after = response
+                            .headers()
+                            .get(reqwest::header::RETRY_AFTER)
+                            .and_then(|value| value.to_str().ok())
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .map(std::time::Duration::from_secs)
+                            .unwrap_or_else(|| {
+                                std::time::Duration::from_millis(200 * (1u64 << attempt))
+                            })
+                            .min(std::time::Duration::from_secs(30));
+                        warn!(
+                            package = %dep.name,
+                            status,
+                            attempt = attempt + 1,
+                            retry_ms = retry_after.as_millis() as u64,
+                            "Transient BC symbol download failure; retrying"
+                        );
+                        drop(response);
+                        tokio::time::sleep(retry_after).await;
+                        continue;
+                    }
+                    return Ok(response);
+                }
+                Err(error) if attempt + 1 < MAX_ATTEMPTS => {
+                    let retry_after = std::time::Duration::from_millis(200 * (1u64 << attempt));
+                    warn!(
+                        package = %dep.name,
+                        %error,
+                        attempt = attempt + 1,
+                        retry_ms = retry_after.as_millis() as u64,
+                        "BC symbol download transport failure; retrying"
+                    );
+                    tokio::time::sleep(retry_after).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        unreachable!("retry loop always returns on its final attempt")
+    }
+
     /// Download all dependencies concurrently, given pre-computed URLs for each.
     ///
     /// `url_deps` is a slice of `(url, dep)` pairs. The caller (al-core) is
     /// responsible for pairing each dependency with its corresponding download URL.
-    /// All downloads are launched in parallel using `futures::future::join_all`.
+    /// Downloads run concurrently behind a bounded semaphore.
     /// Returns one result per entry in the same order as the input slice.
     pub async fn download_all(
         &self,
         url_deps: &[(String, AppDependency)],
         dest: &Path,
     ) -> Vec<Result<PathBuf, BcServerError>> {
+        const MAX_CONCURRENT_DOWNLOADS: usize = 4;
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DOWNLOADS));
         let futures: Vec<_> = url_deps
             .iter()
-            .map(|(url, dep)| self.download_one(url, dep, dest))
+            .map(|(url, dep)| {
+                let semaphore = Arc::clone(&semaphore);
+                async move {
+                    let _permit = semaphore
+                        .acquire()
+                        .await
+                        .expect("download semaphore is never closed");
+                    self.download_one(url, dep, dest).await
+                }
+            })
             .collect();
         futures::future::join_all(futures).await
     }
@@ -305,6 +399,106 @@ impl BcServerClient {
     }
 }
 
+async fn stream_package_to_file(
+    mut response: reqwest::Response,
+    dep: &AppDependency,
+    dest: &Path,
+    output_path: &Path,
+) -> Result<u64, BcServerError> {
+    use tokio::io::AsyncWriteExt;
+
+    tokio::fs::create_dir_all(dest).await?;
+    static TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let filename = output_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("package.app");
+    let temp_path = dest.join(format!(
+        ".{filename}.{}.{}.tmp",
+        std::process::id(),
+        sequence
+    ));
+
+    let write_result: Result<u64, BcServerError> = async {
+        let mut file = tokio::fs::File::create(&temp_path).await?;
+        let mut received = 0u64;
+        let mut magic = [0u8; 4];
+        let mut magic_len = 0usize;
+
+        while let Some(chunk) = response.chunk().await? {
+            received = received.checked_add(chunk.len() as u64).ok_or_else(|| {
+                BcServerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "package response size overflow",
+                ))
+            })?;
+            if received > MAX_PACKAGE_BYTES {
+                return Err(BcServerError::ServerError {
+                    status: 200,
+                    message: format!(
+                        "Package '{name}' body exceeds {MAX_PACKAGE_BYTES} byte limit",
+                        name = dep.name
+                    ),
+                });
+            }
+            if magic_len < magic.len() {
+                let take = (magic.len() - magic_len).min(chunk.len());
+                magic[magic_len..magic_len + take].copy_from_slice(&chunk[..take]);
+                magic_len += take;
+            }
+            file.write_all(&chunk).await?;
+        }
+
+        if magic_len != magic.len() || &magic != b"NAVX" {
+            return Err(BcServerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "BC server returned non-NAVX content for package '{}'",
+                    dep.name
+                ),
+            )));
+        }
+        file.flush().await?;
+        file.sync_all().await?;
+        Ok(received)
+    }
+    .await;
+
+    let received = match write_result {
+        Ok(received) => received,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(error);
+        }
+    };
+
+    if let Err(error) = crate::app_reader::read_app_manifest_file(&temp_path) {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(BcServerError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "BC server returned an invalid .app for package '{}': {error}",
+                dep.name
+            ),
+        )));
+    }
+
+    if let Err(error) = tokio::fs::rename(&temp_path, output_path).await {
+        // Windows cannot atomically replace an existing destination. The full
+        // temp file is durable at this point, so fall back to remove+rename.
+        if tokio::fs::try_exists(output_path).await.unwrap_or(false) {
+            tokio::fs::remove_file(output_path).await?;
+            tokio::fs::rename(&temp_path, output_path).await?;
+        } else {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(error.into());
+        }
+    }
+
+    Ok(received)
+}
+
 /// Read an error response body with a Content-Length cap before buffering,
 /// then scrub/truncate it via `sanitize_error_body`.
 ///
@@ -324,11 +518,12 @@ async fn read_error_body_capped(response: reqwest::Response) -> String {
 /// replace every character that isn't ASCII-alphanumeric, `.`, `-` or `_`
 /// with `_`, and additionally collapse any `..` sequence so no parent-dir
 /// component can survive.
-fn package_filename(publisher: &str, name: &str) -> String {
+fn package_filename(publisher: &str, name: &str, version: &str) -> String {
     format!(
-        "{}_{}.app",
+        "{}_{}_{}.app",
         sanitize_path_component(publisher),
-        sanitize_path_component(name)
+        sanitize_path_component(name),
+        sanitize_path_component(version)
     )
 }
 
@@ -363,15 +558,15 @@ mod tests {
 
     #[test]
     fn test_app_filename() {
-        let filename = package_filename("Microsoft", "System Application");
-        assert_eq!(filename, "Microsoft_System_Application.app");
+        let filename = package_filename("Microsoft", "System Application", "27.4.0.0");
+        assert_eq!(filename, "Microsoft_System_Application_27.4.0.0.app");
     }
 
     #[test]
     fn test_filename_rejects_path_traversal() {
         // Parent-directory components and path separators in publisher/name
         // must not survive into the filename.
-        let filename = package_filename("../../evil", "..\\pwned");
+        let filename = package_filename("../../evil", "..\\pwned", "1.0/../../bad");
         assert!(!filename.contains(".."), "got {filename}");
         assert!(!filename.contains('/'), "got {filename}");
         assert!(!filename.contains('\\'), "got {filename}");
@@ -442,6 +637,29 @@ mod tests {
         }
     }
 
+    fn valid_app_bytes(name: &str) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let manifest = format!(
+            r#"<?xml version="1.0"?><Package><App Id="00000000-0000-0000-0000-000000000001" Name="{name}" Publisher="Test" Version="1.0.0.0" /></Package>"#
+        );
+        let mut data = Vec::from(&b"NAVX"[..]);
+        data.resize(40, 0);
+        let mut zip_data = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut zip_data));
+            let options = SimpleFileOptions::default();
+            zip.start_file("NavxManifest.xml", options).unwrap();
+            zip.write_all(manifest.as_bytes()).unwrap();
+            zip.start_file("SymbolReference.json", options).unwrap();
+            zip.write_all(b"{}").unwrap();
+            zip.finish().unwrap();
+        }
+        data.extend_from_slice(&zip_data);
+        data
+    }
+
     /// A client that never authenticates (Windows auth adds no headers), so
     /// `download_one` can be driven against a mock server without touching the
     /// OAuth flow or env vars.
@@ -452,13 +670,13 @@ mod tests {
 
     #[tokio::test]
     async fn download_one_200_writes_app_file_to_dest() {
-        let body = b"AL-PACKAGE-BYTES";
+        let body = valid_app_bytes("System Application");
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
                     .insert_header("Content-Length", body.len().to_string().as_str())
-                    .set_body_bytes(body.to_vec()),
+                    .set_body_bytes(body.clone()),
             )
             .mount(&server)
             .await;
@@ -472,9 +690,90 @@ mod tests {
             .await
             .expect("download succeeds");
 
-        assert_eq!(out, tmp.join("Microsoft_System_Application.app"));
+        assert_eq!(out, tmp.join("Microsoft_System_Application_1.0.0.0.app"));
         assert_eq!(std::fs::read(&out).unwrap(), body);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn chunked_download_is_streamed_without_content_length() {
+        let body = valid_app_bytes("Chunked");
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Transfer-Encoding", "chunked")
+                    .set_body_bytes(body.clone()),
+            )
+            .mount(&server)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = no_auth_client()
+            .download_one(&server.uri(), &dep("Chunked", "Pub", "1.0.0.0"), tmp.path())
+            .await
+            .expect("chunked package should stream successfully");
+
+        assert_eq!(std::fs::read(out).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn non_navx_response_is_rejected_without_publishing_partial_file() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("login page"))
+            .mount(&server)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let dependency = dep("Bad", "Pub", "1.0.0.0");
+
+        let error = no_auth_client()
+            .download_one(&server.uri(), &dependency, tmp.path())
+            .await
+            .expect_err("HTML/error content must not be published as an .app");
+
+        assert!(error.to_string().contains("non-NAVX"));
+        assert!(
+            std::fs::read_dir(tmp.path()).unwrap().next().is_none(),
+            "failed download must leave neither final nor temp files"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_same_package_downloads_share_one_request() {
+        let body = valid_app_bytes("Shared");
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(50))
+                    .set_body_bytes(body),
+            )
+            .mount(&server)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let client = Arc::new(no_auth_client());
+        let dependency = dep("Shared", "Pub", "1.0.0.0");
+        let url = server.uri();
+
+        let first = {
+            let client = Arc::clone(&client);
+            let dependency = dependency.clone();
+            let dest = tmp.path().to_path_buf();
+            let url = url.clone();
+            tokio::spawn(async move { client.download_one(&url, &dependency, &dest).await })
+        };
+        let second = {
+            let client = Arc::clone(&client);
+            let dependency = dependency.clone();
+            let dest = tmp.path().to_path_buf();
+            tokio::spawn(async move { client.download_one(&url, &dependency, &dest).await })
+        };
+
+        let first_path = first.await.unwrap().unwrap();
+        let second_path = second.await.unwrap().unwrap();
+        assert_eq!(first_path, second_path);
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -547,13 +846,13 @@ mod tests {
     #[tokio::test]
     async fn download_all_preserves_order_and_per_entry_results() {
         let server = wiremock::MockServer::start().await;
-        let body = b"ok-bytes";
+        let body = valid_app_bytes("Good");
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path("/ok"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
                     .insert_header("Content-Length", body.len().to_string().as_str())
-                    .set_body_bytes(body.to_vec()),
+                    .set_body_bytes(body),
             )
             .mount(&server)
             .await;

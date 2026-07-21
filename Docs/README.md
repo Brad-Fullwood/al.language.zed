@@ -4,8 +4,8 @@ This `/Docs` tree is the complete, code-grounded reference for **AL Language for
 native Business Central AL toolchain for the [Zed](https://zed.dev) editor, written almost
 entirely in Rust. It is *not* a syntax package with a thin language-server wrapper — it is a
 language server, debug adapter, native `.app` compiler/emitter, symbol engine, graph-based
-analysis engine, native test interpreter, CLI/TUI, and MCP (AI agent) server, all sharing one
-core crate.
+analysis engine, native test interpreter, CLI/TUI, and MCP (AI agent) server, all sharing the same
+lower-level engine crates and command dispatcher.
 
 > **How this documentation was produced.** Every subsystem below was read directly from source
 > (~150k lines of Rust across the workspace). Each feature page cites the files and functions
@@ -17,9 +17,9 @@ core crate.
 
 | Document | What it covers |
 | --- | --- |
-| [00 — Overview & Philosophy](./00-overview.md) | What the project is, the native-first philosophy, the native-vs-Microsoft matrix |
-| [01 — Architecture](./01-architecture.md) | Crates, binaries, runtime modes, the transport-boundary rule, data flow |
-| [02 — Zed Extension Integration](./02-zed-extension.md) | Extension manifest, binary resolution, settings, tasks, schemas |
+| [Project Overview & Philosophy](../README.md) | What the project is, the native-first philosophy, and the user-facing capability map |
+| [Architecture](./architecture.md) | Crates, binaries, runtime modes, shared dispatcher, and request flow |
+| [Zed Extension Integration](../README.md#zed-integration) | Extension manifest, binary resolution, settings, tasks, and schemas |
 | [Microsoft Comparison](./microsoft-comparison.md) | Feature-by-feature comparison against the official AL extension |
 | [Consolidated Roadmap](./roadmap.md) | Per-feature roadmap, cross-referenced to source |
 | [Gaps, Misleading Surfaces & Future Work](./gaps-and-future-work.md) | Code-verified actionable audit: inert settings, empty baselines, incomplete features, nice-to-haves |
@@ -37,7 +37,7 @@ core crate.
 | [Analysis & Insight Engine](./features/analysis-and-insight.md) | impact, events, call graph, dead code, SQL scan, arch lint, breaking/upgrade/obsolete, audits, deps, profiler hints, duplicates, bulk fixes |
 | [Native Test Runtime](./features/native-test-runtime.md) | the pure-logic AL interpreter, routing, mutation testing, coverage, snapshots |
 | [Debugging (DAP) & BC Runtime](./features/debugging-dap.md) | native debug adapter, SignalR/REST integration, profiling, snapshots |
-| [AI & MCP Server](./features/ai-mcp.md) | the `al-tools` MCP context server and its tools |
+| [AI & MCP Server](./features/ai-mcp.md) | the `al-tools` context server, complete `al_call` dispatcher bridge, and named aliases |
 | [CLI & TUI (`al-explorer`)](./features/cli-and-tui.md) | the terminal companion: command surface and interactive views |
 | [Daemon Protocol](./features/daemon-protocol.md) | the shared JSON-RPC backend over Unix sockets |
 | [XLIFF & Translation](./features/xliff-translation.md) | generate/refresh/untranslated/suggest workflows |
@@ -51,7 +51,7 @@ core crate.
 | [Settings Reference](./reference/settings.md) | every `al.*` setting, type, default, and status |
 | [CLI Command Reference](./reference/cli-commands.md) | every `al-explorer` subcommand |
 | [LSP Command Reference](./reference/lsp-commands.md) | LSP methods, execute commands, CodeLens IDs |
-| [MCP Tool Reference](./reference/mcp-tools.md) | every MCP tool and its schema |
+| [MCP Tool Reference](./reference/mcp-tools.md) | complete dispatcher access plus named MCP aliases and schemas |
 | [Daemon Method Reference](./reference/daemon-methods.md) | every JSON-RPC method the daemon dispatches |
 
 ## Conventions used in these docs

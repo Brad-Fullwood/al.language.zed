@@ -38,7 +38,7 @@ execute commands.
 | `al.lintFile` | re-publish diagnostics for a file |
 | `al.getStatus` | health snapshot JSON |
 | `al.reindex` | re-run workspace init in background |
-| `al.compile` | build (native emitter, or `alc` if `al.useOfficialCompiler`) |
+| `al.compile` | verified native build with structured diagnostics, or `alc` if `al.useOfficialCompiler` |
 | `al.applyRecommendedSettings` | apply recommended Zed AL workspace settings |
 
 ## CodeLens command IDs

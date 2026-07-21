@@ -5,11 +5,17 @@
 //! - The `.nupkg` is a ZIP containing the `.app` file
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
+
+const MAX_NUPKG_BYTES: u64 = 200 * 1024 * 1024;
+const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_DOWNLOAD_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Error)]
 pub enum NuGetError {
@@ -27,6 +33,8 @@ pub enum NuGetError {
     Io(#[from] std::io::Error),
     #[error("ZIP error: {0}")]
     Zip(#[from] zip::result::ZipError),
+    #[error("Downloaded package contains an invalid .app: {0}")]
+    InvalidApp(#[from] super::app_reader::AppReaderError),
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -161,6 +169,8 @@ struct VersionIndex {
     versions: Vec<String>,
 }
 
+type DownloadCacheKey = (PathBuf, String, Option<String>);
+
 pub struct NuGetClient {
     client: reqwest::Client,
     feeds: Vec<NuGetFeed>,
@@ -171,6 +181,10 @@ pub struct NuGetClient {
     /// skips the network round-trip. Downloads of DIFFERENT packages still
     /// run concurrently up to the `download_all` semaphore.
     package_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    /// Successful downloads keyed by destination + package identity/version.
+    /// This is what turns the per-package mutex into true request de-duplication:
+    /// waiters reuse the first completed artifact instead of downloading again.
+    completed_downloads: Mutex<HashMap<DownloadCacheKey, PathBuf>>,
     /// `al.symbolsCountryRegion` — selects localized core packages
     /// (e.g. `Microsoft.Application.DE.symbols`). None/"w1" = worldwide.
     country: Option<String>,
@@ -187,6 +201,7 @@ impl NuGetClient {
             feeds,
             base_address_cache: Mutex::new(HashMap::new()),
             package_locks: Mutex::new(HashMap::new()),
+            completed_downloads: Mutex::new(HashMap::new()),
             country: None,
         }
     }
@@ -219,10 +234,33 @@ impl NuGetClient {
         let lock = self.lock_for(&pkg.id);
         let _serial = lock.lock().await;
 
+        let completion_key = (
+            dest.to_path_buf(),
+            pkg.id.to_lowercase(),
+            pkg.version.clone(),
+        );
+        if let Some(path) = self
+            .completed_downloads
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&completion_key)
+            .filter(|path| path.is_file())
+            .cloned()
+        {
+            debug!(package = %pkg.display_name, path = %path.display(), "Reusing completed NuGet package download");
+            return Ok(path);
+        }
+
         let mut last_err = None;
         for feed in &self.feeds {
             match download(&self.client, &self.base_address_cache, feed, pkg, dest).await {
-                Ok(path) => return Ok(path),
+                Ok(path) => {
+                    self.completed_downloads
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .insert(completion_key, path.clone());
+                    return Ok(path);
+                }
                 Err(e) => {
                     tracing::debug!(feed = %feed.index_url, error = %e, "Feed failed, trying next");
                     last_err = Some(e);
@@ -296,45 +334,14 @@ async fn download(
         return Err(NuGetError::NoVersions(pkg.id.clone()));
     }
 
-    let version = if let Some(ref requested) = pkg.version {
-        if let Some(v) = version_index.versions.iter().find(|v| *v == requested) {
-            v.clone()
-        } else {
-            // Find best prefix match: e.g. "26.5.0.0" → latest "26.5.*"
-            let prefix = version_prefix(requested);
-            let mut prefix_matches: Vec<&String> = version_index
-                .versions
-                .iter()
-                .filter(|v| v.starts_with(&prefix))
-                .collect();
-            prefix_matches.sort_by_key(|a| parse_version(a));
-            if let Some(v) = prefix_matches.last() {
-                info!(
-                    requested = %requested,
-                    resolved = %v,
-                    "Resolved version via prefix match"
-                );
-                (*v).clone()
-            } else {
-                let latest = version_index
-                    .versions
-                    .last()
-                    .ok_or_else(|| NuGetError::NoVersions(pkg.id.clone()))?;
-                info!(
-                    requested = %requested,
-                    resolved = %latest,
-                    "No prefix match, using latest version"
-                );
-                latest.clone()
-            }
-        }
-    } else {
-        version_index
-            .versions
-            .last()
-            .ok_or_else(|| NuGetError::NoVersions(pkg.id.clone()))?
-            .clone()
-    };
+    let version = select_version(&pkg.id, pkg.version.as_deref(), &version_index.versions)?;
+    if pkg.version.as_deref() != Some(version.as_str()) {
+        info!(
+            requested = ?pkg.version,
+            resolved = %version,
+            "Resolved NuGet symbol package version"
+        );
+    }
 
     let nupkg_url = format!(
         "{}{}/{}/{}.{}.nupkg",
@@ -345,45 +352,53 @@ async fn download(
         version = %version,
         "Downloading package"
     );
-    const MAX_NUPKG_BYTES: u64 = 200 * 1024 * 1024;
-    let response = client.get(&nupkg_url).send().await?;
-    // Require a Content-Length header so the cap below is enforceable. Without
-    // a length header an attacker-controlled server could lie about the
-    // content size and push arbitrary bytes through `response.bytes()` —
-    // bytes() buffers without a cap. Refuse the download in that case.
-    let content_length = response.content_length().ok_or_else(|| {
-        NuGetError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "Package '{}' download has no Content-Length header — refusing.",
-                pkg.display_name
-            ),
-        ))
-    })?;
-    if content_length > MAX_NUPKG_BYTES {
-        return Err(NuGetError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "Package '{name}' Content-Length {content_length} exceeds {max} byte limit — refusing download",
-                name = pkg.display_name,
-                max = MAX_NUPKG_BYTES,
-            ),
-        )));
-    }
-    let nupkg_bytes = response.bytes().await?;
-    if nupkg_bytes.len() as u64 > MAX_NUPKG_BYTES {
-        return Err(NuGetError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "Package '{name}' actual body {actual} exceeds {max} byte limit — server lied about Content-Length",
-                name = pkg.display_name,
-                actual = nupkg_bytes.len(),
-                max = MAX_NUPKG_BYTES,
-            ),
-        )));
+    let mut response = get_with_retry(client, &nupkg_url).await?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_NUPKG_BYTES)
+    {
+        return Err(body_too_large_error(
+            &pkg.display_name,
+            response.content_length().unwrap_or_default(),
+            MAX_NUPKG_BYTES,
+        ));
     }
 
-    let app_path = extract_app_from_nupkg(&nupkg_bytes, dest, &pkg.display_name)?;
+    tokio::fs::create_dir_all(dest).await?;
+    let nupkg_tmp = download_temp_path(dest, &pkg.id);
+    let stream_result = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&nupkg_tmp)
+            .await?;
+        let mut received = 0u64;
+        while let Some(chunk) = response.chunk().await? {
+            received = received.checked_add(chunk.len() as u64).ok_or_else(|| {
+                body_too_large_error(&pkg.display_name, u64::MAX, MAX_NUPKG_BYTES)
+            })?;
+            if received > MAX_NUPKG_BYTES {
+                return Err(body_too_large_error(
+                    &pkg.display_name,
+                    received,
+                    MAX_NUPKG_BYTES,
+                ));
+            }
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        file.sync_all().await?;
+        Ok::<(), NuGetError>(())
+    }
+    .await;
+    if let Err(error) = stream_result {
+        let _ = tokio::fs::remove_file(&nupkg_tmp).await;
+        return Err(error);
+    }
+
+    let app_result = extract_app_from_nupkg_file(&nupkg_tmp, dest, &pkg.display_name);
+    let _ = tokio::fs::remove_file(&nupkg_tmp).await;
+    let app_path = app_result?;
     info!(
         package = %pkg.display_name,
         path = %app_path.display(),
@@ -391,6 +406,39 @@ async fn download(
     );
 
     Ok(app_path)
+}
+
+fn select_version(
+    package_id: &str,
+    requested: Option<&str>,
+    versions: &[String],
+) -> Result<String, NuGetError> {
+    if versions.is_empty() {
+        return Err(NuGetError::NoVersions(package_id.to_string()));
+    }
+    if let Some(requested) = requested {
+        if let Some(exact) = versions
+            .iter()
+            .find(|version| version.as_str() == requested)
+        {
+            return Ok(exact.clone());
+        }
+        let prefix = version_prefix(requested);
+        return versions
+            .iter()
+            .filter(|version| version.starts_with(&prefix))
+            .max_by_key(|version| parse_version(version))
+            .cloned()
+            .ok_or_else(|| NuGetError::VersionNotFound {
+                id: package_id.to_string(),
+                version: requested.to_string(),
+            });
+    }
+    versions
+        .iter()
+        .max_by_key(|version| parse_version(version))
+        .cloned()
+        .ok_or_else(|| NuGetError::NoVersions(package_id.to_string()))
 }
 
 /// Extract the major.minor prefix from a version string.
@@ -426,44 +474,108 @@ fn parse_version(version: &str) -> (u64, u64, u64, u64) {
 /// These should be a few hundred KB at most for normal feeds; the cap is a
 /// defence against a hostile or misconfigured server streaming gigabytes of
 /// JSON before parser-side truncation kicks in.
-const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
-
 /// Fetch a JSON metadata response from `url`, refusing bodies larger than
-/// `MAX_METADATA_BYTES`. Requires a `Content-Length` header so the cap is
-/// enforceable without buffering the whole response first; servers without
-/// one are refused. Same hardening pattern as the package-download path.
+/// `MAX_METADATA_BYTES`. Chunked responses are accepted and counted while
+/// streaming; a missing or dishonest `Content-Length` cannot bypass the cap.
 async fn fetch_metadata_json<T: serde::de::DeserializeOwned>(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<T, NuGetError> {
-    let response = client.get(url).send().await?.error_for_status()?;
-    let content_length = response.content_length().ok_or_else(|| {
-        NuGetError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("Metadata response from {url} has no Content-Length header — refusing"),
-        ))
-    })?;
-    if content_length > MAX_METADATA_BYTES {
+    let mut response = get_with_retry(client, url).await?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_METADATA_BYTES)
+    {
         return Err(NuGetError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "Metadata response from {url} Content-Length {content_length} exceeds \
-                 {MAX_METADATA_BYTES} byte limit — refusing"
+                "Metadata response from {url} Content-Length exceeds \
+                 {MAX_METADATA_BYTES} byte limit"
             ),
         )));
     }
-    let bytes = response.bytes().await?;
-    if bytes.len() as u64 > MAX_METADATA_BYTES {
-        return Err(NuGetError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "Metadata response from {url} body {actual} exceeds {MAX_METADATA_BYTES} \
-                 byte limit — server lied about Content-Length",
-                actual = bytes.len(),
-            ),
-        )));
+    let mut bytes = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or_default()
+            .min(MAX_METADATA_BYTES) as usize,
+    );
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_METADATA_BYTES as usize {
+            return Err(NuGetError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Metadata response from {url} exceeds {MAX_METADATA_BYTES} byte limit"),
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+async fn get_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<reqwest::Response, reqwest::Error> {
+    for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
+        match client.get(url).send().await {
+            Ok(response)
+                if is_retryable_status(response.status()) && attempt < MAX_DOWNLOAD_ATTEMPTS =>
+            {
+                let delay = retry_delay(&response, attempt);
+                warn!(url, status = %response.status(), attempt, ?delay, "Transient NuGet response; retrying");
+                tokio::time::sleep(delay).await;
+            }
+            Ok(response) => return response.error_for_status(),
+            Err(error) if attempt < MAX_DOWNLOAD_ATTEMPTS => {
+                let delay = std::time::Duration::from_millis(200 * (1 << (attempt - 1)));
+                warn!(url, %error, attempt, ?delay, "Transient NuGet request failure; retrying");
+                tokio::time::sleep(delay).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("retry loop always returns on its final attempt")
+}
+
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 429 | 502 | 503 | 504)
+}
+
+fn retry_delay(response: &reqwest::Response, attempt: usize) -> std::time::Duration {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|seconds| std::time::Duration::from_secs(seconds.min(30)))
+        .unwrap_or_else(|| std::time::Duration::from_millis(200 * (1 << (attempt - 1))))
+}
+
+fn body_too_large_error(name: &str, actual: u64, limit: u64) -> NuGetError {
+    NuGetError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("Package '{name}' body {actual} exceeds {limit} byte limit"),
+    ))
+}
+
+fn download_temp_path(dest: &Path, package_id: &str) -> PathBuf {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let safe_id: String = package_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    dest.join(format!(
+        ".{safe_id}.{}.{}.nupkg.tmp",
+        std::process::id(),
+        sequence
+    ))
 }
 
 async fn get_package_base_address(
@@ -511,13 +623,40 @@ async fn get_package_base_address(
     Ok(url)
 }
 
+#[cfg(test)]
 fn extract_app_from_nupkg(
     nupkg_bytes: &[u8],
     dest: &Path,
     display_name: &str,
 ) -> Result<PathBuf, NuGetError> {
     let cursor = std::io::Cursor::new(nupkg_bytes);
-    let mut archive = zip::ZipArchive::new(cursor)?;
+    extract_app_from_nupkg_reader(cursor, dest, display_name)
+}
+
+fn extract_app_from_nupkg_file(
+    nupkg_path: &Path,
+    dest: &Path,
+    display_name: &str,
+) -> Result<PathBuf, NuGetError> {
+    extract_app_from_nupkg_reader(std::fs::File::open(nupkg_path)?, dest, display_name)
+}
+
+fn extract_app_from_nupkg_reader<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    dest: &Path,
+    display_name: &str,
+) -> Result<PathBuf, NuGetError> {
+    let mut archive = zip::ZipArchive::new(reader)?;
+    const MAX_ARCHIVE_ENTRIES: usize = 200_000;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(NuGetError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "nupkg contains {} entries; limit is {MAX_ARCHIVE_ENTRIES}",
+                archive.len()
+            ),
+        )));
+    }
 
     for i in 0..archive.len() {
         let file = archive.by_index(i)?;
@@ -539,17 +678,25 @@ fn extract_app_from_nupkg(
                 continue;
             }
             let out_path = dest.join(raw_filename);
-            let tmp_path = dest.join(format!("{}.tmp", raw_filename));
+            static EXTRACT_SEQUENCE: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let sequence = EXTRACT_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let tmp_path = dest.join(format!(
+                ".{raw_filename}.{}.{}.tmp",
+                std::process::id(),
+                sequence
+            ));
 
             std::fs::create_dir_all(dest)?;
             {
                 let mut out_file = std::fs::File::create(&tmp_path)?;
-                // Limit extraction to 512 MB to guard against decompression bombs.
+                // Match the .app reader's 200 MB cap so downloads cannot
+                // publish an artifact the symbol engine will immediately reject.
                 // Use Read::take explicitly to avoid ambiguity with Iterator::take.
-                const MAX_APP_SIZE: u64 = 536_870_912;
-                let mut limited = std::io::Read::take(file, MAX_APP_SIZE);
+                const MAX_APP_SIZE: u64 = super::app_reader::MAX_APP_FILE_SIZE;
+                let mut limited = std::io::Read::take(file, MAX_APP_SIZE + 1);
                 let bytes_copied = std::io::copy(&mut limited, &mut out_file)?;
-                if bytes_copied >= MAX_APP_SIZE {
+                if bytes_copied > MAX_APP_SIZE {
                     let _ = std::fs::remove_file(&tmp_path);
                     return Err(NuGetError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -559,9 +706,26 @@ fn extract_app_from_nupkg(
                         ),
                     )));
                 }
+                out_file.flush()?;
+                out_file.sync_all()?;
+            }
+            // Reject corrupt/truncated payloads before they become visible in
+            // the package folder. Manifest-only validation avoids the much
+            // larger SymbolReference parse that normal indexing performs next.
+            if let Err(error) = super::app_reader::read_app_manifest_file(&tmp_path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(error.into());
             }
             // Atomic rename: only the complete file is ever visible at the final path.
-            std::fs::rename(&tmp_path, &out_path)?;
+            if let Err(error) = std::fs::rename(&tmp_path, &out_path) {
+                if out_path.exists() {
+                    std::fs::remove_file(&out_path)?;
+                    std::fs::rename(&tmp_path, &out_path)?;
+                } else {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(error.into());
+                }
+            }
 
             return Ok(out_path);
         }
@@ -577,6 +741,30 @@ fn extract_app_from_nupkg(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn valid_app_bytes() -> Vec<u8> {
+        let mut app = Vec::new();
+        app.extend_from_slice(b"NAVX");
+        app.extend_from_slice(&1u32.to_le_bytes());
+        app.extend_from_slice(&[0u8; 32]);
+        let mut zip_bytes = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("NavxManifest.xml", options)
+                .expect("manifest entry");
+            zip.write_all(
+                br#"<Package><App Id="test-id" Name="Test" Publisher="Test" Version="1.0.0.0" /></Package>"#,
+            )
+            .expect("manifest body");
+            zip.start_file("SymbolReference.json", options)
+                .expect("symbols entry");
+            zip.write_all(br#"{"Tables":[]}"#).expect("symbols body");
+            zip.finish().expect("finish app archive");
+        }
+        app.extend_from_slice(&zip_bytes);
+        app
+    }
 
     #[test]
     fn resolve_core_system_application() {
@@ -776,6 +964,33 @@ mod tests {
     }
 
     #[test]
+    fn version_selection_is_numeric_and_does_not_depend_on_feed_order() {
+        let versions = vec![
+            "26.5.999.0".to_string(),
+            "25.9.99999.0".to_string(),
+            "26.5.12345.0".to_string(),
+            "26.4.99999.0".to_string(),
+        ];
+        assert_eq!(
+            select_version("pkg", Some("26.5.0.0"), &versions).unwrap(),
+            "26.5.12345.0"
+        );
+        assert_eq!(
+            select_version("pkg", None, &versions).unwrap(),
+            "26.5.12345.0"
+        );
+    }
+
+    #[test]
+    fn version_selection_never_silently_crosses_requested_release_line() {
+        let versions = vec!["25.5.0.0".to_string(), "27.0.0.0".to_string()];
+        assert!(matches!(
+            select_version("pkg", Some("26.5.0.0"), &versions),
+            Err(NuGetError::VersionNotFound { .. })
+        ));
+    }
+
+    #[test]
     fn resolve_third_party_dependency() {
         let deps = vec![AppDependency {
             id: "id-2".to_string(),
@@ -805,8 +1020,7 @@ mod tests {
 
             zip.start_file("Microsoft.Application.symbols.app", options)
                 .unwrap();
-            // Write NAVX header + minimal content (won't be a valid .app but tests extraction)
-            zip.write_all(b"NAVX_APP_CONTENT").unwrap();
+            zip.write_all(&valid_app_bytes()).unwrap();
 
             zip.finish().unwrap();
         }
@@ -835,7 +1049,7 @@ mod tests {
             let mut zip = zip::ZipWriter::new(cursor);
             let options = SimpleFileOptions::default();
             zip.start_file("lib/net/Nested.app", options).unwrap();
-            zip.write_all(b"NAVX").unwrap();
+            zip.write_all(&valid_app_bytes()).unwrap();
             zip.finish().unwrap();
         }
 
@@ -931,7 +1145,7 @@ mod tests {
             let mut zip = zip::ZipWriter::new(cursor);
             let options = SimpleFileOptions::default();
             zip.start_file("Test.app", options).expect("add zip entry");
-            zip.write_all(b"NAVX").expect("write zip data");
+            zip.write_all(&valid_app_bytes()).expect("write zip data");
             zip.finish().expect("finalize zip");
         }
 
@@ -974,9 +1188,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_metadata_json_refuses_missing_content_length() {
-        // Negative: a response with no Content-Length header is refused, so
-        // we never start buffering an unbounded body.
+    async fn fetch_metadata_json_accepts_bounded_chunked_response() {
+        // Valid chunked feeds are useful and safe: the streaming reader applies
+        // the same cap even when no Content-Length is present.
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(
@@ -988,11 +1202,10 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let res: Result<DummyJson, NuGetError> = fetch_metadata_json(&client, &server.uri()).await;
-        assert!(
-            res.is_err(),
-            "missing Content-Length must be refused, got Ok"
-        );
+        let result: DummyJson = fetch_metadata_json(&client, &server.uri())
+            .await
+            .expect("bounded chunked response should be accepted");
+        assert!(result.ok);
     }
 
     #[tokio::test]
@@ -1070,6 +1283,33 @@ mod tests {
             "10 × 5ms serial waits should take >= 45ms (got {elapsed:?}) — \
              if they ran concurrently the mutex isn't serialising"
         );
+    }
+
+    #[tokio::test]
+    async fn completed_download_is_reused_without_another_feed_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let artifact = tmp.path().join("Cached.app");
+        std::fs::write(&artifact, b"NAVX").unwrap();
+        let client = NuGetClient::new(vec![]);
+        let package = PackageRef {
+            id: "Microsoft.Cached.symbols".into(),
+            version: Some("1.0.0.0".into()),
+            display_name: "Cached".into(),
+        };
+        client.completed_downloads.lock().unwrap().insert(
+            (
+                tmp.path().to_path_buf(),
+                package.id.to_lowercase(),
+                package.version.clone(),
+            ),
+            artifact.clone(),
+        );
+
+        let resolved = client
+            .download(&package, tmp.path())
+            .await
+            .expect("completed artifact should be reused even with no feeds");
+        assert_eq!(resolved, artifact);
     }
 
     /// Mount a service index that advertises `base_id` as a PackageBaseAddress

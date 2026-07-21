@@ -168,6 +168,23 @@ fn resolve_debug_config(
     })
 }
 
+fn debug_uses_oauth(config: &al_dap::dap::bc_debug::BcDebugConfig) -> bool {
+    !config.environment_type.eq_ignore_ascii_case("OnPrem")
+        || config.authentication.eq_ignore_ascii_case("AAD")
+        || config
+            .authentication
+            .eq_ignore_ascii_case("MicrosoftEntraID")
+}
+
+fn has_inline_debug_config(params: &serde_json::Value) -> bool {
+    // `server` identifies an on-prem target; `tenant` / `environmentName`
+    // identify a BC online target. Do not require a meaningless `server`
+    // placeholder merely to select the inline cloud configuration path.
+    ["server", "tenant", "environmentName"]
+        .iter()
+        .any(|field| params.get(field).is_some())
+}
+
 pub(super) async fn dispatch_debug(
     workspace: &Workspace,
     id: u64,
@@ -184,14 +201,15 @@ pub(super) async fn dispatch_debug(
 
     match cmd {
         "start" => {
-            let access_token = params
+            let supplied_access_token = params
                 .get("accessToken")
                 .and_then(|v| v.as_str())
-                .unwrap_or("");
+                .unwrap_or("")
+                .to_string();
 
             // Look up the named config in the project's debug configuration.
             // or fall back to parsing full DAP args from params for backward compat.
-            let config = if params.get("config").is_some() || params.get("server").is_none() {
+            let config = if params.get("config").is_some() || !has_inline_debug_config(params) {
                 match resolve_debug_config(workspace, params) {
                     Ok(c) => c,
                     Err(msg) => {
@@ -210,7 +228,34 @@ pub(super) async fn dispatch_debug(
                 BcDebugConfig::from_dap_args(params)
             };
 
-            match NativeDebugSession::start(config, access_token).await {
+            // MCP/CLI callers normally authenticate through the shared OAuth
+            // cache (`authenticate login`). Requiring them to extract that
+            // bearer token and pass it back into `debug start` defeats the
+            // purpose of the cache and made the first real MCP call negotiate
+            // with an empty bearer token. Preserve an explicitly supplied
+            // token for automation, otherwise acquire/refresh through the same
+            // keyring-backed flow used by symbol download and authentication.
+            let access_token = if supplied_access_token.is_empty() && debug_uses_oauth(&config) {
+                let client = reqwest::Client::new();
+                match al_symbols::oauth::acquire_token(&client, &config.tenant, |message| {
+                    tracing::info!("debug authentication: {message}");
+                })
+                .await
+                {
+                    Ok(token) => token,
+                    Err(e) => {
+                        return Response::error(
+                            id,
+                            error_codes::INTERNAL_ERROR,
+                            format!("Debug authentication failed: {e}"),
+                        );
+                    }
+                }
+            } else {
+                supplied_access_token
+            };
+
+            match NativeDebugSession::start(config, &access_token).await {
                 Ok(session) => {
                     let session_id = session.session_id().to_string();
                     *workspace.debug_session.lock().await = Some(session);
@@ -366,6 +411,96 @@ pub(super) async fn dispatch_debug(
             }
         }
 
+        "stack" => {
+            let mut guard = workspace.debug_session.lock().await;
+            match guard.as_mut() {
+                None => no_session(id),
+                Some(session) => match session.stack().await {
+                    Ok(frames) => Response {
+                        id,
+                        result: Some(serde_json::json!({
+                            "cmd": "stack",
+                            "frames": frames,
+                        })),
+                        error: None,
+                        ..Default::default()
+                    },
+                    Err(e) => Response::error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        format!("stack() failed: {e}"),
+                    ),
+                },
+            }
+        }
+
+        "variables" | "globals" => {
+            let frame_id = params.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
+            let mut guard = workspace.debug_session.lock().await;
+            match guard.as_mut() {
+                None => no_session(id),
+                Some(session) => {
+                    let values = if cmd == "globals" {
+                        session.globals(frame_id).await
+                    } else {
+                        session.variables(frame_id).await
+                    };
+                    match values {
+                        Ok(values) => match serialize_each(id, values, cmd) {
+                            Ok(values) => Response {
+                                id,
+                                result: Some(serde_json::json!({
+                                    "cmd": cmd,
+                                    "frameId": frame_id,
+                                    "variables": values,
+                                })),
+                                error: None,
+                                ..Default::default()
+                            },
+                            Err(err_response) => err_response,
+                        },
+                        Err(e) => Response::error(
+                            id,
+                            error_codes::INTERNAL_ERROR,
+                            format!("{cmd}() failed: {e}"),
+                        ),
+                    }
+                }
+            }
+        }
+
+        "expand" => {
+            let Some(path) = params.get("path").and_then(|v| v.as_str()) else {
+                return missing_cmd(id, "Missing 'path' parameter for expand");
+            };
+            let frame_id = params.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
+            let mut guard = workspace.debug_session.lock().await;
+            match guard.as_mut() {
+                None => no_session(id),
+                Some(session) => match session.expand(frame_id, path).await {
+                    Ok(values) => match serialize_each(id, values, "expand") {
+                        Ok(values) => Response {
+                            id,
+                            result: Some(serde_json::json!({
+                                "cmd": "expand",
+                                "frameId": frame_id,
+                                "path": path,
+                                "variables": values,
+                            })),
+                            error: None,
+                            ..Default::default()
+                        },
+                        Err(err_response) => err_response,
+                    },
+                    Err(e) => Response::error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        format!("expand() failed: {e}"),
+                    ),
+                },
+            }
+        }
+
         "eval" => {
             let expr = match params.get("expr").and_then(|v| v.as_str()) {
                 Some(e) => e.to_string(),
@@ -381,15 +516,17 @@ pub(super) async fn dispatch_debug(
                     };
                 }
             };
+            let frame_id = params.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
 
             let mut guard = workspace.debug_session.lock().await;
             match guard.as_mut() {
                 None => no_session(id),
-                Some(session) => match session.eval(&expr).await {
+                Some(session) => match session.eval_at(frame_id, &expr).await {
                     Ok(eval_result) => Response {
                         id,
                         result: Some(serde_json::json!({
                             "cmd": "eval",
+                            "frameId": frame_id,
                             "result": eval_result.result,
                             "typeName": eval_result.type_name,
                         })),
@@ -529,8 +666,9 @@ pub(super) async fn dispatch_debug(
 
 #[cfg(test)]
 mod pick_named_config_tests {
-    use super::pick_named_config;
+    use super::{debug_uses_oauth, has_inline_debug_config, pick_named_config};
     use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
+    use al_dap::dap::bc_debug::BcDebugConfig;
 
     fn cfg(name: &str) -> BcServerConfig {
         BcServerConfig {
@@ -574,6 +712,47 @@ mod pick_named_config_tests {
     fn empty_config_list_errors_when_no_name_given() {
         let err = pick_named_config(&[], None).expect_err("empty list must error");
         assert!(err.contains("no configs"));
+    }
+
+    #[test]
+    fn cloud_debug_uses_oauth_even_when_auth_field_is_legacy_default() {
+        let config = BcDebugConfig {
+            environment_type: "Sandbox".to_string(),
+            authentication: "UserPassword".to_string(),
+            ..BcDebugConfig::default()
+        };
+        assert!(debug_uses_oauth(&config));
+    }
+
+    #[test]
+    fn onprem_aad_uses_oauth_but_windows_does_not() {
+        let aad = BcDebugConfig {
+            environment_type: "OnPrem".to_string(),
+            authentication: "MicrosoftEntraID".to_string(),
+            ..BcDebugConfig::default()
+        };
+        assert!(debug_uses_oauth(&aad));
+
+        let windows = BcDebugConfig {
+            authentication: "Windows".to_string(),
+            ..aad
+        };
+        assert!(!debug_uses_oauth(&windows));
+    }
+
+    #[test]
+    fn inline_cloud_config_does_not_require_a_dummy_server() {
+        assert!(has_inline_debug_config(&serde_json::json!({
+            "tenant": "tenant-id",
+            "environmentName": "Sandbox"
+        })));
+        assert!(has_inline_debug_config(&serde_json::json!({
+            "server": "https://bc.example.test"
+        })));
+        assert!(!has_inline_debug_config(&serde_json::json!({
+            "cmd": "start",
+            "breakOnNext": "WebClient"
+        })));
     }
 }
 
@@ -752,6 +931,28 @@ mod dispatch_debug_tests {
         let r = dispatch_debug(&ws, 9, &json!({"cmd": "state"})).await;
         assert_eq!(err_code(&r), error_codes::INTERNAL_ERROR);
         assert!(err_msg(&r).contains("No active debug session"));
+    }
+
+    #[tokio::test]
+    async fn inspection_commands_without_session_are_no_session() {
+        let ws = Workspace::new();
+        for (id, params) in [
+            (17, json!({"cmd": "stack"})),
+            (18, json!({"cmd": "variables", "frameId": 1})),
+            (19, json!({"cmd": "globals", "frameId": 1})),
+            (20, json!({"cmd": "expand", "frameId": 1, "path": "Rec"})),
+        ] {
+            let r = dispatch_debug(&ws, id, &params).await;
+            assert_eq!(err_msg(&r), "No active debug session");
+        }
+    }
+
+    #[tokio::test]
+    async fn expand_requires_a_path() {
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 21, &json!({"cmd": "expand"})).await;
+        assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
+        assert!(err_msg(&r).contains("path"));
     }
 
     #[tokio::test]

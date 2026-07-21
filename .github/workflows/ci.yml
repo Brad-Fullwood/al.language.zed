@@ -21,9 +21,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows is intentionally excluded — al-protocol's daemon socket is
-        # Unix-only (see F-020), so al-explorer cannot link on Windows. The
-        # Zed extension itself ships as platform-neutral WASM.
         os: [ubuntu-latest, macos-latest]
 
     steps:
@@ -153,15 +150,13 @@ jobs:
       - name: Check release hygiene invariants
         run: ./scripts/check-release-hygiene.sh
 
-  windows-al-lsp:
-    # al-lsp ships on Windows (release.yml), but the main `ci` matrix is Unix-only
-    # (al-explorer's AF_UNIX daemon IPC can't link on Windows). Without this, a
-    # Windows-specific compile regression — the daemon's #[cfg(not(unix))] stub or
-    # the native Windows Credential Manager keyring backend — would only surface at
-    # the next release tag (O2). Build-only, and default features (no
-    # --features semantic): build.rs skips the .NET bridge when dotnet is absent,
+  windows-native:
+    # Build both native binaries on Windows so named-pipe transport and the
+    # Windows Credential Manager dependency cannot regress unnoticed. With
+    # default features (no `--features semantic`), build.rs skips the .NET
+    # bridge when dotnet is absent,
     # so no SDK is needed; the semantic path stays gated by release.yml.
-    name: Windows al-lsp build
+    name: Windows native build
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -179,9 +174,15 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: windows-al-lsp-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: windows-native-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            windows-al-lsp-cargo-
+            windows-native-cargo-
 
-      - name: Build al-lsp (Windows, default features)
-        run: cargo build -p al-lsp --bin al-lsp
+      - name: Build al-lsp and al-explorer (Windows, default features)
+        run: cargo build -p al-lsp -p al-explorer
+
+      - name: Test cross-platform protocol and explorer crates
+        run: cargo test -p al-protocol -p al-explorer
+
+      - name: Exercise Windows named-pipe daemon end to end
+        run: cargo test -p al-test-harness --test cli_smoke --test extension_smoke

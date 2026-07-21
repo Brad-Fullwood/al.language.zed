@@ -36,6 +36,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+interprocess = { workspace = true }
 tower-lsp = { workspace = true }
 dashmap = { workspace = true }
 ropey = { workspace = true }

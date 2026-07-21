@@ -9,6 +9,7 @@
 //! Format: `[4-byte LE header_len][JSON header][JSON Vec<SymbolEntry>]` per package, keyed by .app filename hash.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -23,6 +24,9 @@ use super::model::SymbolPackage;
 /// fabricated Option-enums that would deserialize as `synthetic: false`
 /// and reappear in search results.
 const CACHE_SCHEMA_VERSION: u32 = 1;
+/// A cache serializes the already-capped (200 MB) SymbolReference payload plus
+/// a small header. Refuse pathological/corrupt files before allocating them.
+const MAX_CACHE_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CacheHeader {
@@ -31,8 +35,8 @@ struct CacheHeader {
     schema_version: u32,
     mtime_secs: u64,
     /// Modification time nanoseconds component (sub-second precision).
-    /// Defaults to 0 on older cache files (serde default); when 0 only
-    /// seconds are compared during validation.
+    /// Defaults to 0 on older cache files; those files also carry an older
+    /// schema version and are rejected before use.
     #[serde(default)]
     mtime_nanos: u32,
     file_size: u64,
@@ -75,7 +79,25 @@ impl SymbolCache {
         let mtime = meta.modified().ok()?;
         let file_size = meta.len();
 
-        let cache_data = fs::read(&cache_path).ok()?;
+        let cache_size = fs::metadata(&cache_path).ok()?.len();
+        if cache_size > MAX_CACHE_FILE_BYTES {
+            tracing::warn!(
+                path = %cache_path.display(),
+                size = cache_size,
+                limit = MAX_CACHE_FILE_BYTES,
+                "symbol cache file exceeds safety limit; ignoring"
+            );
+            return None;
+        }
+        let mut cache_data = Vec::with_capacity(cache_size as usize);
+        fs::File::open(&cache_path)
+            .ok()?
+            .take(MAX_CACHE_FILE_BYTES + 1)
+            .read_to_end(&mut cache_data)
+            .ok()?;
+        if cache_data.len() as u64 > MAX_CACHE_FILE_BYTES {
+            return None;
+        }
 
         let (header, objects_data) = decode_cache(&cache_data)?;
 
@@ -83,8 +105,7 @@ impl SymbolCache {
         let mtime_secs = mtime_duration.as_secs();
         let mtime_nanos = mtime_duration.subsec_nanos();
 
-        let mtime_matches = header.mtime_secs == mtime_secs
-            && (header.mtime_nanos == 0 || header.mtime_nanos == mtime_nanos);
+        let mtime_matches = header.mtime_secs == mtime_secs && header.mtime_nanos == mtime_nanos;
 
         if header.schema_version != CACHE_SCHEMA_VERSION {
             debug!(
@@ -232,9 +253,24 @@ impl SymbolCache {
         // Write to a temp file in the same directory, then atomically rename.
         // This prevents concurrent readers from seeing a partial write and
         // prevents corruption if the process is killed mid-write.
-        let tmp_path = cache_path.with_extension(format!("tmp.{}", std::process::id()));
+        static CACHE_WRITE_SEQUENCE: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let sequence = CACHE_WRITE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_path =
+            cache_path.with_extension(format!("tmp.{}.{}", std::process::id(), sequence));
         fs::write(&tmp_path, &data)?;
-        fs::rename(&tmp_path, &cache_path)?;
+        if let Err(error) = fs::rename(&tmp_path, &cache_path) {
+            // Unix atomically replaces the destination. Windows rename does
+            // not, so fall back to a remove+rename; a concurrent reader may see
+            // a harmless cache miss during this narrow window.
+            if cache_path.exists() {
+                fs::remove_file(&cache_path)?;
+                fs::rename(&tmp_path, &cache_path)?;
+            } else {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(error);
+            }
+        }
 
         debug!(
             name = %pkg.name,
@@ -268,11 +304,12 @@ fn decode_cache(data: &[u8]) -> Option<(CacheHeader, &[u8])> {
         return None;
     }
     let header_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    if data.len() < 4 + header_len {
+    let objects_start = 4usize.checked_add(header_len)?;
+    if data.len() < objects_start {
         return None;
     }
-    let header: CacheHeader = serde_json::from_slice(&data[4..4 + header_len]).ok()?;
-    let objects_data = &data[4 + header_len..];
+    let header: CacheHeader = serde_json::from_slice(&data[4..objects_start]).ok()?;
+    let objects_data = &data[objects_start..];
     Some((header, objects_data))
 }
 
@@ -422,6 +459,50 @@ mod tests {
         fs::write(&cache_path, b"corrupted data").unwrap();
 
         assert!(cache.load(&app_path).is_none());
+    }
+
+    #[test]
+    fn oversized_sparse_cache_is_rejected_without_reading_it() {
+        let dir = TempDir::new().unwrap();
+        let cache = SymbolCache::at(dir.path().join("cache"));
+        let (app_path, pkg) = make_test_app(dir.path(), "HugeCachePkg");
+        cache.save(&app_path, &pkg).unwrap();
+
+        let cache_path = cache.cache_path_for(&app_path);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&cache_path)
+            .unwrap()
+            .set_len(MAX_CACHE_FILE_BYTES + 1)
+            .unwrap();
+
+        assert!(cache.load(&app_path).is_none());
+    }
+
+    #[test]
+    fn concurrent_saves_use_independent_temp_files() {
+        let dir = TempDir::new().unwrap();
+        let cache = std::sync::Arc::new(SymbolCache::at(dir.path().join("cache")));
+        let (app_path, pkg) = make_test_app(dir.path(), "ConcurrentPkg");
+        let pkg = std::sync::Arc::new(pkg);
+        let mut threads = Vec::new();
+        for _ in 0..8 {
+            let cache = cache.clone();
+            let app_path = app_path.clone();
+            let pkg = pkg.clone();
+            threads.push(std::thread::spawn(move || cache.save(&app_path, &pkg)));
+        }
+        for thread in threads {
+            thread.join().unwrap().unwrap();
+        }
+
+        assert!(cache.load(&app_path).is_some());
+        let leftovers: Vec<_> = fs::read_dir(&cache.cache_dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
     }
 
     #[test]

@@ -219,6 +219,7 @@ pub async fn completions_full(
     let Some(bridge) = guard.as_ref() else {
         return items;
     };
+    let bridge_generation = bridge.generation();
     let Ok(path) = uri.to_file_path() else {
         return items;
     };
@@ -229,13 +230,42 @@ pub async fn completions_full(
     // F-037: pass the open-document text so the bridge sees unsaved edits
     // instead of stale on-disk content.
     let unsaved_text = workspace.documents.get_text(uri);
+    let configured_package_cache = workspace.config.read().await.package_cache_path.clone();
+    let package_cache = match configured_package_cache {
+        Some(path) => Some(path),
+        None => workspace
+            .project
+            .read()
+            .await
+            .as_ref()
+            .map(|project| project.packages_dir.clone()),
+    };
     let bridge_items = match bridge
-        .completions_at(&path, pos, unsaved_text.as_deref())
+        .completions_at_with_package_cache(
+            &path,
+            pos,
+            unsaved_text.as_deref(),
+            package_cache.as_deref(),
+        )
         .await
     {
         Ok(v) => v,
         Err(e) => {
             tracing::debug!(error = %e, "completions_full: bridge error");
+            let restart = matches!(
+                e,
+                al_semantic::SemanticError::Timeout(_)
+                    | al_semantic::SemanticError::Poisoned
+                    | al_semantic::SemanticError::HostInit(_)
+            );
+            drop(guard);
+            if restart {
+                if let Err(restart_error) =
+                    al_workspace::restart_bridge_if_current(workspace, bridge_generation).await
+                {
+                    tracing::warn!(error = %restart_error, "completions_full: bridge restart failed");
+                }
+            }
             return items;
         }
     };
