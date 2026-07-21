@@ -1061,6 +1061,15 @@ mod tests {
         Workspace::new()
     }
 
+    async fn install_test_result_store(ws: &Workspace, tmp: &tempfile::TempDir) {
+        let store = al_test::TestResultStore::open(tmp.path().join("test-results.json"))
+            .await
+            .expect("open sandboxed test-results store");
+        *ws.test_results
+            .write()
+            .expect("test_results lock must not be poisoned") = Some(std::sync::Arc::new(store));
+    }
+
     #[test]
     fn clamp_timeout_ms_passes_through_sensible_values() {
         assert_eq!(clamp_timeout_ms(Some(0)), Some(0));
@@ -1713,11 +1722,7 @@ mod tests {
     async fn last_results_returns_empty_when_no_history() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
-        // Override XDG_DATA_HOME so the store path is sandboxed.
-        // SAFETY: tests run on a single thread by default in cargo test.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-        }
+        install_test_result_store(&ws, &tmp).await;
         {
             let mut guard = ws.project.write().await;
             *guard = Some(al_project::project::AlProject {
@@ -1756,10 +1761,6 @@ mod tests {
     /// last_results dispatcher reaches its codeunitId validation.
     async fn ws_with_project(tmp: &tempfile::TempDir) -> Workspace {
         let ws = empty_ws();
-        // SAFETY: cargo test runs on a single thread by default.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-        }
         let mut guard = ws.project.write().await;
         *guard = Some(al_project::project::AlProject {
             root: tmp.path().to_path_buf(),
@@ -1778,6 +1779,7 @@ mod tests {
             server_configs: Vec::new(),
         });
         drop(guard);
+        install_test_result_store(&ws, tmp).await;
         ws
     }
 
@@ -1925,10 +1927,7 @@ mod tests {
     async fn run_batch_persistence_roundtrip_via_dispatchers() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
-        // SAFETY: tests run on a single thread by default in cargo test.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-        }
+        install_test_result_store(&ws, &tmp).await;
         {
             let mut guard = ws.project.write().await;
             *guard = Some(al_project::project::AlProject {
@@ -1949,7 +1948,6 @@ mod tests {
             });
         }
 
-        ensure_result_store(&ws, tmp.path()).await.unwrap();
         let store = ws
             .test_results
             .read()
@@ -2070,10 +2068,7 @@ mod tests {
     async fn freeze_last_results_response_shapes() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
-        // SAFETY: cargo test runs single-threaded by default.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-        }
+        install_test_result_store(&ws, &tmp).await;
         {
             let mut g = ws.project.write().await;
             *g = Some(al_project::project::AlProject {
