@@ -249,24 +249,13 @@ impl DaemonClient {
                 } else {
                     Self::start_daemon(project_root)
                         .and_then(|()| Self::wait_for_daemon(&endpoint))
-                        .and_then(|()| {
-                            connect_stream(&endpoint).map_err(|e| {
-                                format!("Failed to connect after starting daemon: {}", e)
-                            })
-                        })
                         .and_then(Self::from_stream)
                 };
                 let _ = std::fs::remove_file(&lock_path);
                 result
             }
             SpawnLockResult::Contended => {
-                Self::wait_for_daemon(&endpoint)?;
-                let stream = connect_stream(&endpoint).map_err(|e| {
-                    format!(
-                        "Failed to connect after another caller's daemon spawn: {}",
-                        e
-                    )
-                })?;
+                let stream = Self::wait_for_daemon(&endpoint)?;
                 Self::from_stream(stream)
             }
         }
@@ -438,10 +427,10 @@ impl DaemonClient {
         Ok(())
     }
 
-    fn wait_for_daemon(endpoint: &Path) -> Result<(), String> {
+    fn wait_for_daemon(endpoint: &Path) -> Result<Stream, String> {
         for _ in 0..50 {
-            if connect_stream(endpoint).is_ok() {
-                return Ok(());
+            if let Ok(stream) = connect_stream(endpoint) {
+                return Ok(stream);
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -475,7 +464,22 @@ pub fn find_al_lsp_binary() -> Result<PathBuf, String> {
 
 fn connect_stream(endpoint: &Path) -> std::io::Result<Stream> {
     let name = endpoint.to_fs_name::<GenericFilePath>()?;
-    Stream::connect(name)
+    #[cfg(windows)]
+    {
+        // `Stream::connect` uses an unbounded named-pipe wait on Windows.
+        // Under concurrent CLI load every server instance can briefly be
+        // occupied, which previously wedged callers before the request-level
+        // deadlines could apply. Try once without waiting; daemon startup has
+        // its own bounded retry loop in `wait_for_daemon`.
+        interprocess::local_socket::ConnectOptions::new()
+            .name(name)
+            .wait_mode(interprocess::ConnectWaitMode::Timeout(Duration::ZERO))
+            .connect_sync()
+    }
+    #[cfg(not(windows))]
+    {
+        Stream::connect(name)
+    }
 }
 
 #[cfg(all(test, unix))]
