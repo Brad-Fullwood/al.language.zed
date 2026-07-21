@@ -1396,7 +1396,7 @@ mod code_lens_command_wiring_tests {
         for id in LENS_COMMAND_IDS {
             assert!(
                 SUPPORTED_COMMANDS.contains(id),
-                "lens command id {id:?} is not advertised/handled in SUPPORTED_COMMANDS — dead lens (A8)"
+                "lens command id {id:?} is not advertised or handled in SUPPORTED_COMMANDS"
             );
         }
     }
@@ -1420,7 +1420,7 @@ mod code_lens_command_wiring_tests {
             let cmd = lens.command.as_ref().expect("lens carries a command");
             assert!(
                 SUPPORTED_COMMANDS.contains(&cmd.command.as_str()),
-                "emitted lens command {:?} is not handled — dead lens (A8)",
+                "emitted lens command {:?} is not handled",
                 cmd.command
             );
             seen.insert(match cmd.command.as_str() {
@@ -1437,7 +1437,7 @@ mod code_lens_command_wiring_tests {
                 .expect("execute_command ok");
             assert!(
                 result.is_some(),
-                "command {:?} fell through to the no-op catch-all (dead lens, A8)",
+                "command {:?} fell through to the no-op catch-all",
                 cmd.command
             );
         }

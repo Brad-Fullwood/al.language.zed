@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn f009_refresh_after_download_returns_zero_for_empty_result() {
+    fn refresh_after_download_returns_zero_for_empty_result() {
         let ws = empty_ws();
         let before = ws.symbols.len();
         let loaded = refresh_workspace_after_download(&ws, &[]);
@@ -471,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn f009_refresh_after_download_skips_failed_downloads() {
+    fn refresh_after_download_skips_failed_downloads() {
         let ws = empty_ws();
         let before = ws.symbols.len();
         let result = vec![
@@ -493,7 +493,7 @@ mod tests {
     /// crashing on bogus input (the regression mode of the original bug
     /// was that this code path was never reached at all).
     #[test]
-    fn f009_refresh_after_download_attempts_load_for_ok_paths() {
+    fn refresh_after_download_attempts_load_for_ok_paths() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
         let bogus = tmp.path().join("nonexistent.app");

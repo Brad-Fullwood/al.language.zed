@@ -83,7 +83,7 @@ mod tests {
     /// positive: write_al_file_and_refresh writes to disk AND
     /// updates documents + file_index + invalidates insight graph.
     #[test]
-    fn f011_write_helper_refreshes_documents_and_file_index() {
+    fn write_helper_refreshes_documents_and_file_index() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("Foo.al");
@@ -105,7 +105,7 @@ mod tests {
     /// positive: rename_al_file_and_refresh moves the file on disk
     /// AND drops the old file_index entry while adding the new one.
     #[test]
-    fn f011_rename_helper_refreshes_file_index_for_old_and_new_paths() {
+    fn rename_helper_refreshes_file_index_for_old_and_new_paths() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
         let old = tmp.path().join("Old.al");
@@ -134,7 +134,7 @@ mod tests {
     /// instead of silently succeeding. A path under a non-existent
     /// directory must surface the underlying io::Error.
     #[test]
-    fn f011_write_helper_returns_io_error_for_unwritable_path() {
+    fn write_helper_returns_io_error_for_unwritable_path() {
         let ws = empty_ws();
         let bogus = std::path::PathBuf::from("/nonexistent/parent/dir/Foo.al");
         let err = write_al_file_and_refresh(&ws, &bogus, "x".to_string()).expect_err("must error");
@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn c11_rename_refuses_to_overwrite_existing_file() {
+    fn rename_refuses_to_overwrite_existing_file() {
         // Two source files exist; renaming one onto the other must NOT destroy
         // the destination. Both files must survive and an error is returned.
         let ws = empty_ws();
@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn c12_write_to_open_doc_keeps_version_monotonic() {
+    fn write_to_open_doc_keeps_version_monotonic() {
         // When the editor has the file open, a daemon-side write must not reset
         // the document version to 0 (which stomps the LSP-synced state); it must
         // advance monotonically via a full-replace.
@@ -202,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn c11_rename_to_free_destination_succeeds() {
+    fn rename_to_free_destination_succeeds() {
         let ws = empty_ws();
         let dir = tempfile::tempdir().unwrap();
         let old = dir.path().join("A.al");

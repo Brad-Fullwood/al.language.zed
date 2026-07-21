@@ -100,7 +100,7 @@ tokio = { workspace = true, features = ["full"] }
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 
-# C6 — deterministic symbol/insight perf benchmarks (cold/warm load, lookup,
+# Deterministic symbol/insight perf benchmarks (cold/warm load, lookup,
 # completion, impact, trace + memory metric). See Docs/benchmarks.md.
 [[bench]]
 name = "perf"

@@ -419,8 +419,8 @@ mod tests {
         // toolchain must still compile via the pure-Rust `.app` emitter and
         // succeed. Previously an early toolchain guard fired before the native
         // branch and failed `compile` with "No toolchain loaded" even though
-        // the native path it was about to run needs no toolchain (audit
-        // 2026-06-20). The toolchain is required only for the opt-in
+        // the native path it was about to run needs no toolchain. The toolchain
+        // is required only for the opt-in
         // `useOfficialCompiler` path (covered separately).
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();

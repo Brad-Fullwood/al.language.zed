@@ -308,7 +308,7 @@ fn report_stats_once() {
     idx.add_entries_owned(entries);
     let graph = build_graph(&idx);
     eprintln!(
-        "\n[C6 MEMORY] indexed_symbols={count} serialized_bytes={bytes} \
+        "\n[MEMORY] indexed_symbols={count} serialized_bytes={bytes} \
          bytes_per_symbol={} insight_nodes={} insight_edges={}\n",
         bytes / count.max(1),
         graph.node_count(),
