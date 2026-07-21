@@ -155,5 +155,13 @@ jobs:
       - name: Test cross-platform protocol and explorer crates
         run: cargo test -p al-protocol -p al-explorer
 
-      - name: Exercise Windows named-pipe daemon end to end
-        run: cargo test -p al-test-harness --test cli_smoke --test extension_smoke
+      - name: Build Windows daemon integration tests
+        run: cargo test -p al-test-harness --test cli_smoke --test extension_smoke --no-run
+
+      - name: Exercise Windows named-pipe CLI end to end
+        timeout-minutes: 3
+        run: cargo test -p al-test-harness --test cli_smoke
+
+      - name: Exercise Windows extension integration end to end
+        timeout-minutes: 3
+        run: cargo test -p al-test-harness --test extension_smoke
