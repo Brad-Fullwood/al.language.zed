@@ -1,16 +1,13 @@
-//! Native semantic workspace checks (gap C8 — additive native increment).
+//! Native semantic workspace checks.
 //!
 //! Pure-Rust, bridge-free checks that need only the workspace object index and
-//! the project's `app.json` `idRanges`. They **complement** — they do NOT
-//! replace — the Microsoft CodeAnalysis bridge (CodeCop / AppSourceCop / UICop
-//! / PerTenantCop), which still owns every rule-style diagnostic.
+//! the project's `app.json` `idRanges`. They complement the Microsoft
+//! CodeAnalysis bridge, which owns rule-style diagnostics.
 //!
 //! ## Codes
 //!
-//! Findings carry an `AL-NC###` code in a deliberately distinct namespace so
-//! they can never collide with:
-//! - the **removed** native lint codes (`AL-L*`, gap A1 — test-enforced as gone), or
-//! - Microsoft compiler diagnostics (`AL####`).
+//! Findings use the `AL-NC###` namespace so they cannot collide with Microsoft
+//! compiler diagnostics (`AL####`).
 //!
 //! This module is wholly separate from the LSP `diagnostics` / `lint` paths; it
 //! is surfaced only via the explicit `al-explorer native-check` command and the

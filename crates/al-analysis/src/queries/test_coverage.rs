@@ -4,8 +4,8 @@
 //! call. The direct pass walks procedure bodies looking for identifier
 //! references that match known procedure names.
 //!
-//! On top of the direct pass, an **indirect** pass (gap C15) consults the
-//! workspace call graph and credits coverage for polymorphic/indirect dispatch
+//! An indirect pass also consults the workspace call graph and credits coverage
+//! for polymorphic/indirect dispatch
 //! that name matching cannot see:
 //! - **interface dispatch** — `IFoo`-typed `.Bar()` covers `Bar` in every
 //!   implementor;
@@ -400,14 +400,7 @@ fn collect_coverage_from_tree(
                 continue;
             }
         }
-        // Same shape as the iterative cursor walk in queries/tests.rs:
-        // the first two arms set the same flag but trigger different
-        // tree-sitter cursor moves. Collapsing them would short-circuit
-        // and break the walk.
-        #[allow(clippy::if_same_then_else)]
-        if !did_visit && cursor.goto_first_child() {
-            did_visit = false;
-        } else if cursor.goto_next_sibling() {
+        if (!did_visit && cursor.goto_first_child()) || cursor.goto_next_sibling() {
             did_visit = false;
         } else if cursor.goto_parent() {
             did_visit = true;

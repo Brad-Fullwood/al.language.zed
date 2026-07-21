@@ -1,9 +1,6 @@
 //! Audit queries: DataClassification and Permission Set coverage.
 //!
-//! T1702: DataClassification audit — find table fields with missing/incorrect classification.
-//! T1706: Permission Set audit — compare defined permission sets against actual object usage.
-//!
-//! B13: usage-vs-grant comparison — flag granted permissions that exceed what the
+//! Usage-vs-grant comparison flags permissions that exceed what the
 //! workspace actually uses. Two complementary checks:
 //!
 //! 1. **Object-level** (`compute_over_broad` / `OverBroadGrantEntry`): a grant is
@@ -18,8 +15,8 @@
 //!    (record-variable subtype map + record-op call sites) rather than re-walking
 //!    the AST. This is an over-approximation in the **safe** direction: a right is
 //!    only flagged when *no* write site is found, so writes via `RecordRef`,
-//!    dynamic dispatch, or other apps are conservatively missed (false negatives,
-//!    never false "you may keep it" advice removed for a right that is used).
+//!    dynamic dispatch, or other apps are conservatively missed. False negatives
+//!    are possible; observed writes are never reported as removable rights.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;

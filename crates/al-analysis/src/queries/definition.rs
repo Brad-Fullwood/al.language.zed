@@ -1,5 +1,3 @@
-#![allow(clippy::useless_conversion)]
-
 //! Go-to-definition query.
 
 use al_symbols::SymbolEntry;
@@ -40,7 +38,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                     | ResolvedMemberKind::EnumValue { range: Some(range) } => {
                         return Some(vec![Location {
                             uri: member.uri.unwrap_or_else(|| uri.clone()),
-                            range: range.into(),
+                            range,
                         }]);
                     }
                     _ => {
@@ -56,7 +54,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                             ) {
                                 return Some(vec![Location {
                                     uri: file_uri,
-                                    range: range.into(),
+                                    range,
                                 }]);
                             }
                         }
@@ -84,7 +82,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         ) {
             return Some(vec![Location {
                 uri: obj_uri,
-                range: range.into(),
+                range,
             }]);
         }
         let pkg_entries = workspace.symbols.get_by_name(clean_name);
@@ -94,7 +92,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
             {
                 return Some(vec![Location {
                     uri: file_uri,
-                    range: range.into(),
+                    range,
                 }]);
             }
         }
@@ -164,7 +162,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         {
             return Some(vec![Location {
                 uri: file_uri,
-                range: range.into(),
+                range,
             }]);
         }
     }

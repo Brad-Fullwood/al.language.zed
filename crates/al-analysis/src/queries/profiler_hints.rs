@@ -324,17 +324,13 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
         return;
     }
 
-    // Build two lookup tables to support object-name disambiguation (ISSUE-146):
-    //   qualified:  (object_name_lc, proc_name_lc) -> (file, line)
-    //   fallback:   proc_name_lc                   -> (file, line)
-    //
-    // When the hint carries an object name we use the qualified key first so
-    // that two procedures with the same name in different objects resolve to
-    // their correct source files.
+    // Qualified names disambiguate procedures shared by multiple objects. The
+    // unqualified index contains only names that are unique in the workspace.
     let mut qualified: std::collections::HashMap<(String, String), (String, u32)> =
         std::collections::HashMap::new();
     let mut fallback: std::collections::HashMap<String, (String, u32)> =
         std::collections::HashMap::new();
+    let mut ambiguous = std::collections::HashSet::new();
 
     for entry in workspace.file_index.files.iter() {
         let path = entry.key();
@@ -354,6 +350,7 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
             &object_name,
             &mut qualified,
             &mut fallback,
+            &mut ambiguous,
         );
     }
 
@@ -383,6 +380,7 @@ fn collect_procedure_locations(
     object_name: &str,
     qualified: &mut std::collections::HashMap<(String, String), (String, u32)>,
     fallback: &mut std::collections::HashMap<String, (String, u32)>,
+    ambiguous: &mut std::collections::HashSet<String>,
 ) {
     let source = text.as_bytes();
     collect_procs(
@@ -392,6 +390,7 @@ fn collect_procedure_locations(
         object_name,
         qualified,
         fallback,
+        ambiguous,
     );
 }
 
@@ -402,6 +401,7 @@ fn collect_procs(
     object_name: &str,
     qualified: &mut std::collections::HashMap<(String, String), (String, u32)>,
     fallback: &mut std::collections::HashMap<String, (String, u32)>,
+    ambiguous: &mut std::collections::HashSet<String>,
 ) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -412,18 +412,22 @@ fn collect_procs(
                     if !name.is_empty() {
                         let line = node.start_position().row as u32 + 1; // 1-based
                         let loc = (file_path.to_string(), line);
-                        // Qualified key: always insert (overwrites — last file wins per object,
-                        // which is fine since object names should be unique in a workspace).
+                        let name_key = name.to_lowercase();
                         if !object_name.is_empty() {
-                            qualified.insert(
-                                (object_name.to_string(), name.to_lowercase()),
-                                loc.clone(),
-                            );
+                            qualified
+                                .insert((object_name.to_string(), name_key.clone()), loc.clone());
                         }
-                        // Fallback: only the first occurrence (DashMap iteration is unordered,
-                        // so this remains non-deterministic for identically-named procs in
-                        // different objects — the qualified key should be used instead).
-                        fallback.entry(name.to_lowercase()).or_insert(loc);
+                        if !ambiguous.contains(&name_key) {
+                            if fallback
+                                .get(&name_key)
+                                .is_some_and(|existing| existing != &loc)
+                            {
+                                fallback.remove(&name_key);
+                                ambiguous.insert(name_key);
+                            } else {
+                                fallback.entry(name_key).or_insert(loc);
+                            }
+                        }
                     }
                 }
             }
@@ -958,10 +962,6 @@ mod tests {
         assert_eq!(validate.line, Some(8), "ValidateEntry on line 8");
     }
 
-    /// ISSUE-146: When two AL objects define a procedure with the same name (e.g.
-    /// OnAfterValidate), the hint must resolve to the correct file by matching on
-    /// the object name.  Previously the result was non-deterministic because DashMap
-    /// iteration order is undefined.
     #[test]
     fn disambiguates_same_proc_name_by_object_name() {
         let file_a = r#"codeunit 50100 "Alpha Codeunit"
@@ -1019,6 +1019,10 @@ mod tests {
             "Should resolve to Alpha.al, got: {:?}",
             h_alpha.file
         );
+
+        let unqualified = profiler_hints(&ws, &[make_hotspot("OnAfterValidate", "", 5.0, 5.0, 5)]);
+        assert_eq!(unqualified[0].file, None);
+        assert_eq!(unqualified[0].line, None);
     }
 
     #[test]
