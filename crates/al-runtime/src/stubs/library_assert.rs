@@ -98,7 +98,7 @@ pub fn are_nearly_equal(args: &[Value]) -> Eval {
         return err("Assert.AreNearlyEqual: non-numeric argument");
     };
     // Exact decimals: no NaN/infinity can arise, so the comparison is a plain
-    // exact tolerance check (C3).
+    // exact tolerance check.
     if (ef - af).abs() <= pf {
         ok()
     } else {
@@ -230,8 +230,6 @@ mod tests {
 
     #[test]
     fn areequal_mixed_numeric() {
-        // 5 == 5.0 across Integer/Decimal — Library Assert's variant
-        // semantics treat these as equal.
         assert_pass(are_equal(&[Value::Integer(5), Value::Decimal(dec!(5.0))]));
     }
 
@@ -283,9 +281,6 @@ mod tests {
 
     #[test]
     fn are_nearly_equal_is_exact_no_float_drift() {
-        // C3: exact decimals mean a computed sum has no binary-float residue,
-        // so AreNearlyEqual with ZERO tolerance still passes for 0.1 + 0.2 = 0.3
-        // (which fails under f64). NaN/infinity can no longer be constructed.
         let sum = dec!(0.1) + dec!(0.2);
         let result = are_nearly_equal(&[
             Value::Decimal(sum),
@@ -300,7 +295,6 @@ mod tests {
 
     #[test]
     fn are_nearly_equal_respects_precision_band() {
-        // Just inside the band passes; just outside fails.
         assert_pass(are_nearly_equal(&[
             Value::Decimal(dec!(1.0)),
             Value::Decimal(dec!(1.0009)),

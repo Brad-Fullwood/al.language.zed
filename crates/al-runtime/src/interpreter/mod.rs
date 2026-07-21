@@ -9,7 +9,7 @@ pub mod scope;
 pub mod value;
 
 #[cfg(test)]
-mod tests_adversarial_wave2;
+mod regression_tests;
 #[cfg(test)]
 mod tests_coverage;
 #[cfg(test)]

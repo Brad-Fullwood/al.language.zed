@@ -2,9 +2,9 @@
 //!
 //! **Stability contract.** This enum is the boundary type between the
 //! interpreter, mock BC runtime, and consumers such as DAP variable inspection
-//! and snapshot replay. Variants here are
-//! considered stable for parallel work; new variants may be added at the
-//! end of the enum but existing variants must not be renamed or reordered.
+//! and snapshot replay. Variants here are considered stable for parallel work;
+//! new variants may be appended, but existing variants must not be renamed or
+//! reordered.
 //!
 //! Variant set tracks AL's primitive + structured value space:
 //!  * scalars: Integer, Decimal, Boolean, Char, Date, Time, DateTime,
@@ -68,10 +68,10 @@ pub enum Value {
     /// AL `Integer` — 32-bit signed. Stored in an i64 carrier, but arithmetic
     /// traps at the i32 range to match BC (see `apply_binary`). Distinct from
     /// [`Value::BigInteger`] so the interpreter can apply the right overflow
-    /// width; the two compare equal by numeric value (C28).
+    /// width; the two compare equal by numeric value.
     Integer(i64),
     /// AL `Decimal` — exact 96-bit decimal (`rust_decimal::Decimal`), matching
-    /// BC's `System.Decimal`: no binary-float drift, no NaN/infinity (C3).
+    /// BC's `System.Decimal`: no binary-float drift and no NaN or infinity.
     Decimal(Decimal),
     Boolean(bool),
     /// AL `Char` — single Unicode code point.
@@ -124,7 +124,7 @@ pub enum Value {
     /// AL `BigInteger` — 64-bit signed. Appended to the enum to preserve the
     /// variant-ordering stability contract; it is treated as the same numeric
     /// class as [`Value::Integer`] for comparison (see `variant_index`), and
-    /// arithmetic on it traps only at the i64 range (C28).
+    /// arithmetic on it traps only at the i64 range.
     BigInteger(i64),
 }
 
@@ -164,7 +164,7 @@ impl Ord for Value {
                 Null => 0,
                 Empty => 1,
                 // Integer and BigInteger are one numeric class: same index so
-                // they order by value, and `5 = 5L` holds (C28).
+                // they order by value, and `5 = 5L` holds.
                 Integer(_) | BigInteger(_) => 2,
                 Decimal(_) => 3,
                 Boolean(_) => 4,
@@ -282,9 +282,9 @@ impl Value {
     /// into. AL variables have a fixed type, so an assignment preserves the
     /// slot's type rather than adopting the RHS's:
     ///
-    /// * a `Code` slot uppercases a string RHS and stays `Code` (caseless — C2);
+    /// * a `Code` slot uppercases a string RHS and stays caseless `Code`;
     /// * an `Integer`/`BigInteger` slot keeps its width so later arithmetic uses
-    ///   the right overflow trap (C28).
+    ///   the right overflow trap.
     ///
     /// Any other combination overwrites as-is. Shared by both assignment paths
     /// (`eval_assignment` and the expression-form handler in `eval_expr`).
@@ -360,7 +360,6 @@ mod tests {
     fn truthiness_is_strict() {
         assert!(Value::Boolean(true).is_truthy());
         assert!(!Value::Boolean(false).is_truthy());
-        // AL does not auto-coerce; even non-zero integer is NOT truthy.
         assert!(!Value::Integer(1).is_truthy());
         assert!(!Value::Text("anything".into()).is_truthy());
         assert!(!Value::Null.is_truthy());
@@ -376,16 +375,12 @@ mod tests {
 
     #[test]
     fn default_for_unknown_returns_none() {
-        // Negative: an unknown type name yields None — caller decides
-        // whether to error or fall back.
         assert!(Value::default_for("DefinitelyNotAnALType").is_none());
         assert!(Value::default_for("").is_none());
     }
 
     #[test]
     fn type_name_is_stable() {
-        // The strings here are part of the stability contract: they
-        // appear in DAP variable inspection and error messages.
         assert_eq!(Value::Integer(0).type_name(), "Integer");
         assert_eq!(Value::Boolean(true).type_name(), "Boolean");
         assert_eq!(
@@ -400,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn default_for_code_returns_code_variant_adversarial_h_1() {
+    fn default_for_code_returns_code_variant() {
         assert!(
             matches!(Value::default_for("Code"), Some(Value::Code(s)) if s.is_empty()),
             "default_for(\"Code\") must return Value::Code, got: {:?}",
@@ -410,14 +405,11 @@ mod tests {
 
     #[test]
     fn decimal_is_exact_no_binary_float_drift() {
-        // C3: Value::Decimal is rust_decimal — exact base-10, no NaN, no drift.
-        // The canonical f64 footgun (0.1 + 0.2 != 0.3) does NOT happen here.
         assert_eq!(
             Value::Decimal(dec!(0.1) + dec!(0.2)),
             Value::Decimal(dec!(0.3)),
             "0.1 + 0.2 must equal 0.3 exactly"
         );
-        // Ordering is a genuine total order over finite decimals.
         let one = Value::Decimal(dec!(1.0));
         let two = Value::Decimal(dec!(2.0));
         assert!(one < two);
@@ -430,11 +422,8 @@ mod tests {
     #[test]
     fn default_for_covers_every_supported_type() {
         use std::cmp::Ordering;
-        // biginteger has its own zero value, distinct variant from Integer but
-        // numerically equal to it (C28).
         assert_eq!(Value::default_for("biginteger"), Some(Value::BigInteger(0)));
         assert_eq!(Value::BigInteger(0), Value::Integer(0));
-        // Decimal default is 0.0 (not NaN, not unset).
         assert_eq!(
             Value::default_for("decimal"),
             Some(Value::Decimal(Decimal::ZERO))
@@ -445,14 +434,12 @@ mod tests {
         assert_eq!(Value::default_for("duration"), Some(Value::Duration(0)));
         assert_eq!(Value::default_for("char"), Some(Value::Char('\0')));
         assert!(matches!(Value::default_for("code"), Some(Value::Code(s)) if s.is_empty()));
-        // Guid default is the AL nil GUID.
         match Value::default_for("guid") {
             Some(Value::Guid(g)) => {
                 assert_eq!(g, "00000000-0000-0000-0000-000000000000");
             }
             other => panic!("guid default wrong: {other:?}"),
         }
-        // Case-insensitive: mixed-case names resolve identically.
         assert_eq!(
             Value::default_for("DateTime").cmp(&Value::default_for("datetime")),
             Ordering::Equal
@@ -461,10 +448,6 @@ mod tests {
 
     #[test]
     fn cross_variant_order_follows_declaration_index() {
-        // Variants are ordered by their declaration index regardless of inner
-        // payload. Null(0) < Empty(1) < Integer(2) < ... < ErrorInfo(21).
-        // A huge integer must still sort BELOW a tiny decimal, because the
-        // variant index dominates the inner value.
         let huge_int = Value::Integer(i64::MAX);
         let tiny_dec = Value::Decimal(dec!(-1000000));
         assert!(
@@ -544,13 +527,9 @@ mod tests {
             member: m.into(),
             ordinal: o,
         };
-        // Ordinal dominates: a "Zzz" member with ordinal 0 sorts before an
-        // "Aaa" member with ordinal 1, because ordinal is the primary key.
         assert!(opt("Status", "Zzz", 0) < opt("Status", "Aaa", 1));
-        // Same ordinal: fall back to type_name, then member.
         assert!(opt("AStatus", "X", 5) < opt("BStatus", "X", 5));
         assert!(opt("Status", "Aaa", 5) < opt("Status", "Bbb", 5));
-        // Equal triple => Equal.
         assert_eq!(opt("S", "M", 3), opt("S", "M", 3));
     }
 
@@ -563,14 +542,10 @@ mod tests {
                 handle,
             })
         };
-        // table_id is primary: lower id sorts first even with a "later" name.
         assert!(rec(18, "Zebra", Some(99)) < rec(27, "Aardvark", Some(1)));
-        // Same id: compare table_name.
         assert!(rec(18, "Apple", None) < rec(18, "Banana", None));
-        // Same id + name: compare handle (None < Some).
         assert!(rec(18, "Customer", None) < rec(18, "Customer", Some(0)));
         assert!(rec(18, "Customer", Some(1)) < rec(18, "Customer", Some(2)));
-        // RecordRef uses the identical comparison path.
         let rref = |id: i32| {
             Value::RecordRef(RecordValue {
                 table_name: "T".into(),
@@ -587,13 +562,11 @@ mod tests {
             Value::Variant(Box::new(Value::Integer(1)))
                 < Value::Variant(Box::new(Value::Integer(2)))
         );
-        // Array / List use lexicographic Vec ordering.
         assert!(
             Value::Array(vec![Value::Integer(1)])
                 < Value::Array(vec![Value::Integer(1), Value::Integer(0)])
         );
         assert!(Value::List(vec![Value::Integer(1)]) < Value::List(vec![Value::Integer(2)]));
-        // Blob uses byte-vector ordering.
         assert!(Value::Blob(vec![1, 2]) < Value::Blob(vec![1, 3]));
         assert!(Value::Blob(vec![1]) < Value::Blob(vec![1, 0]));
     }
@@ -605,7 +578,6 @@ mod tests {
         let mut b = BTreeMap::new();
         b.insert("k1".to_string(), Value::Integer(2));
         assert!(Value::Dict(a.clone()) < Value::Dict(b));
-        // Adding a second entry makes the longer sequence sort after.
         let mut c = a.clone();
         c.insert("k2".to_string(), Value::Integer(0));
         assert!(Value::Dict(a) < Value::Dict(c));
@@ -620,15 +592,12 @@ mod tests {
                 source: Some("CU 50000".into()),
             }))
         };
-        // Only the message participates in ordering; error_type/source ignored.
         assert!(err("aaa") < err("bbb"));
         assert_eq!(err("same"), err("same"));
     }
 
     #[test]
     fn eq_mirrors_cmp_across_variants() {
-        // Eq contract a == a holds; distinct variants never compare equal even
-        // for the same numeric value (Integer(0) is not Decimal(0)).
         let d = Value::Decimal(dec!(1.25));
         assert_eq!(d, d.clone(), "a decimal must equal itself");
         assert_ne!(Value::Integer(0), Value::Decimal(Decimal::ZERO));
@@ -687,8 +656,6 @@ mod tests {
 
     #[test]
     fn al_date_math_known_anchors() {
-        // Ground truth, independent of the interpreter: the AL epoch is day 0,
-        // and the Unix epoch is the standard 719162-day offset.
         assert_eq!(al_days_from_ymd(1, 1, 1), 0);
         assert_eq!(al_days_from_ymd(1970, 1, 1), AL_EPOCH_TO_UNIX_DAYS);
         assert_eq!(days_from_civil(1970, 1, 1), 0);
@@ -697,22 +664,18 @@ mod tests {
 
     #[test]
     fn al_date_math_month_lengths_and_leap_years() {
-        // June has 30 days.
         assert_eq!(
             al_days_from_ymd(2024, 7, 1) - al_days_from_ymd(2024, 6, 1),
             30
         );
-        // 2024 is a leap year → February has 29 days.
         assert_eq!(
             al_days_from_ymd(2024, 3, 1) - al_days_from_ymd(2024, 2, 1),
             29
         );
-        // 2023 is not a leap year → February has 28 days.
         assert_eq!(
             al_days_from_ymd(2023, 3, 1) - al_days_from_ymd(2023, 2, 1),
             28
         );
-        // One ordinary year (2023, non-leap) is 365 days.
         assert_eq!(
             al_days_from_ymd(2024, 1, 1) - al_days_from_ymd(2023, 1, 1),
             365
@@ -721,12 +684,10 @@ mod tests {
 
     #[test]
     fn value_is_usable_as_btreemap_key() {
-        // The whole point of the total Ord impl: Value must work as a key.
         let mut map: BTreeMap<Value, &str> = BTreeMap::new();
         map.insert(Value::Integer(2), "two");
         map.insert(Value::Integer(1), "one");
         map.insert(Value::Decimal(dec!(3.5)), "dec");
-        // Lookups round-trip; the exact decimal key is stable.
         assert_eq!(map.get(&Value::Integer(1)), Some(&"one"));
         assert_eq!(map.get(&Value::Decimal(dec!(3.5))), Some(&"dec"));
         let keys: Vec<_> = map.keys().cloned().collect();

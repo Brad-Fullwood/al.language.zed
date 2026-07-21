@@ -18,9 +18,8 @@ pub fn eval_expr(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    // Expression evaluation recurses per
-    // AST nesting level, and ~400 nested parens overflow a 2 MiB worker
-    // thread stack — aborting the whole process. Mirror eval_stmt's guard.
+    // Expression evaluation recurses per AST nesting level. About 400 nested
+    // parentheses overflow a 2 MiB worker stack, so mirror eval_stmt's guard.
     if !stack.enter_expr() {
         return Eval::Error(simple_error(&format!(
             "expression nesting depth exceeded (max {} levels) — likely a pathological or generated test source",
@@ -124,7 +123,7 @@ fn utf8_text<'a>(node: Node<'_>, source: &'a [u8]) -> Option<&'a str> {
     node.utf8_text(source).ok()
 }
 
-/// Type an integer literal (C28). An `l`/`L` suffix — AL's `BigInteger` literal
+/// Type an integer literal. An `l`/`L` suffix — AL's `BigInteger` literal
 /// marker — or a magnitude outside the 32-bit `Integer` range yields a
 /// `BigInteger`; otherwise `Integer`.
 fn int_literal_value(text: &str) -> Option<Value> {
@@ -206,7 +205,7 @@ fn eval_unary(
         ("-", Value::Integer(n)) => Eval::Normal(Value::Integer(-n)),
         // A BigInteger can hold the full i64 range, so `-n` could overflow at
         // i64::MIN (unlike the 32-bit Integer above); wrapping_neg avoids the
-        // debug-build panic and is identical for every reachable value (C28).
+        // debug-build panic and is identical for every reachable value.
         ("-", Value::BigInteger(n)) => Eval::Normal(Value::BigInteger(n.wrapping_neg())),
         ("-", Value::Decimal(n)) => Eval::Normal(Value::Decimal(-n)),
         ("not", Value::Boolean(b)) => Eval::Normal(Value::Boolean(!b)),
@@ -247,7 +246,7 @@ fn eval_postfix(
     }
 
     // Record field read: `Rec."Field"` (a `member_suffix`, not a call) where the
-    // receiver resolves to a bound `Value::Record` (B6).
+    // receiver resolves to a bound `Value::Record`.
     if let Some((recv, field)) = records::record_field_access(node, source) {
         if let Some(Value::Record(rv)) = stack.lookup(&recv) {
             let table_name = rv.table_name.clone();
@@ -601,7 +600,7 @@ fn classify_numeric(v: &Value) -> Option<Num> {
 /// carrier means an i64 `checked_*` alone would let `2147483647 * 3` silently
 /// produce a value no `Integer` can hold, so an `Integer` result is also
 /// range-checked against i32. Either overflow is a runtime error, never a
-/// silent wrap (C28).
+/// silent wrap.
 fn checked_int(result: Option<i64>, big: bool) -> Eval {
     match result {
         Some(n) if big => Eval::Normal(Value::BigInteger(n)),
@@ -626,7 +625,7 @@ fn checked_decimal(d: Option<Decimal>) -> Eval {
 /// * `/` is AL real division: always `Decimal` (e.g. `Avg := Total / Count`).
 /// * `div`/`mod` are integer-only; on any `Decimal` operand they error.
 /// * Integer/Integer stays `Integer` (i32 trap); if either side is a
-///   `BigInteger` the result is `BigInteger` (i64 trap) — BC's promotion (C28).
+///   `BigInteger` the result is `BigInteger` with an i64 overflow trap.
 fn apply_numeric(op: &str, l: Num, r: Num) -> Eval {
     // Real division always promotes to Decimal.
     if op == "/" {
@@ -684,7 +683,7 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
 
     // Numeric arithmetic (Integer, BigInteger, Decimal, and every mix) is
     // handled first, before the value-consuming match, so the operand-type
-    // classification lives in one place (C28). Non-arithmetic ops and
+    // classification lives in one place. Non-arithmetic operations and
     // non-numeric operands fall through to the match below.
     if matches!(op.as_str(), "+" | "-" | "*" | "/" | "div" | "mod") {
         if let (Some(l), Some(r)) = (classify_numeric(&left), classify_numeric(&right)) {
@@ -718,7 +717,7 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
     }
 }
 
-/// AL value equality for `=`/`<>` and CASE matching. BC semantics (C2):
+/// AL value equality for `=`/`<>` and CASE matching:
 /// - `Text = Text` is **case-sensitive**.
 /// - `Code = Code` and `Code = Text` are **case-insensitive** (Code is an
 ///   uppercased, caseless type; a Text on the other side is coerced to Code).
@@ -754,7 +753,7 @@ fn values_cmp(a: &Value, b: &Value, predicate: impl Fn(std::cmp::Ordering) -> bo
         (Text(x), Text(y)) => x.cmp(y),
         // `Code` is caseless in BC, so relational operators must compare it
         // case-insensitively too — matching `values_equal` and the record
-        // filter (C2/C20). A Text/Code mix coerces to caseless Code.
+        // filter. A Text/Code mix coerces to caseless Code.
         (Code(x), Code(y)) | (Text(x), Code(y)) | (Code(x), Text(y)) => {
             x.to_ascii_uppercase().cmp(&y.to_ascii_uppercase())
         }
@@ -836,7 +835,6 @@ mod tests {
 
     #[test]
     fn integer_arithmetic_associativity() {
-        // (1 + 2) + 3 == 1 + (2 + 3)
         let lhs = ok(apply_binary(
             "+",
             ok(apply_binary("+", Value::Integer(1), Value::Integer(2))),
@@ -860,7 +858,6 @@ mod tests {
 
     #[test]
     fn slash_promotes_to_decimal() {
-        // AL: integer `/` integer → Decimal.
         assert_eq!(
             ok(apply_binary("/", Value::Integer(7), Value::Integer(2))),
             Value::Decimal(dec!(3.5))
@@ -876,23 +873,19 @@ mod tests {
     }
 
     #[test]
-    fn c28_integer_arithmetic_traps_i32_overflow() {
-        // BC's Integer is 32-bit; 2147483647 * 3 overflows and errors (it must
-        // not silently produce 6442450941 in the i64 store).
+    fn integer_arithmetic_traps_i32_overflow() {
         let e = err(apply_binary(
             "*",
             Value::Integer(2_147_483_647),
             Value::Integer(3),
         ));
         assert!(e.message.contains("overflow"), "got {}", e.message);
-        // i32::MAX + 1 overflows.
         let e = err(apply_binary(
             "+",
             Value::Integer(i32::MAX as i64),
             Value::Integer(1),
         ));
         assert!(e.message.contains("overflow"));
-        // A result that stays within i32 is fine.
         assert_eq!(
             ok(apply_binary(
                 "+",
@@ -904,10 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn c3_repeating_division_yields_value_not_error() {
-        // 10 / 3 is a non-terminating decimal. rust_decimal rounds to its 28-
-        // digit precision and returns a value — it must NOT be treated as an
-        // overflow/undefined error (that only happens past the 96-bit range).
+    fn repeating_division_yields_value_not_error() {
         let r = ok(apply_binary(
             "/",
             Value::Decimal(dec!(10)),
@@ -915,7 +905,6 @@ mod tests {
         ));
         match r {
             Value::Decimal(d) => {
-                // 3.3333333333333333333333333333 (28 threes), well within range.
                 assert!(d > dec!(3.333) && d < dec!(3.334), "got {d}");
             }
             other => panic!("expected Decimal, got {other:?}"),
@@ -923,9 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn c3_decimal_overflow_on_add_and_mul_errors() {
-        // Past the 96-bit range every checked op returns None → runtime error,
-        // never a silent wrap or NaN/Inf (which rust_decimal cannot represent).
+    fn decimal_overflow_on_add_and_mul_errors() {
         assert!(err(apply_binary(
             "*",
             Value::Decimal(Decimal::MAX),
@@ -943,11 +930,7 @@ mod tests {
     }
 
     #[test]
-    fn c3_large_integer_decimal_equality_is_exact() {
-        // i64::MAX (9223372036854775807) exceeds f64's 2^53 exact-integer
-        // range, so the old `as f64` cast made `Integer(i64::MAX) = Decimal(same)`
-        // wrongly true for nearby values. With exact promotion it is precise:
-        // equal to itself, not equal to itself minus one.
+    fn large_integer_decimal_equality_is_exact() {
         let big = i64::MAX;
         let as_dec = Decimal::from(big);
         assert_eq!(
@@ -970,9 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn c28_biginteger_arithmetic_uses_i64_width_not_i32_trap() {
-        // The core fix: BigInteger arithmetic past the 32-bit Integer range must
-        // compute, not error. 5_000_000_000 + 1 = 5_000_000_001.
+    fn biginteger_arithmetic_uses_i64_width() {
         assert_eq!(
             ok(apply_binary(
                 "+",
@@ -981,7 +962,6 @@ mod tests {
             )),
             Value::BigInteger(5_000_000_001)
         );
-        // A BigInteger result stays BigInteger (not silently demoted to Integer).
         assert!(matches!(
             ok(apply_binary(
                 "*",
@@ -993,9 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn c28_integer_arithmetic_still_traps_at_i32() {
-        // BC's 32-bit Integer overflow must still error when both operands are
-        // Integer — the guarantee C28 originally added, preserved.
+    fn integer_arithmetic_still_traps_at_i32() {
         assert!(err(apply_binary(
             "*",
             Value::Integer(2_000_000_000),
@@ -1006,9 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn c28_mixed_integer_biginteger_promotes_to_biginteger() {
-        // BC promotes Integer op BigInteger → BigInteger; the sum exceeds i32
-        // but must NOT trap because the BigInteger operand widens the result.
+    fn mixed_integer_biginteger_promotes_to_biginteger() {
         assert_eq!(
             ok(apply_binary(
                 "+",
@@ -1020,8 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn c28_biginteger_overflow_at_i64_traps() {
-        // BigInteger is 64-bit; past that it errors rather than wrapping.
+    fn biginteger_overflow_at_i64_traps() {
         assert!(err(apply_binary(
             "*",
             Value::BigInteger(i64::MAX),
@@ -1032,8 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn c28_integer_and_biginteger_compare_equal_by_value() {
-        // `5 = 5L` holds; the two integer types are one numeric class.
+    fn integer_and_biginteger_compare_equal_by_value() {
         assert_eq!(
             ok(apply_binary("=", Value::Integer(5), Value::BigInteger(5))),
             Value::Boolean(true)
@@ -1046,8 +1020,7 @@ mod tests {
     }
 
     #[test]
-    fn c28_biginteger_divided_by_integer_promotes_to_decimal() {
-        // Real division always yields Decimal, regardless of integer width.
+    fn biginteger_divided_by_integer_promotes_to_decimal() {
         assert_eq!(
             ok(apply_binary(
                 "/",
@@ -1060,9 +1033,6 @@ mod tests {
 
     #[test]
     fn code_relational_comparison_is_caseless() {
-        // Review fix: `<=`/`<` on Code must be case-insensitive like `=`
-        // (C2/C20). Previously `<=` was case-sensitive, so `=` and `<=`
-        // disagreed for the same pair.
         assert_eq!(
             ok(apply_binary(
                 "<=",
@@ -1091,9 +1061,6 @@ mod tests {
 
     #[test]
     fn values_equal_covers_non_numeric_variants() {
-        // Review fix: `Assert.AreEqual` on Duration/Guid/Char/Option used to
-        // always fail because both `values_equal` copies only listed a subset
-        // of variants; the structural fallback now covers them.
         assert!(values_equal(&Value::Duration(1000), &Value::Duration(1000)));
         assert!(!values_equal(
             &Value::Duration(1000),
@@ -1105,14 +1072,12 @@ mod tests {
         ));
         assert!(values_equal(&Value::Char('x'), &Value::Char('x')));
         assert!(!values_equal(&Value::Char('x'), &Value::Char('y')));
-        // BigInteger still unifies with Integer, and cross-type stays unequal.
         assert!(values_equal(&Value::BigInteger(5), &Value::Integer(5)));
         assert!(!values_equal(&Value::Integer(5), &Value::Text("5".into())));
     }
 
     #[test]
-    fn mixed_integer_decimal_division_promotes(/* C1 */) {
-        // Decimal ÷ Integer (e.g. `Avg := Total / Count`) → Decimal.
+    fn mixed_integer_decimal_division_promotes() {
         assert_eq!(
             ok(apply_binary(
                 "/",
@@ -1121,7 +1086,6 @@ mod tests {
             )),
             Value::Decimal(dec!(3.5))
         );
-        // Integer ÷ Decimal → Decimal.
         assert_eq!(
             ok(apply_binary(
                 "/",
@@ -1133,7 +1097,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_integer_decimal_division_by_zero_is_error(/* C1 */) {
+    fn mixed_integer_decimal_division_by_zero_is_error() {
         let e = err(apply_binary(
             "/",
             Value::Decimal(dec!(1.0)),
@@ -1149,8 +1113,7 @@ mod tests {
     }
 
     #[test]
-    fn all_four_operators_handle_mixed_types(/* C1 regression net */) {
-        // Every arithmetic operator must accept both Integer/Decimal orderings.
+    fn all_four_operators_handle_mixed_types() {
         for op in ["+", "-", "*", "/"] {
             assert!(
                 matches!(
@@ -1283,7 +1246,6 @@ mod tests {
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
 
-        // Find the first `expression` child of the `exit_statement`.
         fn find_exit_arg<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
             if node.kind() == "exit_statement" {
                 let mut cursor = node.walk();
@@ -1318,9 +1280,6 @@ mod tests {
         if let Eval::Normal(v) = parse_and_eval("42") {
             assert_eq!(v, Value::Integer(42));
         }
-        // The parser may or may not produce the precise expected node
-        // structure we rely on; we don't fail the suite on a parser
-        // miss because this is a smoke test, not a contract.
     }
 
     #[test]
@@ -1330,11 +1289,7 @@ mod tests {
             Eval::Error(e) => {
                 assert!(e.message.contains("unbound") || e.message.contains("unsupported"));
             }
-            // If the parser wrapped the identifier in a kind we don't
-            // recognise, the unsupported branch produces an error too.
-            Eval::Normal(_) | Eval::Exit(_) => {
-                // The parser may wrap the identifier in a different node shape.
-            }
+            Eval::Normal(_) | Eval::Exit(_) => {}
             Eval::Break | Eval::Continue => panic!("unexpected break/continue"),
         }
     }
@@ -1359,9 +1314,6 @@ mod tests {
 
     #[test]
     fn decimal_arithmetic_is_exact_and_overflow_errors() {
-        // C3: rust_decimal is exact base-10 — no NaN/infinity can arise, so the
-        // old "Inf / Inf silently yields NaN" footgun is structurally gone.
-        // 0.1 + 0.2 == 0.3 exactly (the classic binary-float failure).
         assert_eq!(
             ok(apply_binary(
                 "+",
@@ -1371,7 +1323,6 @@ mod tests {
             Value::Decimal(dec!(0.3)),
             "0.1 + 0.2 must equal 0.3 exactly"
         );
-        // Overflow of the 96-bit range is a runtime error, not a silent value.
         let result = apply_binary(
             "*",
             Value::Decimal(Decimal::MAX),
