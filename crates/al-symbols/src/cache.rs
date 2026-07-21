@@ -19,7 +19,7 @@ use super::model::SymbolPackage;
 /// Cache header stored alongside each cached package.
 /// Bump whenever `SymbolEntry`'s semantics change in a way that defaults
 /// can't repair — old caches are then rejected and the .app re-parsed.
-/// v1: `synthetic` flag on entries (FB-2) — pre-flag caches contain
+/// Version 1 added the `synthetic` flag. Older caches contain
 /// fabricated Option-enums that would deserialize as `synthetic: false`
 /// and reappear in search results.
 const CACHE_SCHEMA_VERSION: u32 = 1;

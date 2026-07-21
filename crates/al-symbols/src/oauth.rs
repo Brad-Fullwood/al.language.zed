@@ -74,7 +74,7 @@ struct TokenResponse {
 }
 
 /// Secret fields are zeroized on drop for the same reason as [`TokenResponse`]
-/// (F-OPEN-010); `expires_at`/`tenant` are non-secret and skipped.
+/// `expires_at` and `tenant` are non-secret and skipped.
 #[derive(Debug, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct CachedToken {
     access_token: String,
@@ -109,45 +109,7 @@ pub async fn acquire_token(
              'common'/'organizations'/'consumers'"
         )));
     }
-    let client_id = match std::env::var("BC_CLIENT_ID") {
-        Ok(v) if !v.trim().is_empty() => {
-            let trimmed = v.trim();
-            // T061: AAD client IDs are GUIDs. Reject obviously bad shapes
-            // before we interpolate them into the authorize URL — a typoed
-            // value would otherwise produce an opaque AAD redirect error
-            // long after the launch attempt. Conservative validator: 36
-            // chars, hyphens at positions 8/13/18/23, hex elsewhere.
-            // Failure path is the same as blank/missing: warn + use default.
-            if !is_well_formed_guid(trimmed) {
-                warn!(
-                    candidate = %trimmed,
-                    "BC_CLIENT_ID is set but is not a well-formed AAD GUID; \
-                     falling back to default client_id"
-                );
-                DEFAULT_CLIENT_ID.into()
-            } else {
-                trimmed.to_string()
-            }
-        }
-        Ok(_) => {
-            warn!("BC_CLIENT_ID is set but blank/whitespace; falling back to default client_id");
-            DEFAULT_CLIENT_ID.into()
-        }
-        // T041 / sec-asym-client-id: split NotPresent (the common case —
-        // env var simply unset) from NotUnicode (a real config error worth
-        // surfacing). Pre-fix the catch-all Err(_) silently used the
-        // default for both, so a misencoded BC_CLIENT_ID was indistinguishable
-        // from "no override set" in the logs.
-        Err(std::env::VarError::NotPresent) => DEFAULT_CLIENT_ID.into(),
-        Err(std::env::VarError::NotUnicode(raw)) => {
-            warn!(
-                ?raw,
-                "BC_CLIENT_ID contains non-UTF-8 bytes; falling back to default client_id \
-                 — fix the env var encoding to override"
-            );
-            DEFAULT_CLIENT_ID.into()
-        }
-    };
+    let client_id = configured_client_id()?;
     let cache_path = token_cache_path(tenant);
 
     if let Some(cached) = load_cached_token(&cache_path, tenant) {
@@ -180,6 +142,28 @@ pub async fn acquire_token(
     info!(tenant, "Acquired BC access token");
     // Clone so `tok` drops intact (Drop scrubs the secrets).
     Ok(tok.access_token.clone())
+}
+
+fn configured_client_id() -> Result<String, OAuthError> {
+    match std::env::var("BC_CLIENT_ID") {
+        Ok(v) if !v.trim().is_empty() => {
+            let trimmed = v.trim();
+            // Reject malformed IDs before building an authorization URL so a
+            // configuration error does not become an opaque redirect failure.
+            if !is_well_formed_guid(trimmed) {
+                Err(OAuthError::Other(
+                    "BC_CLIENT_ID must be a well-formed GUID".to_string(),
+                ))
+            } else {
+                Ok(trimmed.to_string())
+            }
+        }
+        Ok(_) => Err(OAuthError::Other("BC_CLIENT_ID is blank".to_string())),
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_CLIENT_ID.into()),
+        Err(std::env::VarError::NotUnicode(_)) => Err(OAuthError::Other(
+            "BC_CLIENT_ID contains non-UTF-8 bytes".to_string(),
+        )),
+    }
 }
 
 async fn interactive_sign_in(
@@ -747,8 +731,7 @@ fn is_valid_tenant(s: &str) -> bool {
 
 /// True iff `s` is a 36-character hyphenated GUID
 /// (8-4-4-4-12, hex elsewhere). Used by acquire_token to validate
-/// BC_CLIENT_ID before interpolating it into the AAD authorize URL
-/// (T061 / sec-061-guid-validate).
+/// `BC_CLIENT_ID` before interpolating it into the authorization URL.
 fn is_well_formed_guid(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.len() != 36 {
@@ -769,7 +752,8 @@ fn is_well_formed_guid(s: &str) -> bool {
 
 #[cfg(test)]
 mod guid_tests {
-    use super::is_well_formed_guid;
+    use super::{configured_client_id, is_well_formed_guid, DEFAULT_CLIENT_ID};
+    use serial_test::serial;
     #[test]
     fn accepts_canonical_aad_app_id() {
         assert!(is_well_formed_guid("ef72a0a7-b59c-4f97-99c8-5b9a2cd3a1b6"));
@@ -792,6 +776,29 @@ mod guid_tests {
         ));
         // non-hex
         assert!(!is_well_formed_guid("zf72a0a7-b59c-4f97-99c8-5b9a2cd3a1b6"));
+    }
+
+    #[test]
+    #[serial]
+    fn missing_client_id_uses_default() {
+        let previous = std::env::var_os("BC_CLIENT_ID");
+        std::env::remove_var("BC_CLIENT_ID");
+        assert_eq!(configured_client_id().unwrap(), DEFAULT_CLIENT_ID);
+        if let Some(value) = previous {
+            std::env::set_var("BC_CLIENT_ID", value);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn invalid_client_id_is_rejected() {
+        let previous = std::env::var_os("BC_CLIENT_ID");
+        std::env::set_var("BC_CLIENT_ID", "not-a-guid");
+        assert!(configured_client_id().is_err());
+        match previous {
+            Some(value) => std::env::set_var("BC_CLIENT_ID", value),
+            None => std::env::remove_var("BC_CLIENT_ID"),
+        }
     }
 }
 

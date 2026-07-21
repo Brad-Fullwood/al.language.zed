@@ -34,11 +34,9 @@ pub enum ObjectKind {
     PageCustomization,
     ControlAddIn,
     Entitlement,
-    /// `profileextension "X" extends "Y"` — extends a Profile's
-    /// customizations (BC 2024+; added by the F-OPEN-267 completeness guard).
+    /// `profileextension "X" extends "Y"` extends a profile's customizations.
     ProfileExtension,
-    /// `dotnet { ... }` assembly-declaration blocks (LanguageData lists it
-    /// as an object type; added by the F-OPEN-267 completeness guard).
+    /// `dotnet { ... }` assembly-declaration blocks.
     DotNet,
 }
 

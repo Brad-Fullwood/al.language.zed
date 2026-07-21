@@ -464,8 +464,8 @@ impl SymbolIndex {
     /// Used to clear previously registered workspace entries before re-adding them,
     /// preventing duplicates when the call graph is rebuilt.
     ///
-    /// T049: every secondary index that stores `Vec<Arc<SymbolEntry>>` MUST be
-    /// passed through `retain_arcs_not_in` here; missing one leaves dangling
+    /// Every secondary index that stores `Vec<Arc<SymbolEntry>>` must be passed
+    /// through `retain_arcs_not_in`; missing one leaves dangling
     /// references the next caller will see. The helper makes the discipline
     /// uniform — adding a new secondary index requires adding exactly one
     /// `Self::retain_arcs_not_in(&self.new_index, &ptrs);` line below.
@@ -511,8 +511,7 @@ impl SymbolIndex {
     /// in place, removing every Arc whose pointer appears in `ptrs` and
     /// dropping any key whose Vec becomes empty as a result.
     ///
-    /// T049: extracted from the four-times-repeated retain pattern in
-    /// remove_package_entries. New secondary indexes that follow the
+    /// New secondary indexes that follow the
     /// `DashMap<K, Vec<Arc<SymbolEntry>>>` shape MUST be passed through
     /// this helper; the contract is that no Arc reachable from any
     /// secondary index can reference an entry no longer in `self.all`.
