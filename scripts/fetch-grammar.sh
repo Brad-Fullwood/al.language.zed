@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # Populate tree-sitter-al/ from the `grammar-vendor` branch when the submodule
-# repository is unreachable (sandboxed agent sessions are scoped to this repo
-# only — F4 in SYSTEM_REVIEW_ACTION_PLAN.md). The branch is maintained by
+# repository is unreachable. The branch is maintained by
 # .github/workflows/vendor-grammar.yml, which snapshots the submodule tree CI
 # checks out and records the exact rev in VENDORED_FROM_REV.
 #
 # Prefer the real submodule when it is available:
 #   git submodule update --init --recursive
-# This script is the fallback, not the primary path.
+# This script is the fallback when submodule access is unavailable.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

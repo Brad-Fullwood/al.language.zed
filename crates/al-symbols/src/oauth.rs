@@ -951,9 +951,6 @@ mod cache_io_tests {
     #[test]
     fn invalidate_cached_token_removes_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        // Tenant maps deterministically to a path via token_cache_path,
-        // but that path is in ~/.cache. To keep the test hermetic, point
-        // at a file we control and exercise the same logic.
         let path = dir.path().join("scratch.json");
         save_cached_token(&path, "contoso.onmicrosoft.com", &sample_token());
         assert!(path.exists());
@@ -963,10 +960,6 @@ mod cache_io_tests {
 
     #[test]
     fn invalidate_cached_token_missing_file_returns_false() {
-        // Negative: calling invalidate when no cache exists must not panic
-        // and must return false (no work done).
-        // We can't easily synthesize a unique tenant that's guaranteed-absent
-        // from ~/.cache, but a freshly-tempdir'd path with no save is one.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("never-existed.json");
         assert!(!path.exists());
@@ -1291,8 +1284,8 @@ fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
     }
     if let Err(e) = file.sync_all() {
         warn!(error = %e, "Failed to fsync OAuth token cache tempfile");
-        // Continue — rename will still complete; the durability guarantee
-        // is best-effort and a fresh refresh-flow will recover on next boot.
+        let _ = std::fs::remove_file(&tmp_path);
+        return;
     }
     drop(file);
     if let Err(e) = std::fs::rename(&tmp_path, path) {

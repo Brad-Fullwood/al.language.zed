@@ -9,31 +9,12 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum TestSnapshotCommands {
-    /// Record variable snapshots at breakpoints during a test run. NOTE: the
-    /// live BC debug bridge is not yet wired, so this currently returns a
-    /// "not yet wired" error rather than capturing samples.
-    Record {
-        /// Codeunit object ID
-        codeunit: i64,
-        /// Test method name
-        #[arg(long)]
-        method: String,
-        /// Breakpoints to capture at, as <file>:<line> (repeatable)
-        #[arg(long = "breakpoint", name = "BREAKPOINT")]
-        breakpoints: Vec<String>,
-    },
-    /// Replay a snapshot FILE (file-only, not live BC). NOTE: this validates
-    /// snapshot LOADING — it parses the .snap.json off disk and reports a match.
-    /// It does NOT re-run the test against a live BC server and compare observed
-    /// values; the live-BC record/replay bridge is not wired yet.
+    /// Validate and summarize a snapshot file.
     Replay {
         /// Path to the .snap.json file
         path: String,
     },
-    /// Diff two snapshot FILES and show field-level divergences (file-vs-file,
-    /// not live BC). NOTE: this compares two .snap.json files already on disk; it
-    /// does NOT capture a fresh run from a live BC server. The live record/replay
-    /// bridge is not wired yet.
+    /// Compare two snapshot files and show field-level divergences.
     Diff {
         /// Path to baseline snapshot A
         a: String,

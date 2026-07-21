@@ -16,7 +16,6 @@ tracing = { workspace = true }
 dashmap = { workspace = true }
 zip = { workspace = true }
 quick-xml = { workspace = true }
-memmap2 = { workspace = true }
 futures = { workspace = true }
 getrandom = { workspace = true }
 tokio = { workspace = true }

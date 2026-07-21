@@ -367,12 +367,6 @@ mod tests {
         assert_eq!(cfg.rules.len(), 1);
     }
 
-    /// Regression: NamingConvention's pattern field is a
-    /// literal token, not a regex. A pattern that *contains* `[A-Z]` (e.g.
-    /// `^[A-Z][a-z]+`) used to silently match against the substring search
-    /// `name_pattern.contains("[A-Z]")` and behave as if the user had set
-    /// `[A-Z]`. Now the comparison is exact, so an unsupported pattern is a
-    /// no-op and lowercase object names are NOT flagged under such a rule.
     #[test]
     fn naming_convention_pattern_is_literal_not_regex() {
         let ws = workspace_with(vec![(
@@ -380,7 +374,6 @@ mod tests {
             "codeunit 50100 lowercase\n{\n}\n",
         )]);
 
-        // Unsupported (regex-looking) pattern — must NOT emit a violation.
         let unsupported = ArchConfig {
             rules: vec![ArchRule {
                 id: "N1".to_string(),
@@ -411,9 +404,6 @@ mod tests {
         );
     }
 
-    /// Regression: `applies_to_kind` must match the object-kind keyword
-    /// EXACTLY, not as a substring. A rule scoped to pattern `"code"` must NOT
-    /// fire on a `codeunit`, while pattern `"codeunit"` must.
     #[test]
     fn applies_to_kind_is_exact_match_not_substring() {
         let ws = workspace_with(vec![(
@@ -505,16 +495,9 @@ mod tests {
         assert!(v.is_empty(), "Object without ID must not violate: {v:?}");
     }
 
-    /// Regression: a malformed range with multiple dashes (`"50000-50100-50200"`)
-    /// must be rejected, NOT silently parsed as `50000-u32::MAX`. Before the
-    /// fix, an out-of-range ID (here 50500, which is between 50100 and 50200)
-    /// would slip through because the upper bound defaulted to u32::MAX.
     #[test]
     fn required_property_malformed_range_is_rejected() {
         let ws = workspace_with(vec![("/src/Mal.al", "codeunit 50500 \"Mal\"\n{\n}\n")]);
-        // The buggy code would treat this as 50000..=u32::MAX and NOT flag
-        // 50500. The correct behaviour is to reject the malformed range
-        // entirely (no violation, no false pass-through to u32::MAX).
         let v = arch_lint(&ws, &required_property_rule("50000-50100-50200"));
         assert!(
             v.is_empty(),

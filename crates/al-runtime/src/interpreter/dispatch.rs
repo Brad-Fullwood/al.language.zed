@@ -68,7 +68,7 @@ pub struct DispatchCtx {
     pub ast_depth: usize,
     /// Optional wall-clock deadline for this dispatch. `eval_stmt` loop
     /// constructs (while / repeat / for) check this on every iteration so
-    /// an adversarial `while true do …` test can't pin the daemon thread
+    /// an unbounded `while true do …` test can't pin the daemon thread
     /// past the configured per-test budget. `None` means "no deadline" —
     /// used by unit-test paths that need full determinism.
     pub deadline: Option<std::time::Instant>,
@@ -890,19 +890,12 @@ fn builtin_indexof(args: &[Value]) -> Eval {
     Eval::Normal(Value::Integer(result))
 }
 
-/// `MaxStrLen(var)` — the declared maximum length of a Text/Code variable.
-///
-/// **Limitation.** The interpreter's `Value::Text`/`Value::Code` do not carry
-/// the declared length cap (see `value.rs`: "length cap not enforced here"),
-/// so the *declared* maximum is unavailable at dispatch time. We return the
-/// length of the current content as a deterministic best-effort. This matches
-/// MaxStrLen only when the variable is full; callers relying on the declared
-/// cap (e.g. `CopyStr(x, 1, MaxStrLen(target))`) will see the current length.
+/// `MaxStrLen` requires declared type metadata that `Value` does not carry.
 fn builtin_maxstrlen(args: &[Value]) -> Eval {
     match args {
-        [Value::Text(s)] | [Value::Code(s)] => {
-            Eval::Normal(Value::Integer(s.chars().count() as i64))
-        }
+        [Value::Text(_)] | [Value::Code(_)] => simple_error(
+            "MaxStrLen is unavailable because the interpreter does not retain declared text lengths",
+        ),
         [v] => simple_error(format!(
             "MaxStrLen expects Text or Code, got {}",
             v.type_name()
@@ -936,13 +929,14 @@ fn builtin_createdatetime(args: &[Value]) -> Eval {
     }
 }
 
-/// Milliseconds since the Unix epoch, from the system clock. Returns 0 if the
-/// clock is before 1970 (cannot happen in practice).
+/// Signed milliseconds since the Unix epoch.
 fn unix_now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_millis()).expect("system time exceeds i64"),
+        Err(error) => {
+            -i64::try_from(error.duration().as_millis()).expect("system time exceeds i64")
+        }
+    }
 }
 
 /// Current date as days since the AL epoch (0001-01-01).

@@ -78,9 +78,7 @@ pub struct AffectedTest {
     pub line: u32,
 }
 
-/// How a set of [`AffectedTest`]s was selected. Surfaced so callers and any
-/// user-facing output stay honest about whether the precise call-graph path
-/// ran or we fell back to coarse file-name matching ().
+/// How a set of [`AffectedTest`]s was selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AffectedMode {
@@ -105,7 +103,7 @@ pub struct AffectedTestsResult {
 
 /// Return the tests affected by a set of changed files.
 ///
-/// Prefers **call-graph reachability** (): each changed file is mapped to
+/// Prefers call-graph reachability: each changed file is mapped to
 /// its AL object, every member (procedure / event / subscriber) of that object
 /// seeds a backward walk of the call graph, and a test is affected iff its
 /// procedure node is reached. This catches tests whose *helpers* changed — not
@@ -291,16 +289,7 @@ fn affected_tests_file_based(workspace: &Workspace, changed_paths: &[String]) ->
     affected
 }
 
-/// Check if the codeunit has `Subtype = Test`.
-///
-/// tightened from a fragile substring match
-/// (`lower.contains("subtype") && lower.contains("test")`) to a proper
-/// `<key> = <value>` parse. Pre-a property like
-/// `Description = 'Has Subtype = Test in description';` would have
-/// false-matched, and any property whose name contained both substrings
-/// (e.g. a hypothetical SubtypeFilter property) would have too. Now we
-/// only match when the property KEY is exactly `subtype` (case-
-/// insensitive) AND the value is exactly `test`.
+/// Return whether the codeunit has a `Subtype = Test` property.
 pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
     let mut cursor = root.walk();
     let mut did_visit = false;
@@ -311,9 +300,6 @@ pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
                 if let Ok(text) = node.utf8_text(source) {
                     if let Some((key, value)) = text.split_once('=') {
                         let k = key.trim();
-                        // Strip trailing ; and surrounding whitespace; tolerate
-                        // single-quoted enum values (the AL printer doesn't quote
-                        // bare identifiers but we're robust either way).
                         let v = value.trim().trim_end_matches(';').trim().trim_matches('\'');
                         if k.eq_ignore_ascii_case("subtype") && v.eq_ignore_ascii_case("test") {
                             return true;
@@ -522,19 +508,12 @@ mod test_discovery {
 }
 
 #[cfg(test)]
-mod adversarial_j_tests {
+mod subtype_tests {
     use super::*;
     use al_syntax::AlParser;
 
-    /// `has_test_subtype` must not fire on a codeunit that has
-    /// Subtype = Normal even if the text of the property node contains the word "test"
-    /// in a different context (e.g. a second property line).
-    ///
-    /// This test will PASS because the grammar creates separate property nodes — the
-    /// "test" word appears in a comment/separate property, not the Subtype value.
-    /// If the grammar ever groups them into one node, this documents the expected behaviour.
     #[test]
-    fn test_has_test_subtype_does_not_match_subtype_normal_adversarial_j_3() {
+    fn subtype_normal_is_not_a_test_codeunit() {
         let source = r#"codeunit 50200 "Normal Codeunit"
 {
     Subtype = Normal;
@@ -549,13 +528,12 @@ mod adversarial_j_tests {
         let bytes = source.as_bytes();
         assert!(
             !has_test_subtype(root, bytes),
-            "Subtype = Normal must NOT be detected as a test subtype"
+            "Subtype = Normal must not be detected as a test subtype"
         );
     }
 
-    /// Negative companion: Subtype = Test must be detected.
     #[test]
-    fn test_has_test_subtype_detects_subtype_test_adversarial_j_3() {
+    fn subtype_test_is_detected() {
         let source = r#"codeunit 50201 "Test Codeunit"
 {
     Subtype = Test;
@@ -574,14 +552,8 @@ mod adversarial_j_tests {
         );
     }
 
-    /// Verify that `has_test_subtype` does not treat a
-    /// property like Subtype = Normal with a trailing comment containing the word
-    /// "test" does NOT trigger a false positive.  This tests the boundary case where
-    /// tree-sitter might include comment trivia in the property node text.
     #[test]
-    fn test_has_test_subtype_comment_with_test_word_not_false_positive_adversarial_j_3() {
-        // If the grammar includes the comment in the property node text, lower() would
-        // contain both "subtype" and "test" — triggering a false positive.
+    fn test_word_in_comment_does_not_change_subtype() {
         let source = r#"codeunit 50202 "Normal Codeunit With Comment"
 {
     // This codeunit has test-like naming but is NOT a test codeunit
@@ -597,14 +569,11 @@ mod adversarial_j_tests {
         let bytes = source.as_bytes();
         assert!(
             !has_test_subtype(root, bytes),
-            "Comment containing 'test' must NOT cause false-positive test subtype detection"
+            "comment containing 'test' must not change the subtype"
         );
     }
 }
 
-/// call-graph reachability for affected-test detection. A test is affected
-/// iff it transitively calls a procedure of a changed object — not merely
-/// because its own file changed (the old file-based heuristic).
 #[cfg(test)]
 mod affected_call_graph {
     use super::*;
@@ -626,7 +595,6 @@ mod affected_call_graph {
 }
 "#;
 
-    // MidCu.Middle calls Helper.DoWork — the middle hop of the chain.
     const MIDCU: &str = r#"codeunit 50102 MidCu
 {
     procedure Middle()
@@ -638,9 +606,6 @@ mod affected_call_graph {
 }
 "#;
 
-    // TestDirect    → Helper.DoWork   (direct dependency)
-    // TestTransitive→ MidCu.Middle    (→ Helper.DoWork; transitive)
-    // TestUnrelated → Unrelated.Other (independent)
     const TESTS: &str = r#"codeunit 50103 MyTests
 {
     Subtype = Test;
@@ -697,7 +662,6 @@ mod affected_call_graph {
         let ws = build_ws();
         let (mode, names) = affected_names(&ws, &["/ws/helper.al"]);
         assert_eq!(mode, AffectedMode::CallGraph, "should use the call graph");
-        // TestDirect calls Helper directly; TestTransitive reaches it via MidCu.
         assert!(
             names.contains(&"TestDirect".to_string()),
             "direct caller affected; got {names:?}"
@@ -706,7 +670,6 @@ mod affected_call_graph {
             names.contains(&"TestTransitive".to_string()),
             "transitive caller A->B->H affected; got {names:?}"
         );
-        // The unrelated test must NOT be dragged in.
         assert!(
             !names.contains(&"TestUnrelated".to_string()),
             "unrelated test must not be affected; got {names:?}"
@@ -728,8 +691,6 @@ mod affected_call_graph {
 
     #[test]
     fn changing_intermediate_marks_only_transitive_caller() {
-        // Changing MidCu (the middle hop) affects the test that goes through it,
-        // but not the test that calls Helper directly nor the unrelated one.
         let ws = build_ws();
         let (mode, names) = affected_names(&ws, &["/ws/midcu.al"]);
         assert_eq!(mode, AffectedMode::CallGraph);
@@ -742,8 +703,6 @@ mod affected_call_graph {
 
     #[test]
     fn changing_the_test_file_itself_marks_all_its_tests() {
-        // Superset guarantee: the old file-based behaviour (a changed test file
-        // marks all its tests) is preserved — each test proc is its own seed.
         let ws = build_ws();
         let (mode, names) = affected_names(&ws, &["/ws/tests.al"]);
         assert_eq!(mode, AffectedMode::CallGraph);
@@ -759,8 +718,6 @@ mod affected_call_graph {
 
     #[test]
     fn unindexed_changed_path_falls_back_to_file_based() {
-        // A changed path that isn't an indexed AL object can't be mapped to a
-        // graph node, so detection honestly reports the file-based fallback.
         let ws = build_ws();
         let (mode, names) = affected_names(&ws, &["/ws/does-not-exist.al"]);
         assert_eq!(

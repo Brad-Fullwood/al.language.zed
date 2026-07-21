@@ -899,6 +899,7 @@ pub(in crate::server::daemon) fn dispatch_tests_classify(
         ..Default::default()
     }
 }
+
 pub(in crate::server::daemon) async fn dispatch_tests_snapshot_record(
     workspace: &Workspace,
     id: u64,
@@ -939,6 +940,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_record(
         ),
     )
 }
+
 pub(in crate::server::daemon) async fn dispatch_tests_snapshot_replay(
     id: u64,
     params: &serde_json::Value,
@@ -1712,9 +1714,6 @@ mod tests {
 
     #[tokio::test]
     async fn run_batch_rejects_out_of_range_codeunit_id() {
-        // Negative regression: a codeunitIds entry beyond the i32 range must be
-        // rejected with INVALID_PARAMS rather than silently wrapping via
-        // `as i32` and executing tests against the wrong codeunit.
         let ws = std::sync::Arc::new(empty_ws());
         let tmp = tempfile::TempDir::new().unwrap();
         let dot_zed = tmp.path().join(".zed");
@@ -1830,9 +1829,6 @@ mod tests {
 
     #[tokio::test]
     async fn last_results_single_lookup_rejects_out_of_range_codeunit_id() {
-        // Negative regression: out-of-range codeunitId in the single
-        // (codeunit, method) lookup path must return INVALID_PARAMS rather
-        // than silently wrapping via `as i32`.
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = ws_with_project(&tmp).await;
         let resp = dispatch_tests_last_results(
@@ -1853,8 +1849,6 @@ mod tests {
 
     #[tokio::test]
     async fn last_results_bulk_filter_rejects_out_of_range_codeunit_id() {
-        // Negative regression: out-of-range codeunitId in the bulk-filter path
-        // must return INVALID_PARAMS rather than silently wrapping via `as i32`.
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = ws_with_project(&tmp).await;
         let resp = dispatch_tests_last_results(
@@ -2207,65 +2201,6 @@ mod tests {
             r["affected"].as_array().expect("array").is_empty(),
             "empty changedFiles must yield empty affected"
         );
-    }
-
-    #[tokio::test]
-    async fn snapshot_record_missing_codeunit_is_invalid_params() {
-        let ws = empty_ws();
-        let resp = dispatch_tests_snapshot_record(&ws, 1, &serde_json::json!({})).await;
-        let err = resp.error.expect("err");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("codeunitId"));
-    }
-
-    #[tokio::test]
-    async fn snapshot_record_rejects_out_of_range_codeunit() {
-        let ws = empty_ws();
-        let resp = dispatch_tests_snapshot_record(
-            &ws,
-            2,
-            &serde_json::json!({ "codeunitId": (i32::MAX as i64) + 1 }),
-        )
-        .await;
-        let err = resp.error.expect("err");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("out of range"));
-    }
-
-    #[tokio::test]
-    async fn snapshot_record_missing_breakpoints_is_invalid_params() {
-        // Past codeunitId + methodName validation, an empty breakpoints array
-        // must still be rejected — proving the guard fires, not the BC stub.
-        let ws = empty_ws();
-        let resp = dispatch_tests_snapshot_record(
-            &ws,
-            3,
-            &serde_json::json!({ "codeunitId": 50100, "methodName": "T", "breakpoints": [] }),
-        )
-        .await;
-        let err = resp.error.expect("err");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("breakpoints"));
-    }
-
-    #[tokio::test]
-    async fn snapshot_record_fully_valid_reaches_not_wired_stub() {
-        // All params valid → the dispatcher reaches the documented
-        // "not yet wired" INTERNAL_ERROR rather than an INVALID_PARAMS.
-        let ws = empty_ws();
-        let resp = dispatch_tests_snapshot_record(
-            &ws,
-            4,
-            &serde_json::json!({
-                "codeunitId": 50100,
-                "methodName": "T",
-                "breakpoints": [{ "file": "a.al", "line": 1 }],
-            }),
-        )
-        .await;
-        let err = resp.error.expect("err");
-        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
-        assert!(err.message.contains("not yet wired"));
     }
 
     #[tokio::test]

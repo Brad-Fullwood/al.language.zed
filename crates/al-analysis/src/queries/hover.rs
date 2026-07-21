@@ -369,15 +369,9 @@ pub async fn hover_full(
     let bridge = guard.as_ref()?;
     let bridge_generation = bridge.generation();
     let path = uri.to_file_path().ok()?;
-    // F-036: bridge `typeAt` consumes 0-based (line, column) — its C#
-    // `LineColToOffset` walks `cur < line` newlines from the start of the
-    // file, then adds `col` directly. Adding 1 here landed one full line
-    // past the cursor and shifted hover one byte right of the token.
+    // The bridge uses the same zero-based coordinates as LSP.
     let pos = (position.line, position.character);
-    // F-037: pass the open-document text so the bridge sees unsaved edits
-    // instead of the last-saved file content. `documents.get_text` is the
-    // same source as the rest of the LSP query path, so behaviour stays
-    // consistent for open vs unopened files.
+    // Open-document text takes precedence over on-disk content.
     let unsaved_text = workspace.documents.get_text(uri);
     let configured_package_cache = workspace.config.read().await.package_cache_path.clone();
     let package_cache = match configured_package_cache {

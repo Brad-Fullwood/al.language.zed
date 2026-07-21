@@ -76,7 +76,8 @@ Composing 15 extensions runs in <5 ms.
 
 ### Source navigation (`source_index.rs`, `virtual_file.rs`)
 
-For go-to-definition into a dependency, `source_index` memory-maps the `.app` and scans `.al` headers
+For go-to-definition into a dependency, `source_index` reads ZIP metadata directly from the `.app`
+without buffering or memory-mapping the whole package, and scans bounded `.al` headers
 to map (kind, id) / (kind, name) → internal ZIP path (with double-checked per-path locking and
 mtime-based staleness). `virtual_file` then either extracts the embedded `.al` source or, when the
 package ships no source, **renders an outline** (fields, methods, keys, enum values, properties) as a

@@ -10,24 +10,21 @@ use serde::Serialize;
 
 use al_project::errors::AlError;
 
-/// Default cap on a single `alc` invocation. Sane AL projects compile in well
-/// under a minute; 10 minutes is well past the largest legitimate workload
-/// we've observed. The cap exists to prevent zombie `alc` children when the
-/// LSP daemon serves a rapid-cancel loop (the awaiting task drops on cancel
-/// but tokio does NOT propagate cancellation to child processes, so without
-/// a timeout the child runs to completion uncollected). Override with
-/// `AL_COMPILE_TIMEOUT_SECS`; values <= 0 disable the cap.
+/// Default cap on one `alc` process. Non-positive overrides disable it.
 const DEFAULT_COMPILE_TIMEOUT_SECS: u64 = 600;
 
-pub(crate) fn compile_timeout() -> Option<std::time::Duration> {
+pub(crate) fn compile_timeout() -> Result<Option<std::time::Duration>, String> {
     let default_timeout = Some(std::time::Duration::from_secs(DEFAULT_COMPILE_TIMEOUT_SECS));
     match std::env::var("AL_COMPILE_TIMEOUT_SECS") {
         Ok(s) => match s.trim().parse::<i64>() {
-            Ok(n) if n <= 0 => None,
-            Ok(n) => Some(std::time::Duration::from_secs(n as u64)),
-            Err(_) => default_timeout,
+            Ok(n) if n <= 0 => Ok(None),
+            Ok(n) => Ok(Some(std::time::Duration::from_secs(n as u64))),
+            Err(_) => Err(format!(
+                "AL_COMPILE_TIMEOUT_SECS must be an integer, got {s:?}"
+            )),
         },
-        Err(_) => default_timeout,
+        Err(std::env::VarError::NotPresent) => Ok(default_timeout),
+        Err(error) => Err(format!("invalid AL_COMPILE_TIMEOUT_SECS: {error}")),
     }
 }
 
@@ -38,6 +35,7 @@ pub(crate) enum AlcRunError {
     Spawn(std::io::Error),
     /// The compile exceeded the `AL_COMPILE_TIMEOUT_SECS` cap (seconds).
     Timeout(u64),
+    InvalidTimeout(String),
 }
 
 /// Run a fully-configured `alc` command under the shared cancellation policy:
@@ -52,8 +50,9 @@ pub(crate) async fn run_alc_with_timeout(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
+    let timeout = compile_timeout().map_err(AlcRunError::InvalidTimeout)?;
     let child = cmd.spawn().map_err(AlcRunError::Spawn)?;
-    match compile_timeout() {
+    match timeout {
         Some(timeout) => match tokio::time::timeout(timeout, child.wait_with_output()).await {
             Ok(result) => result.map_err(AlcRunError::Spawn),
             Err(_) => {
@@ -99,20 +98,15 @@ pub struct CompilationConfigOptions {
 }
 
 impl CompilationConfigOptions {
-    /// Build the extra `alc` argument vector for these settings, in a stable
-    /// order (raw options, then incremental, ruleset, assembly probing paths,
-    /// analyzer statistics). Pure — no I/O — so it can be unit-tested without
-    /// invoking `alc` (which is absent in dev/CI).
+    /// Build extra `alc` arguments in stable order.
     pub fn to_alc_args(&self) -> Vec<String> {
         let mut args = Vec::new();
-        // Raw, user-supplied options pass through verbatim.
         for opt in &self.compilation_options {
             args.push(opt.clone());
         }
         if self.incremental_build {
             args.push("/incrementalbuild".to_string());
         }
-        // ruleSetPath only takes effect when external rulesets are enabled.
         if self.enable_external_rulesets {
             if let Some(path) = &self.rule_set_path {
                 args.push(format!("/ruleset:{}", path.display()));
@@ -198,21 +192,15 @@ pub async fn compile_project_with_analyzers(
         )));
     }
 
-    // Resolve `..` and symlinks before passing paths to the external compiler.
-    // A project with an app.json must be canonicalizable; continuing with an
-    // unresolved path would weaken the output-directory boundary.
+    // Canonicalization enforces the output-directory boundary.
     let project_root_buf = std::fs::canonicalize(project_root)?;
     let project_root = project_root_buf.as_path();
 
-    // Route compiler output to a unique directory and move the complete package
-    // into place. The sequence number prevents concurrent requests in one
-    // process from sharing cleanup state.
     static BUILD_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = BUILD_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let build_tmp = project_root.join(format!(".al-build-tmp.{}.{seq}", std::process::id()));
     std::fs::create_dir(&build_tmp)?;
 
-    // RAII drop guard so we always sweep the tmp dir, even on error/panic.
     struct TmpDirGuard(PathBuf);
     impl Drop for TmpDirGuard {
         fn drop(&mut self) {
@@ -222,13 +210,8 @@ pub async fn compile_project_with_analyzers(
     let tmp_guard = TmpDirGuard(build_tmp.clone());
     let out_dir = build_tmp.as_path();
 
-    // `dotnet_command_async` sets DOTNET_ROLL_FORWARD=Major so Microsoft's
-    // net8.0 `alc.dll` runs on a newer .NET major (e.g. 10) when 8 is absent.
     let mut cmd = al_project::toolchain::dotnet_command_async(&toolchain.alc);
     cmd.arg(format!("/project:{}", project_root.display()));
-    // alc's `/out:` must be a FILE path, not a directory — passing the dir
-    // fails with `AL1012 … Access denied`. Use the canonical app filename so
-    // `find_app_file` locates it afterward and the produced name is correct.
     let out_file_name = manifest_app_filename(project_root).ok_or_else(|| {
         AlError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -296,28 +279,13 @@ pub async fn compile_project_with_analyzers(
         }
     }
     if !analyzer_paths.is_empty() {
-        // /analyzer:p1,p2,p3 splits on comma, so a path containing a literal
-        // comma silently truncates the analyzer list and turns the rest into
-        // a phantom analyzer that ALTool then can't load. Drop any such
-        // path with a warn — recovering by encoding (\\,) is fragile because
-        // not all platforms honour it.
-        let safe_paths: Vec<String> = analyzer_paths
-            .into_iter()
-            .filter(|p| {
-                if p.contains(',') {
-                    tracing::warn!(
-                        path = %p,
-                        "Analyzer DLL path contains a comma — skipping (would corrupt /analyzer arg list)"
-                    );
-                    false
-                } else {
-                    true
-                }
-            })
-            .collect();
-        if !safe_paths.is_empty() {
-            cmd.arg(format!("/analyzer:{}", safe_paths.join(",")));
+        if let Some(path) = analyzer_paths.iter().find(|path| path.contains(',')) {
+            return Err(AlError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("analyzer path contains a comma: {path}"),
+            )));
         }
+        cmd.arg(format!("/analyzer:{}", analyzer_paths.join(",")));
     }
 
     for arg in config_options.to_alc_args() {
@@ -330,6 +298,12 @@ pub async fn compile_project_with_analyzers(
         Ok(o) => o,
         Err(AlcRunError::Spawn(e)) => return Err(e.into()),
         Err(AlcRunError::Timeout(secs)) => return Err(AlError::BuildTimeout(secs)),
+        Err(AlcRunError::InvalidTimeout(message)) => {
+            return Err(AlError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                message,
+            )))
+        }
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -906,7 +880,7 @@ Build failed.";
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
         assert_eq!(
-            compile_timeout(),
+            compile_timeout().unwrap(),
             Some(std::time::Duration::from_secs(DEFAULT_COMPILE_TIMEOUT_SECS))
         );
     }
@@ -969,19 +943,6 @@ Build failed.";
         assert!(leaked.is_empty(), "leaked build tmp dirs: {leaked:?}");
     }
 
-    /// The per-invocation tmp-dir suffix counter must be monotonic so two
-    /// near-simultaneous calls never compute the same path.
-    #[test]
-    fn build_tmp_seq_is_unique_per_call() {
-        // Mirror the production counter usage: each fetch_add yields a fresh,
-        // distinct value. We can't reach the private static directly, so assert
-        // the invariant on an equivalent AtomicU64 to document the contract.
-        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let a = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let b = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        assert_ne!(a, b);
-    }
-
     #[test]
     fn compile_timeout_zero_disables_cap() {
         let _g = COMPILE_TIMEOUT_ENV_LOCK
@@ -990,11 +951,11 @@ Build failed.";
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "0");
         }
-        assert_eq!(compile_timeout(), None);
+        assert_eq!(compile_timeout().unwrap(), None);
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "-1");
         }
-        assert_eq!(compile_timeout(), None);
+        assert_eq!(compile_timeout().unwrap(), None);
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1008,24 +969,24 @@ Build failed.";
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "30");
         }
-        assert_eq!(compile_timeout(), Some(std::time::Duration::from_secs(30)));
+        assert_eq!(
+            compile_timeout().unwrap(),
+            Some(std::time::Duration::from_secs(30))
+        );
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
     }
 
     #[test]
-    fn compile_timeout_garbage_falls_back_to_default() {
+    fn compile_timeout_rejects_invalid_value() {
         let _g = COMPILE_TIMEOUT_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "not-a-number");
         }
-        assert_eq!(
-            compile_timeout(),
-            Some(std::time::Duration::from_secs(DEFAULT_COMPILE_TIMEOUT_SECS))
-        );
+        assert!(compile_timeout().is_err());
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }

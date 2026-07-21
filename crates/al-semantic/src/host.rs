@@ -427,22 +427,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "semantic"))]
     fn test_stub_new_returns_not_initialized_without_semantic_feature() {
-        #[cfg(not(feature = "semantic"))]
-        {
-            use std::path::Path;
-            let dummy = Path::new("/nonexistent");
-            let result = DotNetHost::new(dummy, dummy, dummy);
-            assert!(
-                result.is_err(),
-                "stub DotNetHost::new must always return Err"
-            );
-        }
-        // When semantic feature is enabled this test is a no-op (covered by runtime behaviour)
-        #[cfg(feature = "semantic")]
-        {
-            // nothing to assert — real impl tested via integration tests with .NET
-        }
+        use std::path::Path;
+        let dummy = Path::new("/nonexistent");
+        let result = DotNetHost::new(dummy, dummy, dummy);
+        assert!(
+            result.is_err(),
+            "stub DotNetHost::new must always return Err"
+        );
     }
 
     #[cfg(feature = "semantic")]
@@ -479,9 +472,6 @@ mod tests {
         assert_eq!(result, Some((dll, config)));
     }
 
-    /// DLL present but config missing -> None. This guards the AND in the
-    /// `dll.is_file() && config.is_file()` check: dropping the second
-    /// conjunct would make this return Some.
     #[test]
     fn test_check_bridge_pair_config_missing_is_none() {
         let dir = tempfile::tempdir().unwrap();
@@ -492,7 +482,6 @@ mod tests {
         assert_eq!(check_bridge_pair(dll, config), None);
     }
 
-    /// Config present but DLL missing -> None (guards the first conjunct).
     #[test]
     fn test_check_bridge_pair_dll_missing_is_none() {
         let dir = tempfile::tempdir().unwrap();

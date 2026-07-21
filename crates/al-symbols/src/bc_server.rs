@@ -150,16 +150,21 @@ impl BcServerClient {
         let lock = self.lock_for(&output_path);
         let _guard = lock.lock().await;
 
-        if let Some(completed) = self
+        let completed = self
             .completed_downloads
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .get(&output_path)
-            .filter(|path| path.is_file())
-            .cloned()
-        {
-            debug!(package = %dep.name, path = %completed.display(), "Reusing completed BC package download");
-            return Ok(completed);
+            .cloned();
+        if let Some(completed) = completed {
+            if manifest_satisfies(&completed, dep) {
+                debug!(package = %dep.name, path = %completed.display(), "Reusing completed BC package download");
+                return Ok(completed);
+            }
+            self.completed_downloads
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&output_path);
         }
 
         let downloaded = self
@@ -421,7 +426,11 @@ async fn stream_package_to_file(
     ));
 
     let write_result: Result<u64, BcServerError> = async {
-        let mut file = tokio::fs::File::create(&temp_path).await?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .await?;
         let mut received = 0u64;
         let mut magic = [0u8; 4];
         let mut magic_len = 0usize;
@@ -473,13 +482,28 @@ async fn stream_package_to_file(
         }
     };
 
-    if let Err(error) = crate::app_reader::read_app_manifest_file(&temp_path) {
+    let manifest = match crate::app_reader::read_app_manifest_file(&temp_path) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(BcServerError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "BC server returned an invalid .app for package '{}': {error}",
+                    dep.name
+                ),
+            )));
+        }
+    };
+    if !manifest.app_id.eq_ignore_ascii_case(&dep.id)
+        || !crate::model::version_at_least(&manifest.version, &dep.version)
+    {
         let _ = tokio::fs::remove_file(&temp_path).await;
         return Err(BcServerError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "BC server returned an invalid .app for package '{}': {error}",
-                dep.name
+                "BC server returned package '{}' {} (id {}) for requested '{}' {} (id {})",
+                manifest.name, manifest.version, manifest.app_id, dep.name, dep.version, dep.id
             ),
         )));
     }
@@ -497,6 +521,13 @@ async fn stream_package_to_file(
     }
 
     Ok(received)
+}
+
+fn manifest_satisfies(path: &Path, dep: &AppDependency) -> bool {
+    crate::app_reader::read_app_manifest_file(path).is_ok_and(|manifest| {
+        manifest.app_id.eq_ignore_ascii_case(&dep.id)
+            && crate::model::version_at_least(&manifest.version, &dep.version)
+    })
 }
 
 /// Read an error response body with a Content-Length cap before buffering,
@@ -638,11 +669,15 @@ mod tests {
     }
 
     fn valid_app_bytes(name: &str) -> Vec<u8> {
+        valid_app_bytes_with_identity(name, "00000000-0000-0000-0000-000000000000", "1.0.0.0")
+    }
+
+    fn valid_app_bytes_with_identity(name: &str, id: &str, version: &str) -> Vec<u8> {
         use std::io::{Cursor, Write};
         use zip::write::SimpleFileOptions;
 
         let manifest = format!(
-            r#"<?xml version="1.0"?><Package><App Id="00000000-0000-0000-0000-000000000001" Name="{name}" Publisher="Test" Version="1.0.0.0" /></Package>"#
+            r#"<?xml version="1.0"?><Package><App Id="{id}" Name="{name}" Publisher="Test" Version="{version}" /></Package>"#
         );
         let mut data = Vec::from(&b"NAVX"[..]);
         data.resize(40, 0);
@@ -737,6 +772,33 @@ mod tests {
             std::fs::read_dir(tmp.path()).unwrap().next().is_none(),
             "failed download must leave neither final nor temp files"
         );
+    }
+
+    #[tokio::test]
+    async fn mismatched_package_identity_is_rejected_before_publication() {
+        let body = valid_app_bytes_with_identity(
+            "Wrong",
+            "11111111-1111-1111-1111-111111111111",
+            "1.0.0.0",
+        );
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(body))
+            .mount(&server)
+            .await;
+        let temp = tempfile::tempdir().unwrap();
+
+        let error = no_auth_client()
+            .download_one(
+                &server.uri(),
+                &dep("Expected", "Pub", "1.0.0.0"),
+                temp.path(),
+            )
+            .await
+            .expect_err("wrong app id must not be published");
+
+        assert!(error.to_string().contains("for requested"));
+        assert!(std::fs::read_dir(temp.path()).unwrap().next().is_none());
     }
 
     #[tokio::test]

@@ -1,8 +1,6 @@
 //! Workspace state container.
 //!
-//! The `Workspace` struct owns all per-project state: documents, symbols,
-//! semantic bridge, and configuration. It is the central coordination point
-//! for all queries routed through al-core.
+//! Per-project documents, symbols, configuration, and semantic state.
 
 use std::sync::Arc;
 
@@ -46,11 +44,6 @@ pub struct PackageInfo {
     pub object_count: usize,
 }
 
-/// Central state container for an AL project.
-///
-/// Owns all per-project state: documents, symbols, workspace file index,
-/// semantic bridge, builtins, and configuration.
-///
 /// ## Lock strategy
 ///
 /// Two RwLock flavors are used intentionally:
@@ -159,39 +152,12 @@ impl Workspace {
     }
 
     /// Get or lazily build the cached insight graph.
-    ///
-    /// The graph is built once from the current symbol index and cached.
-    /// Call `invalidate_insight_graph()` after reloading packages.
-    ///
-    /// The expensive `build_from_index` runs WITHOUT any lock held — holding
-    /// a `std::sync::RwLock` write guard across the build would park the
-    /// tokio executor thread for the duration when this is called from an
-    /// async query path. We tolerate the (rare) duplicate-build race in
-    /// exchange for not blocking the executor: the second-arriving thread
-    /// returns the first thread's stored graph.
-    ///
-    /// Cold-cache cost can reach 50–200 ms on large BC workspaces. The build
-    /// is therefore wrapped in `tokio::task::block_in_place` when called from
-    /// inside a multi-threaded Tokio runtime so the worker thread is yielded
-    /// to the blocking pool for the duration. Outside a Tokio runtime (tests,
-    /// daemon utilities) `try_handle()` returns `Err` and we fall back to a
-    /// direct call.
     pub fn get_or_build_insight_graph(&self) -> Arc<InsightGraph> {
         if let Ok(guard) = self.insight_graph.read() {
             if let Some(arc) = guard.as_ref() {
                 return Arc::clone(arc);
             }
         }
-        // Slow path: acquire the write lock, then re-check (double-checked
-        // locking). Without DCL, N concurrent first-callers each independently
-        // build a 50–200 ms graph and discard all but the first — wasted CPU
-        // on cold cache. The build runs INSIDE this write lock because the
-        // graph build is short enough (≤200 ms) that holding the data lock
-        // is cheaper than introducing a separate build-coordination mutex.
-        // `get_or_build_call_graph` uses the build-coordination-mutex pattern
-        // because its build is longer and includes this build internally.
-        // Recover from a poisoned lock via `into_inner` so a panic inside an
-        // earlier build does not permanently freeze the cache.
         let mut guard = self
             .insight_graph
             .write()
@@ -199,11 +165,6 @@ impl Workspace {
         if let Some(arc) = guard.as_ref() {
             return Arc::clone(arc);
         }
-        // Build inside the write lock. block_in_place yields the worker to
-        // the blocking pool when we are inside a multi-threaded Tokio
-        // runtime; otherwise the closure runs inline (block_in_place panics
-        // in current_thread mode, so we guard with try_handle and runtime
-        // flavor detection).
         let build = || {
             let mut g = InsightGraph::new();
             g.build_from_index(&self.symbols);
@@ -220,12 +181,7 @@ impl Workspace {
         arc
     }
 
-    /// Invalidate the cached InsightGraph (call when packages reload).
-    ///
-    /// Recovers from poisoned locks via `into_inner` so a panic during a build
-    /// does not permanently disable invalidation — without recovery the
-    /// poisoned guard would silently skip `*guard = None` and leave a stale
-    /// graph cached forever.
+    /// Invalidate both graph caches.
     pub fn invalidate_insight_graph(&self) {
         let mut ig = self
             .insight_graph
@@ -236,24 +192,13 @@ impl Workspace {
         *cg = None;
     }
 
-    /// Invalidate ONLY the call_graph, leaving the insight_graph intact.
-    /// Used by `on_document_change` when the edit is body-only (procedure
-    /// signatures unchanged) — the insight graph's node topology stays
-    /// valid; only call edges might have shifted.
+    /// Invalidate the call graph while retaining the insight graph.
     pub fn invalidate_call_graph_only(&self) {
         let mut cg = self.call_graph.write().unwrap_or_else(|e| e.into_inner());
         *cg = None;
     }
 
     /// Get (or lazily build) the cached CallGraph.
-    ///
-    /// Builds a workspace-enriched InsightGraph (symbol index + workspace file
-    /// objects/procedures/subscribers), then builds the CallGraph and populates
-    /// Tier 1 call edges. The enriched InsightGraph replaces the cached one.
-    ///
-    /// Uses double-checked locking to prevent the TOCTOU race where two concurrent
-    /// callers both see `None` and both build the graph. The write lock is acquired
-    /// before building, and re-checked inside the lock so at most one build runs.
     ///
     /// **Lock ordering invariant:** This function takes locks in the order
     /// `call_graph_build_lock` → `insight_graph` (write, brief) → `call_graph`
@@ -275,10 +220,6 @@ impl Workspace {
             }
         }
 
-        // Slow path: serialise concurrent builds on a *separate* mutex —
-        // the data lock stays available to readers for the whole build.
-        // Double-checked locking guards against the case where another
-        // caller built the graph while we waited for the build mutex.
         let _build_lock = self
             .call_graph_build_lock
             .lock()
@@ -293,17 +234,6 @@ impl Workspace {
             }
         }
 
-        // Build enriched InsightGraph + CallGraph. This is a CPU-intensive
-        // pass over every workspace file and the symbol index; on a daemon
-        // running in tokio's multi-threaded scheduler we MUST yield the
-        // worker via block_in_place so other handlers (diagnostics, hover,
-        // hover-followups) keep responding while the build runs. Guarded
-        // by try_handle + flavor check because block_in_place panics on
-        // current_thread runtimes (e.g. CLI tests).
-        //
-        // Important: no read/write guard on `call_graph` or `insight_graph`
-        // is held across this build. Readers see the previous (or symbol-
-        // only) graph until the swap below.
         let build = || {
             let mut graph = InsightGraph::new();
             graph.build_from_index(&self.symbols);
@@ -330,10 +260,6 @@ impl Workspace {
             _ => build(),
         };
 
-        // Atomic-ish swap: take each write lock just long enough to store the
-        // built artefact, then release before re-acquiring the call_graph
-        // read guard the function returns. Recover from poison so a panic
-        // earlier in the daemon's lifetime can't silently discard the build.
         {
             let mut ig_guard = self
                 .insight_graph

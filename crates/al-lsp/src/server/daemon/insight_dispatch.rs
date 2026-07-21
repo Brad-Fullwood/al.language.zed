@@ -3,7 +3,7 @@
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 use al_workspace::Workspace;
 
-use super::invalid_params;
+use super::{invalid_params, serialized_response};
 
 /// Upper bound on `node_count + edge_count` for full graph export.
 /// A 100k-symbol workspace can yield 200 MB+ of DOT/JSON; we refuse
@@ -27,27 +27,13 @@ pub(super) fn dispatch_trace(
     // is cached; the returned call-graph read guard is held only while serving.
     let (graph, _cg_guard) = workspace.get_or_build_call_graph();
     let steps = al_insight::search::trace_event(&graph, event_name, max_depth);
-    // TraceStep serialization is infallible for valid values.
-    let value = serde_json::to_value(&steps).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
-    }
+    serialized_response(id, &steps, "trace")
 }
 
 pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
     let (graph, _cg_guard) = workspace.get_or_build_call_graph();
     let entry_points = al_insight::search::find_entry_points(&graph);
-    // InsightNode serialization is infallible for valid values.
-    let value = serde_json::to_value(&entry_points).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
-    }
+    serialized_response(id, &entry_points, "entrypoints")
 }
 
 pub(super) fn dispatch_graph_export(
@@ -94,14 +80,7 @@ pub(super) fn dispatch_graph_export(
         }
         _ => {
             let json = al_insight::search::export_json(&graph);
-            // GraphJson serialization is infallible for valid values.
-            let value = serde_json::to_value(&json).unwrap_or(serde_json::Value::Null);
-            Response {
-                id,
-                result: Some(value),
-                error: None,
-                ..Default::default()
-            }
+            serialized_response(id, &json, "graphExport")
         }
     }
 }
@@ -121,14 +100,7 @@ pub(super) fn dispatch_insight_stats(workspace: &Workspace, id: u64) -> Response
 
 pub(super) fn dispatch_dead_code(workspace: &Workspace, id: u64) -> Response {
     let unused = al_analysis::queries::dead_code::dead_code(workspace);
-    // DeadCodeEntry serialization is infallible for valid values.
-    let value = serde_json::to_value(&unused).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
-    }
+    serialized_response(id, &unused, "deadCode")
 }
 
 /// Native semantic workspace checks duplicate object ids, ids outside
@@ -136,14 +108,7 @@ pub(super) fn dispatch_dead_code(workspace: &Workspace, id: u64) -> Response {
 /// entirely separate from the `diagnostics`/`lint` paths — emits `AL-NC*` codes.
 pub(super) fn dispatch_native_check(workspace: &Workspace, id: u64) -> Response {
     let findings = al_analysis::queries::native_check::native_semantic_checks(workspace);
-    // NativeFinding serialization is infallible for valid values.
-    let value = serde_json::to_value(&findings).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
-    }
+    serialized_response(id, &findings, "nativeCheck")
 }
 
 pub(super) fn dispatch_impact(
@@ -201,21 +166,10 @@ pub(super) fn dispatch_suggest_event(
         };
 
     let result = al_analysis::queries::suggest_event::suggest_event(workspace, &query);
-    // SuggestEventResult serialization is infallible for valid values.
-    let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
-    }
+    serialized_response(id, &result, "suggestEvent")
 }
 
-/// Table-centric impact: every object touching the named table, grouped by
-/// object with operation kinds (RecordVariable / RecordParameter / Relation /
-/// Extends) and location hints. Richer than `impact` (which flattens to
-/// per-consumer Read/Filter entries); wires the previously-orphaned
-/// `insight::analysis::table_impact`. Backs `al impact --table <name>`.
+/// Returns table usage grouped by object and operation.
 pub(super) fn dispatch_table_impact(
     workspace: &Workspace,
     id: u64,
@@ -225,20 +179,10 @@ pub(super) fn dispatch_table_impact(
         return invalid_params(id);
     };
     let result = al_insight::analysis::table_impact(&workspace.symbols, table);
-    let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
-    }
+    serialized_response(id, &result, "tableImpact")
 }
 
-/// Multi-hop event propagation TREE. Unlike `trace` (a flat list following only
-/// SubscribesTo edges), this follows the call graph's DirectCall /
-/// TriggerInvocation / RecordTrigger / EventSubscription edges through procedure
-/// intermediaries and marks cycles. Wires the previously-orphaned
-/// `insight::search::trace_event_chain`. Backs `al trace --tree`.
+/// Returns the event propagation tree, including cycles.
 pub(super) fn dispatch_trace_chain(
     workspace: &Workspace,
     id: u64,
@@ -249,9 +193,6 @@ pub(super) fn dispatch_trace_chain(
     };
     let max_depth = (params.get("depth").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(50);
 
-    // Enriched graph (workspace SubscribesTo + call edges) — same rationale as
-    // dispatch_trace. get_or_build_call_graph builds and returns
-    // the CallGraph that trace_event_chain needs in addition to the InsightGraph.
     let (insight, cg_guard) = workspace.get_or_build_call_graph();
     let chain = match cg_guard.as_ref() {
         Some(call_graph) => {
@@ -264,31 +205,14 @@ pub(super) fn dispatch_trace_chain(
             nodes_visited: 0,
         },
     };
-    let value = serde_json::to_value(&chain).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
-    }
+    serialized_response(id, &chain, "traceChain")
 }
 
-/// Complete event-interception map: every published event with its full
-/// subscriber list and counts, plus orphan subscribers (those targeting a
-/// missing event), in one structured result. No prior endpoint produced the
-/// whole-workspace map; `subscribers` answers a single event and `deadCode`
-/// only flags orphans. Wires the previously-orphaned
-/// `insight::discovery::discover_events`. Backs `al intercept`.
+/// Returns all published events, subscribers, and orphan subscribers.
 pub(super) fn dispatch_event_map(workspace: &Workspace, id: u64) -> Response {
     let (insight, _cg_guard) = workspace.get_or_build_call_graph();
     let result = al_insight::discovery::discover_events(&insight);
-    let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
-    }
+    serialized_response(id, &result, "eventMap")
 }
 
 #[cfg(test)]
@@ -396,8 +320,6 @@ mod tests {
         assert_eq!(resp.id, 5);
     }
 
-    /// A non-string `event` (here an integer) does not satisfy `as_str()` and
-    /// must be treated exactly like a missing event.
     #[test]
     fn dispatch_trace_non_string_event_is_invalid_params() {
         let ws = Workspace::new();
@@ -437,10 +359,6 @@ mod tests {
         assert_eq!(value.get("edges").and_then(|v| v.as_u64()), Some(0));
     }
 
-    /// the insight dispatchers must serve the WORKSPACE-ENRICHED
-    /// graph. They used the package-only builder, so on a workspace-only
-    /// project `insight-stats` reported 0 useful nodes and `trace`/
-    /// `entrypoints`/the TUI Events+CallGraph views were empty.
     #[test]
     fn dispatch_insight_stats_includes_workspace_objects() {
         let ws = Workspace::new();
@@ -470,8 +388,6 @@ mod tests {
         );
     }
 
-    /// companion: entrypoints must include workspace procedures
-    /// with no incoming calls.
     #[test]
     fn dispatch_entrypoints_includes_workspace_procedures() {
         let ws = Workspace::new();

@@ -15,7 +15,7 @@ pub const MAX_WORKSPACE_FILES: usize = 10_000;
 const MAX_DEPTH: usize = 10;
 
 /// Real AL source files are KB-scale; a multi-megabyte `.al` is almost
-/// certainly a build artifact, generated blob, or adversarial input. Reading
+/// certainly a build artifact, generated blob, or pathological input. Reading
 /// it would pin its full contents in the in-memory `files` map. `scan` and
 /// `incremental_scan` skip and log larger files.
 pub const MAX_AL_FILE_BYTES: u64 = 50 * 1024 * 1024; // 50 MiB
@@ -154,25 +154,18 @@ impl FileIndex {
         Some((pair.0.clone(), pair.1.clone()))
     }
 
-    /// Returns the symbols extracted at index time. Falls back to extracting
-    /// from the cached parse tree if symbols were not cached (shouldn't happen).
+    /// Returns the symbols extracted at index time.
     pub fn get_cached_symbols(
         &self,
         path: &Path,
     ) -> Option<Vec<al_syntax::types::SyntaxDocumentSymbol>> {
-        if let Some(entry) = self.file_symbols.get(path) {
-            return Some(entry.value().clone());
-        }
-        let (text, tree) = self.get_cached_parse(path)?;
-        let symbols: Vec<al_syntax::types::SyntaxDocumentSymbol> =
-            al_syntax::extract_document_symbols(&tree, &text);
         self.file_symbols
-            .insert(path.to_path_buf(), symbols.clone());
-        Some(symbols)
+            .get(path)
+            .map(|entry| entry.value().clone())
     }
 
     /// Skips hidden directories, `node_modules`, and `.alpackages`.
-    /// On a re-scan, files that were previously indexed but no longer
+    /// On a re-scan, indexed files that no longer
     /// exist on disk are removed from every index (primary + secondary
     /// object-name / object-id / procedure maps).
     /// Returns the number of files freshly indexed (not the resulting
@@ -231,9 +224,7 @@ impl FileIndex {
                     continue;
                 }
             };
-            // Skip oversized .al files before reading them into memory
-            // before reading them into memory. We already have the size from metadata,
-            // so no extra syscall is needed here.
+            // The metadata read above lets us reject oversized files before allocation.
             if current_meta.size > MAX_AL_FILE_BYTES {
                 tracing::warn!(
                     path = %path.display(),
@@ -241,8 +232,7 @@ impl FileIndex {
                     cap = MAX_AL_FILE_BYTES,
                     "skipping .al file: exceeds per-file size cap"
                 );
-                // If this path was previously indexed (it was small enough at
-                // the time) and has since grown past the cap, its old content,
+                // If this path is indexed and has grown past the cap, its old content,
                 // parse tree, and object/procedure mappings are now stale and
                 // will never be refreshed. Evict it so the index never serves
                 // outdated data for an oversized file. Record it as removed so
@@ -281,7 +271,7 @@ impl FileIndex {
         delta
     }
 
-    /// If the file was previously indexed, the old object-name mapping is
+    /// If the file is already indexed, the old object-name mapping is
     /// removed before the new one is inserted, so no stale entries remain.
     /// Records current mtime+size so `incremental_scan` can skip this file
     /// if it hasn't changed since.
@@ -340,15 +330,7 @@ impl FileIndex {
     /// `add_file_with_tree` (after a caller-supplied parse). The tree must
     /// correspond to `content`.
     ///
-    /// **Atomicity:** this function mutates 7 DashMaps (`file_trees`,
-    /// `objects`, `path_to_object`, `object_info`, `file_symbols`, `files`,
-    /// `path_to_procedures`). A panic between any two of those mutations
-    /// would leave the index in a split state — e.g. `file_trees` populated
-    /// but `files` missing the text. Tree-sitter parsing and symbol
-    /// extraction are well-tested and don't panic on real inputs, so this is
-    /// latent. Any future contributor adding a new map mutation
-    /// here should consider widening the window or grouping mutations into
-    /// a single transactional helper if the cost becomes meaningful.
+    /// All secondary maps must be updated together when this method changes.
     fn index_from_result(&self, path: PathBuf, content: String, tree: &tree_sitter::Tree) {
         // Cache the (text, tree) pair atomically under one Arc so a concurrent
         // reader can never observe a torn text/tree combination.
@@ -487,13 +469,7 @@ impl FileIndex {
     fn remove_procedures_for_file(&self, path: &Path) {
         if let Some((_, old_proc_names)) = self.path_to_procedures.remove(path) {
             for proc_name in old_proc_names {
-                // Use the entry API so the retain-then-maybe-remove sequence
-                // happens under a single, continuously-held shard lock. The
-                // previous get_mut → drop → remove sequence released the lock
-                // between the empty check and the removal: a concurrent
-                // `index_from_result` could push a fresh, legitimate entry for
-                // the same proc name in that window, which `remove` would then
-                // wipe out, causing intermittent go-to-definition misses.
+                // Retain and conditional removal must hold one shard lock.
                 use dashmap::mapref::entry::Entry;
                 if let Entry::Occupied(mut occ) = self.procedures.entry(proc_name) {
                     occ.get_mut().retain(|e| e.file != path);
@@ -543,10 +519,6 @@ impl FileIndex {
             let entry = match entry_result {
                 Ok(e) => e,
                 Err(e) => {
-                    // Per-entry errors (e.g. permission denied on a specific
-                    // child) are surfaced rather than silently dropped by the
-                    // old `flatten()`, so unreadable parts of the workspace are
-                    // observable in the logs.
                     tracing::debug!(error = %e, dir = %dir.display(), "skipping directory entry due to error");
                     continue;
                 }
@@ -808,9 +780,6 @@ mod tests {
         assert!(index.get_content(&path).is_none());
     }
 
-    /// positive: when two files share an object name (table Foo,
-    /// page Foo) they are distinct kind-tagged owners, so removing one file
-    /// must NOT drop the other file's mapping.
     #[test]
     fn remove_file_preserves_other_owners_object_mapping() {
         let index = FileIndex::new();
@@ -821,8 +790,6 @@ mod tests {
             table_path.clone(),
             r#"table 50100 "Foo" { fields { } }"#.to_string(),
         );
-        // The page is a separate owner under objects["foo"]; it no longer
-        // overwrites the table, and both are indexed.
         index.add_file(
             page_path.clone(),
             r#"page 50100 "Foo" { layout { } actions { } }"#.to_string(),
@@ -831,19 +798,14 @@ mod tests {
 
         index.remove_file(&table_path);
 
-        // The page's mapping must survive — find_by_object_name should still
-        // resolve "foo" to the page file.
         let resolved = index.find_by_object_name("foo");
         assert_eq!(
             resolved.as_deref(),
             Some(page_path.as_path()),
-            "F-040: surviving owner's object mapping was dropped"
+            "surviving owner's object mapping was dropped"
         );
     }
 
-    /// a table and a page sharing a name are kind-addressable regardless
-    /// of index order — a `Record Foo` reference (kind "table") never resolves
-    /// to the page, and deleting the page leaves the table resolvable.
     #[test]
     fn same_named_objects_are_kind_addressable() {
         for page_first in [false, true] {
@@ -881,7 +843,6 @@ mod tests {
                 "kind=page must resolve to the page (page_first={page_first})"
             );
 
-            // Deleting the page must not break table resolution.
             index.remove_file(&page_path);
             assert_eq!(
                 index.object_path_of_kind("foo", &["table"]).as_deref(),
@@ -892,8 +853,6 @@ mod tests {
         }
     }
 
-    /// F-040 negative: when the file being removed IS the current owner of
-    /// `objects[name]`, the mapping is correctly removed (no orphan).
     #[test]
     fn remove_file_drops_objects_mapping_when_owner() {
         let index = FileIndex::new();
@@ -939,9 +898,6 @@ mod tests {
         assert!(index.object_path_of_kind("foo", &["enum"]).is_none());
     }
 
-    /// re-indexing a file whose object was renamed drops the old name and
-    /// registers the new one — no stale owner strands behind (via the
-    /// path_to_object cleanup that runs before every re-index).
     #[test]
     fn reindex_object_rename_clears_old_name() {
         let index = FileIndex::new();
@@ -1045,9 +1001,6 @@ mod tests {
         index.incremental_scan(dir.path());
         assert_eq!(index.len(), 3);
 
-        // Sleep briefly so the mtime will differ (filesystem resolution is typically 1ms+).
-        // We write new content to just one file and force a metadata change by
-        // explicitly bumping the mtime via setting file times.
         let table_path = dir.path().join("MyTestTable.al");
         let new_content = r#"table 50101 "My Modified Table"
 {
@@ -1060,9 +1013,7 @@ mod tests {
 
         fs::write(&table_path, new_content).unwrap();
 
-        // Flush the metadata cache entry so the next stat picks up the new mtime.
-        // (Some Linux filesystems have 10ms mtime resolution; if the write is
-        // within the same tick the test would still pass because size changes.)
+        // The size change makes the metadata snapshot differ even on coarse filesystems.
 
         let delta = index.incremental_scan(dir.path());
 
@@ -1108,11 +1059,6 @@ mod tests {
         assert!(index.get_content(&new_path).is_some());
     }
 
-    /// F-010: a full `scan()` re-run after a file is deleted from disk
-    /// must drop the deleted file from every index — primary `files`,
-    /// the object-name map, content cache, and the procedure reverse
-    /// index. Previously `scan` only added/updated entries, leaving
-    /// deleted AL objects discoverable by go-to-definition.
     #[test]
     fn scan_removes_files_deleted_between_scans() {
         let dir = setup_test_dir();
@@ -1139,9 +1085,6 @@ mod tests {
         );
     }
 
-    /// F-010 negative regression: a scan with no on-disk changes must
-    /// not remove anything. Confirms the deletion sweep is gated on
-    /// "not on disk this scan", not on "older than this scan".
     #[test]
     fn scan_preserves_files_still_present() {
         let dir = setup_test_dir();
@@ -1340,11 +1283,6 @@ mod tests {
 
     #[test]
     fn equal_length_reindex_returns_coherent_new_pair() {
-        // an edit that keeps the byte length identical (renaming one
-        // identifier character — common) previously defeated the length-based
-        // coherence check, which could pair stale text with a fresh tree. With
-        // the atomic (text, tree) pair, get_cached_parse returns the re-indexed
-        // content and its matching tree.
         let index = FileIndex::new();
         let path = PathBuf::from("/test/src/Eq.al");
         let a = r#"codeunit 50100 "Eq" { procedure Aaa() begin end; }"#.to_string();

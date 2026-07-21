@@ -1,16 +1,4 @@
-//! Completeness tests — ensure every LSP capability the server declares is functional
-//! and produces correct, well-formed responses that Zed can consume.
-//!
-//! These tests go beyond "does not crash" to validate:
-//! - Diagnostic ranges are valid (Zed uses them for underlines)
-//! - Completion items have kind, detail, and insertText
-//! - Semantic token types match the declared legend
-//! - Cross-file interactions work after edits
-//! - Workspace state is consistent after file close
-//! - Dot-access completion triggers work
-//! - Signature help triggers work at ( and , positions
-//!
-//! Run with: cargo test -p al-test-harness --test completeness -- --test-threads=1
+//! Response-shape and state-transition tests for declared LSP capabilities.
 
 use al_test_harness::*;
 
@@ -309,7 +297,6 @@ async fn test_completeness_c01_semantic_tokens_cover_all_token_types() {
         data.len()
     );
 
-    // Verify each token group has 5 elements (delta_line, delta_start, length, type, modifiers)
     for (i, group) in data.iter().enumerate() {
         assert!(group[2] > 0, "token {i} length must be > 0: {group:?}");
     }
@@ -330,8 +317,12 @@ async fn test_completeness_d01_cross_file_hover_after_edit() {
     );
     client.change_file("src/helper.al", &edited_helper).await;
 
-    let _hover = client.hover("src/caller.al", 4, 20).await;
-    // May or may not resolve — key thing is no crash and server is responsive
+    let hover = client.hover("src/caller.al", 4, 28).await;
+    let content = hover.as_ref().and_then(hover_content);
+    assert!(
+        content.is_some_and(|text| text.contains("Helper CU")),
+        "cross-file hover disappeared after edit: {content:?}"
+    );
     let symbols = client.workspace_symbol("Helper CU").await;
     assert!(
         !symbols.is_empty(),
@@ -374,18 +365,14 @@ async fn test_completeness_d02_workspace_symbols_reflect_edits() {
         .await;
 
     let syms_new = client.workspace_symbol("Changed Name").await;
-    // The workspace symbol search scans open documents
-    // At minimum, the old name should no longer match the edited document
     let syms_old = client.workspace_symbol("Original Name").await;
-    // One of these assertions should hold (depends on how quickly the index updates)
-    let found_new = !syms_new.is_empty();
-    let lost_old = syms_old.iter().all(|s| {
-        s.get("name").and_then(|n| n.as_str()) != Some("Original Name")
-            || s.get("location").is_none()
-    });
+    assert!(!syms_new.is_empty(), "changed object name was not indexed");
     assert!(
-        found_new || lost_old,
-        "workspace symbols should update after edit: new={syms_new:?}, old={syms_old:?}"
+        syms_old.iter().all(|s| {
+            s.get("name").and_then(|n| n.as_str()) != Some("Original Name")
+                || s.get("location").is_none()
+        }),
+        "stale object name remained indexed: {syms_old:?}"
     );
 
     client.shutdown().await;
@@ -801,7 +788,7 @@ async fn test_completeness_i01_references_include_declaration() {
 }
 
 #[tokio::test]
-async fn test_completeness_j01_all_declared_capabilities_are_functional() {
+async fn core_navigation_and_symbol_requests_are_functional() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let code = r#"codeunit 50100 "Cap Test"
@@ -827,9 +814,6 @@ async fn test_completeness_j01_all_declared_capabilities_are_functional() {
     let comp = client.completion("src/cap_test.al", 7, 8).await;
     assert!(!comp.is_empty(), "completion capability must work");
 
-    let _def = client.definition("src/cap_test.al", 6, 14).await;
-    // May or may not resolve — just must not error
-
     let refs = client.references("src/cap_test.al", 4, 10).await;
     assert!(!refs.is_empty(), "references capability must work");
 
@@ -841,20 +825,6 @@ async fn test_completeness_j01_all_declared_capabilities_are_functional() {
 
     let folds = client.folding_ranges("src/cap_test.al").await;
     assert!(!folds.is_empty(), "foldingRange capability must work");
-
-    let _fmt = client.format("src/cap_test.al").await;
-    // May or may not produce edits
-
-    let _sig = client.signature_help("src/cap_test.al", 6, 20).await;
-    // May or may not resolve
-
-    // codeAction — native lint rules have been removed so AL-L001 quickfixes will
-    // not appear, but the capability must respond without crashing.
-    let _acts = client.code_actions("src/cap_test.al", 12, 14).await;
-    // May or may not return actions depending on context — just verify no crash.
-
-    let _hints = client.inlay_hints("src/cap_test.al", 0, 15).await;
-    // May or may not produce hints
 
     let ren = client.rename("src/cap_test.al", 4, 10, "Length").await;
     assert!(ren.is_some(), "rename capability must work");

@@ -67,7 +67,6 @@ fn metrics_all_reports_complexity() {
 
 #[test]
 fn intercept_runs_workspace_wide() {
-    // Just assert it produces output and exits cleanly (publishers/orphans map).
     let (ok, out) = al(&["intercept"]);
     assert!(ok, "intercept failed:\n{out}");
     assert!(!out.trim().is_empty(), "intercept produced no output");

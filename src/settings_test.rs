@@ -60,8 +60,6 @@ fn non_object_al_key_is_treated_as_literal_value() {
     assert_eq!(merged, json!({ "al": "bogus" }));
 }
 
-/// A pathologically deep dotted key must not overflow the stack. The remaining
-/// segments beyond the depth cap are stored as one literal key.
 #[test]
 fn deeply_nested_key_does_not_overflow_and_collapses() {
     let deep_key = format!("al.{}", vec!["x"; 500].join("."));

@@ -97,8 +97,6 @@ fn validate_runnables_query() {
     validate_query_file("runnables.scm");
 }
 
-/// Catch-all: validate ALL .scm files in languages/al/, including any new ones
-/// that might be added in the future without a dedicated test.
 #[test]
 fn validate_all_query_files() {
     let dir = languages_dir();

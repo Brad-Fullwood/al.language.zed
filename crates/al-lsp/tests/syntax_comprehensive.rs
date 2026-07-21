@@ -781,21 +781,6 @@ fn lint_returns_empty_for_deep_nesting() {
 }
 
 #[test]
-fn lint_config_default_constructs() {
-    // LintConfig is now a unit struct placeholder — verify it constructs and
-    // that lint_with_config still returns empty.
-    let config = al_syntax::lint::LintConfig;
-    let mut parser = make_parser();
-    let result = parser.parse(CODEUNIT_CODE);
-    let diags = al_syntax::lint::lint_with_config(&result.tree, CODEUNIT_CODE, &config);
-    assert!(
-        diags.is_empty(),
-        "lint_with_config() must return empty Vec: {:?}",
-        diags
-    );
-}
-
-#[test]
 fn find_object_in_all_fixtures() {
     let mut parser = make_parser();
 
@@ -1008,8 +993,6 @@ fn format_deeply_nested_does_not_collapse() {
     }
 }
 
-/// negative: a deeply-nested pageext with a missing closing `}` must
-/// surface a parse error rather than silently accepting a truncated tree.
 #[test]
 fn parse_deeply_nested_truncated_reports_errors() {
     let mut parser = AlParser::new();

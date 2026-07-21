@@ -133,13 +133,6 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                     sort_text: None,
                 });
             }
-            // Use get_by_kind for each wanted kind directly. Previously this
-            // was a single all_entries() pass with per-kind counters and an
-            // early-exit that required ALL four counters to hit 50 — so if
-            // (say) Interface had fewer than 50 entries, the loop kept
-            // scanning every other entry in the index after the other three
-            // were already full. The targeted lookups bound work to the
-            // requested kind sets and the per-kind cap.
             const TYPE_COMPLETION_CAP: usize = 50;
             for kind in [
                 al_symbols::ObjectKind::Table,
@@ -223,12 +216,9 @@ pub async fn completions_full(
     let Ok(path) = uri.to_file_path() else {
         return items;
     };
-    // F-036: bridge `completions` consumes 0-based (line, column) — see
-    // `bridge::SemanticBridge::completions_at` doc and the matching C#
-    // `LineColToOffset` invariant.
+    // The bridge uses the same zero-based coordinates as LSP.
     let pos = (position.line, position.character);
-    // F-037: pass the open-document text so the bridge sees unsaved edits
-    // instead of stale on-disk content.
+    // Open-document text takes precedence over on-disk content.
     let unsaved_text = workspace.documents.get_text(uri);
     let configured_package_cache = workspace.config.read().await.package_cache_path.clone();
     let package_cache = match configured_package_cache {

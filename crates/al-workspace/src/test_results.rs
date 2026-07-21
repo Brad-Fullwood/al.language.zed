@@ -1,28 +1,4 @@
-//! Persistent test result history.
-//!
-//! Append-only newline-delimited JSON at
-//! `$XDG_DATA_HOME/al-lsp/<project-hash>/test-results.json`. Concurrent
-//! appends are serialized through an in-process `tokio::sync::Mutex` —
-//! cross-process contention is rare for this file (it's per-project) and
-//! is not serialized.
-//!
-//! Schema per record:
-//! ```jsonc
-//! {
-//!   "timestamp": 1700000000,        // unix seconds (recorded at append time)
-//!   "codeunitId": 50100,
-//!   "codeunitName": "MyTests",
-//!   "methodName": "Test_Alpha",
-//!   "status": "pass" | "fail" | "skip",
-//!   "durationMs": 42,               // optional
-//!   "error": "..."                  // optional, only on fail
-//! }
-//! ```
-//!
-//! On read, malformed lines are skipped with a `tracing::warn!` — the file
-//! is recoverable. The cap is 1000 entries per (codeunit_id, method_name)
-//! tuple; on append, if that bucket would exceed 1000, the oldest entry
-//! for that bucket is dropped via a single rewrite pass.
+//! Persistent newline-delimited test result history.
 
 use std::path::PathBuf;
 
@@ -36,11 +12,7 @@ use al_types::{PersistenceError, TestRunRecord};
 
 pub struct TestResultStore {
     path: PathBuf,
-    /// Serializes appends within this process. Cross-process is best-effort.
     write_lock: Mutex<()>,
-    /// In-memory bucket-count cache: maps (codeunit_id, method_name) → current
-    /// count in the file. Populated lazily on first append and refreshed when
-    /// a bucket overflows and triggers a rewrite.
     bucket_counts: Mutex<Option<std::collections::HashMap<(i32, String), usize>>>,
 }
 
@@ -61,7 +33,7 @@ impl TestResultStore {
     pub async fn open_for_project(
         project_root: &std::path::Path,
     ) -> Result<Self, PersistenceError> {
-        let path = canonical_path_for(project_root);
+        let path = canonical_path_for(project_root)?;
         Self::open(path).await
     }
 
@@ -69,21 +41,13 @@ impl TestResultStore {
         &self.path
     }
 
-    /// Append one record. May trigger a single-pass prune if the affected
-    /// bucket would exceed `MAX_PER_BUCKET`.
-    ///
-    /// Uses an in-memory `bucket_counts` cache so the common
-    /// path is O(1) — no file read, no allocation. Only the first call (or
-    /// a call that pushes a bucket past `MAX_PER_BUCKET`) re-materialises
-    /// the full record set from disk to do an accurate prune.
+    /// Append one record, pruning the oldest record in a full method bucket.
     pub async fn append(&self, record: TestRunRecord) -> Result<(), PersistenceError> {
         let _guard = self.write_lock.lock().await;
 
         let key = (record.codeunit_id, record.method_name.clone());
         let mut counts_guard = self.bucket_counts.lock().await;
         if counts_guard.is_none() {
-            // First append in this process — materialise the on-disk counts
-            // once, then maintain incrementally.
             let mut counts = std::collections::HashMap::new();
             for rec in read_records_no_lock(&self.path).await? {
                 *counts
@@ -103,8 +67,6 @@ impl TestResultStore {
                 existing.remove(oldest_idx);
             }
             rewrite_records(&self.path, &existing).await?;
-            // Drop the count by 1 to reflect the prune; the post-append
-            // increment below restores it to MAX_PER_BUCKET exactly.
             counts.entry(key.clone()).and_modify(|n| *n -= 1);
         }
 
@@ -128,24 +90,38 @@ impl TestResultStore {
         read_records_no_lock(&self.path).await
     }
 
-    /// Synchronous best-effort read of all records — for callers (LSP code
-    /// lens, TUI watchers) that run outside a tokio context. Errors and
-    /// malformed lines yield an empty `Vec`; this is the fast path used
-    /// when momentarily-stale results are acceptable.
+    /// Synchronous read for callers outside a Tokio context.
     pub fn all_records(&self) -> Vec<TestRunRecord> {
         let file = match std::fs::File::open(&self.path) {
             Ok(f) => f,
-            Err(_) => return Vec::new(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(error) => {
+                tracing::warn!(path = %self.path.display(), %error, "failed to read test results");
+                return Vec::new();
+            }
         };
         let reader = std::io::BufReader::new(file);
         let mut out = Vec::new();
-        for line in std::io::BufRead::lines(reader).map_while(Result::ok) {
+        for (line_no, line) in std::io::BufRead::lines(reader).enumerate() {
+            let line = match line {
+                Ok(line) => line,
+                Err(error) => {
+                    tracing::warn!(path = %self.path.display(), line = line_no + 1, %error, "failed to read test result record");
+                    continue;
+                }
+            };
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            if let Ok(rec) = serde_json::from_str::<TestRunRecord>(trimmed) {
-                out.push(rec);
+            match serde_json::from_str::<TestRunRecord>(trimmed) {
+                Ok(record) => out.push(record),
+                Err(error) => tracing::warn!(
+                    path = %self.path.display(),
+                    line = line_no + 1,
+                    %error,
+                    "skipping malformed test result record"
+                ),
             }
         }
         out
@@ -163,7 +139,7 @@ impl TestResultStore {
     }
 }
 
-fn canonical_path_for(project_root: &std::path::Path) -> PathBuf {
+fn canonical_path_for(project_root: &std::path::Path) -> Result<PathBuf, PersistenceError> {
     let hash = short_hash(project_root.to_string_lossy().as_bytes());
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -175,16 +151,20 @@ fn canonical_path_for(project_root: &std::path::Path) -> PathBuf {
                 p
             })
         })
-        .unwrap_or_else(std::env::temp_dir);
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "neither XDG_DATA_HOME nor HOME is set",
+            )
+        })?;
     let mut path = base;
     path.push("al-lsp");
     path.push(hash);
     path.push("test-results.json");
-    path
+    Ok(path)
 }
 
 fn short_hash(bytes: &[u8]) -> String {
-    // Tiny FNV-1a so we don't pull in another hashing crate.
     let mut h: u64 = 0xcbf29ce484222325;
     for b in bytes {
         h ^= *b as u64;
@@ -442,20 +422,25 @@ mod tests {
 
     #[test]
     fn canonical_path_uses_xdg_data_home() {
-        let prev_xdg = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: tests run on a single thread by default in cargo test
-        // unless --test-threads is set; this is acceptable for the unit.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        struct RestoreEnv(Option<std::ffi::OsString>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                unsafe {
+                    match self.0.take() {
+                        Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                        None => std::env::remove_var("XDG_DATA_HOME"),
+                    }
+                }
+            }
+        }
+        let _restore = RestoreEnv(std::env::var_os("XDG_DATA_HOME"));
         unsafe {
             std::env::set_var("XDG_DATA_HOME", "/tmp/al-lsp-test-xdg");
         }
-        let p = canonical_path_for(std::path::Path::new("/projects/foo"));
+        let p = canonical_path_for(std::path::Path::new("/projects/foo")).unwrap();
         assert!(p.starts_with("/tmp/al-lsp-test-xdg/al-lsp/"));
         assert!(p.ends_with("test-results.json"));
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-                None => std::env::remove_var("XDG_DATA_HOME"),
-            }
-        }
     }
 }

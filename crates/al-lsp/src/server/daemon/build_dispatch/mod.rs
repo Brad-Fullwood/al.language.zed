@@ -157,10 +157,7 @@ pub(super) fn dispatch_breaking_changes(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    // Callers supply the previous version's symbols in
-    // `params.baselineSymbols`; an absent baseline finds every current symbol
-    // as new (the pre-fix behaviour). Populating it lets removals/changes be
-    // reported against a real previous version.
+    // `baselineSymbols` represents the previous published version.
     let current: Vec<al_symbols::SymbolEntry> = workspace
         .symbols
         .all_entries()
@@ -395,8 +392,6 @@ mod tests {
 
     #[test]
     fn breaking_changes_absent_baseline_reports_nothing() {
-        // The pre-fix behaviour: with no baseline, added current symbols are
-        // not breaking, so the result is empty.
         let ws = empty_ws();
         ws.symbols
             .add_entries_owned(vec![codeunit("New CU", vec![public_method("DoWork")])]);

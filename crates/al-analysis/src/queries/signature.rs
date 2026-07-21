@@ -201,8 +201,7 @@ pub fn signature_help(
         return Some(sig);
     }
 
-    // collect ALL overloads of `func_name` — previously returned only the first match,
-    // hiding other overloads from clients that show all signatures (Zed, VS Code).
+    // Return all overloads for clients that present multiple signatures.
     {
         let symbols = workspace.symbols.get_by_name(func_name);
         let mut sigs: Vec<SignatureInfo> = Vec::new();

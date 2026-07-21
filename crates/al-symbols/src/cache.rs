@@ -125,10 +125,7 @@ impl SymbolCache {
             return None;
         }
 
-        // Deserialize the objects. A failure here means the on-disk format is
-        // incompatible with the current SymbolEntry struct (schema migration,
-        // truncated file, corruption). Logging at warn surfaces the cause —
-        // previously this returned None and silently re-parsed the .app.
+        // An incompatible or corrupt cache is rebuilt from the package.
         let objects: Vec<super::model::SymbolEntry> = match serde_json::from_slice(objects_data) {
             Ok(v) => v,
             Err(e) => {
@@ -159,14 +156,14 @@ impl SymbolCache {
         Some(pkg)
     }
 
-    /// Delete orphaned `.tmp.*` files left by processes that crashed mid-write.
-    ///
-    /// Files matching `*.tmp.*` that are older than 60 seconds are removed.
-    /// Errors are silently ignored — cleanup is best-effort.
+    /// Deletes stale temporary cache files.
     fn cleanup_stale_tmp(&self) {
         let entries = match fs::read_dir(&self.cache_dir) {
             Ok(e) => e,
-            Err(_) => return,
+            Err(error) => {
+                debug!(%error, path = %self.cache_dir.display(), "Could not scan symbol cache");
+                return;
+            }
         };
         let cutoff = Duration::from_secs(60);
         let now = SystemTime::now();
@@ -179,7 +176,9 @@ impl SymbolCache {
             if let Ok(meta) = fs::metadata(&path) {
                 if let Ok(age) = now.duration_since(meta.modified().unwrap_or(now)) {
                     if age > cutoff {
-                        let _ = fs::remove_file(&path);
+                        if let Err(error) = fs::remove_file(&path) {
+                            debug!(%error, path = %path.display(), "Could not remove stale cache file");
+                        }
                     }
                 }
             }

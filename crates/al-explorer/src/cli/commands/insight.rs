@@ -234,8 +234,6 @@ pub fn cmd_impact(symbol: &str, table: bool, json: bool) -> ExitCode {
     }
 }
 
-/// `al impact --table <name>`: table-centric grouped impact (wires the
-/// previously-orphaned table_impact via the `tableImpact` daemon endpoint).
 fn cmd_table_impact(table: &str, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -296,8 +294,6 @@ fn cmd_table_impact(table: &str, json: bool) -> ExitCode {
     }
 }
 
-/// `al trace --tree`: multi-hop event propagation TREE (wires the
-/// previously-orphaned trace_event_chain via the `traceChain` endpoint).
 fn cmd_trace_chain(event: &str, depth: usize, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -358,9 +354,6 @@ fn print_chain_node(node: &serde_json::Value, indent: usize) {
     }
 }
 
-/// `al intercept`: complete event-interception map — every publisher with its
-/// subscribers + orphan subscribers (wires the previously-orphaned
-/// discover_events via the `eventMap` endpoint).
 pub fn cmd_intercept(json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,

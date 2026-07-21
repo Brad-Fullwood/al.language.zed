@@ -472,10 +472,6 @@ mod tests {
 
     #[test]
     fn generate_page_escapes_double_quote_in_table_name() {
-        // Negative regression for the scaffold/generators audit: a table
-        // name containing a `"` must be emitted as `""` inside an AL
-        // quoted identifier. Pre-fix, the embedded quote terminated the
-        // identifier early and produced unparseable AL.
         let table = make_table(r#"Bad"Table"#, vec![make_field(1, "No.", "Code[20]")]);
         let config = GeneratePageConfig {
             object_id: 50100,
@@ -505,9 +501,6 @@ mod tests {
 
     #[test]
     fn generate_test_escapes_double_quote_in_test_name() {
-        // A test codeunit name containing a `"` must be emitted as `""` so the
-        // generated object declaration parses. Pre-fix the bare quote
-        // terminated the identifier early.
         let config = GenerateTestConfig {
             object_id: 50100,
             test_name: r#"My "Test" Suite"#.to_string(),

@@ -586,9 +586,6 @@ mod tests {
         uri
     }
 
-    /// F-039 regression: caller `Add(1, 2)` appears BEFORE the `procedure Add`
-    /// declaration. Hover the call-site `Add` and `definition()` must return
-    /// the declaration line, not the call-site itself.
     #[test]
     fn definition_jumps_to_forward_declared_procedure() {
         let src = "codeunit 50100 \"Test\"\n{\n    procedure Caller()\n    begin\n        Add(1, 2);\n    end;\n\n    procedure Add(A: Integer; B: Integer): Integer\n    begin\n        exit(A + B);\n    end;\n}\n";

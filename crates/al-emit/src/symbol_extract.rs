@@ -1,10 +1,4 @@
-//! Extract structured AL objects from source into [`SymbolEntry`] values, for
-//! emitting `SymbolReference.json`.
-//!
-//! Walks the tree-sitter parse tree directly. Currently covers the object kinds
-//! whose symbol shape is fully reverse-engineered: table, codeunit, enum,
-//! interface. Other kinds (page/report/xmlport/query/extensions) extend the
-//! same machinery and are tracked follow-up.
+//! Extract `SymbolReference.json` objects from AL parse trees.
 
 use tree_sitter::{Node, Tree};
 

@@ -809,8 +809,6 @@ mod tests {
         );
     }
 
-    /// Custom `Serialize` impl that always returns an error — used to drive the
-    /// serialisation-failure path in `ok_response`.
     struct AlwaysFails;
 
     impl serde::Serialize for AlwaysFails {
@@ -822,8 +820,6 @@ mod tests {
         }
     }
 
-    /// `ok_response` returns an `INTERNAL_ERROR` instead of silently emitting `null`
-    /// when serialisation fails.
     #[test]
     fn ok_response_returns_rpc_error_on_serialization_failure() {
         let resp = ok_response(11, &AlwaysFails, "test/method");
@@ -841,11 +837,6 @@ mod tests {
         );
     }
 
-    /// Workspace-object payloads must deserialize as `al_symbols::SymbolEntry` so
-    /// downstream daemon clients (al-cli, al-explorer) accept them. The `kind`
-    /// field arrives from tree-sitter as a lowercase string but the wire schema
-    /// is the PascalCase `ObjectKind` enum — regression test for the
-    /// daemon→explorer launch failure observed in cycle 4.
     #[test]
     fn workspace_object_to_json_round_trips_through_symbol_entry() {
         let info = al_source::file_index::CachedObjectInfo {
@@ -910,10 +901,6 @@ mod tests {
         );
     }
 
-    /// `by-id` must find workspace source objects, not only .app
-    /// package symbols. `object` (lookup by name) already merges the workspace
-    /// file index; `by-id codeunit 50100` returned "No Codeunit with id 50100"
-    /// for an object that `object codeunit "Hello World"` found.
     #[test]
     fn dispatch_by_id_finds_workspace_objects() {
         let ws = al_workspace::Workspace::new();
@@ -948,11 +935,6 @@ mod tests {
         assert_eq!(arr[0]["package"], WORKSPACE_PACKAGE);
     }
 
-    /// `events` must surface WORKSPACE event publishers, not only
-    /// package symbols. Workspace methods only enter the SymbolIndex via
-    /// the call-graph enrichment pass — which nothing on the events path
-    /// triggered, so `al-explorer events OnBeforeProcess` missed publishers
-    /// defined in the user's own project.
     #[test]
     fn dispatch_events_finds_workspace_publishers() {
         let ws = al_workspace::Workspace::new();
@@ -979,12 +961,6 @@ mod tests {
         );
     }
 
-    /// `composed` must merge a WORKSPACE base table with its
-    /// WORKSPACE extension — previously it returned "No Table named ... or no
-    /// extensions found" because neither object was in the SymbolIndex.
-    /// the Zed task only has the symbol under the cursor,
-    /// so `composed` must resolve the kind from a bare name when it is
-    /// unambiguous, and explain itself when it is not.
     #[test]
     fn dispatch_composed_resolves_kind_from_bare_name() {
         let ws = al_workspace::Workspace::new();
@@ -1073,7 +1049,6 @@ mod tests {
         );
     }
 
-    /// guard: an id that matches nothing still errors.
     #[test]
     fn dispatch_by_id_unknown_id_still_errors() {
         let ws = al_workspace::Workspace::new();
@@ -1081,9 +1056,6 @@ mod tests {
         assert!(resp.error.is_some(), "unknown id must keep erroring");
     }
 
-    /// An out-of-range `startLine` (> u32::MAX) must be rejected with
-    /// INVALID_PARAMS rather than silently truncated via `as u32`. Mirrors the
-    /// hardening verified by `extract_position_rejects_overflow` in mod.rs.
     #[test]
     fn dispatch_inlay_hints_rejects_overflow_start_line() {
         let ws = al_workspace::Workspace::new();
@@ -1103,7 +1075,6 @@ mod tests {
         assert!(resp.result.is_none());
     }
 
-    /// An out-of-range `endLine` must likewise be rejected, not wrapped.
     #[test]
     fn dispatch_inlay_hints_rejects_overflow_end_line() {
         let ws = al_workspace::Workspace::new();
@@ -1123,8 +1094,6 @@ mod tests {
         assert!(resp.result.is_none());
     }
 
-    /// Absent line params default to the full-document range (0..u32::MAX) and
-    /// succeed — no document is open so the hints list is simply empty.
     #[test]
     fn dispatch_inlay_hints_defaults_lines_when_absent() {
         let ws = al_workspace::Workspace::new();
@@ -1214,7 +1183,6 @@ mod tests {
         assert_invalid_params(&resp, 9);
     }
 
-    /// rename has an extra required `newName` parameter beyond uri/position.
     #[test]
     fn dispatch_rename_rejects_missing_new_name() {
         let ws = al_workspace::Workspace::new();
@@ -1249,12 +1217,6 @@ mod tests {
         );
     }
 
-    /// An absurdly large `limit` must be clamped to MAX_SEARCH_RESULTS, not
-    /// passed through verbatim (a u64 → usize that could exhaust memory).
-    /// We can observe the clamp indirectly: the call succeeds and does not
-    /// hang/allocate unboundedly. The value handed to the index is the
-    /// min(limit, 500_000); we assert the request completes with an empty
-    /// array on an empty workspace.
     #[test]
     fn dispatch_search_clamps_oversized_limit() {
         let ws = al_workspace::Workspace::new();
@@ -1291,8 +1253,6 @@ mod tests {
         assert_invalid_params(&resp, 15);
     }
 
-    /// A valid kind+name with no matching object yields an INVALID_PARAMS error
-    /// whose message names the object, not a silent empty success.
     #[test]
     fn dispatch_object_not_found_returns_error() {
         let ws = al_workspace::Workspace::new();
@@ -1393,9 +1353,6 @@ mod tests {
         assert_eq!(resp.result, Some(serde_json::json!([])));
     }
 
-    /// With no project loaded, deps reports an INTERNAL_ERROR rather than a
-    /// bogus empty success — clients must distinguish "no project" from
-    /// "project with zero dependencies".
     #[test]
     fn dispatch_deps_no_project_returns_internal_error() {
         let ws = al_workspace::Workspace::new();

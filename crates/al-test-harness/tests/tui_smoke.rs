@@ -52,9 +52,8 @@ fn tui_object_browser_lists_fixture_objects() {
 
     // Re-render the accumulated stream *while still in the alternate screen*
     // (al-explorer emits "leave alternate screen" on quit, which restores the
-    // empty primary buffer). A fixed sleep is flaky — the daemon cold-start
-    // varies, and the workspace package no longer sorts first (it sits after the
-    // built-in "Runtime" package), so the object browser defaults to Runtime.
+    // empty primary buffer). A fixed sleep is flaky because daemon cold-start
+    // time varies.
     let render = |buf: &Arc<Mutex<Vec<u8>>>| -> String {
         let bytes = buf.lock().unwrap().clone();
         let mut parser = vt100::Parser::new(rows, cols, 0);
@@ -73,31 +72,28 @@ fn tui_object_browser_lists_fixture_objects() {
         s
     };
 
-    // 1. Wait for the daemon to return packages (the "workspace" package proves
-    //    the project loaded). The rendered screen from this poll isn't used
-    //    directly -- it's superseded by step 3's poll -- so it's only kept
-    //    around as a synchronization point.
-    let _ = poll(&buf, "workspace", 15);
-    // 2. Select the workspace package: Down enters the Packages pane, Down moves
-    //    to the next package. From the default (Runtime selected) this lands on
-    //    workspace; if workspace is the only package, the move wraps back to it.
-    let down = b"\x1b[B";
-    for _ in 0..2 {
-        let _ = writer.write_all(down);
-        let _ = writer.flush();
-        thread::sleep(Duration::from_millis(400));
-    }
-    // 3. Wait for a workspace object's details to render. The details pane shows
-    //    "Package: workspace" for any selected workspace object — robust to which
-    //    object-kind tab happens to be active (the list is kind-gated).
-    let screen = {
-        let s = poll(&buf, "Package: workspace", 6);
-        if s.contains("Package: workspace") {
-            s
-        } else {
-            render(&buf)
+    // A fresh daemon labels the local package `(workspace)`, while a daemon
+    // reused by the full suite can expose it as `workspace`. Runtime sorts
+    // first in the latter case, so inspect the actual selection before moving.
+    let mut screen = poll(&buf, "workspace", 15);
+    if screen.contains(">> Runtime") {
+        let down = b"\x1b[B";
+        for _ in 0..2 {
+            let _ = writer.write_all(down);
+            let _ = writer.flush();
+            thread::sleep(Duration::from_millis(400));
         }
-    };
+    }
+
+    // Wait for a workspace object's details to render, regardless of which
+    // object-kind tab is active or which workspace label the daemon supplied.
+    for _ in 0..6 {
+        thread::sleep(Duration::from_secs(2));
+        screen = render(&buf);
+        if screen.contains("Package: workspace") || screen.contains("Package: (workspace)") {
+            break;
+        }
+    }
 
     // Quit cleanly: al-explorer treats Ctrl-C (0x03) as "quit" in raw mode.
     let _ = writer.write_all(&[0x03]);
@@ -111,7 +107,7 @@ fn tui_object_browser_lists_fixture_objects() {
         "TUI mode bar not rendered (TUI may not have started).\n--- screen ---\n{screen}"
     );
     assert!(
-        screen.contains("Package: workspace"),
+        screen.contains("Package: workspace") || screen.contains("Package: (workspace)"),
         "TUI did not render a workspace object after selecting the workspace package.\n--- screen ---\n{screen}"
     );
 }

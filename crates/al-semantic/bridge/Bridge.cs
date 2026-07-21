@@ -323,7 +323,7 @@ internal class CodeAnalysisBridge
                 name = m.Name,
                 parameters = m.Params.Select(p => new { name = p.Name, typeName = p.TypeName, isVar = p.IsVar }).ToArray(),
                 returnType = m.ReturnType,
-                documentation = m.Doc ?? "",
+                documentation = "",
             }).ToArray(),
             enumValues = t.EnumValues.ToArray(),
         }).ToArray();
@@ -1381,5 +1381,5 @@ internal class CodeAnalysisBridge
 }
 
 internal class BTypeInfo { public string Name = ""; public List<BMethodInfo> Methods = new(); public List<string> EnumValues = new(); }
-internal class BMethodInfo { public string Name = ""; public List<BParamInfo> Params = new(); public string? ReturnType; public string? Doc; }
+internal class BMethodInfo { public string Name = ""; public List<BParamInfo> Params = new(); public string? ReturnType; }
 internal class BParamInfo { public string Name = ""; public string TypeName = "Variant"; public bool IsVar; }

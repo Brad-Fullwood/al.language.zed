@@ -70,15 +70,35 @@ pub fn read_app_bytes(data: &[u8]) -> Result<SymbolPackage, AppReaderError> {
     let zip_data = &data[zip_offset..];
 
     let cursor = Cursor::new(zip_data);
-    let mut archive = ZipArchive::new(cursor)?;
+    read_archive(ZipArchive::new(cursor)?)
+}
+
+pub fn read_app_file(path: &std::path::Path) -> Result<SymbolPackage, AppReaderError> {
+    let file_size = std::fs::metadata(path)?.len();
+    if file_size > MAX_APP_FILE_SIZE {
+        return Err(AppReaderError::TooLarge(file_size));
+    }
+    if file_size < MIN_HEADER_SIZE as u64 {
+        return Err(AppReaderError::TooSmall(file_size as usize));
+    }
+    let mut file = std::fs::File::open(path)?;
+    let mut magic = [0u8; MIN_HEADER_SIZE];
+    file.read_exact(&mut magic)?;
+    if &magic != NAVX_MAGIC {
+        return Err(AppReaderError::NotNavx);
+    }
+    file.rewind()?;
+    read_archive(ZipArchive::new(file)?)
+}
+
+fn read_archive<R: Read + Seek>(
+    mut archive: ZipArchive<R>,
+) -> Result<SymbolPackage, AppReaderError> {
     if archive.len() > MAX_ARCHIVE_ENTRIES {
         return Err(AppReaderError::TooManyEntries(archive.len()));
     }
-
     let manifest = read_manifest(&mut archive)?;
-
     let objects = read_symbol_reference(&mut archive, &manifest.name)?;
-
     Ok(SymbolPackage {
         app_id: manifest.app_id,
         name: manifest.name,
@@ -87,15 +107,6 @@ pub fn read_app_bytes(data: &[u8]) -> Result<SymbolPackage, AppReaderError> {
         object_count: objects.len(),
         objects,
     })
-}
-
-pub fn read_app_file(path: &std::path::Path) -> Result<SymbolPackage, AppReaderError> {
-    let file_size = std::fs::metadata(path)?.len();
-    if file_size > MAX_APP_FILE_SIZE {
-        return Err(AppReaderError::TooLarge(file_size));
-    }
-    let data = std::fs::read(path)?;
-    read_app_bytes(&data)
 }
 
 /// Read only package identity/version metadata without parsing

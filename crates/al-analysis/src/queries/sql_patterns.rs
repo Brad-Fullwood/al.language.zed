@@ -365,9 +365,6 @@ mod tests {
         assert!(detect_sql_patterns(&Workspace::new()).is_empty());
     }
 
-    /// A FindFirst() call after a nested if..begin..end inside a for loop
-    /// must still be flagged.  Previously the inner "end;" prematurely zeroed
-    /// `in_loop`, making code after the nested block invisible to the detector.
     #[test]
     fn detects_findfirst_after_nested_begin_end_in_loop() {
         let ws = workspace_with(vec![(
@@ -398,10 +395,6 @@ mod tests {
         );
     }
 
-    /// Regression: a FindFirst() substring buried inside
-    /// a string literal or a // comment must not trigger a false-positive
-    /// FindInLoop violation. The text scanner now strips literal contents
-    /// and skips comment lines.
     #[test]
     fn no_false_positive_for_findfirst_in_string_literal_or_comment() {
         let ws = workspace_with(vec![(

@@ -27,19 +27,7 @@ use tracing::{debug, error, info, warn};
 
 pub use editor_services::find_editor_services;
 
-/// Redact known credential / secret fields from a DAP message body before
-/// writing to the `AL_DAP_CAPTURE` log. The DAP `launch` request carries
-/// `arguments` like `password`, `accessToken`, `apiKey`, `clientSecret` —
-/// fields that should never end up in a developer's debug log file.
-///
-/// Parses the body as JSON, walks the tree, replaces the string value of
-/// any field whose lowercased name appears in `SENSITIVE_FIELDS` with
-/// `<redacted>`. If the body doesn't parse as JSON, returns it via lossy
-/// UTF-8 unchanged — capture is opt-in via env var, and an unparseable
-/// body in the capture log is no worse than the pre-fix behaviour.
-///
-/// Defence-in-depth only. Stops a developer's accidentally-shared log
-/// file from leaking credentials.
+/// Redacts credentials before writing an opt-in DAP capture log.
 fn redact_dap_body_for_log(body: &[u8]) -> String {
     const SENSITIVE_FIELDS: &[&str] = &[
         "password",
@@ -63,7 +51,6 @@ fn redact_dap_body_for_log(body: &[u8]) -> String {
                 for (key, v) in map.iter_mut() {
                     if SENSITIVE_FIELDS.contains(&key.to_lowercase().as_str()) {
                         if let serde_json::Value::String(s) = v {
-                            // Preserve "empty value" — there's nothing to hide.
                             if !s.is_empty() {
                                 *s = "<redacted>".to_string();
                             }
@@ -85,10 +72,9 @@ fn redact_dap_body_for_log(body: &[u8]) -> String {
     match serde_json::from_slice::<serde_json::Value>(body) {
         Ok(mut v) => {
             walk(&mut v);
-            serde_json::to_string(&v).unwrap_or_else(|_| String::from_utf8_lossy(body).into_owned())
+            serde_json::to_string(&v).unwrap_or_else(|_| "<body omitted>".to_string())
         }
-        // Non-JSON body — pass through. Capture log is best-effort.
-        Err(_) => String::from_utf8_lossy(body).into_owned(),
+        Err(_) => "<non-JSON body omitted>".to_string(),
     }
 }
 
@@ -530,7 +516,6 @@ mod tests {
     fn redactor_handles_empty_value() {
         let body = br#"{"password":""}"#;
         let out = redact_dap_body_for_log(body);
-        // Empty value stays empty (nothing between the quotes to redact).
         assert!(out.contains("\"password\":\"\""), "got: {out}");
     }
 
@@ -551,14 +536,12 @@ mod tests {
     }
 
     #[test]
-    fn redactor_passes_through_non_json_body() {
+    fn redactor_omits_non_json_body() {
         let body = b"this is not json at all";
         let out = redact_dap_body_for_log(body);
-        assert_eq!(out, "this is not json at all");
+        assert_eq!(out, "<non-JSON body omitted>");
     }
 
-    /// Helper: parse a JSON object literal into the map shape `patch_launch_args`
-    /// expects, run the patcher, and hand back the mutated map.
     fn run_patch_launch_args(json: &str) -> serde_json::Map<String, serde_json::Value> {
         let val: serde_json::Value = serde_json::from_str(json).expect("valid json object");
         let mut map = val.as_object().expect("object").clone();
@@ -748,8 +731,6 @@ mod tests {
 
     #[test]
     fn redactor_recurses_into_arrays_of_objects() {
-        // The array branch of `walk` must be exercised: a secret nested inside
-        // an array element has to be scrubbed too.
         let body = br#"{"items":[{"token":"leakme"},{"name":"ok"}]}"#;
         let out = redact_dap_body_for_log(body);
         assert!(!out.contains("leakme"), "got: {out}");
@@ -758,17 +739,12 @@ mod tests {
 
     #[test]
     fn redactor_leaves_non_string_sensitive_value_untouched() {
-        // A sensitive field whose value is NOT a string (e.g. numeric) is not
-        // a credential string — the redactor must not stringify/replace it.
         let body = br#"{"token":12345}"#;
         let out = redact_dap_body_for_log(body);
         assert!(out.contains("12345"), "got: {out}");
         assert!(!out.contains("<redacted>"), "got: {out}");
     }
 
-    /// Build a throwaway toolchain pointing at non-existent paths. Sufficient
-    /// for the `compile_project` early-return branch, which never reaches the
-    /// compiler because `app.json` is missing.
     fn dummy_toolchain() -> AlToolchain {
         use std::path::PathBuf;
         AlToolchain {

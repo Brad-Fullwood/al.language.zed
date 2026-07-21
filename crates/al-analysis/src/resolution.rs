@@ -684,7 +684,7 @@ pub(crate) fn format_xml_doc(s: &str) -> String {
     }
 
     // Cap the number of params we extract. A real AL signature has a handful of
-    // parameters; an adversarial or malformed documentation string with
+    // parameters; an untrusted or malformed documentation string with
     // thousands of `<param>` tags (or unclosed ones forcing repeated rescans)
     // would otherwise drive an O(params * doc_len) search. 256 is far above any
     // legitimate signature while keeping the worst case bounded.
@@ -1854,8 +1854,6 @@ mod tests {
                 character: utf16_len as u32,
             },
         )
-        // Before the fix this returned None because the prefix was sliced at byte 5
-        // (UTF-16 col used as byte index), cutting off the trailing '.'.
         .expect("receiver before trailing dot when line has multi-byte prefix");
         assert_eq!(receiver, "ÿRec");
         assert_eq!(kind, AccessKind::Member);

@@ -1,11 +1,6 @@
 //! Workspace configuration.
 //!
-//! `AlConfig` holds merged settings from initialization options,
-//! workspace/didChangeConfiguration, and project defaults. This is the
-//! single source of truth for all configurable behavior in al-core.
-//!
-//! Settings follow MS AL extension naming conventions where applicable
-//! (e.g., `enableCodeAnalysis`, `backgroundCodeAnalysis`).
+//! Settings follow Microsoft AL extension naming where applicable.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -14,10 +9,9 @@ use serde::{Deserialize, Serialize};
 
 /// Merged configuration for an AL workspace.
 ///
-/// All fields have sensible defaults matching MS extension behavior.
 /// Settings can be updated at runtime via `workspace/didChangeConfiguration`.
 ///
-/// See `docs/settings.md` for the full MS→Zed setting mapping.
+/// See `Docs/reference/settings.md` for the full MS→Zed setting mapping.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AlConfig {
@@ -26,12 +20,10 @@ pub struct AlConfig {
 
     pub background_code_analysis: bool,
 
-    /// Scope for diagnostics: "project" (all .al files) or "openFiles" (only open tabs).
-    /// Default: "project" — we are performant enough to lint the entire project.
+    /// Scope for diagnostics: `project` or `openFiles`.
     pub diagnostics_scope: DiagnosticsScope,
 
-    /// When to run diagnostics: "continuous" (on every change) or "onSave".
-    /// Default: "continuous" — our native lint is fast enough.
+    /// When to run diagnostics: `continuous` or `onSave`.
     pub diagnostics_trigger: DiagnosticsTrigger,
 
     /// Which analyzers to run (e.g., "CodeCop", "AppSourceCop", "UICop", "PerTenantCop").
@@ -58,11 +50,7 @@ pub struct AlConfig {
 
     pub inlay_hints: InlayHintConfig,
 
-    /// Master toggle for native lint rules (`al_syntax::lint()`'s starter set:
-    /// AL-NL001 find-in-loop, AL-NL002 missing DataClassification). Most AL
-    /// diagnostics still come from the .NET CodeAnalysis bridge
-    /// (`crate::semantic`); native lint is a small, separate, additive set.
-    /// Setting this to `false` suppresses all native lint diagnostics.
+    /// Enables native lint diagnostics.
     pub enable_native_lint: bool,
 
     /// Per-rule enable/disable overrides. Key is rule code (e.g. "AL-NL001").
@@ -89,11 +77,7 @@ pub struct AlConfig {
 
     pub incremental_build: bool,
 
-    /// Escape hatch: compile via Microsoft's `dotnet alc` subprocess directly
-    /// instead of the pure-Rust native `.app` emitter. The native emitter is the
-    /// default for the daemon compile endpoint, `al.compile`, and publish; it
-    /// produces the package without `alc` or the C# bridge. Set this to `true`
-    /// when you need Microsoft's full compile-time semantic validation.
+    /// Use Microsoft's `alc` instead of the native package emitter.
     pub use_official_compiler: bool,
 
     /// Path to EditorServices.Host binary. If None, auto-discovered.
@@ -114,12 +98,7 @@ pub struct AlConfig {
     /// Suggested folder for AL:Go scaffolding.
     pub algo_suggested_folder: Option<PathBuf>,
 
-    /// Optional per-document size cap, in bytes. When set, the language server
-    /// refuses to ingest a single document whose content exceeds this many
-    /// bytes (e.g. a multi-gigabyte file accidentally opened in the workspace),
-    /// keeping it out of the in-memory rope/parse-tree store rather than letting
-    /// it consume memory unbounded. `None` (the default) means no
-    /// cap, matching prior behaviour.
+    /// Optional per-document size cap in bytes.
     pub max_document_size_bytes: Option<usize>,
 }
 
@@ -136,7 +115,6 @@ pub struct NuGetFeedConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DiagnosticsScope {
-    /// Lint all .al files in the project (recommended — our lint is fast).
     #[default]
     Project,
     /// Only lint files currently open in the editor.
@@ -146,7 +124,6 @@ pub enum DiagnosticsScope {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DiagnosticsTrigger {
-    /// Run on every change (debounced). Fast enough for our native lint.
     #[default]
     Continuous,
     OnSave,

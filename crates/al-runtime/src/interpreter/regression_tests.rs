@@ -326,10 +326,9 @@ mod tests {
     }
 
     #[test]
-    fn maxstrlen_assigns_result() {
-        let (eval, stack) = run_stmt("x := MaxStrLen(s);");
-        assert!(matches!(eval, Eval::Normal(Value::Empty)));
-        assert!(matches!(stack.lookup("x"), Some(Value::Integer(_))));
+    fn maxstrlen_rejects_values_without_declared_length() {
+        let (eval, _) = run_stmt("x := MaxStrLen(s);");
+        assert!(eval.is_error());
     }
 
     #[test]
@@ -639,9 +638,8 @@ mod tests {
         );
     }
 
-    /// `MaxStrLen` is dispatched as an inline builtin and lands in the LHS.
     #[test]
-    fn maxstrlen_dispatches_into_variable() {
+    fn maxstrlen_does_not_guess_from_current_content() {
         let wrapper = r#"codeunit 50100 "Regression"
 {
     procedure Test()
@@ -664,8 +662,8 @@ mod tests {
         stack.push(frame);
         let mut ctx = ctx();
         let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
-        assert!(matches!(eval, Eval::Normal(_)), "got: {:?}", eval);
-        assert_eq!(stack.lookup("x"), Some(&Value::Integer(5)));
+        assert!(eval.is_error(), "got: {:?}", eval);
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(0)));
     }
 
     /// Date literal evaluates to the correct day carrier.

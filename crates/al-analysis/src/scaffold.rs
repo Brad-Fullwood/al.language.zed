@@ -286,32 +286,14 @@ fn generate_template_files(dir: &Path, config: &ScaffoldConfig) -> Result<Vec<St
             atomic_write(&dir.join(name), api.as_bytes(), "API page")?;
             Ok(vec![name.to_string()])
         }
-        // Custom templates are intercepted in `create_project` and never reach
-        // here. This arm keeps the match exhaustive; reaching it would mean a
-        // future refactor routed a custom template through the built-in flow,
-        // which would silently drop its files — fail loudly instead.
         ProjectTemplate::Custom(_) => {
             Err("internal error: custom template reached generate_template_files".to_string())
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// User-defined (custom) templates
-//
-// A custom template lives at `<templates_root>/<name>/` and contains:
-//   - `template.json` — a [`TemplateDescriptor`].
-//   - `files/`        — the project tree, copied verbatim into the new project
-//                       with `{{placeholder}}` substitution in file contents
-//                       AND in file/directory names.
-//
-// `templates_root` is, in order of precedence:
-//   1. `$AL_TEMPLATES_DIR`
-//   2. `$XDG_CONFIG_HOME/al/templates`
-//   3. `$HOME/.config/al/templates`
-// ---------------------------------------------------------------------------
-
-/// Resolve the templates root directory from the environment, if any.
+/// Resolve the custom-template directory from `AL_TEMPLATES_DIR`,
+/// `XDG_CONFIG_HOME/al/templates`, or `HOME/.config/al/templates`.
 fn templates_root() -> Option<PathBuf> {
     let non_empty = |v: std::ffi::OsString| (!v.is_empty()).then_some(v);
     if let Some(dir) = std::env::var_os("AL_TEMPLATES_DIR").and_then(non_empty) {
@@ -1293,21 +1275,15 @@ mod tests {
 
     #[test]
     fn generated_codeunit_with_escaped_quote_in_name_parses() {
-        // Regression for the iteration-9 escape fix: if a name contains
-        // `"`, the doubled-quote escape must produce parseable AL.
         let config = ScaffoldConfig {
             name: r#"My"App"#.to_string(),
             ..Default::default()
         };
         let src = generate_library_codeunit(&config);
-        // The header must end up as "My""App Library".
         assert!(src.contains(r#""My""App Library""#));
         assert_al_parses("library codeunit with escaped quote", &src);
     }
 
-    // -- Custom (user-defined) templates -----------------------------
-
-    /// Write a custom template (`template.json` + `files/`) under `root`.
     fn write_custom_template(root: &Path, name: &str, descriptor: &str, files: &[(&str, &str)]) {
         let tdir = root.join(name);
         std::fs::create_dir_all(tdir.join("files")).unwrap();

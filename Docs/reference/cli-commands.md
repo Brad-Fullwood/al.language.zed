@@ -76,7 +76,7 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | `fix [file]` | `--dry-run --rule <code>` | Apply fixable diagnostics |
 | `permissions` | `--format al\|xml --name <n> --id <N> --role-id <id>` | Generate permission set |
 | `new <dir>` | `--name --publisher --template <t>` | New project (templates: default, pte, appsource, library, test, copilot, agent, api) |
-| `generate <kind>` | `--id --name --table --page-type --subject` | Generate page/report/test |
+| `generate <kind>` | `--id --name --table --page-type --subject` | Generate page/report/test (`test` requires `--subject`) |
 | `sort-members [file]` | `--all --dry-run` | Canonical member order |
 | `organize-files` | `--dry-run` | Rename `.al` files to `<Type><Id>.<Name>.al` |
 | `add-application-area` | `--value <v> --dry-run` | Add `ApplicationArea` workspace-wide |
@@ -126,7 +126,7 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | `test-affected <files…>` | — | Tests affected by changed files |
 | `test-results` | `--codeunit --method` | Persisted result history |
 | `test-mutate` | `--files … --parallel --timeout-ms N` | Mutation testing |
-| `test-snapshot` | `record <codeunit> --method --breakpoint F:L · replay <path> · diff <a> <b>` | Snapshot record/replay/diff |
+| `test-snapshot` | `replay <path> · diff <a> <b>` | Validate or compare snapshot files |
 
 ## Translation
 

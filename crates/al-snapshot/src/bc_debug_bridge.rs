@@ -189,16 +189,4 @@ mod tests {
             "expected Parse error, got: {err}"
         );
     }
-
-    /// Confirm `ReplayerError::NotYetWired` displays correctly — the variant is
-    /// kept for callers that may still produce it, even though `wait_for_break`
-    /// no longer does.
-    #[test]
-    fn replayer_error_not_yet_wired_display() {
-        let err = ReplayerError::NotYetWired("test gap".to_string());
-        assert!(
-            err.to_string().contains("not yet wired"),
-            "display should mention 'not yet wired': {err}"
-        );
-    }
 }

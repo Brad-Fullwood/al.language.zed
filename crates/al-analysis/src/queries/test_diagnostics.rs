@@ -367,10 +367,6 @@ mod tests {
         assert!(line.is_none());
     }
 
-    /// Regression: a failing test method that is present in the run results
-    /// but was NOT seen during static discovery (its codeunit was discovered,
-    /// but the method is absent from `cu.tests`) must fall back to line 0 — the
-    /// documented "unknown location" value — not line 1 (the codeunit header).
     #[test]
     fn discovered_codeunit_undiscovered_method_falls_back_to_line_zero() {
         let results = vec![make_result(

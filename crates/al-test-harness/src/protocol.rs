@@ -30,27 +30,26 @@ pub fn symbol_names<'a>(symbols: &'a [Value]) -> Vec<&'a str> {
     names
 }
 
-/// The LSP semantic-tokens spec requires `data` length to be a multiple of 5.
-/// `chunks_exact(5)` silently discards any malformed trailing partial chunk
-/// rather than panicking on indexing past its end.
 pub fn semantic_token_data(result: &Value) -> Vec<[u32; 5]> {
-    result
+    let data = result
         .get("data")
-        .and_then(|d| d.as_array())
-        .map(|arr| {
-            arr.chunks_exact(5)
-                .map(|chunk| {
-                    [
-                        chunk[0].as_u64().unwrap_or(0) as u32,
-                        chunk[1].as_u64().unwrap_or(0) as u32,
-                        chunk[2].as_u64().unwrap_or(0) as u32,
-                        chunk[3].as_u64().unwrap_or(0) as u32,
-                        chunk[4].as_u64().unwrap_or(0) as u32,
-                    ]
-                })
-                .collect()
+        .and_then(Value::as_array)
+        .expect("semantic token response missing data array");
+    assert_eq!(
+        data.len() % 5,
+        0,
+        "semantic token data length must be divisible by five"
+    );
+    data.chunks_exact(5)
+        .map(|chunk| {
+            std::array::from_fn(|index| {
+                let value = chunk[index]
+                    .as_u64()
+                    .expect("semantic token fields must be unsigned integers");
+                u32::try_from(value).expect("semantic token field exceeds u32")
+            })
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 pub fn definition_uri(result: &Value) -> Option<&str> {
@@ -114,18 +113,26 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn semantic_token_data_handles_partial_trailing_chunk_without_panicking() {
-        // Server bug: emits 7 ints instead of a multiple of 5. We must not panic.
+    #[should_panic(expected = "semantic token data length must be divisible by five")]
+    fn semantic_token_data_rejects_partial_trailing_chunk() {
         let result = json!({ "data": [0, 0, 1, 0, 0, 1, 2] });
-        let tokens = semantic_token_data(&result);
-        assert_eq!(tokens.len(), 1);
-        assert_eq!(tokens[0], [0, 0, 1, 0, 0]);
+        semantic_token_data(&result);
     }
 
     #[test]
-    fn semantic_token_data_missing_field_returns_empty() {
-        assert!(semantic_token_data(&json!({})).is_empty());
-        assert!(semantic_token_data(&json!({ "data": null })).is_empty());
+    #[should_panic(expected = "semantic token response missing data array")]
+    fn semantic_token_data_rejects_missing_field() {
+        semantic_token_data(&json!({}));
+    }
+
+    #[test]
+    #[should_panic(expected = "semantic token response missing data array")]
+    fn semantic_token_data_rejects_null_field() {
+        semantic_token_data(&json!({ "data": null }));
+    }
+
+    #[test]
+    fn semantic_token_data_accepts_empty_data() {
         assert!(semantic_token_data(&json!({ "data": [] })).is_empty());
     }
 

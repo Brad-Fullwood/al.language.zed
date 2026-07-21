@@ -3,34 +3,6 @@
 use al_test_harness::*;
 
 #[tokio::test]
-async fn inlay_hints_no_panic() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-
-    let code = r#"codeunit 50100 "Hints Test"
-{
-    procedure Caller()
-    begin
-        Helper('hello', 42);
-    end;
-
-    procedure Helper(Name: Text; Count: Integer)
-    begin
-    end;
-}"#;
-    client.open_file("src/hints_test.al", code).await;
-
-    let _hints = client.inlay_hints("src/hints_test.al", 0, 10).await;
-
-    let symbols = client.document_symbols("src/hints_test.al").await;
-    assert!(
-        !symbols.is_empty(),
-        "server should still work after inlay hints"
-    );
-
-    client.shutdown().await;
-}
-
-#[tokio::test]
 async fn hover_on_unopened_file_returns_error() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 

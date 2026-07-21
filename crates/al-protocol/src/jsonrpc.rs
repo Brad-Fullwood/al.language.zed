@@ -187,9 +187,6 @@ mod tests {
         assert_eq!(resp.error.unwrap().code, error_codes::METHOD_NOT_FOUND);
     }
 
-    /// Per JSON-RPC 2.0 section 5.1, success responses contain `result`,
-    /// including when its value is null. Strict clients reject responses
-    /// missing both `result` and `error`.
     #[test]
     fn null_response_serializes_explicit_result_null() {
         let resp = Response::null(7);
@@ -204,7 +201,6 @@ mod tests {
         );
     }
 
-    /// JSON-RPC 2.0 error responses must not include a `result` field.
     #[test]
     fn error_response_omits_result_field() {
         let resp = Response::error(8, error_codes::INTERNAL_ERROR, "boom");

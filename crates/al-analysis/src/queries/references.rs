@@ -225,11 +225,6 @@ mod tests {
 
     #[test]
     fn exclude_declaration_not_the_clicked_usage() {
-        // Invoke references from a *usage* site with includeDeclaration=false.
-        // The declaration (line 4) must be excluded; the clicked usage (line 6)
-        // must still be present. Previously the code dropped whichever ref
-        // started at the request position — i.e. the clicked usage — and never
-        // dropped the declaration.
         let uri = Url::parse("file:///test/c21.al").expect("test");
         let src = r#"codeunit 50100 "Refs"
 {
@@ -270,11 +265,6 @@ mod tests {
 
     #[test]
     fn exclude_declaration_when_cursor_on_declaration() {
-        // Adversarial: invoke references from the DECLARATION site (not a usage)
-        // with includeDeclaration=false. The declaration (line 4) must be
-        // excluded and BOTH usages (lines 6 and 7) preserved. Regression guard
-        // for the case where go-to-definition on a declaration falls through to
-        // a usage — which previously excluded a usage and kept the declaration.
         let uri = Url::parse("file:///test/c21decl.al").expect("test");
         let src = r#"codeunit 50100 "Refs"
 {

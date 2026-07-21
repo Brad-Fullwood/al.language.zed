@@ -14,8 +14,8 @@ process and communicate via C-ABI function pointers.
 | Bridge method | Used for | Rust caller |
 | --- | --- | --- |
 | `analyze(file, source, analyzers[], packageCache)` | compilation diagnostics + CodeCop/UICop/AppSourceCop/PerTenantCop | `server/diagnostics.rs` (phase 2) |
-| `typeAt(file, pos, [unsavedText])` | hover fallback (semantic type at cursor) | `queries/hover.rs` |
-| `completions_at(file, pos, [unsavedText])` | member-access completion fallback | `queries/completions.rs` |
+| `typeAt(file, pos, [unsavedText], packageCache)` | hover fallback (semantic type at cursor) | `queries/hover.rs` |
+| `completions_at(file, pos, [unsavedText], packageCache)` | member-access completion fallback | `queries/completions.rs` |
 | `builtins()` | built-in types/methods catalog | LSP startup → `SemanticCache` |
 | `errorCodes()` | error-code → severity/message catalog | diagnostic message enrichment |
 | `compile(...)` | legacy Rust API; fails closed with `-32601` | **retired** — builds use `al-compile` |
@@ -26,7 +26,7 @@ process and communicate via C-ABI function pointers.
 ### Hosting & threading (`host.rs`, `bridge.rs`)
 
 `DotNetHost` loads `hostfxr`, initializes the CLR from a runtime config, and obtains delegates for the
-`Bridge.cs` entry points (`Init`, `HandleRequest`, `FreeBuffer`). Every request is JSON in both
+`Bridge.cs` entry points (`Init`, `GetLastError`, `HandleRequest`, `FreeBuffer`). Every request is JSON in both
 directions: `{ "method": ..., "params": ... }` → exactly one of `{ "result": ... }` or
 `{ "error": ... }`. Rust validates lengths, UTF-8, JSON, and the response envelope before exposing a
 result. CLR calls run via `tokio::task::spawn_blocking`; a process-wide semaphore and a host mutex
@@ -94,8 +94,7 @@ the whole official extension.
 Exact compile-time semantics belong to Microsoft, so for diagnostics/hover/completion the project
 delegates to the real compiler rather than approximating it. But an in-process CLR is heavy: it adds a
 .NET runtime dependency, serializes all calls, and is the slowest part of the editor loop. The native
-emitter already removed the bridge from the build path (2026-06-17), and `docs/csharp-bridge-retirement.md`
-tracks replacing the rest with native Rust:
+emitter already removed the bridge from the build path. Replacing the remaining bridge work requires:
 
 1. native semantic diagnostics (replace `analyze`),
 2. native type resolver + hover (replace `typeAt`),

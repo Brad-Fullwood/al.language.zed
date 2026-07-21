@@ -224,9 +224,7 @@ pub fn cmd_download_symbols(
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    // Symbol downloads pull multi-hundred-MB packages from NuGet or a BC
-    // server — allow up to 15 minutes before declaring the daemon stuck
-    // (this used to die at 30s with a raw EAGAIN).
+    // Symbol downloads may transfer large packages from NuGet or BC.
     client.set_request_timeout(std::time::Duration::from_secs(900));
     let params = serde_json::json!({
         "source": source.unwrap_or("nuget"),
@@ -287,9 +285,6 @@ mod clear_cache_tests {
 
     #[test]
     fn al_lsp_index_dir_targets_index_subdir() {
-        // Positive: invariant — al-explorer points at `…/al-lsp/index`,
-        // matching the daemon's `clearCache` target. Previously it pointed
-        // at `…/al-lsp/packages` (a stale cache location).
         let dir = al_lsp_index_dir();
         let s = dir.to_string_lossy();
         assert!(
@@ -300,13 +295,11 @@ mod clear_cache_tests {
 
     #[test]
     fn al_lsp_index_dir_is_not_packages_subdir() {
-        // Negative: explicitly assert we never resolve to the legacy
-        // `…/al-lsp/packages` path that flagged.
         let dir = al_lsp_index_dir();
         let s = dir.to_string_lossy();
         assert!(
             !s.ends_with("/al-lsp/packages") && !s.ends_with("\\al-lsp\\packages"),
-            "regression: clear-cache resolves back to legacy packages path: {s}"
+            "clear-cache must not resolve to the packages directory: {s}"
         );
     }
 }

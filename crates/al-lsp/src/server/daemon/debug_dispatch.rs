@@ -787,9 +787,6 @@ mod resolve_object_metadata_tests {
 
     #[test]
     fn returns_none_for_out_of_range_cached_id() {
-        // Negative regression: a cached object id beyond the i32 range must
-        // make the helper return None rather than silently wrapping via
-        // `as i32` and routing a breakpoint to the wrong BC object.
         use al_source::file_index::CachedObjectInfo;
         let ws = Workspace::new();
         let path = std::path::PathBuf::from("/tmp/Overflow.al");

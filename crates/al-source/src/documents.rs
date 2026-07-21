@@ -56,8 +56,7 @@ pub struct DocumentStore {
     trees: DashMap<Url, CachedTree>,
     /// Monotonic source of access stamps for the approximate-LRU tree cache.
     tree_access_counter: std::sync::atomic::AtomicU64,
-    /// Maximum number of parse trees to retain. `0` means
-    /// "unbounded" (the historical behaviour); the constructor seeds it with
+    /// Maximum number of parse trees to retain. `0` means unbounded; the constructor seeds it with
     /// [`DEFAULT_MAX_CACHED_TREES`]. Atomic so the daemon can retune it on a
     /// config update without locking the whole store.
     max_cached_trees: std::sync::atomic::AtomicUsize,
@@ -215,9 +214,7 @@ impl DocumentStore {
     }
 
     pub fn open(&self, uri: Url, text: String) {
-        // Refuse to ingest an oversized document. Any previously
-        // open version of this URI is left untouched, and crucially the giant
-        // text is never copied into the rope/cache.
+        // Leave an existing document untouched when the replacement exceeds the cap.
         if self.exceeds_cap(&uri, text.len()) {
             return;
         }
@@ -386,9 +383,6 @@ impl DocumentStore {
                             doc.text.remove(s..e);
                             doc.text.insert(s, &change.text);
                         }
-                        // Backward range (end < start). Silently dropping the
-                        // change would make the editor and server diverge. Log
-                        // the malformed input and skip it.
                         (Some(s), Some(e)) => {
                             tracing::warn!(
                                 uri = %uri,
@@ -397,10 +391,6 @@ impl DocumentStore {
                                 "DocumentStore: skipping malformed TextChange with end<start"
                             );
                         }
-                        // One or both endpoints out-of-bounds. The position
-                        // came from the LSP client; almost always a client bug.
-                        // Same treatment: warn + skip rather than silently
-                        // diverge.
                         _ => {
                             tracing::warn!(
                                 uri = %uri,
@@ -524,12 +514,7 @@ fn position_to_offset(rope: &Rope, line: u32, character: u32) -> Option<usize> {
     // entire line on every position-to-offset call).
     let line_slice = rope.line(line);
     let line_byte_start = rope.line_to_byte(line);
-    // Clamp an over-EOL `character` to the line length EXCLUDING its trailing
-    // line break. `len_utf16_cu()` counts the `\n` (or `\r\n`), so clamping to
-    // it lands *past* the newline and merges this line with the next — text
-    // corruption relative to what the client computed. LSP: a character beyond
-    // line length "defaults back to the line length", i.e. before the
-    // terminator.
+    // LSP line lengths exclude the trailing line break.
     let max_char = line_slice.len_utf16_cu() - line_break_utf16_width(line_slice);
     let utf16_idx = (character as usize).min(max_char);
     let char_in_line = line_slice.utf16_cu_to_char(utf16_idx);
@@ -631,9 +616,6 @@ mod tests {
 
     #[test]
     fn test_close_evicts_parse_lock() {
-        // Regression: parse_locks must not grow unbounded over a long-running
-        // daemon's lifetime. Opening and closing distinct files should leave the
-        // lock map empty, not accumulate one stale entry per file ever opened.
         let store = DocumentStore::new();
         assert_eq!(store.parse_locks_len(), 0);
 
@@ -660,10 +642,6 @@ mod tests {
 
     #[test]
     fn test_tree_cache_evicts_lru_when_over_cap() {
-        // A long-running daemon may open and parse many
-        // distinct files without ever closing them. The tree cache must not
-        // grow without bound — once it exceeds the cap, the least-recently-used
-        // trees are evicted so memory stays bounded.
         let store = DocumentStore::new();
         store.set_max_cached_trees(Some(4));
 
@@ -721,8 +699,6 @@ mod tests {
 
     #[test]
     fn test_tree_cache_unbounded_when_cap_cleared() {
-        // Setting the cap to None (or 0) restores the historical unbounded
-        // behaviour — every cached tree is retained.
         let store = DocumentStore::new();
         store.set_max_cached_trees(None);
         for i in 0..50 {
@@ -735,9 +711,6 @@ mod tests {
 
     #[test]
     fn test_default_cap_bounds_daemon_style_growth() {
-        // Simulates the daemon path: open every file and parse it, never
-        // closing. With the default cap the tree cache is bounded even though
-        // far more files than the cap are opened.
         let store = DocumentStore::new();
         let n = DEFAULT_MAX_CACHED_TREES * 3;
         for i in 0..n {
@@ -769,8 +742,6 @@ mod tests {
 
     #[test]
     fn test_max_doc_bytes_rejects_oversized_open() {
-        // With a cap set, an oversized open() must not ingest the
-        // document — neither the rope nor the cache should hold the giant text.
         let store = DocumentStore::new();
         store.set_max_doc_bytes(Some(8));
         let uri = test_uri("huge");
@@ -1252,10 +1223,6 @@ mod tests {
 
     #[test]
     fn apply_changes_skips_backward_range_and_logs() {
-        // Negative regression: a malformed TextChange with end before start
-        // should be skipped (not panic, not silently apply garbage). The
-        // doc version still bumps because subsequent valid changes in the
-        // same batch should still take effect; only THIS change is dropped.
         let store = DocumentStore::new();
         let uri = test_uri("backward");
         store.open(uri.clone(), "hello\n".to_string());
@@ -1287,10 +1254,6 @@ mod tests {
 
     #[test]
     fn apply_changes_skips_out_of_bounds_range_and_logs() {
-        // Negative regression: range pointing past EOF must be skipped, not
-        // panicked over. The Ropey `remove` would itself accept an invalid
-        // index path, but `position_to_offset` returns None for
-        // out-of-bounds lines, which gets caught here.
         let store = DocumentStore::new();
         let uri = test_uri("oob");
         store.open(uri.clone(), "abc\n".to_string());

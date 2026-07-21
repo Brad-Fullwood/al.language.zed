@@ -14,6 +14,56 @@ use super::model::{ObjectKind, SymbolEntry, SymbolPackage};
 
 const DEFAULT_COMPLETIONS_CAP: usize = 30;
 
+struct SearchMatch {
+    rank: u8,
+    name: String,
+    kind: ObjectKind,
+    id: i32,
+    package: String,
+    seq: usize,
+    entry: Arc<SymbolEntry>,
+}
+
+impl PartialEq for SearchMatch {
+    fn eq(&self, other: &Self) -> bool {
+        self.rank == other.rank
+            && self.name == other.name
+            && self.kind == other.kind
+            && self.id == other.id
+            && self.package == other.package
+            && self.seq == other.seq
+    }
+}
+
+impl Eq for SearchMatch {}
+
+impl PartialOrd for SearchMatch {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SearchMatch {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (
+            self.rank,
+            &self.name,
+            self.kind,
+            self.id,
+            &self.package,
+            self.seq,
+        )
+            .cmp(&(
+                other.rank,
+                &other.name,
+                other.kind,
+                other.id,
+                &other.package,
+                other.seq,
+            ))
+    }
+}
+
 /// Thread-safe symbol index over multiple AL packages.
 #[derive(Debug)]
 pub struct SymbolIndex {
@@ -387,37 +437,44 @@ impl SymbolIndex {
         }
 
         let query_lower = query.to_lowercase();
-        let mut matches: Vec<(u8, String, usize, Arc<SymbolEntry>)> = self
-            .all
-            .iter()
-            .filter_map(|entry| {
-                let seq = *entry.key();
-                let (arc, name_lower) = entry.value();
-                if arc.synthetic || !name_lower.contains(&query_lower) {
-                    return None;
-                }
-                let rank = if query_lower.is_empty() || *name_lower == query_lower {
-                    0
-                } else if name_lower.starts_with(&query_lower) {
-                    1
-                } else {
-                    2
-                };
-                Some((rank, name_lower.clone(), seq, Arc::clone(arc)))
-            })
-            .collect();
-        matches.sort_unstable_by(|a, b| {
-            (a.0, &a.1, a.3.kind, a.3.id, &a.3.package, a.2).cmp(&(
-                b.0,
-                &b.1,
-                b.3.kind,
-                b.3.id,
-                &b.3.package,
-                b.2,
-            ))
-        });
-        matches.truncate(limit);
-        matches.into_iter().map(|(_, _, _, arc)| arc).collect()
+        // Keep only the best `limit` candidates while scanning. Sorting every
+        // substring hit made broad queries allocate and sort the full index
+        // even when the caller requested the usual 30 results.
+        let mut matches = std::collections::BinaryHeap::with_capacity(limit.min(self.all.len()));
+        for entry in self.all.iter() {
+            let seq = *entry.key();
+            let (arc, name_lower) = entry.value();
+            if arc.synthetic || !name_lower.contains(&query_lower) {
+                continue;
+            }
+            let rank = if query_lower.is_empty() || *name_lower == query_lower {
+                0
+            } else if name_lower.starts_with(&query_lower) {
+                1
+            } else {
+                2
+            };
+            let candidate = SearchMatch {
+                rank,
+                name: name_lower.clone(),
+                kind: arc.kind,
+                id: arc.id,
+                package: arc.package.clone(),
+                seq,
+                entry: Arc::clone(arc),
+            };
+            if matches.len() < limit {
+                matches.push(candidate);
+            } else if matches.peek().is_some_and(|worst| candidate < *worst) {
+                matches.pop();
+                matches.push(candidate);
+            }
+        }
+        matches
+            .into_sorted_vec()
+            .into_iter()
+            .map(|candidate| candidate.entry)
+            .collect()
     }
 
     pub fn search_in_package(&self, package_name: &str, query: &str) -> Vec<Arc<SymbolEntry>> {
@@ -570,7 +627,7 @@ impl SymbolIndex {
 
     /// Remove all entries whose `package` field matches `package_name` (case-insensitive).
     ///
-    /// Used to clear previously registered workspace entries before re-adding them,
+    /// Clears registered workspace entries before re-adding them,
     /// preventing duplicates when the call graph is rebuilt.
     ///
     /// Every secondary index that stores `Vec<Arc<SymbolEntry>>` must be passed
@@ -804,11 +861,6 @@ mod tests {
 
     #[test]
     fn synthetic_enum_sentinel_id_does_not_pollute_lookup() {
-        // regression: synthetic Option enums emitted by table-
-        // field OptionMembers carry id: -1 (model.rs:731). Pre-fix they all
-        // accumulated under (Enum, -1) in by_kind_id and a get_by_id(Enum, -1)
-        // returned every synthetic enum across the workspace, drowning real
-        // lookups. The fix: only positive ids enter by_kind_id.
         let index = SymbolIndex::new();
         index.add_entries(&[
             make_entry(ObjectKind::Enum, -1, "InlineOpt1"),
@@ -818,7 +870,6 @@ mod tests {
             make_entry(ObjectKind::Codeunit, 0, "BuiltinHelper"),
         ]);
 
-        // Sentinel ids must NOT be reachable through by_kind_id.
         assert!(
             index.get_by_id(ObjectKind::Enum, -1).is_empty(),
             "synthetic-enum sentinel id -1 must not be queryable"
@@ -828,14 +879,10 @@ mod tests {
             "no-id sentinel 0 must not be queryable"
         );
 
-        // Real positive id stays reachable as before.
         let real = index.get_by_id(ObjectKind::Enum, 50200);
         assert_eq!(real.len(), 1, "real enum id must still be reachable");
         assert_eq!(real[0].name, "RealEnum");
 
-        // The entries are still discoverable via by_name (which doesn't gate
-        // on sentinel ids). This proves we only narrowed by_kind_id, not
-        // dropped the entries entirely.
         let by_name = index.get_by_name("InlineOpt1");
         assert!(
             !by_name.is_empty(),
@@ -887,13 +934,6 @@ mod tests {
         assert_eq!(index.len(), 1);
     }
 
-    /// regression: removing a package must clear EVERY secondary
-    /// index in lockstep. Adds entries that populate by_name, by_kind_id,
-    /// by_kind, and by_extends, then removes the package and asserts each
-    /// secondary index is empty for those entries. Adding a new secondary
-    /// index later without wiring it through `retain_arcs_not_in` would
-    /// leave its entries dangling — this test would still pass, so the
-    /// followup discipline lives in the doc comment on the helper.
     #[test]
     fn remove_package_entries_clears_all_secondary_indexes() {
         let index = SymbolIndex::new();
@@ -1073,19 +1113,6 @@ mod tests {
         assert_eq!(results[0].methods.len(), 1);
     }
 
-    // ----- `appLocalFolderPaths` — what is actually supported -----
-    //
-    // The `al.appLocalFolderPaths` setting is parsed into `AlConfig`
-    // (`al-project`) but is NOT yet wired into symbol loading — nothing reads
-    // that field to feed paths into the index. What IS supported, and what such
-    // wiring would ultimately call, is loading `.app` packages from an
-    // *arbitrary directory* via `SymbolIndex::load_packages`. This test pins
-    // that supported behavior: a package dropped in a non-`.alpackages` folder
-    // resolves, its objects become queryable, and the index records the folder
-    // the symbols came from.
-
-    /// Build a minimal NAVX `.app` (header + ZIP of NavxManifest.xml +
-    /// SymbolReference.json) so the loader has a real package to read.
     fn build_app(name: &str, table_id: i32, table_name: &str) -> Vec<u8> {
         use std::io::{Cursor, Write};
         use zip::write::SimpleFileOptions;

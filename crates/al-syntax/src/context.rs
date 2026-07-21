@@ -446,18 +446,9 @@ mod tests {
         let _ = ctx;
     }
 
-    // -----------------------------------------------------------------------
-    // #24 — TypePosition detection must only look at the immediate token, not
-    // the whole line prefix.  A `::` earlier on the line (e.g. from a case
-    // label or assignment) must not suppress TypePosition for a later `x: I`.
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_detect_context_type_position_after_enum_assign_on_same_line() {
-        // `Status := Status::Posting; x: I` — the `x: I` part is a type annotation
-        // even though `::` appears earlier in the line.
         let text = "    Status := Status::Posting; x: I\n";
-        // cursor is after `x: I`, character index 35
         let pos = Position {
             line: 0,
             character: 35,
@@ -472,7 +463,6 @@ mod tests {
 
     #[test]
     fn test_detect_context_enum_token_not_type_position() {
-        // `Status::` — cursor directly after `::`, should be EnumAccess
         let text = "    Status::\n";
         let pos = Position {
             line: 0,
@@ -481,11 +471,6 @@ mod tests {
         let ctx = detect_context(text, pos);
         assert_eq!(ctx, CompletionContext::EnumAccess);
     }
-
-    // -----------------------------------------------------------------------
-    // #25 — find_call_context must skip string literal contents when counting
-    // parens and commas.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_find_call_context_paren_inside_string_ignored() {

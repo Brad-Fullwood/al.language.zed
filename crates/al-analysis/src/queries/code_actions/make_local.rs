@@ -6,9 +6,8 @@ use super::single_edit_ws;
 use super::{CodeActionEntry, CodeActionKind, Range, TextEdit};
 use al_workspace::Workspace;
 
-/// F-043: cheap workspace-wide scan for a call-site identifier matching
-/// `proc_name`, excluding the file currently under cursor. Returns true on
-/// the first match. Conservative: any other file containing the literal
+/// Scan other workspace files for a call-site identifier matching `proc_name`.
+/// Returns on the first match. Any other file containing the literal
 /// identifier (followed by `(` or whitespace, case-insensitive) counts as
 /// an external caller, including same-name procedures in unrelated objects
 /// — promoting to `local` is non-reversible by tooling, so false positives
@@ -87,13 +86,7 @@ pub(super) fn source_action_make_local(
         return None;
     }
 
-    // F-043: don't offer the refactor when external callers exist —
-    // promoting to `local` would silently break those callers. Resolve the
-    // procedure name from the parsed `name` field, then scan every other
-    // file in the workspace for a call-site identifier matching that name.
-    // The check is conservative (any same-name identifier in another file
-    // suppresses the action) — a name collision across two unrelated
-    // codeunits would also suppress, which is the safe direction.
+    // Conservatively suppress the action on any same-name call in another file.
     let proc_name = node
         .child_by_field_name("name")
         .and_then(|n| n.utf8_text(text.as_bytes()).ok())
@@ -102,7 +95,7 @@ pub(super) fn source_action_make_local(
         return None;
     }
 
-    // F-042: `find` returns a BYTE offset; LSP `Position.character` is a UTF-16 code
+    // `find` returns a byte offset; LSP `Position.character` is a UTF-16 code
     // unit count. Convert before using, otherwise a multi-byte character earlier on
     // the line shifts the edit to the wrong column.
     let proc_col_bytes = lower.find("procedure")?;
@@ -220,8 +213,6 @@ mod tests {
         );
     }
 
-    /// F-043 positive (no external callers): the procedure is only used in
-    /// the same file, so the refactor is still offered.
     #[test]
     fn make_local_offered_when_no_external_callers() {
         let ws = Workspace::new();
@@ -262,9 +253,6 @@ mod tests {
         );
     }
 
-    /// F-043 negative: an external caller in a SEPARATE workspace file
-    /// must suppress the refactor — promoting to `local` would break the
-    /// caller silently.
     #[test]
     fn make_local_not_offered_when_external_caller_exists() {
         let ws = Workspace::new();
@@ -305,7 +293,7 @@ mod tests {
         let actions = source_actions(&ws, &helper_uri, range);
         assert!(
             !actions.iter().any(|a| a.title == "Make procedure local"),
-            "external caller in another file must suppress (F-043)"
+            "external caller in another file must suppress the action"
         );
     }
 }

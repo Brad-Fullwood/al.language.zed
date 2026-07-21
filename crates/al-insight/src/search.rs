@@ -624,15 +624,8 @@ mod tests {
 
     #[test]
     fn trace_event_is_deterministic_across_repeated_builds() {
-        // trace_event used to iterate
-        // `graph.index` (a HashMap) directly, so the order of matching
-        // event roots was arbitrary between graph rebuilds. The fix
-        // sorts matching NodeIndex values before walking. This test
-        // builds the same graph 5 times and asserts trace output is
-        // byte-identical every time.
+        // Multiple publishers with the same event name must have stable ordering.
         let index = SymbolIndex::new();
-        // Two publishers emitting the same event name — without the
-        // sort, their relative order in the trace would be HashMap-
         // iteration-arbitrary.
         index.add_entries(&[
             make_codeunit_with_events(

@@ -12,18 +12,10 @@ use serde_json::{json, Value};
 use std::fs;
 use zed_extension_api::{self as zed, settings::LspSettings, Result};
 
-/// GitHub repository that publishes the `al-lsp` release assets the extension
-/// downloads in step 4 of `find_or_download_binary`. This MUST match the actual
-/// repository (the `origin` git remote / `extension.toml` `repository` field),
-/// otherwise `latest_github_release` fails with "repository not found" and a
-/// fresh user's language server never spawns. A CI consistency check
-/// (`scripts/check-repo-consistency.sh`) and the `github_repo_matches_extension_toml`
-/// unit test guard against this drifting.
+/// Repository that publishes the extension's `al-lsp` release assets.
 const GITHUB_REPO: &str = "Brad-Fullwood/al.language.zed";
 
 struct AlExtension {
-    /// Path to a previously downloaded al-lsp binary in the extension work dir.
-    /// Set after a successful GitHub release download; re-checked on each call.
     cached_binary_path: Option<String>,
 }
 
@@ -42,14 +34,7 @@ fn is_safe_version(v: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
 }
 
-/// Shared, per-OS "how to recover" guidance appended to every spawn-failure
-/// message: where to download a build manually, a copy-paste Zed settings
-/// snippet pointing `binary.path` at it, and the PATH fallback. Centralised so
-/// that *every* failure mode on the download path (no release yet, GitHub API /
-/// network failure, no matching asset) tells a new user exactly what to do.
 fn manual_install_hint(os: zed::Os) -> String {
-    // Per-OS path separator hint for the manual `binary.path` value, so the
-    // snippet is correct to paste on the user's actual platform.
     let example_path = match os {
         zed::Os::Windows => r"C:\\path\\to\\al-lsp.exe",
         _ => "/path/to/al-lsp",
@@ -62,10 +47,6 @@ fn manual_install_hint(os: zed::Os) -> String {
     )
 }
 
-/// Build an actionable error for when no matching release asset can be found
-/// for the current platform. Includes the expected asset name, the releases
-/// page to download from manually, and a copy-paste Zed settings snippet so a
-/// new user whose language server fails to spawn knows exactly what to do
 fn spawn_failure_message(os: zed::Os, asset_name: &str) -> String {
     format!(
         "Could not find an al-lsp release asset named '{asset_name}' for this platform. {}",
@@ -73,13 +54,6 @@ fn spawn_failure_message(os: zed::Os, asset_name: &str) -> String {
     )
 }
 
-/// Build an actionable error for when the GitHub release lookup itself fails —
-/// most commonly because **no release has been published yet** (the reported
-/// new-user blocker), but also network failures, rate limits, or a renamed
-/// repository. Without this, `latest_github_release(...)?` surfaces a raw,
-/// opaque error (e.g. "no releases found") with no path forward. This is the
-/// single most likely first-run failure, so it must be just as actionable as
-/// the asset-not-found case.
 fn release_lookup_failure_message(os: zed::Os, underlying: &str) -> String {
     format!(
         "Could not fetch an al-lsp release from https://github.com/{GITHUB_REPO}/releases \
@@ -89,33 +63,21 @@ fn release_lookup_failure_message(os: zed::Os, underlying: &str) -> String {
     )
 }
 
-/// The AL settings JSON Schema, embedded from `schemas/settings.json`.
-///
-/// This is the single source of truth Zed surfaces for settings.json
-/// autocomplete + validation of the `lsp.al-lsp.settings` block — but only on
-/// extension API ≥ 0.8 (see `build.rs` / the `zed_api_0_8` cfg and the
-/// `language_server_*_schema` methods below). It is parsed *unconditionally* so
-/// the embedded schema stays valid JSON even on the released 0.7 build, where
-/// `al_settings_schema_parses` exercises it.
 #[cfg_attr(not(zed_api_0_8), allow(dead_code))]
 fn al_settings_schema() -> Option<Value> {
-    serde_json::from_str(include_str!("../schemas/settings.json")).ok()
+    Some(
+        serde_json::from_str(include_str!("../schemas/settings.json"))
+            .expect("bundled AL settings schema must be valid JSON"),
+    )
 }
 
 /// Deep-merge `overrides` into `base`, returning the merged result.
-/// - Objects are merged recursively (override keys replace base keys)
-/// - All other types: override replaces base entirely
-/// - Recursion is capped at `MERGE_JSON_MAX_DEPTH`
-///
-/// NOTE: These are separate Cargo packages (WASM vs native) that can't share code
-/// without a shared crate, which would add complexity for a small utility.
 fn merge_json(base: &Value, overrides: &Value) -> Value {
     merge_json_inner(base, overrides, 0)
 }
 
 fn merge_json_inner(base: &Value, overrides: &Value, depth: u32) -> Value {
     if depth >= MERGE_JSON_MAX_DEPTH {
-        // Stop recursing — user wins by default at deep nesting.
         return overrides.clone();
     }
     match (base, overrides) {
@@ -123,8 +85,6 @@ fn merge_json_inner(base: &Value, overrides: &Value, depth: u32) -> Value {
             let mut merged = base_obj.clone();
             for (key, override_value) in override_obj {
                 if let Some(slot) = merged.get_mut(key) {
-                    // Key present in base: recurse and overwrite in place,
-                    // reusing the existing key (no key clone).
                     *slot = merge_json_inner(slot, override_value, depth + 1);
                 } else {
                     merged.insert(key.clone(), override_value.clone());
@@ -137,16 +97,7 @@ fn merge_json_inner(base: &Value, overrides: &Value, depth: u32) -> Value {
 }
 
 impl AlExtension {
-    /// Resolve the al-lsp binary path in priority order:
-    /// 1. User-configured explicit path (settings override)
-    /// 2. Locally installed binary (extension work dir, previously downloaded)
-    /// 3. PATH lookup (dev builds, `cargo install`, system installs)
-    /// 4. GitHub release download → cache in work dir
-    ///
-    /// `status_id` is the language-server id used to surface download progress
-    /// in Zed's status UI. The DAP path passes `None` (there is no way to
-    /// construct a `LanguageServerId` for it on the released API), which only
-    /// skips the progress spinner — resolution and download behave identically.
+    /// Resolves an explicit, cached, installed, or downloadable `al-lsp` binary.
     fn find_or_download_binary(
         &mut self,
         status_id: Option<&zed::LanguageServerId>,
@@ -186,14 +137,8 @@ impl AlExtension {
         )
         .map_err(|e| release_lookup_failure_message(os, &e))?;
 
-        // Unix release assets are gzip archives; Windows uses zip. These names
-        // must match the release workflow's artifact matrix.
         let arch_name = match arch {
             zed::Architecture::Aarch64 => "aarch64",
-            // The 0.8+ API dropped the 32-bit `X86` variant; this arm only
-            // exists (and is only needed for exhaustiveness) on 0.7. Gated on
-            // the same `zed_api_0_8` cfg `build.rs` derives from Cargo.lock so
-            // the same source compiles on both API lines.
             #[cfg(not(zed_api_0_8))]
             zed::Architecture::X86 => "x86",
             zed::Architecture::X8664 => "x86_64",
@@ -219,9 +164,6 @@ impl AlExtension {
             .find(|a| a.name == asset_name)
             .ok_or_else(|| spawn_failure_message(os, &asset_name))?;
 
-        // Defense-in-depth: validate the version string is plain alphanumeric/
-        // dot/hyphen so a malicious or compromised release tag can't produce a
-        // path that escapes the extension's work directory.
         if !is_safe_version(&release.version) {
             return Err(format!(
                 "Rejected release version '{}': contains path-unsafe characters",
@@ -243,16 +185,13 @@ impl AlExtension {
                 );
             }
 
-            // Zed's host HTTP client validates the connection against the
-            // platform trust store.
             zed::download_file(&asset.download_url, &version_dir, archive_type)
                 .map_err(|e| format!("Failed to download al-lsp: {e}"))?;
 
             zed::make_file_executable(&binary_path)
                 .map_err(|e| format!("Failed to make al-lsp executable: {e}"))?;
 
-            // Stale release directories are best-effort cleanup: the WASM
-            // extension has no logging surface, and failure only wastes space.
+            // Cleanup failure only leaves an obsolete cached release.
             if fs::metadata(&version_dir).is_ok_and(|m| m.is_dir()) {
                 if let Ok(entries) = fs::read_dir(".") {
                     for entry in entries.flatten() {

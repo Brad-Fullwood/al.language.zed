@@ -691,6 +691,26 @@ pub(crate) fn rpc_error(id: u64, code: i32, message: &str) -> Response {
     }
 }
 
+pub(crate) fn serialized_response<T: serde::Serialize>(
+    id: u64,
+    value: &T,
+    method: &str,
+) -> Response {
+    match serde_json::to_value(value) {
+        Ok(value) => Response {
+            id,
+            result: Some(value),
+            error: None,
+            ..Default::default()
+        },
+        Err(error) => rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("Failed to serialize {method} response: {error}"),
+        ),
+    }
+}
+
 // Err is a ready-to-send JSON-RPC `Response` by design (callers just return it
 // on a cold error path); boxing it would scatter `*` derefs across every
 // dispatcher for no real benefit.

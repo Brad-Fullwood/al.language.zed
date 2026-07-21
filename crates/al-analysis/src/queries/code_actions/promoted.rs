@@ -22,9 +22,7 @@ pub(super) fn source_action_convert_promoted_actions(
 ) -> Vec<CodeActionEntry> {
     let cursor_line = range.start.line as usize;
 
-    // Must be inside a page or pageextension object (F-045: previously
-    // matched `Page | Other`, which included tables, queries, enums, and
-    // every other non-special-cased object kind).
+    // Promoted actions are valid only on pages and page extensions.
     let obj_kind = detect_object_kind(text);
     match obj_kind {
         Some(AlObjectKind::Page) | Some(AlObjectKind::PageExtension) => {}
@@ -302,9 +300,7 @@ pub(super) fn source_action_set_application_area(
     let cursor_line = range.start.line as usize;
     let _ = cursor_line; // offered throughout the file
 
-    // Must be inside a page, report, or one of their extensions (F-045:
-    // previously matched `Page | Report | Other`, which included queries,
-    // enums, and every other non-special-cased kind).
+    // Action categories are valid only on page/report objects and extensions.
     let obj_kind = detect_object_kind(text)?;
     match obj_kind {
         AlObjectKind::Page

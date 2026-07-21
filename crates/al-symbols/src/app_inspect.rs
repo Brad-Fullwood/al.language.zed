@@ -132,7 +132,7 @@ pub fn list_app_entries(data: &[u8]) -> Result<AppContents, AppReaderError> {
         let size = file.size();
         let compressed_size = file.compressed_size();
         let mut head = [0u8; PEEK_LEN];
-        let n = file.read(&mut head).unwrap_or(0);
+        let n = file.read(&mut head)?;
         entries.push(AppEntry {
             name: name.clone(),
             size,

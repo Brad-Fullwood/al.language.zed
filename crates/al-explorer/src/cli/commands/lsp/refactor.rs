@@ -143,61 +143,6 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
     use crate::cli::TestSnapshotCommands;
 
     match subcmd {
-        TestSnapshotCommands::Record {
-            codeunit,
-            method,
-            breakpoints,
-        } => {
-            let mut client = match connect(None) {
-                Ok(c) => c,
-                Err(e) => return report_error(&e, json),
-            };
-
-            // Parse "file:line" breakpoint specs
-            let mut bp_array = Vec::new();
-            for spec in breakpoints {
-                let Some((file, line_str)) = spec.rsplit_once(':') else {
-                    return report_error(
-                        &format!("Invalid breakpoint spec '{spec}': expected <file>:<line>"),
-                        json,
-                    );
-                };
-                let line: u32 = match line_str.parse() {
-                    Ok(n) => n,
-                    Err(_) => {
-                        return report_error(
-                            &format!("Invalid line number in breakpoint '{spec}'"),
-                            json,
-                        );
-                    }
-                };
-                bp_array.push(serde_json::json!({"file": file, "line": line}));
-            }
-
-            let params = serde_json::json!({
-                "codeunitId": codeunit,
-                "methodName": method,
-                "breakpoints": bp_array,
-            });
-            client.set_read_timeout(std::time::Duration::from_secs(120));
-            match client.request("tests.snapshot_record", Some(params)) {
-                Ok(result) => {
-                    if json {
-                        print_json(&result);
-                    } else {
-                        let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-                        let count = result
-                            .get("sampleCount")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        println!("Snapshot recorded: {path} ({count} samples)");
-                    }
-                    ExitCode::SUCCESS
-                }
-                Err(e) => report_error(&e, json),
-            }
-        }
-
         TestSnapshotCommands::Replay { path } => {
             let abs_path = match std::path::Path::new(path).canonicalize() {
                 Ok(p) => p,

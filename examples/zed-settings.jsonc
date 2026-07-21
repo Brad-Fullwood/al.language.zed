@@ -13,7 +13,7 @@
     // value — delete the ones you don't need to change. On Zed Dev/Nightly
     // (0.8 extension API) these keys also autocomplete + validate as you type;
     // on Stable Zed they are applied correctly but without in-editor
-    // autocomplete. See docs/settings.md for the full reference.
+    // autocomplete. See Docs/reference/settings.md for the full reference.
     // ─────────────────────────────────────────────────────────────────────
     "al-lsp": {
       // Point Zed at a specific build; otherwise al-lsp is auto-downloaded or

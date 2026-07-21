@@ -126,13 +126,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // When > 0, an `end;` closes a begin block, not the case label body.
     let mut case_begin_depth: i32 = 0;
 
-    // Multi-line block comment state. `/* ... */` comments may span many
-    // lines; while we're inside one, the formatter MUST NOT drain the
-    // single-stmt stack or re-indent based on the comment text. The
-    // previous text-based scanner only knew about line comments (`//`),
-    // so a block comment between an `if … then` and its body would
-    // misclassify as a regular statement and collapse the single-stmt
-    // indent prematurely. See the AL formatter audit.
+    // Block comments do not consume pending single-statement indentation.
     let mut in_block_comment = false;
 
     for line in text.lines() {
@@ -167,12 +161,9 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             in_var_section = false;
         }
 
-        // an OBJECT-level `var` section has no closing `begin` — it
+        // An object-level `var` section has no closing `begin`; it
         // ends at the next member declaration: an attribute line
         // (`[EventSubscriber(...)]`) or a procedure/trigger header.
-        // Previously the next member stayed at variable indentation
-        // (verified on a real codeunit: the attribute + `local procedure`
-        // header were pushed to var-entry depth while `begin` stayed put).
         if in_var_section {
             let is_member_start = trimmed.starts_with('[')
                 || trimmed_lower.starts_with("procedure ")
@@ -335,11 +326,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // whether the line opens and/or closes a block comment.
         let starts_block_comment = trimmed.starts_with("/*");
         let line_is_block_comment_body = in_block_comment || starts_block_comment;
-        // A line counts as "closing" the block comment if it contains `*/`
-        // AFTER the position where the block comment starts on this line.
-        // For the simple case we just look at whether the trimmed text
-        // contains `*/` — adversarial pathologies (string literals
-        // containing `*/`) are out of scope for this text-based scanner.
+        // This text-based scanner does not distinguish delimiters in strings.
         let closes_block_comment = trimmed.contains("*/");
         if line_is_block_comment_body {
             // Update the multi-line tracker for the NEXT iteration. If this
@@ -498,14 +485,7 @@ pub fn format_range(
 /// The formatter collapses consecutive blank lines (two → one). We walk orig and fmt
 /// in lockstep, skipping orig-only collapsed blanks without advancing the fmt cursor.
 ///
-/// The only supported asymmetry between
-/// `orig_lines` and `fmt_lines` is collapsed double-blanks. If a future
-/// formatter rule drops or duplicates any other line, the lockstep walk
-/// here silently mis-aligns and emits the wrong fmt rows for the requested
-/// range. To make that regression loud instead of silent, a `debug_assert`
-/// at the bottom of this function verifies that the fmt cursor advanced by
-/// the same count as the non-collapsed-blank orig rows we visited up to
-/// `end`.
+/// Collapsed double-blanks are the only supported line-count difference.
 fn extract_formatted_region<'a>(
     orig_lines: &[&str],
     fmt_lines: &[&'a str],
@@ -979,7 +959,7 @@ fn is_procedure_member_start(trimmed: &str) -> bool {
         || lower.starts_with("trigger ")
 }
 
-/// PASS 2 — `blank_lines_between_procedures`. Normalise the blank-line gap
+/// Normalize the blank-line gap
 /// between a member-level `end;` and the following procedure/trigger member
 /// (or its leading attribute block) to the configured count. Inserts blanks
 /// when none exist; leaves everything else alone.
@@ -1594,11 +1574,6 @@ end;
 
     #[test]
     fn test_block_comment_between_if_then_and_body_preserves_indent() {
-        // Regression: a multi-line `/* */` block comment between an
-        // `if … then` and its body must NOT drain the single-statement
-        // indent stack. Previously the text-based scanner saw the comment
-        // body as a regular statement and collapsed the indent, leaving
-        // the actual body de-indented. See iteration-6 formatter audit.
         let input = "\
 codeunit 50100 Test
 {
@@ -1613,7 +1588,6 @@ codeunit 50100 Test
 ";
         let opts = FormatOptions::default();
         let out = format_al(input, &opts);
-        // The body line must remain indented one level past `if … then`.
         assert!(
             out.contains("            Message('yes');"),
             "block comment must not collapse single-stmt indent — got:\n{out}"
@@ -1622,10 +1596,6 @@ codeunit 50100 Test
 
     #[test]
     fn test_formatter_is_idempotent_on_simple_input() {
-        // Positive: formatting twice produces identical output. Regressions
-        // here usually mean the state machine is sensitive to the very
-        // whitespace it just produced — a quietly catastrophic class of bug
-        // when formatting fires on save.
         let input = "\
 codeunit 50100 Test
 {
@@ -1654,9 +1624,6 @@ codeunit 50100 Test
 
     #[test]
     fn test_formatter_is_idempotent_with_block_comments() {
-        // Idempotency must hold even when block comments are present —
-        // the per-line block-comment tracker must produce the same
-        // classification on a second pass.
         let input = "\
 codeunit 50100 Test
 {
@@ -1763,9 +1730,6 @@ codeunit 50100 Test
 
     #[test]
     fn keyword_casing_preserves_non_ascii_content() {
-        // Regression: keyword casing copied string/identifier content byte by
-        // byte via `as char`, mangling multi-byte UTF-8 into mojibake. The
-        // non-ASCII content must survive verbatim while keywords are cased.
         let out = apply_keyword_casing("if X then Message('Grüße: €');", &KeywordCasing::Upper);
         assert!(
             out.contains("'Grüße: €'"),
@@ -1775,7 +1739,6 @@ codeunit 50100 Test
             out.starts_with("IF ") && out.contains(" THEN "),
             "keywords were not upper-cased: {out}"
         );
-        // A quoted identifier containing non-ASCII is likewise preserved.
         let id = apply_keyword_casing("field(1; \"Preis in €\"; Decimal)", &KeywordCasing::Lower);
         assert!(
             id.contains("\"Preis in €\""),
@@ -1877,11 +1840,6 @@ codeunit 50100 Test
         assert_eq!(pass1, pass2);
     }
 
-    /// regression (found on a real customer codeunit): an object-level
-    /// `var` section is not closed by `begin` — the next member's attribute
-    /// and procedure header must dedent back to member level, and a
-    /// multi-line `Permissions = …,` property keeps its continuation line
-    /// indented past the opener instead of collapsing to property level.
     #[test]
     fn attribute_after_object_var_and_property_continuation() {
         let input = r#"codeunit 50104 "AUK Data Management Event Subs"

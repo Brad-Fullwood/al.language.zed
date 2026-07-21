@@ -3,8 +3,7 @@
 Every edge below is **derived from the real `crates/*/Cargo.toml` `[dependencies]`
 tables** (direct Cargo path-dependencies) — nothing is invented. `default`,
 optional, dev-only and external edges are called out where they differ from a
-plain production dependency. The crate-layering intent is described in
-`CLAUDE.md`; this page shows what the manifests actually declare.
+plain production dependency.
 
 > Re-derive at any time with `cargo metadata --no-deps` (or read the manifests).
 > The tier grouping is presentational; the arrows are the source of truth.
@@ -197,7 +196,7 @@ graph TD
   `tower-lsp` wire conversions); `al-explorer` does not enable it.
 - `al-lsp` is built **twice**: a plain `cargo build` links the no-op semantic
   stub, and `--features semantic` links the real in-process .NET CodeAnalysis
-  bridge (see `make rust` / `make install` and the trap notes in `CLAUDE.md`).
+  bridge (see `make rust` and `make install`).
 - `zed-al`, `al-explorer`, `al-lsp`, `al-protocol` and `al-test-harness` are
   `publish = false`; the remaining 17 library crates are publishable to
   crates.io.

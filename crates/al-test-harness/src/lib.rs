@@ -136,6 +136,16 @@ enum Lifecycle {
 
 type Writer = Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
 
+fn response_array(method: &str, result: Value) -> Vec<Value> {
+    if result.is_null() {
+        return Vec::new();
+    }
+    result
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| panic!("{method} returned an invalid response: {result}"))
+}
+
 pub struct LspClient {
     writer: Option<Writer>,
     lifecycle: Lifecycle,
@@ -507,7 +517,7 @@ impl LspClient {
         let result = self
             .request("textDocument/prepareRename", params)
             .await
-            .ok()?;
+            .expect("prepareRename request failed");
         if result.is_null() {
             None
         } else {
@@ -522,18 +532,14 @@ impl LspClient {
             "position": { "line": line, "character": character }
         });
 
-        match self.request("textDocument/hover", params).await {
-            Ok(result) => {
-                if result.is_null() {
-                    None
-                } else {
-                    Some(result)
-                }
-            }
-            Err(e) => {
-                tracing::warn!(uri = %uri, line, character, error = %e, "hover request failed");
-                None
-            }
+        let result = self
+            .request("textDocument/hover", params)
+            .await
+            .expect("hover request failed");
+        if result.is_null() {
+            None
+        } else {
+            Some(result)
         }
     }
 
@@ -549,20 +555,18 @@ impl LspClient {
             "position": { "line": line, "character": character }
         });
 
-        match self.request("textDocument/completion", params).await {
-            Ok(result) => {
-                if let Some(items) = result.get("items").and_then(|v| v.as_array()) {
-                    items.clone()
-                } else if let Some(arr) = result.as_array() {
-                    arr.clone()
-                } else {
-                    vec![]
-                }
-            }
-            Err(e) => {
-                tracing::warn!(uri = %uri, line, character, error = %e, "completion request failed");
-                vec![]
-            }
+        let result = self
+            .request("textDocument/completion", params)
+            .await
+            .expect("completion request failed");
+        if let Some(items) = result.get("items").and_then(Value::as_array) {
+            items.clone()
+        } else if let Some(items) = result.as_array() {
+            items.clone()
+        } else if result.is_null() {
+            Vec::new()
+        } else {
+            panic!("invalid completion response: {result}");
         }
     }
 
@@ -578,7 +582,10 @@ impl LspClient {
             "position": { "line": line, "character": character }
         });
 
-        let result = self.request("textDocument/definition", params).await.ok()?; // test helper: LSP errors are non-fatal
+        let result = self
+            .request("textDocument/definition", params)
+            .await
+            .expect("definition request failed");
         if result.is_null() {
             None
         } else {
@@ -599,26 +606,22 @@ impl LspClient {
             "context": { "includeDeclaration": true }
         });
 
-        match self.request("textDocument/references", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, line, character, error = %e, "references request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/references", params)
+            .await
+            .expect("references request failed");
+        response_array("textDocument/references", result)
     }
 
     pub async fn document_symbols(&mut self, relative_path: &str) -> Vec<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({ "textDocument": { "uri": uri } });
 
-        match self.request("textDocument/documentSymbol", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "documentSymbol request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/documentSymbol", params)
+            .await
+            .expect("documentSymbol request failed");
+        response_array("textDocument/documentSymbol", result)
     }
 
     pub async fn semantic_tokens(&mut self, relative_path: &str) -> Option<Value> {
@@ -628,7 +631,7 @@ impl LspClient {
         let result = self
             .request("textDocument/semanticTokens/full", params)
             .await
-            .ok()?; // test helper: LSP errors are non-fatal
+            .expect("semanticTokens request failed");
         if result.is_null() {
             None
         } else {
@@ -640,13 +643,11 @@ impl LspClient {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({ "textDocument": { "uri": uri } });
 
-        match self.request("textDocument/foldingRange", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "foldingRange request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/foldingRange", params)
+            .await
+            .expect("foldingRange request failed");
+        response_array("textDocument/foldingRange", result)
     }
 
     pub async fn format(&mut self, relative_path: &str) -> Vec<Value> {
@@ -656,13 +657,11 @@ impl LspClient {
             "options": { "tabSize": 4, "insertSpaces": true }
         });
 
-        match self.request("textDocument/formatting", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "formatting request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/formatting", params)
+            .await
+            .expect("formatting request failed");
+        response_array("textDocument/formatting", result)
     }
 
     pub async fn signature_help(
@@ -680,7 +679,7 @@ impl LspClient {
         let result = self
             .request("textDocument/signatureHelp", params)
             .await
-            .ok()?; // test helper: LSP errors are non-fatal
+            .expect("signatureHelp request failed");
         if result.is_null() {
             None
         } else {
@@ -688,24 +687,17 @@ impl LspClient {
         }
     }
 
-    /// Exercises the `textDocument/codeLens` path through the real
-    /// `al-lsp` binary with a live `DocumentStore` + (optional) test-result
-    /// store, so the wire format and end-to-end shape of the response are
-    /// observed by tests rather than just the inline unit-tests in
-    /// `al-core::queries::code_lens`.
     pub async fn code_lens(&mut self, relative_path: &str) -> Vec<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({
             "textDocument": { "uri": uri },
         });
 
-        match self.request("textDocument/codeLens", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "codeLens request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/codeLens", params)
+            .await
+            .expect("codeLens request failed");
+        response_array("textDocument/codeLens", result)
     }
 
     pub async fn code_actions(
@@ -724,13 +716,11 @@ impl LspClient {
             "context": { "diagnostics": [] }
         });
 
-        match self.request("textDocument/codeAction", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "codeAction request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/codeAction", params)
+            .await
+            .expect("codeAction request failed");
+        response_array("textDocument/codeAction", result)
     }
 
     pub async fn inlay_hints(
@@ -748,13 +738,11 @@ impl LspClient {
             }
         });
 
-        match self.request("textDocument/inlayHint", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "inlayHint request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/inlayHint", params)
+            .await
+            .expect("inlayHint request failed");
+        response_array("textDocument/inlayHint", result)
     }
 
     pub async fn rename(
@@ -771,7 +759,10 @@ impl LspClient {
             "newName": new_name
         });
 
-        let result = self.request("textDocument/rename", params).await.ok()?; // test helper: LSP errors are non-fatal
+        let result = self
+            .request("textDocument/rename", params)
+            .await
+            .expect("rename request failed");
         if result.is_null() {
             None
         } else {
@@ -782,13 +773,11 @@ impl LspClient {
     pub async fn workspace_symbol(&mut self, query: &str) -> Vec<Value> {
         let params = serde_json::json!({ "query": query });
 
-        match self.request("workspace/symbol", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(query, error = %e, "workspace/symbol request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("workspace/symbol", params)
+            .await
+            .expect("workspace/symbol request failed");
+        response_array("workspace/symbol", result)
     }
 
     /// Includes notifications buffered by internal waits (e.g. `open_file`).
@@ -804,11 +793,14 @@ impl LspClient {
         let mut result: HashMap<String, Vec<Value>> = HashMap::new();
         for (method, params) in self.drain_notifications() {
             if method == "textDocument/publishDiagnostics" {
-                let uri = params["uri"].as_str().unwrap_or("").to_string();
+                let uri = params["uri"]
+                    .as_str()
+                    .expect("publishDiagnostics missing uri")
+                    .to_string();
                 let diags = params["diagnostics"]
                     .as_array()
                     .cloned()
-                    .unwrap_or_default();
+                    .expect("publishDiagnostics missing diagnostics array");
                 result.insert(uri, diags);
             }
         }
@@ -828,19 +820,7 @@ impl LspClient {
     }
 }
 
-/// Best-effort orphan-cleanup hook.
-///
-/// `shutdown()` is the graceful path and should be called from every test that
-/// reaches its happy ending. When a test panics or returns early, however,
-/// `Drop` runs first and we still need to reap the child — otherwise the
-/// `al-lsp` process leaks past the test boundary, which has bitten us before
-/// in CI when tests left orphans that consumed sockets and confused later
-/// runs in the same process group.
-///
-/// `start_kill()` is sync (no `await`) and only signals SIGKILL; it does NOT
-/// wait for reap. The kernel reaps the orphan via the tokio reactor that the
-/// `Child` was created with. If `shutdown()` already consumed `self`, this
-/// `Drop` does not run; if it didn't, we send SIGKILL here as a safety net.
+/// Terminates the child when a test exits without calling `shutdown()`.
 impl Drop for LspClient {
     fn drop(&mut self) {
         let Lifecycle::Stdio(child) = &mut self.lifecycle;
@@ -1079,11 +1059,7 @@ pub async fn read_loop(
 
 /// Per-request timeout, configurable via `AL_TEST_REQUEST_TIMEOUT_MS`.
 ///
-/// Defaults to 10 s. Under load (debug builds in CI, debugger attached,
-/// running with sanitisers) individual queries can exceed 10 s and a test
-/// will see `None`/`[]` instead of the real response. Tests that exercise
-/// slow code paths (`completion`, `references` over a large workspace,
-/// `formatting` on big files) should bump this.
+/// Defaults to 10 s.
 fn request_timeout() -> tokio::time::Duration {
     let ms = std::env::var("AL_TEST_REQUEST_TIMEOUT_MS")
         .ok()

@@ -451,10 +451,8 @@ fn xml_escape(s: &str) -> String {
 /// Uses a simple line-based parser that handles typical AL XLIFF output without
 /// requiring a full XML parser dependency.
 ///
-/// Multi-line `<source>` / `<target>` / `<note>` bodies are collected until
-/// their closing tag is found on a later line. Earlier versions truncated at
-/// the first newline, silently losing the rest of the translation
-/// Multi-line source and target bodies are accumulated before parsing.
+/// Multi-line `<source>` / `<target>` / `<note>` bodies are collected through
+/// their closing tags.
 pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
     let mut units: HashMap<String, TranslationUnit> = HashMap::new();
     let mut current_id: Option<String> = None;
@@ -911,7 +909,7 @@ pub fn suggest_translations(
 /// unit, in order:
 /// 1. an exact normalized-source TM match (origin `tm-exact`, confidence 1.0);
 /// 2. else the best token-overlap fuzzy TM match (origin `tm-fuzzy`, lower);
-/// 3. else symbol-name matching as before (origin `name`).
+/// 3. else symbol-name matching (origin `name`).
 ///
 /// Suggestions are sorted by confidence (highest first), then unit id so the
 /// output is deterministic.
@@ -991,8 +989,7 @@ fn name_match_suggestions(
 /// Returns:
 /// - `Ok(Some((path, count)))` on success.
 /// - `Ok(None)` when no translatable units exist (not an error).
-/// - `Err(io::Error)` when directory creation or file write fails — previously
-///   these were silently swallowed via `.ok()?`, masking real disk problems.
+/// - `Err(io::Error)` when directory creation or file write fails.
 pub fn build_xliff(
     workspace: &Workspace,
     project_root: &Path,
@@ -1364,10 +1361,6 @@ mod tests {
 
     #[test]
     fn label_ids_are_stable_across_extraction_order() {
-        // Regression: make_label_id previously used the cumulative units.len()
-        // as the index, so the same label in the same file got a different ID
-        // depending on how many units earlier files contributed. The ID must
-        // depend only on the label's position within its own object.
         let al = r#"codeunit 50100 "My Codeunit"
 {
     var
@@ -1379,7 +1372,6 @@ mod tests {
         extract_from_file(Path::new("a.al"), al, &mut units_a);
         let ids_a: Vec<String> = units_a.iter().map(|u| u.id.clone()).collect();
 
-        // Extract into a vector that already holds units from an "earlier" file.
         let mut units_b = vec![make_test_unit("preexisting one"), make_test_unit("two")];
         let pre_len = units_b.len();
         extract_from_file(Path::new("a.al"), al, &mut units_b);
@@ -1395,10 +1387,6 @@ mod tests {
 
     #[test]
     fn parse_xliff_preserves_empty_single_line_source() {
-        // Regression: a single-line `<source></source>` with an empty body
-        // used to make extract_single_line return None, which switched the
-        // parser into multi-line mode hunting for a closing tag that had
-        // already passed — silently dropping the whole trans-unit.
         let xml = r#"<?xml version="1.0" encoding="utf-8"?>
 <xliff version="1.2">
   <file datatype="xml" source-language="en-US" target-language="de-DE" original="MyApp">
@@ -1579,13 +1567,8 @@ mod tests {
         );
     }
 
-    // --- Multi-line body handling -------------------------------------------
-
     #[test]
     fn parse_xliff_preserves_multi_line_source_body() {
-        // Regression: extract_xml_text previously stopped at the first
-        // newline, silently dropping line 2+ of a multi-line <source>.
-        // The new parser accumulates until </source>.
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <xliff version="1.2">
   <file>
@@ -1608,8 +1591,6 @@ Line three</source>
 
     #[test]
     fn parse_xliff_preserves_multi_line_target_body() {
-        // Same regression for translated content. A real translator's
-        // newline in `<target>` text must survive parse + round-trip.
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <xliff version="1.2">
   <file>
@@ -1640,8 +1621,6 @@ le monde</target>
 
     #[test]
     fn xlf_exceeds_cap_huge_file_returns_some_true() {
-        // Negative: a virtual 100 MB .xlf is refused. Sparse-file trick
-        // — disk usage is one block, but metadata reports the full size.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("huge.xlf");
         let f = std::fs::File::create(&path).unwrap();
@@ -1658,9 +1637,6 @@ le monde</target>
 
     #[test]
     fn parse_xliff_single_line_body_still_works() {
-        // Positive: the common single-line case must continue to work
-        // exactly as before — this is what 99% of BC-generated XLIFF
-        // files look like.
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <xliff version="1.2">
   <file>
@@ -1682,11 +1658,6 @@ le monde</target>
 
     #[test]
     fn parse_xliff_preserves_ms_format_note_with_attributes() {
-        // Regression: BC and the MS AL extension emit `<note>` elements WITH
-        // attributes (`from`, `annotates`, `priority`). The earlier exact
-        // `starts_with("<note>")` check dropped every such note, so a
-        // refresh/merge of a real-world language `.xlf` silently lost the
-        // developer context. Both the bare and the attributed form must parse.
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <xliff version="1.2">
   <file>

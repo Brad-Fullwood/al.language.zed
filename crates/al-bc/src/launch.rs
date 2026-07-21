@@ -203,14 +203,14 @@ pub fn find_launch_config(project_root: &Path) -> Option<DebugConfigFile> {
 /// Maximum bytes accepted for a debug-config file (Zed `debug.json` or
 /// VS Code `launch.json`). Real launch configs are kilobytes at most; 1 MiB
 /// is two orders of magnitude past anything legitimate while refusing
-/// pathological inputs (sparse files / adversarial commit) that would OOM
+/// pathological inputs such as sparse or untrusted files that would OOM
 /// the daemon on `read_to_string`.
 const MAX_LAUNCH_FILE_BYTES: u64 = 1_048_576;
 
 /// Allowlist check on the `server` field of an OnPrem BC config.
 ///
 /// AL launch configs let users specify the BC server URL freely. A misconfigured
-/// or adversarial config could use `file:///etc/passwd` or `gopher://...` and
+/// or untrusted config could use `file:///etc/passwd` or `gopher://...` and
 /// that URL would be handed unchanged to the BC HTTP client. Restrict to
 /// http(s):// (the only two schemes the BC dev API uses) or bare hostnames
 /// (e.g. `localhost`, where the BC client default-prepends http://).
@@ -499,9 +499,6 @@ mod tests {
         assert!(url.contains("&tenant=default"), "unexpected URL: {url}");
     }
 
-    /// Regression for the OnPrem path-encoding gap: a server instance with
-    /// reserved characters must be percent-encoded in the URL path, matching
-    /// the Cloud path's encoding of tenant/environment.
     #[test]
     fn dev_packages_url_onprem_instance_path_encoded() {
         let mut cfg = onprem_config();

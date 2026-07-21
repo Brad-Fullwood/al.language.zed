@@ -372,7 +372,6 @@ mod tests {
         }
     }
 
-    /// #23 — Braces inside string literals must not corrupt the depth counter.
     #[test]
     fn sort_members_string_literal_brace_does_not_corrupt_depth() {
         // The Caption property contains `{` and `}` inside a single-quoted string.
@@ -400,7 +399,6 @@ mod tests {
         );
     }
 
-    /// #23 — Double-quoted identifiers containing braces are also handled.
     #[test]
     fn sort_members_double_quoted_brace_does_not_corrupt_depth() {
         let input = r#"codeunit 50100 "My Codeunit"
@@ -425,7 +423,6 @@ mod tests {
         );
     }
 
-    /// #23 — Escaped single-quote inside string (`''`) is handled correctly.
     #[test]
     fn sort_members_escaped_single_quote_in_string() {
         let input = r#"codeunit 50100 "My Codeunit"

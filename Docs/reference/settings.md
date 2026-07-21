@@ -1,10 +1,7 @@
 # Settings Reference
 
-The **canonical, fully-described** settings reference is [`docs/settings.md`](../../docs/settings.md)
-(with types, defaults, descriptions, project-file schema associations, environment variables, and BC
-credential variables), and a ready-to-copy commented template is
-[`examples/zed-settings.jsonc`](../../examples/zed-settings.jsonc). This page is a status-tagged
-summary; where it and `docs/settings.md` differ, `docs/settings.md` wins.
+This is the canonical settings reference. A ready-to-copy template is
+[`examples/zed-settings.jsonc`](../../examples/zed-settings.jsonc).
 
 Settings live under `lsp.al-lsp.settings` in Zed's `settings.json` (or `.zed/settings.json`). Keys may
 be flat, dotted (`"al.enableCodeAnalysis"`, recommended), or nested under an `"al"` object — all three
@@ -89,7 +86,7 @@ Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
 
 ## Environment variables
 
-For CI/troubleshooting (see `docs/settings.md` for full descriptions): `AL_TOOL_PATH`,
+For CI and troubleshooting: `AL_TOOL_PATH`,
 `AL_COMPILE_TIMEOUT_SECS`, `AL_LOG_FILE_LEVEL`, `AL_LSP_ALLOW_HTTP_FEED`, `AL_EDITOR_SERVICES_PATH`,
 `AL_BRIDGE_DIR`, `AL_ERROR_CODES_LIVE`, `AL_DAP_CAPTURE`, `AL_OAUTH_DISABLE_KEYRING`. BC credentials
 (secrets, prefer OAuth/keyring): `BC_CLIENT_ID`, `BC_TOKEN`/`BC_ACCESS_TOKEN`,
@@ -98,5 +95,5 @@ For CI/troubleshooting (see `docs/settings.md` for full descriptions): `AL_TOOL_
 ## Project-file schemas
 
 Associate `schemas/{app,ruleset,appsourcecop,migration}.json` with Zed's bundled JSON LS via
-`json.schemas` for autocomplete/validation on every channel today — see `docs/settings.md` and
+`json.schemas` for autocomplete/validation on every channel today; see
 [language-assets](../features/language-assets.md).

@@ -5,13 +5,12 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Cursor, Read};
+use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
 use dashmap::DashMap;
-use memmap2::Mmap;
 use zip::ZipArchive;
 
 use super::model::{ObjectKind, SymbolEntry};
@@ -34,8 +33,7 @@ static SOURCE_BUILD_LOCKS: OnceLock<DashMap<PathBuf, Arc<Mutex<()>>>> = OnceLock
 pub struct AppSourceIndex {
     modified: SystemTime,
     file_size: u64,
-    mmap: Arc<Mmap>,
-    zip_offset: usize,
+    app_path: PathBuf,
     by_kind_id: HashMap<(ObjectKind, i32), String>,
     by_kind_name: HashMap<(ObjectKind, String), String>,
 }
@@ -54,25 +52,21 @@ impl AppSourceIndex {
             ));
         }
         let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        // SAFETY: .app files are opened read-only. memmap2::Mmap uses
-        // MAP_SHARED on Linux (not MAP_PRIVATE — earlier comment versions of
-        // this file had that wrong), so concurrent file replacement may
-        // produce stale or partial data, but never UB; corruption surfaces as
-        // a ZIP-decode error and is caught by the InvalidData branch below.
-        // On Windows, the file cannot be replaced while it is mapped, so the
-        // race doesn't exist there. Concurrent modification is prevented at
-        // the call site by the staleness check (package version comparison
-        // via `modified` timestamp) — we never re-mmap a file we've already
-        // accepted as fresh.
-        let mmap = unsafe { Mmap::map(&file)? };
-        let zip_offset = super::app_reader::find_zip_offset(&mmap).ok_or_else(|| {
-            io::Error::new(
+        let mut file = file;
+        let mut magic = [0u8; 4];
+        file.read_exact(&mut magic)?;
+        if &magic != b"NAVX" {
+            return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "ZIP signature not found in .app",
-            )
-        })?;
+                "missing NAVX header in .app",
+            ));
+        }
+        file.rewind()?;
 
-        let mut archive = ZipArchive::new(Cursor::new(&mmap[zip_offset..]))?;
+        // zip infers the archive offset from the central directory, so the
+        // prefixed NAVX package can be read directly from the file without an
+        // unsafe memory map or a 200 MiB heap allocation.
+        let mut archive = ZipArchive::new(file)?;
         if archive.len() > MAX_ARCHIVE_ENTRIES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -101,9 +95,7 @@ impl AppSourceIndex {
 
             let mut buf = Vec::new();
             let mut limited = file.take(MAX_HEADER_BYTES as u64);
-            if limited.read_to_end(&mut buf).is_err() {
-                continue;
-            }
+            limited.read_to_end(&mut buf)?;
             total_decompressed = total_decompressed.saturating_add(buf.len() as u64);
             if total_decompressed > MAX_TOTAL_DECOMPRESSED_BYTES {
                 return Err(io::Error::new(
@@ -123,8 +115,7 @@ impl AppSourceIndex {
         Ok(Self {
             modified,
             file_size,
-            mmap: Arc::new(mmap),
-            zip_offset,
+            app_path: app_path.to_path_buf(),
             by_kind_id,
             by_kind_name,
         })
@@ -142,7 +133,14 @@ impl AppSourceIndex {
     }
 
     pub fn extract_source_by_path(&self, zip_path: &str) -> Option<String> {
-        let mut archive = ZipArchive::new(Cursor::new(&self.mmap[self.zip_offset..])).ok()?;
+        let file = File::open(&self.app_path).ok()?;
+        let metadata = file.metadata().ok()?;
+        if metadata.len() != self.file_size
+            || metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH) != self.modified
+        {
+            return None;
+        }
+        let mut archive = ZipArchive::new(file).ok()?;
         let file = archive.by_name(zip_path).ok()?;
         if file.size() > MAX_EXTRACTED_SOURCE_BYTES {
             tracing::warn!(
@@ -384,7 +382,7 @@ pub(crate) fn is_ident_char(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Cursor, Write};
 
     fn entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {
@@ -601,18 +599,10 @@ mod tests {
         for ((k, n), p) in by_name {
             by_kind_name.insert((*k, n.to_string()), p.to_string());
         }
-        // The mmap field is required but never read by the lookup-only tests;
-        // back it with a tiny non-empty temp file (an empty file cannot be mapped).
-        let mut f = tempfile::NamedTempFile::new().unwrap();
-        f.write_all(b"x").unwrap();
-        f.flush().unwrap();
-        let mmap = Arc::new(unsafe { Mmap::map(f.as_file()) }.unwrap());
-
         AppSourceIndex {
             modified: SystemTime::UNIX_EPOCH,
             file_size: 1,
-            mmap,
-            zip_offset: 0,
+            app_path: PathBuf::new(),
             by_kind_id,
             by_kind_name,
         }

@@ -1110,6 +1110,27 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn write_manifest_app(path: &std::path::Path, id: &str, version: &str) {
+        use std::io::Write;
+
+        let mut bytes = Vec::from(&b"NAVX"[..]);
+        bytes.resize(40, 0);
+        let mut zip_bytes = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("NavxManifest.xml", options).unwrap();
+            write!(
+                zip,
+                r#"<Package><App Id="{id}" Name="Dependency" Publisher="Test" Version="{version}" /></Package>"#
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        bytes.extend_from_slice(&zip_bytes);
+        std::fs::write(path, bytes).unwrap();
+    }
+
     #[test]
     fn strip_line_comments() {
         let input = r#"{
@@ -1296,6 +1317,32 @@ mod tests {
         ));
         assert!(!al_symbols::model::version_at_least("preview", "27.0.0.0"));
         assert!(al_symbols::model::version_at_least("preview", "PREVIEW"));
+    }
+
+    #[test]
+    fn path_dependency_check_uses_manifest_identity_and_minimum_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("misleading-filename.app");
+        write_manifest_app(&package, "wanted-id", "2.1.0.0");
+        let dependencies = vec![
+            al_project::project::AppDependency {
+                id: "WANTED-ID".into(),
+                name: "Dependency".into(),
+                publisher: "Test".into(),
+                version: "2.0.0.0".into(),
+            },
+            al_project::project::AppDependency {
+                id: "other-id".into(),
+                name: "Other".into(),
+                publisher: "Test".into(),
+                version: "1.0.0.0".into(),
+            },
+        ];
+
+        let missing = missing_dependencies_in_paths(&dependencies, &[package]);
+
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].id, "other-id");
     }
 
     /// (`al.nugetFeeds` / `al.useOnlyCustomFeeds` parity):

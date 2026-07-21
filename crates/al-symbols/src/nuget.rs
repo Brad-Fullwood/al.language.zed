@@ -239,16 +239,21 @@ impl NuGetClient {
             pkg.id.to_lowercase(),
             pkg.version.clone(),
         );
-        if let Some(path) = self
+        let completed = self
             .completed_downloads
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .get(&completion_key)
-            .filter(|path| path.is_file())
-            .cloned()
-        {
-            debug!(package = %pkg.display_name, path = %path.display(), "Reusing completed NuGet package download");
-            return Ok(path);
+            .cloned();
+        if let Some(path) = completed {
+            if super::app_reader::read_app_manifest_file(&path).is_ok() {
+                debug!(package = %pkg.display_name, path = %path.display(), "Reusing completed NuGet package download");
+                return Ok(path);
+            }
+            self.completed_downloads
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&completion_key);
         }
 
         let mut last_err = None;
@@ -470,10 +475,6 @@ fn parse_version(version: &str) -> (u64, u64, u64, u64) {
     (major, minor, patch, rev)
 }
 
-/// Upper bound for NuGet metadata responses (service index + version list).
-/// These should be a few hundred KB at most for normal feeds; the cap is a
-/// defence against a hostile or misconfigured server streaming gigabytes of
-/// JSON before parser-side truncation kicks in.
 /// Fetch a JSON metadata response from `url`, refusing bodies larger than
 /// `MAX_METADATA_BYTES`. Chunked responses are accepted and counted while
 /// streaming; a missing or dishonest `Content-Length` cannot bypass the cap.
@@ -689,7 +690,10 @@ fn extract_app_from_nupkg_reader<R: std::io::Read + std::io::Seek>(
 
             std::fs::create_dir_all(dest)?;
             {
-                let mut out_file = std::fs::File::create(&tmp_path)?;
+                let mut out_file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&tmp_path)?;
                 // Match the .app reader's 200 MB cap so downloads cannot
                 // publish an artifact the symbol engine will immediately reject.
                 // Use Read::take explicitly to avoid ambiguity with Iterator::take.
@@ -733,7 +737,7 @@ fn extract_app_from_nupkg_reader<R: std::io::Read + std::io::Seek>(
 
     warn!(
         package = %display_name,
-        "No .app file found at root of nupkg, trying any path"
+        "No safe .app file found in nupkg"
     );
     Err(NuGetError::NoAppInNupkg)
 }
@@ -1289,7 +1293,7 @@ mod tests {
     async fn completed_download_is_reused_without_another_feed_request() {
         let tmp = tempfile::tempdir().unwrap();
         let artifact = tmp.path().join("Cached.app");
-        std::fs::write(&artifact, b"NAVX").unwrap();
+        std::fs::write(&artifact, valid_app_bytes()).unwrap();
         let client = NuGetClient::new(vec![]);
         let package = PackageRef {
             id: "Microsoft.Cached.symbols".into(),

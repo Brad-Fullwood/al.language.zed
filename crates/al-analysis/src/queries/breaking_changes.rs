@@ -442,7 +442,6 @@ mod tests {
 
     #[test]
     fn detects_return_type_change() {
-        // previously untested ReturnTypeChanged variant.
         let old_cu = make_codeunit(
             "Calc",
             vec![make_method("Total", vec![], Some("Decimal".to_string()))],
@@ -463,7 +462,6 @@ mod tests {
 
     #[test]
     fn detects_enum_value_removed() {
-        // previously untested EnumValueRemoved variant.
         use al_symbols::EnumValueSymbol;
         let make_enum = |values: Vec<&str>| SymbolEntry {
             synthetic: false,
@@ -503,8 +501,6 @@ mod tests {
 
     #[test]
     fn detects_signature_change_parameter_count() {
-        // signature-change tests previously only covered TYPE changes;
-        // adding/removing a parameter is also a SignatureChanged report.
         let old_cu = make_codeunit(
             "API",
             vec![make_method("Send", vec![make_param("Body", "Text")], None)],

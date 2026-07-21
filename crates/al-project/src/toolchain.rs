@@ -11,60 +11,13 @@ use serde::Serialize;
 use crate::errors::DiscoveryError;
 use crate::project::home_dir;
 
-/// Environment variable that overrides the `dotnet` host executable used to run
-/// Microsoft's net8 AL tools (`alc.dll`, `aldoc.dll`, `altool.dll`).
-///
-/// By default the tools are launched via the bare `dotnet` program, which must
-/// be discoverable on `PATH`. On machines where `dotnet` is not on `PATH`, or
-/// where a specific SDK install must be pinned, set `AL_DOTNET_PATH` to the full
-/// path of the desired `dotnet` host executable. If the override is set but does
-/// not point at an existing, executable file, a warning is logged and discovery
-/// falls back to the bare `dotnet` program (it never hard-fails).
+/// Overrides the `dotnet` host used to run Microsoft's AL tools.
 pub const DOTNET_PATH_ENV: &str = "AL_DOTNET_PATH";
 
-/// True if `path` is a regular file the current user can execute.
-///
-/// On Unix this checks both that the file exists and that any execute bit is
-/// set. On other platforms (Windows) execute permission isn't represented the
-/// same way, so it just checks the file exists.
-fn is_executable_file(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path)
-            .map(|m| m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
-}
-
-/// Resolve the `dotnet` host program to invoke for the AL tools.
-///
-/// Source order:
-/// 1. `$AL_DOTNET_PATH` — used only if it points at an existing executable file;
-///    otherwise a warning is logged and we fall through.
-/// 2. the bare `"dotnet"` program (resolved from `PATH` by the OS).
-///
-/// See [`DOTNET_PATH_ENV`] for the override rationale.
 fn dotnet_program() -> OsString {
-    if let Some(custom) = std::env::var_os(DOTNET_PATH_ENV) {
-        if !custom.is_empty() {
-            if is_executable_file(Path::new(&custom)) {
-                return custom;
-            }
-            tracing::warn!(
-                "{DOTNET_PATH_ENV}={} is not an executable file; falling back to `dotnet` on PATH",
-                Path::new(&custom).display()
-            );
-        }
-    }
-    OsString::from("dotnet")
+    std::env::var_os(DOTNET_PATH_ENV)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| OsString::from("dotnet"))
 }
 
 /// Build a `dotnet <alc.dll> …` command for invoking the AL toolchain
@@ -769,22 +722,10 @@ mod tests {
     }
 
     #[test]
-    fn dotnet_program_falls_back_when_path_missing() {
-        let _g = DotnetEnvGuard::set(Some(std::ffi::OsStr::new(
-            "/no/such/dotnet-xyz-does-not-exist",
-        )));
-        assert_eq!(dotnet_program(), OsString::from("dotnet"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn dotnet_program_falls_back_when_not_executable() {
-        let tmp = tempfile::tempdir().unwrap();
-        // Plain file, no execute bit → must be rejected on Unix.
-        let f = tmp.path().join("plain-dotnet");
-        std::fs::write(&f, b"not executable\n").unwrap();
-        let _g = DotnetEnvGuard::set(Some(f.as_os_str()));
-        assert_eq!(dotnet_program(), OsString::from("dotnet"));
+    fn dotnet_program_preserves_invalid_override_for_spawn_error() {
+        let missing = std::ffi::OsStr::new("/no/such/dotnet-xyz-does-not-exist");
+        let _g = DotnetEnvGuard::set(Some(missing));
+        assert_eq!(dotnet_program(), missing);
     }
 
     #[test]
