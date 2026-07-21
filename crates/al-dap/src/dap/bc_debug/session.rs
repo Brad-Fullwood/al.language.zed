@@ -610,20 +610,31 @@ impl BcDebugSession {
     }
 
     pub async fn attach(&self, config: &BcDebugConfig) -> Result<()> {
-        let mut args = serde_json::json!({
-            "breakOnError": config.break_on_error,
-            "breakOnRecordWrite": config.break_on_record_write,
+        // This is EditorServices' AttachOptions wire type. Break flags belong
+        // to DebugOptions/configurationDone, not AttachOptions. SignalR emits
+        // enum values numerically and applies camelCase to the CLR properties.
+        let break_on_next_client = match config
+            .break_on_next
+            .as_deref()
+            .unwrap_or("WebClient")
+            .replace([' ', '-', '_'], "")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "webserviceclient" => 0,
+            "background" => 2,
+            "clientservice" => 3,
+            _ => 1, // WebClient
+        };
+        let session_id = config
+            .session_id
+            .and_then(|value| i32::try_from(value).ok())
+            .unwrap_or(-1);
+        let args = serde_json::json!({
+            "breakOnNextClient": break_on_next_client,
+            "sessionId": session_id,
+            "userId": null,
         });
-        // Attach session selectors. `breakOnNext` breaks into the next client
-        // session of the given kind; `sessionId` attaches to one already-running
-        // session. Both are forwarded only when configured, so the default
-        // attach payload (and its existing wire contract) is unchanged.
-        if let Some(next) = config.break_on_next.as_deref() {
-            args["breakOnNext"] = serde_json::json!(next);
-        }
-        if let Some(session_id) = config.session_id {
-            args["sessionId"] = serde_json::json!(session_id);
-        }
         self.invoke("Attach", vec![args]).await?;
         info!("Attached to BC debug session");
         Ok(())
@@ -632,16 +643,19 @@ impl BcDebugSession {
     /// BC hub method: `DebugAdapterConfigurationDone(debugOptions)`
     /// Newer BC versions (>1.0) require debug options argument.
     pub async fn configuration_done(&self, config: &BcDebugConfig) -> Result<()> {
+        // Microsoft's SignalR JSON protocol applies camelCase to the public
+        // .NET DebugOptions properties. PascalCase looks plausible from the
+        // CLR types but is rejected by current BC online hubs.
         let debug_options = serde_json::json!({
-            "BreakOnError": config.break_on_error,
-            "BreakOnErrorBehaviour": if config.break_on_error { 1 } else { 0 }, // All=1, None=0
-            "BreakOnRecordWrite": config.break_on_record_write,
-            "BreakOnRecordWriteBehaviour": if config.break_on_record_write { 1 } else { 0 },
-            "SkipSystemTriggers": true,
-            "EnableSqlInformationDebugger": true,
-            "EnableLongRunningSqlStatements": true,
-            "LongRunningSqlStatementsThreshold": 500,
-            "NumberOfSqlStatements": 10,
+            "breakOnError": config.break_on_error,
+            "breakOnErrorBehaviour": if config.break_on_error { 1 } else { 0 }, // All=1, None=0
+            "breakOnRecordWrite": config.break_on_record_write,
+            "breakOnRecordWriteBehaviour": if config.break_on_record_write { 1 } else { 0 },
+            "skipSystemTriggers": true,
+            "enableSqlInformationDebugger": true,
+            "enableLongRunningSqlStatements": true,
+            "longRunningSqlStatementsThreshold": 500,
+            "numberOfSqlStatements": 10,
         });
         // Try with debug options first (newer BC >=2.0), fall back to empty args
         match self
@@ -681,18 +695,16 @@ impl BcDebugSession {
         column: i64,
         condition: &str,
     ) -> Result<serde_json::Value> {
-        // BC uses Newtonsoft.Json with [JsonProperty] PascalCase names.
-        // ObjectTypeWrapper enum — try both integer and string forms since BC hub
-        // configuration may vary. The enum names are: Table, Report, CodeUnit, XmlPort,
-        // Page, Query, PageExtension, TableExtension, Enum, EnumExtension, ReportExtension
-        // Newtonsoft.Json defaults to integer enum serialization
+        // Microsoft's SignalR JSON protocol serializes the CLR properties as
+        // camelCase. Keep the enum numeric: ObjectTypeWrapper is not configured
+        // with a string-enum converter in EditorServices.
         let object_id = serde_json::json!({
-            "ObjectType": object_type,
-            "ObjectNumber": object_number,
+            "objectType": object_type,
+            "objectNumber": object_number,
         });
         let position = serde_json::json!({
-            "Line": line,
-            "Column": column,
+            "line": line,
+            "column": column,
         });
         let result = self
             .invoke(
@@ -807,8 +819,8 @@ impl BcDebugSession {
     /// BC hub method: `GetSource(ApplicationObjectIdWrapper)` → `string`
     pub async fn get_source(&self, object_type: i32, object_number: i32) -> Result<String> {
         let object_id = serde_json::json!({
-            "ObjectType": object_type,
-            "ObjectNumber": object_number,
+            "objectType": object_type,
+            "objectNumber": object_number,
         });
         let result = self.invoke("GetSource", vec![object_id]).await?;
         Ok(result
@@ -1267,10 +1279,10 @@ mod tests {
         assert_eq!(frame["target"], "AddBreakpoint");
         assert_eq!(frame["invocationId"], "1");
         let args = frame["arguments"].as_array().unwrap();
-        assert_eq!(args[0]["ObjectType"], 5);
-        assert_eq!(args[0]["ObjectNumber"], 50100);
-        assert_eq!(args[1]["Line"], 42);
-        assert_eq!(args[1]["Column"], 8);
+        assert_eq!(args[0]["objectType"], 5);
+        assert_eq!(args[0]["objectNumber"], 50100);
+        assert_eq!(args[1]["line"], 42);
+        assert_eq!(args[1]["column"], 8);
         assert_eq!(args[2], "Rec.\"No.\" = '10000'");
     }
 
@@ -1305,32 +1317,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attach_serializes_break_flags() {
+    async fn attach_serializes_editorservices_attach_options() {
         let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
         event_tx
             .send(completion("1", Some(serde_json::json!(null)), None))
             .await
             .unwrap();
-        let cfg = BcDebugConfig {
-            break_on_error: true,
-            break_on_record_write: false,
-            ..BcDebugConfig::default()
-        };
+        let cfg = BcDebugConfig::default();
         session.attach(&cfg).await.expect("attach ok");
         let frame = next_frame(&mut ws_rx);
         assert_eq!(frame["target"], "Attach");
-        assert_eq!(frame["arguments"][0]["breakOnError"], true);
-        assert_eq!(frame["arguments"][0]["breakOnRecordWrite"], false);
-        // With neither selector set, the payload carries no session keys —
-        // the default attach wire contract is unchanged.
-        assert!(
-            frame["arguments"][0].get("sessionId").is_none(),
-            "sessionId must be absent when unset"
-        );
-        assert!(
-            frame["arguments"][0].get("breakOnNext").is_none(),
-            "breakOnNext must be absent when unset"
-        );
+        assert_eq!(frame["arguments"][0]["breakOnNextClient"], 1);
+        assert_eq!(frame["arguments"][0]["sessionId"], -1);
+        assert!(frame["arguments"][0]["userId"].is_null());
+        assert!(frame["arguments"][0].get("breakOnError").is_none());
     }
 
     #[tokio::test]
@@ -1341,15 +1341,14 @@ mod tests {
             .await
             .unwrap();
         let cfg = BcDebugConfig {
-            break_on_next: Some("Agent".to_string()),
+            break_on_next: Some("Background".to_string()),
             session_id: Some(7),
             ..BcDebugConfig::default()
         };
         session.attach(&cfg).await.expect("attach ok");
         let frame = next_frame(&mut ws_rx);
         assert_eq!(frame["target"], "Attach");
-        // Selectors are forwarded into the Attach payload when configured.
-        assert_eq!(frame["arguments"][0]["breakOnNext"], "Agent");
+        assert_eq!(frame["arguments"][0]["breakOnNextClient"], 2);
         assert_eq!(frame["arguments"][0]["sessionId"], 7);
     }
 
@@ -1374,9 +1373,9 @@ mod tests {
         assert_eq!(frame["target"], "DebugAdapterConfigurationDone");
         let args = frame["arguments"].as_array().unwrap();
         assert_eq!(args.len(), 1, "debug options arg present on first attempt");
-        assert_eq!(args[0]["BreakOnError"], true);
-        assert_eq!(args[0]["BreakOnErrorBehaviour"], 1);
-        assert_eq!(args[0]["BreakOnRecordWriteBehaviour"], 0);
+        assert_eq!(args[0]["breakOnError"], true);
+        assert_eq!(args[0]["breakOnErrorBehaviour"], 1);
+        assert_eq!(args[0]["breakOnRecordWriteBehaviour"], 0);
         // A successful first attempt must NOT send the no-args fallback frame.
         assert!(
             ws_rx.try_recv().is_err(),
@@ -1581,8 +1580,8 @@ mod tests {
         assert_eq!(src, "codeunit 50100 X { }");
         let f = next_frame(&mut ws_rx);
         assert_eq!(f["target"], "GetSource");
-        assert_eq!(f["arguments"][0]["ObjectType"], 5);
-        assert_eq!(f["arguments"][0]["ObjectNumber"], 50100);
+        assert_eq!(f["arguments"][0]["objectType"], 5);
+        assert_eq!(f["arguments"][0]["objectNumber"], 50100);
     }
 
     #[tokio::test]

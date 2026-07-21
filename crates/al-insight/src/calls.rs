@@ -838,9 +838,9 @@ fn callable_node_id(
     let object = object_name.to_lowercase();
     let member = procedure_name.to_lowercase();
     [
-        NodeKey::Procedure(object_kind, object.clone(), member.clone()),
         NodeKey::Subscriber(object_kind, object.clone(), member.clone()),
-        NodeKey::Event(object_kind, object, member),
+        NodeKey::Event(object_kind, object.clone(), member.clone()),
+        NodeKey::Procedure(object_kind, object, member),
     ]
     .iter()
     .find_map(|key| CallGraph::node_id_for(insight, key))
@@ -1039,6 +1039,51 @@ pub fn register_workspace_nodes(
     // Without this pass the subscribers registered above carried their
     // target on the node but had no SubscribesTo edge, so `trace` showed
     // origins and nothing else.
+    insight.resolve_subscriber_edges();
+}
+
+/// Register objects and callable members parsed from dependency package source.
+///
+/// Loaded `SymbolReference.json` data creates the ordinary package graph first;
+/// this source enrichment adds attributes that symbol metadata can omit (most
+/// importantly `EventSubscriber`) and makes complete Microsoft/third-party AL
+/// bodies available to call-edge resolution. Unlike [`register_workspace_nodes`]
+/// it deliberately does not rewrite the shared [`SymbolIndex`]: dependency
+/// symbols are already indexed under their real package identities.
+pub fn register_dependency_source_nodes(file_index: &FileIndex, insight: &mut InsightGraph) {
+    let snapshot: Vec<(std::path::PathBuf, al_source::file_index::CachedObjectInfo)> = file_index
+        .object_info
+        .iter()
+        .map(|entry| (entry.key().clone(), entry.value().clone()))
+        .collect();
+
+    for (path, info) in snapshot {
+        let Ok(object_kind) = info.kind.parse::<ObjectKind>() else {
+            continue;
+        };
+        let object_key = NodeKey::Object(object_kind, info.name.to_lowercase());
+        let object = insight.ensure_node(
+            object_key,
+            InsightNode::Object {
+                kind: object_kind,
+                id: info.id.unwrap_or_default() as i32,
+                name: info.name.clone(),
+                package: "dependency-source".to_string(),
+            },
+        );
+        let Some((source, tree)) = file_index.get_cached_parse(&path) else {
+            continue;
+        };
+        register_procedures_from_tree(
+            tree.root_node(),
+            source.as_bytes(),
+            object_kind,
+            &info.name,
+            object,
+            insight,
+        );
+    }
+
     insight.resolve_subscriber_edges();
 }
 

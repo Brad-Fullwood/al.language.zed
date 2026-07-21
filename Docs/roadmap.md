@@ -45,8 +45,9 @@ drift checks.
 - ✅ Native file/project lint is wired through editor, CLI/daemon, and build diagnostics;
   `al.enableNativeLint`/`al.nativeLintRules` are honored.
 - ✅ Resolved transaction rules follow ordinary calls, interface/codeunit dispatch, table triggers,
-  dependency event symbols, and subscriber bodies (`AL-NL003` unsafe `Commit`, `AL-NL004`
-  database writes in a `[TryFunction]` stack).
+  publishers/subscribers, and available standard/third-party source bodies extracted from loaded
+  `.app` packages (`AL-NL003` unsafe `Commit`, `AL-NL004` database writes in a `[TryFunction]`
+  stack). Genuinely source-free packages retain declaration/event fallback.
 - 🟡 Continue expanding the catalogue (`SetLoadFields`, `ApplicationArea`, tooltips, obsolete
   usage) while keeping native and Microsoft diagnostic namespaces distinct.
 

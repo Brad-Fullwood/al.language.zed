@@ -19,12 +19,19 @@
 //! * `Commit` / `Rollback` — requires transaction semantics.
 //! * `Codeunit.Run` / `CODEUNIT.RUN` — polymorphic dispatch; even with
 //!   a literal argument, the called codeunit's body may touch DB.
-//! * Event subscribers whose source body is in workspace are followed;
-//!   subscribers from `.app` packages have no body and force `LiveBc`.
+//! * Event subscribers whose source body is in the workspace or embedded in a
+//!   loaded `.app` are followed; genuinely source-free package procedures
+//!   without a native stub force `LiveBc`.
 //!
 //! Anything outside the safe-list routes to `LiveBc`.
 
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
+
 use al_analysis::queries::tests::TestCodeunit;
+use al_insight::graph::NodeKey;
+use al_insight::index::{CallGraph, EdgeKind, NodeId};
+use al_symbols::ObjectKind;
 use al_workspace::Workspace;
 
 // "Which tests must I re-run after changing these files?" is answered by
@@ -114,262 +121,60 @@ pub struct ClassifyResult {
     pub reasons: Vec<RoutingReason>,
 }
 
-/// Disqualifying patterns we look for in test source. Substrings are
-/// matched case-insensitively against the test procedure body and the
-/// resolved bodies of its directly-called workspace procedures.
-///
-/// **Discipline:** every pattern in this list is "if I see this, route
-/// at least to InterpRecord, more often LiveBc". Adding a pattern is
-/// *safe* (more conservative). Removing one is *dangerous* (could lead
-/// to silent-wrong interpreter execution).
-///
-/// This is routing policy rather than language-definition data: a conservative
-/// disqualifier set classifies whether an AL test can run in our pure
-/// interpreter or has
-/// to escalate to LiveBc. Failure mode is over-routing (run on LiveBc
-/// when the interpreter would have sufficed), not silent-wrong results.
-/// Migrating it to a JSON config file would be a configuration burden
-/// without a correctness payoff. When BC adds a new operation that
-/// SHOULD force a routing upgrade, append a new entry here and the
-/// classifier picks it up on the next test pass.
-struct DisqualifyingPattern {
-    needle: &'static str,
-    /// Decision floor: never go below this once matched.
-    floor: RoutingDecision,
-    why: &'static str,
+#[derive(Debug, Clone)]
+struct ProcedureLocation {
+    file: PathBuf,
+    name: String,
 }
 
-const PATTERNS: &[DisqualifyingPattern] = &[
-    // Supported record operations — interpreter + mock record store.
-    DisqualifyingPattern {
-        needle: ".init(",
-        floor: RoutingDecision::InterpRecord,
-        why: "calls Record.Init",
-    },
-    DisqualifyingPattern {
-        needle: ".insert(",
-        floor: RoutingDecision::InterpRecord,
-        why: "calls Record.Insert",
-    },
-    DisqualifyingPattern {
-        needle: ".modify(",
-        floor: RoutingDecision::InterpRecord,
-        why: "calls Record.Modify",
-    },
-    DisqualifyingPattern {
-        needle: ".delete(",
-        floor: RoutingDecision::InterpRecord,
-        why: "calls Record.Delete",
-    },
-    DisqualifyingPattern {
-        needle: ".validate(",
-        floor: RoutingDecision::LiveBc,
-        why: "calls Record.Validate (field triggers require BC)",
-    },
-    DisqualifyingPattern {
-        needle: ".findset",
-        floor: RoutingDecision::InterpRecord,
-        why: "iterates a Record",
-    },
-    DisqualifyingPattern {
-        needle: ".findfirst",
-        floor: RoutingDecision::InterpRecord,
-        why: "queries a Record",
-    },
-    DisqualifyingPattern {
-        needle: ".findlast",
-        floor: RoutingDecision::InterpRecord,
-        why: "queries a Record",
-    },
-    DisqualifyingPattern {
-        needle: ".calcfields(",
-        floor: RoutingDecision::InterpRecord,
-        why: "calls CalcFields (FlowField)",
-    },
-    DisqualifyingPattern {
-        needle: ".calcsums(",
-        floor: RoutingDecision::LiveBc,
-        why: "calls CalcSums (not supported by native record runtime)",
-    },
-    DisqualifyingPattern {
-        needle: ".setrange(",
-        floor: RoutingDecision::InterpRecord,
-        why: "applies Record.SetRange filter",
-    },
-    DisqualifyingPattern {
-        needle: ".setfilter(",
-        floor: RoutingDecision::InterpRecord,
-        why: "applies Record.SetFilter",
-    },
-    DisqualifyingPattern {
-        needle: ".get(",
-        floor: RoutingDecision::InterpRecord,
-        why: "calls Record.Get",
-    },
-    DisqualifyingPattern {
-        needle: ".find(",
-        floor: RoutingDecision::InterpRecord,
-        why: "queries a Record",
-    },
-    DisqualifyingPattern {
-        needle: ".next(",
-        floor: RoutingDecision::InterpRecord,
-        why: "advances a Record iterator",
-    },
-    DisqualifyingPattern {
-        needle: ".count(",
-        floor: RoutingDecision::InterpRecord,
-        why: "counts a Record or collection",
-    },
-    DisqualifyingPattern {
-        needle: ".countapprox(",
-        floor: RoutingDecision::InterpRecord,
-        why: "counts a Record",
-    },
-    DisqualifyingPattern {
-        needle: ".isempty(",
-        floor: RoutingDecision::InterpRecord,
-        why: "checks whether a Record is empty",
-    },
-    DisqualifyingPattern {
-        needle: ".reset(",
-        floor: RoutingDecision::InterpRecord,
-        why: "resets a Record",
-    },
-    DisqualifyingPattern {
-        needle: ".setcurrentkey(",
-        floor: RoutingDecision::InterpRecord,
-        why: "sets a Record key",
-    },
-    DisqualifyingPattern {
-        needle: ".deleteall(",
-        floor: RoutingDecision::InterpRecord,
-        why: "deletes filtered Records",
-    },
-    // Record APIs whose platform semantics are not implemented locally.
-    DisqualifyingPattern {
-        needle: "recordref",
-        floor: RoutingDecision::LiveBc,
-        why: "uses RecordRef (not supported by native record runtime)",
-    },
-    DisqualifyingPattern {
-        needle: "fieldref",
-        floor: RoutingDecision::LiveBc,
-        why: "uses FieldRef (not supported by native record runtime)",
-    },
-    DisqualifyingPattern {
-        needle: ".rename(",
-        floor: RoutingDecision::LiveBc,
-        why: "calls Record.Rename (not supported by native record runtime)",
-    },
-    DisqualifyingPattern {
-        needle: ".locktable(",
-        floor: RoutingDecision::LiveBc,
-        why: "calls Record.LockTable (requires BC transaction semantics)",
-    },
-    // The hard escapes — anything below MUST go to live BC.
-    DisqualifyingPattern {
-        needle: "httpclient",
-        floor: RoutingDecision::LiveBc,
-        why: "uses HttpClient (no mock)",
-    },
-    DisqualifyingPattern {
-        needle: "httprequestmessage",
-        floor: RoutingDecision::LiveBc,
-        why: "uses HttpRequestMessage (no mock)",
-    },
-    DisqualifyingPattern {
-        needle: "httpresponsemessage",
-        floor: RoutingDecision::LiveBc,
-        why: "uses HttpResponseMessage (no mock)",
-    },
-    DisqualifyingPattern {
-        needle: ".runmodal(",
-        floor: RoutingDecision::LiveBc,
-        why: "opens a page modally",
-    },
-    DisqualifyingPattern {
-        needle: " testpage ",
-        floor: RoutingDecision::LiveBc,
-        why: "uses TestPage (no mock yet)",
-    },
-    DisqualifyingPattern {
-        needle: "report.run",
-        floor: RoutingDecision::LiveBc,
-        why: "runs a report",
-    },
-    DisqualifyingPattern {
-        needle: "xmlport.run",
-        floor: RoutingDecision::LiveBc,
-        why: "runs an XmlPort",
-    },
-    DisqualifyingPattern {
-        needle: "codeunit.run",
-        floor: RoutingDecision::LiveBc,
-        why: "runs a codeunit polymorphically",
-    },
-    DisqualifyingPattern {
-        needle: "page.run",
-        floor: RoutingDecision::LiveBc,
-        why: "runs a page",
-    },
-    DisqualifyingPattern {
-        needle: "commit;",
-        floor: RoutingDecision::LiveBc,
-        why: "commits a transaction",
-    },
-    DisqualifyingPattern {
-        needle: "commit(",
-        floor: RoutingDecision::LiveBc,
-        why: "commits a transaction",
-    },
-    DisqualifyingPattern {
-        needle: " session.",
-        floor: RoutingDecision::LiveBc,
-        why: "uses Session APIs",
-    },
-    DisqualifyingPattern {
-        needle: "starttask(",
-        floor: RoutingDecision::LiveBc,
-        why: "schedules a background task",
-    },
-    DisqualifyingPattern {
-        needle: "startsession(",
-        floor: RoutingDecision::LiveBc,
-        why: "starts a parallel session",
-    },
+type ProcedureCatalog = HashMap<(String, String), ProcedureLocation>;
+
+const LOCAL_RECORD_METHODS: &[&str] = &[
+    "init",
+    "get",
+    "insert",
+    "modify",
+    "delete",
+    "find",
+    "findset",
+    "findfirst",
+    "findlast",
+    "next",
+    "setrange",
+    "setfilter",
+    "count",
+    "countapprox",
+    "isempty",
+    "reset",
+    "setcurrentkey",
+    "deleteall",
+    "calcfields",
 ];
 
-/// Classify a single test procedure.
-///
-/// `body_text` is the lower-cased, dot-prefixed source of the procedure
-/// (the dot prefix is added by [`classify_in_workspace`] so patterns
-/// like `.insert(` reliably match `Customer.Insert(true)` regardless of
-/// whitespace between the receiver and the dot).
-fn classify_body(body_text: &str) -> (RoutingDecision, Vec<RoutingReason>) {
-    let lower = body_text.to_ascii_lowercase();
-    let mut floor = RoutingDecision::Interp;
-    let mut reasons = Vec::new();
-    for pat in PATTERNS {
-        if lower.contains(pat.needle) {
-            floor = floor.max(pat.floor);
-            reasons.push(RoutingReason {
-                message: pat.why.to_string(),
-                file: None,
-                line: None,
-            });
-        }
-    }
-    (floor, reasons)
-}
+const PLATFORM_TYPES: &[&str] = &[
+    "httpclient",
+    "httprequestmessage",
+    "httpresponsemessage",
+    "testpage",
+    "testrequestpage",
+    "recordref",
+    "fieldref",
+    "session",
+    "notification",
+];
 
-/// Classify every discovered test in the workspace.
-///
-/// Source for each procedure body is read from the cached parse tree.
-/// Cross-codeunit reachability is intentionally limited: the router only
-/// inspects the test procedure body itself plus a single
-/// hop of textual matches. It errs toward `LiveBc` when deeper reachability is
-/// unknown.
+const PLATFORM_GLOBALS: &[&str] = &[
+    "commit",
+    "rollback",
+    "startsession",
+    "starttask",
+    "report",
+    "xmlport",
+    "page",
+];
+
+/// Classify every discovered test in the workspace using the fully-resolved
+/// workspace call/event graph and syntax nodes from every reachable body.
 pub fn classify_all(workspace: &Workspace) -> Vec<ClassifyResult> {
     let codeunits = al_analysis::queries::tests::discover_tests(workspace);
     classify_codeunits(workspace, &codeunits)
@@ -381,43 +186,94 @@ pub fn classify_codeunits(
     workspace: &Workspace,
     codeunits: &[TestCodeunit],
 ) -> Vec<ClassifyResult> {
+    let (insight, cached_graph) = workspace.get_or_build_call_graph();
+    drop(cached_graph);
+    let mut graph = CallGraph::build_from_insight(&insight);
+    al_insight::calls::resolve_all_workspace_call_edges(
+        &workspace.file_index,
+        &workspace.symbols,
+        &insight,
+        &mut graph,
+    );
+    let catalog = build_procedure_catalog(workspace);
     let mut out = Vec::new();
     for cu in codeunits {
-        let path = std::path::Path::new(&cu.file);
-        let Some((text, tree)) = workspace.file_index.get_cached_parse(path) else {
-            // No cached parse — emit a conservative decision per method.
-            for proc in &cu.tests {
-                out.push(ClassifyResult {
-                    codeunit_id: cu.id,
-                    codeunit_name: cu.name.clone(),
-                    method_name: proc.name.clone(),
-                    decision: RoutingDecision::LiveBc,
-                    reasons: vec![RoutingReason {
-                        message: "no cached parse for source file".into(),
-                        file: Some(cu.file.clone()),
-                        line: None,
-                    }],
-                });
-            }
-            continue;
-        };
-        // Classify each procedure against its own body, not the whole codeunit.
-        // A mixed-concern codeunit (one DB-touching test plus
-        // one pure-record test) routed every method to LiveBc because the
-        // worst pattern in any procedure dragged the rest with it.
-        // Falls back to whole-text classification only when we cannot
-        // locate the proc body — same conservative behaviour as before.
-        let proc_bodies = extract_procedure_bodies(&tree, &text);
+        let kind = workspace
+            .file_index
+            .object_info
+            .get(std::path::Path::new(&cu.file))
+            .and_then(|info| info.kind.parse::<ObjectKind>().ok())
+            .unwrap_or(ObjectKind::Codeunit);
         for proc in &cu.tests {
-            let body = match proc_bodies
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case(&proc.name))
-            {
-                Some((_, body)) => body.as_str(),
-                None => text.as_str(),
+            let key = NodeKey::Procedure(
+                kind,
+                cu.name.to_ascii_lowercase(),
+                proc.name.to_ascii_lowercase(),
+            );
+            let Some(root) = CallGraph::node_id_for(&insight, &key) else {
+                out.push(conservative_result(
+                    cu,
+                    proc,
+                    "test procedure is absent from the resolved call graph",
+                ));
+                continue;
             };
-            let (mut decision, mut reasons) = classify_body(body);
-            classify_record_subtypes(workspace, body, &cu.file, &mut decision, &mut reasons);
+            let (mut decision, mut reasons) = classify_reachable(workspace, &graph, &catalog, root);
+            for lifecycle in cu.test_initializers.iter().chain(&cu.test_cleanups) {
+                let lifecycle_key = NodeKey::Procedure(
+                    kind,
+                    cu.name.to_ascii_lowercase(),
+                    lifecycle.name.to_ascii_lowercase(),
+                );
+                let Some(lifecycle_root) = CallGraph::node_id_for(&insight, &lifecycle_key) else {
+                    decision = RoutingDecision::LiveBc;
+                    push_reason(
+                        &mut reasons,
+                        RoutingReason {
+                            message: format!(
+                                "lifecycle procedure '{}' is absent from the resolved call graph",
+                                lifecycle.name
+                            ),
+                            file: Some(cu.file.clone()),
+                            line: Some(lifecycle.line),
+                        },
+                    );
+                    continue;
+                };
+                let (lifecycle_decision, lifecycle_reasons) =
+                    classify_reachable(workspace, &graph, &catalog, lifecycle_root);
+                decision = decision.max(lifecycle_decision);
+                for reason in lifecycle_reasons {
+                    push_reason(&mut reasons, reason);
+                }
+            }
+            for handler in &proc.handler_functions {
+                let handler_key = NodeKey::Procedure(
+                    kind,
+                    cu.name.to_ascii_lowercase(),
+                    handler.to_ascii_lowercase(),
+                );
+                let Some(handler_root) = CallGraph::node_id_for(&insight, &handler_key) else {
+                    decision = RoutingDecision::LiveBc;
+                    push_reason(
+                        &mut reasons,
+                        RoutingReason {
+                            message: format!(
+                                "configured handler procedure '{handler}' is absent from the resolved call graph"
+                            ),
+                            file: Some(cu.file.clone()),
+                            line: Some(proc.line),
+                        },
+                    );
+                    continue;
+                };
+                let (handler_decision, handler_reasons) =
+                    classify_reachable(workspace, &graph, &catalog, handler_root);
+                decision = decision.max(handler_decision);
+                for reason in handler_reasons {
+                    push_reason(&mut reasons, reason);
+                }
+            }
             out.push(ClassifyResult {
                 codeunit_id: cu.id,
                 codeunit_name: cu.name.clone(),
@@ -430,126 +286,823 @@ pub fn classify_codeunits(
     out
 }
 
-/// Promote record-using procedures based on the declared table subtype.
-/// Workspace-defined tables can use the in-memory backend; base-app/package
-/// tables have no local schema/body and must remain on live BC.
-fn classify_record_subtypes(
-    workspace: &Workspace,
-    body: &str,
-    file: &str,
-    decision: &mut RoutingDecision,
-    reasons: &mut Vec<RoutingReason>,
-) {
-    for table in record_subtypes(body) {
-        let workspace_table = workspace
-            .file_index
-            .find_by_object_name(&table)
-            .and_then(|path| {
-                workspace
-                    .file_index
-                    .object_info
-                    .get(&path)
-                    .map(|info| info.kind.eq_ignore_ascii_case("table"))
-            })
-            .unwrap_or(false);
-
-        if workspace_table {
-            *decision = (*decision).max(RoutingDecision::InterpRecord);
-            reasons.push(RoutingReason {
-                message: format!("uses workspace record table '{table}'"),
-                file: Some(file.to_string()),
-                line: None,
-            });
-        } else {
-            *decision = (*decision).max(RoutingDecision::LiveBc);
-            reasons.push(RoutingReason {
-                message: format!(
-                    "uses record table '{table}' without a workspace table definition"
-                ),
-                file: Some(file.to_string()),
-                line: None,
-            });
-        }
+fn conservative_result(
+    cu: &TestCodeunit,
+    proc: &al_analysis::queries::tests::TestProcedure,
+    message: &str,
+) -> ClassifyResult {
+    ClassifyResult {
+        codeunit_id: cu.id,
+        codeunit_name: cu.name.clone(),
+        method_name: proc.name.clone(),
+        decision: RoutingDecision::LiveBc,
+        reasons: vec![RoutingReason {
+            message: message.to_string(),
+            file: Some(cu.file.clone()),
+            line: Some(proc.line),
+        }],
     }
 }
 
-/// Extract `Record <Subtype>` declarations from procedure text. AL table names
-/// containing spaces are quoted; bare names end at whitespace or punctuation.
-/// This deliberately errs toward finding too many declarations because an
-/// unnecessary live-BC route is safer than executing against a missing schema.
-fn record_subtypes(body: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in body.lines() {
-        let lower = line.to_ascii_lowercase();
-        let mut offset = 0;
-        while let Some(found) = lower[offset..].find("record ") {
-            let keyword_start = offset + found;
-            let prefix = &line[..keyword_start];
-            let declaration_prefix = prefix.rfind(':').and_then(|colon| {
-                let between = &prefix[colon + 1..];
-                let names = prefix[..colon].rsplit(';').next().unwrap_or("").trim();
-                (between.trim().is_empty()
-                    && !names.is_empty()
-                    && !names.chars().any(|c| matches!(c, '(' | ')' | '\'' | '=')))
-                .then_some(names)
-            });
-            let start = keyword_start + "record ".len();
-            if declaration_prefix.is_none() {
-                offset = start;
+fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
+    let mut catalog = HashMap::new();
+    for entry in workspace.file_index.object_info.iter() {
+        let path = entry.key().clone();
+        let object = entry.value().name.to_ascii_lowercase();
+        let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) else {
+            continue;
+        };
+        let bytes = text.as_bytes();
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            if matches!(
+                node.kind(),
+                "procedure_declaration" | "trigger_declaration" | "event_declaration"
+            ) {
+                if let Some(name) = node
+                    .child_by_field_name("name")
+                    .and_then(|name| name.utf8_text(bytes).ok())
+                {
+                    let clean = name.trim().trim_matches('"').to_string();
+                    catalog.insert(
+                        (object.clone(), clean.to_ascii_lowercase()),
+                        ProcedureLocation {
+                            file: path.clone(),
+                            name: clean,
+                        },
+                    );
+                }
                 continue;
             }
-            let rest = line[start..].trim_start();
-            let table = if let Some(quoted) = rest.strip_prefix('"') {
-                quoted.find('"').map(|end| quoted[..end].to_string())
-            } else {
-                let end = rest
-                    .find(|c: char| c.is_whitespace() || matches!(c, ';' | ',' | ')' | ']'))
-                    .unwrap_or(rest.len());
-                (end > 0).then(|| rest[..end].to_string())
-            };
-            if let Some(table) = table.filter(|name| !name.is_empty()) {
-                if !out
-                    .iter()
-                    .any(|seen: &String| seen.eq_ignore_ascii_case(&table))
-                {
-                    out.push(table);
-                }
-            }
-            offset = start;
-            if offset >= lower.len() {
-                break;
+            let mut cursor = node.walk();
+            stack.extend(node.named_children(&mut cursor));
+        }
+    }
+    catalog
+}
+
+fn classify_reachable(
+    workspace: &Workspace,
+    graph: &CallGraph,
+    catalog: &ProcedureCatalog,
+    root: NodeId,
+) -> (RoutingDecision, Vec<RoutingReason>) {
+    let mut decision = RoutingDecision::Interp;
+    let mut reasons = Vec::new();
+    let mut visited = HashSet::from([root]);
+    let mut queue = VecDeque::from([root]);
+    while let Some(node) = queue.pop_front() {
+        let Some(info) = graph.node_info(node) else {
+            continue;
+        };
+        let key = (
+            info.object.to_ascii_lowercase(),
+            info.name.to_ascii_lowercase(),
+        );
+        if let Some(location) = catalog.get(&key) {
+            classify_procedure_ast(
+                workspace,
+                location,
+                &mut decision,
+                &mut reasons,
+                node != root,
+            );
+        } else if !matches!(info.node_type.as_str(), "event" | "object")
+            && al_runtime::stubs::resolve(&info.object, &info.name).is_none()
+        {
+            decision = RoutingDecision::LiveBc;
+            push_reason(
+                &mut reasons,
+                RoutingReason {
+                    message: format!(
+                        "reachable dependency procedure '{}::{}' has no executable workspace body or native stub",
+                        info.object, info.name
+                    ),
+                    file: None,
+                    line: None,
+                },
+            );
+        }
+        for edge in graph
+            .callees_of(node)
+            .iter()
+            .filter(|edge| edge.kind != EdgeKind::EventSubscription)
+        {
+            if visited.insert(edge.to) {
+                queue.push_back(edge.to);
             }
         }
     }
-    out
+    (decision, reasons)
 }
 
-/// Walk the cached parse tree and emit `(proc_name, body_text)` for every
-/// `procedure_declaration`. Iterative — uses a Vec stack so we don't blow
-/// the call stack on deeply nested AL.
-fn extract_procedure_bodies(tree: &tree_sitter::Tree, text: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let source = text.as_bytes();
-    let mut stack = vec![tree.root_node()];
+fn classify_procedure_ast(
+    workspace: &Workspace,
+    location: &ProcedureLocation,
+    decision: &mut RoutingDecision,
+    reasons: &mut Vec<RoutingReason>,
+    reachable: bool,
+) {
+    let Some((text, tree)) = workspace.file_index.get_cached_parse(&location.file) else {
+        *decision = RoutingDecision::LiveBc;
+        push_reason(
+            reasons,
+            RoutingReason {
+                message: format!(
+                    "no cached parse for reachable procedure '{}'; routing conservatively",
+                    location.name
+                ),
+                file: Some(location.file.to_string_lossy().into_owned()),
+                line: None,
+            },
+        );
+        return;
+    };
+    let bytes = text.as_bytes();
+    let Some(procedure) = find_callable_node(tree.root_node(), bytes, &location.name) else {
+        *decision = RoutingDecision::LiveBc;
+        push_reason(
+            reasons,
+            RoutingReason {
+                message: format!(
+                    "cannot locate syntax node for reachable procedure '{}'; routing conservatively",
+                    location.name
+                ),
+                file: Some(location.file.to_string_lossy().into_owned()),
+                line: None,
+            },
+        );
+        return;
+    };
+    let resolver = al_syntax::TypeResolver::new(&tree, &text);
+    let mut stack = vec![procedure];
     while let Some(node) = stack.pop() {
-        if node.kind() == "procedure_declaration" {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                if let Ok(name) = name_node.utf8_text(source) {
-                    if let Ok(body_text) = node.utf8_text(source) {
-                        out.push((name.trim_matches('"').to_string(), body_text.to_string()));
-                    }
-                }
+        if node != procedure
+            && matches!(
+                node.kind(),
+                "procedure_declaration" | "trigger_declaration" | "event_declaration"
+            )
+        {
+            continue;
+        }
+        if node.kind() == "regular_variable_declaration" || node.kind() == "parameter" {
+            if let Some(type_node) = node.child_by_field_name("type") {
+                classify_type_reference(
+                    workspace,
+                    type_node,
+                    bytes,
+                    &location.file,
+                    decision,
+                    reasons,
+                    reachable,
+                );
             }
-            // Don't recurse into procedure body — nested fn declarations
-            // are not legal AL, so skipping children is safe and avoids
-            // re-emitting nested anonymous block bodies.
+        } else if node.kind() == "postfix_expression" {
+            classify_call(
+                &resolver,
+                node,
+                bytes,
+                &location.file,
+                decision,
+                reasons,
+                reachable,
+            );
+        } else if node.kind() == "attribute" || node.kind() == "attribute_list" {
+            let attr = node.utf8_text(bytes).unwrap_or("");
+            let attr_lower = attr.to_ascii_lowercase();
+            if attr_lower.contains("testpermissions") {
+                promote(
+                    decision,
+                    reasons,
+                    RoutingDecision::LiveBc,
+                    "uses TestPermissions (requires BC authorization semantics)",
+                    &location.file,
+                    node,
+                    reachable,
+                );
+            } else if attr_lower.contains("handler")
+                && !attr_lower.contains("handlerfunctions")
+                && !attr_lower.contains("messagehandler")
+                && !attr_lower.contains("confirmhandler")
+            {
+                promote(
+                    decision,
+                    reasons,
+                    RoutingDecision::LiveBc,
+                    &format!("uses unsupported test handler attribute {attr}"),
+                    &location.file,
+                    node,
+                    reachable,
+                );
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+}
+
+fn classify_type_reference(
+    workspace: &Workspace,
+    type_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    file: &std::path::Path,
+    decision: &mut RoutingDecision,
+    reasons: &mut Vec<RoutingReason>,
+    reachable: bool,
+) {
+    let raw = type_node.utf8_text(source).unwrap_or("").trim();
+    let (kind, subtype) = split_type_reference(raw);
+    let kind_lower = kind.to_ascii_lowercase();
+
+    if PLATFORM_TYPES
+        .iter()
+        .any(|platform| kind_lower.eq_ignore_ascii_case(platform))
+    {
+        promote(
+            decision,
+            reasons,
+            RoutingDecision::LiveBc,
+            &format!("uses platform type '{kind}'"),
+            file,
+            type_node,
+            reachable,
+        );
+        return;
+    }
+
+    if kind_lower == "record" {
+        let Some(table) = subtype.filter(|name| !name.is_empty()) else {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                "uses an untyped Record without a locally verifiable schema",
+                file,
+                type_node,
+                reachable,
+            );
+            return;
+        };
+        let local = workspace
+            .file_index
+            .object_path_of_kind(&table, &["table"])
+            .is_some();
+        let (floor, message) = if local {
+            (
+                RoutingDecision::InterpRecord,
+                format!("uses workspace record table '{table}'"),
+            )
+        } else {
+            (
+                RoutingDecision::LiveBc,
+                format!("uses record table '{table}' without a workspace table definition"),
+            )
+        };
+        promote(
+            decision, reasons, floor, &message, file, type_node, reachable,
+        );
+    } else if matches!(kind_lower.as_str(), "page" | "report" | "xmlport" | "query") {
+        promote(
+            decision,
+            reasons,
+            RoutingDecision::LiveBc,
+            &format!("uses platform object type '{kind}'"),
+            file,
+            type_node,
+            reachable,
+        );
+    }
+}
+
+fn classify_call(
+    resolver: &al_syntax::TypeResolver<'_>,
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    file: &std::path::Path,
+    decision: &mut RoutingDecision,
+    reasons: &mut Vec<RoutingReason>,
+    reachable: bool,
+) {
+    let mut cursor = node.walk();
+    let children: Vec<_> = node.named_children(&mut cursor).collect();
+    let (Some(primary), Some(suffix)) = (children.first().copied(), children.last().copied())
+    else {
+        return;
+    };
+    let receiver = primary
+        .utf8_text(source)
+        .unwrap_or("")
+        .trim()
+        .trim_matches('"');
+
+    // AL permits parameterless built-ins as statements without parentheses
+    // (`Commit;`). In that shape the postfix expression has no call suffix.
+    if children.len() == 1
+        && PLATFORM_GLOBALS
+            .iter()
+            .any(|global| receiver.eq_ignore_ascii_case(global))
+    {
+        promote(
+            decision,
+            reasons,
+            RoutingDecision::LiveBc,
+            &format!("calls platform operation {receiver}"),
+            file,
+            primary,
+            reachable,
+        );
+        return;
+    }
+
+    if suffix.kind() == "call_suffix" {
+        if PLATFORM_GLOBALS
+            .iter()
+            .any(|global| receiver.eq_ignore_ascii_case(global))
+        {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!("calls platform operation {receiver}"),
+                file,
+                primary,
+                reachable,
+            );
+        }
+        return;
+    }
+
+    if !matches!(suffix.kind(), "member_call_suffix" | "scope_call_suffix") {
+        return;
+    }
+    let Some(member_node) = suffix.child_by_field_name("member") else {
+        return;
+    };
+    let method = member_node
+        .utf8_text(source)
+        .unwrap_or("")
+        .trim()
+        .trim_matches('"');
+
+    if matches!(
+        receiver.to_ascii_lowercase().as_str(),
+        "codeunit" | "page" | "report" | "xmlport"
+    ) {
+        promote(
+            decision,
+            reasons,
+            RoutingDecision::LiveBc,
+            &format!("calls {receiver}.{method} (requires platform dispatch)"),
+            file,
+            member_node,
+            reachable,
+        );
+        return;
+    }
+
+    let point = primary.start_position();
+    let line = std::str::from_utf8(source)
+        .ok()
+        .and_then(|text| text.lines().nth(point.row))
+        .unwrap_or("");
+    let position = al_syntax::SyntaxPosition {
+        line: point.row as u32,
+        character: al_syntax::byte_col_to_utf16_col(line, point.column),
+    };
+    let Some(decl) = resolver.resolve_type(receiver, position) else {
+        return;
+    };
+    let type_name = decl.type_name.to_ascii_lowercase();
+    if type_name == "record" {
+        let local = LOCAL_RECORD_METHODS
+            .iter()
+            .any(|candidate| method.eq_ignore_ascii_case(candidate));
+        let (floor, message) = if local {
+            (
+                RoutingDecision::InterpRecord,
+                format!("calls supported Record.{method}"),
+            )
+        } else {
+            (
+                RoutingDecision::LiveBc,
+                format!("calls unsupported Record.{method} (requires BC semantics)"),
+            )
+        };
+        promote(
+            decision,
+            reasons,
+            floor,
+            &message,
+            file,
+            member_node,
+            reachable,
+        );
+    } else if PLATFORM_TYPES
+        .iter()
+        .any(|platform| type_name.eq_ignore_ascii_case(platform))
+        || matches!(type_name.as_str(), "page" | "report" | "xmlport" | "query")
+    {
+        promote(
+            decision,
+            reasons,
+            RoutingDecision::LiveBc,
+            &format!(
+                "calls {receiver}.{method} on platform type {}",
+                decl.type_name
+            ),
+            file,
+            member_node,
+            reachable,
+        );
+    }
+}
+
+fn split_type_reference(raw: &str) -> (String, Option<String>) {
+    let raw = raw.trim().trim_end_matches(';').trim();
+    let split = raw.find(char::is_whitespace).unwrap_or(raw.len());
+    let kind = raw[..split].trim_matches('"').to_string();
+    let mut subtype = raw[split..].trim().trim_matches('"').trim().to_string();
+    if subtype.to_ascii_lowercase().ends_with(" temporary") {
+        subtype.truncate(subtype.len() - " temporary".len());
+        subtype = subtype.trim_end().trim_matches('"').to_string();
+    }
+    (kind, (!subtype.is_empty()).then_some(subtype))
+}
+
+fn promote(
+    decision: &mut RoutingDecision,
+    reasons: &mut Vec<RoutingReason>,
+    floor: RoutingDecision,
+    message: &str,
+    file: &std::path::Path,
+    node: tree_sitter::Node<'_>,
+    reachable: bool,
+) {
+    *decision = (*decision).max(floor);
+    let message = if reachable {
+        format!("reachable procedure {message}")
+    } else {
+        message.to_string()
+    };
+    push_reason(
+        reasons,
+        RoutingReason {
+            message,
+            file: Some(file.to_string_lossy().into_owned()),
+            line: Some(node.start_position().row as u32),
+        },
+    );
+}
+
+fn push_reason(reasons: &mut Vec<RoutingReason>, reason: RoutingReason) {
+    if !reasons.contains(&reason) {
+        reasons.push(reason);
+    }
+}
+
+fn find_callable_node<'a>(
+    root: tree_sitter::Node<'a>,
+    source: &[u8],
+    name: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if matches!(
+            node.kind(),
+            "procedure_declaration" | "trigger_declaration" | "event_declaration"
+        ) {
+            if node
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .is_some_and(|n| n.trim().trim_matches('"').eq_ignore_ascii_case(name))
+            {
+                return Some(node);
+            }
             continue;
         }
         let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            stack.push(child);
+        stack.extend(node.named_children(&mut cursor));
+    }
+    None
+}
+
+#[cfg(any())]
+mod superseded_router_helpers {
+    use super::*;
+
+    fn classify_type_reference(
+        workspace: &Workspace,
+        node: tree_sitter::Node<'_>,
+        source: &[u8],
+        file: &std::path::Path,
+        decision: &mut RoutingDecision,
+        reasons: &mut Vec<RoutingReason>,
+        reachable: bool,
+    ) {
+        let text = node.utf8_text(source).unwrap_or("").trim();
+        let mut parts = text.splitn(2, char::is_whitespace);
+        let type_name = parts.next().unwrap_or("").trim_matches('"');
+        let subtype = parts
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_end_matches(" temporary")
+            .trim_matches('"');
+        if type_name.eq_ignore_ascii_case("record") {
+            let workspace_table = !subtype.is_empty()
+                && workspace
+                    .file_index
+                    .find_by_object_name(subtype)
+                    .and_then(|path| {
+                        workspace
+                            .file_index
+                            .object_info
+                            .get(&path)
+                            .map(|info| info.kind.clone())
+                    })
+                    .is_some_and(|kind| {
+                        matches!(
+                            kind.to_ascii_lowercase().as_str(),
+                            "table" | "tableextension"
+                        )
+                    });
+            let (floor, message) = if workspace_table {
+                (
+                    RoutingDecision::InterpRecord,
+                    format!("uses workspace record table '{subtype}'"),
+                )
+            } else {
+                (
+                    RoutingDecision::LiveBc,
+                    format!("uses record table '{subtype}' without a workspace table definition"),
+                )
+            };
+            promote(decision, reasons, floor, &message, file, node, reachable);
+        } else if PLATFORM_TYPES
+            .iter()
+            .any(|candidate| type_name.eq_ignore_ascii_case(candidate))
+        {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!("uses platform type {type_name}"),
+                file,
+                node,
+                reachable,
+            );
         }
     }
+
+    fn classify_call(
+        resolver: &al_syntax::TypeResolver<'_>,
+        node: tree_sitter::Node<'_>,
+        source: &[u8],
+        file: &std::path::Path,
+        decision: &mut RoutingDecision,
+        reasons: &mut Vec<RoutingReason>,
+        reachable: bool,
+    ) {
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        let Some(last) = children.last().copied() else {
+            return;
+        };
+        match last.kind() {
+            "call_suffix" => {
+                let name = children
+                    .first()
+                    .and_then(|child| child.utf8_text(source).ok())
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"');
+                if PLATFORM_GLOBALS
+                    .iter()
+                    .any(|candidate| name.eq_ignore_ascii_case(candidate))
+                {
+                    promote(
+                        decision,
+                        reasons,
+                        RoutingDecision::LiveBc,
+                        &format!("calls platform operation {name}"),
+                        file,
+                        node,
+                        reachable,
+                    );
+                }
+            }
+            "member_call_suffix" | "scope_call_suffix" => {
+                let receiver = children
+                    .first()
+                    .and_then(|child| child.utf8_text(source).ok())
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"');
+                let method = last
+                    .child_by_field_name("member")
+                    .and_then(|member| member.utf8_text(source).ok())
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"');
+                let point = node.start_position();
+                let position = al_syntax::SyntaxPosition {
+                    line: point.row as u32,
+                    character: point.column as u32,
+                };
+                if let Some(decl) = resolver.resolve_type(receiver, position) {
+                    if decl.type_name.eq_ignore_ascii_case("record") {
+                        let local = LOCAL_RECORD_METHODS
+                            .iter()
+                            .any(|candidate| method.eq_ignore_ascii_case(candidate));
+                        let (floor, message) = if local {
+                            (
+                                RoutingDecision::InterpRecord,
+                                format!("calls supported Record.{method}"),
+                            )
+                        } else {
+                            (
+                                RoutingDecision::LiveBc,
+                                format!("calls Record.{method}, which requires BC semantics"),
+                            )
+                        };
+                        promote(decision, reasons, floor, &message, file, node, reachable);
+                    } else if PLATFORM_TYPES
+                        .iter()
+                        .any(|candidate| decl.type_name.eq_ignore_ascii_case(candidate))
+                    {
+                        promote(
+                            decision,
+                            reasons,
+                            RoutingDecision::LiveBc,
+                            &format!("calls {}.{method}", decl.type_name),
+                            file,
+                            node,
+                            reachable,
+                        );
+                    }
+                } else if ["report", "xmlport", "page", "codeunit"]
+                    .iter()
+                    .any(|candidate| receiver.eq_ignore_ascii_case(candidate))
+                    && matches!(method.to_ascii_lowercase().as_str(), "run" | "runmodal")
+                {
+                    promote(
+                        decision,
+                        reasons,
+                        RoutingDecision::LiveBc,
+                        &format!("calls {receiver}.{method}"),
+                        file,
+                        node,
+                        reachable,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn promote(
+        decision: &mut RoutingDecision,
+        reasons: &mut Vec<RoutingReason>,
+        floor: RoutingDecision,
+        message: &str,
+        file: &std::path::Path,
+        node: tree_sitter::Node<'_>,
+        reachable: bool,
+    ) {
+        *decision = (*decision).max(floor);
+        push_reason(
+            reasons,
+            RoutingReason {
+                message: if reachable {
+                    format!("reachable call path: {message}")
+                } else {
+                    message.to_string()
+                },
+                file: Some(file.to_string_lossy().into_owned()),
+                line: Some(node.start_position().row as u32 + 1),
+            },
+        );
+    }
+
+    fn push_reason(reasons: &mut Vec<RoutingReason>, reason: RoutingReason) {
+        if !reasons.iter().any(|existing| existing == &reason) {
+            reasons.push(reason);
+        }
+    }
+}
+
+#[cfg(test)]
+fn classify_body(body: &str) -> (RoutingDecision, Vec<RoutingReason>) {
+    let wrapped = format!("codeunit 50100 X {{ {body} }}");
+    let parsed = al_syntax::AlParser::parse_quick(&wrapped);
+    let bytes = wrapped.as_bytes();
+    let mut decision = RoutingDecision::Interp;
+    let mut reasons = Vec::new();
+    let mut stack = vec![parsed.tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if let Some(type_node) = (node.kind() == "regular_variable_declaration")
+            .then(|| node.child_by_field_name("type"))
+            .flatten()
+        {
+            let ty = type_node.utf8_text(bytes).unwrap_or("");
+            if PLATFORM_TYPES.iter().any(|candidate| {
+                ty.split_whitespace()
+                    .next()
+                    .is_some_and(|part| part.eq_ignore_ascii_case(candidate))
+            }) {
+                decision = RoutingDecision::LiveBc;
+            }
+        }
+        if node.kind() == "postfix_expression" {
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.children(&mut cursor).collect();
+            if children.len() == 1 {
+                let name = children[0].utf8_text(bytes).unwrap_or("").trim();
+                if PLATFORM_GLOBALS
+                    .iter()
+                    .any(|candidate| name.eq_ignore_ascii_case(candidate))
+                {
+                    decision = RoutingDecision::LiveBc;
+                    reasons.push(RoutingReason {
+                        message: format!("calls {name}"),
+                        file: None,
+                        line: None,
+                    });
+                }
+            }
+            if let Some(last) = children.last() {
+                let method = match last.kind() {
+                    "member_call_suffix" | "scope_call_suffix" => last
+                        .child_by_field_name("member")
+                        .and_then(|member| member.utf8_text(bytes).ok()),
+                    "call_suffix" => children.first().and_then(|name| name.utf8_text(bytes).ok()),
+                    _ => None,
+                };
+                if let Some(method) = method.map(str::trim) {
+                    if LOCAL_RECORD_METHODS
+                        .iter()
+                        .any(|candidate| method.eq_ignore_ascii_case(candidate))
+                    {
+                        decision = decision.max(RoutingDecision::InterpRecord);
+                        reasons.push(RoutingReason {
+                            message: format!("calls {method}"),
+                            file: None,
+                            line: None,
+                        });
+                    }
+                    if PLATFORM_GLOBALS
+                        .iter()
+                        .any(|candidate| method.eq_ignore_ascii_case(candidate))
+                        || matches!(method.to_ascii_lowercase().as_str(), "run" | "runmodal")
+                    {
+                        decision = RoutingDecision::LiveBc;
+                        reasons.push(RoutingReason {
+                            message: format!("calls {method}"),
+                            file: None,
+                            line: None,
+                        });
+                    }
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    (decision, reasons)
+}
+
+#[cfg(test)]
+fn record_subtypes(body: &str) -> Vec<String> {
+    let wrapped = format!("codeunit 50100 X {{ {body} }}");
+    let parsed = al_syntax::AlParser::parse_quick(&wrapped);
+    let bytes = wrapped.as_bytes();
+    let mut out = Vec::new();
+    let mut stack = vec![parsed.tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "regular_variable_declaration" {
+            if let Some(text) = node
+                .child_by_field_name("type")
+                .and_then(|ty| ty.utf8_text(bytes).ok())
+                .filter(|ty| {
+                    ty.split_whitespace()
+                        .next()
+                        .is_some_and(|part| part.eq_ignore_ascii_case("record"))
+                })
+            {
+                let subtype = text["record".len()..].trim().trim_matches('"').to_string();
+                if !subtype.is_empty()
+                    && !out
+                        .iter()
+                        .any(|seen: &String| seen.eq_ignore_ascii_case(&subtype))
+                {
+                    out.push(subtype);
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    out.sort_by_key(|name| name.to_ascii_lowercase());
     out
 }
 
@@ -718,6 +1271,14 @@ mod tests {
         assert_eq!(
             record_subtypes(body),
             vec!["Customer".to_string(), "Native Entry".to_string()]
+        );
+    }
+
+    #[test]
+    fn temporary_record_type_keeps_only_the_table_subtype() {
+        assert_eq!(
+            split_type_reference(r#"Record "Native Entry" temporary"#),
+            ("Record".to_string(), Some("Native Entry".to_string()))
         );
     }
 

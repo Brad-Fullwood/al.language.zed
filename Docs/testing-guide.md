@@ -8,6 +8,7 @@ real output (or inspect the screenshot), not just an exit code.
 |---|---|
 | Parser / symbols / semantic / formatting / lint / metrics in a single crate | `cargo test -p <crate>` |
 | Anything crossing crates, or `al-lsp` LSP/daemon/MCP protocol behavior | crate unit tests **plus** the native harness: `cargo test -p al-test-harness` |
+| Daemon endpoint, framing, connection, timeout, auto-start, or platform code | `cargo test -p al-protocol` plus `cargo test -p al-test-harness --test cli_smoke --test extension_smoke`; named-pipe changes must also pass native Windows CI |
 | `al-explorer` CLI / TUI | `cargo test -p al-test-harness --test cli_smoke --test tui_smoke` |
 | tree-sitter grammar, `languages/al/*.scm`, `extension.toml`, language-server wiring, in-editor behavior | GUI e2e: `crates/al-test-harness/editor-e2e/drive.sh` — **open the screenshot** |
 | Native `.app` emit / `alc` / live semantic bridge | env-gated harness tests with `AL_TOOL_PATH=…` (see below) |
@@ -41,16 +42,54 @@ cargo test  -p al-test-harness              # all default (non-env-gated) tests
 Representative tests under `crates/al-test-harness/tests/` (run one with
 `--test <name>`):
 
-- `cli_smoke`, `cli_analysis` — `al-explorer` JSON-RPC CLI surfaces.
+- `cli_smoke`, `cli_analysis` — `al-explorer` JSON-RPC CLI surfaces; `cli_smoke` auto-starts the
+  daemon and uses the host's real local IPC transport.
+- `extension_smoke` — compiled binary resolution plus daemon auto-start/response and MCP startup;
+  this is wiring coverage, not rendered-editor coverage.
 - `tui_smoke` — drives `al-explorer` in a real PTY and renders the screen with a
   `vt100` parser (the Rust replacement for the former `tui.py`).
-- `mcp_stdio`, `transport` — the MCP server / daemon transports over stdio.
+- `mcp_stdio` — the MCP server over stdio.
+- `transport` — in-memory LSP `Content-Length` framing and malformed-message edge cases; it does not
+  exercise daemon IPC.
 - `e2e`, `integration_full`, `edit_lifecycle`, `cancellation`,
   `test_engine_e2e`, `real_world`, `regression`, `completeness`,
   `data_driven`, `performance`, `zed_fidelity`, `zed_simulation` — broader
   end-to-end and fidelity coverage.
 
 These run with **no** Microsoft toolchain and **no** GUI.
+
+The verified native build has a dedicated binary-level suite that covers successful NAVX emission,
+syntax rejection with structured start/end ranges, manifest rejection, and the no-artifact-on-error
+contract:
+
+```bash
+cargo build -p al-explorer
+cargo test -p al-test-harness --test pack_native_verified
+```
+
+Do not confuse this always-on native test with `pack_native_validate` below: the latter deliberately
+adds Microsoft `alc` as a compatibility oracle and is therefore environment-gated.
+
+### Daemon IPC on Linux, macOS, and Windows
+
+Daemon transport is selected by the host: Unix-domain sockets on Linux/macOS and per-user named
+pipes on Windows. Run the protocol and binary-level checks together:
+
+```bash
+cargo test -p al-protocol
+cargo build -p al-lsp -p al-explorer
+cargo test -p al-test-harness --test cli_smoke --test extension_smoke
+```
+
+The protocol suite includes
+`client::cross_platform_tests::local_transport_round_trip_uses_real_platform_backend`, which binds
+and exchanges JSON-RPC over the actual host backend. The harness then proves that the compiled CLI
+can auto-start the compiled daemon and receive a real response.
+
+CI repeats these commands in the `windows-native` job on `windows-latest`. A Linux-to-Windows
+cross-compile is useful as an additional compile check, but it is not sufficient transport coverage:
+only a native Windows runner exercises the named-pipe connection and nonblocking I/O path. Linux and
+macOS runs exercise the Unix-domain-socket backend.
 
 ## 3. GUI end-to-end (the actual editor)
 
@@ -106,7 +145,17 @@ AL_TOOL_PATH=<ext>/bin/linux \
 # Optional: also exercise dependency-reference loading.
 AL_TOOL_PATH=<ext>/bin/linux AL_PACKAGE_CACHE_PATH=<project>/.alpackages \
   cargo test -p al-semantic --features semantic --test live_bridge
+
+# Required consumer finish gate after changing the bridge or its lifecycle.
+cargo test -p al-semantic --all-features
+cargo test -p al-workspace
+cargo test -p al-analysis
+cargo test -p al-lsp --lib --features semantic
 ```
+
+Do not treat a bridge-only pass as complete: the consumer finish gate catches drift in lifecycle,
+hover/completion, diagnostics, daemon routing, and semantic feature wiring. The package-backed live
+contract and all four consumer commands above were last run successfully on 2026-07-21.
 
 Reminder: a plain `cargo build --workspace` links `al-lsp` against the **no-op
 semantic stub** and rewrites `target/debug/al-lsp`; only a `--features semantic`

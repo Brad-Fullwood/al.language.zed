@@ -1945,14 +1945,24 @@ mod tests {
             tests: vec![TestProcedure {
                 name: "TestA".to_string(),
                 line: 5,
+                handler_functions: vec![],
             }],
+            test_initializers: vec![],
+            test_cleanups: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
-        for key in ["id", "name", "file", "tests"] {
+        for key in [
+            "id",
+            "name",
+            "file",
+            "tests",
+            "testInitializers",
+            "testCleanups",
+        ] {
             assert!(json.get(key).is_some(), "TestCodeunit key `{key}` missing");
         }
         let proc = &json["tests"][0];
-        for key in ["name", "line"] {
+        for key in ["name", "line", "handlerFunctions"] {
             assert!(proc.get(key).is_some(), "TestProcedure key `{key}` missing");
         }
     }

@@ -147,8 +147,8 @@ fn tools() -> &'static [ToolDef] {
                         },
                         "line": {
                             "type": "integer",
-                            "minimum": 0,
-                            "description": "For breakpoint: source line accepted by the BC debug service."
+                            "minimum": 1,
+                            "description": "For breakpoint: one-based AL source line."
                         },
                         "condition": {
                             "type": "string",

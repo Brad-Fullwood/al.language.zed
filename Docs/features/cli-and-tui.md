@@ -92,6 +92,13 @@ al-explorer impact "Sales-Post.PostDocument"
 al-explorer test-run-all --junit-out results.xml
 ```
 
+## Platform verification
+
+The shared protocol suite binds the host's real local transport, and the native harness verifies
+that `al-explorer` auto-starts `al-lsp` and completes a JSON-RPC request. CI runs those checks on a
+native Windows host, where they exercise the named-pipe implementation rather than merely
+cross-compiling it. See [Testing guide — daemon IPC](../testing-guide.md#daemon-ipc-on-linux-macos-and-windows).
+
 ## Limitations & roadmap
 
 - Windows uses a per-user named pipe; Linux and macOS use owner-only Unix-domain sockets.

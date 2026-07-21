@@ -3,7 +3,7 @@
 //! Builds a fast map from (ObjectKind, Id, Name) to the internal ZIP path
 //! by scanning object headers once per package. Subsequent lookups are instant.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
@@ -19,6 +19,7 @@ const MAX_HEADER_BYTES: usize = 256 * 1024;
 const MAX_APP_FILE_BYTES: u64 = 200 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 200_000;
 const MAX_EXTRACTED_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_TOTAL_EXTRACTED_SOURCE_BYTES: u64 = 1_073_741_824; // 1 GiB
 
 /// Cached source index per `.app` file.
 ///
@@ -36,6 +37,10 @@ pub struct AppSourceIndex {
     app_path: PathBuf,
     by_kind_id: HashMap<(ObjectKind, i32), String>,
     by_kind_name: HashMap<(ObjectKind, String), String>,
+    /// Every archive path containing a parsed AL object, in stable order.
+    /// Retaining this list lets graph consumers extract a package in one ZIP
+    /// pass instead of reopening the archive once per symbol entry.
+    source_paths: Vec<String>,
 }
 
 impl AppSourceIndex {
@@ -78,12 +83,12 @@ impl AppSourceIndex {
         }
         let mut by_kind_id = HashMap::new();
         let mut by_kind_name = HashMap::new();
+        let mut source_paths = Vec::new();
 
         // Zip-bomb guard: cap total decompressed bytes across all `.al` entries
         // so a malicious .app cannot expand to gigabytes during scan. 1 GiB is
         // far above any plausible legitimate package and well below typical
         // memory limits.
-        const MAX_TOTAL_DECOMPRESSED_BYTES: u64 = 1_073_741_824; // 1 GiB
         let mut total_decompressed: u64 = 0;
 
         for i in 0..archive.len() {
@@ -97,7 +102,7 @@ impl AppSourceIndex {
             let mut limited = file.take(MAX_HEADER_BYTES as u64);
             limited.read_to_end(&mut buf)?;
             total_decompressed = total_decompressed.saturating_add(buf.len() as u64);
-            if total_decompressed > MAX_TOTAL_DECOMPRESSED_BYTES {
+            if total_decompressed > MAX_TOTAL_EXTRACTED_SOURCE_BYTES {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "decompressed .al header bytes exceed 1 GiB total — refusing potential zip bomb",
@@ -105,6 +110,7 @@ impl AppSourceIndex {
             }
 
             if let Some((kind, id, obj_name)) = parse_object_header(&buf) {
+                source_paths.push(name.clone());
                 by_kind_id.entry((kind, id)).or_insert_with(|| name.clone());
                 by_kind_name
                     .entry((kind, obj_name.to_lowercase()))
@@ -112,12 +118,16 @@ impl AppSourceIndex {
             }
         }
 
+        source_paths.sort_unstable();
+        source_paths.dedup();
+
         Ok(Self {
             modified,
             file_size,
             app_path: app_path.to_path_buf(),
             by_kind_id,
             by_kind_name,
+            source_paths,
         })
     }
 
@@ -164,6 +174,75 @@ impl AppSourceIndex {
     pub fn extract_source_for_entry(&self, entry: &SymbolEntry) -> Option<String> {
         let path = self.source_path_for_entry(entry)?;
         self.extract_source_by_path(path)
+    }
+
+    /// Extract every indexed AL object source from this package in one archive
+    /// pass.
+    ///
+    /// Standard Microsoft source packages and most third-party development
+    /// packages contain complete `.al` bodies. Transaction/call-graph analysis
+    /// consumes this method so those bodies participate just like workspace
+    /// files. Packages without embedded source simply return an empty vector.
+    pub fn extract_all_sources(&self) -> io::Result<Vec<(String, String)>> {
+        let file = File::open(&self.app_path)?;
+        let metadata = file.metadata()?;
+        if metadata.len() != self.file_size
+            || metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH) != self.modified
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "package changed after its source index was built",
+            ));
+        }
+
+        let mut archive = ZipArchive::new(file)?;
+        let mut sources = Vec::with_capacity(self.source_paths.len());
+        let mut extracted_total = 0u64;
+        let mut seen = HashSet::new();
+        for path in &self.source_paths {
+            if !seen.insert(path) {
+                continue;
+            }
+            let mut entry = match archive.by_name(path) {
+                Ok(entry) => entry,
+                Err(error) => {
+                    tracing::warn!(path, %error, "indexed AL source disappeared from package");
+                    continue;
+                }
+            };
+            if entry.size() > MAX_EXTRACTED_SOURCE_BYTES {
+                tracing::warn!(
+                    path,
+                    size = entry.size(),
+                    limit = MAX_EXTRACTED_SOURCE_BYTES,
+                    "embedded AL source exceeds extraction limit"
+                );
+                continue;
+            }
+            extracted_total = extracted_total.saturating_add(entry.size());
+            if extracted_total > MAX_TOTAL_EXTRACTED_SOURCE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "embedded AL sources exceed the 1 GiB package extraction limit",
+                ));
+            }
+
+            let mut bytes = Vec::with_capacity(entry.size() as usize);
+            entry
+                .by_ref()
+                .take(MAX_EXTRACTED_SOURCE_BYTES + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > MAX_EXTRACTED_SOURCE_BYTES {
+                continue;
+            }
+            match String::from_utf8(bytes) {
+                Ok(source) => sources.push((path.clone(), source)),
+                Err(error) => {
+                    tracing::warn!(path, %error, "embedded AL source is not UTF-8");
+                }
+            }
+        }
+        Ok(sources)
     }
 }
 
@@ -599,12 +678,20 @@ mod tests {
         for ((k, n), p) in by_name {
             by_kind_name.insert((*k, n.to_string()), p.to_string());
         }
+        let mut source_paths: Vec<String> = by_kind_id
+            .values()
+            .chain(by_kind_name.values())
+            .cloned()
+            .collect();
+        source_paths.sort_unstable();
+        source_paths.dedup();
         AppSourceIndex {
             modified: SystemTime::UNIX_EPOCH,
             file_size: 1,
             app_path: PathBuf::new(),
             by_kind_id,
             by_kind_name,
+            source_paths,
         }
     }
 
@@ -686,6 +773,15 @@ mod tests {
             idx.source_path_for_entry(&by_name),
             Some("src/Tab18.Customer.al")
         );
+
+        let all_sources = idx.extract_all_sources().unwrap();
+        assert_eq!(all_sources.len(), 2);
+        assert!(all_sources
+            .iter()
+            .any(|(path, source)| { path == "src/Tab18.Customer.al" && source == tab_src }));
+        assert!(all_sources
+            .iter()
+            .any(|(path, source)| { path == "src/Cod50100.MyHelper.al" && source == cod_src }));
     }
 
     #[test]

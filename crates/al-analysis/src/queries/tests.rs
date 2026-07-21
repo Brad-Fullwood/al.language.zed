@@ -17,6 +17,8 @@ use al_workspace::Workspace;
 pub struct TestProcedure {
     pub name: String,
     pub line: u32,
+    /// Handler procedure names declared by `[HandlerFunctions(...)]`.
+    pub handler_functions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,6 +28,11 @@ pub struct TestCodeunit {
     pub id: i32,
     pub file: String,
     pub tests: Vec<TestProcedure>,
+    /// Procedures marked `[TestInitialize]`, executed before each test method.
+    pub test_initializers: Vec<TestProcedure>,
+    /// Procedures marked `[TestCleanup]`, executed after each test method even
+    /// when initialization or the test body fails.
+    pub test_cleanups: Vec<TestProcedure>,
 }
 
 /// Discover all [Test] codeunits and procedures in workspace .al files.
@@ -51,6 +58,8 @@ pub fn discover_tests(workspace: &Workspace) -> Vec<TestCodeunit> {
         let root = tree.root_node();
         let is_test_subtype = has_test_subtype(root, source);
         let test_procs = collect_test_procedures(root, source);
+        let test_initializers = collect_procedures_with_attribute(root, source, "TestInitialize");
+        let test_cleanups = collect_procedures_with_attribute(root, source, "TestCleanup");
 
         if is_test_subtype || !test_procs.is_empty() {
             results.push(TestCodeunit {
@@ -58,6 +67,8 @@ pub fn discover_tests(workspace: &Workspace) -> Vec<TestCodeunit> {
                 id: obj_id,
                 file: path,
                 tests: test_procs,
+                test_initializers,
+                test_cleanups,
             });
         }
     }
@@ -328,6 +339,65 @@ pub fn collect_test_procedures(root: tree_sitter::Node, source: &[u8]) -> Vec<Te
     procs
 }
 
+/// Collect procedures carrying an exact AL attribute name. Attribute arguments
+/// are ignored here; lifecycle attributes do not accept any.
+pub fn collect_procedures_with_attribute(
+    root: tree_sitter::Node,
+    source: &[u8],
+    attribute: &str,
+) -> Vec<TestProcedure> {
+    let mut procedures = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "procedure_declaration" {
+            if has_exact_attribute(node, source, attribute) {
+                if let Some(name) = node
+                    .child_by_field_name("name")
+                    .and_then(|name| name.utf8_text(source).ok())
+                {
+                    procedures.push(TestProcedure {
+                        name: name.trim_matches('"').to_string(),
+                        line: node.start_position().row as u32 + 1,
+                        handler_functions: Vec::new(),
+                    });
+                }
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    procedures.sort_by_key(|procedure| procedure.line);
+    procedures
+}
+
+fn has_exact_attribute(proc_node: tree_sitter::Node, source: &[u8], wanted: &str) -> bool {
+    let matches = |node: tree_sitter::Node| {
+        node.utf8_text(source).ok().is_some_and(|text| {
+            let inner = text.trim().trim_start_matches('[').trim_end_matches(']');
+            let name = inner.split(['(', ';']).next().unwrap_or("").trim();
+            name.eq_ignore_ascii_case(wanted)
+        })
+    };
+    let mut cursor = proc_node.walk();
+    if proc_node
+        .children(&mut cursor)
+        .any(|child| matches!(child.kind(), "attribute" | "attribute_list") && matches(child))
+    {
+        return true;
+    }
+    let mut sibling = proc_node.prev_sibling();
+    while let Some(node) = sibling {
+        match node.kind() {
+            "attribute" | "attribute_list" if matches(node) => return true,
+            "attribute" | "attribute_list" | "comment" => {}
+            _ => break,
+        }
+        sibling = node.prev_sibling();
+    }
+    false
+}
+
 /// Iterative tree-walk (despite the historical `_recursive` name, retained
 /// elsewhere in this crate's history): uses `tree_sitter::TreeCursor`
 /// goto_first_child / goto_next_sibling / goto_parent. No self-recursion,
@@ -349,6 +419,7 @@ fn collect_test_procs_iterative(
                             procs.push(TestProcedure {
                                 name: name.trim_matches('"').to_string(),
                                 line: node.start_position().row as u32 + 1,
+                                handler_functions: handler_functions(node, source),
                             });
                         }
                     }
@@ -372,6 +443,50 @@ fn collect_test_procs_iterative(
         }
         break;
     }
+}
+
+fn handler_functions(proc_node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
+    let mut attributes = Vec::new();
+    let mut cursor = proc_node.walk();
+    attributes.extend(
+        proc_node
+            .children(&mut cursor)
+            .filter(|node| matches!(node.kind(), "attribute" | "attribute_list")),
+    );
+    let mut sibling = proc_node.prev_sibling();
+    while let Some(node) = sibling {
+        match node.kind() {
+            "attribute" | "attribute_list" => attributes.push(node),
+            "comment" => {}
+            _ => break,
+        }
+        sibling = node.prev_sibling();
+    }
+    for attribute in attributes {
+        let text = attribute.utf8_text(source).unwrap_or("").trim();
+        let Some(open) = text.find('(') else { continue };
+        let name = text[..open].trim().trim_start_matches('[').trim();
+        if !name.eq_ignore_ascii_case("HandlerFunctions") {
+            continue;
+        }
+        let inner = text[open + 1..]
+            .trim_end_matches(']')
+            .trim_end_matches(')')
+            .trim()
+            .trim_matches('\'');
+        return inner
+            .split(',')
+            .map(|handler| {
+                handler
+                    .trim()
+                    .trim_matches('\'')
+                    .trim_matches('"')
+                    .to_string()
+            })
+            .filter(|handler| !handler.is_empty())
+            .collect();
+    }
+    Vec::new()
 }
 
 fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
@@ -461,6 +576,33 @@ mod test_discovery {
         );
         assert_eq!(procs[0].name, "TestSomething");
         assert_eq!(procs[1].name, "TestAnotherThing");
+    }
+
+    #[test]
+    fn discovers_lifecycle_procedures_separately() {
+        let source = r#"codeunit 50100 "My Tests"
+{
+    Subtype = Test;
+    [TestInitialize]
+    procedure SetUp() begin end;
+    [Test]
+    procedure Runs() begin end;
+    [TestCleanup]
+    procedure TearDown() begin end;
+}"#;
+        let parsed = AlParser::parse_quick(source);
+        let root = parsed.tree.root_node();
+        let init = collect_procedures_with_attribute(root, source.as_bytes(), "TestInitialize");
+        let cleanup = collect_procedures_with_attribute(root, source.as_bytes(), "TestCleanup");
+        assert_eq!(
+            init.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["SetUp"]
+        );
+        assert_eq!(
+            cleanup.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["TearDown"]
+        );
+        assert_eq!(collect_test_procedures(root, source.as_bytes()).len(), 1);
     }
 
     #[test]

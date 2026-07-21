@@ -72,6 +72,7 @@ dependencies = [
  "tracing",
  "tree-sitter",
  "url",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -379,7 +380,9 @@ version = "0.1.0"
 dependencies = [
  "al-analysis",
  "al-bc",
+ "al-insight",
  "al-runtime",
+ "al-symbols",
  "al-syntax",
  "al-types",
  "al-workspace",

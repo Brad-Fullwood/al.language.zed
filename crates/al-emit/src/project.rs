@@ -10,7 +10,8 @@ use super::package::{random_package_guid, EmitError};
 use super::symbol_extract::{extract_objects_from_tree, EmitObject};
 use super::symbol_reference::{build_symbol_reference, ExternalSymbols, ObjectRef, SymbolRefMeta};
 use super::verification::{
-    verify_artifact, verify_project_objects, VerificationDiagnostic, VerificationSeverity,
+    verify_artifact, verify_manifest, verify_project_objects, VerificationDiagnostic,
+    VerificationSeverity,
 };
 use al_symbols::model::ObjectKind;
 use al_syntax::AlParser;
@@ -197,11 +198,34 @@ pub fn build_verified_app_from_project(
     build_timestamp: &str,
 ) -> Result<VerifiedBuild, EmitError> {
     let app_json_path = project_dir.join("app.json");
-    let app_json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&app_json_path).map_err(|e| {
-            EmitError::Project(format!("reading {}: {e}", app_json_path.display()))
-        })?)
-        .map_err(|e| EmitError::Project(format!("parsing app.json: {e}")))?;
+    let app_json_text = std::fs::read_to_string(&app_json_path)
+        .map_err(|e| EmitError::Project(format!("reading {}: {e}", app_json_path.display())))?;
+    let app_json: serde_json::Value = match serde_json::from_str(&app_json_text) {
+        Ok(value) => value,
+        Err(error) => {
+            return Ok(VerifiedBuild {
+                app: None,
+                diagnostics: vec![VerificationDiagnostic {
+                    file: "app.json".to_string(),
+                    line: error.line() as u32,
+                    column: error.column() as u32,
+                    end_line: error.line() as u32,
+                    end_column: error.column().saturating_add(1) as u32,
+                    severity: VerificationSeverity::Error,
+                    code: "ALN0100",
+                    message: format!("Invalid app.json: {error}"),
+                }],
+            });
+        }
+    };
+
+    let manifest_diagnostics = verify_manifest(&app_json);
+    if !manifest_diagnostics.is_empty() {
+        return Ok(VerifiedBuild {
+            app: None,
+            diagnostics: manifest_diagnostics,
+        });
+    }
 
     let optional_string = |k: &str| {
         app_json
@@ -220,6 +244,7 @@ pub fn build_verified_app_from_project(
                 EmitError::Project(format!("app.json field `{k}` must be a non-empty string"))
             })
     };
+    // Safe after verify_manifest rejected absent, non-string, and empty fields.
     let app_id = required_string("id")?;
     let app_name = required_string("name")?;
     let publisher = required_string("publisher")?;
@@ -246,12 +271,13 @@ pub fn build_verified_app_from_project(
             .replace('\\', "/");
         let parsed = AlParser::parse_quick(&content);
         for error in &parsed.errors {
+            let range = al_syntax::ts_range_to_syntax(&error.range, content.as_bytes());
             diagnostics.push(VerificationDiagnostic {
                 file: rel.clone(),
-                line: error.range.start_point.row.saturating_add(1) as u32,
-                column: error.range.start_point.column.saturating_add(1) as u32,
-                end_line: error.range.end_point.row.saturating_add(1) as u32,
-                end_column: error.range.end_point.column.saturating_add(1) as u32,
+                line: range.start.line.saturating_add(1),
+                column: range.start.character.saturating_add(1),
+                end_line: range.end.line.saturating_add(1),
+                end_column: range.end.character.saturating_add(1),
                 severity: VerificationSeverity::Error,
                 code: "ALN0001",
                 message: error.message.clone(),
@@ -299,7 +325,7 @@ pub fn build_verified_app_from_project(
         random_package_guid()?,
         Some(project_dir),
     )?;
-    diagnostics.extend(verify_artifact(&bytes, sources.len()));
+    diagnostics.extend(verify_artifact(&bytes, &sources, &meta));
     if diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == VerificationSeverity::Error)
@@ -515,7 +541,11 @@ mod tests {
         )
         .unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/A.al"), "codeunit 50100 A { }").unwrap();
+        std::fs::write(
+            dir.path().join("src/A.al"),
+            "// declaration deliberately starts below line one\n\ncodeunit 50100 A { }",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("src/B.al"), "codeunit 50100 B { }").unwrap();
 
         let result =
@@ -529,6 +559,60 @@ mod tests {
                 .count(),
             2
         );
+        let a_diagnostic = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "ALN1001" && diagnostic.file == "src/A.al")
+            .expect("duplicate diagnostic for A.al");
+        assert_eq!(a_diagnostic.line, 3);
+        assert!(a_diagnostic.end_line >= a_diagnostic.line);
+        assert!(a_diagnostic.end_column > a_diagnostic.column);
+    }
+
+    #[test]
+    fn verified_build_returns_structured_invalid_json_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.json"), "{\n  \"id\": ]\n}").unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        assert!(result.app.is_none());
+        let diagnostic = result.diagnostics.first().expect("JSON diagnostic");
+        assert_eq!(diagnostic.code, "ALN0100");
+        assert_eq!(diagnostic.file, "app.json");
+        assert!(diagnostic.line > 1);
+        assert!(diagnostic.end_column > diagnostic.column);
+    }
+
+    #[test]
+    fn verified_build_rejects_invalid_manifest_shape_before_emission() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{
+                "id":"not-a-guid", "name":"", "publisher":"P", "version":"1.0",
+                "idRanges":[{"from":50149,"to":50100}],
+                "dependencies":[
+                    {"id":"bbbbbbbb-1111-2222-3333-444444444444","name":"D","publisher":"P","version":"1.0.0.0"},
+                    {"id":"BBBBBBBB-1111-2222-3333-444444444444","name":"D2","publisher":"P","version":"1.0.0.0"}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        assert!(result.app.is_none());
+        for expected in ["ALN0101", "ALN0102", "ALN0103", "ALN0104", "ALN0106"] {
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == expected),
+                "missing {expected}: {:?}",
+                result.diagnostics
+            );
+        }
     }
 
     #[test]

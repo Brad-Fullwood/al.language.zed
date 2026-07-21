@@ -41,6 +41,15 @@ pub enum DispatchMode {
     WithRecords,
 }
 
+/// Dialog handlers enabled for the currently executing `[Test]` method.
+/// Names are paired with their containing workspace codeunit so dispatch is
+/// deterministic even when another object declares the same procedure name.
+#[derive(Debug, Clone, Default)]
+pub struct TestHandlers {
+    pub message: Option<(String, String)>,
+    pub confirm: Option<(String, String)>,
+}
+
 /// Shared context threaded through `eval_stmt` and `dispatch_call`.
 ///
 /// Owns the workspace handle plus any stateful runtime support (record
@@ -94,6 +103,7 @@ pub struct DispatchCtx {
     /// Cleared at the top of every `dispatch_call`, so builtins and
     /// non-workspace calls leave it empty.
     pub var_writebacks: Vec<(usize, Value)>,
+    pub test_handlers: TestHandlers,
 }
 
 impl DispatchCtx {
@@ -108,6 +118,7 @@ impl DispatchCtx {
             cancel: None,
             coverage: None,
             var_writebacks: Vec::new(),
+            test_handlers: TestHandlers::default(),
         }
     }
 
@@ -125,6 +136,7 @@ impl DispatchCtx {
             cancel: None,
             coverage: None,
             var_writebacks: Vec::new(),
+            test_handlers: TestHandlers::default(),
         }
     }
 
@@ -214,7 +226,53 @@ pub fn dispatch_call(
 
     match procedure.to_ascii_lowercase().as_str() {
         "error" => return builtin_error(&args),
-        "message" => return builtin_message(&args),
+        "message" => {
+            if let Some((object, handler)) = ctx.test_handlers.message.clone() {
+                let message = formatted_dialog_text(&args);
+                let result = dispatch_workspace_procedure(
+                    Some(&object),
+                    &handler,
+                    vec![Value::Text(message)],
+                    ctx,
+                );
+                ctx.var_writebacks.clear();
+                return result;
+            }
+            return builtin_message(&args);
+        }
+        "confirm" => {
+            if let Some((object, handler)) = ctx.test_handlers.confirm.clone() {
+                let question = formatted_dialog_text(&args);
+                let result = dispatch_workspace_procedure(
+                    Some(&object),
+                    &handler,
+                    vec![Value::Text(question), Value::Boolean(false)],
+                    ctx,
+                );
+                if result.is_error() {
+                    return result;
+                }
+                let reply = ctx
+                    .var_writebacks
+                    .iter()
+                    .find(|(index, _)| *index == 1)
+                    .and_then(|(_, value)| match value {
+                        Value::Boolean(reply) => Some(*reply),
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+                ctx.var_writebacks.clear();
+                return Eval::Normal(Value::Boolean(reply));
+            }
+            return Eval::Normal(Value::Boolean(
+                args.get(1)
+                    .and_then(|value| match value {
+                        Value::Boolean(default) => Some(*default),
+                        _ => None,
+                    })
+                    .unwrap_or(false),
+            ));
+        }
         "strsubstno" => return builtin_strsubstno(&args),
         "format" => return builtin_format(&args),
         "strlen" => return builtin_strlen(&args),
@@ -766,6 +824,19 @@ fn builtin_message(args: &[Value]) -> Eval {
         msg
     };
     Eval::Normal(Value::Empty)
+}
+
+fn formatted_dialog_text(args: &[Value]) -> String {
+    let message = match args.first() {
+        Some(Value::Text(text)) | Some(Value::Code(text)) => text.clone(),
+        Some(value) => render_value(value),
+        None => String::new(),
+    };
+    if args.len() > 1 {
+        substitute_placeholders(&message, &args[1..])
+    } else {
+        message
+    }
 }
 
 /// `StrSubstNo(fmt, arg1, …)` — substitute %1, %2, … in `fmt`.

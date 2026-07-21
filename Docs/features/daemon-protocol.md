@@ -14,11 +14,13 @@ path does **not** use the daemon — it uses LSP handlers directly. See
 - **Wire format:** newline-delimited JSON-RPC 2.0 (`Request { jsonrpc, id, method, params? }`,
   `Response { jsonrpc, id, result? , error? }`, `RpcError { code, message }`). Standard error codes
   plus `-32000` (code analysis) and `-32001` (file not found).
-- **Socket path (`socket.rs`):** deterministic — FNV-1a hash of the canonicalized project root →
-  `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock`, with a `/run/user/{uid}` fallback. Directory `0700`, socket
-  `0600`.
-- **Auto-start & locking (`client.rs`, F-046):** `DaemonClient::connect` tries the socket, else takes
-  a per-socket `.lock` (atomic `create_new`) and spawns the daemon while losers wait; stale locks
+- **Endpoint name (`socket.rs`):** deterministic — an FNV-1a hash of the canonicalized project root.
+  Linux uses `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` with a `/run/user/{uid}` fallback; macOS uses its
+  per-user `$TMPDIR` when XDG is unset; Windows uses
+  `\\.\pipe\al-lsp-{user-scope-hash}-{project-hash}`. Unix directories are `0700` and sockets `0600`.
+- **Auto-start & locking (`client.rs`, F-046):** `DaemonClient::connect` tries the local endpoint,
+  else takes a per-project filesystem `.lock` (atomic `create_new`) and spawns the daemon while
+  losers wait; stale locks
   (>30 s) are reclaimed. Client timeouts: 2 s socket poll (not the request deadline), 30 s default
   request timeout, 60 s init wait with 250 ms retries while the daemon reports "initializing".
 - **Lifecycle (`daemon/mod.rs`):** ≤64 concurrent connections (semaphore); 30-minute idle timeout
@@ -76,6 +78,24 @@ al-lsp daemon --project /path/to/project
 ```
 
 Then any `al-explorer <command>` in that project connects to it (auto-starting it if needed).
+
+## Platform verification
+
+Cross-platform support is covered at three levels:
+
+- `cargo test -p al-protocol` includes
+  `client::cross_platform_tests::local_transport_round_trip_uses_real_platform_backend`. It binds
+  the backend selected for the host, exchanges a framed JSON-RPC request and response, and therefore
+  exercises a Unix-domain socket on Linux/macOS or a real named pipe on Windows.
+- The native harness runs the compiled `al-lsp` and `al-explorer` binaries. Its `cli_smoke` and
+  `extension_smoke` suites verify daemon auto-start plus a request/response round trip.
+- `.github/workflows/ci.yml` runs both layers on `windows-latest`, after building both binaries.
+  This matters because cross-compiling can prove that Windows code builds, but cannot exercise the
+  named-pipe runtime. Repository consistency tests pin those Windows CI commands so that coverage
+  cannot be silently removed while the documentation still claims support.
+
+See the [testing guide](../testing-guide.md#daemon-ipc-on-linux-macos-and-windows) for the exact
+commands and platform matrix.
 
 ## Limitations & roadmap
 

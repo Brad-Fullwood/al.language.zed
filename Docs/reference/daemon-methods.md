@@ -22,6 +22,13 @@ route here; MCP calls the same dispatcher in-process. Every method below is avai
 
 XLIFF: `xlf.generate`, `xlf.refresh`, `xlf.untranslated`, `xlf.suggest`.
 
+`compile` is native by default. A native response includes `backend: "native"`, `validated: true`,
+`verificationLevel: "native-syntax-project-binding-symbol-graph"`, `appPath` (or `null` on
+rejection), and diagnostics with 1-based `line`/`column` plus exact native `endLine`/`endColumn`.
+Workspace semantic/call-graph errors gate emission; warnings are returned with a successful build.
+Set `al.useOfficialCompiler: true` to select the explicit Microsoft `alc` backend; there is no
+silent fallback from native to Microsoft tooling.
+
 Tests: `tests.discover`, `tests.run`, `tests.coverage`, `tests.run_batch`, `tests.run_auto`,
 `tests.last_results`, `tests.affected`, `tests.classify`, `tests.snapshot_replay`,
 `tests.snapshot_diff`, `tests.mutate`.

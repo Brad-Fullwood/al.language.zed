@@ -52,10 +52,11 @@ The gaps previously listed here are implemented and regression-tested:
   `AL-NL004` follows the complete call/event stack from `[TryFunction]` and
   highlights non-temporary record writes that AL will not roll back. Resolution
   covers ordinary calls, interface dispatch, `Codeunit.Run`, table triggers,
-  event publishers/subscribers, and standard/third-party declarations loaded
-  from `.app` symbols. Dependency packages do not contain executable bodies, so
-  the analyzer never invents side effects it cannot prove; post-write dependency
-  events such as `OnAfterModifyEvent` are recognized as transaction boundaries.
+  event publishers/subscribers, and standard/third-party code. Complete AL
+  bodies embedded in loaded `.app` packages are extracted once into a cached
+  dependency source index and participate in the same call/effect graph as the
+  project. Only genuinely source-free packages fall back to declarations and
+  known event boundaries such as `OnAfterModifyEvent`.
 - **Native compile-time validation** — native compile/package now verifies once
   from a coherent source snapshot and refuses to replace the last good `.app`
   on blocking syntax, manifest/dependency, object/member identity, declared-type,

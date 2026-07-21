@@ -381,6 +381,8 @@ mod tests {
             id: 50100,
             file: "/src/MyTests.al".to_string(),
             tests: vec![],
+            test_initializers: vec![],
+            test_cleanups: vec![],
         }];
         let diags = results_to_diagnostics_with_codeunits(&results, &codeunits);
         assert_eq!(diags.len(), 1);

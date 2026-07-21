@@ -140,6 +140,10 @@ pub struct CompileDiagnostic {
     pub file: String,
     pub line: u32,
     pub column: u32,
+    /// Optional one-based end position. Native verification supplies exact
+    /// ranges; `alc` text output supplies only a start position.
+    pub end_line: Option<u32>,
+    pub end_column: Option<u32>,
     pub severity: DiagnosticSeverity,
     pub code: String,
     pub message: String,
@@ -488,6 +492,8 @@ fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
         file,
         line: line_num,
         column: col_num,
+        end_line: None,
+        end_column: None,
         severity,
         code,
         message,
@@ -517,6 +523,8 @@ pub fn native_compile(project_root: &Path) -> CompileResult {
                     file: diagnostic.file,
                     line: diagnostic.line,
                     column: diagnostic.column,
+                    end_line: Some(diagnostic.end_line),
+                    end_column: Some(diagnostic.end_column),
                     severity: match diagnostic.severity {
                         al_emit::VerificationSeverity::Error => DiagnosticSeverity::Error,
                         al_emit::VerificationSeverity::Warning => DiagnosticSeverity::Warning,
@@ -566,6 +574,8 @@ pub fn native_compile(project_root: &Path) -> CompileResult {
                 file: project_root.join("app.json").display().to_string(),
                 line: 1,
                 column: 1,
+                end_line: None,
+                end_column: None,
                 severity: DiagnosticSeverity::Error,
                 code: "ALN0000".to_string(),
                 message: error.to_string(),
@@ -761,6 +771,8 @@ Build failed.";
                 file: "test.al".to_string(),
                 line: 1,
                 column: 1,
+                end_line: None,
+                end_column: None,
                 severity: DiagnosticSeverity::Error,
                 code: "AL0001".to_string(),
                 message: "test error".to_string(),
@@ -1216,6 +1228,13 @@ Build failed.";
             "expected native syntax diagnostic, got {:?}",
             rejected.diagnostics
         );
+        let syntax = rejected
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "ALN0001")
+            .unwrap();
+        assert!(syntax.end_line.is_some());
+        assert!(syntax.end_column.is_some());
         assert_eq!(
             std::fs::read(app_path).unwrap(),
             last_good,
@@ -1241,5 +1260,31 @@ Build failed.";
             "expected unresolved type diagnostic, got {:?}",
             result.diagnostics
         );
+    }
+
+    #[test]
+    fn native_compile_reports_manifest_failures_as_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"id":"bad","publisher":"T","version":"1.0"}"#,
+        )
+        .unwrap();
+
+        let result = native_compile(dir.path());
+        assert!(!result.success);
+        assert!(result.app_path.is_none());
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ALN0101"));
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ALN0102"));
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ALN0103"));
     }
 }

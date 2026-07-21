@@ -20,9 +20,9 @@ pub struct SymbolIndex {
     /// Objects keyed by lowercase name. Multiple objects can share a name
     /// (e.g., a Table and a Page with the same name, or objects from different packages).
     by_name: DashMap<String, Vec<Arc<SymbolEntry>>>,
-    /// Sorted unique names make relevance-ranked prefix/substring search
-    /// deterministic without collecting and sorting every symbol hit.
-    sorted_names: std::sync::RwLock<std::collections::BTreeSet<String>>,
+    /// Lazily-built sorted unique names make relevance-ranked search
+    /// deterministic without adding work to package loading.
+    sorted_names: std::sync::RwLock<Option<Arc<Vec<String>>>>,
     by_kind_id: DashMap<(ObjectKind, i32), Vec<Arc<SymbolEntry>>>,
     by_kind: DashMap<ObjectKind, Vec<Arc<SymbolEntry>>>,
     by_extends: DashMap<String, Vec<Arc<SymbolEntry>>>,
@@ -46,7 +46,7 @@ impl SymbolIndex {
     pub fn new() -> Self {
         Self {
             by_name: DashMap::new(),
-            sorted_names: std::sync::RwLock::new(std::collections::BTreeSet::new()),
+            sorted_names: std::sync::RwLock::new(None),
             by_kind_id: DashMap::new(),
             by_kind: DashMap::new(),
             by_extends: DashMap::new(),
@@ -328,37 +328,56 @@ impl SymbolIndex {
 
     pub fn add_entries(&self, entries: &[SymbolEntry]) {
         self.invalidate_composed_for_entries(entries.iter());
-        let names: Vec<String> = entries
-            .iter()
-            .map(|entry| entry.name.to_lowercase())
-            .collect();
+        let update_sorted_names = entries.len() <= 64
+            && self
+                .sorted_names
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_some();
         let new_arcs: Vec<Arc<SymbolEntry>> = entries
             .iter()
             .map(|entry| self.add_arc(Arc::new(entry.clone())))
             .collect();
-        self.sorted_names
-            .write()
-            .unwrap_or_else(|error| error.into_inner())
-            .extend(names);
+        self.update_sorted_names_after_add(&new_arcs, update_sorted_names);
         self.update_default_completions(&new_arcs);
     }
 
     /// Like `add_entries` but takes owned entries, avoiding the clone into Arc.
     pub fn add_entries_owned(&self, entries: Vec<SymbolEntry>) {
         self.invalidate_composed_for_entries(entries.iter());
-        let names: Vec<String> = entries
-            .iter()
-            .map(|entry| entry.name.to_lowercase())
-            .collect();
+        let update_sorted_names = entries.len() <= 64
+            && self
+                .sorted_names
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_some();
         let new_arcs: Vec<Arc<SymbolEntry>> = entries
             .into_iter()
             .map(|entry| self.add_arc(Arc::new(entry)))
             .collect();
-        self.sorted_names
-            .write()
-            .unwrap_or_else(|error| error.into_inner())
-            .extend(names);
+        self.update_sorted_names_after_add(&new_arcs, update_sorted_names);
         self.update_default_completions(&new_arcs);
+    }
+
+    fn update_sorted_names_after_add(&self, entries: &[Arc<SymbolEntry>], update_in_place: bool) {
+        let mut cache = self
+            .sorted_names
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        if !update_in_place {
+            *cache = None;
+            return;
+        }
+        let Some(names) = cache.as_mut() else {
+            return;
+        };
+        let names = Arc::make_mut(names);
+        for entry in entries {
+            let name = entry.name.to_lowercase();
+            if let Err(position) = names.binary_search(&name) {
+                names.insert(position, name);
+            }
+        }
     }
 
     /// Append newly-added entries into the default_completions cache up to the cap.
@@ -407,10 +426,7 @@ impl SymbolIndex {
         }
 
         let query_lower = query.to_lowercase();
-        let names = self
-            .sorted_names
-            .read()
-            .unwrap_or_else(|error| error.into_inner());
+        let names = self.sorted_names();
         let mut results = Vec::with_capacity(limit.min(DEFAULT_COMPLETIONS_CAP));
 
         if !query_lower.is_empty() {
@@ -418,8 +434,8 @@ impl SymbolIndex {
         }
 
         if results.len() < limit {
-            let range = names.range(query_lower.clone()..);
-            for name in range {
+            let start = names.partition_point(|name| name < &query_lower);
+            for name in &names[start..] {
                 if !name.starts_with(&query_lower) {
                     break;
                 }
@@ -462,6 +478,35 @@ impl SymbolIndex {
                 .into_iter()
                 .take(limit.saturating_sub(results.len())),
         );
+    }
+
+    fn sorted_names(&self) -> Arc<Vec<String>> {
+        if let Some(names) = self
+            .sorted_names
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            return Arc::clone(names);
+        }
+
+        let mut cache = self
+            .sorted_names
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(names) = cache.as_ref() {
+            return Arc::clone(names);
+        }
+        let mut names: Vec<String> = self
+            .by_name
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        let names = Arc::new(names);
+        *cache = Some(Arc::clone(&names));
+        names
     }
 
     pub fn search_in_package(&self, package_name: &str, query: &str) -> Vec<Arc<SymbolEntry>> {
@@ -665,6 +710,20 @@ impl SymbolIndex {
 
         let ptrs: std::collections::HashSet<*const SymbolEntry> =
             to_remove.iter().map(|(_, arc)| Arc::as_ptr(arc)).collect();
+        let update_sorted_names = to_remove.len() <= 64
+            && self
+                .sorted_names
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_some();
+        let removed_names: Vec<String> = if update_sorted_names {
+            to_remove
+                .iter()
+                .map(|(_, entry)| entry.name.to_lowercase())
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         for (seq, _) in &to_remove {
             self.all.remove(seq);
@@ -674,14 +733,24 @@ impl SymbolIndex {
         Self::retain_arcs_not_in(&self.by_kind_id, &ptrs);
         Self::retain_arcs_not_in(&self.by_kind, &ptrs);
         Self::retain_arcs_not_in(&self.by_extends, &ptrs);
-        *self
+        let mut sorted_names = self
             .sorted_names
             .write()
-            .unwrap_or_else(|error| error.into_inner()) = self
-            .by_name
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect();
+            .unwrap_or_else(|error| error.into_inner());
+        if update_sorted_names {
+            if let Some(names) = sorted_names.as_mut() {
+                let names = Arc::make_mut(names);
+                for name in removed_names {
+                    if !self.by_name.contains_key(&name) {
+                        if let Ok(position) = names.binary_search(&name) {
+                            names.remove(position);
+                        }
+                    }
+                }
+            }
+        } else {
+            *sorted_names = None;
+        }
 
         for package_name in package_names {
             self.app_paths.remove(package_name);
@@ -821,6 +890,47 @@ mod tests {
             vec!["Customer", "Customer Ledger Entry", "My Customer Archive"]
         );
         assert!(index.search("customer", 0).is_empty());
+    }
+
+    #[test]
+    fn search_name_cache_tracks_additions_after_it_is_built() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[make_entry(ObjectKind::Table, 1, "Alpha")]);
+        assert_eq!(index.search("alpha", 10).len(), 1);
+
+        index.add_entries(&[make_entry(ObjectKind::Table, 2, "Beta")]);
+        assert_eq!(index.search("beta", 10).len(), 1);
+
+        index.add_entries_owned(vec![make_entry(ObjectKind::Table, 3, "Gamma")]);
+        assert_eq!(index.search("gamma", 10).len(), 1);
+
+        let large_batch: Vec<_> = (0..65)
+            .map(|offset| {
+                make_entry(
+                    ObjectKind::Table,
+                    10_000 + offset,
+                    &format!("Bulk {offset:02}"),
+                )
+            })
+            .collect();
+        index.add_entries_owned(large_batch);
+        assert_eq!(index.search("bulk", 100).len(), 65);
+    }
+
+    #[test]
+    fn search_name_cache_tracks_removals_after_it_is_built() {
+        let index = SymbolIndex::new();
+        let mut drop_entry = make_entry(ObjectKind::Table, 1, "Drop Me");
+        drop_entry.package = "Drop".into();
+        let mut keep_entry = make_entry(ObjectKind::Table, 2, "Keep Me");
+        keep_entry.package = "Keep".into();
+        index.add_entries(&[drop_entry, keep_entry]);
+        assert_eq!(index.search("me", 10).len(), 2);
+
+        index.remove_package_entries("drop");
+
+        assert!(index.search("drop", 10).is_empty());
+        assert_eq!(index.search("keep", 10).len(), 1);
     }
 
     #[test]

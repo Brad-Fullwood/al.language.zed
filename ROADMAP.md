@@ -69,8 +69,10 @@ Native diagnostics now combine file-local `AL-NL001`/`AL-NL002`, project and sym
 `AL-NC001` through `AL-NC006`, and resolved transaction-stack rules: `AL-NL003` warns when
 `Commit()` can finalize an earlier database change, while `AL-NL004` highlights writes reached
 from `[TryFunction]`. The transaction pass follows ordinary calls, interface dispatch,
-`Codeunit.Run`, table triggers, events/subscribers, and dependency declarations loaded from
-`.app` symbols. Remaining catalogue work:
+`Codeunit.Run`, table triggers, events/subscribers, and complete Microsoft/third-party source
+bodies embedded in loaded `.app` packages. Those bodies are parsed once into a cached dependency
+source index; source-free packages fall back to declarations and known event boundaries. Remaining
+catalogue work:
 
 - Add the remaining high-value rules: missing `SetLoadFields`, missing `ApplicationArea`, missing tooltips,
   obsolete usage, and architecture-layer violations.

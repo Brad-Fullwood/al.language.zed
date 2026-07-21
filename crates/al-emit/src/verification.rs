@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use al_symbols::model::{ObjectKind, SymbolEntry};
 use serde::Serialize;
 
-use crate::{EmitObject, ExternalSymbols};
+use crate::{EmitObject, ExternalSymbols, SourceFile, SymbolRefMeta};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -45,6 +45,182 @@ impl VerificationDiagnostic {
             message,
         }
     }
+
+    fn error_for_object(object: &EmitObject, code: &'static str, message: String) -> Self {
+        Self {
+            file: object.source_file.clone(),
+            line: object.source_range.start.line.saturating_add(1),
+            column: object.source_range.start.character.saturating_add(1),
+            end_line: object.source_range.end.line.saturating_add(1),
+            end_column: object.source_range.end.character.saturating_add(1),
+            severity: VerificationSeverity::Error,
+            code,
+            message,
+        }
+    }
+}
+
+pub(crate) fn verify_manifest(app_json: &serde_json::Value) -> Vec<VerificationDiagnostic> {
+    let mut diagnostics = Vec::new();
+    let required = ["id", "name", "publisher", "version"];
+    for field in required {
+        if app_json
+            .get(field)
+            .and_then(|value| value.as_str())
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            diagnostics.push(VerificationDiagnostic::error(
+                "app.json",
+                "ALN0101",
+                format!("app.json field `{field}` must be a non-empty string"),
+            ));
+        }
+    }
+
+    if let Some(id) = app_json.get("id").and_then(|value| value.as_str()) {
+        if !is_guid(id) {
+            diagnostics.push(VerificationDiagnostic::error(
+                "app.json",
+                "ALN0102",
+                format!("app.json field `id` is not a valid GUID: {id}"),
+            ));
+        }
+    }
+    if let Some(version) = app_json.get("version").and_then(|value| value.as_str()) {
+        if !is_al_version(version) {
+            diagnostics.push(VerificationDiagnostic::error(
+                "app.json",
+                "ALN0103",
+                format!("app.json field `version` must contain four numeric components: {version}"),
+            ));
+        }
+    }
+
+    if let Some(ranges) = app_json.get("idRanges") {
+        match ranges.as_array() {
+            Some(ranges) => {
+                for (index, range) in ranges.iter().enumerate() {
+                    let bounds = range.as_object().and_then(|object| {
+                        let from = object.get("from")?.as_i64()?;
+                        let to = object.get("to")?.as_i64()?;
+                        Some((from, to))
+                    });
+                    match bounds {
+                        Some((from, to)) if from > 0 && from <= to && to <= i64::from(i32::MAX) => {}
+                        _ => diagnostics.push(VerificationDiagnostic::error(
+                            "app.json",
+                            "ALN0104",
+                            format!(
+                                "app.json idRanges[{index}] must contain positive integer `from`/`to` values with from <= to"
+                            ),
+                        )),
+                    }
+                }
+            }
+            None => diagnostics.push(VerificationDiagnostic::error(
+                "app.json",
+                "ALN0104",
+                "app.json field `idRanges` must be an array".to_string(),
+            )),
+        }
+    }
+
+    if let Some(dependencies) = app_json.get("dependencies") {
+        match dependencies.as_array() {
+            Some(dependencies) => {
+                let mut ids = HashSet::new();
+                for (index, dependency) in dependencies.iter().enumerate() {
+                    let Some(dependency) = dependency.as_object() else {
+                        diagnostics.push(VerificationDiagnostic::error(
+                            "app.json",
+                            "ALN0105",
+                            format!("app.json dependencies[{index}] must be an object"),
+                        ));
+                        continue;
+                    };
+                    for field in ["id", "name", "publisher", "version"] {
+                        if dependency
+                            .get(field)
+                            .and_then(|value| value.as_str())
+                            .is_none_or(|value| value.trim().is_empty())
+                        {
+                            diagnostics.push(VerificationDiagnostic::error(
+                                "app.json",
+                                "ALN0105",
+                                format!(
+                                    "app.json dependencies[{index}].{field} must be a non-empty string"
+                                ),
+                            ));
+                        }
+                    }
+                    if let Some(id) = dependency.get("id").and_then(|value| value.as_str()) {
+                        if !is_guid(id) {
+                            diagnostics.push(VerificationDiagnostic::error(
+                                "app.json",
+                                "ALN0105",
+                                format!(
+                                    "app.json dependencies[{index}].id is not a valid GUID: {id}"
+                                ),
+                            ));
+                        }
+                        let normalized = id.trim_matches(['{', '}']).to_lowercase();
+                        if !ids.insert(normalized) {
+                            diagnostics.push(VerificationDiagnostic::error(
+                                "app.json",
+                                "ALN0106",
+                                format!("app.json declares dependency id {id} more than once"),
+                            ));
+                        }
+                    }
+                    if let Some(version) =
+                        dependency.get("version").and_then(|value| value.as_str())
+                    {
+                        if !is_al_version(version) {
+                            diagnostics.push(VerificationDiagnostic::error(
+                                "app.json",
+                                "ALN0105",
+                                format!(
+                                    "app.json dependencies[{index}].version must contain four numeric components: {version}"
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+            None => diagnostics.push(VerificationDiagnostic::error(
+                "app.json",
+                "ALN0105",
+                "app.json field `dependencies` must be an array".to_string(),
+            )),
+        }
+    }
+
+    diagnostics
+}
+
+fn is_guid(value: &str) -> bool {
+    let value = value.trim();
+    let value = match (value.strip_prefix('{'), value.strip_suffix('}')) {
+        (Some(without_open), Some(_)) => &without_open[..without_open.len().saturating_sub(1)],
+        (None, None) => value,
+        _ => return false,
+    };
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
+}
+
+fn is_al_version(value: &str) -> bool {
+    let mut components = value.split('.');
+    (0..4).all(|_| {
+        components.next().is_some_and(|component| {
+            !component.is_empty()
+                && component.bytes().all(|byte| byte.is_ascii_digit())
+                && component.parse::<u32>().is_ok()
+        })
+    }) && components.next().is_none()
 }
 
 pub(crate) fn verify_project_objects(
@@ -132,8 +308,8 @@ fn verify_object_identity(
                     i64::from(object.entry.id) >= *from && i64::from(object.entry.id) <= *to
                 })
             {
-                out.push(VerificationDiagnostic::error(
-                    object.source_file.clone(),
+                out.push(VerificationDiagnostic::error_for_object(
+                    object,
                     "ALN1003",
                     format!(
                         "{} '{}' uses id {}, which is outside app.json idRanges",
@@ -156,8 +332,8 @@ fn verify_object_identity(
                 .map(|candidate| format!("'{}' in {}", candidate.entry.name, candidate.source_file))
                 .collect::<Vec<_>>()
                 .join(", ");
-            out.push(VerificationDiagnostic::error(
-                object.source_file.clone(),
+            out.push(VerificationDiagnostic::error_for_object(
+                object,
                 "ALN1001",
                 format!(
                     "Duplicate {} id {id} for '{}' (also declared in {others})",
@@ -174,8 +350,8 @@ fn verify_object_identity(
                 .map(|candidate| candidate.source_file.clone())
                 .collect::<Vec<_>>()
                 .join(", ");
-            out.push(VerificationDiagnostic::error(
-                object.source_file.clone(),
+            out.push(VerificationDiagnostic::error_for_object(
+                object,
                 "ALN1002",
                 format!(
                     "Duplicate {} name '{}' (also declared in {others})",
@@ -244,8 +420,8 @@ fn verify_members(objects: &[EmitObject], out: &mut Vec<VerificationDiagnostic>)
             let mut parameter_names = HashSet::new();
             for parameter in &method.parameters {
                 if !parameter_names.insert(parameter.name.to_lowercase()) {
-                    out.push(VerificationDiagnostic::error(
-                        object.source_file.clone(),
+                    out.push(VerificationDiagnostic::error_for_object(
+                        object,
                         "ALN1106",
                         format!(
                             "Procedure '{}' on {} '{}' declares parameter '{}' more than once",
@@ -259,8 +435,8 @@ fn verify_members(objects: &[EmitObject], out: &mut Vec<VerificationDiagnostic>)
             .into_iter()
             .filter(|(_, methods)| methods.len() > 1)
         {
-            out.push(VerificationDiagnostic::error(
-                object.source_file.clone(),
+            out.push(VerificationDiagnostic::error_for_object(
+                object,
                 "ALN1105",
                 format!(
                     "{} '{}' declares duplicate procedure signature {signature} ({})",
@@ -280,8 +456,8 @@ fn verify_members(objects: &[EmitObject], out: &mut Vec<VerificationDiagnostic>)
             for key in entry.keys.iter().chain(object.field_groups.iter()) {
                 for field in &key.field_names {
                     if !fields.contains(&field.to_lowercase()) {
-                        out.push(VerificationDiagnostic::error(
-                            object.source_file.clone(),
+                        out.push(VerificationDiagnostic::error_for_object(
+                            object,
                             "ALN1107",
                             format!(
                                 "{} '{}' references unknown field '{}' in key/field group '{}'",
@@ -307,8 +483,8 @@ fn duplicate_values<'a>(
         groups.entry(value).or_default().push(name);
     }
     for (value, names) in groups.into_iter().filter(|(_, names)| names.len() > 1) {
-        out.push(VerificationDiagnostic::error(
-            object.source_file.clone(),
+        out.push(VerificationDiagnostic::error_for_object(
+            object,
             code,
             format!(
                 "{} '{}' has duplicate {label} {value}: {}",
@@ -330,8 +506,8 @@ fn duplicate_names<'a>(
     let mut names = HashSet::new();
     for name in values {
         if !names.insert(name.to_lowercase()) {
-            out.push(VerificationDiagnostic::error(
-                object.source_file.clone(),
+            out.push(VerificationDiagnostic::error_for_object(
+                object,
                 code,
                 format!(
                     "{} '{}' declares duplicate {label} '{}'",
@@ -489,17 +665,16 @@ fn require_object(
     out: &mut Vec<VerificationDiagnostic>,
 ) {
     if !available.contains(&(kind, name.to_lowercase())) {
-        out.push(VerificationDiagnostic::error(
-            object.source_file.clone(),
-            code,
-            message,
+        out.push(VerificationDiagnostic::error_for_object(
+            object, code, message,
         ));
     }
 }
 
 pub(crate) fn verify_artifact(
     bytes: &[u8],
-    expected_source_count: usize,
+    expected_sources: &[SourceFile],
+    expected_meta: &SymbolRefMeta,
 ) -> Vec<VerificationDiagnostic> {
     let contents = match al_symbols::app_inspect::list_app_entries(bytes) {
         Ok(contents) => contents,
@@ -517,6 +692,13 @@ pub(crate) fn verify_artifact(
         .map(|entry| entry.name.as_str())
         .collect();
     let mut diagnostics = Vec::new();
+    if names.len() != contents.entries.len() {
+        diagnostics.push(VerificationDiagnostic::error(
+            "<artifact>",
+            "ALN3006",
+            "Emitted artifact contains duplicate archive entry names".to_string(),
+        ));
+    }
     for required in [
         "NavxManifest.xml",
         "SymbolReference.json",
@@ -530,21 +712,78 @@ pub(crate) fn verify_artifact(
                 "ALN3002",
                 format!("Emitted artifact is missing required entry {required}"),
             ));
+        } else if contents
+            .entries
+            .iter()
+            .any(|entry| entry.name == required && entry.size == 0)
+        {
+            diagnostics.push(VerificationDiagnostic::error(
+                "<artifact>",
+                "ALN3002",
+                format!("Emitted artifact entry {required} is empty"),
+            ));
         }
     }
-    let source_count = contents
+
+    let actual_sources: HashSet<&str> = contents
         .entries
         .iter()
         .filter(|entry| entry.name.to_ascii_lowercase().ends_with(".al"))
-        .count();
-    if source_count != expected_source_count {
+        .map(|entry| entry.name.as_str())
+        .collect();
+    let expected_sources: HashSet<&str> = expected_sources
+        .iter()
+        .map(|source| source.archive_path.as_str())
+        .collect();
+    if actual_sources != expected_sources {
         diagnostics.push(VerificationDiagnostic::error(
             "<artifact>",
             "ALN3003",
             format!(
-                "Emitted artifact contains {source_count} AL source entries; expected {expected_source_count}"
+                "Emitted AL source entries differ from the verified source snapshot (actual: {}; expected: {})",
+                sorted_names(&actual_sources).join(", "),
+                sorted_names(&expected_sources).join(", ")
             ),
         ));
     }
+
+    match al_symbols::app_reader::read_app_bytes(bytes) {
+        Ok(package) => {
+            let actual_id = package.app_id.trim_matches(['{', '}']);
+            let expected_id = expected_meta.app_id.trim_matches(['{', '}']);
+            if !actual_id.eq_ignore_ascii_case(expected_id)
+                || package.name != expected_meta.name
+                || package.publisher != expected_meta.publisher
+                || package.version != expected_meta.version
+            {
+                diagnostics.push(VerificationDiagnostic::error(
+                    "<artifact>",
+                    "ALN3005",
+                    format!(
+                        "Emitted package identity does not match app.json (got {} / {} / {} / {}; expected {} / {} / {} / {})",
+                        package.app_id,
+                        package.publisher,
+                        package.name,
+                        package.version,
+                        expected_meta.app_id,
+                        expected_meta.publisher,
+                        expected_meta.name,
+                        expected_meta.version
+                    ),
+                ));
+            }
+        }
+        Err(error) => diagnostics.push(VerificationDiagnostic::error(
+            "<artifact>",
+            "ALN3004",
+            format!("Emitted manifest or SymbolReference.json failed to parse: {error}"),
+        )),
+    }
     diagnostics
+}
+
+fn sorted_names<'a>(names: &HashSet<&'a str>) -> Vec<&'a str> {
+    let mut names: Vec<_> = names.iter().copied().collect();
+    names.sort_unstable();
+    names
 }

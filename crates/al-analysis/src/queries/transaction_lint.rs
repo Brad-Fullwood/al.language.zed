@@ -80,6 +80,8 @@ struct EffectSite {
 struct ProcedureEffects {
     node: NodeId,
     file: PathBuf,
+    declaration_range: Range,
+    reportable: bool,
     is_try_function: bool,
     writes: Vec<EffectSite>,
     commits: Vec<EffectSite>,
@@ -91,10 +93,9 @@ struct ProcedureEffects {
 ///
 /// Resolution includes workspace calls, interface dispatch, codeunit-run
 /// dispatch, record triggers, event subscribers, and object/method declarations
-/// loaded from standard and third-party `.app` symbol packages. Package bodies
-/// are not present in `SymbolReference.json`, so effects inside a dependency are
-/// not guessed; dependency post-write events are still understood as mutation
-/// boundaries for project subscribers.
+/// loaded from standard and third-party `.app` packages. When a package embeds
+/// AL source, its complete procedure bodies participate in call/effect
+/// resolution. Symbol-only packages retain declaration/event fallback behavior.
 #[must_use]
 pub fn transaction_lints(workspace: &Workspace) -> Vec<WorkspaceLintDiagnostic> {
     // Ensure the cached graph is workspace-enriched (package nodes alone are
@@ -109,8 +110,16 @@ pub fn transaction_lints(workspace: &Workspace) -> Vec<WorkspaceLintDiagnostic> 
         &insight,
         &mut call_graph,
     );
+    let dependency_sources = workspace.get_or_build_dependency_source_index();
+    al_insight::calls::resolve_all_workspace_call_edges(
+        &dependency_sources,
+        &workspace.symbols,
+        &insight,
+        &mut call_graph,
+    );
 
-    let effects = collect_workspace_effects(workspace, &insight);
+    let mut effects = collect_effects(&workspace.file_index, &insight, true);
+    effects.extend(collect_effects(&dependency_sources, &insight, false));
     if effects.is_empty() {
         return Vec::new();
     }
@@ -140,7 +149,7 @@ fn lint_commits(
     out: &mut Vec<WorkspaceLintDiagnostic>,
     seen: &mut HashSet<(&'static str, PathBuf, u32, u32)>,
 ) {
-    for effect in effects {
+    for effect in effects.iter().filter(|effect| effect.reportable) {
         for commit in &effect.commits {
             // Same-procedure ordering is exact: only a write textually before
             // this Commit() is evidence of an earlier mutation.
@@ -200,24 +209,47 @@ fn lint_try_stacks(
         let reachable = reachable_callees_with_paths(root.node, graph);
         for (node, path) in reachable {
             let Some(effect) = by_node.get(&node).copied() else {
-                // Dependency nodes contribute resolution/dispatch edges, but
-                // SymbolReference.json deliberately contains no executable
-                // body from which a write could be proven.
+                // A genuinely symbol-only dependency has no body from which a
+                // write can be proven. Source-backed dependencies are present
+                // in `by_node` and participate normally.
                 continue;
             };
             for write in &effect.writes {
+                let (file, range, message) = if effect.reportable {
+                    (
+                        effect.file.clone(),
+                        write.range,
+                        format!(
+                            "{} is reachable from [TryFunction] through {}; database changes in a try-function call stack are not rolled back when the try call fails.",
+                            write.label,
+                            format_path(graph, &path)
+                        ),
+                    )
+                } else if root.reportable {
+                    // The dependency body is known, but editor diagnostics
+                    // must point into the user's project. Anchor the warning on
+                    // the project TryFunction declaration and name the proven
+                    // external write/path in the message.
+                    (
+                        root.file.clone(),
+                        root.declaration_range,
+                        format!(
+                            "{} in dependency source is reachable from this [TryFunction] through {}; database changes in a try-function call stack are not rolled back when the try call fails.",
+                            write.label,
+                            format_path(graph, &path)
+                        ),
+                    )
+                } else {
+                    continue;
+                };
                 push_once(
                     out,
                     seen,
                     WorkspaceLintDiagnostic {
                         code: DATABASE_WRITE_IN_TRY_STACK,
-                        message: format!(
-                            "{} is reachable from [TryFunction] through {}; database changes in a try-function call stack are not rolled back when the try call fails.",
-                            write.label,
-                            format_path(graph, &path)
-                        ),
-                        file: effect.file.clone(),
-                        range: write.range,
+                        message,
+                        file,
+                        range,
                         severity: WorkspaceLintSeverity::Warning,
                     },
                 );
@@ -309,12 +341,12 @@ fn format_path(graph: &CallGraph, path: &[NodeId]) -> String {
         .join(" -> ")
 }
 
-fn collect_workspace_effects(
-    workspace: &Workspace,
+fn collect_effects(
+    file_index: &al_source::file_index::FileIndex,
     insight: &InsightGraph,
+    reportable: bool,
 ) -> Vec<ProcedureEffects> {
-    let snapshot: Vec<(PathBuf, al_source::file_index::CachedObjectInfo)> = workspace
-        .file_index
+    let snapshot: Vec<(PathBuf, al_source::file_index::CachedObjectInfo)> = file_index
         .object_info
         .iter()
         .map(|entry| (entry.key().clone(), entry.value().clone()))
@@ -325,10 +357,9 @@ fn collect_workspace_effects(
         let Ok(object_kind) = object.kind.parse::<ObjectKind>() else {
             continue;
         };
-        let Some((source, tree)) = workspace.file_index.get_cached_parse(&path) else {
+        let Some((source, tree)) = file_index.get_cached_parse(&path) else {
             continue;
         };
-        let source_bytes = source.as_bytes();
         let mut stack = vec![tree.root_node()];
         while let Some(node) = stack.pop() {
             if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
@@ -340,6 +371,7 @@ fn collect_workspace_effects(
                     &tree,
                     &source,
                     insight,
+                    reportable,
                 ) {
                     effects.push(effect);
                 }
@@ -348,7 +380,6 @@ fn collect_workspace_effects(
             let mut cursor = node.walk();
             stack.extend(node.children(&mut cursor));
         }
-        let _ = source_bytes;
     }
     effects
 }
@@ -362,10 +393,11 @@ fn effects_for_procedure(
     tree: &tree_sitter::Tree,
     source: &str,
     insight: &InsightGraph,
+    reportable: bool,
 ) -> Option<ProcedureEffects> {
     let bytes = source.as_bytes();
-    let name = procedure
-        .child_by_field_name("name")?
+    let name_node = procedure.child_by_field_name("name")?;
+    let name = name_node
         .utf8_text(bytes)
         .ok()?
         .trim()
@@ -384,6 +416,8 @@ fn effects_for_procedure(
     Some(ProcedureEffects {
         node,
         file: path.to_path_buf(),
+        declaration_range: al_syntax::ts_range_to_syntax(&name_node.range(), bytes).into(),
+        reportable,
         is_try_function,
         writes,
         commits,
@@ -630,6 +664,7 @@ fn capitalize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Cursor, Write};
 
     fn workspace(files: &[(&str, &str)]) -> Workspace {
         let ws = Workspace::new();
@@ -640,6 +675,50 @@ mod tests {
             );
         }
         ws
+    }
+
+    fn install_dependency_source_package(
+        workspace: &Workspace,
+        sources: &[(&str, &str)],
+    ) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        let app_path = directory.path().join("Dependency_Source.app");
+        let manifest = r#"<?xml version="1.0" encoding="utf-8"?>
+<Package><App Id="00000000-0000-0000-0000-000000000099" Name="Dependency Source" Publisher="Test" Version="1.0.0.0" /></Package>"#;
+        let symbols = r#"{
+  "Codeunits": [
+    { "Id": 70000, "Name": "Dependency Publisher", "Methods": [] },
+    { "Id": 70001, "Name": "Dependency Writer", "Methods": [] }
+  ]
+}"#;
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"NAVX");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&40u32.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 28]);
+        let mut archive_bytes = Vec::new();
+        {
+            let mut archive = zip::ZipWriter::new(Cursor::new(&mut archive_bytes));
+            let options = zip::write::SimpleFileOptions::default();
+            archive.start_file("NavxManifest.xml", options).unwrap();
+            archive.write_all(manifest.as_bytes()).unwrap();
+            archive.start_file("SymbolReference.json", options).unwrap();
+            archive.write_all(symbols.as_bytes()).unwrap();
+            for (path, source) in sources {
+                archive.start_file(*path, options).unwrap();
+                archive.write_all(source.as_bytes()).unwrap();
+            }
+            archive.finish().unwrap();
+        }
+        bytes.extend_from_slice(&archive_bytes);
+        std::fs::write(&app_path, bytes).unwrap();
+        let loaded = workspace
+            .symbols
+            .load_packages(std::slice::from_ref(&app_path));
+        assert_eq!(loaded.len(), 1);
+        workspace.invalidate_insight_graph();
+        directory
     }
 
     #[test]
@@ -775,6 +854,93 @@ mod tests {
             .find(|d| d.code == COMMIT_AFTER_DATABASE_CHANGE)
             .expect("post-write dependency event must make Commit unsafe");
         assert!(diagnostic.message.contains("dependency symbols"));
+    }
+
+    #[test]
+    fn dependency_source_write_and_event_reach_project_commit() {
+        let ws = workspace(&[(
+            "Subscriber.al",
+            r#"codeunit 50100 "Subscriber"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Dependency Publisher", 'OnAfterMutate', '', false, false)]
+    local procedure AfterDependencyMutation()
+    begin
+        Commit();
+    end;
+}"#,
+        )]);
+        let _package = install_dependency_source_package(
+            &ws,
+            &[(
+                "src/DependencyPublisher.al",
+                r#"codeunit 70000 "Dependency Publisher"
+{
+    procedure Mutate()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.Modify();
+        OnAfterMutate();
+    end;
+
+    [IntegrationEvent(false, false)]
+    local procedure OnAfterMutate()
+    begin
+    end;
+}"#,
+            )],
+        );
+
+        let diagnostics = transaction_lints(&ws);
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == COMMIT_AFTER_DATABASE_CHANGE)
+            .expect("dependency source write/event stack must reach project Commit");
+        assert!(diagnostic.message.contains("Dependency Publisher::Mutate"));
+        assert!(!diagnostic.message.contains("dependency symbols"));
+    }
+
+    #[test]
+    fn project_try_function_reports_write_inside_dependency_source() {
+        let ws = workspace(&[(
+            "TryDependency.al",
+            r#"codeunit 50100 "Try Dependency"
+{
+    [TryFunction]
+    procedure TryDependencyWrite()
+    var
+        Writer: Codeunit "Dependency Writer";
+    begin
+        Writer.WriteCustomer();
+    end;
+}"#,
+        )]);
+        let _package = install_dependency_source_package(
+            &ws,
+            &[(
+                "src/DependencyWriter.al",
+                r#"codeunit 70001 "Dependency Writer"
+{
+    procedure WriteCustomer()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.Modify();
+    end;
+}"#,
+            )],
+        );
+
+        let diagnostics = transaction_lints(&ws);
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == DATABASE_WRITE_IN_TRY_STACK)
+            .expect("dependency source write must be visible from project TryFunction");
+        assert_eq!(diagnostic.file, PathBuf::from("/project/TryDependency.al"));
+        assert!(diagnostic.message.contains("in dependency source"));
+        assert!(diagnostic
+            .message
+            .contains("Dependency Writer::WriteCustomer"));
     }
 
     #[test]

@@ -285,6 +285,8 @@ fn native_workspace_compile_diagnostics(
             file: path.display().to_string(),
             line: diagnostic.range.start.line + 1,
             column: diagnostic.range.start.character + 1,
+            end_line: Some(diagnostic.range.end.line + 1),
+            end_column: Some(diagnostic.range.end.character + 1),
             severity: match diagnostic.severity {
                 al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Error => {
                     al_compile::DiagnosticSeverity::Error
@@ -328,14 +330,18 @@ fn group_compile_diagnostics(
                     line: start_line,
                     character: start_char,
                 },
-                // Compiler diagnostics only carry a start position today; the
-                // LSP-spec way to express "to end of line" is the start of the
-                // next line. The previous u32::MAX sentinel was tolerated by
-                // Zed/VS Code but is undefined by the LSP spec and breaks
-                // stricter clients.
-                end: Position {
-                    line: start_line.saturating_add(1),
-                    character: 0,
+                end: match (d.end_line, d.end_column) {
+                    (Some(line), Some(character)) => Position {
+                        line: line.saturating_sub(1),
+                        character: character.saturating_sub(1),
+                    },
+                    // `alc` text diagnostics carry only a start. The LSP-spec
+                    // representation for the rest of that line is the start
+                    // of the next line.
+                    _ => Position {
+                        line: start_line.saturating_add(1),
+                        character: 0,
+                    },
                 },
             },
             severity: Some(severity),
@@ -657,6 +663,8 @@ mod tests {
             file: file.to_string(),
             line,
             column,
+            end_line: None,
+            end_column: None,
             severity: sev,
             code: code.to_string(),
             message: format!("{code} message"),
@@ -711,6 +719,22 @@ mod tests {
             }
         );
         assert_eq!(v[0].severity, Some(DiagnosticSeverity::WARNING));
+    }
+
+    #[test]
+    fn preserves_exact_native_end_position() {
+        let root = std::path::Path::new("/proj");
+        let mut diagnostic = diag("/proj/src/A.al", 5, 3, S::Error, "ALN0001");
+        diagnostic.end_line = Some(7);
+        diagnostic.end_column = Some(11);
+        let by_file = group_compile_diagnostics(&[diagnostic], root);
+        assert_eq!(
+            by_file["/proj/src/A.al"][0].range.end,
+            Position {
+                line: 6,
+                character: 10
+            }
+        );
     }
 
     #[test]

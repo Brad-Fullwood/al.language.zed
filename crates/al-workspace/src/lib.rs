@@ -2,6 +2,8 @@
 //!
 //! Per-project documents, symbols, configuration, and semantic state.
 
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod doctor;
@@ -42,6 +44,12 @@ pub struct PackageInfo {
     pub publisher: String,
     pub version: String,
     pub object_count: usize,
+}
+
+struct DependencySourceCache {
+    /// `(canonical app path, byte length, modified nanos)` in stable order.
+    fingerprint: Vec<(PathBuf, u64, u128)>,
+    index: Arc<FileIndex>,
 }
 
 /// ## Lock strategy
@@ -102,6 +110,11 @@ pub struct Workspace {
     /// Without this, the slow path would have to hold the `call_graph` write
     /// lock for the whole build, blocking every reader during initial warmup.
     call_graph_build_lock: std::sync::Mutex<()>,
+    /// Parsed Microsoft/third-party object sources extracted from loaded `.app`
+    /// packages. The fingerprint makes this cache independent from ordinary
+    /// workspace-file graph invalidation while still rebuilding after package
+    /// download/replacement.
+    dependency_source_index: std::sync::RwLock<Option<DependencySourceCache>>,
     /// Active profiler session loaded from a `.alcpuprofile` file.
     ///
     /// When a profile is loaded the hints are stored here so that `code_lens`
@@ -145,6 +158,7 @@ impl Workspace {
             insight_graph: std::sync::RwLock::new(None),
             call_graph: std::sync::RwLock::new(None),
             call_graph_build_lock: std::sync::Mutex::new(()),
+            dependency_source_index: std::sync::RwLock::new(None),
             profiler_session: std::sync::RwLock::new(None),
             test_results: std::sync::RwLock::new(None),
             last_compile_affected: tokio::sync::Mutex::new(std::collections::HashSet::new()),
@@ -198,14 +212,109 @@ impl Workspace {
         *cg = None;
     }
 
+    /// Return a coherent parsed index of every AL object body embedded in the
+    /// currently loaded Microsoft/third-party packages.
+    ///
+    /// Package source is immutable during normal editing, so it is cached
+    /// separately from the workspace graph. A stable path/size/mtime
+    /// fingerprint forces a rebuild when a package is downloaded or replaced.
+    pub fn get_or_build_dependency_source_index(&self) -> Arc<FileIndex> {
+        let fingerprint = self.dependency_package_fingerprint();
+        if let Ok(cache) = self.dependency_source_index.read() {
+            if let Some(cache) = cache
+                .as_ref()
+                .filter(|cache| cache.fingerprint == fingerprint)
+            {
+                return Arc::clone(&cache.index);
+            }
+        }
+
+        let mut cache = self
+            .dependency_source_index
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(existing) = cache
+            .as_ref()
+            .filter(|existing| existing.fingerprint == fingerprint)
+        {
+            return Arc::clone(&existing.index);
+        }
+
+        let index = Arc::new(FileIndex::new());
+        for (app_path, _, _) in &fingerprint {
+            let source_index = match al_symbols::source_index::get_or_build(app_path) {
+                Ok(index) => index,
+                Err(error) => {
+                    tracing::debug!(
+                        path = %app_path.display(),
+                        %error,
+                        "loaded package has no readable embedded AL source"
+                    );
+                    continue;
+                }
+            };
+            let sources = match source_index.extract_all_sources() {
+                Ok(sources) => sources,
+                Err(error) => {
+                    tracing::warn!(
+                        path = %app_path.display(),
+                        %error,
+                        "failed to extract dependency AL sources"
+                    );
+                    continue;
+                }
+            };
+            for (archive_path, source) in sources {
+                index.add_file(dependency_virtual_path(app_path, &archive_path), source);
+            }
+        }
+        tracing::info!(
+            packages = fingerprint.len(),
+            source_files = index.len(),
+            "dependency AL source index ready"
+        );
+        let index_for_return = Arc::clone(&index);
+        *cache = Some(DependencySourceCache { fingerprint, index });
+        index_for_return
+    }
+
+    fn dependency_package_fingerprint(&self) -> Vec<(PathBuf, u64, u128)> {
+        let mut package_names: std::collections::HashSet<String> = self
+            .symbols
+            .all_entries()
+            .into_iter()
+            .filter(|entry| !entry.synthetic && !entry.package.eq_ignore_ascii_case("workspace"))
+            .map(|entry| entry.package.clone())
+            .collect();
+        let mut fingerprint = Vec::new();
+        for package in package_names.drain() {
+            let Some(path) = self.symbols.app_path(&package) else {
+                continue;
+            };
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                continue;
+            };
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            fingerprint.push((path, metadata.len(), modified));
+        }
+        fingerprint.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        fingerprint.dedup_by(|left, right| left.0 == right.0);
+        fingerprint
+    }
+
     /// Get (or lazily build) the cached CallGraph.
     ///
     /// **Lock ordering invariant:** This function takes locks in the order
-    /// `call_graph_build_lock` → `insight_graph` (write, brief) → `call_graph`
-    /// (write, brief). The expensive build itself runs while holding ONLY
-    /// the build coordination mutex — no readers are blocked during the
-    /// 100-200ms build pass. Any new code that touches the data locks MUST
-    /// follow that ordering or the daemon can deadlock.
+    /// `call_graph_build_lock` → `dependency_source_index` → `insight_graph`
+    /// (write, brief) → `call_graph` (write, brief). The expensive build itself
+    /// runs without either graph data lock, so readers are not blocked. Any new
+    /// code that touches these locks MUST follow that ordering or the daemon can
+    /// deadlock.
     pub fn get_or_build_call_graph(
         &self,
     ) -> (
@@ -235,6 +344,7 @@ impl Workspace {
         }
 
         let build = || {
+            let dependency_sources = self.get_or_build_dependency_source_index();
             let mut graph = InsightGraph::new();
             graph.build_from_index(&self.symbols);
             al_insight::calls::register_workspace_nodes(
@@ -242,11 +352,18 @@ impl Workspace {
                 &self.symbols,
                 &mut graph,
             );
+            al_insight::calls::register_dependency_source_nodes(&dependency_sources, &mut graph);
             let insight = Arc::new(graph);
 
             let mut cg = CallGraph::build_from_insight(&insight);
             al_insight::calls::populate_workspace_call_edges(
                 &self.file_index,
+                &self.symbols,
+                &insight,
+                &mut cg,
+            );
+            al_insight::calls::populate_workspace_call_edges(
+                &dependency_sources,
                 &self.symbols,
                 &insight,
                 &mut cg,
@@ -295,6 +412,23 @@ impl Workspace {
             package_count,
         }
     }
+}
+
+fn dependency_virtual_path(app_path: &Path, archive_path: &str) -> PathBuf {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    app_path.hash(&mut hasher);
+    let mut path = PathBuf::from("/__al_dependency_sources__");
+    path.push(format!("{:016x}", hasher.finish()));
+    let component_count_before = path.components().count();
+    for component in Path::new(archive_path).components() {
+        if let std::path::Component::Normal(component) = component {
+            path.push(component);
+        }
+    }
+    if path.components().count() == component_count_before {
+        path.push("source.al");
+    }
+    path
 }
 
 /// Approximate memory statistics for diagnostic/observability.

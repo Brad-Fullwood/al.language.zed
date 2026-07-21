@@ -12,6 +12,8 @@ al-bc = { path = "../al-bc", version = "0.1.0" }
 al-runtime = { path = "../al-runtime", version = "0.1.0" }
 al-workspace = { path = "../al-workspace", version = "0.1.0" }
 al-analysis = { path = "../al-analysis", version = "0.1.0" }
+al-insight = { path = "../al-insight", version = "0.1.0" }
+al-symbols = { path = "../al-symbols", version = "0.1.0", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

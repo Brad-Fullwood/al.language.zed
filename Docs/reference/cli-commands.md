@@ -63,7 +63,7 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | --- | --- | --- |
 | `compile` | `--project <dir>` | Compile (native default; `al.useOfficialCompiler` → `alc`) |
 | `package` | — | Package compiled app into `.app` |
-| `pack-native` | `--project <dir> --out <path> [--validate]` | Verified pure-Rust `.app` build; `--validate` adds an `alc` compatibility gate after native checks |
+| `pack-native` | `--project <dir> --out <path> [--validate]` | Verified pure-Rust `.app` build; rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure; global `--json` returns exact native ranges; `--validate` adds `alc` after native checks |
 | `download-symbols` | `--source server\|nuget` | Download dependency symbols |
 | `authenticate` | — | BC / Entra authentication |
 

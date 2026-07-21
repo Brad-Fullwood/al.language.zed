@@ -598,9 +598,13 @@ where
                 let mut new_ids = Vec::new();
                 for bp in &bp_requests {
                     let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
+                    let server_line = line.saturating_sub(1);
                     let condition = bp.get("condition").and_then(|v| v.as_str()).unwrap_or("");
 
-                    match s.add_breakpoint(obj_type, obj_id, line, 0, condition).await {
+                    match s
+                        .add_breakpoint(obj_type, obj_id, server_line, 0, condition)
+                        .await
+                    {
                         Ok(result) => {
                             // BC's add_breakpoint can return Ok(Value::Null) or a
                             // payload without an Id field (bc_debug.rs:945). A
@@ -1390,13 +1394,16 @@ fn try_spawn(cmd: &str, args: &[&str]) -> bool {
 
 /// Pull a usable breakpoint id out of BC's `AddBreakpoint` response.
 ///
-/// BC may answer with `Value::Null` or a payload lacking an `Id`/`id` field
+/// Current BC returns `BreakpointId`; older variants used `Id`/`id`. BC may
+/// also answer with `Value::Null` or a payload lacking any usable ID
 /// (see `bc_debug::add_breakpoint`). An id of `0` is not a valid handle — we
 /// could neither later remove it nor truthfully report `verified: true` — so a
 /// missing or zero id maps to `None`.
 fn extract_breakpoint_id(result: &serde_json::Value) -> Option<i64> {
     result
-        .get("Id")
+        .get("BreakpointId")
+        .or_else(|| result.get("breakpointId"))
+        .or_else(|| result.get("Id"))
         .or_else(|| result.get("id"))
         .and_then(|v| v.as_i64())
         .filter(|&id| id != 0)
@@ -1523,6 +1530,14 @@ mod tests {
 
     #[test]
     fn extract_breakpoint_id_reads_pascal_and_camel_case() {
+        assert_eq!(
+            extract_breakpoint_id(&serde_json::json!({ "BreakpointId": 99 })),
+            Some(99)
+        );
+        assert_eq!(
+            extract_breakpoint_id(&serde_json::json!({ "breakpointId": 88 })),
+            Some(88)
+        );
         assert_eq!(
             extract_breakpoint_id(&serde_json::json!({ "Id": 42 })),
             Some(42)

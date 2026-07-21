@@ -91,14 +91,19 @@ impl NativeDebugSession {
 
         for &(line, condition) in lines {
             let cond = condition.unwrap_or("");
+            // MCP/CLI source lines are one-based, like DAP clients. BC's
+            // SourcePosition.Line is zero-based.
+            let server_line = i64::from(line.saturating_sub(1));
             match self
                 .session
-                .add_breakpoint(object_type, object_id, line as i64, 0, cond)
+                .add_breakpoint(object_type, object_id, server_line, 0, cond)
                 .await
             {
                 Ok(resp) => {
                     let bp_id = resp
-                        .get("Id")
+                        .get("BreakpointId")
+                        .or_else(|| resp.get("breakpointId"))
+                        .or_else(|| resp.get("Id"))
                         .or_else(|| resp.get("id"))
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0);
@@ -106,9 +111,17 @@ impl NativeDebugSession {
                         .get("Verified")
                         .or_else(|| resp.get("verified"))
                         .and_then(|v| v.as_bool())
-                        .unwrap_or(true);
-                    new_ids.push(bp_id);
-                    results.push(make_bp_info(file, line, cond, bp_id, verified));
+                        .unwrap_or(bp_id != 0);
+                    if bp_id != 0 {
+                        new_ids.push(bp_id);
+                    }
+                    results.push(make_bp_info(
+                        file,
+                        line,
+                        cond,
+                        bp_id,
+                        verified && bp_id != 0,
+                    ));
                 }
                 Err(e) => {
                     warn!(line, error = %e, "Failed to add breakpoint");
@@ -823,9 +836,9 @@ mod native_session_tests {
         let frames = fake.sent_frames();
         assert_eq!(frames.len(), 1, "exactly one AddBreakpoint invoke");
         assert_eq!(frames[0]["target"], "AddBreakpoint");
-        assert_eq!(frames[0]["arguments"][0]["ObjectType"], 5);
-        assert_eq!(frames[0]["arguments"][0]["ObjectNumber"], 50100);
-        assert_eq!(frames[0]["arguments"][1]["Line"], 10);
+        assert_eq!(frames[0]["arguments"][0]["objectType"], 5);
+        assert_eq!(frames[0]["arguments"][0]["objectNumber"], 50100);
+        assert_eq!(frames[0]["arguments"][1]["line"], 9);
     }
 
     #[tokio::test]

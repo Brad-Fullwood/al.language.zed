@@ -1,7 +1,7 @@
 # Semantic Bridge (.NET CodeAnalysis)
 
 **Module:** `crates/al-semantic/src/` + `crates/al-semantic/bridge/Bridge.cs`, `AlBridge.csproj` ·
-**Status:** ✅ shipped (feature-gated) · **being retired** in favor of native Rust
+**Status:** ✅ shipped and integration-tested (feature-gated) · **being retired** in favor of native Rust
 
 The semantic bridge is the project's link to Microsoft's actual AL compiler semantics. When you want
 *compiler-grade* diagnostics, type info, and completions — the things that need real name binding and
@@ -130,9 +130,16 @@ automatically. To control it:
 
 ## Verification
 
-- `cargo test -p al-semantic --features semantic` covers boundary validation, cooldown/restart state,
-  cache integrity, serialization, and the disabled-feature behavior.
+- `cargo test -p al-semantic --all-features` covers boundary validation, cooldown/restart state,
+  cache integrity, serialization, managed initialization error propagation, and the
+  disabled-feature behavior.
 - `AL_TOOL_PATH=<official-extension>/bin/<platform> cargo test -p al-semantic --features semantic --test live_bridge`
   loads the real Microsoft DLL and verifies initialization/health, compiler semantic diagnostics,
   unsaved-buffer type lookup, invalid-position rejection, member completion, shipped CodeCop loading,
   built-ins, and error codes. Set `AL_PACKAGE_CACHE_PATH` as well to exercise package-reference loading.
+- `cargo test -p al-workspace`, `cargo test -p al-analysis`, and
+  `cargo test -p al-lsp --lib --features semantic` are the consumer finish gate. They prove that the
+  lifecycle, hover/completion, diagnostics, and semantic-enabled LSP wiring compile and pass together;
+  a passing bridge-only test is not considered sufficient.
+
+The full finish gate and the package-backed live contract were last run successfully on 2026-07-21.

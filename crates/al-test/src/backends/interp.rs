@@ -27,7 +27,7 @@ use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
 use crate::session::{RunOptions, TestEvent, TestId, TestSession};
 use al_analysis::queries::tests::{discover_tests, TestCodeunit};
 use al_runtime::interpreter::coverage::{Coverage, DynamicCoverageReport};
-use al_runtime::interpreter::dispatch::{DispatchCtx, DispatchMode};
+use al_runtime::interpreter::dispatch::{DispatchCtx, DispatchMode, TestHandlers};
 use al_runtime::interpreter::eval_stmt::eval_stmt;
 use al_runtime::interpreter::scope::{CallFrame, Eval, ScopeStack};
 use al_workspace::Workspace;
@@ -417,41 +417,6 @@ fn run_procedure_interp(
     let source = text.as_bytes();
     let root = tree.root_node();
 
-    let proc_node = match find_procedure_node(root, source, proc_name) {
-        Some(n) => n,
-        None => {
-            return (
-                Eval::Error(al_runtime::interpreter::value::ErrorInfo {
-                    message: format!("procedure '{proc_name}' not found in '{codeunit_name}'"),
-                    error_type: None,
-                    source: None,
-                }),
-                None,
-            );
-        }
-    };
-    let body = match procedure_body(proc_node) {
-        Some(b) => b,
-        None => {
-            return (
-                Eval::Error(al_runtime::interpreter::value::ErrorInfo {
-                    message: format!("procedure '{proc_name}' in '{codeunit_name}' has no body"),
-                    error_type: None,
-                    source: None,
-                }),
-                None,
-            );
-        }
-    };
-
-    let mut stack = ScopeStack::new();
-    let mut frame = CallFrame::new(codeunit_name, proc_name);
-    // Bind the test method's own locals to defaults, exactly as
-    // workspace-procedure dispatch does — BC zero-initializes every local, so a
-    // test that reads a local before assigning it must not error.
-    al_runtime::interpreter::dispatch::bind_procedure_locals(proc_node, source, &mut frame);
-    stack.push(frame);
-
     let proc_source: Arc<dyn al_types::ProcedureSource> = workspace.file_index.clone();
     // Thread the timeout down to the interpreter so a runaway
     // `while true do …` test fails with a clear "deadline exceeded" error
@@ -473,10 +438,119 @@ fn run_procedure_interp(
             cov
         }),
         var_writebacks: Vec::new(),
+        test_handlers: configured_handlers(cu, root, source, proc_name, codeunit_name),
     };
 
-    let result = eval_stmt(body, source, &mut stack, &mut ctx);
+    // One context (especially one record store and deadline) spans the full BC
+    // lifecycle for this test method. Cleanup always runs, including after a
+    // failing initializer or test body.
+    let mut result = Eval::Normal(al_runtime::interpreter::value::Value::Null);
+    for initializer in &cu.test_initializers {
+        let lifecycle =
+            eval_named_procedure(root, source, codeunit_name, &initializer.name, &mut ctx);
+        if lifecycle.is_error() {
+            result = lifecycle;
+            break;
+        }
+    }
+    if !result.is_error() {
+        result = eval_named_procedure(root, source, codeunit_name, proc_name, &mut ctx);
+    }
+    for cleanup in &cu.test_cleanups {
+        let lifecycle = eval_named_procedure(root, source, codeunit_name, &cleanup.name, &mut ctx);
+        if !result.is_error() && lifecycle.is_error() {
+            result = lifecycle;
+        }
+    }
     (result, ctx.coverage)
+}
+
+fn configured_handlers(
+    cu: &TestCodeunit,
+    root: Node<'_>,
+    source: &[u8],
+    proc_name: &str,
+    codeunit_name: &str,
+) -> TestHandlers {
+    let mut handlers = TestHandlers::default();
+    let Some(test) = cu
+        .tests
+        .iter()
+        .find(|test| test.name.eq_ignore_ascii_case(proc_name))
+    else {
+        return handlers;
+    };
+    for handler_name in &test.handler_functions {
+        let Some(handler) = find_procedure_node(root, source, handler_name) else {
+            continue;
+        };
+        if procedure_has_attribute(handler, source, "MessageHandler") {
+            handlers.message = Some((codeunit_name.to_string(), handler_name.clone()));
+        } else if procedure_has_attribute(handler, source, "ConfirmHandler") {
+            handlers.confirm = Some((codeunit_name.to_string(), handler_name.clone()));
+        }
+    }
+    handlers
+}
+
+fn procedure_has_attribute(node: Node<'_>, source: &[u8], wanted: &str) -> bool {
+    let matches = |attribute: Node<'_>| {
+        attribute.utf8_text(source).ok().is_some_and(|text| {
+            let name = text
+                .trim()
+                .trim_start_matches('[')
+                .split(['(', ';', ']'])
+                .next()
+                .unwrap_or("")
+                .trim();
+            name.eq_ignore_ascii_case(wanted)
+        })
+    };
+    let mut cursor = node.walk();
+    if node
+        .children(&mut cursor)
+        .any(|child| matches!(child.kind(), "attribute" | "attribute_list") && matches(child))
+    {
+        return true;
+    }
+    let mut sibling = node.prev_sibling();
+    while let Some(child) = sibling {
+        match child.kind() {
+            "attribute" | "attribute_list" if matches(child) => return true,
+            "attribute" | "attribute_list" | "comment" => {}
+            _ => break,
+        }
+        sibling = child.prev_sibling();
+    }
+    false
+}
+
+fn eval_named_procedure(
+    root: Node<'_>,
+    source: &[u8],
+    codeunit_name: &str,
+    proc_name: &str,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let Some(proc_node) = find_procedure_node(root, source, proc_name) else {
+        return Eval::Error(al_runtime::interpreter::value::ErrorInfo {
+            message: format!("procedure '{proc_name}' not found in '{codeunit_name}'"),
+            error_type: None,
+            source: None,
+        });
+    };
+    let Some(body) = procedure_body(proc_node) else {
+        return Eval::Error(al_runtime::interpreter::value::ErrorInfo {
+            message: format!("procedure '{proc_name}' in '{codeunit_name}' has no body"),
+            error_type: None,
+            source: None,
+        });
+    };
+    let mut stack = ScopeStack::new();
+    let mut frame = CallFrame::new(codeunit_name, proc_name);
+    al_runtime::interpreter::dispatch::bind_procedure_locals(proc_node, source, &mut frame);
+    stack.push(frame);
+    eval_stmt(body, source, &mut stack, ctx)
 }
 
 /// Locate the `begin_end_block` (body) of a named procedure.
@@ -1011,5 +1085,143 @@ mod tests {
             }
             Some(other) => panic!("unexpected CaseResult shape: {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_initialize_shares_record_context_with_test_body() {
+        let table = r#"table 50140 "Lifecycle Entry"
+{
+    fields { field(1; "No."; Code[20]) { } }
+    keys { key(PK; "No.") { } }
+}"#;
+        let tests_source = r#"codeunit 50141 "Lifecycle Tests"
+{
+    Subtype = Test;
+
+    [TestInitialize]
+    procedure SetUp()
+    var Entry: Record "Lifecycle Entry";
+    begin
+        Entry."No." := 'INIT';
+        Entry.Insert();
+    end;
+
+    [Test]
+    procedure SeesInitializedRecord()
+    var Entry: Record "Lifecycle Entry";
+    begin
+        if not Entry.Get('INIT') then
+            Error('initializer record was not visible');
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/LifecycleEntry.Table.al"),
+            table.to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/LifecycleTests.Codeunit.al"),
+            tests_source.to_string(),
+        );
+        let session = InterpMode::with_records(Arc::new(workspace));
+        let events = collect_events(
+            &session,
+            vec![TestId {
+                codeunit_id: 50141,
+                codeunit_name: "Lifecycle Tests".to_string(),
+                method_name: Some("SeesInitializedRecord".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(events.iter().any(|event| {
+            matches!(event, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
+        }), "initializer and test must share the record store: {events:?}");
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_runs_and_its_failure_is_reported() {
+        let source = r#"codeunit 50142 "Cleanup Tests"
+{
+    Subtype = Test;
+    [Test]
+    procedure BodyPasses() begin end;
+
+    [TestCleanup]
+    procedure TearDown()
+    begin
+        Error('cleanup executed');
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/CleanupTests.Codeunit.al"),
+            source.to_string(),
+        );
+        let events = collect_events(
+            &InterpMode::new(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50142,
+                codeunit_name: "Cleanup Tests".to_string(),
+                method_name: Some("BodyPasses".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(events.iter().any(|event| {
+            matches!(event, TestEvent::CaseResult { result, .. }
+                if result.status == TestStatus::Fail
+                    && result.error.as_deref().is_some_and(|error| error.contains("cleanup executed")))
+        }), "cleanup failure must fail the test: {events:?}");
+    }
+
+    #[tokio::test]
+    async fn message_and_confirm_handlers_execute_locally() {
+        let source = r#"codeunit 50143 "Handler Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    [HandlerFunctions('HandleMessage,HandleConfirm')]
+    procedure Dialogs()
+    begin
+        Message('Hello %1', 'world');
+        if not Confirm('Proceed?') then
+            Error('confirm handler did not reply true');
+    end;
+
+    [MessageHandler]
+    procedure HandleMessage(MessageText: Text[1024])
+    begin
+        if MessageText <> 'Hello world' then
+            Error('wrong message: %1', MessageText);
+    end;
+
+    [ConfirmHandler]
+    procedure HandleConfirm(Question: Text[1024]; var Reply: Boolean)
+    begin
+        if Question <> 'Proceed?' then
+            Error('wrong question: %1', Question);
+        Reply := true;
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/HandlerTests.Codeunit.al"),
+            source.to_string(),
+        );
+        let events = collect_events(
+            &InterpMode::new(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50143,
+                codeunit_name: "Handler Tests".to_string(),
+                method_name: Some("Dialogs".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(events.iter().any(|event| {
+            matches!(event, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
+        }), "dialog handlers should execute and validate calls: {events:?}");
     }
 }

@@ -304,13 +304,14 @@ pub(super) async fn dispatch_debug(
                 .get("line")
                 .and_then(|v| v.as_u64())
                 .and_then(|n| u32::try_from(n).ok())
+                .filter(|line| *line > 0)
             else {
                 return Response {
                     id,
                     result: None,
                     error: Some(RpcError {
                         code: error_codes::INVALID_PARAMS,
-                        message: "Missing or out-of-range 'line' parameter (must be 0..=u32::MAX)"
+                        message: "Missing or out-of-range 'line' parameter (must be 1..=u32::MAX)"
                             .to_string(),
                     }),
                     ..Default::default()
@@ -884,6 +885,14 @@ mod dispatch_debug_tests {
         .await;
         assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
         assert!(err_msg(&r).contains("line"), "{}", err_msg(&r));
+
+        let zero = dispatch_debug(
+            &ws,
+            61,
+            &json!({"cmd": "breakpoint", "file": "/tmp/Foo.al", "line": 0}),
+        )
+        .await;
+        assert_eq!(err_code(&zero), error_codes::INVALID_PARAMS);
     }
 
     #[tokio::test]

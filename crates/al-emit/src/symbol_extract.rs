@@ -86,6 +86,9 @@ pub struct PermissionDecl {
 pub struct EmitObject {
     pub entry: SymbolEntry,
     pub source_file: String,
+    /// Object declaration range in 0-based UTF-16 coordinates. Native build
+    /// diagnostics use this instead of collapsing structural errors to 1:1.
+    pub source_range: al_syntax::SyntaxRange,
     /// Per-enum-value properties (e.g. a value's `Caption`), parallel to
     /// `entry.enum_values`. Held here rather than on the shared
     /// `EnumValueSymbol` model to avoid churn across unrelated readers.
@@ -132,6 +135,7 @@ pub fn extract_objects_from_tree(source: &str, source_file: &str, tree: &Tree) -
                 out.push(EmitObject {
                     entry: ex.entry,
                     source_file: source_file.to_string(),
+                    source_range: al_syntax::ts_range_to_syntax(&child.range(), src),
                     enum_value_properties: ex.enum_value_properties,
                     query_elements: ex.query_elements,
                     permissions: ex.permissions,

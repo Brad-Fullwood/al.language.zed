@@ -78,11 +78,28 @@ The shipped verifier performs:
 
 | Layer | Checks | Build behaviour |
 | --- | --- | --- |
-| Project input | valid `app.json` required fields, readable source files, declared dependency packages present in `.alpackages`, object IDs inside `idRanges` | Definite errors block before emission. |
-| Syntax | tree-sitter `ERROR` and missing nodes in every `.al` file, including truncated constructs | `ALN0001` carries file and exact range and always blocks. |
-| Declarations | duplicate object IDs/names; duplicate field IDs/names; duplicate enum ordinals/names; duplicate procedure signatures/parameter names; unknown key/field-group fields | `ALN1xxx` diagnostics block emission. |
+| Project input | parseable `app.json`; non-empty identity fields; valid app/dependency GUIDs and four-part versions; valid `idRanges`; unique dependency IDs; readable source files; declared dependency packages present in `.alpackages`; object IDs inside `idRanges` | `ALN01xx` and project diagnostics block before emission. |
+| Syntax | tree-sitter `ERROR` and missing nodes in every `.al` file, including truncated constructs | `ALN0001` carries file and exact 1-based UTF-16 start/end range and always blocks. |
+| Declarations | duplicate object IDs/names; duplicate field IDs/names; duplicate enum ordinals/names; duplicate procedure signatures/parameter names; unknown key/field-group fields | `ALN1xxx` diagnostics point at the complete object declaration range and block emission. |
 | Declared bindings | extension targets, implemented interfaces, declared object subtypes (`Record`, `Page`, `Codeunit`, `Report`, `XmlPort`, `Query`, `Enum`, `Interface`) and `SourceTable` references resolve against project plus dependency symbols | `ALN2xxx` diagnostics block emission. |
-| Artifact integrity | reopen NAVX/ZIP; require manifest, symbols, content types, doc comments and media listing; verify the embedded AL-source count | `ALN3xxx` failures discard the staged artifact. |
+| Artifact integrity | reopen NAVX/ZIP; reject duplicate/empty required entries; compare the exact embedded AL source-path set with the verified snapshot; parse the generated manifest and `SymbolReference.json`; compare package id/name/publisher/version with `app.json` | `ALN3xxx` failures discard the staged artifact. |
+
+### Native diagnostic codes
+
+The JSON shape is stable across `pack-native`, shared `CompileResult`, daemon/MCP compile, and LSP
+publication: `file`, `line`, `column`, `endLine`, `endColumn`, `severity`, `code`, and `message`.
+Positions are 1-based at the build/daemon boundary and converted to 0-based UTF-16 ranges for LSP.
+The Microsoft `alc` text parser cannot recover an exact end range, so its `endLine`/`endColumn`
+remain `null`; native diagnostics preserve both endpoints.
+
+| Codes | Meaning |
+| --- | --- |
+| `ALN0000`–`ALN0001` | Native build infrastructure failure or AL syntax error. |
+| `ALN0100`–`ALN0106` | Invalid JSON, missing/invalid identity fields, invalid ranges/dependencies, or duplicate dependency IDs. |
+| `ALN1001`–`ALN1007` | Duplicate/out-of-range object identity or missing dependency package. |
+| `ALN1101`–`ALN1107` | Duplicate fields, enum values, procedures/parameters, or invalid key/field-group field references. |
+| `ALN2001`–`ALN2004` | Unresolved extension target, interface, declared object subtype, or `SourceTable`. |
+| `ALN3001`–`ALN3006` | Unreadable/corrupt artifact, missing/empty or duplicate entries, source-snapshot mismatch, generated metadata parse failure, or package identity mismatch. |
 
 `build_verified_app_from_project` preserves all structured diagnostics.
 `build_app_from_project` is the simpler API and also refuses invalid input. `native_compile` maps the
@@ -185,7 +202,8 @@ in-process caches should make repeated verified builds reproducible and near-ins
 
 - **CLI:** `al-explorer compile` (Zed task *AL: Compile*), `al-explorer package` (*AL: Package*),
   `al-explorer pack-native --project <dir> --out <path>` (verified native build), and add
-  `--validate` for the Microsoft compatibility gate.
+  `--validate` for the Microsoft compatibility gate. Add global `--json` for machine-readable
+  success metadata and full diagnostics; validation failure exits non-zero and writes no `.app`.
 - **LSP:** the `al.compile` execute command.
 - **MCP:** `al_build` is the named compile alias; the other shared build dispatcher methods, including
   `package`, are available through `al_call`.

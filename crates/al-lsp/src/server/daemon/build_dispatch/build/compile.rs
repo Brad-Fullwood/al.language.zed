@@ -14,8 +14,8 @@ fn diagnostics_json(diagnostics: &[al_compile::CompileDiagnostic]) -> Vec<serde_
                 "file": diagnostic.file,
                 "line": diagnostic.line,
                 "column": diagnostic.column,
-                "endLine": serde_json::Value::Null,
-                "endColumn": serde_json::Value::Null,
+                "endLine": diagnostic.end_line,
+                "endColumn": diagnostic.end_column,
                 "severity": diagnostic.severity,
                 "code": diagnostic.code,
                 "message": diagnostic.message,
@@ -566,6 +566,14 @@ mod tests {
             .expect("diagnostics array")
             .iter()
             .any(|diagnostic| diagnostic["code"] == "ALN0001"));
+        let syntax = result["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|diagnostic| diagnostic["code"] == "ALN0001")
+            .unwrap();
+        assert!(syntax["endLine"].is_number());
+        assert!(syntax["endColumn"].is_number());
     }
 
     /// Native-first compile policy: the default `compile` path uses the pure-Rust

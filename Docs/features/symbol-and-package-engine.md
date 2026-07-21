@@ -37,13 +37,13 @@ Common queries become direct map lookups. Package ZIP/JSON parsing runs in paral
 shorter index commit is applied in input order; reloading a package therefore replaces its previous
 generation deterministically instead of racing duplicate entries into secondary indexes. Search is
 stable and relevance-ranked (exact name, prefix, then substring), with synthetic pseudo-types kept
-out of user-facing results; bounded searches retain only the requested best candidates rather than
-sorting every match. A pre-computed 30-entry default-completions slice answers the "blank completion
-at top level" path in O(1) (ISSUE-162). On package removal, all secondary indexes are pruned in
-lockstep (the "T049"
-discipline), source/path caches are removed, and affected composed views are invalidated, so a hot
-reload cannot serve stale or dangling data. Synthetic pseudo-enums (generated for Option-typed
-fields, id = -1) are excluded from id-based lookups, search, and default completion.
+out of user-facing results; a lazily-built ordered name catalogue lets bounded searches stop as soon
+as the requested deterministic window is full, without taxing package load. A pre-computed 30-entry
+default-completions slice answers the "blank completion at top level" path in O(1) (ISSUE-162). On
+package removal, all secondary indexes are pruned in lockstep (the "T049" discipline), source/path
+caches are removed, and affected composed views are invalidated, so a hot reload cannot serve stale
+or dangling data. Synthetic pseudo-enums (generated for Option-typed fields, id = -1) are excluded
+from id-based lookups, search, and default completion.
 
 ### Reading `.app` (`app_reader.rs`, `manifest.rs`, `app_inspect.rs`)
 

@@ -80,9 +80,9 @@ The indexing path is built around shared ownership and bounded caches. Large fil
 The default `.app` build path is verified native Rust. Microsoft `alc` remains available as an explicit compatibility gate or fallback for exact compiler semantics and analyzer behavior.
 
 - The daemon `compile` dispatcher, LSP `al.compile`, publish path, and native DAP launch compile default to the pure-Rust verifier and `.app` emitter: no `alc`, no C# bridge.
-- Native builds reject syntax errors, invalid dependencies/id ranges, duplicate declarations, unresolved declared object types/targets/interfaces/SourceTable bindings, and malformed emitted packages with structured `ALNxxxx` diagnostics.
-- Workspace-aware daemon/LSP/MCP builds also run the shared native `AL-NC*` semantic checks and resolved call/event-graph transaction diagnostics before emission; error-severity findings gate the build.
-- Native artifacts are staged, synced, integrity-checked, and atomically persisted, so a failed build preserves the previous `.app`.
+- Native builds reject syntax errors, malformed manifests, invalid dependencies/id ranges, duplicate declarations, unresolved declared object types/targets/interfaces/SourceTable bindings, and malformed emitted packages with structured `ALNxxxx` diagnostics and exact native UTF-16 start/end ranges.
+- Workspace-aware daemon/LSP/MCP builds also run the shared native `AL-NC*` semantic checks and resolved call/event-graph transaction diagnostics before emission. Available Microsoft/third-party AL bodies embedded in loaded `.app` packages participate in that graph; error-severity findings gate the build.
+- Native artifacts are staged, synced, reopened, and atomically persisted only after generated metadata parses, package identity matches `app.json`, and the exact embedded source-path set matches the verified snapshot, so a failed build preserves the previous `.app`.
 - `al-explorer pack-native --validate` runs native checks first and invokes `alc` only after they pass, providing an explicit authoritative compatibility gate without putting Microsoft tooling on the default path.
 - `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc` where Microsoft compile-time validation is required.
 - The native emitter builds the package directly from `app.json`, source files, package symbols, generated manifest data, and generated `SymbolReference.json`.
@@ -416,11 +416,17 @@ Useful validation:
 cargo fmt --all --check
 cargo test --workspace --exclude zed-al
 cargo test -p zed-al --target wasm32-wasip1
+cargo test -p al-protocol
 cargo test -p al-test-harness
 scripts/check-repo-consistency.sh
 scripts/check-release-hygiene.sh
 make language
 ```
+
+Daemon IPC is tested against the host's real transport: Unix-domain sockets on Linux/macOS and
+named pipes on Windows. CI's native `windows-latest` job builds `al-lsp` and `al-explorer`, runs the
+protocol tests, and runs `cli_smoke` plus `extension_smoke` end to end; a cross-compile alone is not
+treated as sufficient named-pipe coverage. See the [testing guide](Docs/testing-guide.md#daemon-ipc-on-linux-macos-and-windows).
 
 The semantic bridge is feature-gated. Release binaries build `al-lsp` with `--features semantic` so the in-process .NET bridge and `AlBridge.dll` are included.
 
