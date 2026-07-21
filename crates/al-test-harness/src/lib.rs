@@ -201,8 +201,8 @@ impl LspClient {
     ) -> Self {
         let pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        // Bound notification buffering so a misbehaving server flooding $/progress or
-        // window/logMessage notifications can't grow memory unbounded. 10k is
+        // Bound notification buffering so a misbehaving server flooding
+        // $/progress or window/logMessage cannot grow memory unbounded. 10k is
         // huge for a test session — well above the largest legitimate burst
         // we've seen. On overflow `read_loop` logs+drops the notification
         // rather than backpressuring (which would stall the reader and break
@@ -677,7 +677,7 @@ impl LspClient {
         }
     }
 
-    /// T026: this exercises the textDocument/codeLens path through the real
+    /// Exercises the `textDocument/codeLens` path through the real
     /// `al-lsp` binary with a live `DocumentStore` + (optional) test-result
     /// store, so the wire format and end-to-end shape of the response are
     /// observed by tests rather than just the inline unit-tests in
@@ -919,7 +919,7 @@ impl LspClient {
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
     }
 
-    /// T052: send the LSP `$/cancelRequest` notification with the given
+    /// Send the LSP `$/cancelRequest` notification with the given
     /// JSON-RPC request id. Used by cancellation tests; tower-lsp drops the
     /// pending future for the matching id (cancels_pending_requests in
     /// tower-lsp 0.20 service.rs).
@@ -928,7 +928,7 @@ impl LspClient {
             .await
     }
 
-    /// T052: peek the next request id that `request()` would assign,
+    /// Peek the next request ID that `request()` would assign,
     /// without incrementing. Tests that want to cancel an in-flight
     /// request need to know its id ahead of time.
     pub fn peek_next_request_id(&self) -> i64 {

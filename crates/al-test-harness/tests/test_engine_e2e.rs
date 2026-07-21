@@ -126,17 +126,15 @@ fn code_lens_test_kind_wire_format_is_recognised() {
     assert_eq!(parsed["status"]["kind"], "notRun");
 }
 
-/// T026: E2E coverage for the textDocument/codeLens path.
+/// End-to-end coverage for the `textDocument/codeLens` path.
 ///
 /// Spawns the real `al-lsp` binary, opens the Pure-Logic test fixture, and
 /// asserts the code-lens response contains entries for the `[Test]`-tagged
 /// procedures (`TestAddition`, `TestStringConcat`). Without test-result
 /// history attached, the response status should be NotRun for every test.
 ///
-/// This closes the deferred-cycle-7 gap noted in handoff T026: previously
-/// only inline al-core unit tests covered code_lens; the wire-format-only
-/// JSON tests above don't exercise the real DocumentStore + tree-sitter
-/// pipeline, so a regression in the LSP transport could go undetected.
+/// Unlike the wire-format checks above, this exercises the real document store,
+/// parser, and LSP transport.
 #[tokio::test]
 #[ignore = "requires al-lsp binary + the fixture project to be on disk"]
 async fn code_lens_e2e_returns_test_lenses_for_test_procedures() {
@@ -188,7 +186,7 @@ async fn code_lens_e2e_returns_test_lenses_for_test_procedures() {
     }
 }
 
-/// T026 negative: code_lens for a non-existent (closed) file produces an
+/// Code lenses for a nonexistent, closed file produce an
 /// empty response without panic.
 #[tokio::test]
 #[ignore = "requires al-lsp binary + the fixture project to be on disk"]

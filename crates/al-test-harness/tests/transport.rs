@@ -1,8 +1,7 @@
 //! Edge-case tests for the in-memory LSP transport helpers.
 //!
-//! These tests do not require a running `al-lsp` binary. They use
-//! `tokio::io::duplex` (in-memory pipes) to talk directly to the internal
-//! read loop.
+//! These tests do not require a running `al-lsp` binary. They use in-memory
+//! `tokio::io::duplex` pipes to talk directly to the internal read loop.
 
 use tokio::io::AsyncWriteExt;
 use tokio::time::{timeout, Duration};
@@ -33,7 +32,7 @@ async fn write_lsp_message(writer: &mut (impl AsyncWriteExt + Unpin), body: &str
 ///
 /// GAP TEST: if read_loop panics or hangs on a malformed header this fails.
 #[tokio::test]
-async fn test_adversarial_read_loop_missing_content_length_is_skipped() {
+async fn read_loop_skips_missing_content_length() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
@@ -63,7 +62,7 @@ async fn test_adversarial_read_loop_missing_content_length_is_skipped() {
 // ST-03  read_loop: invalid JSON body → silent skip, loop continues
 
 #[tokio::test]
-async fn test_adversarial_read_loop_invalid_json_body_is_skipped() {
+async fn read_loop_skips_invalid_json_body() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (_pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
@@ -97,7 +96,7 @@ async fn test_adversarial_read_loop_invalid_json_body_is_skipped() {
 /// GAP: the code does `pending.remove(&id)` and drops the tx if None — this
 /// is safe, but verify it does not also block the notification path.
 #[tokio::test]
-async fn test_adversarial_read_loop_unknown_response_id_is_dropped() {
+async fn read_loop_drops_unknown_response_id() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (_pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
@@ -126,7 +125,7 @@ async fn test_adversarial_read_loop_unknown_response_id_is_dropped() {
 /// empty slice.  `serde_json::from_slice(b"")` returns an error, so the
 /// message is skipped.  The loop must not panic or exit.
 #[tokio::test]
-async fn test_adversarial_read_loop_zero_content_length_is_skipped() {
+async fn read_loop_skips_zero_content_length() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (_pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
@@ -152,7 +151,7 @@ async fn test_adversarial_read_loop_zero_content_length_is_skipped() {
 /// Content lengths above the harness's 64 MiB cap are rejected before reading
 /// or allocating the body.
 #[tokio::test]
-async fn test_adversarial_read_loop_rejects_oversized_body() {
+async fn read_loop_rejects_oversized_body() {
     let (mut server_write, client_read) = tokio::io::duplex(65536);
     let (_pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
@@ -179,7 +178,7 @@ async fn test_adversarial_read_loop_rejects_oversized_body() {
 /// The server sends a notification without a `params` field.
 /// `msg.get("params").cloned().unwrap_or(Value::Null)` must provide Null.
 #[tokio::test]
-async fn test_adversarial_read_loop_notification_no_params_defaults_to_null() {
+async fn read_loop_defaults_missing_notification_params_to_null() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (_pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
@@ -202,7 +201,7 @@ async fn test_adversarial_read_loop_notification_no_params_defaults_to_null() {
 
 /// Fractional JSON-RPC IDs are invalid and must not resolve an integer request.
 #[tokio::test]
-async fn test_adversarial_read_loop_float_id_response_is_silently_dropped() {
+async fn read_loop_drops_fractional_response_id() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
@@ -252,7 +251,7 @@ async fn test_adversarial_read_loop_float_id_response_is_silently_dropped() {
 /// takes self by value — the compiler prevents it.  Documented.
 #[tokio::test]
 #[cfg(unix)]
-async fn test_adversarial_shutdown_stdio_lifecycle_completes_within_timeout() {
+async fn shutdown_stdio_lifecycle_completes_within_timeout() {
     // Spawn a long-running process and immediately call shutdown on a client
     // wrapping it.  The client sends "shutdown" + "exit" over a duplex, which
     // the process ignores (it's not al-lsp), then we drop the writer and wait
@@ -289,7 +288,7 @@ async fn test_adversarial_shutdown_stdio_lifecycle_completes_within_timeout() {
 /// An LSP message whose body is `null` (2 bytes: `null`) must be framed
 /// correctly and parsed back correctly by read_loop.
 #[tokio::test]
-async fn test_adversarial_send_message_null_body_round_trips() {
+async fn send_message_null_body_round_trips() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (_pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
@@ -310,7 +309,7 @@ async fn test_adversarial_send_message_null_body_round_trips() {
 
 /// A string response ID must not resolve an integer request ID.
 #[tokio::test]
-async fn test_adversarial_read_loop_string_id_does_not_match_integer_request() {
+async fn read_loop_string_id_does_not_match_integer_request() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (pending_map, _notif_rx) = make_dispatch_pair(client_read);
 
@@ -335,7 +334,7 @@ async fn test_adversarial_read_loop_string_id_does_not_match_integer_request() {
 /// The parser deliberately accepts LF-only headers even though LSP specifies
 /// CRLF framing.
 #[tokio::test]
-async fn test_adversarial_read_loop_lf_only_headers_are_accepted() {
+async fn read_loop_accepts_lf_only_headers() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (_pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
@@ -364,7 +363,7 @@ async fn test_adversarial_read_loop_lf_only_headers_are_accepted() {
 /// full header line strips trailing space before `strip_prefix` is applied,
 /// so the value passed to `parse()` is always trimmed.
 #[tokio::test]
-async fn test_adversarial_read_loop_content_length_trailing_whitespace_is_tolerated() {
+async fn read_loop_accepts_content_length_with_trailing_whitespace() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (_pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
