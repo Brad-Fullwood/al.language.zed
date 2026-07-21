@@ -1,4 +1,4 @@
-//! Record (table) operations for the AL interpreter — Phase 3 (B6).
+//! Record and table operations for the AL interpreter.
 //!
 //! Wires `Value::Record` to the in-memory [`MockRecord`] table store so that
 //! the common BC `Record` API executes natively in the interpreter:
@@ -12,7 +12,7 @@
 //! its `fields { field(N; Name; …) }` and `keys { key(…; F1, F2) }` sections to
 //! recover the field-name→number map and primary-key field list. Tables that are
 //! not defined in the workspace (e.g. base-app `Customer`) cannot be modelled
-//! and produce a graceful error rather than a panic.
+//! and return an error.
 //!
 //! **FlowField / `CalcFormula` evaluation** is implemented for the aggregating
 //! formula classes — `Sum`, `Average`, `Min`, `Max`, `Count`, `Exist` and
@@ -526,7 +526,10 @@ pub(crate) fn dispatch_record_method(
         "setrange" => {
             let f = field_no.unwrap();
             match values.len() {
-                0 => Eval::Normal(Value::Empty), // clear filter: best-effort no-op
+                0 => {
+                    store.record.clear_filter(f);
+                    Eval::Normal(Value::Empty)
+                }
                 1 => {
                     store
                         .record

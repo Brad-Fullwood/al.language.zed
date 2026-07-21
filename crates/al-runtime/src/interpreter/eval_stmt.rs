@@ -1,4 +1,4 @@
-//! Statement evaluator for the AL interpreter — Phase 2.
+//! Statement evaluator for the AL interpreter.
 //!
 //! Walks tree-sitter statement nodes produced by the AL grammar and evaluates
 //! them against the active `ScopeStack`. Control-flow (`exit`, `if`, `while`,

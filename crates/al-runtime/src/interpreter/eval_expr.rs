@@ -4,10 +4,6 @@
 //! through: literals, identifier loads, binary/unary arithmetic and
 //! comparisons, string concatenation, parenthesised groups, member
 //! lookups, and procedure-call expressions (delegated to `dispatch`).
-//!
-//! Phase 2a scope: enough to run pure-logic tests (Library Assert, simple
-//! arithmetic and string manipulation, control-flow predicates). Record
-//! / FlowField / HTTP method calls return `Eval::Error` until Phase 3.
 
 use tree_sitter::Node;
 
@@ -22,7 +18,7 @@ pub fn eval_expr(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    // Stack-overflow guard (F-OPEN-265): expression evaluation recurses per
+    // Expression evaluation recurses per
     // AST nesting level, and ~400 nested parens overflow a 2 MiB worker
     // thread stack — aborting the whole process. Mirror eval_stmt's guard.
     if !stack.enter_expr() {
@@ -111,7 +107,7 @@ fn eval_expr_inner(
         // Anything else: signal a clear error rather than silently
         // returning a default — failing loud is better than failing wrong.
         other => Eval::Error(simple_error(&format!(
-            "unsupported expression kind in Phase 2a: {other}"
+            "unsupported expression kind: {other}"
         ))),
     }
 }
@@ -682,7 +678,7 @@ fn apply_numeric(op: &str, l: Num, r: Num) -> Eval {
 }
 
 /// Apply a binary operator to two values. Made `pub(crate)` so unit tests
-/// (and Phase 3's mock dispatch) can reuse the operator semantics.
+/// so mock dispatch can reuse the operator semantics.
 pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
     let op = operator.to_ascii_lowercase();
 
@@ -803,9 +799,6 @@ mod tests {
         }
     }
 
-    /// F-OPEN-265: eval_expr must cap AST nesting the way eval_stmt already
-    /// does — degenerate expression nesting must yield `Eval::Error`, not a
-    /// native stack overflow (which aborts the whole al-lsp process).
     #[test]
     fn deep_expression_nesting_errors_instead_of_overflowing() {
         let depth = 400; // beyond the cap, far below crash territory
@@ -1340,22 +1333,14 @@ mod tests {
             // If the parser wrapped the identifier in a kind we don't
             // recognise, the unsupported branch produces an error too.
             Eval::Normal(_) | Eval::Exit(_) => {
-                // Acceptable in Phase 2a — the harness can't always
-                // reach the identifier node depending on grammar shape.
+                // The parser may wrap the identifier in a different node shape.
             }
             Eval::Break | Eval::Continue => panic!("unexpected break/continue"),
         }
     }
 
     #[test]
-    fn integer_add_overflow_should_not_panic_adversarial_h_4() {
-        // FINDING P0 panic: Integer(i64::MAX) + Integer(1) panics in debug
-        // (attempt to add with overflow) or silently wraps in release.
-        // The arm `("+", Integer(a), Integer(b)) => Normal(Integer(a + b))`
-        // uses unchecked addition with no overflow guard.
-        // Expected: Eval::Error
-        // Observed (debug): thread panic "attempt to add with overflow"
-        // Observed (release): Normal(Integer(i64::MIN))
+    fn integer_add_overflow_returns_error() {
         let result = apply_binary("+", Value::Integer(i64::MAX), Value::Integer(1));
         assert!(
             result.is_error(),
@@ -1364,12 +1349,7 @@ mod tests {
     }
 
     #[test]
-    fn integer_min_div_neg1_should_not_panic_adversarial_h_5() {
-        // FINDING P0 panic: Integer(i64::MIN) div Integer(-1) panics in debug.
-        // The div arm checks `b == 0` but not the special case
-        // `a == i64::MIN && b == -1` which also overflows.
-        // Expected: Eval::Error
-        // Observed (debug): thread panic "attempt to divide with overflow"
+    fn integer_min_div_neg1_returns_error() {
         let result = apply_binary("div", Value::Integer(i64::MIN), Value::Integer(-1));
         assert!(
             result.is_error(),

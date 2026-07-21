@@ -1,8 +1,8 @@
 //! AL runtime values for the pure-Rust interpreter.
 //!
 //! **Stability contract.** This enum is the boundary type between the
-//! interpreter (Phase 2), the mock BC runtime (Phase 3), and any future
-//! consumer (DAP variable inspection, snapshot replay). Variants here are
+//! interpreter, mock BC runtime, and consumers such as DAP variable inspection
+//! and snapshot replay. Variants here are
 //! considered stable for parallel work; new variants may be added at the
 //! end of the enum but existing variants must not be renamed or reordered.
 //!
@@ -17,8 +17,7 @@ use std::collections::BTreeMap;
 
 pub use rust_decimal::Decimal;
 
-/// AL `Date` carrier: days since 0001-01-01 (CLR `DateTime.Ticks` style is
-/// overkill here — Phase 2 just needs ordering and arithmetic).
+/// AL `Date` carrier: days since 0001-01-01.
 pub type AlDate = i64;
 /// AL `Time` carrier: milliseconds since midnight, in `[0, 86_400_000)`.
 pub type AlTime = i64;
@@ -99,8 +98,7 @@ pub enum Value {
         member: String,
         ordinal: i64,
     },
-    /// AL `Record` — boxed handle into the in-memory table store.
-    /// Phase 3 fills in the inner type; Phase 2 uses the placeholder shape.
+    /// AL `Record` — handle into the in-memory table store.
     Record(RecordValue),
     RecordRef(RecordValue),
     /// AL `Variant` — tagged any-value.
@@ -130,9 +128,7 @@ pub enum Value {
     BigInteger(i64),
 }
 
-/// In-memory record handle. Phase 2 uses an opaque key into a per-thread
-/// table store managed by Phase 3's `mock::record::MockRecord`. Until
-/// Phase 3 lands, the interpreter constructs these only as placeholders.
+/// In-memory record handle backed by `mock::record::MockRecord`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordValue {
     pub table_name: String,
@@ -405,12 +401,6 @@ mod tests {
 
     #[test]
     fn default_for_code_returns_code_variant_adversarial_h_1() {
-        // FINDING P2 wrong-result: default_for("code") returns Value::Text,
-        // not Value::Code. Match arm at value.rs:222:
-        //   "text" | "code" => Some(Value::Text(String::new()))
-        // The Code arm should produce Value::Code, not Value::Text.
-        // Expected: Some(Value::Code(""))
-        // Observed: Some(Value::Text(""))
         assert!(
             matches!(Value::default_for("Code"), Some(Value::Code(s)) if s.is_empty()),
             "default_for(\"Code\") must return Value::Code, got: {:?}",
@@ -640,9 +630,7 @@ mod tests {
         // Eq contract a == a holds; distinct variants never compare equal even
         // for the same numeric value (Integer(0) is not Decimal(0)).
         let d = Value::Decimal(dec!(1.25));
-        #[allow(clippy::eq_op)]
-        let self_eq = d == d;
-        assert!(self_eq, "a decimal must equal itself");
+        assert_eq!(d, d.clone(), "a decimal must equal itself");
         assert_ne!(Value::Integer(0), Value::Decimal(Decimal::ZERO));
         assert_eq!(
             Value::Integer(1).partial_cmp(&Value::Integer(2)),

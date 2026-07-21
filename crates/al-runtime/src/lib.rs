@@ -1,9 +1,8 @@
-//! al-runtime: pure-Rust AL test runtime.
+//! Pure-Rust AL test runtime.
 //!
-//! Phase 2 ships the interpreter (pure-logic tests). Phase 3 fills in the
-//! mock BC runtime (records, filters, FlowFields, stubs). Phase 4+ adds the
-//! offline DAP server. None of this code transitively requires the .NET CLR
-//! or a live BC instance.
+//! Includes the tree-walking interpreter, in-memory record and FlowField
+//! support, and native test-library stubs. It does not require the .NET CLR or
+//! a live Business Central instance.
 //!
 //! Procedure lookup for nested workspace calls is abstracted behind
 //! `al_types::ProcedureSource`; the production implementation lives in

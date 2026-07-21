@@ -303,6 +303,13 @@ impl MockRecord {
         self.iter_pos = None;
     }
 
+    /// Remove the active filter for one field.
+    pub fn clear_filter(&mut self, field: FieldNo) {
+        self.filters.remove(&field);
+        self.iter_set.clear();
+        self.iter_pos = None;
+    }
+
     /// `SETFILTER(field, expr)` — set a BC filter expression on a field.
     pub fn set_filter(&mut self, field: FieldNo, expr: &str) -> Result<(), RecordError> {
         let parsed =
@@ -762,6 +769,20 @@ mod tests {
         }
         let expected: Vec<Value> = (3i64..=7).map(Value::Integer).collect();
         assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn clear_filter_restores_unfiltered_iteration() {
+        let mut rec = make_table();
+        for i in 1i64..=3 {
+            insert_row(&mut rec, i, "x");
+        }
+        rec.set_range(1, Value::Integer(2), Value::Integer(2));
+        assert_eq!(rec.count(), 1);
+
+        rec.clear_filter(1);
+
+        assert_eq!(rec.count(), 3);
     }
 
     #[test]

@@ -1,42 +1,4 @@
-//! Adversarial wave 2 — BCApps corpus findings.
-//!
-//! Each test was derived by loading or inspecting real BCApps test source
-//! from `tests/.repos/BCApps/` and running the snippet through the Phase 2
-//! interpreter.  Tests are categorised:
-//!
-//!   PASS            — test runs, asserts hold (good)
-//!   FAIL            — real assertion failure (expected BCApps behaviour)
-//!   PANIC           — interpreter panics (OUR BUG, guarded #[ignore])
-//!   TYPE_ERROR      — Eval::Error from a type mismatch (OUR BUG, guarded #[ignore])
-//!   UNIMPLEMENTED   — Eval::Error "unsupported …" (known Phase-2 gap)
-//!
-//! All bug-repro tests use `#[ignore]` so CI does not break.
-//! Source references are BCApps file paths relative to the repo root.
-//!
-//! # Findings summary (wave 2)
-//!
-//! | ID    | Category        | Synopsis                                          |
-//! |-------|-----------------|---------------------------------------------------|
-//! | W2-01 | UNIMPLEMENTED   | Date literal `20240701D` → unsupported expr kind  |
-//! | W2-02 | UNIMPLEMENTED   | Time literal `063030T` → unsupported expr kind    |
-//! | W2-03 | TYPE_ERROR      | Compound `+=` operator → "not supported on Int"   |
-//! | W2-04 | TYPE_ERROR      | Compound `-=` operator → "not supported on Int"   |
-//! | W2-05 | UNIMPLEMENTED   | Multi-var decl `a, b : Integer` — second var unbound |
-//! | W2-06 | PANIC           | FOR downto with `i64::MIN` start → i -= 1 panics  |
-//! | W2-07 | UNIMPLEMENTED   | `Enum::` scope-qualified enum member not evaluated |
-//! | W2-08 | UNIMPLEMENTED   | `List of [T]` variable → member calls unresolved  |
-//! | W2-09 | PASS            | BigInteger `L`-suffix stripped correctly           |
-//! | W2-10 | TYPE_ERROR      | FOR loop body `x := x + i` — `operator` node kind not handled |
-//! | W2-11 | UNIMPLEMENTED   | `MaxStrLen()` builtin not implemented              |
-//! | W2-12 | UNIMPLEMENTED   | `CreateDateTime()` builtin not implemented         |
-//! | W2-13 | PASS            | `StrSubstNo` used as argument to `Assert.AreEqual` |
-//! | W2-14 | PASS            | `Format(integer)` used as argument to AreEqual     |
-//! | W2-15 | TYPE_ERROR      | Compound `+=` on Text → "not supported on Text"   |
-//! | W2-16 | PASS            | `asserterror` correctly catches "procedure not found" |
-//! | W2-17 | TYPE_ERROR      | CASE on integer fails — arm value eval returns unsupported |
-//! | W2-18 | PASS            | Nested if/else chains evaluate correctly           |
-//! | W2-19 | UNIMPLEMENTED   | `CurrentDateTime` global fn not implemented        |
-//! | W2-20 | PANIC           | FOR upward loop with `i64::MAX` end → i += 1 OOB  |
+//! Interpreter regression tests derived from real BCApps source patterns.
 
 #[cfg(test)]
 mod tests {
@@ -520,51 +482,15 @@ mod tests {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // W2-11  `MaxStrLen()` builtin
-    //
-    // Source: src/Business Foundation/Test/NoSeries/src/NoSeriesTests.Codeunit.al
-    //   NoSeriesCode := CopyStr(UpperCase(Any.AlphabeticText(MaxStrLen(NoSeriesCode))), 1, MaxStrLen(NoSeriesCode));
-    //
-    // `MaxStrLen(var)` is a BC built-in that returns the declared maximum
-    // length of a Text/Code variable.  It is not implemented as an inline
-    // builtin in dispatch.rs.
-    //
-    // Expected: Eval::Normal(Value::Integer(N)) — the declared length.
-    // Observed: Eval::Error("procedure not found: MaxStrLen")
-    // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-11 NOW IMPLEMENTED but repro assertion is wrong: MaxStrLen() is dispatched \
-                (see b4_maxstrlen_* tests below), but this repro asserts the *statement* evaluates \
-                to Normal(Integer). An assignment statement evaluates to Normal(Empty) — the integer \
-                lands in `x`, not in the Eval. Kept ignored rather than rewrite an existing assertion."]
-    fn w2_11_maxstrlen_not_implemented() {
-        let (eval, _) = run_stmt("x := MaxStrLen(s);");
-        assert!(
-            matches!(eval, Eval::Normal(Value::Integer(_))),
-            "Expected Normal(Integer) from MaxStrLen, got: {:?}",
-            eval
-        );
+    fn w2_11_maxstrlen_assigns_result() {
+        let (eval, stack) = run_stmt("x := MaxStrLen(s);");
+        assert!(matches!(eval, Eval::Normal(Value::Empty)));
+        assert!(matches!(stack.lookup("x"), Some(Value::Integer(_))));
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // W2-12  `CreateDateTime()` builtin
-    //
-    // Source: src/System Application/Test/Date and Time/src/UnixTimestampTest.Codeunit.al
-    //   GivenDateTime := CreateDateTime(20240701D, 063030T);
-    //
-    // `CreateDateTime(date, time)` is a BC global that is not an inline
-    // builtin in dispatch.rs.
-    //
-    // Expected: Eval::Normal(Value::DateTime(...)) — the combined datetime.
-    // Observed: Eval::Error("procedure not found: CreateDateTime")
-    // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    fn w2_12_createdatetime_not_implemented() {
-        let (_eval, _) = run_stmt("x := 1;"); // placeholder — real test needs Date vars
-                                              // The real failing pattern from BCApps:
-                                              //   GivenDateTime := CreateDateTime(20240701D, 063030T);
-                                              // Both W2-01 (date literal) and this builtin absence are needed.
-                                              // This test documents the missing builtin separately.
+    fn w2_12_createdatetime_executes() {
         let wrapper = r#"codeunit 50100 "W2"
 {
     procedure Test()
@@ -590,7 +516,6 @@ mod tests {
             "Expected Normal after CreateDateTime, got: {:?}",
             eval
         );
-        let _ = eval;
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -819,23 +744,8 @@ mod tests {
         );
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // W2-19  `CurrentDateTime` global function
-    //
-    // Source: src/System Application/Test/Filter Tokens/src/FilterTokensTest.Codeunit.al
-    //   ExpectedFilterText := STRSUBSTNO(ExpectedText, CURRENTDATETIME());
-    //
-    // `CurrentDateTime` is a BC global that returns the current date-time.
-    // It is not implemented as an inline builtin in dispatch.rs.
-    //
-    // Expected: Eval::Normal(Value::DateTime(...)) — current datetime.
-    // Observed: Eval::Error("procedure not found: CurrentDateTime")
-    // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    fn w2_19_currentdatetime_not_implemented() {
-        let (_eval, _) = run_stmt("x := 1;"); // placeholder
-                                              // The real failing pattern:
-                                              //   dt := CurrentDateTime();
+    fn w2_19_currentdatetime_executes() {
         let wrapper = r#"codeunit 50100 "W2"
 {
     procedure Test()

@@ -59,8 +59,8 @@ pub struct ScopeStack {
     /// Current `eval_expr` recursion depth. Expression evaluation recurses
     /// per AST nesting level; ~400 nested parens overflow a 2 MiB thread
     /// stack (tokio worker default) and ABORT the process. Capped at
-    /// `MAX_EXPR_DEPTH` so degenerate input yields `Eval::Error` instead
-    /// (F-OPEN-265). Statement nesting has its own cap in `DispatchCtx`.
+    /// `MAX_EXPR_DEPTH` so degenerate input yields `Eval::Error` instead.
+    /// Statement nesting has its own cap in `DispatchCtx`.
     expr_depth: usize,
 }
 

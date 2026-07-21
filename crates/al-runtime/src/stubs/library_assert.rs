@@ -1,17 +1,7 @@
 //! Library Assert (codeunit 130 / 130002) — native Rust port.
 //!
-//! AL test source for the real codeunit lives in BCApps at:
-//!   `tests/.repos/BCApps/src/Tools/Test Framework/Test Libraries/Assert/src/LibraryAssert.Codeunit.al`
-//!
-//! Phase 2 takes the **fast-path** approach: instead of interpreting the
-//! AL source of Library Assert, the dispatch layer recognises calls to
-//! Library Assert procedure names and invokes the equivalent Rust code
-//! here. Same external semantics; far less interpreter surface to maintain.
-//!
 //! Every procedure follows AL's "raise via `Error(...)`" convention,
-//! which we translate to `Eval::Error(ErrorInfo { message, .. })`. AL
-//! `asserterror` blocks (Phase 3 work) catch these; until then a failing
-//! assertion propagates as an `Eval::Error` and aborts the test method.
+//! translated to `Eval::Error(ErrorInfo { message, .. })`.
 
 use crate::interpreter::scope::Eval;
 use crate::interpreter::value::{Decimal, ErrorInfo, Value};
