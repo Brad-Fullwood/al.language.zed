@@ -1,10 +1,7 @@
 //! AL project compilation via `dotnet alc`.
 //!
-//! Provides `compile_project()` which invokes the AL compiler and returns
-//! structured results including diagnostics. Used by:
-//! - `al package` CLI command
-//! - `al.package` LSP execute command
-//! - `al debug start` (via crate::dap, which has its own simpler version)
+//! Provides the shared compiler process policy and structured diagnostics used
+//! by CLI, LSP, and debugger build requests.
 
 use std::path::{Path, PathBuf};
 
@@ -47,8 +44,8 @@ pub(crate) enum AlcRunError {
 /// piped stdio, `kill_on_drop` (SIGKILL when the awaiting future is dropped —
 /// covers the timeout branch and upstream task cancellation such as
 /// `$/cancelRequest`), and the `AL_COMPILE_TIMEOUT_SECS` cap. Centralized so the
-/// daemon build path (`compile_project`) and the DAP compile path can never drift
-/// on timeout / zombie-child handling (was duplicated verbatim — DUP-1/DUP-2).
+/// daemon build path (`compile_project`) and the DAP compile path share timeout
+/// and child-process handling.
 pub(crate) async fn run_alc_with_timeout(
     mut cmd: tokio::process::Command,
 ) -> Result<std::process::Output, AlcRunError> {
@@ -201,46 +198,20 @@ pub async fn compile_project_with_analyzers(
         )));
     }
 
-    // F-OPEN-057: canonicalise `project_root` before interpolating into
-    // alc's `/project:` and `/out:` flags. Defence-in-depth — alc honours
-    // `..` segments and a misconfigured caller passing `/tmp/proj/../etc`
-    // would let alc write its output where the caller didn't intend.
-    // canonicalize() may fail on a freshly-created path that doesn't yet
-    // exist; fall back to the original path so happy-path behaviour is
-    // preserved.
-    let project_root_buf =
-        std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+    // Resolve `..` and symlinks before passing paths to the external compiler.
+    // A project with an app.json must be canonicalizable; continuing with an
+    // unresolved path would weaken the output-directory boundary.
+    let project_root_buf = std::fs::canonicalize(project_root)?;
     let project_root = project_root_buf.as_path();
 
-    // F-OPEN-058: atomic `.app` write. Route alc's `/out:` to a per-build
-    // temp directory inside the project, then `rename(2)` the resulting
-    // `.app` into the project root on success. A crashed/killed alc leaves
-    // its partial output in the tmp dir, which we always clean up. The
-    // prior approach wrote directly to `project_root`, so a crashed alc
-    // could leave a partial `.app` that `find_app_file_from_manifest`
-    // (mtime-sorted) would then pick up as the "latest build".
-    //
-    // Sibling-of-project rather than `target/` so the dir is inside the
-    // workspace and is automatically gitignored alongside the existing
-    // `*.app` ignore patterns.
-    // Per-invocation suffix: PID alone collides when multiple concurrent
-    // `compile_project()` calls run in the same process (the LSP daemon serves
-    // requests concurrently). Two tasks computing the same path would race —
-    // one's `remove_dir_all` could wipe the other's in-flight output between
-    // its `is_dir()` check and alc actually writing there. A monotonic counter
-    // gives each invocation its own isolated tmp dir.
+    // Route compiler output to a unique directory and move the complete package
+    // into place. The sequence number prevents concurrent requests in one
+    // process from sharing cleanup state.
     static BUILD_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = BUILD_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let build_tmp = project_root.join(format!(".al-build-tmp.{}.{seq}", std::process::id()));
-    // Best-effort cleanup of any leftover dir from a previous crashed run.
-    let _ = std::fs::remove_dir_all(&build_tmp);
-    if let Err(e) = std::fs::create_dir_all(&build_tmp) {
-        tracing::warn!(
-            path = %build_tmp.display(),
-            error = %e,
-            "alc build: failed to create tmp output dir, falling back to in-place /out:"
-        );
-    }
+    std::fs::create_dir(&build_tmp)?;
+
     // RAII drop guard so we always sweep the tmp dir, even on error/panic.
     struct TmpDirGuard(PathBuf);
     impl Drop for TmpDirGuard {
@@ -249,14 +220,7 @@ pub async fn compile_project_with_analyzers(
         }
     }
     let tmp_guard = TmpDirGuard(build_tmp.clone());
-    // Use tmp dir only if it was created successfully; otherwise fall back
-    // to the legacy in-place behaviour so the build path doesn't break in
-    // environments where we can't write a sibling dir.
-    let out_dir = if build_tmp.is_dir() {
-        build_tmp.as_path()
-    } else {
-        project_root
-    };
+    let out_dir = build_tmp.as_path();
 
     // `dotnet_command_async` sets DOTNET_ROLL_FORWARD=Major so Microsoft's
     // net8.0 `alc.dll` runs on a newer .NET major (e.g. 10) when 8 is absent.
@@ -265,8 +229,15 @@ pub async fn compile_project_with_analyzers(
     // alc's `/out:` must be a FILE path, not a directory — passing the dir
     // fails with `AL1012 … Access denied`. Use the canonical app filename so
     // `find_app_file` locates it afterward and the produced name is correct.
-    let out_file_name =
-        manifest_app_filename(project_root).unwrap_or_else(|| "output.app".to_string());
+    let out_file_name = manifest_app_filename(project_root).ok_or_else(|| {
+        AlError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} must contain string publisher, name, and version fields",
+                project_root.join("app.json").display()
+            ),
+        ))
+    })?;
     cmd.arg(format!("/out:{}", out_dir.join(&out_file_name).display()));
 
     let pkg_dir = package_cache
@@ -276,11 +247,8 @@ pub async fn compile_project_with_analyzers(
         cmd.arg(format!("/packagecachepath:{}", pkg_dir.display()));
     }
 
-    // Add analyzers — MS named analyzers filtered by name, custom DLL paths by absolute path.
-    // These are toolchain-side analyzer DLL identifiers (Microsoft's published names for the
-    // four built-in AL static analysers), not AL *language* keywords / object types / built-ins,
-    // so they are exempt from the "no hardcoded AL values" rule in CLAUDE.md. The set is
-    // fixed by Microsoft and does not drift with BC releases.
+    // Microsoft publishes these analyzer assembly names as part of the
+    // toolchain; custom analyzers are handled separately below.
     let named_analyzers: [(&str, &PathBuf); 4] = [
         ("CodeCop", &toolchain.analyzers.code_cop),
         ("AppSourceCop", &toolchain.analyzers.app_source_cop),
@@ -352,10 +320,6 @@ pub async fn compile_project_with_analyzers(
         }
     }
 
-    // A2–A4: thread the configured compilation options (compilationOptions,
-    // incrementalBuild, ruleSetPath/enableExternalRulesets, assemblyProbingPaths,
-    // outputAnalyzerStatistics) into the alc invocation. Previously parsed into
-    // AlConfig and never read; now built into a stable arg vector and appended.
     for arg in config_options.to_alc_args() {
         cmd.arg(arg);
     }
@@ -374,20 +338,13 @@ pub async fn compile_project_with_analyzers(
 
     let diagnostics = parse_alc_output(&combined);
 
-    // Find .app file in the output dir; on success, atomically move it
-    // into project_root so the result appears only once the build is
-    // complete (F-OPEN-058). If we fell back to in-place /out: (tmp dir
-    // creation failed), the .app is already in project_root.
+    // Move the package named in `/out:` into the project only after a successful
+    // compiler exit. Never select an unrelated artifact from the temp directory.
     let app_path = if output.status.success() {
-        let produced = find_app_file(out_dir);
+        let expected_output = out_dir.join(&out_file_name);
+        let produced = expected_output.is_file().then_some(expected_output);
         if let Some(src) = produced {
-            if out_dir == project_root {
-                Some(src)
-            } else {
-                // Cross-directory rename within the same filesystem (we
-                // created out_dir as a sibling of project_root, so the same
-                // mount). On success the .app appears atomically in
-                // project_root from the consumer's perspective.
+            {
                 // A produced .app path always has a file name; if it somehow
                 // doesn't (root path / "..") it's a path error, not a timeout.
                 // Report it as an Io error so callers see the true failure mode.
@@ -467,8 +424,8 @@ pub async fn compile_project_with_analyzers(
 /// alc output format: `file(line,col): error CODE: message`
 /// Find the byte offsets of the `(` and `)` that wrap the `<line>,<col>`
 /// coordinate pair in an alc diagnostic line, choosing the rightmost
-/// candidate so that earlier `(` characters in the path component (F-019)
-/// do not steal the match. Returns `None` when the line has no recognisable
+/// candidate so that earlier `(` characters in the path component do not
+/// steal the match. Returns `None` when the line has no recognisable
 /// coordinate-pair-followed-by-severity shape.
 fn find_diagnostic_coord_span(line: &str) -> Option<(usize, usize)> {
     let bytes = line.as_bytes();
@@ -520,7 +477,7 @@ fn parse_alc_output(output: &str) -> Vec<CompileDiagnostic> {
 ///
 /// Format: `path/file.al(10,5): error AL0001: Some message`
 ///
-/// F-019: paths can contain `(` (e.g. `Project (Old)/Foo.al`). Scan for the
+/// Paths can contain `(` (e.g. `Project (Old)/Foo.al`). Scan for the
 /// rightmost `(<digits>,<digits>):` followed by a severity keyword instead
 /// of the first `(`, so the path keeps its embedded parentheses.
 fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
@@ -563,13 +520,6 @@ fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
     })
 }
 
-/// Find the .app file produced by compilation.
-///
-/// First tries to construct the expected filename from app.json
-/// (`{publisher}_{name}_{version}.app`) to avoid returning a stale artifact
-/// when multiple .app files from old builds are present in the project root.
-/// Falls back to the most-recently-modified .app file if the manifest cannot
-/// be read or the expected path does not exist.
 /// Compile via the pure-Rust native `.app` emitter — no Microsoft `alc`, no C#
 /// bridge. Emits a deployable `.app` straight from the project source and writes
 /// it to `{publisher}_{name}_{version}.app` in the project root.
@@ -609,10 +559,6 @@ pub fn native_compile(project_root: &Path) -> CompileResult {
 
 /// Which compiler backend a [`build`] request targets.
 ///
-/// Gap B2: the daemon `compile`/`package` dispatchers, `al-explorer`, publish,
-/// and DAP launch each independently chose native-vs-alc and reimplemented the
-/// surrounding config/toolchain handling. [`BuildBackend`] + [`build`] centralize
-/// that selection behind one entry point returning the uniform [`CompileResult`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildBackend {
     /// Pure-Rust `.app` emitter — the default; needs no toolchain, no `.NET`.
@@ -632,7 +578,7 @@ impl BuildBackend {
     }
 }
 
-/// A single, backend-agnostic build request (gap B2).
+/// A backend-agnostic build request.
 pub struct BuildRequest<'a> {
     pub project_root: &'a Path,
     pub backend: BuildBackend,
@@ -643,8 +589,8 @@ pub struct BuildRequest<'a> {
     pub config: CompilationConfigOptions,
 }
 
-/// Unified build entry point (gap B2): one service the native emitter and the
-/// Microsoft `alc` path both go through, returning the uniform [`CompileResult`]
+/// Unified entry point for the native emitter and Microsoft `alc`, returning
+/// the common [`CompileResult`]
 /// (`success` / `app_path` / `diagnostics` / `output`). Callers select the
 /// backend and read one result shape instead of each branching and handling
 /// toolchain/config themselves.
@@ -654,15 +600,11 @@ pub struct BuildRequest<'a> {
 /// for an **infrastructure** failure that stopped the build from running at all
 /// (no toolchain for the `Alc` backend, missing `app.json`, alc spawn failure),
 /// so callers can distinguish "compile reported errors" from "couldn't build"
-/// and surface them differently — preserving the pre-B2 contract.
+/// and surface them differently.
 pub async fn build(req: BuildRequest<'_>) -> Result<CompileResult, AlError> {
     match req.backend {
         BuildBackend::Native => {
-            // C8: native_compile reads every `.al` file and writes the `.app` —
-            // blocking IO. Running it directly on the async runtime stalls a
-            // tokio worker for the whole compile, delaying unrelated LSP
-            // requests on the small default runtime. Offload to the blocking
-            // pool.
+            // Native compilation performs blocking filesystem I/O.
             let root = req.project_root.to_path_buf();
             tokio::task::spawn_blocking(move || native_compile(&root))
                 .await
@@ -686,40 +628,14 @@ pub async fn build(req: BuildRequest<'_>) -> Result<CompileResult, AlError> {
     }
 }
 
+/// Return the package whose name matches the project's manifest.
+///
+/// Unrelated `.app` files are deliberately ignored; selecting the newest file
+/// can publish a stale package left by a different build.
 pub fn find_app_file(project_root: &Path) -> Option<PathBuf> {
-    if let Some(path) = find_app_file_from_manifest(project_root) {
-        return Some(path);
-    }
-
-    let entries = std::fs::read_dir(project_root).ok()?; // SILENT: dir read failure means no .app
-    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .flatten()
-        .filter_map(|e| {
-            let path = e.path();
-            if path.extension().is_some_and(|ext| ext == "app") {
-                // file_type() does NOT follow symlinks: reject pre-planted
-                // symlinks (e.g. MyPub_MyApp.app -> /etc/passwd) so the path is
-                // never handed to read_app_capped() for an arbitrary-file read.
-                let ft = e.file_type().ok()?;
-                if !ft.is_file() {
-                    return None;
-                }
-                let mtime = e.metadata().ok()?.modified().ok()?;
-                Some((mtime, path))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    candidates.sort_by_key(|b| std::cmp::Reverse(b.0));
-    candidates.into_iter().next().map(|(_, path)| path)
+    find_app_file_from_manifest(project_root)
 }
 
-/// Derive the expected .app filename from `app.json` fields.
-///
-/// alc names the output `{publisher}_{name}_{version}.app` in the directory
-/// passed to `/out:` (the project root in our case).
 /// Compute the canonical `{publisher}_{name}_{version}.app` filename from a
 /// project's `app.json`, without requiring the file to exist yet.
 ///
@@ -885,15 +801,13 @@ Build failed.";
     }
 
     #[test]
-    fn find_app_file_falls_back_to_most_recent_when_no_manifest() {
+    fn find_app_file_requires_a_manifest() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
 
-        // No app.json — manifest lookup will fail gracefully
         std::fs::write(root.join("Some_1.0.0.0.app"), b"only one").unwrap();
 
-        let result = find_app_file(root).unwrap();
-        assert_eq!(result.file_name().unwrap(), "Some_1.0.0.0.app");
+        assert!(find_app_file(root).is_none());
     }
 
     #[cfg(unix)]
@@ -917,20 +831,6 @@ Build failed.";
 
         // Must be rejected: a symlink is not a legitimate build artifact and
         // would otherwise enable an arbitrary-file read.
-        assert!(find_app_file(root).is_none());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn find_app_file_rejects_fallback_symlink() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-
-        // No app.json -> exercise the fallback most-recent scan.
-        let secret = dir.path().join("secret.txt");
-        std::fs::write(&secret, b"top secret").unwrap();
-        std::os::unix::fs::symlink(&secret, root.join("Evil_1.0.0.0.app")).unwrap();
-
         assert!(find_app_file(root).is_none());
     }
 
