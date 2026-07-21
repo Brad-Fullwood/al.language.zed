@@ -1,37 +1,6 @@
 //! Library Random (codeunit 130440) — native Rust port.
 //!
-//! Library Random is a Microsoft test library shipped in the
-//! `Microsoft_Test Libraries_*.app` NuGet package.  Its AL source is not
-//! available in either the BCApps or ALAppExtensions open-source repos, so
-//! this stub is implemented directly from the published API contract, using
-//! the same fast-path approach as `library_assert.rs`: the dispatch layer
-//! recognises calls by codeunit name / ID and invokes the Rust equivalent.
-//!
-//! ## Determinism
-//!
-//! AL tests that use `LibraryRandom` need deterministic output when running
-//! under the offline interpreter.  `Random(n)` in BC uses a seeded LCG.
-//! We replicate this with a thread-local LCG seeded to 1 by default (the
-//! same default BC uses when `Randomize` is not called).  Callers can
-//! inject a known seed by calling `SetSeed` (see `resolve`).
-//!
-//! The LCG parameters mirror the classic Microsoft C runtime:
-//!   `state = state * 214013 + 2531011`
-//!   `value = (state >> 16) & 0x7FFF`   — gives values in [1, 32767]
-//!
-//! To satisfy `Random(N)` semantics (returns integer in [1, N]):
-//!   `result = (state_value % N) + 1`
-//!
-//! ## Procedure set
-//!
-//! | AL procedure          | Description                         |
-//! |-----------------------|-------------------------------------|
-//! | `RandInt(Max)`        | Integer in \[1, Max\]               |
-//! | `RandIntInRange(Min, Max)` | Integer in \[Min, Max\]         |
-//! | `RandDec(Max, Places)`| Decimal in \[0.01, Max\] rounded    |
-//! | `RandText([Max])`     | Text of up to `Max` (≤250) chars    |
-//! | `SetSeed(Seed)`       | Seed the thread-local RNG           |
-//! | `RandDateFrom(Date, Max)` | Date in \[Date, Date+Max days\] |
+//! Native Library Random test-codeunit procedures.
 
 use std::cell::Cell;
 
@@ -53,7 +22,7 @@ thread_local! {
 ///
 /// The final result is `(rand_value % max) + 1`, giving a value in [1, max].
 /// When `max` is 1, this always returns 1.
-fn next_rand(max: i64) -> i64 {
+pub(super) fn next_rand(max: i64) -> i64 {
     if max <= 1 {
         return 1;
     }
@@ -159,7 +128,15 @@ pub fn rand_text(args: &[Value]) -> Eval {
 /// one test's `SetSeed(42)` doesn't bleed into the next test's
 /// expectations on the same thread.
 pub fn reset_lcg() {
-    LCG_STATE.with(|cell| cell.set(1));
+    set_lcg_seed(1);
+}
+
+pub(super) fn set_lcg_seed(seed: u64) {
+    LCG_STATE.with(|cell| cell.set(seed.max(1)));
+}
+
+pub(super) fn lcg_state() -> u64 {
+    LCG_STATE.with(Cell::get)
 }
 
 /// `LibraryRandom.SetSeed(Seed: Integer)`
@@ -171,8 +148,7 @@ pub fn set_seed(args: &[Value]) -> Eval {
         [] => return err("LibraryRandom.SetSeed requires 1 argument"),
         _ => return err("LibraryRandom.SetSeed expects (Integer)"),
     };
-    let effective = if seed == 0 { 1 } else { seed };
-    LCG_STATE.with(|cell| cell.set(effective));
+    set_lcg_seed(seed);
     ok(Value::Empty)
 }
 

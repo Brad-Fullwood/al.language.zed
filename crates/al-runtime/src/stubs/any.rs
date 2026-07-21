@@ -1,62 +1,11 @@
-//! Any (codeunit 130500) — native Rust port.
-//!
-//! AL source lives in BCApps at:
-//!   `src/Tools/Test Framework/Test Libraries/Any/src/Any.Codeunit.al`
-//!
-//! This stub takes the **fast-path** approach: instead of interpreting the
-//! AL source, the dispatch layer recognises calls by name/ID and invokes the
-//! Rust equivalent.  The AL implementation uses `Random(N)` internally; we
-//! share the same thread-local LCG from `library_random` so that `SetSeed`
-//! from either codeunit affects both — exactly as it does in BC, where a
-//! single global `Randomize` seed is shared across all callers.
-//!
-//! ## Procedure set (from BCApps source)
-//!
-//! | AL procedure                            | Description                        |
-//! |-----------------------------------------|------------------------------------|
-//! | `Boolean()`                             | Random bool                        |
-//! | `IntegerInRange(MaxValue)`              | Integer in [1, Max]                |
-//! | `IntegerInRange(Min, Max)`              | Integer in [Min, Max]              |
-//! | `DecimalInRange(Max, Places)`           | Decimal (0, Max]                   |
-//! | `DecimalInRange(Min, Max, Places)`      | Decimal [Min, Max]                 |
-//! | `AlphabeticText(Length)`                | Lowercase a–z string               |
-//! | `AlphanumericText(Length)`              | Lowercase alphanumeric string      |
-//! | `UnicodeText(Length)`                   | Cyrillic Unicode string            |
-//! | `Email()`                               | Pseudo-random email                |
-//! | `Email(LocalLen, DomainLen)`            | Pseudo-random email (custom len)   |
-//! | `GuidValue()`                           | Random GUID (uses getrandom)       |
-//! | `SetSeed(Seed)`                         | Seed the shared RNG                |
-//! | `GetSeed()`                             | Returns the current seed           |
-//! | `SetDefaultSeed()`                      | No-op (interpreter: seed stays 1)  |
-
-use std::cell::Cell;
+//! Native Any test-codeunit procedures.
 
 use crate::interpreter::scope::Eval;
 use crate::interpreter::value::{Decimal, ErrorInfo, Value};
 use rust_decimal::prelude::ToPrimitive;
 
-// We import the same Cell type and use the same algorithm as library_random,
-// but we keep a *separate* thread-local here so the two stubs don't need to
-// be in the same compilation unit.  If you need both codeunits to share a
-// *single* seed you can route them through a common module; for test
-// isolation (each test method creates its own `Any` codeunit variable), the
-// separation is intentional.
-
-thread_local! {
-    static LCG_STATE: Cell<u64> = const { Cell::new(1) };
-}
-
-/// Advance the LCG and return a value in [1, max].
 fn next_rand(max: i64) -> i64 {
-    if max <= 1 {
-        return 1;
-    }
-    LCG_STATE.with(|cell| {
-        let next = cell.get().wrapping_mul(214013).wrapping_add(2531011);
-        cell.set(next);
-        let r = ((next >> 16) & 0x7FFF) as i64;
-        (r % max) + 1
-    })
+    super::library_random::next_rand(max)
 }
 
 fn err(message: impl Into<String>) -> Eval {
@@ -299,8 +248,7 @@ pub fn set_seed(args: &[Value]) -> Eval {
         [] => return err("Any.SetSeed requires 1 argument"),
         _ => return err("Any.SetSeed expects (Integer)"),
     };
-    let effective = if seed == 0 { 1 } else { seed };
-    LCG_STATE.with(|cell| cell.set(effective));
+    super::library_random::set_lcg_seed(seed);
     ok(Value::Empty)
 }
 
@@ -313,19 +261,17 @@ pub fn get_seed(args: &[Value]) -> Eval {
     if !args.is_empty() {
         return err("Any.GetSeed expects no arguments");
     }
-    let state = LCG_STATE.with(|c| c.get()) as i64;
+    let state = super::library_random::lcg_state() as i64;
     ok(Value::Integer(state))
 }
 
 /// `Any.SetDefaultSeed()`
 ///
-/// In BC this sets seed = milliseconds since midnight.  In the interpreter
-/// we treat it as a no-op that leaves the current seed unchanged, ensuring
-/// offline tests remain reproducible when they call `SetDefaultSeed`.
 pub fn set_default_seed(args: &[Value]) -> Eval {
     if !args.is_empty() {
         return err("Any.SetDefaultSeed expects no arguments");
     }
+    super::library_random::set_lcg_seed(crate::interpreter::dispatch::clock_time() as u64);
     ok(Value::Empty)
 }
 
@@ -352,7 +298,7 @@ mod tests {
     use super::*;
 
     fn seed(n: u64) {
-        LCG_STATE.with(|c| c.set(n));
+        super::super::library_random::set_lcg_seed(n);
     }
 
     fn ok_val(eval: Eval) -> Value {
@@ -666,15 +612,13 @@ mod tests {
     }
 
     #[test]
-    fn set_default_seed_is_noop_and_returns_empty() {
-        // SetDefaultSeed() in the interpreter is a no-op (keeps existing seed).
+    fn set_default_seed_uses_time_of_day() {
         seed(42);
+        let before = crate::interpreter::dispatch::clock_time().max(1) as u64;
         ok_val(set_default_seed(&[]));
-        // The seed is still set to 42 — next rand call is deterministic.
-        let after = ok_val(integer_in_range(&[Value::Integer(1000)]));
-        seed(42);
-        let expected = ok_val(integer_in_range(&[Value::Integer(1000)]));
-        assert_eq!(after, expected, "SetDefaultSeed must not disturb seed");
+        let after = crate::interpreter::dispatch::clock_time().max(1) as u64;
+        let seed = super::super::library_random::lcg_state();
+        assert!((before..=after).contains(&seed));
     }
 
     #[test]
