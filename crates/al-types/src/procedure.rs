@@ -1,10 +1,4 @@
 //! Procedure-source abstraction for the AL interpreter.
-//!
-//! The pure-Rust test interpreter (`al-runtime`, tier 1) needs to look
-//! procedures up by object name and walk their cached parse trees, but must
-//! not depend on the workspace hub (tier 4) or the file index (`al-source`,
-//! tier 1). This trait is the seam: `al-runtime` consumes `dyn ProcedureSource`
-//! and `al-source` provides `impl ProcedureSource for FileIndex`.
 
 use std::path::{Path, PathBuf};
 

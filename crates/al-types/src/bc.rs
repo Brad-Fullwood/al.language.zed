@@ -1,6 +1,4 @@
-//! Business Central connection enums, shared by the BC client, the DAP layer,
-//! and the symbol-download layer (previously duplicated in `dap/config.rs` and
-//! `symbols/bc_server.rs`).
+//! Business Central connection enums shared across the toolchain.
 
 /// The kind of BC environment a connection targets.
 #[derive(Debug, Clone, PartialEq)]
