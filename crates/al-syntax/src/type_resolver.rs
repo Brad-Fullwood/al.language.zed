@@ -17,6 +17,9 @@ pub struct VariableDecl {
     pub type_subtype: Option<String>,
     pub is_var: bool,
     pub scope: VariableScope,
+    /// Source anchor for the declaration. For explicit declarations this is
+    /// the variable name itself, so definition/binding queries use the same
+    /// canonical location whether the cursor is on the declaration or a use.
     pub range: tree_sitter::Range,
 }
 
@@ -390,7 +393,12 @@ impl<'a> TypeResolver<'a> {
             type_subtype,
             is_var,
             scope: VariableScope::Parameter,
-            range: node.range(),
+            // A `var` parameter node starts at the `var` keyword, while the
+            // binding layer identifies declarations by the name token. Using
+            // the whole parameter range therefore gave declaration and usage
+            // sites different binding keys and filtered every usage out of
+            // find-references. Anchor the resolved declaration at its name.
+            range: name_node.range(),
         })
     }
 

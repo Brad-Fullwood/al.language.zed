@@ -114,6 +114,7 @@ dependencies = [
  "al-types",
  "futures-util",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",

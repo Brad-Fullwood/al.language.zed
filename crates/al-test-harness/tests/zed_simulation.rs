@@ -49,10 +49,9 @@ async fn open_test_files(client: &mut LspClient) {
     ];
     for file in &files {
         let path = test_project_dir().join(file);
-        if path.exists() {
-            let content = std::fs::read_to_string(&path).unwrap();
-            client.open_file(file, &content).await;
-        }
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("fixture {} must exist: {error}", path.display()));
+        client.open_file(file, &content).await;
     }
 }
 
@@ -100,23 +99,19 @@ async fn test_fixture_open_real_files() {
 
     for file in &files {
         let path = test_project_dir().join(file);
-        if path.exists() {
-            let content = std::fs::read_to_string(&path).unwrap();
-            client.open_file(file, &content).await;
-        }
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("fixture {} must exist: {error}", path.display()));
+        client.open_file(file, &content).await;
     }
 
     for file in &files {
-        let path = test_project_dir().join(file);
-        if path.exists() {
-            let symbols = client.document_symbols(file).await;
-            let names = symbol_names(&symbols);
-            assert!(
-                !names.is_empty(),
-                "File {} should have document symbols. Got none.",
-                file
-            );
-        }
+        let symbols = client.document_symbols(file).await;
+        let names = symbol_names(&symbols);
+        assert!(
+            !names.is_empty(),
+            "File {} should have document symbols. Got none.",
+            file
+        );
     }
 
     client.shutdown().await;
@@ -134,24 +129,23 @@ async fn test_fixture_semantic_tokens_real_files() {
 
     for file in &files {
         let path = test_project_dir().join(file);
-        if path.exists() {
-            let content = std::fs::read_to_string(&path).unwrap();
-            client.open_file(file, &content).await;
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("fixture {} must exist: {error}", path.display()));
+        client.open_file(file, &content).await;
 
-            let tokens = client.semantic_tokens(file).await;
-            assert!(
-                tokens.is_some(),
-                "File {} should produce semantic tokens",
-                file
-            );
+        let tokens = client.semantic_tokens(file).await;
+        assert!(
+            tokens.is_some(),
+            "File {} should produce semantic tokens",
+            file
+        );
 
-            let data = semantic_token_data(&tokens.unwrap());
-            assert!(
-                !data.is_empty(),
-                "File {} should have at least one semantic token. Got 0.",
-                file
-            );
-        }
+        let data = semantic_token_data(&tokens.unwrap());
+        assert!(
+            !data.is_empty(),
+            "File {} should have at least one semantic token. Got 0.",
+            file
+        );
     }
 
     client.shutdown().await;
@@ -502,12 +496,11 @@ async fn test_fixture_formatting_all_files() {
 
     for file in &files {
         let path = test_project_dir().join(file);
-        if path.exists() {
-            let content = std::fs::read_to_string(&path).unwrap();
-            client.open_file(file, &content).await;
-            let _edits = client.format(file).await;
-            // No crash = success
-        }
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("fixture {} must exist: {error}", path.display()));
+        client.open_file(file, &content).await;
+        let _edits = client.format(file).await;
+        // No crash = success
     }
 
     client.shutdown().await;
@@ -525,19 +518,18 @@ async fn test_fixture_folding_all_files() {
 
     for (file, min_folds) in &files {
         let path = test_project_dir().join(file);
-        if path.exists() {
-            let content = std::fs::read_to_string(&path).unwrap();
-            client.open_file(file, &content).await;
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("fixture {} must exist: {error}", path.display()));
+        client.open_file(file, &content).await;
 
-            let ranges = client.folding_ranges(file).await;
-            assert!(
-                ranges.len() >= *min_folds,
-                "File {} should have at least {} folds. Got: {}",
-                file,
-                min_folds,
-                ranges.len()
-            );
-        }
+        let ranges = client.folding_ranges(file).await;
+        assert!(
+            ranges.len() >= *min_folds,
+            "File {} should have at least {} folds. Got: {}",
+            file,
+            min_folds,
+            ranges.len()
+        );
     }
 
     client.shutdown().await;
@@ -1271,7 +1263,6 @@ async fn test_fixture_signature_help_cross_file_workspace_procedure() {
 
     let page_rel = "src/WorkOrderStagingList.Page.al";
     let page = std::fs::read_to_string(test_project_dir().join(page_rel)).unwrap();
-    client.open_file(page_rel, &page).await;
     open_test_files(&mut client).await;
 
     let (line, _) = find_position(

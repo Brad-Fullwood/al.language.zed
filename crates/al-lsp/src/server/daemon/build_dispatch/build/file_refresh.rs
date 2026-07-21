@@ -44,17 +44,52 @@ fn is_same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
     }
 }
 
+/// Claim `new` without an exists-then-rename race. On Windows, the native
+/// rename operation already fails atomically when the destination exists. On
+/// Unix, create the destination directory entry with `link(2)` (which is an
+/// atomic create-if-absent operation), then unlink the old name. AL sources are
+/// regular files on one filesystem, so this provides no-overwrite semantics
+/// without a platform-specific syscall dependency.
+fn rename_no_replace(old: &std::path::Path, new: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        std::fs::rename(old, new)
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::fs::hard_link(old, new)?;
+        if let Err(error) = std::fs::remove_file(old) {
+            // Best-effort rollback: preserve the original name if unlinking it
+            // fails after the destination was claimed.
+            let _ = std::fs::remove_file(new);
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn rename_al_file_and_refresh(
     workspace: &Workspace,
     old: &std::path::Path,
     new: &std::path::Path,
 ) -> std::io::Result<()> {
-    // C11 (data loss): std::fs::rename silently replaces an existing
-    // destination on Unix. Two objects that normalize to the same
-    // `<Kind><Id>.<Name>.al` filename would collide and `al organize-files`
-    // would destroy one source file. Refuse to overwrite a different existing
-    // file (a case-only rename to the same file is still allowed).
-    if new != old && new.exists() && !is_same_file(old, new) {
+    let old_uri = url::Url::from_file_path(old).ok();
+    let new_uri = url::Url::from_file_path(new).ok();
+    if let (Some(old_uri), Some(new_uri)) = (&old_uri, &new_uri) {
+        if workspace.documents.contains(old_uri) && workspace.documents.contains(new_uri) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("rename target {} is already open", new.display()),
+            ));
+        }
+    }
+
+    // A case-only rename to the same file is allowed. Every other rename uses
+    // an atomic create-if-absent primitive, so a destination created after this
+    // advisory check still cannot be overwritten.
+    let same_file = new != old && new.exists() && is_same_file(old, new);
+    if new != old && new.exists() && !same_file {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
             format!(
@@ -63,7 +98,17 @@ pub(crate) fn rename_al_file_and_refresh(
             ),
         ));
     }
-    std::fs::rename(old, new)?;
+    if old != new {
+        if same_file {
+            std::fs::rename(old, new)?;
+        } else {
+            rename_no_replace(old, new)?;
+        }
+    }
+
+    if let (Some(old_uri), Some(new_uri)) = (old_uri, new_uri) {
+        workspace.documents.rename(&old_uri, new_uri);
+    }
     workspace.file_index.remove_file(old);
     if let Ok(content) = std::fs::read_to_string(new) {
         workspace.file_index.add_file(new.to_path_buf(), content);
@@ -128,6 +173,39 @@ mod tests {
             Some(content.as_str()),
             "new path must be re-indexed"
         );
+    }
+
+    #[test]
+    fn rename_transfers_open_document_without_resetting_versions() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let old = tmp.path().join("OpenOld.al");
+        let new = tmp.path().join("OpenNew.al");
+        let content = r#"codeunit 50101 "Renamed" { }"#.to_string();
+        std::fs::write(&old, &content).unwrap();
+        ws.file_index.add_file(old.clone(), content.clone());
+
+        let old_uri = url::Url::from_file_path(&old).unwrap();
+        let new_uri = url::Url::from_file_path(&new).unwrap();
+        ws.documents.open(old_uri.clone(), content.clone());
+        ws.documents.apply_changes_and_get(
+            &old_uri,
+            &[al_source::documents::TextChange {
+                range: None,
+                text: content.clone(),
+            }],
+        );
+        ws.documents.set_client_version(&old_uri, 17);
+
+        rename_al_file_and_refresh(&ws, &old, &new).unwrap();
+
+        assert!(!ws.documents.contains(&old_uri));
+        assert_eq!(
+            ws.documents.get_text(&new_uri).as_deref(),
+            Some(content.as_str())
+        );
+        assert_eq!(ws.documents.get_version(&new_uri), Some(1));
+        assert_eq!(ws.documents.get_client_version(&new_uri), Some(17));
     }
 
     /// F-011 negative: write_al_file_and_refresh propagates I/O errors

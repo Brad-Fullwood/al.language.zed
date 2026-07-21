@@ -171,6 +171,33 @@ mod tests {
     }
 
     #[test]
+    fn references_bind_var_parameter_uses_to_parameter_name() {
+        // A `var` parameter's syntax node starts at `var`, but its canonical
+        // declaration is the name token. Definition and references must use
+        // that same location or every use is incorrectly filtered out.
+        let uri = Url::parse("file:///test/refs_var_parameter.al").expect("test");
+        let src = r#"codeunit 50100 "Refs"
+{
+    procedure Calc(var Staging: Record Customer)
+    begin
+        Staging.FindFirst();
+        Staging.Modify();
+    end;
+}"#;
+        let ws = ws_with_doc(&uri, src);
+        let pos = Position {
+            line: 2,
+            character: 23,
+        };
+        let locs = references(&ws, &uri, pos, true);
+        let lines: Vec<u32> = locs.iter().map(|loc| loc.range.start.line).collect();
+        assert!(
+            lines.contains(&2) && lines.contains(&4) && lines.contains(&5),
+            "expected the var parameter declaration and both uses, got {lines:?}"
+        );
+    }
+
+    #[test]
     fn c21_exclude_declaration_not_the_clicked_usage() {
         // Invoke references from a *usage* site with includeDeclaration=false.
         // The declaration (line 4) must be excluded; the clicked usage (line 6)

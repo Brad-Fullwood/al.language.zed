@@ -1,6 +1,5 @@
-// Reproduces: p1-1-test-engine-skeleton — al_test module does not exist;
-// TestStatus / TestMethodResult / TestCodeunitResult / TestRunnerError are not yet at
-// crate::test_engine::result; Workspace::test_results field is absent.
+// Verifies the al_test module integration, its canonical test-result types,
+// and the Workspace::test_results storage used by the test engine.
 
 use al_test::result::{TestCodeunitResult, TestMethodResult, TestRunnerError, TestStatus};
 use al_workspace::Workspace;

@@ -2,11 +2,15 @@
 //! `invoke()` request/response loop, and every public debug operation.
 //! Split out of the former monolithic `bc_debug.rs` (pure move, no behavior change).
 
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::AUTHORIZATION;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::{verify_tls12_signature, verify_tls13_signature, WebPkiSupportedAlgorithms};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
@@ -19,35 +23,167 @@ use super::wire::{
     resolve_negotiate_connection, validate_signalr_handshake_response, SignalRMessage,
 };
 
-const PENDING_EVENT_CAPACITY: usize = 64;
+const COMPLETION_CHANNEL_CAPACITY: usize = 32;
 
 /// Capacity of the SignalR event channel that the reader task forwards
-/// every server-push message into. A misbehaving (or malicious) BC server
+/// server-push messages into. A misbehaving (or malicious) BC server
 /// flooding the daemon used to grow this channel unboundedly, since the
 /// previous channel was `mpsc::unbounded_channel`. F-OPEN-017.
 ///
 /// 4096 messages × ~few-KB-each = ~MB-scale bound. Variable-expansion
 /// responses can be large (deep AL records); Break / step-complete events
 /// are small. If the channel ever fills, the reader task drops the
-/// offending message with a `warn!` log — that's preferable to OOM.
+/// offending push message with a `warn!` log — that's preferable to OOM.
 /// Break events have a *separate* dedicated channel (`break_event_*`)
 /// that stays unbounded because each entry is a single `bool` and a
 /// dropped Break event leaves the debugger silently stuck.
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
+#[derive(Debug)]
+struct AcceptInvalidCertVerifier {
+    algorithms: WebPkiSupportedAlgorithms,
+}
+
+impl ServerCertVerifier for AcceptInvalidCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.algorithms.supported_schemes()
+    }
+}
+
+fn websocket_connector(accept_invalid_certs: bool) -> Result<Option<tokio_tungstenite::Connector>> {
+    if !accept_invalid_certs {
+        return Ok(None);
+    }
+
+    let algorithms = rustls::crypto::ring::default_provider().signature_verification_algorithms;
+    let provider = rustls::crypto::ring::default_provider();
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| DapError::ConnectionFailed(format!("TLS configuration failed: {e}")))?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AcceptInvalidCertVerifier { algorithms }))
+        .with_no_client_auth();
+    Ok(Some(tokio_tungstenite::Connector::Rustls(Arc::new(config))))
+}
+
+fn websocket_host_header(ws_url: &str) -> Result<String> {
+    let parsed = url::Url::parse(ws_url)
+        .map_err(|e| DapError::ConnectionFailed(format!("Invalid WebSocket URL: {e}")))?;
+    let host = match parsed.host() {
+        Some(url::Host::Domain(domain)) => domain.to_string(),
+        Some(url::Host::Ipv4(address)) => address.to_string(),
+        Some(url::Host::Ipv6(address)) => format!("[{address}]"),
+        None => {
+            return Err(DapError::ConnectionFailed(
+                "WebSocket URL has no host".to_string(),
+            ))
+        }
+    };
+    Ok(match parsed.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
+}
+
+fn validate_handshake_and_take_frames(text: &str) -> Result<Vec<String>> {
+    let mut parts = text.split('\x1e');
+    let handshake = parts.next().unwrap_or_default();
+    validate_signalr_handshake_response(handshake)?;
+    Ok(parts
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+async fn route_signalr_message(
+    msg: SignalRMessage,
+    event_tx: &mpsc::Sender<SignalRMessage>,
+    completion_tx: &mpsc::Sender<SignalRMessage>,
+    break_event_tx: &mpsc::UnboundedSender<bool>,
+) -> bool {
+    if msg.type_ == 6 {
+        return true;
+    }
+    debug!(
+        "SignalR recv: type={} target={:?} id={:?}",
+        msg.type_, msg.target, msg.invocation_id
+    );
+
+    if msg.type_ == 1 {
+        let break_state = match msg.target.as_deref() {
+            Some("Break") => Some(true),
+            Some("OnDetachedFromConnection" | "OnFatalDebuggerException") => Some(false),
+            _ => None,
+        };
+        if let Some(state) = break_state {
+            if break_event_tx.send(state).is_err() {
+                debug!("break-event listener has gone away");
+            }
+        }
+    }
+
+    if msg.type_ == 3 {
+        // Completion replies are correctness-critical. Back-pressure the WS
+        // reader rather than dropping a reply and timing out its invocation.
+        return completion_tx.send(msg).await.is_ok();
+    }
+
+    match event_tx.try_send(msg) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            warn!(
+                cap = EVENT_CHANNEL_CAPACITY,
+                "SignalR push-event channel full — dropping callback"
+            );
+            true
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
 /// Native BC debug session over SignalR.
 pub struct BcDebugSession {
     ws_tx: mpsc::Sender<String>,
-    /// Receive events/completions from the hub (unbounded — never drops events)
+    /// Bounded server-push queue. Overflow may discard ordinary callbacks, but
+    /// completion replies and Break notifications use dedicated channels.
     event_rx: Mutex<mpsc::Receiver<SignalRMessage>>,
+    /// Completion replies are back-pressured, never dropped, and consumed by
+    /// exactly one serialized `invoke()` at a time.
+    completion_rx: Mutex<mpsc::Receiver<SignalRMessage>>,
     next_id: AtomicI64,
     /// SignalR connection ID — used in browser URL for debug context
     pub connection_id: String,
     is_stopped: Mutex<bool>,
-    /// Server-push type-1 events that arrived while an `invoke()` was waiting
-    /// for its own completion. Callers drain this buffer after each invoke.
-    /// Unbounded so that Break events are never silently dropped.
-    pending_events: Mutex<VecDeque<SignalRMessage>>,
     /// Receives `true` when a Break event arrives and `false` when the session
     /// ends (Detached or FatalError). Populated by the WebSocket reader task,
     /// which sends without holding any lock — no deadlock risk. The channel is
@@ -138,18 +274,17 @@ impl BcDebugSession {
                 "Sec-WebSocket-Key",
                 tokio_tungstenite::tungstenite::handshake::client::generate_key(),
             )
-            .header(
-                "Host",
-                url::Url::parse(&ws_url)
-                    .map(|u| u.host_str().unwrap_or("").to_string())
-                    .unwrap_or_default(),
-            )
+            .header("Host", websocket_host_header(&ws_url)?)
             .body(())
             .map_err(|e| DapError::ConnectionFailed(format!("WS request build error: {e}")))?;
 
-        let (ws_stream, _) = tokio_tungstenite::connect_async(request)
-            .await
-            .map_err(|e| DapError::ConnectionFailed(format!("WebSocket connect failed: {e}")))?;
+        let connector = websocket_connector(config.accept_invalid_certs)?;
+        let (ws_stream, _) =
+            tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector)
+                .await
+                .map_err(|e| {
+                    DapError::ConnectionFailed(format!("WebSocket connect failed: {e}"))
+                })?;
 
         let (mut ws_sink, mut ws_source) = ws_stream.split();
 
@@ -165,16 +300,19 @@ impl BcDebugSession {
         // protocol/version mismatch here via `{"error":...}`; validate it so a
         // rejected handshake fails loudly instead of limping on against an
         // adapter that will misbehave on every later invoke (F-OPEN-016).
-        if let Some(msg) = ws_source.next().await {
+        let initial_frames = if let Some(msg) = ws_source.next().await {
             let msg = msg.map_err(|e| DapError::ConnectionFailed(format!("WS read error: {e}")))?;
             debug!("SignalR handshake response: {:?}", msg);
             if let tokio_tungstenite::tungstenite::Message::Text(text) = &msg {
-                // SignalR frames are record-separator (\x1e) delimited; the
-                // handshake response is the first frame.
-                let first = text.split('\x1e').next().unwrap_or(text.as_str());
-                validate_signalr_handshake_response(first)?;
+                validate_handshake_and_take_frames(text)?
+            } else {
+                Vec::new()
             }
-        }
+        } else {
+            return Err(DapError::ConnectionFailed(
+                "WebSocket closed before SignalR handshake response".to_string(),
+            ));
+        };
 
         info!("SignalR connection established");
 
@@ -184,6 +322,8 @@ impl BcDebugSession {
         // invariant; everything else drops with a warn on overflow so a
         // hostile or misbehaving server can't OOM the daemon. F-OPEN-017.
         let (event_tx, event_rx) = mpsc::channel::<SignalRMessage>(EVENT_CHANNEL_CAPACITY);
+        let (completion_tx, completion_rx) =
+            mpsc::channel::<SignalRMessage>(COMPLETION_CHANNEL_CAPACITY);
         // Dedicated channel for Break/Detached/FatalError notifications.
         // Using an unbounded channel ensures events buffered before wait_for_break_event
         // is called are never lost. Each entry is one `bool`, so even a
@@ -205,6 +345,19 @@ impl BcDebugSession {
         });
 
         tokio::spawn(async move {
+            for part in initial_frames {
+                match serde_json::from_str::<SignalRMessage>(&part) {
+                    Ok(msg) => {
+                        if !route_signalr_message(msg, &event_tx, &completion_tx, &break_event_tx)
+                            .await
+                        {
+                            return;
+                        }
+                    }
+                    Err(e) => warn!("Failed to parse coalesced SignalR message: {e}: {part}"),
+                }
+            }
+
             while let Some(msg) = ws_source.next().await {
                 let msg = match msg {
                     Ok(m) => m,
@@ -228,63 +381,15 @@ impl BcDebugSession {
                     }
                     match serde_json::from_str::<SignalRMessage>(part) {
                         Ok(msg) => {
-                            if msg.type_ == 6 {
-                                continue;
-                            }
-                            debug!(
-                                "SignalR recv: type={} target={:?} id={:?}",
-                                msg.type_, msg.target, msg.invocation_id
-                            );
-                            // Notify wait_for_break_event before forwarding the full
-                            // message so it can unblock immediately on Break/end events.
-                            // The break_event_tx.send(...) result is intentionally
-                            // logged-on-drop rather than collapsed into a match guard:
-                            // putting a side-effecting send() in a pattern guard would
-                            // be unusual and harder to reason about than the explicit
-                            // if-let-err shape here.
-                            #[allow(clippy::collapsible_match)]
-                            if msg.type_ == 1 {
-                                match msg.target.as_deref() {
-                                    Some("Break") => {
-                                        if break_event_tx.send(true).is_err() {
-                                            tracing::debug!(
-                                                target = "Break",
-                                                "break_event_tx receiver dropped — \
-                                                 wait_for_break_event listener has gone"
-                                            );
-                                        }
-                                    }
-                                    Some(
-                                        "OnDetachedFromConnection" | "OnFatalDebuggerException",
-                                    ) => {
-                                        if break_event_tx.send(false).is_err() {
-                                            tracing::debug!(
-                                                target = "Detached/Fatal",
-                                                "break_event_tx receiver dropped — \
-                                                 session-end notification not delivered"
-                                            );
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            // try_send so a full channel drops the message
-                            // with a warn instead of awaiting (which would
-                            // hold up the WS reader task and back-pressure
-                            // the BC server). The dedicated break-event
-                            // channel above carries the don't-lose-this
-                            // signal separately. F-OPEN-017.
-                            if let Err(e) = event_tx.try_send(msg) {
-                                match e {
-                                    tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                                        warn!(
-                                            cap = EVENT_CHANNEL_CAPACITY,
-                                            "SignalR event channel full — dropping non-Break message; \
-                                             debug consumer is not draining fast enough"
-                                        );
-                                    }
-                                    tokio::sync::mpsc::error::TrySendError::Closed(_) => break,
-                                }
+                            if !route_signalr_message(
+                                msg,
+                                &event_tx,
+                                &completion_tx,
+                                &break_event_tx,
+                            )
+                            .await
+                            {
+                                return;
                             }
                         }
                         Err(e) => {
@@ -298,21 +403,19 @@ impl BcDebugSession {
         Ok(Self {
             ws_tx,
             event_rx: Mutex::new(event_rx),
+            completion_rx: Mutex::new(completion_rx),
             next_id: AtomicI64::new(1),
             connection_id,
             is_stopped: Mutex::new(false),
-            pending_events: Mutex::new(VecDeque::with_capacity(PENDING_EVENT_CAPACITY)),
             break_event_rx: Mutex::new(break_event_rx),
         })
     }
 
     /// Invoke a SignalR method and wait for completion.
     ///
-    /// Acquires `event_rx` for the duration of the call. Concurrent calls will
-    /// queue on the mutex — this is intentional: BC requires request/response
-    /// serialisation. Do NOT call this from within `handle_server_callback`
-    /// (which is invoked while `event_rx` is held) — use `ws_tx.try_send`
-    /// directly instead to avoid deadlock.
+    /// Acquires `completion_rx` before sending. Concurrent calls therefore
+    /// serialize on the wire as required by BC, rather than both sending and
+    /// racing to consume one another's replies.
     async fn invoke(
         &self,
         target: &str,
@@ -346,24 +449,25 @@ impl BcDebugSession {
             args = %serde_json::to_string(&arguments).unwrap_or_default(),
             "SignalR invoke arguments"
         );
-        // Compute the deadline BEFORE the send + event_rx.lock so the budget
+        // Compute the deadline BEFORE the lock + send so the budget
         // declared by `default_invoke_timeout` is faithful even when another
         // invoke is holding `event_rx` for its own (potentially 120s `Attach`)
         // window. Previously the deadline was anchored after the lock was
         // granted, so a queued caller's effective timeout silently extended
         // by however long it waited for the mutex.
         let deadline = tokio::time::Instant::now() + timeout;
-        self.ws_tx
-            .send(msg.to_string())
+        let mut rx = tokio::time::timeout_at(deadline, self.completion_rx.lock())
             .await
+            .map_err(|_| DapError::Timeout(timeout))?;
+        tokio::time::timeout_at(deadline, self.ws_tx.send(msg.to_string()))
+            .await
+            .map_err(|_| DapError::Timeout(timeout))?
             .map_err(|_| DapError::ConnectionFailed("WebSocket channel closed".to_string()))?;
-
-        let mut rx = self.event_rx.lock().await;
 
         loop {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Some(msg)) => {
-                    if msg.type_ == 3 && msg.invocation_id.as_deref() == Some(&id) {
+                    if msg.invocation_id.as_deref() == Some(&id) {
                         if let Some(ref err) = msg.error {
                             error!("SignalR error for {target}: {err}");
                             return Err(DapError::ServerError(err.clone()));
@@ -371,10 +475,11 @@ impl BcDebugSession {
                         debug!("SignalR result for {target}: {:?}", msg.result);
                         return Ok(msg.result);
                     }
-                    if msg.type_ == 1 {
-                        let mut buf = self.pending_events.lock().await;
-                        buf.push_back(msg);
-                    }
+                    warn!(
+                        expected = %id,
+                        actual = ?msg.invocation_id,
+                        "ignoring stale SignalR completion"
+                    );
                 }
                 Ok(None) => {
                     return Err(DapError::ConnectionFailed(
@@ -443,17 +548,18 @@ impl BcDebugSession {
         }
     }
 
-    /// Process server-push events that arrived during the last `invoke()` call.
-    ///
-    /// Call this after every `invoke()` to handle buffered callbacks (e.g.
-    /// `Break`, `OnDetachedFromConnection`) that arrived while the invoke loop
-    /// was consuming the event channel.
+    /// Process server-push events queued while an invocation or other operation
+    /// was in progress.
     ///
     /// Returns processed `BcEvent` values so callers can convert them to DAP events.
     pub async fn flush_pending_events(&self) -> Vec<BcEvent> {
         let raw: Vec<SignalRMessage> = {
-            let mut buf = self.pending_events.lock().await;
-            buf.drain(..).collect()
+            let mut rx = self.event_rx.lock().await;
+            let mut events = Vec::new();
+            while let Ok(msg) = rx.try_recv() {
+                events.push(msg);
+            }
+            events
         };
         let mut out = Vec::new();
         for event in &raw {
@@ -469,14 +575,14 @@ impl BcDebugSession {
     /// without blocking. Used by the background event-forwarding task to check for BC
     /// push events (e.g. Break) that arrive while no `invoke()` is in progress.
     ///
-    /// Returns processed `BcEvent` values. May return an empty Vec if `invoke()` is
-    /// currently holding the `event_rx` lock or if no events are available.
+    /// Returns processed `BcEvent` values. May return an empty Vec if another
+    /// drain is in progress or no events are available.
     pub async fn try_drain_push_events(&self) -> Vec<BcEvent> {
         let mut out = Vec::new();
-        // Use try_lock so this never blocks waiting for invoke() to release event_rx.
+        // Use try_lock so this never blocks another push-event drain.
         let mut rx = match self.event_rx.try_lock() {
             Ok(r) => r,
-            Err(_) => return out, // invoke() is running — events will be buffered in pending_events
+            Err(_) => return out,
         };
         while let Ok(msg) = rx.try_recv() {
             if msg.type_ == 1 {
@@ -485,7 +591,6 @@ impl BcDebugSession {
                     out.push(bc_event);
                 }
             }
-            // type 3 completions without a pending invoke are unexpected — ignore
         }
         out
     }
@@ -720,7 +825,7 @@ impl BcDebugSession {
         Ok(())
     }
 
-    /// Calls `invoke()`, which acquires `event_rx`. Only safe to call when no
+    /// Calls `invoke()`, which acquires `completion_rx`. Only safe to call when no
     /// other `invoke()` is in progress (i.e. outside of an active debug loop).
     /// Server-side `IsAlive` pings during a session are handled automatically
     /// via `try_send` in `handle_server_callback`.
@@ -730,6 +835,32 @@ impl BcDebugSession {
 
     pub async fn is_stopped(&self) -> bool {
         *self.is_stopped.lock().await
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct TestSignalRTx {
+    event_tx: mpsc::Sender<SignalRMessage>,
+    completion_tx: mpsc::Sender<SignalRMessage>,
+}
+
+#[cfg(test)]
+impl TestSignalRTx {
+    async fn send(&self, msg: SignalRMessage) -> std::result::Result<(), ()> {
+        if msg.type_ == 3 {
+            self.completion_tx.send(msg).await.map_err(|_| ())
+        } else {
+            self.event_tx.send(msg).await.map_err(|_| ())
+        }
+    }
+
+    fn try_send(&self, msg: SignalRMessage) -> std::result::Result<(), ()> {
+        if msg.type_ == 3 {
+            self.completion_tx.try_send(msg).map_err(|_| ())
+        } else {
+            self.event_tx.try_send(msg).map_err(|_| ())
+        }
     }
 }
 
@@ -761,23 +892,33 @@ impl BcDebugSession {
         connection_id: String,
     ) -> (
         Self,
-        mpsc::Sender<SignalRMessage>,
+        TestSignalRTx,
         mpsc::UnboundedSender<bool>,
         mpsc::Receiver<String>,
     ) {
         let (ws_tx, ws_rx) = mpsc::channel::<String>(32);
         let (event_tx, event_rx) = mpsc::channel::<SignalRMessage>(EVENT_CHANNEL_CAPACITY);
+        let (completion_tx, completion_rx) =
+            mpsc::channel::<SignalRMessage>(COMPLETION_CHANNEL_CAPACITY);
         let (break_event_tx, break_event_rx) = mpsc::unbounded_channel::<bool>();
         let session = Self {
             ws_tx,
             event_rx: Mutex::new(event_rx),
+            completion_rx: Mutex::new(completion_rx),
             next_id: AtomicI64::new(1),
             connection_id,
             is_stopped: Mutex::new(false),
-            pending_events: Mutex::new(VecDeque::with_capacity(PENDING_EVENT_CAPACITY)),
             break_event_rx: Mutex::new(break_event_rx),
         };
-        (session, event_tx, break_event_tx, ws_rx)
+        (
+            session,
+            TestSignalRTx {
+                event_tx,
+                completion_tx,
+            },
+            break_event_tx,
+            ws_rx,
+        )
     }
 }
 
@@ -796,10 +937,9 @@ impl BcDebugSession {
 /// touches no live code path — it merely feeds the existing channels.
 #[cfg(test)]
 pub(crate) mod fake {
-    use super::{BcDebugSession, SignalRMessage};
+    use super::{BcDebugSession, SignalRMessage, TestSignalRTx};
     use std::collections::{HashMap, VecDeque};
     use std::sync::{Arc, Mutex};
-    use tokio::sync::mpsc;
 
     /// A canned reply the fake hub returns for the next `invoke` of a target.
     enum Reply {
@@ -809,7 +949,7 @@ pub(crate) mod fake {
 
     /// Handle to a fake BC debug hub. See the module doc.
     pub(crate) struct FakeBc {
-        event_tx: mpsc::Sender<SignalRMessage>,
+        event_tx: TestSignalRTx,
         replies: Arc<Mutex<HashMap<String, VecDeque<Reply>>>>,
         sent: Arc<Mutex<Vec<serde_json::Value>>>,
         _responder: tokio::task::JoinHandle<()>,
@@ -995,6 +1135,113 @@ mod tests {
     fn next_frame(rx: &mut mpsc::Receiver<String>) -> serde_json::Value {
         let raw = rx.try_recv().expect("session should have sent a frame");
         serde_json::from_str(&raw).expect("sent frame is valid JSON")
+    }
+
+    #[test]
+    fn websocket_host_header_preserves_port_and_ipv6_brackets() {
+        assert_eq!(
+            websocket_host_header("wss://bc.example.test:7049/debug?id=x").unwrap(),
+            "bc.example.test:7049"
+        );
+        assert_eq!(
+            websocket_host_header("ws://[2001:db8::1]:8080/debug?id=x").unwrap(),
+            "[2001:db8::1]:8080"
+        );
+        assert_eq!(
+            websocket_host_header("wss://bc.example.test/debug?id=x").unwrap(),
+            "bc.example.test"
+        );
+    }
+
+    #[test]
+    fn handshake_retains_coalesced_signalr_frames() {
+        let frames = validate_handshake_and_take_frames(
+            "{}\x1e{\"type\":1,\"target\":\"Break\"}\x1e{\"type\":3,\"invocationId\":\"1\"}\x1e",
+        )
+        .unwrap();
+        assert_eq!(frames.len(), 2);
+        assert!(frames[0].contains("Break"));
+        assert!(frames[1].contains("invocationId"));
+    }
+
+    #[test]
+    fn invalid_cert_option_builds_only_the_explicit_insecure_connector() {
+        assert!(websocket_connector(false).unwrap().is_none());
+        assert!(websocket_connector(true).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn concurrent_invokes_are_serialized_before_send() {
+        let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+        let session = Arc::new(session);
+
+        let first_session = Arc::clone(&session);
+        let first = tokio::spawn(async move { first_session.invoke("First", vec![]).await });
+        let first_frame: serde_json::Value =
+            serde_json::from_str(&ws_rx.recv().await.unwrap()).unwrap();
+        assert_eq!(first_frame["target"], "First");
+
+        let second_session = Arc::clone(&session);
+        let second = tokio::spawn(async move { second_session.invoke("Second", vec![]).await });
+        assert!(
+            tokio::time::timeout(tokio::time::Duration::from_millis(25), ws_rx.recv())
+                .await
+                .is_err(),
+            "second invoke must not reach the wire before the first completes"
+        );
+
+        event_tx
+            .send(completion(
+                first_frame["invocationId"].as_str().unwrap(),
+                Some(serde_json::json!("first")),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            first.await.unwrap().unwrap(),
+            Some(serde_json::json!("first"))
+        );
+
+        let second_frame: serde_json::Value =
+            serde_json::from_str(&ws_rx.recv().await.unwrap()).unwrap();
+        assert_eq!(second_frame["target"], "Second");
+        event_tx
+            .send(completion(
+                second_frame["invocationId"].as_str().unwrap(),
+                Some(serde_json::json!("second")),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            second.await.unwrap().unwrap(),
+            Some(serde_json::json!("second"))
+        );
+    }
+
+    #[tokio::test]
+    async fn push_queue_is_bounded_without_dropping_completions() {
+        let (session, event_tx, _b, _ws_rx) = BcDebugSession::test_new("c".into());
+        for _ in 0..EVENT_CHANNEL_CAPACITY {
+            event_tx
+                .try_send(invocation(Some("OnAttachedToConnection"), None))
+                .unwrap();
+        }
+        assert!(
+            event_tx
+                .try_send(invocation(Some("OnAttachedToConnection"), None))
+                .is_err(),
+            "push queue must reject overflow"
+        );
+        event_tx
+            .send(completion("1", Some(serde_json::json!("ok")), None))
+            .await
+            .unwrap();
+        assert_eq!(
+            session.invoke("StillCompletes", vec![]).await.unwrap(),
+            Some(serde_json::json!("ok"))
+        );
     }
 
     #[tokio::test]

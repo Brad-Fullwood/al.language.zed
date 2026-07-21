@@ -36,9 +36,13 @@ table 50130 "Work Order Staging"
 
     procedure GetJournalData(): Text
     var
+        InStream: InStream;
         JsonObj: JsonObject;
         Result: Text;
     begin
+        CalcFields("Journal Data");
+        "Journal Data".CreateInStream(InStream, TextEncoding::UTF8);
+        InStream.ReadText(Result);
         JsonObj.ReadFrom(Result);
         exit(Result);
     end;

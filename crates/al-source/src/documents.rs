@@ -242,6 +242,45 @@ impl DocumentStore {
         self.parse_locks.remove(uri);
     }
 
+    /// Move an open document and its derived state to a new URI without
+    /// recreating it. This preserves both the internal edit counter and the
+    /// last client-supplied LSP version across daemon-side file renames.
+    ///
+    /// Returns `true` when an open document was moved. If `new_uri` is already
+    /// open, the store is left unchanged and `false` is returned.
+    pub fn rename(&self, old_uri: &Url, new_uri: Url) -> bool {
+        if old_uri == &new_uri {
+            return self.docs.contains_key(old_uri);
+        }
+        if self.docs.contains_key(&new_uri) {
+            return false;
+        }
+
+        let Some((_, document)) = self.docs.remove(old_uri) else {
+            return false;
+        };
+        match self.docs.entry(new_uri.clone()) {
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(document);
+            }
+            dashmap::mapref::entry::Entry::Occupied(_) => {
+                // A concurrent didOpen won the destination between the check
+                // and entry acquisition. Restore the original document rather
+                // than overwriting either editor state.
+                self.docs.insert(old_uri.clone(), document);
+                return false;
+            }
+        }
+
+        if let Some((_, tree)) = self.trees.remove(old_uri) {
+            self.trees.insert(new_uri.clone(), tree);
+        }
+        if let Some((_, lock)) = self.parse_locks.remove(old_uri) {
+            self.parse_locks.insert(new_uri, lock);
+        }
+        true
+    }
+
     /// Prefer `get_text_arc` on hot paths to avoid deep-copying large file content.
     pub fn get_text(&self, uri: &Url) -> Option<String> {
         self.docs.get(uri).map(|d| d.text_cache.as_ref().clone())
@@ -552,6 +591,49 @@ mod tests {
         store.close(&uri);
         assert!(!store.contains(&uri));
         assert_eq!(store.get_text(&uri), None);
+    }
+
+    #[test]
+    fn test_rename_preserves_text_versions_tree_and_parse_lock() {
+        let store = DocumentStore::new();
+        let old_uri = test_uri("rename_old");
+        let new_uri = test_uri("rename_new");
+        store.open(old_uri.clone(), "codeunit 50100 A { }".to_string());
+        store.apply_changes(
+            &old_uri,
+            &[TextChange {
+                range: None,
+                text: "codeunit 50100 A { trigger OnRun() begin end; }".to_string(),
+            }],
+        );
+        store.set_client_version(&old_uri, 42);
+        let tree = parse_al(&store.get_text(&old_uri).unwrap());
+        store.cache_tree(&old_uri, store.get_version(&old_uri).unwrap(), tree);
+        let old_lock = store.parse_lock(&old_uri);
+
+        assert!(store.rename(&old_uri, new_uri.clone()));
+        assert!(!store.contains(&old_uri));
+        assert_eq!(store.get_version(&new_uri), Some(1));
+        assert_eq!(store.get_client_version(&new_uri), Some(42));
+        assert!(store.get_text(&new_uri).unwrap().contains("OnRun"));
+        assert!(store.get_cached_tree(&new_uri).is_some());
+        assert!(std::sync::Arc::ptr_eq(
+            &old_lock,
+            &store.parse_lock(&new_uri)
+        ));
+    }
+
+    #[test]
+    fn test_rename_refuses_an_already_open_destination() {
+        let store = DocumentStore::new();
+        let old_uri = test_uri("rename_source");
+        let new_uri = test_uri("rename_destination");
+        store.open(old_uri.clone(), "source".to_string());
+        store.open(new_uri.clone(), "destination".to_string());
+
+        assert!(!store.rename(&old_uri, new_uri.clone()));
+        assert_eq!(store.get_text(&old_uri).as_deref(), Some("source"));
+        assert_eq!(store.get_text(&new_uri).as_deref(), Some("destination"));
     }
 
     #[test]

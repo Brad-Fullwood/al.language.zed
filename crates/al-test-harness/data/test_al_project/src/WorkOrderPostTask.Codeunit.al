@@ -1,9 +1,19 @@
 codeunit 50131 "Work Order Post Task"
 {
+    TableNo = "Work Order Staging";
+
+    trigger OnRun()
+    begin
+        Run(Rec);
+    end;
+
     procedure Run(var Staging: Record "Work Order Staging")
     var
         ErrorText: Text;
     begin
+        if Staging.Status <> Staging.Status::Posted then
+            exit;
+
         Staging.SetRange(Status, Staging.Status::Posted);
         if not InsertJournalLine(Staging, ErrorText, 0) then
             MarkStagingFailed(Staging, ErrorText);
@@ -28,10 +38,16 @@ codeunit 50131 "Work Order Post Task"
         Staging.Modify();
     end;
 
-    procedure ScheduleBackgroundTask()
+    procedure ScheduleBackgroundTask(var Staging: Record "Work Order Staging")
     var
         TaskId: Guid;
     begin
-        TaskId := TaskScheduler.CreateTask(Codeunit::"Work Order Post Task");
+        TaskId := TaskScheduler.CreateTask(
+            Codeunit::"Work Order Post Task",
+            0,
+            true,
+            CompanyName(),
+            CurrentDateTime(),
+            Staging.RecordId);
     end;
 }
