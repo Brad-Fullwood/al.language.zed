@@ -496,9 +496,11 @@ fn is_url(s: &str) -> bool {
 fn resolve_addin_resources(
     props: &[al_symbols::model::PropertyValue],
     project_root: Option<&std::path::Path>,
-) -> AddinResources {
-    let read = |rel: &str| -> Option<String> {
-        project_root.and_then(|root| std::fs::read_to_string(root.join(rel)).ok())
+) -> Result<AddinResources, EmitError> {
+    let read = |rel: &str| -> Result<Option<String>, EmitError> {
+        project_root
+            .map(|root| std::fs::read_to_string(root.join(rel)).map_err(EmitError::from))
+            .transpose()
     };
     let mut r = AddinResources::default();
     for s in list_prop(props, "Scripts") {
@@ -516,16 +518,16 @@ fn resolve_addin_resources(
         }
     }
     r.images = list_prop(props, "Images");
-    let inline = |name: &str| {
-        props
-            .iter()
-            .find(|p| p.name.eq_ignore_ascii_case(name))
-            .and_then(|p| read(&p.value))
+    let inline = |name: &str| -> Result<Option<String>, EmitError> {
+        match props.iter().find(|p| p.name.eq_ignore_ascii_case(name)) {
+            Some(property) => read(&property.value),
+            None => Ok(None),
+        }
     };
-    r.startup_script = inline("StartupScript");
-    r.refresh_script = inline("RefreshScript");
-    r.recreate_script = inline("RecreateScript");
-    r
+    r.startup_script = inline("StartupScript")?;
+    r.refresh_script = inline("RefreshScript")?;
+    r.recreate_script = inline("RecreateScript")?;
+    Ok(r)
 }
 
 /// A control add-in's `manifest.xml`, reproducing alc's
@@ -659,7 +661,7 @@ fn control_addin_bundle(
             .find(|p| p.name.eq_ignore_ascii_case("Version"))
             .map(|p| p.value.clone())
             .unwrap_or_default();
-        let res = resolve_addin_resources(&o.entry.properties, project_root);
+        let res = resolve_addin_resources(&o.entry.properties, project_root)?;
 
         // Inner OPC zip: bundled local resource files (scripts, stylesheets,
         // images, in that order), then manifest.xml, then [Content_Types].xml
@@ -671,9 +673,10 @@ fn control_addin_bundle(
             .chain(&res.local_stylesheets)
             .chain(&res.images)
         {
-            let content = project_root
-                .and_then(|root| std::fs::read(root.join(rel)).ok())
-                .unwrap_or_default();
+            let content = match project_root {
+                Some(root) => std::fs::read(root.join(rel))?,
+                None => Vec::new(),
+            };
             inner_entries.push((rel.clone(), content));
         }
         inner_entries.push((
@@ -1020,7 +1023,7 @@ mod tests {
              FileName=\"My_Addin.zip\" Type=\"JavaScriptControlAddIn\" />"
         ));
         // Manifest element order: dimensions then stretch/shrink (true only) then Version.
-        let res = resolve_addin_resources(&objects[0].entry.properties, None);
+        let res = resolve_addin_resources(&objects[0].entry.properties, None).unwrap();
         let manifest = control_addin_manifest_xml(&objects[0].entry.properties, &res);
         assert_eq!(
             manifest,
@@ -1038,7 +1041,7 @@ mod tests {
         let src = "controladdin \"Loc\" { Scripts = 'src/main.js', 'https://cdn/x.js'; \
                    StartupScript = 'src/main.js'; RequestedHeight = 100; }";
         let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
-        let res = resolve_addin_resources(&objects[0].entry.properties, Some(dir.path()));
+        let res = resolve_addin_resources(&objects[0].entry.properties, Some(dir.path())).unwrap();
         // Local file vs external URL split.
         assert_eq!(res.local_scripts, vec!["src/main.js"]);
         assert_eq!(res.script_urls, vec!["https://cdn/x.js"]);
@@ -1048,6 +1051,17 @@ mod tests {
         assert!(m.contains("<Resources>\n    <Script>src/main.js</Script>\n  </Resources>"));
         assert!(m.contains("<Script><![CDATA[init();\n]]></Script>"));
         assert!(m.contains("<ScriptUrl>https://cdn/x.js</ScriptUrl>"));
+    }
+
+    #[test]
+    fn control_addin_missing_local_resource_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = "controladdin Missing { Scripts = 'src/missing.js'; }";
+        let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
+
+        let error = control_addin_bundle(&objects, "App", Some(dir.path()))
+            .expect_err("missing local resource must fail");
+        assert!(matches!(error, EmitError::Io(_)));
     }
 
     #[test]

@@ -3,10 +3,8 @@
 //! `builtinTypes` CLI surfaces must reflect it instead of reporting an empty
 //! "requires ALTool" list.
 //!
-//! This is the verification for the daemon wiring fix where the dedicated
-//! `errorCodes` / `builtinTypes` RPCs now lazily initialize the bridge (they
-//! previously only read a cache that *diagnostics* populated, so the CLI always
-//! reported empty even with ALTool present).
+//! The dedicated `errorCodes` and `builtinTypes` RPCs lazily initialize the
+//! semantic bridge, so they work before a diagnostics request populates caches.
 //!
 //! Gated on environment because the bridge needs:
 //!   1. `AL_TOOL_PATH` pointing at a dir with `Microsoft.Dynamics.Nav.CodeAnalysis.dll`

@@ -432,7 +432,6 @@ mod tests {
 
     #[test]
     fn test_equality_text() {
-        // Quoted text without @ is case-insensitive (BC default).
         let expr = parse("'Hello'").unwrap();
         assert!(matches(&expr, &text("Hello")));
         assert!(matches(&expr, &text("hello")));
@@ -484,7 +483,6 @@ mod tests {
 
     #[test]
     fn test_range_single_value() {
-        // A range where lo == hi acts as equality.
         let expr = parse("50..50").unwrap();
         assert!(matches(&expr, &int(50)));
         assert!(!matches(&expr, &int(49)));
@@ -536,7 +534,6 @@ mod tests {
 
     #[test]
     fn test_range_or_union() {
-        // `100..200|300` — values in range OR exactly 300.
         let expr = parse("100..200|300").unwrap();
         assert!(matches(&expr, &int(150)));
         assert!(matches(&expr, &int(300)));
@@ -545,7 +542,6 @@ mod tests {
 
     #[test]
     fn test_and_expression() {
-        // `100..200 & <>150` — in range but not 150.
         let expr = parse("100..200&<>150").unwrap();
         assert!(matches(&expr, &int(100)));
         assert!(matches(&expr, &int(200)));
@@ -557,13 +553,11 @@ mod tests {
     fn test_at_case_sensitive() {
         let expr = parse("@Hello").unwrap();
         assert!(matches(&expr, &text("Hello")));
-        // Without @, default is case-insensitive — but @ makes it case-sensitive.
         assert!(!matches(&expr, &text("hello")));
     }
 
     #[test]
     fn test_default_case_insensitive() {
-        // Without @, text matching is case-insensitive.
         let expr = parse("hello").unwrap();
         assert!(matches(&expr, &text("Hello")));
         assert!(matches(&expr, &text("HELLO")));
@@ -590,7 +584,6 @@ mod tests {
 
     #[test]
     fn test_invalid_missing_range_end() {
-        // A lone `..` with nothing after is an error.
         let result = parse("100..");
         assert!(result.is_err());
     }
@@ -617,9 +610,8 @@ mod tests {
         }
     }
 
-    // Double-star `**` should behave same as `*` (match anything).
     #[test]
-    fn test_wildcard_double_star_adversarial_i_9a() {
+    fn wildcard_double_star() {
         let expr = parse("A**B").unwrap();
         assert!(matches(&expr, &text("AxxxxB")), "A**B must match AxxxxB");
         assert!(
@@ -633,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wildcard_single_question_adversarial_i_9b() {
+    fn wildcard_single_question() {
         let expr = parse("?").unwrap();
         assert!(matches(&expr, &text("X")), "? must match any single char");
         assert!(matches(&expr, &text("a")), "? must match any single char");
@@ -641,10 +633,8 @@ mod tests {
         assert!(!matches(&expr, &text("AB")), "? must not match two chars");
     }
 
-    // `**` alone (double star as the entire pattern) — matches anything
-    // including empty string, same as `*`.
     #[test]
-    fn test_wildcard_double_star_alone_adversarial_i_9c() {
+    fn wildcard_double_star_alone() {
         let expr = parse("**").unwrap();
         assert!(matches(&expr, &text("")), "** must match empty string");
         assert!(
@@ -653,12 +643,8 @@ mod tests {
         );
     }
 
-    // `@` alone (case-sensitive prefix with no expression after it):
-    // After stripping `@`, the text is empty. Empty pattern matches only
-    // empty string via the DP table (dp[0][0]=true, dp[0][j>0]=false).
     #[test]
-    fn test_at_alone_matches_only_empty_adversarial_i_9d() {
-        // `@` alone: case_sensitive=true, text="" → should match only empty.
+    fn at_alone_matches_only_empty() {
         let expr = parse("@").unwrap();
         assert!(matches(&expr, &text("")), "@ alone must match empty string");
         assert!(
@@ -667,29 +653,17 @@ mod tests {
         );
     }
 
-    // `..100` (open lower bound) — BC treats this as "everything up to 100".
-    // The current parser rejects it with an error because read_token returns
-    // UnexpectedEnd for empty first token before `..`.
-    // This test documents that `..100` is rejected (currently) even though
-    // BC would accept it.
     #[test]
-    fn test_range_open_lower_bound_adversarial_i_10a() {
-        // BC supports `..100` as "everything <= 100"; the mock parser currently
-        // rejects this as an error. This test captures the current (broken)
-        // behaviour so a future fix can be tracked.
+    fn range_open_lower_bound() {
         let result = parse("..100");
-        // If fixed to match BC: result.is_ok() && matches(&result.unwrap(), &int(50)).
         assert!(
             result.is_err(),
             "..100 currently rejected — BC supports it as open lower bound"
         );
     }
 
-    // `100..50` (reversed range) — should match nothing (empty set).
-    // Currently accepted as a valid Range(100, 50); the evaluator would
-    // produce no matches since value>=100 AND value<=50 is impossible.
     #[test]
-    fn test_range_reversed_is_empty_adversarial_i_10b() {
+    fn range_reversed_is_empty() {
         let expr = parse("100..50").unwrap();
         assert!(
             !matches(&expr, &int(75)),
@@ -705,17 +679,10 @@ mod tests {
         );
     }
 
-    // Vector 11: OR/AND precedence — `A|B&C` should parse as `A|(B&C)`.
-    // `&` must bind tighter than `|`.
     #[test]
-    fn test_or_and_precedence_adversarial_i_11() {
-        // `1|2&3` — if & is higher precedence: 1 | (2 & 3).
-        // `2 & 3` matches a value that is BOTH 2 AND 3 — impossible for a single
-        // integer → never matches.  So the whole expr matches only 1.
+    fn or_and_precedence() {
         let expr = parse("1|2&3").unwrap();
         assert!(matches(&expr, &int(1)), "1 should match 1|2&3");
-        // A value that satisfies only `2`: doesn't satisfy `3`, so `2&3` is false;
-        // `1` branch is false too — result: false.
         assert!(
             !matches(&expr, &int(2)),
             "2 alone must not match 1|(2&3) — 2&3 requires both"
@@ -723,12 +690,9 @@ mod tests {
         assert!(!matches(&expr, &int(3)), "3 alone must not match 1|(2&3)");
     }
 
-    // `@a` (lowercase) is case-sensitive — must NOT match "A" or "ABCDE".
-    // `@A*` (uppercase + wildcard) IS case-sensitive — matches "Apple" but not "apple".
     #[test]
-    fn test_at_case_sensitive_lower_adversarial_i_13() {
+    fn at_case_sensitive_lower() {
         let expr = parse("@a").unwrap();
-        // case_sensitive=true, pattern="a" → only exact lowercase "a".
         assert!(matches(&expr, &text("a")), "@a must match literal 'a'");
         assert!(
             !matches(&expr, &text("A")),
@@ -738,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn test_at_wildcard_case_sensitive_adversarial_i_13b() {
+    fn at_wildcard_case_sensitive() {
         let expr = parse("@A*").unwrap();
         assert!(matches(&expr, &text("Apple")), "@A* must match 'Apple'");
         assert!(matches(&expr, &text("ABCDE")), "@A* must match 'ABCDE'");
@@ -753,14 +717,12 @@ mod tests {
     }
 
     #[test]
-    fn test_relational_on_text_adversarial_i_14() {
+    fn relational_on_text() {
         let expr = parse(">=B").unwrap();
         assert!(matches(&expr, &text("B")), ">=B must match 'B'");
         assert!(matches(&expr, &text("C")), ">=B must match 'C'");
         assert!(matches(&expr, &text("Z")), ">=B must match 'Z'");
         assert!(!matches(&expr, &text("A")), ">=B must NOT match 'A'");
-        // Case: by default unquoted text is compared as Text OrderableValue.
-        // The cmp_value function for Text uses String::cmp (byte order).
         assert!(
             !matches(&expr, &text("")),
             ">=B must NOT match empty string"
@@ -768,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decimal_range_precision_adversarial_i_20() {
+    fn decimal_range_precision() {
         let expr = parse("1.5..1.6").unwrap();
         let v_mid = Value::Decimal(dec!(1.55));
         let v_lo = Value::Decimal(dec!(1.5));
@@ -788,9 +750,6 @@ mod tests {
             "1.6001 must NOT be in [1.5..1.6]"
         );
 
-        // C3: with exact decimals the old f64 footgun is gone — 0.1 + 0.2 is
-        // EXACTLY 0.3, so it lands on the upper boundary of [0.1..0.3] and MUST
-        // match. (Under f64 the sum was 0.30000000000000004 and fell out.)
         let sum = dec!(0.1) + dec!(0.2);
         assert_eq!(sum, dec!(0.3), "0.1 + 0.2 must be exactly 0.3");
         let range_03 = parse("0.1..0.3").unwrap();
@@ -841,7 +800,6 @@ mod proptest_tests {
             range_str().prop_map(|(lo, hi)| format!("{lo}..{hi}")),
             int_token().prop_map(|n| format!(">{n}")),
             int_token().prop_map(|n| format!(">={n}")),
-            // Less-than (ensure n >= 1 so LessThan has a meaningful domain)
             (1i64..=1_000_000i64).prop_map(|n| format!("<{n}")),
             int_token().prop_map(|n| format!("<={n}")),
             int_token().prop_map(|n| format!("<>{n}")),

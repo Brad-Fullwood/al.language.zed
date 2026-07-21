@@ -60,11 +60,10 @@ memmap2 = { workspace = true }
 rayon = "1"
 getrandom = { workspace = true }
 futures = { workspace = true }
-# Zeroize OAuth bearer/refresh secrets on drop — al-lsp is a long-lived daemon
-# (F-OPEN-010). Pre-approved direct dependency.
+# Zeroize OAuth bearer and refresh secrets on drop.
 zeroize = { workspace = true }
 # OS secret store (Secret Service / Keychain / Credential Manager) for OAuth
-# token persistence (S1): keeps the 90-day refresh token off plaintext disk.
+# token persistence keeps the 90-day refresh token off plaintext disk.
 # crypto-rust keeps the pure-Rust / no-OpenSSL cross-compile posture; the code
 # falls back to the hardened 0o600 file when no backend is available (headless
 # Linux / CI), so auth never breaks because a keyring is absent.
@@ -86,7 +85,7 @@ default = ["nuget", "bin"]
 nuget = ["al-symbols/nuget"]
 # `bin` is on by default (so `cargo build --workspace` still produces al-lsp),
 # but library consumers can opt out with default-features = false to drop the
-# tracing-subscriber tree. T060.
+# tracing-subscriber tree.
 bin = ["dep:tracing-subscriber"]
 # Enable in-process .NET hosting (requires libnethost from the .NET SDK).
 # Off by default so workspace commands work in environments without .NET.
@@ -101,7 +100,7 @@ tokio = { workspace = true, features = ["full"] }
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 
-# C6 — deterministic symbol/insight perf benchmarks (cold/warm load, lookup,
+# Deterministic symbol/insight perf benchmarks (cold/warm load, lookup,
 # completion, impact, trace + memory metric). See Docs/benchmarks.md.
 [[bench]]
 name = "perf"

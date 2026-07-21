@@ -28,7 +28,7 @@ pub(crate) fn full_diagnostic_report(items: Vec<Diagnostic>) -> DocumentDiagnost
 ///
 /// Cache files are virtual AL outlines extracted from .app packages — Zed can
 /// navigate to them for go-to-definition, but they are not workspace files so
-/// diagnostics must not be published for them (ISSUE-072).
+/// diagnostics must not be published for them.
 pub(crate) fn is_cache_path(uri: &Url) -> bool {
     if let Ok(path) = uri.to_file_path() {
         let cache_root = al_symbols::virtual_file::cache_dir();
@@ -69,7 +69,7 @@ pub(crate) async fn compute_diagnostics(
     diagnostics
 }
 
-/// Compute project-scope diagnostics keyed by file (B11 — `workspace/diagnostic`).
+/// Compute project-scope diagnostics keyed by file for `workspace/diagnostic`.
 ///
 /// Aggregates the diagnostics the project already produces per file:
 ///
@@ -80,7 +80,7 @@ pub(crate) async fn compute_diagnostics(
 ///   its cached parse tree (no re-parse). Bridge/semantic analysis is *not* run
 ///   across unopened files: each is a multi-second CLR round-trip and is only
 ///   meaningful for files the user has open. Workspace scope therefore means
-///   "parse errors everywhere, semantic errors for open files" — see B11.
+///   "parse errors everywhere, semantic errors for open files".
 ///
 /// Files with no diagnostics are dropped, so a clean workspace yields an empty
 /// `Vec`. Returns `(uri, document_version, diagnostics)`; `version` is `Some`
@@ -133,7 +133,7 @@ pub(crate) async fn compute_workspace_diagnostics(
 }
 
 pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str) {
-    // ISSUE-072: skip diagnostics for virtual symbol cache files — they are not
+    // skip diagnostics for virtual symbol cache files — they are not
     // workspace files and Zed logs a warning for every publishDiagnostics on them.
     if is_cache_path(uri) {
         tracing::debug!(uri = %uri, "publish_diagnostics: skipping cache file");
@@ -144,7 +144,7 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
     let mut diagnostics = Vec::new();
 
     // Reuse the parse tree already cached by update_workspace_index to avoid a
-    // redundant parse on every did_open / did_change (ISSUE-056 fix).
+    // redundant parse on every did_open or did_change.
     {
         let parse_start = std::time::Instant::now();
         let config_guard = server.workspace.config.read().await;
@@ -161,10 +161,11 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
     }
 
     let phase1_count = diagnostics.len();
+    let document_version = server.workspace.documents.get_client_version(uri);
     tracing::debug!(uri = %uri, phase1_count, "publish_diagnostics: publishing phase 1");
     server
         .client
-        .publish_diagnostics(uri.clone(), diagnostics.clone(), None)
+        .publish_diagnostics(uri.clone(), diagnostics.clone(), document_version)
         .await;
 
     let semantic_diags = run_semantic_analysis(server, uri, text).await;
@@ -174,7 +175,7 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
         tracing::debug!(uri = %uri, total_count, "publish_diagnostics: publishing phase 2");
         server
             .client
-            .publish_diagnostics(uri.clone(), diagnostics, None)
+            .publish_diagnostics(uri.clone(), diagnostics, document_version)
             .await;
     }
 }
@@ -270,7 +271,7 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
     }
 }
 
-/// Convert a transport-agnostic `SyntaxDiagnostic` (from al-core) to an LSP `Diagnostic`.
+/// Convert a transport-agnostic `SyntaxDiagnostic` to an LSP `Diagnostic`.
 ///
 /// `SyntaxDiagnostic.range` already carries UTF-16 code unit columns — the
 /// `queries::diagnostics::ts_range_to_query_range` helper runs `byte_col_to_utf16_col`
@@ -344,7 +345,7 @@ pub fn lint_to_diagnostic(lint: &al_syntax::LintDiagnostic, source: &[u8]) -> Di
     }
 }
 
-/// Convert a `TestDiagnostic` (from al-core's test runner) to an LSP `Diagnostic`.
+/// Convert a `TestDiagnostic` from the test runner to an LSP `Diagnostic`.
 ///
 /// Lines in `TestDiagnostic` are 1-based; LSP positions are 0-based.
 pub fn test_diag_to_lsp(td: &al_analysis::queries::test_diagnostics::TestDiagnostic) -> Diagnostic {

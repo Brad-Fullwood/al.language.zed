@@ -113,18 +113,12 @@ impl SnapshotReplayer {
         snapshot: &Snapshot,
         session: &S,
     ) -> Result<ReplayVerdict, ReplayerError> {
-        let mut bp_map: std::collections::HashMap<u32, (String, u32)> =
-            std::collections::HashMap::new();
+        let mut registered = std::collections::HashSet::new();
         for sample in &snapshot.samples {
-            if bp_map.contains_key(&sample.breakpoint_id) {
+            if !registered.insert(sample.breakpoint_id) {
                 continue;
             }
-            let assigned_id = session.add_breakpoint(&sample.file, sample.line).await?;
-            bp_map.insert(sample.breakpoint_id, (sample.file.clone(), sample.line));
-            // If the server assigns a different ID that's fine — we track by
-            // original bp ID in the reference snapshot.  The assigned_id is
-            // used to correlate Break events by line.
-            let _ = assigned_id;
+            session.add_breakpoint(&sample.file, sample.line).await?;
         }
 
         session.configuration_done().await?;
@@ -142,15 +136,16 @@ impl SnapshotReplayer {
 
             let vars = session.get_variables().await?;
 
-            // Determine which breakpoint was hit.  We match by file/line from
-            // the snapshot — in practice the Break event carries position info.
-            // For the replayer we conservatively assign the first unmatched
-            // breakpoint_id from the reference snapshot whose (bp_id, iter)
-            // pair hasn't yet been observed.
-            //
-            // A more precise implementation would parse the Break event's
-            // SourcePosition; that detail is left for future refinement.
-            let bp_id = find_next_expected_bp(snapshot, &iterations);
+            // The session interface does not expose the stopped location, so
+            // samples are attributed in the reference snapshot's expected
+            // order. Extra stops are rejected instead of being assigned to an
+            // arbitrary breakpoint.
+            let bp_id = find_next_expected_bp(snapshot, &iterations).ok_or_else(|| {
+                ReplayerError::Session(
+                    "debug session produced more breakpoint stops than the reference snapshot"
+                        .to_string(),
+                )
+            })?;
 
             let iter = *iterations.get(&bp_id).unwrap_or(&0);
             *iterations.entry(bp_id).or_insert(0) += 1;
@@ -191,7 +186,7 @@ impl Default for SnapshotReplayer {
 fn find_next_expected_bp(
     snapshot: &Snapshot,
     iterations: &std::collections::HashMap<u32, u32>,
-) -> u32 {
+) -> Option<u32> {
     // Count how many times each bp_id should fire (from snapshot).
     let mut expected: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
     for s in &snapshot.samples {
@@ -203,16 +198,10 @@ fn find_next_expected_bp(
         let seen = *iterations.get(&s.breakpoint_id).unwrap_or(&0);
         let needed = *expected.get(&s.breakpoint_id).unwrap_or(&0);
         if seen < needed {
-            return s.breakpoint_id;
+            return Some(s.breakpoint_id);
         }
     }
-
-    // Fallback: return the first bp_id in the snapshot (or 0 if empty).
-    snapshot
-        .samples
-        .first()
-        .map(|s| s.breakpoint_id)
-        .unwrap_or(0)
+    None
 }
 
 #[cfg(test)]
@@ -374,5 +363,20 @@ mod tests {
             .block_on(replayer.replay_via_dap(&snap, &DivergentSession))
             .unwrap();
         assert!(matches!(verdict, ReplayVerdict::Diverged(_)));
+    }
+
+    #[test]
+    fn replay_via_dap_rejects_unexpected_extra_stop() {
+        let rt = Runtime::new().unwrap();
+        let snap = base_snapshot(vec![sample(1, 0, serde_json::json!({"x": 1}))]);
+        let session = FakeSession::new(vec![
+            serde_json::json!({"x": 1}),
+            serde_json::json!({"x": 2}),
+        ]);
+
+        let error = rt
+            .block_on(SnapshotReplayer::new().replay_via_dap(&snap, &session))
+            .expect_err("an extra stop must not be assigned to an arbitrary breakpoint");
+        assert!(error.to_string().contains("more breakpoint stops"));
     }
 }

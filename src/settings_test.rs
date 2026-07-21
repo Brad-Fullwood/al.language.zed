@@ -2,7 +2,7 @@ use crate::settings::apply_al_settings_to_config;
 use serde_json::json;
 
 #[test]
-fn f027_nested_al_wrapper_unwraps_at_root() {
+fn nested_al_wrapper_unwraps_at_root() {
     let config = json!({});
     let user_settings = json!({ "al": { "enableCodeAnalysis": true } });
     let merged = apply_al_settings_to_config(&config, &user_settings);
@@ -10,7 +10,7 @@ fn f027_nested_al_wrapper_unwraps_at_root() {
 }
 
 #[test]
-fn f027_nested_al_wrapper_with_dotted_children() {
+fn nested_al_wrapper_with_dotted_children() {
     let config = json!({});
     let user_settings = json!({
         "al": {
@@ -25,7 +25,7 @@ fn f027_nested_al_wrapper_with_dotted_children() {
 }
 
 #[test]
-fn f027_nested_al_wrapper_combined_with_other_shapes() {
+fn nested_al_wrapper_combined_with_other_shapes() {
     let config = json!({});
     let user_settings = json!({
         "al": { "enableCodeAnalysis": true },
@@ -39,8 +39,6 @@ fn f027_nested_al_wrapper_combined_with_other_shapes() {
     assert_eq!(obj.get("showAllFiles"), Some(&json!(true)));
 }
 
-/// Regression: dotted keys still strip the `al.` prefix and nest by `.`
-/// (existing behaviour, must not regress with the F-027 wrapper handling).
 #[test]
 fn dotted_al_prefix_still_strips_and_nests() {
     let config = json!({});
@@ -55,18 +53,15 @@ fn dotted_al_prefix_still_strips_and_nests() {
 }
 
 #[test]
-fn f027_non_object_al_key_is_treated_as_literal_value() {
+fn non_object_al_key_is_treated_as_literal_value() {
     let config = json!({});
     let user_settings = json!({ "al": "bogus" });
     let merged = apply_al_settings_to_config(&config, &user_settings);
     assert_eq!(merged, json!({ "al": "bogus" }));
 }
 
-/// Defensive: a pathologically deep dotted key (hundreds of segments) must
-/// not overflow the stack. Up to MAX_SETTINGS_KEY_DEPTH (64) levels nest as
-/// ordinary objects; the remaining segments are then collapsed into a single
-/// literal key. Parity with merge_json's depth guard. Regression for the
-/// unbounded-recursion finding AND the depth-cap nesting-semantics finding.
+/// A pathologically deep dotted key must not overflow the stack. The remaining
+/// segments beyond the depth cap are stored as one literal key.
 #[test]
 fn deeply_nested_key_does_not_overflow_and_collapses() {
     let deep_key = format!("al.{}", vec!["x"; 500].join("."));

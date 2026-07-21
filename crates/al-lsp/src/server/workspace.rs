@@ -36,8 +36,8 @@ impl DownloadSource {
 
 /// Initialize the workspace: discover toolchain, load packages, scan files.
 ///
-/// Called from the background task spawned by the `initialized` notification handler
-/// (ISSUE-026 fix). Failures are logged but do not prevent the server from operating
+/// Called from the background task spawned by the `initialized` notification
+/// handler. Failures are logged but do not prevent the server from operating
 /// (graceful degradation).
 ///
 /// `ready_flag` and `init_notify` are signalled as soon as the file scan is complete
@@ -82,7 +82,7 @@ pub(crate) async fn initialize_workspace(
 
     let workspace_root = root_uri
         .as_ref()
-        .and_then(|u| u.to_file_path().ok()) // SILENT: non-file URIs legitimately have no path
+        .and_then(|u| u.to_file_path().ok()) // Non-file URIs legitimately have no path.
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     match al_project::project::find_project(&workspace_root) {
@@ -105,7 +105,7 @@ pub(crate) async fn initialize_workspace(
 
             *workspace.project.write().await = Some(project.clone());
 
-            // F-018: load already-cached packages BEFORE flipping `ready` so
+            // load already-cached packages BEFORE flipping `ready` so
             // that warm-start queries (the common case) see complete symbol
             // coverage. The package-download prompt path still signals ready
             // before user interaction so a missing-dependencies dialog
@@ -322,7 +322,7 @@ pub(crate) async fn initialize_workspace(
 ///
 /// Extracted from `AlServer::load_caches_from_disk` to be callable from the background init task.
 async fn load_caches_from_disk(workspace: &Workspace, version: &str) {
-    // SILENT: .unwrap_or_else recovers from RwLock poison by taking the inner value
+    // Recover from RwLock poison by taking the inner value.
     if workspace
         .builtins
         .read()
@@ -536,7 +536,7 @@ pub(crate) fn map_nuget_feeds(
 }
 
 /// Resolve the EFFECTIVE NuGet feed list from user config + built-in defaults
-/// (VS Code v17 parity, F-OPEN-259): custom feeds (`al.nugetFeeds`) are tried
+/// Custom feeds (`al.nugetFeeds`) are tried
 /// first; the public Microsoft feeds (MSSymbols/AppSourceSymbols/MSApps)
 /// are appended unless `al.useOnlyCustomFeeds` is set.
 pub(crate) fn effective_nuget_feeds(
@@ -571,7 +571,7 @@ async fn download_packages_nuget(
     );
 
     // al_project::project::AppDependency is re-exported from al_symbols — pass directly.
-    // F-OPEN-259: honor al.nugetFeeds / al.useOnlyCustomFeeds / al.symbolsCountryRegion.
+    // honor al.nugetFeeds / al.useOnlyCustomFeeds / al.symbolsCountryRegion.
     let (feeds, country) = {
         let cfg = workspace.config.read().await;
         (
@@ -672,7 +672,7 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         .symbols
         .load_packages_cached(&packages, &cache);
     server.workspace.symbols.load_runtime_enums();
-    // Invalidate insight graph -- packages changed (ISSUE-132 fix)
+    // Package changes invalidate the insight graph.
     server.workspace.invalidate_insight_graph();
     info!(
         loaded = loaded.len(),
@@ -704,8 +704,8 @@ pub(crate) fn handle_workspace_symbol(
     server: &AlServer,
     query: &str,
 ) -> Option<Vec<SymbolInformation>> {
-    // Use al-core search to avoid duplicating the name-filter loop (ISSUE-057 fix:
-    // reads from cached object_info, not re-parsing files on every request).
+    // Use the shared search implementation, which reads cached object data
+    // instead of reparsing files on every request.
     const MAX_LSP_SYMBOLS: usize = 10_000;
     let ws_results =
         al_analysis::queries::search::workspace_search(&server.workspace, query, MAX_LSP_SYMBOLS);
@@ -1175,7 +1175,7 @@ mod tests {
         assert_eq!(DownloadSource::NuGet.display_name(), "NuGet");
     }
 
-    /// F-OPEN-259 (`al.nugetFeeds` / `al.useOnlyCustomFeeds` parity):
+    /// (`al.nugetFeeds` / `al.useOnlyCustomFeeds` parity):
     /// custom feeds take priority; defaults are appended unless the
     /// only-custom flag is set.
     #[test]

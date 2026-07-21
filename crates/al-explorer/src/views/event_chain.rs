@@ -29,8 +29,8 @@ pub(crate) struct EventChainView {
     pub(crate) input_focused: bool,
     rows: Vec<TraceRow>,
     list_state: ListState,
-    /// Live event-name suggestions for the current query (FB-6:
-    /// search-as-you-type). Refreshed on each keystroke, rendered in the
+    /// Live event-name suggestions for search-as-you-type. Refreshed on each
+    /// keystroke and rendered in the
     /// results area until a trace is run.
     suggestions: Vec<String>,
     suggestion_state: ListState,
@@ -58,7 +58,7 @@ impl EventChainView {
         ensure_daemon_client(&mut self.client, &self.project_root, &mut self.status);
     }
 
-    /// FB-6: refresh the search-as-you-type suggestion list from the
+    /// refresh the search-as-you-type suggestion list from the
     /// daemon's `events` substring search. Cheap (index-backed) and
     /// synchronous — runs on each keystroke.
     fn refresh_suggestions(&mut self) {
@@ -203,7 +203,7 @@ pub(crate) fn handle_event_chain_key(app: &mut App, key: crossterm::event::KeyEv
                 }
             }
             KeyCode::Down | KeyCode::Tab => {
-                // Prefer the live suggestion list when present (FB-6),
+                // Prefer the live suggestion list when present,
                 // otherwise fall back to the trace rows.
                 if view.rows.is_empty() && !view.suggestions.is_empty() {
                     view.input_focused = false;
@@ -291,7 +291,7 @@ pub(crate) fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChai
         Style::default().fg(Color::DarkGray)
     };
 
-    // FB-6: before a trace has run, the results area shows live
+    // before a trace has run, the results area shows live
     // search-as-you-type matches for the current query.
     if view.rows.is_empty() && !view.suggestions.is_empty() {
         let items: Vec<ListItem> = view

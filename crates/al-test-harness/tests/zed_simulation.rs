@@ -1623,7 +1623,7 @@ async fn test_fixture_code_actions_no_crash() {
 
 /// 2-level chain hover: this.Helper.PrecheckRecord → should show procedure sig.
 #[tokio::test]
-async fn test_fixture_audit_two_level_member_chain_hover() {
+async fn two_level_member_chain_hover_resolves() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
 
@@ -1654,7 +1654,7 @@ async fn test_fixture_audit_two_level_member_chain_hover() {
 
 /// Hover on quoted field access: Rec."Journal Data" in the staging list page.
 #[tokio::test]
-async fn test_fixture_audit_quoted_field_hover() {
+async fn quoted_field_hover_resolves() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
 
@@ -1685,7 +1685,7 @@ async fn test_fixture_audit_quoted_field_hover() {
 
 /// Hover on StagingRec.Status (field access on dataitem Record variable).
 #[tokio::test]
-async fn test_fixture_audit_dataitem_field_hover() {
+async fn dataitem_field_hover_resolves() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
 

@@ -1,8 +1,4 @@
-//! AL interpreter — Phase 2 of the test engine.
-//!
-//! Walks the existing tree-sitter parse tree and evaluates AL constructs
-//! directly, with no .NET runtime dependency. Phase 2a covers pure-logic
-//! tests (no DB / HTTP / UI ops); Phase 3 will add the mock BC runtime.
+//! Tree-walking AL interpreter with no .NET runtime dependency.
 
 pub mod coverage;
 pub mod dispatch;
@@ -13,7 +9,7 @@ pub mod scope;
 pub mod value;
 
 #[cfg(test)]
-mod tests_adversarial_wave2;
+mod regression_tests;
 #[cfg(test)]
 mod tests_coverage;
 #[cfg(test)]

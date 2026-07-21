@@ -23,7 +23,7 @@ use al_workspace::Workspace;
 /// files are at most a few MB even on huge BC apps; a 64 MB cap is a
 /// defence-in-depth bound that lets `parse_xliff` keep its simple
 /// in-memory line-based parser without risking OOM from a malformed or
-/// hostile input. F-OPEN-045.
+/// hostile input.
 pub const MAX_XLF_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Return whether `path`'s on-disk size exceeds `MAX_XLF_FILE_BYTES`.
@@ -241,7 +241,7 @@ fn detect_object_header(text: &str) -> Option<(String, u32, String)> {
 /// closing quote (quoted identifiers) or the first whitespace (bare
 /// identifiers). Extension headers continue with `extends "Base"` —
 /// `trim_matches('"')` on the whole remainder swallowed that clause into the
-/// name and mangled every xlf unit id for extension objects (F-OPEN-273).
+/// name and mangled every xlf unit id for extension objects.
 fn parse_object_name(rest: &str) -> String {
     let rest = rest.trim();
     for quote in ['"', '\''] {
@@ -454,7 +454,7 @@ fn xml_escape(s: &str) -> String {
 /// Multi-line `<source>` / `<target>` / `<note>` bodies are collected until
 /// their closing tag is found on a later line. Earlier versions truncated at
 /// the first newline, silently losing the rest of the translation
-/// (F-OPEN-(xliff-audit-1)).
+/// Multi-line source and target bodies are accumulated before parsing.
 pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
     let mut units: HashMap<String, TranslationUnit> = HashMap::new();
     let mut current_id: Option<String> = None;
@@ -1066,7 +1066,7 @@ mod tests {
         assert_eq!(result.2, "Customer Extension");
     }
 
-    /// F-OPEN-273: the name must stop at the closing quote — extension
+    /// the name must stop at the closing quote — extension
     /// headers carry an `extends` clause that was being swallowed into the
     /// name (`Sales Order Pageext" extends "Sales Order`), mangling every
     /// xlf unit id for extension objects.
@@ -1579,7 +1579,7 @@ mod tests {
         );
     }
 
-    // --- multi-line body regression (F-OPEN-(xliff-audit-1)) ----------------
+    // --- Multi-line body handling -------------------------------------------
 
     #[test]
     fn parse_xliff_preserves_multi_line_source_body() {

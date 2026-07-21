@@ -19,7 +19,7 @@ use super::model::SymbolPackage;
 /// Cache header stored alongside each cached package.
 /// Bump whenever `SymbolEntry`'s semantics change in a way that defaults
 /// can't repair — old caches are then rejected and the .app re-parsed.
-/// v1: `synthetic` flag on entries (FB-2) — pre-flag caches contain
+/// Version 1 added the `synthetic` flag. Older caches contain
 /// fabricated Option-enums that would deserialize as `synthetic: false`
 /// and reappear in search results.
 const CACHE_SCHEMA_VERSION: u32 = 1;
@@ -212,8 +212,7 @@ impl SymbolCache {
             builder.mode(0o700);
             builder.create(&self.cache_dir)?;
             // Ensure existing dirs (created earlier with default mode) are
-            // tightened too. Log on failure (T068) — pre-fix this was a
-            // silent let _, so a permissions tightening failure left the
+            // tightened too. Log on failure; silently ignoring it can leave the
             // cache dir at whatever default mode the umask produced.
             use std::os::unix::fs::PermissionsExt;
             if let Err(e) = fs::set_permissions(&self.cache_dir, fs::Permissions::from_mode(0o700))

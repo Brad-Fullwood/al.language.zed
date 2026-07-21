@@ -106,7 +106,7 @@ pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, Profili
         });
     }
 
-    // Content-Length-capped read (F-OPEN-044). BC dev API responses for
+    // Content-Length-capped read. BC dev API responses for
     // session start are tiny (a few hundred bytes); 16 MB is a generous
     // defence-in-depth bound. Wrap the cross-crate BcClientError into our
     // local error variant so the caller doesn't see a foreign type.
@@ -130,7 +130,7 @@ pub async fn stop_profiling(
     session_id: &str,
 ) -> Result<PathBuf, ProfilingError> {
     // Validate that output_dir is an absolute path before doing any work
-    // (F-OPEN path traversal guard; mirrors snapshot.rs). A relative output_dir
+    // A relative output_dir
     // would be resolved against the long-lived daemon's cwd, allowing the
     // downloaded profile to escape to an arbitrary location. Fail fast, before
     // the network round-trip.
@@ -177,8 +177,8 @@ pub async fn stop_profiling(
     let file_name = format!("profile-{timestamp}.alcpuprofile");
     let dest = config.output_dir.join(&file_name);
 
-    // Content-Length-capped binary read (F-OPEN-044 follow-up). A misbehaving
-    // server could otherwise stream gigabytes through `bytes()` straight into
+    // A misbehaving server could otherwise stream gigabytes through
+    // `bytes()` straight into
     // the daemon's memory; the helper enforces a 500 MB cap pre- and post-read.
     let bytes = crate::bc_client::read_binary_body_capped(resp)
         .await
@@ -381,8 +381,8 @@ pub fn analyze_profile(
             Some((id, self_ms))
         })
         .collect();
-    // Total time = self + Σ descendants, rolled up over the call tree (B14
-    // follow-up). Keyed by node id; nodes outside the map fall back to self time.
+    // Total time = self + Σ descendants, rolled up over the call tree.
+    // Nodes outside the map fall back to self time.
     let total_by_node = aggregate_total_time_ms(&nodes, &self_ms_by_node);
 
     let mut hotspots: Vec<Hotspot> = nodes
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn time_based_self_time_beats_hit_count_ranking() {
-        // B14: the node with FEWER hits but LARGER aggregated timeDeltas must
+        // The node with fewer hits but larger aggregated timeDeltas must
         // rank as the bigger hotspot — proving time-based beats count-based.
         //
         //   ManyHits: hitCount 100, but sampled once for 100µs  -> 0.1 ms
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn mismatched_samples_timedeltas_lengths_handled_gracefully() {
-        // B14: a malformed profile whose samples/timeDeltas arrays differ in
+        // A malformed profile whose samples/timeDeltas arrays differ in
         // length must not panic — we aggregate over the common prefix only.
         // samples has 3 entries, timeDeltas has 1: only samples[0] (node 2) is
         // charged, for 1000µs = 1.0 ms; node 3 gets nothing.
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn total_time_rolls_up_the_call_tree() {
-        // B14 follow-up: total_time(node) = self + Σ total_time(descendants).
+        // total_time(node) = self + Σ total_time(descendants).
         // A 3-node chain root -> child -> grandchild with distinct self times.
         //   root(1):       sampled 1000µs -> 1.0 ms self
         //   child(2):      sampled 2000µs -> 2.0 ms self
@@ -679,7 +679,7 @@ mod tests {
 
     #[test]
     fn total_time_handles_cycle_and_dangling_child_without_hanging() {
-        // B14 follow-up: a malformed profile with a cycle (1 -> 2 -> 1) and a
+        // A malformed profile with a cycle (1 -> 2 -> 1) and a
         // dangling child id (99, no such node) must not loop forever or panic.
         //   A(1): sampled 3000µs -> 3.0 ms self, children [2, 99]
         //   B(2): sampled 5000µs -> 5.0 ms self, children [1]   (back edge)

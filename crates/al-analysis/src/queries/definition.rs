@@ -1,5 +1,3 @@
-#![allow(clippy::useless_conversion)]
-
 //! Go-to-definition query.
 
 use al_symbols::SymbolEntry;
@@ -40,7 +38,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                     | ResolvedMemberKind::EnumValue { range: Some(range) } => {
                         return Some(vec![Location {
                             uri: member.uri.unwrap_or_else(|| uri.clone()),
-                            range: range.into(),
+                            range,
                         }]);
                     }
                     _ => {
@@ -56,7 +54,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                             ) {
                                 return Some(vec![Location {
                                     uri: file_uri,
-                                    range: range.into(),
+                                    range,
                                 }]);
                             }
                         }
@@ -70,7 +68,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     // `Record Customer`, `Page CustomerCard`, `Codeunit Foo`. The subtype token
     // (`Customer`) is a plain unquoted identifier, so the quoted/spaced checks
     // below miss it; detect the type-subtype position explicitly and carry the
-    // leading type keyword so the object resolves kind-correctly (C30 defect 1).
+    // leading type keyword so the object resolves kind-correctly.
     let type_subtype_kw = type_reference_subtype_keyword(node, source);
     let looks_like_object_name = node.kind() == "quoted_identifier"
         || clean_name.contains(' ')
@@ -84,7 +82,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         ) {
             return Some(vec![Location {
                 uri: obj_uri,
-                range: range.into(),
+                range,
             }]);
         }
         let pkg_entries = workspace.symbols.get_by_name(clean_name);
@@ -94,7 +92,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
             {
                 return Some(vec![Location {
                     uri: file_uri,
-                    range: range.into(),
+                    range,
                 }]);
             }
         }
@@ -164,14 +162,14 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         {
             return Some(vec![Location {
                 uri: file_uri,
-                range: range.into(),
+                range,
             }]);
         }
     }
 
     // Last-resort fallback: jump to the first *other* same-named reference in
     // this file. This sits BELOW the workspace-object/procedure/package stages
-    // (C30 defect 2) so it can never shadow a real object lookup, and it skips
+    // so it can never shadow a real object lookup, and it skips
     // any reference that contains the cursor — otherwise go-to-definition on an
     // identifier with no resolvable declaration would return the cursor's own
     // usage site.
@@ -465,12 +463,11 @@ mod tests {
     }
 
     #[test]
-    fn c30_unquoted_record_type_resolves_to_table_not_page_or_self() {
+    fn unquoted_record_type_resolves_to_table_not_page_or_self() {
         // `c: Record Customer` — the subtype is an unquoted single word, and a
         // same-named page is indexed last. Go-to-definition must resolve to the
-        // TABLE (kind-correct, C22/C30 defect 1) regardless of where in the
-        // token the cursor sits, and must never return the cursor's own usage
-        // (C30 defect 2).
+        // table regardless of where in the token the cursor sits, and must
+        // never return the cursor's own usage.
         let ws = Workspace::new();
         let table_path = std::path::PathBuf::from("/ws/Customer.Table.al");
         let page_path = std::path::PathBuf::from("/ws/Customer.Page.al");

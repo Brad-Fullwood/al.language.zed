@@ -10,8 +10,8 @@
 //!   - `NavxManifest.xml` matches except the unavoidable `<Build>` provenance
 //!     line (timestamp + compiler name differ by construction).
 //!
-//! This is the live, end-to-end form of gap B3 ("differential-test against
-//! alc"): instead of a checked-in golden it runs the real alc when present.
+//! Instead of relying on a checked-in golden file, this runs the real compiler
+//! when it is available.
 //!
 //! Gated on `AL_TOOL_PATH` pointing at a dir containing `alc.dll` (e.g. an
 //! installed `ms-dynamics-smb.al` extension's `bin/linux`), plus `dotnet` on

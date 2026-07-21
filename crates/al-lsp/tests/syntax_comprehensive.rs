@@ -919,7 +919,7 @@ fn full_pipeline_all_fixtures() {
 }
 
 // ---------------------------------------------------------------------------
-// T071: deeply-nested AL coverage
+// deeply-nested AL coverage
 //
 // Page extension with 3-deep nested action groups, action triggers carrying
 // var sections, and a top-level page trigger. Previously there was no
@@ -968,7 +968,7 @@ const DEEPLY_NESTED_PAGEEXT: &str = r#"pageextension 50101 "Sales Order Pageext"
 "#;
 
 #[test]
-fn t071_parse_deeply_nested_action_groups() {
+fn parse_deeply_nested_action_groups() {
     let mut parser = AlParser::new();
     let result = parser.parse(DEEPLY_NESTED_PAGEEXT);
     assert!(
@@ -986,7 +986,7 @@ fn t071_parse_deeply_nested_action_groups() {
 }
 
 #[test]
-fn t071_format_deeply_nested_does_not_collapse() {
+fn format_deeply_nested_does_not_collapse() {
     let mut parser = AlParser::new();
     let opts = FormatOptions::default();
     let formatted = format_al(DEEPLY_NESTED_PAGEEXT, &opts);
@@ -1008,10 +1008,10 @@ fn t071_format_deeply_nested_does_not_collapse() {
     }
 }
 
-/// T071 negative: a deeply-nested pageext with a missing closing `}` must
+/// negative: a deeply-nested pageext with a missing closing `}` must
 /// surface a parse error rather than silently accepting a truncated tree.
 #[test]
-fn t071_parse_deeply_nested_truncated_reports_errors() {
+fn parse_deeply_nested_truncated_reports_errors() {
     let mut parser = AlParser::new();
     let truncated = DEEPLY_NESTED_PAGEEXT.trim_end_matches('\n');
     let truncated = truncated.trim_end_matches('}');

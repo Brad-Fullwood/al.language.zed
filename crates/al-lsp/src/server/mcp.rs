@@ -1,4 +1,4 @@
-//! MCP (Model Context Protocol) server mode — `al-lsp mcp` (F-OPEN-261).
+//! MCP (Model Context Protocol) server mode — `al-lsp mcp`.
 //!
 //! Exposes a curated set of AL development tools to MCP-compatible agents
 //! (Claude Code, Zed's agent panel via `context_servers`, custom agents)
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(resp["error"]["code"], -32602);
     }
 
-    /// C2: every registered tool must advertise a well-formed JSON Schema and a
+    /// Every registered tool must advertise a well-formed JSON Schema and a
     /// non-empty description, and every `required` field must actually be
     /// declared in `properties` (otherwise an agent cannot satisfy it).
     #[test]
@@ -492,7 +492,7 @@ mod tests {
         }
     }
 
-    /// C1: the broadened agent surface (suggest-event, test-classify,
+    /// The agent surface (suggest-event, test-classify,
     /// test-coverage, dependency-graph) is registered and listed.
     #[tokio::test]
     async fn tools_list_includes_the_broadened_agent_surface() {

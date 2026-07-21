@@ -1,4 +1,4 @@
-//! SQL anti-pattern detection (T1806).
+//! SQL anti-pattern detection.
 //!
 //! Detects: FindFirst in loops (N+1), FindSet without filters, Get in loops, CalcFields in loops.
 
@@ -104,7 +104,7 @@ fn analyze_proc_text(
     proc_name: &str,
     violations: &mut Vec<SqlPatternViolation>,
 ) {
-    // ISSUE-145 fix: track a per-loop begin..end nesting depth to prevent an
+    // fix: track a per-loop begin..end nesting depth to prevent an
     // inner "end;" from prematurely decrementing the loop counter.
     //
     // `loop_begin_depth` is a stack — one entry per active loop level.
@@ -365,7 +365,7 @@ mod tests {
         assert!(detect_sql_patterns(&Workspace::new()).is_empty());
     }
 
-    /// ISSUE-145: A FindFirst() call after a nested if..begin..end inside a for loop
+    /// A FindFirst() call after a nested if..begin..end inside a for loop
     /// must still be flagged.  Previously the inner "end;" prematurely zeroed
     /// `in_loop`, making code after the nested block invisible to the detector.
     #[test]
@@ -398,7 +398,7 @@ mod tests {
         );
     }
 
-    /// Regression for 0d6373b97a0caab2: a FindFirst() substring buried inside
+    /// Regression: a FindFirst() substring buried inside
     /// a string literal or a // comment must not trigger a false-positive
     /// FindInLoop violation. The text scanner now strips literal contents
     /// and skips comment lines.

@@ -105,10 +105,10 @@ fn find_in_vscode_extensions() -> Option<PathBuf> {
 
         let entries = match std::fs::read_dir(ext_dir) {
             Ok(e) => e,
-            Err(_) => continue, // SILENT: unreadable directories are skipped, not fatal
+            Err(_) => continue, // Unreadable directories are skipped.
         };
         let mut al_dirs: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok()) // SILENT: directory entries may be unreadable
+            .filter_map(|e| e.ok()) // Directory entries may be unreadable.
             .filter(|e| {
                 e.file_name()
                     .to_string_lossy()

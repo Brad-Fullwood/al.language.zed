@@ -1,15 +1,10 @@
-//! Persistent test result history — the async `tokio::fs` append-only store.
-//!
-//! Lives in the al-workspace hub crate (re-exported by al-core's
-//! `test_engine::persistence`) so the `Workspace` hub can own per-project test
-//! state without al-workspace depending on the tier-6 `al-test` crate.
-//!
+//! Persistent test result history.
 //!
 //! Append-only newline-delimited JSON at
 //! `$XDG_DATA_HOME/al-lsp/<project-hash>/test-results.json`. Concurrent
 //! appends are serialized through an in-process `tokio::sync::Mutex` —
 //! cross-process contention is rare for this file (it's per-project) and
-//! is intentionally not handled in Phase 1.
+//! is not serialized.
 //!
 //! Schema per record:
 //! ```jsonc
@@ -37,7 +32,6 @@ use tokio::sync::Mutex;
 
 const MAX_PER_BUCKET: usize = 1000;
 
-// The persisted record + error types live in the tier-0 `al-types` crate.
 use al_types::{PersistenceError, TestRunRecord};
 
 pub struct TestResultStore {
@@ -45,10 +39,8 @@ pub struct TestResultStore {
     /// Serializes appends within this process. Cross-process is best-effort.
     write_lock: Mutex<()>,
     /// In-memory bucket-count cache: maps (codeunit_id, method_name) → current
-    /// count in the file. Populated lazily on first append (T070 perf fix —
-    /// pre-cache `append` re-read the entire file on every call to count
-    /// the bucket; with this cache we only re-read when the bucket genuinely
-    /// overflows and triggers a rewrite).
+    /// count in the file. Populated lazily on first append and refreshed when
+    /// a bucket overflows and triggers a rewrite.
     bucket_counts: Mutex<Option<std::collections::HashMap<(i32, String), usize>>>,
 }
 
@@ -83,7 +75,7 @@ impl TestResultStore {
     /// Uses an in-memory `bucket_counts` cache so the common
     /// path is O(1) — no file read, no allocation. Only the first call (or
     /// a call that pushes a bucket past `MAX_PER_BUCKET`) re-materialises
-    /// the full record set from disk to do an accurate prune (T070).
+    /// the full record set from disk to do an accurate prune.
     pub async fn append(&self, record: TestRunRecord) -> Result<(), PersistenceError> {
         let _guard = self.write_lock.lock().await;
 

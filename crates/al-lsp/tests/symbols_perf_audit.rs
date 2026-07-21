@@ -1,4 +1,4 @@
-//! T701: Symbol Index Performance Audit
+//! Symbol Index Performance Audit
 //!
 //! Profiles al-symbols loading and querying against real .app packages.
 //! Run with: cargo test -p al-symbols --test perf_audit -- --nocapture
@@ -68,7 +68,7 @@ fn perf_audit_index_build() {
         return;
     }
 
-    eprintln!("\n=== T701: Symbol Index Performance Audit ===\n");
+    eprintln!("\n=== Symbol Index Performance Audit ===\n");
     eprintln!("Found {} .app packages:", paths.len());
     let mut total_bytes: u64 = 0;
     for p in &paths {

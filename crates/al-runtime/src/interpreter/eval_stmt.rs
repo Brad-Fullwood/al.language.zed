@@ -1,4 +1,4 @@
-//! Statement evaluator for the AL interpreter — Phase 2.
+//! Statement evaluator for the AL interpreter.
 //!
 //! Walks tree-sitter statement nodes produced by the AL grammar and evaluates
 //! them against the active `ScopeStack`. Control-flow (`exit`, `if`, `while`,
@@ -63,10 +63,8 @@ pub fn eval_stmt(
             MAX_AST_DEPTH
         )));
     }
-    // Dynamic coverage (gap C9): record this statement's source line. A
-    // not-taken `if`/`case`/loop body is never passed to `eval_stmt`, so it is
-    // never recorded — that is what gives us statement coverage. Zero-cost when
-    // the collector is disabled (`ctx.coverage` is `None`).
+    // Record the source line for dynamic coverage. Untaken branches never reach
+    // `eval_stmt`, so their statements are not recorded.
     ctx.cov_record_stmt(node);
     ctx.ast_depth += 1;
     let result = eval_stmt_inner(node, source, stack, ctx);
@@ -97,10 +95,7 @@ fn eval_stmt_inner(
         "case_statement" => eval_case(node, source, stack, ctx),
         "assignment_statement" => eval_assignment(node, source, stack, ctx),
         "exit_statement" => eval_exit(node, source, stack, ctx),
-        // C24: `break`/`continue`. Requires the tree-sitter-al grammar to emit
-        // `break_statement`/`continue_statement` nodes (see the grammar prompt);
-        // until then these keywords parse as bare expressions and error as
-        // unbound identifiers. The interpreter side is ready.
+        // Handle the grammar's dedicated `break` and `continue` nodes.
         "break_statement" => Eval::Break,
         "continue_statement" => Eval::Continue,
         "asserterror_statement" => eval_asserterror(node, source, stack, ctx),
@@ -133,7 +128,7 @@ fn eval_block(
         match &last {
             Eval::Normal(_) => {}
             // Error/Exit unwind the procedure; Break/Continue unwind to the
-            // nearest enclosing loop (C24). All propagate up out of the block.
+            // nearest enclosing loop. All propagate up out of the block.
             Eval::Error(_) | Eval::Exit(_) | Eval::Break | Eval::Continue => return last,
         }
     }
@@ -164,9 +159,8 @@ fn eval_if(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Disp
         )));
     }
 
-    // Dynamic coverage (gap C9): record which side of this `if` decision was
-    // taken. THEN-taken == true, ELSE-taken (or absent-else fall-through) ==
-    // false. Zero-cost when coverage is disabled.
+    // Record the taken side for dynamic coverage. An absent else branch counts
+    // as the false side.
     ctx.cov_record_decision(node, cond.is_truthy());
 
     if cond.is_truthy() {
@@ -304,7 +298,7 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
 
     // The counter is a BigInteger if either bound is one, or if the loop
     // variable is already declared BigInteger — so a wide range counts at i64
-    // width instead of overflowing the 32-bit Integer trap (C28).
+    // width instead of overflowing the 32-bit Integer trap.
     let counter_big = matches!(start_val, Value::BigInteger(_))
         || matches!(end_val, Value::BigInteger(_))
         || matches!(stack.lookup(&var_name), Some(Value::BigInteger(_)));
@@ -529,8 +523,8 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
         }
 
         if matched {
-            // Dynamic coverage (gap C9): an arm matched — record this as the
-            // THEN side of the case decision. Per-arm path coverage is not
+            // An arm matched; record the true side of the case decision.
+            // Per-arm path coverage is not
             // tracked (see `coverage` module docs); the arm body's own lines
             // are recorded by `eval_stmt` as it executes them.
             ctx.cov_record_decision(node, true);
@@ -732,9 +726,9 @@ pub(crate) fn eval_call(
     let (receiver, proc_name, args_node) = extract_call_parts(node, source);
 
     // A method call on a bound variable routes by the variable's value kind:
-    //   * `Value::Record`   → in-memory MockRecord ops (B6).
-    //   * `Value::List`     → List of [T] member calls (W2-08).
-    //   * `Value::Codeunit` → dispatch to the declared subtype object (B5).
+    //   * `Value::Record`   → in-memory MockRecord operations.
+    //   * `Value::List`     → List of [T] member calls.
+    //   * `Value::Codeunit` → dispatch to the declared subtype object.
     // Field-reference args (e.g. `SetRange("Field", …)`) need the AST, so record
     // dispatch is handed the raw `args_node` rather than pre-evaluated values.
     if let Some(recv) = receiver.as_deref() {
@@ -785,8 +779,8 @@ pub(crate) fn eval_call(
 }
 
 /// After a workspace procedure returns, propagate the final values of its
-/// `var` (by-reference) parameters back into the caller's argument variables
-/// (C25). `dispatch_workspace_procedure` populates `ctx.var_writebacks` with
+/// `var` (by-reference) parameters back into the caller's argument variables.
+/// `dispatch_workspace_procedure` populates `ctx.var_writebacks` with
 /// `(arg_index, final_value)`; here we map each index to its argument
 /// expression and, when that argument is a plain variable reference (a valid
 /// lvalue), overwrite the caller's binding. Arguments that are not simple
@@ -865,7 +859,6 @@ fn extract_call_parts<'a>(
     node: Node<'a>,
     source: &[u8],
 ) -> (Option<String>, String, Option<Node<'a>>) {
-    // ── Shape 2: postfix_expression ──────────────────────────────────────────
     // Children: primary_expression, [member_call_suffix | scope_call_suffix | call_suffix]
     // member_call_suffix has: "." identifier argument_list
     // scope_call_suffix  has: "::" identifier argument_list
@@ -930,7 +923,6 @@ fn extract_call_parts<'a>(
         }
     }
 
-    // ── Shape 1 (legacy flat shape) ──────────────────────────────────────────
     let child_count = node.child_count();
     let parts: Vec<(bool, Node)> = (0..child_count)
         .filter_map(|i| node.child(i))
@@ -993,9 +985,7 @@ fn find_argument_list(node: Node<'_>) -> Option<Node<'_>> {
 enum ArgsShort {
     Error(ErrorInfo),
     /// AL semantics: `exit(v)` inside `Foo(exit(42), 1)` unwinds the
-    /// caller's procedure with value `v`, not the inner expression. The
-    /// prior code pushed the Exit value as a regular argument and
-    /// continued, which is a wrong-control-flow bug.
+    /// caller's procedure with value `v`, not the inner expression.
     Exit(Value),
 }
 
@@ -1112,10 +1102,8 @@ fn named_stmt_child(node: Node<'_>, n: usize) -> Option<Node<'_>> {
 }
 
 // CASE selector-vs-arm matching uses the same `values_equal` as `=`/`<>`
-// (C2): BC evaluates a CASE arm exactly like an equality test, so Text is
-// case-sensitive and Code is case-insensitive. The former separate
-// `values_equal_for_case` compared Text case-insensitively, which matched
-// `'ABC'` against `'abc'` where BC does not.
+// BC evaluates a CASE arm exactly like an equality test, so Text is
+// case-sensitive and Code is case-insensitive.
 
 #[cfg(test)]
 mod tests {
@@ -1155,7 +1143,6 @@ mod tests {
     }
 
     fn find_proc_body<'a>(node: Node<'a>, _source: &[u8]) -> Option<Node<'a>> {
-        // Iterative walk looking for begin_end_block inside procedure_declaration.
         let mut stack = vec![node];
         while let Some(current) = stack.pop() {
             if current.kind() == "begin_end_block" {
@@ -1168,7 +1155,7 @@ mod tests {
     }
 
     /// Run statements against a frame that declares `bi: BigInteger(0)`, so the
-    /// declared-type stickiness path (C28) can be exercised end to end.
+    /// declared-type stickiness path can be exercised end to end.
     fn run_stmt_with_bigint(source_snippet: &str) -> (Eval, ScopeStack) {
         let wrapper = format!(
             "codeunit 50100 \"X\"\n{{\n    procedure Test()\n    var\n        bi: BigInteger;\n    begin\n        {source_snippet}\n    end;\n}}"
@@ -1187,44 +1174,33 @@ mod tests {
     }
 
     #[test]
-    fn c28_biginteger_literal_arithmetic_end_to_end() {
-        // A literal beyond the 32-bit range types as BigInteger, so the sum
-        // computes instead of tripping the Integer overflow trap.
+    fn biginteger_literal_arithmetic_end_to_end() {
         let (eval, stack) = run_stmt("y := 5000000000 + 1;");
         assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
         assert_eq!(stack.lookup("y"), Some(&Value::BigInteger(5_000_000_001)));
     }
 
     #[test]
-    fn c28_unary_negation_of_biginteger() {
-        // Regression: a negative BigInteger literal is unary minus applied to a
-        // >i32 literal. Without a BigInteger arm in eval_unary this errored as
-        // "operator not supported".
+    fn unary_negation_of_biginteger() {
         let (eval, stack) = run_stmt("y := -5000000000;");
         assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
         assert_eq!(stack.lookup("y"), Some(&Value::BigInteger(-5_000_000_000)));
     }
 
     #[test]
-    fn c28_integer_literal_overflow_errors_end_to_end() {
-        // Both operands are in-range Integer literals, so the product overflows
-        // BC's 32-bit Integer and must error (not silently wrap).
+    fn integer_literal_overflow_errors_end_to_end() {
         let (eval, _) = run_stmt("x := 2147483647 * 2;");
         assert!(eval.is_error(), "expected Integer overflow, got {eval:?}");
     }
 
     #[test]
-    fn c28_declared_biginteger_var_keeps_width_the_finding_scenario() {
-        // The exact reported scenario: a BigInteger variable assigned a small
-        // literal keeps its width, so later arithmetic stays at i64.
-        // A small Integer literal into a BigInteger slot keeps BigInteger width.
+    fn declared_biginteger_variable_keeps_width() {
         let (_e1, stack1) = run_stmt_with_bigint("bi := 5;");
         assert_eq!(
             stack1.lookup("bi"),
             Some(&Value::BigInteger(5)),
             "small literal assigned to a BigInteger slot must stay BigInteger"
         );
-        // Full scenario: subsequent arithmetic then uses i64 width, not the trap.
         let (eval, stack) = run_stmt_with_bigint("bi := 5; bi := bi * 1000000000;");
         assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
         assert_eq!(stack.lookup("bi"), Some(&Value::BigInteger(5_000_000_000)));
@@ -1310,11 +1286,6 @@ mod tests {
 
     #[test]
     fn runaway_while_loop_trips_deadline() {
-        // Negative regression for F-OPEN-015b: an infinite loop must
-        // return Eval::Error with the deadline message instead of pinning
-        // the thread forever. We set a deadline 5 ms in the future and
-        // expect the while-loop's per-iteration check to fire on the next
-        // iteration after the deadline has passed.
         use crate::interpreter::scope::{CallFrame, ScopeStack};
         use crate::interpreter::value::Value;
         use crate::test_support::MockSource as Workspace;
@@ -1347,10 +1318,6 @@ mod tests {
 
     #[test]
     fn cancel_token_interrupts_while_loop() {
-        // F-OPEN-093 / F-OPEN-096: an external cancel signal must interrupt
-        // a running loop without waiting for the wall-clock deadline. Set the
-        // cancel token from a different thread once the loop has started;
-        // the loop's per-iteration check should fire on the next iteration.
         use crate::interpreter::scope::{CallFrame, ScopeStack};
         use crate::interpreter::value::Value;
         use crate::test_support::MockSource as Workspace;
@@ -1370,12 +1337,9 @@ mod tests {
 
         let cancel = Arc::new(AtomicBool::new(false));
         let mut ctx = DispatchCtx::new_pure(Arc::new(Workspace::new()));
-        // Long deadline — must be cancel that fires, not deadline.
         ctx.deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
         ctx.cancel = Some(cancel.clone());
 
-        // Signal cancel from a background thread after a tiny delay so the
-        // loop is already running when the flag flips.
         let canceller = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(20));
             cancel.store(true, Ordering::Relaxed);
@@ -1396,8 +1360,6 @@ mod tests {
 
     #[test]
     fn cancel_token_can_be_attached_and_pre_signalled() {
-        // Sanity: a pre-set cancel token aborts the loop on the very first
-        // iteration check. No threading, fully deterministic.
         use crate::interpreter::scope::{CallFrame, ScopeStack};
         use crate::interpreter::value::Value;
         use crate::test_support::MockSource as Workspace;
@@ -1444,16 +1406,7 @@ mod tests {
     }
 
     #[test]
-    fn asserterror_must_propagate_exit_not_convert_to_fail_adversarial_h_7() {
-        // FINDING P1 spec-deviation: eval_asserterror converts Eval::Exit to
-        // Eval::Error("asserterror: expected an error...") instead of propagating
-        // it. AL spec: asserterror only catches Error(); Exit must propagate
-        // so the enclosing procedure can return normally.
-        // Buggy code at eval_stmt.rs line 578:
-        //   Eval::Normal(_) | Eval::Exit(_) => Error("expected an error...")
-        // Fix: separate Exit(_) to propagate: `Eval::Exit(v) => Eval::Exit(v)`.
-        // Expected: Eval::Exit(Value::Empty)
-        // Observed: Eval::Error("asserterror: expected an error to be raised...")
+    fn asserterror_propagates_exit() {
         let (eval, _) = run_stmt("asserterror exit;");
         assert!(
             matches!(eval, Eval::Exit(_)),
@@ -1464,10 +1417,6 @@ mod tests {
 
     #[test]
     fn for_downto_decrements_when_direction_field_is_downto() {
-        // Sanity check that the new grammar-field path works for a real downto.
-        // Loop body binds x to each iteration value; after the last iteration
-        // (i=1) the local counter decrements to 0, the loop exits, and x is
-        // left at the last bound value (1).
         let (eval, stack) = run_stmt("for x := 3 downto 1 do begin end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(1)));
@@ -1475,17 +1424,6 @@ mod tests {
 
     #[test]
     fn for_to_with_substring_downto_in_body_still_counts_up() {
-        // Regression: prior `is_downto` substring check matched anywhere in
-        // the for_statement text — including the loop body. Any identifier
-        // or string literal containing "downto" (e.g. `mydowntoval`) flipped
-        // direction silently. With the grammar-field fix, body content is
-        // irrelevant.
-        //
-        // Test: a to-loop whose body sets `s` to a string containing the
-        // substring "downto". The fix asserts the loop ran upward: x ends
-        // at 3 (the last bound value). With the prior bug, the loop would
-        // have been treated as downto and immediately broken (since 1 < 3),
-        // leaving x at 0.
         let (eval, stack) = run_stmt(r#"for x := 1 to 3 do begin s := 'mydowntoval'; end;"#);
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(
@@ -1498,10 +1436,6 @@ mod tests {
 
     #[test]
     fn case_else_branch_runs_when_no_arm_matches() {
-        // The AL grammar carries `else_body` as a field on `case_statement`,
-        // not as a separate `case_else` / `else_clause` child node. The prior
-        // code matched on those non-existent node kinds, so the else branch
-        // never ran. Fix consults `child_by_field_name("else_body")` directly.
         let (eval, stack) = run_stmt("case 42 of 1: x := 1; 2: x := 2; else x := 99; end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(
@@ -1520,8 +1454,6 @@ mod tests {
 
     #[test]
     fn case_integer_decimal_compare_rejects_fractional() {
-        // 5 (Integer) must NOT match 5.1 (Decimal). Prior `as f64` cast would
-        // still return false for this case (5.0 != 5.1) — pinned for safety.
         let (eval, stack) = run_stmt("case 5 of 5.1: x := 7; else x := 1; end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(1)));
@@ -1529,20 +1461,6 @@ mod tests {
 
     #[test]
     fn exit_inside_argument_propagates_out_of_call() {
-        // The prior eval_args_into absorbed `Eval::Exit` as a value and passed
-        // it through as a regular argument. AL semantics: `exit(v)` inside a
-        // call expression unwinds the enclosing procedure with value v.
-        // The simplest reproducer: bare `exit;` (Exit(Empty)) in the position
-        // where it's evaluated as part of args.
-        //
-        // We can't easily construct an argument-position exit in plain AL
-        // syntax without a workspace lookup, so this test exercises the
-        // direct path: dispatch_call returns Exit when the FIRST argument
-        // evaluation produced Exit. Use `Message(exit)` — bare `exit` as
-        // identifier doesn't parse; use the recurse-via-case shape instead.
-        //
-        // Reproducer via case-arm that contains an exit-statement: the
-        // outer Test() procedure exits when the case arm fires.
         let (eval, _) = run_stmt("case 1 of 1: exit; else x := 99; end;");
         assert!(
             matches!(eval, Eval::Exit(_)),
@@ -1553,10 +1471,6 @@ mod tests {
 
     #[test]
     fn deep_nesting_errors_instead_of_stack_overflow() {
-        // Build a string with > MAX_AST_DEPTH (1024) levels of nested
-        // begin/end blocks. The prior code would recurse into eval_stmt
-        // that many times and could blow the Rust stack. The depth cap
-        // aborts with a clean error well before any stack risk.
         let depth = 1500;
         let mut body = String::new();
         for _ in 0..depth {
@@ -1584,8 +1498,6 @@ mod tests {
 
     #[test]
     fn for_to_counts_up_and_leaves_last_value() {
-        // FOR x := 1 TO 3 DO begin end — loop body runs for 1,2,3 then exits.
-        // x is left bound to the last value that satisfied the loop guard (3).
         let (eval, stack) = run_stmt("for x := 1 to 3 do begin end;");
         assert!(matches!(eval, Eval::Normal(_)), "got {:?}", eval);
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(3)));
@@ -1600,9 +1512,6 @@ mod tests {
 
     #[test]
     fn for_empty_range_does_not_run_body() {
-        // FOR x := 5 TO 1 — start > end for an upward loop, so the body never
-        // runs and x is left at its pre-loop binding from the first assignment
-        // attempt. The guard breaks before any bind: x stays 0.
         let (eval, stack) = run_stmt("for x := 5 to 1 do begin end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(
@@ -1659,8 +1568,6 @@ mod tests {
 
     #[test]
     fn repeat_runs_body_at_least_once() {
-        // REPEAT executes the body before checking the UNTIL condition.
-        // Even though x >= 0 is already true, the body runs once: x := x + 1.
         let (eval, stack) = run_stmt("repeat x := x + 1; until x >= 0;");
         assert!(matches!(eval, Eval::Normal(_)), "got {:?}", eval);
         assert_eq!(
@@ -1679,8 +1586,6 @@ mod tests {
 
     #[test]
     fn repeat_deadline_trips_on_runaway() {
-        // A repeat-until whose condition is never satisfied must trip the
-        // deadline rather than spin forever.
         use crate::interpreter::scope::{CallFrame, ScopeStack};
         use crate::interpreter::value::Value;
         use crate::test_support::MockSource as Workspace;
@@ -1746,8 +1651,6 @@ mod tests {
 
     #[test]
     fn case_text_selector_is_case_sensitive() {
-        // C2: BC CASE matches with `=` semantics, so a Text selector is
-        // case-SENSITIVE. 'ABC' does NOT match the arm 'abc' → else runs.
         let (eval, stack) = run_stmt("case 'ABC' of 'abc': x := 5; else x := 1; end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(
@@ -1759,7 +1662,6 @@ mod tests {
 
     #[test]
     fn case_text_selector_exact_match() {
-        // Control: an exact-case Text label still matches.
         let (eval, stack) = run_stmt("case 'abc' of 'abc': x := 5; else x := 1; end;");
         assert!(matches!(eval, Eval::Normal(_)));
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(5)));

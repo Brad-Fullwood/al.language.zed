@@ -29,20 +29,8 @@ pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::R
 
     fs::create_dir_all(&pkg_dir)?;
 
-    // F-041: invalidate the cache entry when the source `.app` package is
-    // newer than the cached virtual file. Without this, replacing a package
-    // with a newer version (same publisher + name + object id + name) would
-    // serve stale generated source forever because `create_new` short-
-    // circuited on AlreadyExists. Compare mtimes — if the .app post-dates
-    // the cached file, drop the cached file (clearing its read-only bit
-    // first so the remove succeeds on Windows + Unix).
-    // Invalidate the cached virtual file when EITHER the source `.app` OR the
-    // running al-lsp binary is newer than the cache. The binary check matters
-    // because a rebuilt / upgraded al-lsp may extract or render symbol source
-    // differently than the build that wrote the cache; without it, an older
-    // build's output (e.g. an outline where the current build produces real
-    // source) persists forever, since the `.app` mtime alone never changes
-    // across an al-lsp upgrade.
+    // Regenerate when the package or running binary is newer. A binary update
+    // may change extraction or outline rendering without changing the package.
     if let Ok(cache_mtime) = fs::metadata(&file_path).and_then(|m| m.modified()) {
         let app_newer = app_path
             .and_then(|app| fs::metadata(app).ok())
@@ -66,8 +54,7 @@ pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::R
             // (bodies included). Otherwise fall back to the metadata outline,
             // prefixed with OUTLINE_NOTE so the reader knows the file is
             // reconstructed from package symbols and carries no implementation
-            // bodies (C7: package symbols = public declaration, not call-site
-            // bodies). The note rides the outline path only — real embedded
+            // bodies. The note is used only for outlines; real embedded
             // source already has its bodies.
             let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
             let source = extracted.unwrap_or_else(|| render_outline_with_note(entry));
@@ -98,8 +85,7 @@ fn self_exe_mtime() -> Option<std::time::SystemTime> {
 }
 
 /// Drop the read-only attribute on a cached virtual file so `remove_file`
-/// can delete it. Best-effort: failures here are not fatal — the subsequent
-/// `remove_file` will simply fail and the stale entry will linger.
+/// can delete it.
 fn clear_readonly(path: &Path) -> std::io::Result<()> {
     let mut perms = fs::metadata(path)?.permissions();
     // Clippy warns about the platform-portability footgun of calling
@@ -237,7 +223,7 @@ fn sanitize_filename(s: &str) -> String {
 /// signatures, fields, keys, enum values, properties — but not the procedure
 /// bodies (those are compiled away). So this outline is the public API surface,
 /// not the call-site source: "who calls X" / the implementation cannot be
-/// recovered from package symbols alone (workspace source fills that in). C7 in
+/// recovered from package symbols alone (workspace source fills that in). in
 /// `Docs/gaps-and-future-work.md`.
 ///
 /// Written as AL line comments so the virtual file still parses. Worded to avoid
@@ -712,7 +698,7 @@ mod tests {
         assert_eq!(r.col_end, r.col_start + 3);
     }
 
-    // ----- C7: package symbols = public declaration, not call-site bodies -----
+    // ----- package symbols = public declaration, not call-site bodies -----
 
     use crate::model::{MethodSymbol, ObjectKind, ParameterSymbol};
 

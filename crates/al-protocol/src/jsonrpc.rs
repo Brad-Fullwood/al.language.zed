@@ -1,17 +1,11 @@
 //! JSON-RPC types for daemon protocol communication.
 //!
-//! This is the canonical definition shared by al-protocol, al-core, and al-lsp.
+//! This is the canonical definition shared by the daemon and its clients.
 
 use serde::{Deserialize, Serialize};
 
-// T057: JSON-RPC 2.0 spec requires a `jsonrpc: "2.0"` field on every
-// Request and Response. The field is wired in as a `#[serde(default)]`
-// String so existing in-tree construction sites continue to compile
-// via `..Default::default()` spread or via the `Request::new` /
-// `Response::ok` / `Response::error` / `Response::null` constructors.
-// Deserialization tolerates omission (defaults to "2.0") so the daemon
-// remains backward-compatible with any older client that doesn't emit
-// the field.
+// Deserialization tolerates older clients that omit the protocol version;
+// constructors always emit the JSON-RPC 2.0 field required by the spec.
 
 fn default_jsonrpc() -> String {
     "2.0".to_string()
@@ -142,17 +136,14 @@ mod tests {
         let req = Request::new(1, "ping", None);
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("\"params\""));
-        // T057: the `jsonrpc: "2.0"` field is now serialised on every Request.
         assert!(
             json.contains("\"jsonrpc\":\"2.0\""),
             "Request must include jsonrpc=\"2.0\" per JSON-RPC 2.0 spec; got {json}"
         );
     }
 
-    /// T057: Response::ok / Response::error / Response::null all set
-    /// jsonrpc="2.0" on the wire.
     #[test]
-    fn t057_response_constructors_emit_jsonrpc_field() {
+    fn response_constructors_emit_jsonrpc_field() {
         let ok = Response::ok(1, serde_json::json!({"v": 42}));
         let err = Response::error(2, error_codes::METHOD_NOT_FOUND, "no");
         let null = Response::null(3);
@@ -165,11 +156,8 @@ mod tests {
         }
     }
 
-    /// T057 negative: a Response JSON without the jsonrpc field still
-    /// deserializes (default = "2.0") so the daemon remains backward-
-    /// compatible with older clients.
     #[test]
-    fn t057_response_deserialization_tolerates_missing_jsonrpc_field() {
+    fn response_deserialization_tolerates_missing_jsonrpc_field() {
         let json = r#"{"id":1,"result":{"v":42}}"#;
         let resp: Response = serde_json::from_str(json).unwrap();
         assert_eq!(resp.jsonrpc, "2.0");
@@ -199,12 +187,11 @@ mod tests {
         assert_eq!(resp.error.unwrap().code, error_codes::METHOD_NOT_FOUND);
     }
 
-    /// F-017: Response::null must serialize `"result":null` on the wire.
-    /// Per JSON-RPC 2.0 §5.1, success responses MUST contain `result`,
+    /// Per JSON-RPC 2.0 section 5.1, success responses contain `result`,
     /// including when its value is null. Strict clients reject responses
     /// missing both `result` and `error`.
     #[test]
-    fn f017_null_response_serializes_explicit_result_null() {
+    fn null_response_serializes_explicit_result_null() {
         let resp = Response::null(7);
         let s = serde_json::to_string(&resp).unwrap();
         assert!(
@@ -217,10 +204,9 @@ mod tests {
         );
     }
 
-    /// F-017 negative: error responses must NOT include a `result` field
-    /// (per JSON-RPC 2.0 §5.1: result and error are mutually exclusive).
+    /// JSON-RPC 2.0 error responses must not include a `result` field.
     #[test]
-    fn f017_error_response_omits_result_field() {
+    fn error_response_omits_result_field() {
         let resp = Response::error(8, error_codes::INTERNAL_ERROR, "boom");
         let s = serde_json::to_string(&resp).unwrap();
         assert!(

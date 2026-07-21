@@ -1,17 +1,7 @@
 //! Library Assert (codeunit 130 / 130002) — native Rust port.
 //!
-//! AL test source for the real codeunit lives in BCApps at:
-//!   `tests/.repos/BCApps/src/Tools/Test Framework/Test Libraries/Assert/src/LibraryAssert.Codeunit.al`
-//!
-//! Phase 2 takes the **fast-path** approach: instead of interpreting the
-//! AL source of Library Assert, the dispatch layer recognises calls to
-//! Library Assert procedure names and invokes the equivalent Rust code
-//! here. Same external semantics; far less interpreter surface to maintain.
-//!
 //! Every procedure follows AL's "raise via `Error(...)`" convention,
-//! which we translate to `Eval::Error(ErrorInfo { message, .. })`. AL
-//! `asserterror` blocks (Phase 3 work) catch these; until then a failing
-//! assertion propagates as an `Eval::Error` and aborts the test method.
+//! translated to `Eval::Error(ErrorInfo { message, .. })`.
 
 use crate::interpreter::scope::Eval;
 use crate::interpreter::value::{Decimal, ErrorInfo, Value};
@@ -108,7 +98,7 @@ pub fn are_nearly_equal(args: &[Value]) -> Eval {
         return err("Assert.AreNearlyEqual: non-numeric argument");
     };
     // Exact decimals: no NaN/infinity can arise, so the comparison is a plain
-    // exact tolerance check (C3).
+    // exact tolerance check.
     if (ef - af).abs() <= pf {
         ok()
     } else {
@@ -240,8 +230,6 @@ mod tests {
 
     #[test]
     fn areequal_mixed_numeric() {
-        // 5 == 5.0 across Integer/Decimal — Library Assert's variant
-        // semantics treat these as equal.
         assert_pass(are_equal(&[Value::Integer(5), Value::Decimal(dec!(5.0))]));
     }
 
@@ -293,9 +281,6 @@ mod tests {
 
     #[test]
     fn are_nearly_equal_is_exact_no_float_drift() {
-        // C3: exact decimals mean a computed sum has no binary-float residue,
-        // so AreNearlyEqual with ZERO tolerance still passes for 0.1 + 0.2 = 0.3
-        // (which fails under f64). NaN/infinity can no longer be constructed.
         let sum = dec!(0.1) + dec!(0.2);
         let result = are_nearly_equal(&[
             Value::Decimal(sum),
@@ -310,7 +295,6 @@ mod tests {
 
     #[test]
     fn are_nearly_equal_respects_precision_band() {
-        // Just inside the band passes; just outside fails.
         assert_pass(are_nearly_equal(&[
             Value::Decimal(dec!(1.0)),
             Value::Decimal(dec!(1.0009)),

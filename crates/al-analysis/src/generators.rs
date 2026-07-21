@@ -238,10 +238,10 @@ fn generate_test_stubs(subject: &SymbolEntry) -> String {
     public_methods
         .iter()
         .map(|m| {
+            let method_name = m.name.replace('\'', "''");
             format!(
-                "    [Test]\n    procedure Test{}()\n    begin\n        // Arrange\n\n        // Act\n\n        // Assert\n        Assert.IsTrue(true, 'TODO: implement test for {}');\n    end;\n",
-                sanitize_identifier(&m.name),
-                m.name,
+                "    [Test]\n    procedure Test{}()\n    begin\n        Error('TODO: implement test for {}');\n    end;\n",
+                sanitize_identifier(&m.name), method_name,
             )
         })
         .collect::<Vec<_>>()
@@ -249,7 +249,7 @@ fn generate_test_stubs(subject: &SymbolEntry) -> String {
 }
 
 fn default_test_stub() -> String {
-    "    [Test]\n    procedure TestSomething()\n    begin\n        // Arrange\n\n        // Act\n\n        // Assert\n        Assert.IsTrue(true, 'Placeholder test');\n    end;\n".to_string()
+    "    [Test]\n    procedure TestSomething()\n    begin\n        Error('Placeholder test: implementation required');\n    end;\n".to_string()
 }
 
 fn al_identifier(name: &str) -> String {
@@ -376,7 +376,7 @@ mod tests {
             name: "Order Processor".to_string(),
             methods: vec![
                 MethodSymbol {
-                    name: "ProcessOrder".to_string(),
+                    name: "Process'Order".to_string(),
                     parameters: Vec::new(),
                     return_type: None,
                     attributes: Vec::new(),
@@ -403,6 +403,8 @@ mod tests {
         assert!(test.contains("Subtype = Test"));
         assert!(test.contains("TestProcessOrder"));
         assert!(!test.contains("TestInternalHelper"));
+        assert!(!test.contains("Assert.IsTrue(true"));
+        assert!(test.contains("Process''Order"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Record (table) operations for the AL interpreter — Phase 3 (B6).
+//! Record and table operations for the AL interpreter.
 //!
 //! Wires `Value::Record` to the in-memory [`MockRecord`] table store so that
 //! the common BC `Record` API executes natively in the interpreter:
@@ -12,7 +12,7 @@
 //! its `fields { field(N; Name; …) }` and `keys { key(…; F1, F2) }` sections to
 //! recover the field-name→number map and primary-key field list. Tables that are
 //! not defined in the workspace (e.g. base-app `Customer`) cannot be modelled
-//! and produce a graceful error rather than a panic.
+//! and return an error.
 //!
 //! **FlowField / `CalcFormula` evaluation** is implemented for the aggregating
 //! formula classes — `Sum`, `Average`, `Min`, `Max`, `Count`, `Exist` and
@@ -380,8 +380,6 @@ fn parse_key_fields(section: Node<'_>, source: &[u8]) -> Vec<String> {
     }
 }
 
-// ───────────────────────────── method dispatch ─────────────────────────────
-
 /// True if `method` is a record API method handled by [`dispatch_record_method`].
 pub(crate) fn is_record_method(method: &str) -> bool {
     matches!(
@@ -526,7 +524,10 @@ pub(crate) fn dispatch_record_method(
         "setrange" => {
             let f = field_no.unwrap();
             match values.len() {
-                0 => Eval::Normal(Value::Empty), // clear filter: best-effort no-op
+                0 => {
+                    store.record.clear_filter(f);
+                    Eval::Normal(Value::Empty)
+                }
                 1 => {
                     store
                         .record
@@ -822,8 +823,6 @@ fn descend_to_postfix(node: Node<'_>) -> Option<Node<'_>> {
     }
 }
 
-// ───────────────────────────── list dispatch ───────────────────────────────
-
 /// True if `method` is a `List of [T]` method handled by [`dispatch_list_method`].
 pub(crate) fn is_list_method(method: &str) -> bool {
     matches!(
@@ -907,8 +906,6 @@ pub(crate) fn dispatch_list_method(
     }
 }
 
-// ───────────────────────────── binding helpers ─────────────────────────────
-
 /// Build a default `Value` for a structured local variable type the scalar
 /// `Value::default_for` does not cover: `Record <Subtype>`, `Codeunit <Subtype>`,
 /// and `List of [T]`. Returns `None` for anything else.
@@ -946,8 +943,6 @@ fn subtype_after_keyword(type_text: &str, keyword: &str) -> String {
     let rest = type_text[keyword.len()..].trim();
     rest.trim_matches('"').trim().to_string()
 }
-
-// ───────────────────────────── small helpers ───────────────────────────────
 
 fn node_text(node: Node<'_>, source: &[u8]) -> String {
     node.utf8_text(source)

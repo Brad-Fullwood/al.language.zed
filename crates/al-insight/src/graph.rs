@@ -126,7 +126,7 @@ pub struct InsightGraph {
     /// Inserted-edge set used by `add_edge` for O(1) dedup. Replaces the
     /// previous `edges_connecting(...).any(...)` scan which was O(degree)
     /// per insert — O(degree²) overall on hot Object nodes that accumulate
-    /// thousands of `Contains` edges. F-OPEN-080.
+    /// thousands of `Contains` edges.
     pub(crate) edge_set: std::collections::HashSet<(NodeIndex, NodeIndex, InsightEdge)>,
 }
 
@@ -173,8 +173,8 @@ impl InsightGraph {
     ///
     /// O(1) dedup via `edge_set`. Previous implementation scanned
     /// `edges_connecting(from, to)` on every insert, which was O(degree) per
-    /// call and O(degree²) on hot Object nodes with thousands of edges
-    /// (F-OPEN-080). The HashSet is paid for once at graph-build time;
+    /// call and O(degree²) on hot Object nodes with thousands of edges.
+    /// The HashSet is paid for once at graph-build time;
     /// the InsightGraph is short-lived (rebuilt on workspace mutations).
     pub fn add_edge(&mut self, from: NodeIndex, to: NodeIndex, edge: InsightEdge) {
         if self.edge_set.insert((from, to, edge)) {
@@ -185,7 +185,7 @@ impl InsightGraph {
     /// Connect every Subscriber node in the graph to its target Event
     /// node(s) with a `SubscribesTo` edge.
     ///
-    /// FB-8: Subscriber nodes added by the workspace-enrichment pass
+    /// Subscriber nodes added by the workspace-enrichment pass
     /// (`insight::calls::register_workspace_nodes`) stored their target on
     /// the node but never got an edge — only `build()`'s
     /// `resolve_relationships` created edges, and that pass only sees

@@ -1,4 +1,4 @@
-//! Definition, references, and rename handlers — thin wrappers over al-core.
+//! Definition, references, and rename handlers.
 
 use tower_lsp::lsp_types::*;
 
@@ -60,7 +60,7 @@ fn origin_selection_range(
     Some(core.into())
 }
 
-// T028: handle_references was inlined into the LanguageServer::references impl
+// handle_references was inlined into the LanguageServer::references impl
 // and wrapped in spawn_blocking so it can be cancel-friendly. Removed.
 
 pub(crate) fn handle_rename(

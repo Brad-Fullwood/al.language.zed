@@ -213,7 +213,7 @@ fn seed_timeout_stamp(stamp: &std::sync::atomic::AtomicU64, secs: u64) {
 /// Outcome of the timeout-cooldown gate (see [`cooldown_gate`]).
 ///
 /// Extracted as a free function over a generic `&Mutex<T>` so the
-/// `try_lock()` race (T047) can be exercised deterministically in tests:
+/// The `try_lock()` race can be exercised deterministically in tests:
 /// a test can pre-lock the mutex to model a still-hung CLR call, poison it
 /// to model a panicked call, or leave it free — without loading the CLR.
 #[derive(Debug)]
@@ -345,8 +345,8 @@ impl SemanticBridge {
     /// Mutex lock or interrupt the .NET call. The lock will remain held until
     /// the bridge returns or the process exits.
     ///
-    /// T047: when the cooldown window elapses, the gate isn't released
-    /// blindly — we first `try_lock()` the Mutex. If the Mutex is still
+    /// When the cooldown window elapses, the gate is not released blindly: it
+    /// first probes the mutex. If the mutex is still
     /// held (the previous CLR call hasn't returned), we re-stamp
     /// `last_timeout_secs` and keep the gate closed for another
     /// TIMEOUT_COOLDOWN. This prevents an indefinitely-hung CLR call from
@@ -413,14 +413,14 @@ impl SemanticBridge {
 
     /// Resolve the type of the symbol at the given position.
     ///
-    /// **Position contract (F-036):** `pos` is `(line, column)` in the same
+    /// **Position contract:** `pos` is `(line, column)` in the same
     /// 0-based UTF-16 coordinate system that LSP uses. The C# bridge's
     /// `LineColToOffset` walks `cur < line` newlines from the start of the
     /// file, then adds `col` directly to the resulting byte offset, so any
     /// off-by-one done on the Rust side will land at the wrong token. Pass
     /// LSP positions through unchanged.
     ///
-    /// **Unsaved-text contract (F-037):** when `text` is `Some`, the bridge
+    /// **Unsaved-text contract:** when `text` is `Some`, the bridge
     /// uses that buffer instead of reading `file` from disk. Pass the
     /// document store's current text for open documents so hover answers
     /// reflect the editor buffer, not the last-saved version.
@@ -449,11 +449,11 @@ impl SemanticBridge {
 
     /// Get completion items at the given position.
     ///
-    /// **Position contract (F-036):** identical to [`Self::type_at`] — `pos`
+    /// **Position contract:** identical to [`Self::type_at`] — `pos`
     /// is 0-based UTF-16 `(line, column)`, passed through to the C# bridge
     /// without adjustment.
     ///
-    /// **Unsaved-text contract (F-037):** identical to [`Self::type_at`] —
+    /// **Unsaved-text contract:** identical to [`Self::type_at`] —
     /// caller-supplied `text` overrides the disk read.
     pub async fn completions_at(
         &self,

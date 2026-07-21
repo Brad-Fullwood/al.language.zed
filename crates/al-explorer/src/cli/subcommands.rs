@@ -25,7 +25,7 @@ pub enum TestSnapshotCommands {
     /// Replay a snapshot FILE (file-only, not live BC). NOTE: this validates
     /// snapshot LOADING — it parses the .snap.json off disk and reports a match.
     /// It does NOT re-run the test against a live BC server and compare observed
-    /// values; the live-BC record/replay bridge is not wired yet (gap A10).
+    /// values; the live-BC record/replay bridge is not wired yet.
     Replay {
         /// Path to the .snap.json file
         path: String,
@@ -33,7 +33,7 @@ pub enum TestSnapshotCommands {
     /// Diff two snapshot FILES and show field-level divergences (file-vs-file,
     /// not live BC). NOTE: this compares two .snap.json files already on disk; it
     /// does NOT capture a fresh run from a live BC server. The live record/replay
-    /// bridge is not wired yet (gap A10).
+    /// bridge is not wired yet.
     Diff {
         /// Path to baseline snapshot A
         a: String,
@@ -84,9 +84,6 @@ pub enum DebugCommands {
     /// Stop the debug session
     Stop,
 }
-
-// DiagCommands removed — diag subcommands had no daemon handler.
-// Tracked as T2702 for future implementation.
 
 #[derive(Subcommand)]
 pub enum SnapshotCommands {

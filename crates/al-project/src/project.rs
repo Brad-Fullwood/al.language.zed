@@ -309,9 +309,6 @@ mod dedup_tests {
         names.iter().map(PathBuf::from).collect()
     }
 
-    /// Audit 2026-06-12: .alpackages folders accumulate old versions; loading
-    /// all of them indexed every object once per version (duplicate search
-    /// rows, doubled counts). Only the highest version may survive.
     #[test]
     fn keeps_only_highest_version_per_package() {
         let result = dedup_package_versions(paths(&[

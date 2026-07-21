@@ -243,7 +243,7 @@ fn build_promoted_action_conversion(
     edits.sort_by_key(|e| e.range.start.line);
 
     Some(CodeActionEntry {
-        title: format!("Convert '{}' to actionRef (T1205)", pa.name),
+        title: format!("Convert '{}' to actionRef", pa.name),
         kind: CodeActionKind::Refactor,
         edit: Some(single_edit_ws(uri, edits)),
         is_preferred: false,
@@ -288,15 +288,12 @@ fn find_actions_block_end(text: &str) -> Option<u32> {
 ///   - The object does NOT yet have a top-level `ApplicationArea` property.
 ///   - At least one field/column control has `ApplicationArea = All`.
 ///
-/// **Hardcoded AL property names (F-OPEN-039):** `ApplicationArea` /
+/// **Hardcoded AL property names:** `ApplicationArea` /
 /// `PromotedCategory` / `Promoted` / `tooltip` appear as string literals
 /// throughout the code-actions emitter because they are *generated output* —
-/// AL source the user can run through alc. The CLAUDE.md no-hardcoded-AL-
-/// values rule targets the *validation/lookup* surface that drifts with BC
-/// releases; an emitter that produces specific AL syntax must by definition
-/// know that syntax. Routing these through `LanguageData` would be circular
-/// (LanguageData reads property names from the grammar/symbols at runtime;
-/// the emitter encodes the AL Sample that uses those names).
+/// AL source the user can run through alc. Emitters must know the specific AL
+/// syntax they produce; routing output tokens through `LanguageData` would be
+/// circular because it reads property names from the grammar at runtime.
 pub(super) fn source_action_set_application_area(
     uri: &Url,
     text: &str,
@@ -367,7 +364,7 @@ pub(super) fn source_action_set_application_area(
     edits.sort_by_key(|e| e.range.start.line);
 
     Some(CodeActionEntry {
-        title: "Set ApplicationArea = All on object and remove redundant field overrides (T1206)"
+        title: "Set ApplicationArea = All on object and remove redundant field overrides"
             .to_string(),
         kind: CodeActionKind::Refactor,
         edit: Some(single_edit_ws(uri, edits)),
@@ -565,7 +562,7 @@ fn build_report_layout_conversion(
     edits.sort_by_key(|e| e.range.start.line);
 
     Some(CodeActionEntry {
-        title: "Convert legacy layout properties to rendering section (T1207)".to_string(),
+        title: "Convert legacy layout properties to rendering section".to_string(),
         kind: CodeActionKind::Refactor,
         edit: Some(single_edit_ws(uri, edits)),
         is_preferred: false,
@@ -605,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn t1205_promoted_action_conversion_offered_on_promoted_line() {
+    fn promoted_action_conversion_offered_on_promoted_line() {
         let ws = Workspace::new();
 
         let al_code = r#"page 50100 "My Page"
@@ -642,11 +639,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let conv_actions: Vec<_> = actions
             .iter()
-            .filter(|a| {
-                a.title.contains("actionRef")
-                    || a.title.contains("actionref")
-                    || a.title.contains("T1205")
-            })
+            .filter(|a| a.title.contains("actionRef") || a.title.contains("actionref"))
             .collect();
 
         assert!(
@@ -672,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn t1205_promoted_action_preserves_category() {
+    fn promoted_action_preserves_category() {
         let ws = Workspace::new();
 
         let al_code = r#"page 50100 "My Page"
@@ -708,7 +701,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let conv_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("T1205") || a.title.to_lowercase().contains("actionref"))
+            .filter(|a| a.title.to_lowercase().contains("actionref"))
             .collect();
 
         assert!(!conv_actions.is_empty(), "Should offer conversion");
@@ -724,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn t1205_not_offered_on_non_page_objects() {
+    fn promoted_action_not_offered_on_non_page_objects() {
         let ws = Workspace::new();
 
         let al_code = r#"table 50100 "My Table"
@@ -755,7 +748,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let conv_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("T1205") || a.title.to_lowercase().contains("actionref"))
+            .filter(|a| a.title.to_lowercase().contains("actionref"))
             .collect();
 
         assert!(
@@ -765,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn t1205_not_offered_when_action_has_no_promoted_property() {
+    fn promoted_action_not_offered_without_promoted_property() {
         let ws = Workspace::new();
 
         let al_code = r#"page 50100 "My Page"
@@ -799,7 +792,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let conv_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("T1205") || a.title.to_lowercase().contains("actionref"))
+            .filter(|a| a.title.to_lowercase().contains("actionref"))
             .collect();
 
         assert!(
@@ -809,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn t1206_application_area_action_offered_on_page_with_field_aa() {
+    fn application_area_action_offered_on_page_with_field_override() {
         let ws = Workspace::new();
 
         let al_code = r#"page 50100 "My Page"
@@ -849,9 +842,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let aa_actions: Vec<_> = actions
             .iter()
-            .filter(|a| {
-                a.title.contains("T1206") || a.title.to_lowercase().contains("applicationarea")
-            })
+            .filter(|a| a.title.to_lowercase().contains("applicationarea"))
             .collect();
 
         assert!(
@@ -883,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn t1206_not_offered_when_object_already_has_application_area() {
+    fn application_area_action_not_offered_when_object_already_has_property() {
         let ws = Workspace::new();
 
         let al_code = r#"page 50100 "My Page"
@@ -919,9 +910,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let aa_actions: Vec<_> = actions
             .iter()
-            .filter(|a| {
-                a.title.contains("T1206") || a.title.to_lowercase().contains("applicationarea")
-            })
+            .filter(|a| a.title.to_lowercase().contains("applicationarea"))
             .collect();
 
         assert!(
@@ -931,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn t1206_not_offered_when_no_field_level_application_area() {
+    fn application_area_action_not_offered_without_field_override() {
         let ws = Workspace::new();
 
         let al_code = r#"page 50100 "My Page"
@@ -965,9 +954,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let aa_actions: Vec<_> = actions
             .iter()
-            .filter(|a| {
-                a.title.contains("T1206") || a.title.to_lowercase().contains("applicationarea")
-            })
+            .filter(|a| a.title.to_lowercase().contains("applicationarea"))
             .collect();
 
         assert!(
@@ -977,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn t1206_not_offered_on_table_objects() {
+    fn application_area_action_not_offered_on_table_objects() {
         let ws = Workspace::new();
 
         let al_code = r#"table 50100 "My Table"
@@ -1008,9 +995,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let aa_actions: Vec<_> = actions
             .iter()
-            .filter(|a| {
-                a.title.contains("T1206") || a.title.to_lowercase().contains("applicationarea")
-            })
+            .filter(|a| a.title.to_lowercase().contains("applicationarea"))
             .collect();
 
         assert!(
@@ -1020,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn t1207_report_layout_conversion_offered_for_rdlclayout() {
+    fn report_layout_conversion_offered_for_rdlc_layout() {
         let ws = Workspace::new();
 
         let al_code = r#"report 50100 "My Report"
@@ -1050,7 +1035,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let layout_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("T1207") || a.title.to_lowercase().contains("rendering"))
+            .filter(|a| a.title.to_lowercase().contains("rendering"))
             .collect();
 
         assert!(
@@ -1093,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn t1207_report_layout_conversion_offered_for_wordlayout() {
+    fn report_layout_conversion_offered_for_word_layout() {
         let ws = Workspace::new();
 
         let al_code = r#"report 50100 "My Report"
@@ -1123,7 +1108,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let layout_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("T1207") || a.title.to_lowercase().contains("rendering"))
+            .filter(|a| a.title.to_lowercase().contains("rendering"))
             .collect();
 
         assert!(
@@ -1147,7 +1132,7 @@ mod tests {
     }
 
     #[test]
-    fn t1207_not_offered_on_non_report_objects() {
+    fn report_layout_conversion_not_offered_on_non_report_objects() {
         let ws = Workspace::new();
 
         let al_code = r#"page 50100 "My Page"
@@ -1172,7 +1157,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let layout_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("T1207") || a.title.to_lowercase().contains("rendering"))
+            .filter(|a| a.title.to_lowercase().contains("rendering"))
             .collect();
 
         assert!(
@@ -1182,7 +1167,7 @@ mod tests {
     }
 
     #[test]
-    fn t1207_not_offered_when_cursor_far_from_layout_property() {
+    fn report_layout_conversion_not_offered_away_from_layout_property() {
         let ws = Workspace::new();
 
         let al_code = r#"report 50100 "My Report"
@@ -1218,7 +1203,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let layout_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("T1207") || a.title.to_lowercase().contains("rendering"))
+            .filter(|a| a.title.to_lowercase().contains("rendering"))
             .collect();
 
         assert!(
@@ -1228,7 +1213,7 @@ mod tests {
     }
 
     #[test]
-    fn t1207_conversion_does_not_drop_layout_path() {
+    fn report_layout_conversion_preserves_layout_path() {
         let ws = Workspace::new();
 
         let al_code = r#"report 50100 "My Report"
@@ -1253,7 +1238,7 @@ mod tests {
         let actions = source_actions(&ws, &uri, range);
         let layout_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("T1207") || a.title.to_lowercase().contains("rendering"))
+            .filter(|a| a.title.to_lowercase().contains("rendering"))
             .collect();
 
         assert!(!layout_actions.is_empty(), "Should offer conversion");

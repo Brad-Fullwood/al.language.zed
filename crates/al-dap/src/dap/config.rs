@@ -23,7 +23,7 @@ pub struct DebugConfigFile {
 ///
 /// Contains only the fields that `crate::dap` needs to construct DAP
 /// launch arguments. This is intentionally minimal — it does not include
-/// fields like `dev_packages_url` that belong in `al-core`.
+/// fields like `dev_packages_url`, which are unrelated to DAP launch arguments.
 #[derive(Debug, Clone)]
 pub struct DapLaunchConfig {
     pub name: String,
@@ -251,7 +251,7 @@ fn parse_environment_type(s: &str) -> Option<EnvironmentType> {
             // ERROR (not WARN) because the config entry is silently dropped —
             // the user typed a config they wanted to use and we're refusing it.
             // Naming the valid values lets them fix the typo without docs.
-            // Mirrors launch.rs::parse_environment_type (F-OPEN-073).
+            // Mirrors launch.rs::parse_environment_type.
             tracing::error!(
                 environment_type = %other,
                 "Unknown environmentType — expected one of OnPrem / Sandbox / Production; dropping this configuration entry"
@@ -269,8 +269,8 @@ fn parse_auth_method(s: Option<&str>, env_type: &EnvironmentType) -> AuthMethod 
         None if *env_type == EnvironmentType::OnPrem => AuthMethod::Windows,
         None => AuthMethod::AAD,
         Some(other) => {
-            // T032 / launch-auth-fallback: env-type-aware fallback rather than
-            // silently jumping to AAD on every typo. A misconfigured launch.json
+            // Use the environment's default instead of always falling back to
+            // AAD. A misconfigured launch.json
             // for an OnPrem server must not silently switch to cloud OAuth —
             // match the None-arm policy so the fallback is "what would the env
             // type pick by default" not "always AAD". (Mirrors launch.rs.)
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn auth_unknown_value_falls_back_by_env_type() {
         // OnPrem with an unknown/typo auth value must NOT silently use cloud AAD;
-        // it falls back to Windows (env-type default). Regression for the T032 fix.
+        // it falls back to Windows, the environment default.
         assert_eq!(
             parse_auth_method(Some("NavUserPassword"), &EnvironmentType::OnPrem),
             AuthMethod::Windows

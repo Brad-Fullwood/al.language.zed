@@ -141,10 +141,14 @@ pub fn get_or_create_virtual_file(
     let app_path = workspace.symbols.app_path(&entry.package);
     match al_symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
         Ok(path) => {
-            let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
-                                                        // Prefer the member range; fall back to the object's own declaration
-                                                        // (so object navigation lands on the object, not file-start `(0,0)`),
-                                                        // then to a default range if neither can be located.
+            let uri = match Url::from_file_path(&path) {
+                Ok(uri) => uri,
+                Err(()) => {
+                    tracing::warn!(path = %path.display(), "virtual-file path is not absolute");
+                    return None;
+                }
+            };
+            // Prefer the requested member, then the object's declaration.
             let member_range = member_name.and_then(|name| {
                 al_symbols::virtual_file::find_member_range(
                     &path,
@@ -168,11 +172,6 @@ pub fn get_or_create_virtual_file(
             Some((uri, range))
         }
         Err(e) => {
-            // T064: previously a silent `Err(_) => None` swallowed every
-            // virtual-file failure. Permission errors, write failures, and
-            // package-not-found all looked identical to the caller (a
-            // missing definition link). Now logged at debug — production
-            // diagnostic logs surface the cause; behaviour is unchanged.
             tracing::debug!(
                 package = %entry.package,
                 kind = ?entry.kind,
@@ -583,14 +582,8 @@ mod query_types_tests {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Syntax-layer -> query-DTO conversions.
-//
-// These land on al-analysis (it owns the target Al* types; al_syntax is a
-// downward dependency). They were previously in al-core's server/conversions.rs
-// but al-analysis's own query code calls `.into()` on them, so they belong here.
-// (The tower_lsp <-> Al* conversions stay at the transport boundary in al-lsp.)
-// ---------------------------------------------------------------------------
+// Syntax-layer to query DTO conversions. Transport conversions remain at the
+// LSP boundary.
 
 impl From<al_syntax::types::SyntaxSymbolKind> for AlSymbolKind {
     fn from(k: al_syntax::types::SyntaxSymbolKind) -> Self {

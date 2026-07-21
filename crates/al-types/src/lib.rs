@@ -1,12 +1,4 @@
-//! `al-types`: the shared, dependency-free data types of the AL (Business
-//! Central) toolchain.
-//!
-//! This is the bottom of the crate graph. It holds the plain value types that
-//! were previously defined inside higher-tier modules but consumed by lower
-//! ones — the placement that manufactured most of the dependency cycles in the
-//! monolith. Keeping them here lets every consumer depend *downward*.
-//!
-//! It deliberately depends only on `serde` and `thiserror`.
+//! Shared data types for the AL (Business Central) toolchain.
 
 pub mod app;
 pub mod bc;

@@ -29,7 +29,7 @@ pub fn warn_insecure_tls(context: &str) {
 /// verification. The helper emits a `tracing::warn!` parity with the
 /// other BC server client builders (`bc_server.rs`, `bc_debug.rs`,
 /// `bc_client.rs`, `native_dap.rs`) so operators see the same warning
-/// regardless of which code path constructs the client. F-OPEN-020.
+/// regardless of which code path constructs the client.
 pub(crate) fn build_http_client(
     accept_invalid_certs: bool,
     timeout_secs: u64,

@@ -1,28 +1,8 @@
-//! Comprehensive integration test suite — T1101
+//! Comprehensive integration tests for the stdio LSP transport.
 //!
-//! Covers every al-core query type via the stdio (LSP) transport.
-//! The daemon (socket) transport stub currently panics on connect, so socket
-//! tests are mocked via the transport.rs white-box helpers where needed.
-//!
-//! Structure:
-//! - Section A: Lifecycle (initialize, shutdown, reconnect)
-//! - Section B: textDocument/didOpen + publishDiagnostics
-//! - Section C: textDocument/hover
-//! - Section D: textDocument/definition
-//! - Section E: textDocument/completion
-//! - Section F: textDocument/documentSymbol
-//! - Section G: textDocument/semanticTokens/full
-//! - Section H: textDocument/formatting
-//! - Section I: textDocument/foldingRange
-//! - Section J: workspace/symbol
-//! - Section K: textDocument/references
-//! - Section L: textDocument/rename
-//! - Section M: textDocument/signatureHelp
-//! - Section N: textDocument/inlayHint
-//! - Section O: textDocument/codeAction
-//! - Section P: Multi-file / cross-file interactions
-//! - Section Q: Adversarial (malformed, concurrent, large files)
-//! - Section R: Daemon-layer methods via stdio equivalents
+//! Covers every al-core query type, lifecycle behavior, malformed input, and
+//! multi-file interactions. Daemon protocol coverage lives in its dedicated
+//! client tests because it is not an LSP transport.
 
 use al_test_harness::*;
 
@@ -149,13 +129,13 @@ const PAGE_SIMPLE: &str = r#"page 50150 "Integration Test Card"
 }"#;
 
 #[tokio::test]
-async fn test_a01_initialize_succeeds() {
+async fn initialize_succeeds() {
     let client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.shutdown().await;
 }
 
 #[tokio::test]
-async fn test_a02_shutdown_is_clean() {
+async fn shutdown_is_clean() {
     let client = LspClient::spawn(test_project_dir()).await.unwrap();
     // shutdown() has a 3-second timeout internally — test must complete
     tokio::time::timeout(tokio::time::Duration::from_secs(10), client.shutdown())
@@ -164,7 +144,7 @@ async fn test_a02_shutdown_is_clean() {
 }
 
 #[tokio::test]
-async fn test_a03_two_sequential_sessions() {
+async fn two_sequential_sessions() {
     {
         let client = LspClient::spawn(test_project_dir()).await.unwrap();
         client.shutdown().await;
@@ -176,7 +156,7 @@ async fn test_a03_two_sequential_sessions() {
 }
 
 #[tokio::test]
-async fn test_a04_initialize_returns_capabilities() {
+async fn initialize_returns_capabilities() {
     // spawn() performs initialize internally — if it succeeds the server
     // responded with a valid InitializeResult containing capabilities.
     // We just verify spawn succeeds without error.
@@ -185,7 +165,7 @@ async fn test_a04_initialize_returns_capabilities() {
 }
 
 #[tokio::test]
-async fn test_b01_open_file_triggers_diagnostics() {
+async fn open_file_triggers_diagnostics() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     // open_file already waits for publishDiagnostics — if it returns,
     // the notification was received.
@@ -205,10 +185,10 @@ fn published_codes(
         .collect()
 }
 
-/// B-02: the custom AL-L001 native-lint rule was removed — an empty begin..end
+/// The custom AL-L001 native-lint rule was removed, so an empty begin..end
 /// must NOT re-emit it, and the server must still process the file (symbols).
 #[tokio::test]
-async fn test_b02_empty_begin_end_emits_no_al_l001() {
+async fn empty_begin_end_emits_no_al_l001() {
     let code = r#"codeunit 50151 "Empty Proc"
 {
     procedure DoNothing()
@@ -236,10 +216,10 @@ async fn test_b02_empty_begin_end_emits_no_al_l001() {
     client.shutdown().await;
 }
 
-/// B-03: the custom AL-L007 native-lint rule was removed — a TODO comment must
+/// The custom AL-L007 native-lint rule was removed, so a TODO comment must
 /// NOT re-emit it, and the server must still process the file (symbols).
 #[tokio::test]
-async fn test_b03_todo_comment_emits_no_al_l007() {
+async fn todo_comment_emits_no_al_l007() {
     let code = r#"codeunit 50152 "Todo Test"
 {
     procedure DoWork()
@@ -268,7 +248,7 @@ async fn test_b03_todo_comment_emits_no_al_l007() {
 }
 
 #[tokio::test]
-async fn test_b04_multiple_files_each_get_diagnostics() {
+async fn multiple_files_each_get_diagnostics() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_b04a.al", CODEUNIT_SIMPLE)
@@ -281,7 +261,7 @@ async fn test_b04_multiple_files_each_get_diagnostics() {
 }
 
 #[tokio::test]
-async fn test_b05_reopen_same_file_does_not_crash() {
+async fn reopen_same_file_does_not_crash() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_b05.al", CODEUNIT_SIMPLE)
@@ -294,7 +274,7 @@ async fn test_b05_reopen_same_file_does_not_crash() {
 }
 
 #[tokio::test]
-async fn test_c01_hover_procedure_name() {
+async fn hover_procedure_name() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_c01.al", CODEUNIT_SIMPLE)
@@ -319,7 +299,7 @@ async fn test_c01_hover_procedure_name() {
 }
 
 #[tokio::test]
-async fn test_c02_hover_local_variable_shows_type() {
+async fn hover_local_variable_shows_type() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_c02.al", CODEUNIT_SIMPLE)
@@ -344,7 +324,7 @@ async fn test_c02_hover_local_variable_shows_type() {
 }
 
 #[tokio::test]
-async fn test_c03_hover_parameter() {
+async fn hover_parameter() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_c03.al", CODEUNIT_SIMPLE)
@@ -367,7 +347,7 @@ async fn test_c03_hover_parameter() {
 }
 
 #[tokio::test]
-async fn test_c04_hover_on_whitespace_returns_null() {
+async fn hover_on_whitespace_returns_null() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_c04.al", CODEUNIT_SIMPLE)
@@ -381,7 +361,7 @@ async fn test_c04_hover_on_whitespace_returns_null() {
 }
 
 #[tokio::test]
-async fn test_c05_hover_unopened_file_is_graceful() {
+async fn hover_unopened_file_is_graceful() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     // Do NOT open the file — hover should return None, not panic
     let hover = client.hover("src/nonexistent_file.al", 0, 0).await;
@@ -391,7 +371,7 @@ async fn test_c05_hover_unopened_file_is_graceful() {
 }
 
 #[tokio::test]
-async fn test_c06_hover_record_variable_shows_type() {
+async fn hover_record_variable_shows_type() {
     let code = r#"codeunit 50153 "Record Hover"
 {
     procedure DoWork()
@@ -423,7 +403,7 @@ async fn test_c06_hover_record_variable_shows_type() {
 }
 
 #[tokio::test]
-async fn test_d01_definition_local_variable() {
+async fn definition_local_variable() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_d01.al", CODEUNIT_SIMPLE)
@@ -440,7 +420,7 @@ async fn test_d01_definition_local_variable() {
 }
 
 #[tokio::test]
-async fn test_d02_definition_on_whitespace_is_graceful() {
+async fn definition_on_whitespace_is_graceful() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_d02.al", CODEUNIT_SIMPLE)
@@ -453,7 +433,7 @@ async fn test_d02_definition_on_whitespace_is_graceful() {
 }
 
 #[tokio::test]
-async fn test_d03_definition_parameter() {
+async fn definition_parameter() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_d03.al", CODEUNIT_SIMPLE)
@@ -471,7 +451,7 @@ async fn test_d03_definition_parameter() {
 }
 
 #[tokio::test]
-async fn test_d04_definition_from_test_project() {
+async fn definition_from_test_project() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let code = include_str!("../data/test_al_project/src/MultiProcedure.al");
@@ -488,7 +468,7 @@ async fn test_d04_definition_from_test_project() {
 }
 
 #[tokio::test]
-async fn test_d05_definition_undeclared_identifier() {
+async fn definition_undeclared_identifier() {
     let code = r#"codeunit 50154 "Undef Test"
 {
     procedure DoWork()
@@ -507,7 +487,7 @@ async fn test_d05_definition_undeclared_identifier() {
 }
 
 #[tokio::test]
-async fn test_e01_completions_in_procedure_body() {
+async fn completions_in_procedure_body() {
     let code = r#"codeunit 50155 "Completion Test"
 {
     procedure DoWork()
@@ -529,7 +509,7 @@ async fn test_e01_completions_in_procedure_body() {
 }
 
 #[tokio::test]
-async fn test_e02_completions_include_local_variables() {
+async fn completions_include_local_variables() {
     let code = r#"codeunit 50156 "Local Var Completion"
 {
     procedure DoWork()
@@ -563,7 +543,7 @@ async fn test_e02_completions_include_local_variables() {
 }
 
 #[tokio::test]
-async fn test_e03_completions_at_type_position() {
+async fn completions_at_type_position() {
     let code = r#"codeunit 50157 "Type Completion"
 {
     procedure DoWork()
@@ -591,7 +571,7 @@ async fn test_e03_completions_at_type_position() {
 }
 
 #[tokio::test]
-async fn test_e04_completions_on_empty_file() {
+async fn completions_on_empty_file() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_e04.al", "").await;
 
@@ -602,7 +582,7 @@ async fn test_e04_completions_on_empty_file() {
 }
 
 #[tokio::test]
-async fn test_e05_completions_include_parameters() {
+async fn completions_include_parameters() {
     let code = r#"codeunit 50158 "Param Completion"
 {
     procedure DoWork(InputValue: Integer; OutputName: Text)
@@ -629,7 +609,7 @@ async fn test_e05_completions_include_parameters() {
 }
 
 #[tokio::test]
-async fn test_f01_document_symbols_codeunit() {
+async fn document_symbols_codeunit() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_f01.al", CODEUNIT_SIMPLE)
@@ -663,7 +643,7 @@ async fn test_f01_document_symbols_codeunit() {
 }
 
 #[tokio::test]
-async fn test_f02_document_symbols_table() {
+async fn document_symbols_table() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_f02.al", TABLE_SIMPLE)
@@ -682,7 +662,7 @@ async fn test_f02_document_symbols_table() {
 }
 
 #[tokio::test]
-async fn test_f03_document_symbols_enum() {
+async fn document_symbols_enum() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_f03.al", ENUM_SIMPLE)
@@ -701,7 +681,7 @@ async fn test_f03_document_symbols_enum() {
 }
 
 #[tokio::test]
-async fn test_f04_document_symbols_page() {
+async fn document_symbols_page() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_f04.al", PAGE_SIMPLE)
@@ -720,7 +700,7 @@ async fn test_f04_document_symbols_page() {
 }
 
 #[tokio::test]
-async fn test_f05_document_symbols_empty_file() {
+async fn document_symbols_empty_file() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_f05.al", "").await;
 
@@ -731,7 +711,7 @@ async fn test_f05_document_symbols_empty_file() {
 }
 
 #[tokio::test]
-async fn test_f06_document_symbols_test_project_files() {
+async fn document_symbols_test_project_files() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let hello = include_str!("../data/test_al_project/src/HelloWorld.al");
@@ -750,7 +730,7 @@ async fn test_f06_document_symbols_test_project_files() {
 }
 
 #[tokio::test]
-async fn test_g01_semantic_tokens_codeunit_non_empty() {
+async fn semantic_tokens_codeunit_non_empty() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_g01.al", CODEUNIT_SIMPLE)
@@ -766,7 +746,7 @@ async fn test_g01_semantic_tokens_codeunit_non_empty() {
 }
 
 #[tokio::test]
-async fn test_g02_semantic_tokens_table_non_empty() {
+async fn semantic_tokens_table_non_empty() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_g02.al", TABLE_SIMPLE)
@@ -785,7 +765,7 @@ async fn test_g02_semantic_tokens_table_non_empty() {
 }
 
 #[tokio::test]
-async fn test_g03_semantic_tokens_format_is_valid() {
+async fn semantic_tokens_format_is_valid() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_g03.al", CODEUNIT_SIMPLE)
@@ -810,7 +790,7 @@ async fn test_g03_semantic_tokens_format_is_valid() {
 }
 
 #[tokio::test]
-async fn test_g04_semantic_tokens_empty_file_is_graceful() {
+async fn semantic_tokens_empty_file_is_graceful() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_g04.al", "").await;
 
@@ -824,7 +804,7 @@ async fn test_g04_semantic_tokens_empty_file_is_graceful() {
 }
 
 #[tokio::test]
-async fn test_g05_semantic_tokens_enum_non_empty() {
+async fn semantic_tokens_enum_non_empty() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_g05.al", ENUM_SIMPLE)
@@ -840,7 +820,7 @@ async fn test_g05_semantic_tokens_enum_non_empty() {
 }
 
 #[tokio::test]
-async fn test_h01_formatting_unindented_code_produces_edits() {
+async fn formatting_unindented_code_produces_edits() {
     let code = r#"codeunit 50160 "Format Test"
 {
 procedure DoWork()
@@ -862,7 +842,7 @@ end;
 }
 
 #[tokio::test]
-async fn test_h02_formatting_edits_have_correct_structure() {
+async fn formatting_edits_have_correct_structure() {
     let code = r#"codeunit 50161 "Format Struct"
 {
 procedure DoWork()
@@ -889,7 +869,7 @@ end;
 }
 
 #[tokio::test]
-async fn test_h03_formatting_empty_file_is_graceful() {
+async fn formatting_empty_file_is_graceful() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_h03.al", "").await;
 
@@ -900,7 +880,7 @@ async fn test_h03_formatting_empty_file_is_graceful() {
 }
 
 #[tokio::test]
-async fn test_h04_formatting_correct_code_produces_fewer_edits_than_wrong() {
+async fn formatting_correct_code_produces_fewer_edits_than_wrong() {
     let correct = CODEUNIT_SIMPLE; // assumed correctly indented
     let incorrect = r#"codeunit 50162 "Format Compare"
 {
@@ -926,7 +906,7 @@ end;
 }
 
 #[tokio::test]
-async fn test_i01_folding_ranges_codeunit_non_empty() {
+async fn folding_ranges_codeunit_non_empty() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_i01.al", CODEUNIT_SIMPLE)
@@ -942,7 +922,7 @@ async fn test_i01_folding_ranges_codeunit_non_empty() {
 }
 
 #[tokio::test]
-async fn test_i02_folding_ranges_are_valid() {
+async fn folding_ranges_are_valid() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_i02.al", CODEUNIT_SIMPLE)
@@ -967,7 +947,7 @@ async fn test_i02_folding_ranges_are_valid() {
 }
 
 #[tokio::test]
-async fn test_i03_folding_ranges_table() {
+async fn folding_ranges_table() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_i03.al", TABLE_SIMPLE)
@@ -984,7 +964,7 @@ async fn test_i03_folding_ranges_table() {
 }
 
 #[tokio::test]
-async fn test_i04_folding_ranges_empty_file_is_graceful() {
+async fn folding_ranges_empty_file_is_graceful() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_i04.al", "").await;
 
@@ -995,7 +975,7 @@ async fn test_i04_folding_ranges_empty_file_is_graceful() {
 }
 
 #[tokio::test]
-async fn test_j01_workspace_symbol_search_after_open() {
+async fn workspace_symbol_search_after_open() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_j01.al", CODEUNIT_SIMPLE)
@@ -1014,7 +994,7 @@ async fn test_j01_workspace_symbol_search_after_open() {
 }
 
 #[tokio::test]
-async fn test_j02_workspace_symbol_empty_query() {
+async fn workspace_symbol_empty_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_j02.al", CODEUNIT_SIMPLE)
@@ -1033,7 +1013,7 @@ async fn test_j02_workspace_symbol_empty_query() {
 }
 
 #[tokio::test]
-async fn test_j03_workspace_symbol_finds_test_project_object() {
+async fn workspace_symbol_finds_test_project_object() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     // Workspace file scanning is async — retry briefly until HelloWorld is indexed
@@ -1054,7 +1034,7 @@ async fn test_j03_workspace_symbol_finds_test_project_object() {
 }
 
 #[tokio::test]
-async fn test_j04_workspace_symbol_case_insensitive() {
+async fn workspace_symbol_case_insensitive() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     // Workspace file scanning is async — retry briefly until HelloWorld is indexed
@@ -1080,7 +1060,7 @@ async fn test_j04_workspace_symbol_case_insensitive() {
 }
 
 #[tokio::test]
-async fn test_k01_references_local_variable() {
+async fn references_local_variable() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_k01.al", CODEUNIT_SIMPLE)
@@ -1097,13 +1077,13 @@ async fn test_k01_references_local_variable() {
     client.shutdown().await;
 }
 
-/// K-02: references for a parameter responds without error
+/// references for a parameter responds without error
 ///
 /// The server must handle the request and return a list (even empty).
 /// Note: parameter reference tracking may return fewer results than usage
 /// sites depending on implementation state — we test the query path works.
 #[tokio::test]
-async fn test_k02_references_parameter_multiple_usages() {
+async fn references_parameter_multiple_usages() {
     let code = r#"codeunit 50163 "Ref Test"
 {
     procedure Double(X: Integer): Integer
@@ -1124,7 +1104,7 @@ async fn test_k02_references_parameter_multiple_usages() {
 }
 
 #[tokio::test]
-async fn test_k03_references_on_whitespace_is_graceful() {
+async fn references_on_whitespace_is_graceful() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_k03.al", CODEUNIT_SIMPLE)
@@ -1137,7 +1117,7 @@ async fn test_k03_references_on_whitespace_is_graceful() {
 }
 
 #[tokio::test]
-async fn test_l01_rename_local_variable() {
+async fn rename_local_variable() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_l01.al", CODEUNIT_SIMPLE)
@@ -1153,7 +1133,7 @@ async fn test_l01_rename_local_variable() {
 }
 
 #[tokio::test]
-async fn test_l02_rename_edit_has_changes() {
+async fn rename_edit_has_changes() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_l02.al", CODEUNIT_SIMPLE)
@@ -1175,7 +1155,7 @@ async fn test_l02_rename_edit_has_changes() {
 }
 
 #[tokio::test]
-async fn test_l03_rename_on_keyword_is_graceful() {
+async fn rename_on_keyword_is_graceful() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_l03.al", CODEUNIT_SIMPLE)
@@ -1191,7 +1171,7 @@ async fn test_l03_rename_on_keyword_is_graceful() {
 }
 
 #[tokio::test]
-async fn test_m01_signature_help_procedure_call() {
+async fn signature_help_procedure_call() {
     let code = r#"codeunit 50164 "Sig Help Test"
 {
     procedure Add(A: Integer; B: Integer): Integer
@@ -1219,7 +1199,7 @@ async fn test_m01_signature_help_procedure_call() {
 }
 
 #[tokio::test]
-async fn test_m02_signature_help_outside_call_is_graceful() {
+async fn signature_help_outside_call_is_graceful() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_m02.al", CODEUNIT_SIMPLE)
@@ -1233,7 +1213,7 @@ async fn test_m02_signature_help_outside_call_is_graceful() {
 }
 
 #[tokio::test]
-async fn test_n01_inlay_hints_procedure_call() {
+async fn inlay_hints_procedure_call() {
     let code = r#"codeunit 50165 "Inlay Test"
 {
     procedure Add(A: Integer; B: Integer): Integer
@@ -1266,7 +1246,7 @@ async fn test_n01_inlay_hints_procedure_call() {
 }
 
 #[tokio::test]
-async fn test_n02_inlay_hints_empty_range_is_graceful() {
+async fn inlay_hints_empty_range_is_graceful() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_n02.al", CODEUNIT_SIMPLE)
@@ -1282,7 +1262,7 @@ async fn test_n02_inlay_hints_empty_range_is_graceful() {
 }
 
 #[tokio::test]
-async fn test_o01_code_action_empty_begin_end() {
+async fn code_action_empty_begin_end() {
     let code = r#"codeunit 50166 "Code Action Test"
 {
     procedure DoNothing()
@@ -1310,7 +1290,7 @@ async fn test_o01_code_action_empty_begin_end() {
 }
 
 #[tokio::test]
-async fn test_o02_code_action_on_valid_code() {
+async fn code_action_on_valid_code() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_o02.al", CODEUNIT_SIMPLE)
@@ -1333,7 +1313,7 @@ async fn test_o02_code_action_on_valid_code() {
 }
 
 #[tokio::test]
-async fn test_p01_multi_file_workspace_symbols() {
+async fn multi_file_workspace_symbols() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_p01a.al", CODEUNIT_SIMPLE)
@@ -1356,7 +1336,7 @@ async fn test_p01_multi_file_workspace_symbols() {
 }
 
 #[tokio::test]
-async fn test_p02_document_symbols_independent_per_file() {
+async fn document_symbols_independent_per_file() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_p02a.al", CODEUNIT_SIMPLE)
@@ -1386,7 +1366,7 @@ async fn test_p02_document_symbols_independent_per_file() {
 }
 
 #[tokio::test]
-async fn test_p03_hover_after_multi_file_open() {
+async fn hover_after_multi_file_open() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_p03a.al", CODEUNIT_SIMPLE)
@@ -1406,7 +1386,7 @@ async fn test_p03_hover_after_multi_file_open() {
 }
 
 #[tokio::test]
-async fn test_p04_cross_file_procedure_in_workspace_symbol() {
+async fn cross_file_procedure_in_workspace_symbol() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_p04.al", CODEUNIT_SIMPLE)
@@ -1424,7 +1404,7 @@ async fn test_p04_cross_file_procedure_in_workspace_symbol() {
 }
 
 #[tokio::test]
-async fn test_q01_large_file_5000_lines() {
+async fn large_file_5000_lines() {
     let mut code = String::from("codeunit 50170 \"Large File\"\n{\n");
     for i in 0..200 {
         code.push_str(&format!(
@@ -1459,7 +1439,7 @@ async fn test_q01_large_file_5000_lines() {
 }
 
 #[tokio::test]
-async fn test_q02_deeply_nested_begin_end() {
+async fn deeply_nested_begin_end() {
     // 20-level nesting — enough to stress parsers without OOM
     let mut body = "        Message('deep');\n".to_string();
     for _ in 0..20 {
@@ -1487,7 +1467,7 @@ async fn test_q02_deeply_nested_begin_end() {
 }
 
 #[tokio::test]
-async fn test_q03_incomplete_code_all_queries_graceful() {
+async fn incomplete_code_all_queries_graceful() {
     let code = r#"codeunit 50172 "Incomplete"
 {
     procedure
@@ -1509,7 +1489,7 @@ async fn test_q03_incomplete_code_all_queries_graceful() {
 }
 
 #[tokio::test]
-async fn test_q04_concurrent_requests_do_not_deadlock() {
+async fn concurrent_requests_do_not_deadlock() {
     // We can't send truly concurrent requests through LspClient (it takes &mut self),
     // but we can pipeline many sequential requests rapidly.
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -1528,7 +1508,7 @@ async fn test_q04_concurrent_requests_do_not_deadlock() {
 }
 
 #[tokio::test]
-async fn test_q05_hover_out_of_bounds_position() {
+async fn hover_out_of_bounds_position() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_q05.al", CODEUNIT_SIMPLE)
@@ -1541,7 +1521,7 @@ async fn test_q05_hover_out_of_bounds_position() {
 }
 
 #[tokio::test]
-async fn test_q06_syntax_error_file_is_parsed_tolerantly() {
+async fn syntax_error_file_is_parsed_tolerantly() {
     let code = include_str!("../data/test_al_project/src/ErrorCases.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -1557,7 +1537,7 @@ async fn test_q06_syntax_error_file_is_parsed_tolerantly() {
 }
 
 #[tokio::test]
-async fn test_q07_unicode_string_literals() {
+async fn unicode_string_literals() {
     let code = r#"codeunit 50173 "Unicode Test"
 {
     procedure Greet()
@@ -1590,7 +1570,7 @@ async fn test_q07_unicode_string_literals() {
 }
 
 #[tokio::test]
-async fn test_q08_very_long_line() {
+async fn very_long_line() {
     // Build a procedure call with 500 arguments (AL doesn't actually allow this,
     // but tree-sitter should not hang on it)
     let long_comment: String = "x".repeat(2000);
@@ -1608,7 +1588,7 @@ async fn test_q08_very_long_line() {
 }
 
 #[tokio::test]
-async fn test_q09_open_file_then_immediate_query() {
+async fn open_file_then_immediate_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     // open_file waits for publishDiagnostics before returning
@@ -1628,7 +1608,7 @@ async fn test_q09_open_file_then_immediate_query() {
 }
 
 #[tokio::test]
-async fn test_q10_file_with_only_comments() {
+async fn file_with_only_comments() {
     let code = r#"// This is a comment
 // Another comment
 // No actual AL code"#;
@@ -1646,7 +1626,7 @@ async fn test_q10_file_with_only_comments() {
 }
 
 #[tokio::test]
-async fn test_q11_crlf_line_endings() {
+async fn crlf_line_endings() {
     let code = "codeunit 50175 \"CRLF Test\"\r\n{\r\n    procedure DoWork()\r\n    begin\r\n        Message('hello');\r\n    end;\r\n}\r\n";
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -1666,7 +1646,7 @@ async fn test_q11_crlf_line_endings() {
 }
 
 #[tokio::test]
-async fn test_q12_workspace_symbol_with_unknown_field_is_graceful() {
+async fn workspace_symbol_with_unknown_field_is_graceful() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     // The standard workspace_symbol method sends {"query": "..."}.
@@ -1682,9 +1662,9 @@ async fn test_q12_workspace_symbol_with_unknown_field_is_graceful() {
 // the LSP transport since the socket transport is not yet implemented.
 // These tests verify the underlying al-core query paths are exercised.
 
-/// R-01: definition query (→ al-core::queries::definition)
+/// definition query (→ al-core::queries::definition)
 #[tokio::test]
-async fn test_r01_core_definition_query() {
+async fn core_definition_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     let code = include_str!("../data/test_al_project/src/MultiProcedure.al");
     client.open_file("src/MultiProcedure.al", code).await;
@@ -1699,9 +1679,9 @@ async fn test_r01_core_definition_query() {
     client.shutdown().await;
 }
 
-/// R-02: references query (→ al-core::queries::references)
+/// references query (→ al-core::queries::references)
 #[tokio::test]
-async fn test_r02_core_references_query() {
+async fn core_references_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_r02.al", CODEUNIT_SIMPLE)
@@ -1718,9 +1698,9 @@ async fn test_r02_core_references_query() {
     client.shutdown().await;
 }
 
-/// R-03: completions query (→ al-core::queries::completions)
+/// completions query (→ al-core::queries::completions)
 #[tokio::test]
-async fn test_r03_core_completions_query() {
+async fn core_completions_query() {
     let code = r#"codeunit 50176 "Core Compl"
 {
     procedure DoWork()
@@ -1746,9 +1726,9 @@ async fn test_r03_core_completions_query() {
     client.shutdown().await;
 }
 
-/// R-04: hover query (→ al-core::queries::hover)
+/// hover query (→ al-core::queries::hover)
 #[tokio::test]
-async fn test_r04_core_hover_query() {
+async fn core_hover_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_r04.al", CODEUNIT_SIMPLE)
@@ -1763,9 +1743,9 @@ async fn test_r04_core_hover_query() {
     client.shutdown().await;
 }
 
-/// R-05: document symbols query (→ al-core::queries::symbols)
+/// document symbols query (→ al-core::queries::symbols)
 #[tokio::test]
-async fn test_r05_core_document_symbols_query() {
+async fn core_document_symbols_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_r05.al", CODEUNIT_SIMPLE)
@@ -1782,9 +1762,9 @@ async fn test_r05_core_document_symbols_query() {
     client.shutdown().await;
 }
 
-/// R-06: semantic tokens query (→ al-core::queries::semantic_tokens)
+/// semantic tokens query (→ al-core::queries::semantic_tokens)
 #[tokio::test]
-async fn test_r06_core_semantic_tokens_query() {
+async fn core_semantic_tokens_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_r06.al", CODEUNIT_SIMPLE)
@@ -1799,9 +1779,9 @@ async fn test_r06_core_semantic_tokens_query() {
     client.shutdown().await;
 }
 
-/// R-07: folding ranges query (→ al-core::queries::folding)
+/// folding ranges query (→ al-core::queries::folding)
 #[tokio::test]
-async fn test_r07_core_folding_ranges_query() {
+async fn core_folding_ranges_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_r07.al", CODEUNIT_SIMPLE)
@@ -1813,9 +1793,9 @@ async fn test_r07_core_folding_ranges_query() {
     client.shutdown().await;
 }
 
-/// R-08: format query (→ al-core::queries::source)
+/// format query (→ al-core::queries::source)
 #[tokio::test]
-async fn test_r08_core_format_query() {
+async fn core_format_query() {
     let bad = r#"codeunit 50177 "Format Core"
 {
 procedure Bad()
@@ -1835,9 +1815,9 @@ end;
     client.shutdown().await;
 }
 
-/// R-09: rename query (→ al-core::queries::rename)
+/// rename query (→ al-core::queries::rename)
 #[tokio::test]
-async fn test_r09_core_rename_query() {
+async fn core_rename_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_r09.al", CODEUNIT_SIMPLE)
@@ -1854,9 +1834,9 @@ async fn test_r09_core_rename_query() {
     client.shutdown().await;
 }
 
-/// R-10: signature help query (→ al-core::queries::signature)
+/// signature help query (→ al-core::queries::signature)
 #[tokio::test]
-async fn test_r10_core_signature_help_query() {
+async fn core_signature_help_query() {
     let code = r#"codeunit 50178 "Sig Core"
 {
     procedure Add(A: Integer; B: Integer): Integer
@@ -1882,9 +1862,9 @@ async fn test_r10_core_signature_help_query() {
     client.shutdown().await;
 }
 
-/// R-11: inlay hints query (→ al-core::queries::inlay_hints)
+/// inlay hints query (→ al-core::queries::inlay_hints)
 #[tokio::test]
-async fn test_r11_core_inlay_hints_query() {
+async fn core_inlay_hints_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_r11.al", CODEUNIT_SIMPLE)
@@ -1896,9 +1876,9 @@ async fn test_r11_core_inlay_hints_query() {
     client.shutdown().await;
 }
 
-/// R-12: code actions query (→ al-core::queries::code_actions)
+/// code actions query (→ al-core::queries::code_actions)
 #[tokio::test]
-async fn test_r12_core_code_actions_query() {
+async fn core_code_actions_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_r12.al", CODEUNIT_SIMPLE)
@@ -1910,9 +1890,9 @@ async fn test_r12_core_code_actions_query() {
     client.shutdown().await;
 }
 
-/// R-13: workspace symbol query (→ al-core::queries::symbols)
+/// workspace symbol query (→ al-core::queries::symbols)
 #[tokio::test]
-async fn test_r13_core_workspace_symbol_query() {
+async fn core_workspace_symbol_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client
         .open_file("src/integration_r13.al", CODEUNIT_SIMPLE)
@@ -1935,13 +1915,8 @@ async fn test_r13_core_workspace_symbol_query() {
     client.shutdown().await;
 }
 
-// `LspClient::connect()` was removed in F-051 — al-lsp's daemon mode speaks
-// a different (non-LSP) protocol via `al_protocol::DaemonClient`, so the
-// LSP-shaped harness cannot share a transport. The S-01 panic-message
-// regression test was deleted alongside the API.
-
 #[tokio::test]
-async fn test_t01_interface_object() {
+async fn interface_object_produces_symbols() {
     let code = include_str!("../data/test_al_project/src/Interface50100.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -1959,33 +1934,33 @@ async fn test_t01_interface_object() {
 }
 
 #[tokio::test]
-async fn test_t02_page_extension_object() {
+async fn page_extension_produces_symbols() {
     let code = include_str!("../data/test_al_project/src/PageExtension50100.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/PageExtension50100.al", code).await;
 
     let symbols = client.document_symbols("src/PageExtension50100.al").await;
-    let _ = symbols;
+    assert!(!symbols.is_empty(), "page extension must produce symbols");
 
     client.shutdown().await;
 }
 
 #[tokio::test]
-async fn test_t03_table_extension_object() {
+async fn table_extension_produces_symbols() {
     let code = include_str!("../data/test_al_project/src/TableExtension50100.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/TableExtension50100.al", code).await;
 
     let symbols = client.document_symbols("src/TableExtension50100.al").await;
-    let _ = symbols;
+    assert!(!symbols.is_empty(), "table extension must produce symbols");
 
     client.shutdown().await;
 }
 
 #[tokio::test]
-async fn test_t04_codeunit_with_integration_events() {
+async fn codeunit_with_integration_events_produces_symbols() {
     let code = include_str!("../data/test_al_project/src/CodeunitWithEvents.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -2005,7 +1980,7 @@ async fn test_t04_codeunit_with_integration_events() {
 }
 
 #[tokio::test]
-async fn test_t05_deep_nesting_fixture() {
+async fn deep_nesting_fixture_produces_semantic_tokens() {
     let code = include_str!("../data/test_al_project/src/DeepNesting.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -2021,7 +1996,7 @@ async fn test_t05_deep_nesting_fixture() {
 }
 
 #[tokio::test]
-async fn test_t06_table_with_field_trigger() {
+async fn table_with_field_trigger_produces_symbols_and_tokens() {
     let code = include_str!("../data/test_al_project/src/Table50100.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();

@@ -242,8 +242,7 @@ fn try_package_source(
 
 /// Find a procedure/trigger node in a tree-sitter tree and return (node, signature).
 ///
-/// Iterative tree-sitter traversal — explicit stack avoids stack overflow on
-/// deeply nested AL (per project convention; see CLAUDE.md "Tree-sitter Traversal").
+/// Iterative tree-sitter traversal avoids stack overflow on deeply nested AL.
 fn find_procedure_node<'a>(
     root: &'a tree_sitter::Node<'a>,
     source: &str,
@@ -337,7 +336,7 @@ pub fn render_method_signature(m: &MethodSymbol) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Event-source resolution — `al-explorer event-source` (FB-9/FB-10)
+// Event-source resolution — `al-explorer event-source`
 // ---------------------------------------------------------------------------
 
 /// Result of resolving the publisher behind an `[EventSubscriber(...)]`
@@ -369,11 +368,11 @@ pub struct EventSourceResult {
 /// Resolve the actual event publisher for the `[EventSubscriber(...)]`
 /// attribute at `line_1based` in `file`.
 ///
-/// FB-10: "Show Event Source" previously ran a name substring search and
+/// "Show Event Source" previously ran a name substring search and
 /// returned a pile of unrelated matches. This resolves the attribute's
 /// `(ObjectType, Object, EventName)` triple to the publisher's declaration
 /// — in the workspace when possible, otherwise materialised from the
-/// symbol package. FB-9: positions without a subscriber attribute get a
+/// symbol package. Positions without a subscriber attribute get a
 /// clear error instead of garbage results.
 pub fn event_source(
     workspace: &Workspace,

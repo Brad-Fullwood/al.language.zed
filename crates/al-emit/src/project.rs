@@ -152,20 +152,34 @@ pub fn build_app_from_project(
         })?)
         .map_err(|e| EmitError::Project(format!("parsing app.json: {e}")))?;
 
-    let s = |k: &str| {
+    let optional_string = |k: &str| {
         app_json
             .get(k)
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string()
     };
+    let required_string = |k: &str| {
+        app_json
+            .get(k)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                EmitError::Project(format!("app.json field `{k}` must be a non-empty string"))
+            })
+    };
+    let app_id = required_string("id")?;
+    let app_name = required_string("name")?;
+    let publisher = required_string("publisher")?;
+    let version = required_string("version")?;
 
     // Collect + sort .al files for deterministic ordering. Like `alc`, scan the
     // ENTIRE project root — AL has no fixed source folder, so objects live under
     // `objects/`, `src/`, `permissions/`, flat at the root, etc. Scanning only
     // `src/` silently produced an empty `.app` for any other layout.
     let mut files = Vec::new();
-    collect_al_files(project_dir, &mut files);
+    collect_al_files(project_dir, &mut files)?;
     files.sort();
 
     let mut objects: Vec<EmitObject> = Vec::new();
@@ -185,11 +199,11 @@ pub fn build_app_from_project(
     }
 
     let meta = SymbolRefMeta {
-        runtime_version: s("runtime"),
-        app_id: s("id"),
-        name: s("name"),
-        publisher: s("publisher"),
-        version: s("version"),
+        runtime_version: optional_string("runtime"),
+        app_id,
+        name: app_name.clone(),
+        publisher: publisher.clone(),
+        version: version.clone(),
     };
     let external = load_external_symbols(project_dir);
     let symbol_reference = build_symbol_reference(&objects, &meta, external.as_ref());
@@ -210,12 +224,12 @@ pub fn build_app_from_project(
     // `:`, quotes, …) doesn't produce a filename that is invalid on Windows —
     // where the native emit would otherwise fail with a raw IO error. The
     // archive *contents* already round-trip such names exactly; only the
-    // on-disk artifact name needs sanitizing (C32).
+    // on-disk artifact name needs sanitizing.
     let file_name = format!(
         "{}_{}_{}.app",
-        sanitize_filename_component(&s("publisher")),
-        sanitize_filename_component(&s("name")),
-        sanitize_filename_component(&s("version")),
+        sanitize_filename_component(&publisher),
+        sanitize_filename_component(&app_name),
+        sanitize_filename_component(&version),
     );
     Ok(BuiltApp { bytes, file_name })
 }
@@ -241,11 +255,14 @@ fn sanitize_filename_component(s: &str) -> String {
     out
 }
 
-fn collect_al_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in entries.flatten() {
+fn collect_al_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), EmitError> {
+    let entries = std::fs::read_dir(dir).map_err(|e| {
+        EmitError::Project(format!("reading source directory {}: {e}", dir.display()))
+    })?;
+    for entry in entries {
+        let e = entry.map_err(|e| {
+            EmitError::Project(format!("reading source directory {}: {e}", dir.display()))
+        })?;
         let p = e.path();
         if p.is_dir() {
             // Skip dot-dirs (.alpackages, .snapshots, .git, .vscode, …): alc does
@@ -255,11 +272,12 @@ fn collect_al_files(dir: &Path, out: &mut Vec<PathBuf>) {
             if name.starts_with('.') {
                 continue;
             }
-            collect_al_files(&p, out);
+            collect_al_files(&p, out)?;
         } else if p.extension().and_then(|x| x.to_str()) == Some("al") {
             out.push(p);
         }
     }
+    Ok(())
 }
 
 /// An ISO-8601 UTC timestamp for the manifest `<Build>` element, derived from
@@ -325,7 +343,21 @@ mod tests {
     }
 
     #[test]
-    fn c32_hostile_names_produce_a_valid_filename() {
+    fn missing_required_manifest_field_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"id":"aaaaaaaa-1111-2222-3333-444444444444","publisher":"P","version":"1.0.0.0"}"#,
+        )
+        .unwrap();
+
+        let error = build_app_from_project(dir.path(), "17.0", "2026-06-16T00:00:00Z")
+            .expect_err("missing name must fail");
+        assert!(error.to_string().contains("`name`"));
+    }
+
+    #[test]
+    fn hostile_names_produce_a_valid_filename() {
         // A project name/publisher containing Windows-invalid characters must
         // still emit a filesystem-safe `.app` name (the archive contents keep
         // the exact names; only the on-disk filename is sanitized).

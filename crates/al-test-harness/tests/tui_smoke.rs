@@ -1,7 +1,6 @@
 //! Black-box smoke test for the `al-explorer` TUI. Spawns it in a real PTY,
 //! lets the object browser load from the daemon, renders the terminal output
 //! with a vt100 parser, and asserts the fixture objects appear on screen.
-//! Replaces the former dependency-on-Python `tui.py` driver.
 
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};

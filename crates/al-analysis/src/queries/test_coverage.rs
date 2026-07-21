@@ -4,8 +4,8 @@
 //! call. The direct pass walks procedure bodies looking for identifier
 //! references that match known procedure names.
 //!
-//! On top of the direct pass, an **indirect** pass (gap C15) consults the
-//! workspace call graph and credits coverage for polymorphic/indirect dispatch
+//! An indirect pass also consults the workspace call graph and credits coverage
+//! for polymorphic/indirect dispatch
 //! that name matching cannot see:
 //! - **interface dispatch** — `IFoo`-typed `.Bar()` covers `Bar` in every
 //!   implementor;
@@ -135,7 +135,7 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
         );
     }
 
-    // C15: supplement the direct, name-based coverage with indirect-dispatch
+    // supplement the direct, name-based coverage with indirect-dispatch
     // edges from the workspace call graph (interface dispatch, Codeunit.Run,
     // event publish→subscriber). Runs before `untested` is computed so an
     // indirectly-covered procedure is not reported as a false-negative.
@@ -162,7 +162,7 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
     CoverageReport { coverage, untested }
 }
 
-/// Credit indirect-dispatch coverage (gap C15) on top of the direct pass.
+/// Credit indirect-dispatch coverage on top of the direct pass.
 ///
 /// For each test procedure already in `coverage`, look up its node in the
 /// workspace call graph and follow one hop of [`EdgeKind::IndirectCall`] edges
@@ -183,7 +183,7 @@ fn augment_coverage_with_indirect_calls(
     }
 
     // Build a fully-resolved call graph (same as the affected-test path). This
-    // resolves every workspace procedure's edges, including the C15 indirect
+    // resolves every workspace procedure's edges, including the indirect
     // ones, so a low-fanout test file is not silently skipped.
     let (insight, _cg_guard) = workspace.get_or_build_call_graph();
     let mut cg = CallGraph::build_from_insight(&insight);
@@ -400,14 +400,7 @@ fn collect_coverage_from_tree(
                 continue;
             }
         }
-        // Same shape as the iterative cursor walk in queries/tests.rs:
-        // the first two arms set the same flag but trigger different
-        // tree-sitter cursor moves. Collapsing them would short-circuit
-        // and break the walk.
-        #[allow(clippy::if_same_then_else)]
-        if !did_visit && cursor.goto_first_child() {
-            did_visit = false;
-        } else if cursor.goto_next_sibling() {
+        if (!did_visit && cursor.goto_first_child()) || cursor.goto_next_sibling() {
             did_visit = false;
         } else if cursor.goto_parent() {
             did_visit = true;
@@ -826,7 +819,7 @@ mod tests {
         assert_eq!(private_is_local, Some(true), "local procedure is local");
     }
 
-    // ---- C15: indirect-dispatch coverage --------------------------------
+    // ---- indirect-dispatch coverage --------------------------------
 
     #[test]
     fn coverage_credits_interface_dispatch_to_implementor() {

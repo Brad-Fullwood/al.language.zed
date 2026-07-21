@@ -1,5 +1,5 @@
 //! `workspace/executeCommand` implementations — one function per `al.*`
-//! command (F-OPEN-264).
+//! command.
 //!
 //! `AlServer::execute_command` in `lsp.rs` is a thin dispatch table over
 //! these. Each command is independently readable and testable instead of
@@ -41,12 +41,29 @@ pub(super) async fn clear_symbol_cache(server: &AlServer) {
 /// Formatting is normally a CodeAction with a WorkspaceEdit (handlers.rs);
 /// this command is kept for backward compatibility and direct calls.
 pub(super) async fn format_file(server: &AlServer, arguments: &[serde_json::Value]) {
-    // SILENT: .ok() on from_value — invalid argument from client is not user-affecting
-    let Some(uri) = arguments
-        .first()
-        .and_then(|v| serde_json::from_value::<Url>(v.clone()).ok())
-    else {
-        return;
+    let uri = match arguments.first().cloned().map(serde_json::from_value) {
+        Some(Ok(uri)) => uri,
+        Some(Err(error)) => {
+            tracing::warn!(%error, "al.formatFile received an invalid URI");
+            server
+                .client
+                .show_message(
+                    MessageType::WARNING,
+                    format!("Format failed: invalid URI: {error}"),
+                )
+                .await;
+            return;
+        }
+        None => {
+            server
+                .client
+                .show_message(
+                    MessageType::WARNING,
+                    "Format failed: no document URI supplied",
+                )
+                .await;
+            return;
+        }
     };
     let Some(edits) = formatting::handle_formatting(
         server,
@@ -92,14 +109,32 @@ pub(super) async fn format_file(server: &AlServer, arguments: &[serde_json::Valu
 
 /// `al.lintFile` — re-publish diagnostics for an open document.
 pub(super) async fn lint_file(server: &AlServer, arguments: &[serde_json::Value]) {
-    // SILENT: .ok() on from_value — invalid argument from client is not user-affecting
-    if let Some(uri) = arguments
-        .first()
-        .and_then(|v| serde_json::from_value::<Url>(v.clone()).ok())
-    {
-        if let Some(text) = server.workspace.documents.get_text(&uri) {
-            diagnostics::publish_diagnostics(server, &uri, &text).await;
+    let uri = match arguments.first().cloned().map(serde_json::from_value) {
+        Some(Ok(uri)) => uri,
+        Some(Err(error)) => {
+            tracing::warn!(%error, "al.lintFile received an invalid URI");
+            server
+                .client
+                .show_message(
+                    MessageType::WARNING,
+                    format!("Lint failed: invalid URI: {error}"),
+                )
+                .await;
+            return;
         }
+        None => {
+            server
+                .client
+                .show_message(
+                    MessageType::WARNING,
+                    "Lint failed: no document URI supplied",
+                )
+                .await;
+            return;
+        }
+    };
+    if let Some(text) = server.workspace.documents.get_text(&uri) {
+        diagnostics::publish_diagnostics(server, &uri, &text).await;
     }
 }
 
@@ -115,7 +150,7 @@ pub(super) async fn get_status(server: &AlServer) -> serde_json::Value {
         .builtins
         .read()
         .unwrap_or_else(|e| e.into_inner())
-        .len(); // SILENT: recover from RwLock poison
+        .len(); // Recover from RwLock poison.
 
     serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -228,8 +263,8 @@ pub(super) async fn compile(server: &AlServer) {
 /// Convert compiler diagnostics into per-file LSP diagnostics, resolving
 /// relative paths against `root`. Pure (no server / I/O) so the severity
 /// mapping, the 1-based→0-based position conversion, the end-of-range (start of
-/// next line per LSP, not the old u32::MAX sentinel — T067), and the relative→
-/// absolute path resolution (F-019) are all unit-testable.
+/// next line per LSP, not the old u32::MAX sentinel), and the relative-to-
+/// absolute path resolution are all unit-testable.
 fn group_compile_diagnostics(
     diagnostics: &[al_compile::CompileDiagnostic],
     root: &std::path::Path,
@@ -254,7 +289,7 @@ fn group_compile_diagnostics(
                 // LSP-spec way to express "to end of line" is the start of the
                 // next line. The previous u32::MAX sentinel was tolerated by
                 // Zed/VS Code but is undefined by the LSP spec and breaks
-                // stricter clients (T067).
+                // stricter clients.
                 end: Position {
                     line: start_line.saturating_add(1),
                     character: 0,
@@ -266,7 +301,7 @@ fn group_compile_diagnostics(
             message: d.message.clone(),
             ..Default::default()
         };
-        // F-019: compilers may emit relative paths (`src/Foo.al`) when run from
+        // compilers may emit relative paths (`src/Foo.al`) when run from
         // project_root. Url::from_file_path requires an absolute path, so
         // resolve relative entries against the root before grouping; otherwise
         // the per-file URI conversion silently drops the diagnostic.
@@ -284,7 +319,7 @@ fn group_compile_diagnostics(
 }
 
 /// Publish compiler diagnostics per file and clear squiggles for files
-/// that were affected last compile but are clean now (F-008).
+/// that were affected last compile but are clean now.
 async fn publish_compile_result(
     server: &AlServer,
     root: &std::path::Path,
@@ -298,7 +333,7 @@ async fn publish_compile_result(
         }
     }
 
-    // F-008: clear compiler diagnostics for files that were
+    // clear compiler diagnostics for files that were
     // affected last compile but are clean now. We re-publish
     // syntax/lint diagnostics if the file is open (so
     // existing squiggles stay), or an empty list otherwise.
@@ -368,7 +403,7 @@ pub(super) async fn apply_recommended_settings(server: &AlServer) {
 }
 
 /// `al.findReferences` — resolve the references for the symbol the CodeLens
-/// sits on and return them as LSP `Location[]` (gap A8).
+/// sits on and return them as LSP `Location[]`.
 ///
 /// The lens passes `{ "uri", "position" }`; we run the same workspace-wide
 /// reference search as `textDocument/references`. Always returns a JSON array
@@ -379,7 +414,7 @@ pub(super) fn find_references(
     arguments: &[serde_json::Value],
 ) -> serde_json::Value {
     let arg = arguments.first();
-    // SILENT: malformed arguments from the client are not user-affecting; an
+    // Malformed arguments from the client are not user-affecting; an
     // empty result is the correct "nothing to show" response.
     let uri = arg
         .and_then(|v| v.get("uri"))
@@ -401,7 +436,7 @@ pub(super) fn find_references(
 }
 
 /// `al.showProfiler` — return the active `.alcpuprofile` session's hotspots so
-/// the client can surface them (gap A8). When no profile is loaded the result
+/// the client can surface them. When no profile is loaded the result
 /// is `{ "active": false, "hints": [] }` rather than a silent no-op. The
 /// profiler lens is only emitted while a session is active, so the inactive
 /// branch is defensive.
@@ -413,7 +448,7 @@ pub(super) fn show_profiler(
         .workspace
         .profiler_session
         .read()
-        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from RwLock poison
+        .unwrap_or_else(|e| e.into_inner()); // Recover from RwLock poison.
     match guard.as_ref() {
         Some(session) if session.is_active() => serde_json::json!({
             "active": true,
@@ -425,7 +460,7 @@ pub(super) fn show_profiler(
 }
 
 /// `al.runTest` — run the `[Test]` procedure the lens targets against the
-/// configured BC server (gap A8).
+/// configured BC server.
 ///
 /// The lens passes a [`al_analysis::queries::code_lens::TestTarget`] (codeunit id +
 /// method). Running BC tests requires a launch configuration (`.zed/debug.json`
@@ -596,7 +631,7 @@ mod tests {
         assert_eq!(v.len(), 1);
         let d = &v[0];
         assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
-        // 1-based (5,3) → 0-based (4,2); end is the start of the next line (T067).
+        // 1-based (5,3) → 0-based (4,2); end is the start of the next line.
         assert_eq!(
             d.range.start,
             Position {

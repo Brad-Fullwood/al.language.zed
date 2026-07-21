@@ -81,7 +81,7 @@ impl CallGraphView {
                             kind: CallRowKind::Entry,
                         });
                     } else {
-                        // FB-11: group by reference type and render each
+                        // group by reference type and render each
                         // entry as readable text — kind, ID, name, and the
                         // field/procedure that creates the reference. The
                         // previous code dumped raw JSON for non-string

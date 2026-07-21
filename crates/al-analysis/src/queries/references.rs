@@ -26,7 +26,7 @@ pub fn references(
     // The canonical declaration the cursor binds to. Every *identifier*
     // reference we keep must bind to this same declaration — otherwise "find
     // references" on `A::Post` would also list the unrelated `B::Post` and its
-    // callers (the same binding-awareness rename got in C18, applied here).
+    // callers. This applies the same binding awareness used by rename.
     // Event-subscriber string-literal references are already specific to the
     // named event, so they are kept without the binding filter.
     let cursor_decl = super::binding::decl_loc(workspace, uri, position);
@@ -85,7 +85,7 @@ pub fn references(
 
     // `includeDeclaration: false` means exclude the symbol's *declaration*, not
     // the occurrence under the cursor. Resolve the declaration's canonical site
-    // and drop the location that matches it (C21). We use the shared
+    // and drop the location that matches it. We use the shared
     // `binding::decl_loc`, not raw go-to-definition: invoked on a declaration's
     // own name, go-to-definition falls through to a *usage*, which would leave
     // the declaration in and drop a real usage instead. `decl_loc` treats a
@@ -198,7 +198,33 @@ mod tests {
     }
 
     #[test]
-    fn c21_exclude_declaration_not_the_clicked_usage() {
+    fn references_bind_record_parameter_member_accesses() {
+        let uri = Url::parse("file:///test/record_param.al").expect("test URI");
+        let src = r#"codeunit 50100 "Refs"
+{
+    procedure Process(var Staging: Record Customer)
+    begin
+        if Staging.FindSet() then
+            repeat
+                Staging.Modify();
+            until Staging.Next() = 0;
+    end;
+}"#;
+        let ws = ws_with_doc(&uri, src);
+        let pos = Position {
+            line: 2,
+            character: 26,
+        };
+        let locs = references(&ws, &uri, pos, true);
+        assert_eq!(
+            locs.len(),
+            4,
+            "the declaration and each receiver use must share one binding"
+        );
+    }
+
+    #[test]
+    fn exclude_declaration_not_the_clicked_usage() {
         // Invoke references from a *usage* site with includeDeclaration=false.
         // The declaration (line 4) must be excluded; the clicked usage (line 6)
         // must still be present. Previously the code dropped whichever ref
@@ -243,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn c21_exclude_declaration_when_cursor_on_declaration() {
+    fn exclude_declaration_when_cursor_on_declaration() {
         // Adversarial: invoke references from the DECLARATION site (not a usage)
         // with includeDeclaration=false. The declaration (line 4) must be
         // excluded and BOTH usages (lines 6 and 7) preserved. Regression guard

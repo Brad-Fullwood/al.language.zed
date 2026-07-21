@@ -367,12 +367,10 @@ fn syntax_error_to_lsp_diagnostic_conversion() {
 
 #[test]
 fn lint_diagnostics_convert_to_lsp() {
-    // Native lint rules have been removed — lint() always returns empty.
-    // Verify that lint_to_diagnostic() still compiles and that lint() returns empty
-    // for code that previously triggered AL-L007.
+    // Native lint rules have been removed, but the conversion boundary remains
+    // available for diagnostics supplied by future rule providers.
     let code = r#"codeunit 50100 Test
 {
-    // TODO: fix this
     procedure DoSomething()
     begin
         Message('Hello');
@@ -389,7 +387,6 @@ fn lint_diagnostics_convert_to_lsp() {
         lints
     );
 
-    // lint_to_diagnostic() must remain callable for the empty slice.
     let src_bytes = code.as_bytes();
     let diagnostics: Vec<Diagnostic> = lints
         .iter()
@@ -908,10 +905,10 @@ fn fixture_test_al_parses_correctly() {
 }
 
 // ---------------------------------------------------------------------------
-// T2401: CLI JSON output schema validation tests
+// CLI JSON output schema validation tests
 //
 // These tests verify that the JSON shapes produced by the core query/format
-// functions match the documented schemas in .claude/data/schemas.toml.
+// functions match the documented CLI schemas.
 // They mirror what the daemon dispatch functions serialize to the wire.
 // ---------------------------------------------------------------------------
 

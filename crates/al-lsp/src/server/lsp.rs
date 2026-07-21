@@ -18,14 +18,14 @@ use super::hover;
 use super::workspace;
 
 /// Debounce delay for diagnostics: wait this long after the last keystroke before running.
-/// ISSUE-025 fix: prevents bridge calls (up to 5s) from blocking hover/completion.
+/// prevents bridge calls (up to 5s) from blocking hover/completion.
 const DIAGNOSTICS_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Every `al.*` command the server advertises in `executeCommandProvider` and
 /// handles in [`AlServer::execute_command`]. Single source of truth: the
 /// capability list and the dispatch both derive from this slice, and the
 /// CodeLens commands (`al.findReferences`, `al.showProfiler`, `al.runTest`)
-/// must all appear here so no clickable lens is a dead no-op (gap A8). The
+/// must all appear here so no clickable lens is a dead no-op. The
 /// `code_lens` test asserts `LENS_COMMAND_IDS ⊆ SUPPORTED_COMMANDS`.
 pub(crate) const SUPPORTED_COMMANDS: &[&str] = &[
     "al.downloadSymbols",
@@ -38,7 +38,7 @@ pub(crate) const SUPPORTED_COMMANDS: &[&str] = &[
     "al.reindex",
     "al.compile",
     "al.applyRecommendedSettings",
-    // CodeLens-backed commands (A8): keep in sync with
+    // Keep CodeLens-backed commands in sync with
     // `al_analysis::queries::code_lens::LENS_COMMAND_IDS`.
     "al.findReferences",
     "al.showProfiler",
@@ -52,15 +52,15 @@ pub struct AlServer {
     pub(crate) root_uri: RwLock<Option<Url>>,
     /// Handle to the currently-pending debounced diagnostics task.
     /// Replaced (and thus cancelled) on every new keystroke.
-    /// ISSUE-025 fix: diagnostics run async, not inline in did_change.
+    /// diagnostics run async, not inline in did_change.
     pub(crate) diag_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Handle to the background workspace initialisation task.
-    /// ISSUE-026 fix: workspace init runs async so initialized() returns promptly.
+    /// workspace init runs async so initialized() returns promptly.
     pub(crate) init_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// JoinHandle for the most recent al.reindex background task.
     /// Stored so a second al.reindex can abort an in-flight previous run.
     pub(crate) reindex_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// Guard against double-initialization (ISSUE-073).
+    /// Guard against double-initialization.
     /// Zed may send `initialized` twice when opening multiple worktrees.
     /// CAS ensures workspace init runs only once per server instance.
     pub(crate) init_done: AtomicBool,
@@ -90,7 +90,7 @@ impl AlServer {
     pub(crate) fn new(client: Client) -> Self {
         let workspace = Arc::new(Workspace::new());
 
-        // Register a notify sink so al-core can surface bridge failures to the user.
+        // Register a notify sink so bridge failures reach the user.
         let sink_client = client.clone();
         let _ = workspace
             .notify_sink
@@ -232,19 +232,19 @@ impl AlServer {
 
     /// Schedule debounced diagnostics for `uri` with the given document text.
     ///
-    /// ISSUE-025 fix: Cancels the previous pending task (if any) so that only
+    /// Cancels the previous pending task (if any) so that only
     /// the most recent keystroke triggers a diagnostics run. The actual diagnostics
     /// publish runs after `DIAGNOSTICS_DEBOUNCE` of silence. This prevents bridge
     /// calls (up to bridge timeout = 5s) from blocking hover/completion.
     async fn schedule_diagnostics(&self, uri: Url) {
-        // ISSUE-072: skip diagnostics for virtual symbol cache files — they are not
+        // skip diagnostics for virtual symbol cache files — they are not
         // workspace files and Zed logs a warning for every publishDiagnostics on them.
         if crate::server::diagnostics::is_cache_path(&uri) {
             tracing::debug!(uri = %uri, "schedule_diagnostics: skipping cache file");
             return;
         }
 
-        // C5: hold the `diag_task` lock across abort → spawn → store as one
+        // Hold the `diag_task` lock across abort → spawn → store as one
         // critical section. Releasing it between the abort and the store let two
         // interleaved did_change handlers both observe "no pending task", spawn
         // two debounce tasks, and race two publishes for the same URI — the
@@ -276,6 +276,7 @@ impl AlServer {
                 tracing::debug!(uri = %uri, "debounced diagnostics: document no longer open, skipping publish");
                 return;
             }
+            let document_version = workspace.documents.get_client_version(&uri);
             // Read config here (not at schedule time) so only the task that
             // survives the debounce pays the clone — keystrokes that abort the
             // previous task before its sleep elapses never clone AlConfig. The
@@ -298,7 +299,9 @@ impl AlServer {
                     return;
                 }
             };
-            client.publish_diagnostics(uri, lsp_diags, None).await;
+            client
+                .publish_diagnostics(uri, lsp_diags, document_version)
+                .await;
         });
 
         *guard = Some(handle);
@@ -367,7 +370,7 @@ impl LanguageServer for AlServer {
                 }
                 config.max_document_size_bytes
             };
-            // F-OPEN-042: apply the per-document size cap to the store.
+            // apply the per-document size cap to the store.
             self.workspace.documents.set_max_doc_bytes(cap);
             tracing::info!("Parsed initialization options into config");
         }
@@ -432,7 +435,7 @@ impl LanguageServer for AlServer {
                 workspace_symbol_provider: Some(OneOf::Left(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 // Pull diagnostics: Zed fetches fresh diagnostics on demand (tab switch, save).
-                // workspace_diagnostics is true (B11): the `workspace_diagnostic` handler
+                // When workspace_diagnostics is true, the `workspace_diagnostic` handler
                 // reports parse/syntax errors across every indexed workspace file, plus
                 // bridge/semantic diagnostics for open documents.
                 diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
@@ -457,7 +460,7 @@ impl LanguageServer for AlServer {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        // ISSUE-073: guard against double-init when Zed sends `initialized` more than once
+        // guard against double-init when Zed sends `initialized` more than once
         // (e.g., when opening multiple worktrees or after a crash-restart cycle).
         if self
             .init_done
@@ -475,7 +478,7 @@ impl LanguageServer for AlServer {
         let root_uri = self.root_uri.read().await.clone();
         tracing::info!(root_uri = ?root_uri, "initialized: spawning workspace init in background");
 
-        // ISSUE-026 fix: spawn workspace initialization into a background task so this
+        // spawn workspace initialization into a background task so this
         // notification handler returns promptly. Clients must not be kept waiting by
         // NuGet downloads, package loading, or bridge initialization.
         let ws = Arc::clone(&self.workspace);
@@ -514,7 +517,7 @@ impl LanguageServer for AlServer {
             .documents
             .open(uri.clone(), params.text_document.text);
         // Record the client's opening version so the did_change guard can
-        // compare like-for-like (C4).
+        // compare like-for-like.
         self.workspace
             .documents
             .set_client_version(&uri, params.text_document.version);
@@ -528,7 +531,7 @@ impl LanguageServer for AlServer {
         let client_version = params.text_document.version;
         tracing::debug!(uri = %uri, version = client_version, change_count = params.content_changes.len(), "did_change");
 
-        // F-OPEN-053: LSP requires client `version` to be monotonically
+        // LSP requires client `version` to be monotonically
         // increasing for a given document. tower-lsp can in theory interleave
         // notifications under load; an out-of-order delivery would otherwise
         // silently corrupt the rope. Compare against our stored version and
@@ -559,7 +562,7 @@ impl LanguageServer for AlServer {
                 text: c.text.clone(),
             })
             .collect();
-        // F-OPEN-054: apply the changes and capture the resulting text under a
+        // apply the changes and capture the resulting text under a
         // single write lock. A separate `apply_changes` + `get_text` pair would
         // leave a TOCTOU window where a concurrent `did_change` (tower-lsp can
         // interleave handlers under load) applies a later keystroke between the
@@ -571,7 +574,7 @@ impl LanguageServer for AlServer {
             .apply_changes_and_get(&uri, &changes)
         {
             // Record the applied client version so a later out-of-order
-            // delivery can be detected (C4).
+            // delivery can be detected.
             self.workspace
                 .documents
                 .set_client_version(&uri, client_version);
@@ -598,12 +601,12 @@ impl LanguageServer for AlServer {
         // Cancel any pending debounced diagnostics task. Without this, a task
         // armed by the last keystroke can wake after the close and publish
         // ghost squiggles. The in-task `contains` check is the primary guard;
-        // this abort is the belt to its braces.
+        // aborting here also prevents unnecessary work.
         if let Some(old) = self.diag_task.lock().await.take() {
             old.abort();
         }
 
-        // Targeted composed invalidation — only evict the object from this file (ISSUE-146)
+        // Evict only the composed object associated with this file.
         al_workspace::on_document_close(&self.workspace, &uri);
 
         if let Ok(path) = uri.to_file_path() {
@@ -644,7 +647,7 @@ impl LanguageServer for AlServer {
             let msg = format!("Unknown AL settings: {}", unknown.join(", "));
             self.client.show_message(MessageType::WARNING, &msg).await;
         }
-        // F-OPEN-042: re-apply the per-document size cap after a config change.
+        // re-apply the per-document size cap after a config change.
         self.workspace.documents.set_max_doc_bytes(cap);
         tracing::info!("Configuration updated");
     }
@@ -701,7 +704,7 @@ impl LanguageServer for AlServer {
         let include_declaration = params.context.include_declaration;
         let start = std::time::Instant::now();
 
-        // T028: run the synchronous reference walk inside `spawn_blocking` so the
+        // run the synchronous reference walk inside `spawn_blocking` so the
         // tokio task can be dropped (via tower-lsp's $/cancelRequest handling)
         // without waiting for the walk to finish. Without this wrapper a pending
         // references query on a large workspace blocks the async task until it
@@ -747,7 +750,7 @@ impl LanguageServer for AlServer {
         self.await_ready().await;
         let uri = params.text_document.uri.clone();
         let start = std::time::Instant::now();
-        // T028: spawn_blocking for cancel-friendliness on large files.
+        // spawn_blocking for cancel-friendliness on large files.
         let workspace = Arc::clone(&self.workspace);
         let uri_for_log = uri.clone();
         let hierarchical = self.document_symbol_hierarchical.load(Ordering::Relaxed);
@@ -815,7 +818,7 @@ impl LanguageServer for AlServer {
         self.await_ready().await;
         let uri = params.text_document.uri.clone();
         let start = std::time::Instant::now();
-        // T028: spawn_blocking — semantic_tokens_full traverses the entire
+        // spawn_blocking — semantic_tokens_full traverses the entire
         // tree-sitter tree on big AL files; cancellation-friendliness matters.
         let workspace = Arc::clone(&self.workspace);
         let uri_for_log = uri.clone();
@@ -888,7 +891,7 @@ impl LanguageServer for AlServer {
         self.await_ready().await;
         let uri = &params.text_document.uri;
 
-        // ISSUE-072: skip diagnostics for virtual symbol cache files.
+        // skip diagnostics for virtual symbol cache files.
         if diagnostics::is_cache_path(uri) {
             tracing::debug!(uri = %uri, "diagnostic (pull): skipping cache file");
             return Ok(diagnostics::full_diagnostic_report(vec![]));
@@ -914,7 +917,7 @@ impl LanguageServer for AlServer {
         &self,
         _params: WorkspaceDiagnosticParams,
     ) -> Result<WorkspaceDiagnosticReportResult> {
-        // B11: project-scope pull diagnostics. Aggregates parse/syntax errors
+        // Project-scope pull diagnostics aggregate parse and syntax errors
         // across every indexed file plus bridge diagnostics for open documents.
         self.await_ready().await;
         let start = std::time::Instant::now();
@@ -1013,14 +1016,14 @@ impl LanguageServer for AlServer {
             .map(|e| {
                 // The command id is owned by the lens kind (single source of
                 // truth shared with `SUPPORTED_COMMANDS`), so a lens can never
-                // emit an id the `execute_command` dispatch doesn't handle (A8).
+                // emit an id the `execute_command` dispatch doesn't handle.
                 let command_id = e.kind.command_id();
                 // `data` carries the lens kind + payload so clients can
                 // distinguish test lenses; `arguments` makes every lens
                 // actionable. Reference/profiler lenses pass `{uri, position}`
                 // so the handler can locate the symbol; test lenses pass the
                 // codeunit/method to run. Both were previously dropped at this
-                // boundary (F-OPEN-270). The payload shape is deliberate — the
+                // boundary. The payload shape is deliberate — the
                 // internal enums are both internally tagged with "kind" and
                 // would collide if serialized directly.
                 let data = match &e.kind {
@@ -1103,7 +1106,7 @@ impl LanguageServer for AlServer {
                 commands::apply_recommended_settings(self).await;
                 Ok(None)
             }
-            // CodeLens-backed commands (A8). Each returns `Some(..)` so a click
+            // Each CodeLens-backed command returns `Some(..)` so a click
             // performs the action instead of silently hitting the catch-all.
             "al.findReferences" => Ok(Some(commands::find_references(self, &params.arguments))),
             "al.showProfiler" => Ok(Some(commands::show_profiler(self, &params.arguments))),
@@ -1327,7 +1330,7 @@ mod definition_link_support_tests {
 
 #[cfg(test)]
 mod code_lens_command_wiring_tests {
-    //! Gap A8: every CodeLens the server emits must resolve to an
+    //! every CodeLens the server emits must resolve to an
     //! `executeCommand` handler — a clicked lens must perform its action, never
     //! a silent no-op. These tests drive the real `code_lens` + `execute_command`
     //! handlers in-process (no transport) and assert both the structural
@@ -1396,7 +1399,7 @@ mod code_lens_command_wiring_tests {
         for id in LENS_COMMAND_IDS {
             assert!(
                 SUPPORTED_COMMANDS.contains(id),
-                "lens command id {id:?} is not advertised/handled in SUPPORTED_COMMANDS — dead lens (A8)"
+                "lens command id {id:?} is not advertised or handled in SUPPORTED_COMMANDS"
             );
         }
     }
@@ -1420,7 +1423,7 @@ mod code_lens_command_wiring_tests {
             let cmd = lens.command.as_ref().expect("lens carries a command");
             assert!(
                 SUPPORTED_COMMANDS.contains(&cmd.command.as_str()),
-                "emitted lens command {:?} is not handled — dead lens (A8)",
+                "emitted lens command {:?} is not handled",
                 cmd.command
             );
             seen.insert(match cmd.command.as_str() {
@@ -1437,7 +1440,7 @@ mod code_lens_command_wiring_tests {
                 .expect("execute_command ok");
             assert!(
                 result.is_some(),
-                "command {:?} fell through to the no-op catch-all (dead lens, A8)",
+                "command {:?} fell through to the no-op catch-all",
                 cmd.command
             );
         }
@@ -1560,7 +1563,7 @@ mod code_lens_command_wiring_tests {
 
 #[cfg(test)]
 mod workspace_diagnostic_tests {
-    //! `workspace/diagnostic` (B11) must report parse/syntax errors across the
+    //! `workspace/diagnostic` must report parse/syntax errors across the
     //! whole workspace — both background (never-opened) files and open documents
     //! — and report nothing for a clean workspace. Driven in-process against the
     //! real `AlServer` handler (no transport, no toolchain ⇒ bridge is a no-op,

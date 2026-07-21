@@ -2,7 +2,7 @@
 //! `tower_lsp::lsp_types` wire types.
 //!
 //! These impls live in `server` — the LSP transport boundary — so that the
-//! `queries` module stays greppably free of `lsp_types` (F-OPEN-267; the
+//! `queries` module stays greppably free of `lsp_types`; the
 //! architecture rule is that queries never speak a wire format).
 
 use crate::queries::{

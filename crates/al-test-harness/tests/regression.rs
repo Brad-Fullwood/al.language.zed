@@ -1,19 +1,9 @@
-//! Regression tests for bugs found in the 2026-03-21 production readiness audit.
-//!
-//! Each test documents the bug it prevents from regressing and the fix that was applied.
-//! Run with: cargo test -p al-test-harness --test regression -- --test-threads=1
+//! End-to-end regressions for LSP behavior and lifecycle edge cases.
 
 use al_test_harness::*;
 
-// ===========================================================================
-// Regression: Inlay hints daemon panic (BUG 2 / ISSUE-P7)
-//
-// The inlay_hints query used `workspace.config.blocking_read()` which panics
-// when called from within a tokio runtime. Fixed by using `try_read()`.
-// ===========================================================================
-
 #[tokio::test]
-async fn test_regression_inlay_hints_no_panic() {
+async fn inlay_hints_no_panic() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let code = r#"codeunit 50100 "Hints Test"
@@ -29,11 +19,8 @@ async fn test_regression_inlay_hints_no_panic() {
 }"#;
     client.open_file("src/hints_test.al", code).await;
 
-    // This used to panic the daemon with:
-    // "Cannot block the current thread from within a runtime"
     let _hints = client.inlay_hints("src/hints_test.al", 0, 10).await;
 
-    // The test passing without a timeout/EOF proves the daemon didn't panic.
     let symbols = client.document_symbols("src/hints_test.al").await;
     assert!(
         !symbols.is_empty(),
@@ -43,42 +30,10 @@ async fn test_regression_inlay_hints_no_panic() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Regression: Sort-members --dry-run modifying files (BUG 1)
-//
-// dispatch_sort_members ignored the dryRun parameter and always wrote to disk.
-// Fixed by checking dryRun before writing.
-// This test verifies the server-side behavior via the sortMembers JSON-RPC method.
-// ===========================================================================
-
-// Note: This is tested at the CLI level (al-cli integration tests), not via LSP.
-// The LSP server receives the dryRun parameter from the CLI and should respect it.
-// The daemon fix was to check `params.dryRun` before calling `std::fs::write`.
-
-// ===========================================================================
-// Regression: No-op test assertions (3 tests in views.rs)
-//
-// Three tests used bare `matches!()` without `assert!()`, making them always pass.
-// Fixed by wrapping in `assert!(matches!(...))`.
-// This is a compile-time guarantee — if someone removes the assert!, clippy warns.
-// ===========================================================================
-
-// Note: These are al-explorer unit tests, not integration tests. The fix is in
-// crates/al-explorer/src/views.rs. Verified by running `cargo test -p al-explorer`.
-
-// ===========================================================================
-// Regression: File-not-found error consistency
-//
-// 5 places in build_dispatch.rs manually constructed the same error Response.
-// Fixed by extracting `file_not_found(id)` helper.
-// Verify the error is returned consistently.
-// ===========================================================================
-
 #[tokio::test]
-async fn test_regression_hover_on_unopened_file_returns_error() {
+async fn hover_on_unopened_file_returns_error() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // Don't open the file — just try to hover on it
     let hover = client.hover("src/nonexistent_file.al", 0, 0).await;
     assert!(hover.is_none(), "hover on unopened file should return None");
 
@@ -92,7 +47,7 @@ async fn test_regression_hover_on_unopened_file_returns_error() {
 }
 
 #[tokio::test]
-async fn test_regression_format_on_unopened_file_returns_empty() {
+async fn format_on_unopened_file_returns_empty() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let edits = client.format("src/nonexistent_file.al").await;
@@ -105,7 +60,7 @@ async fn test_regression_format_on_unopened_file_returns_empty() {
 }
 
 #[tokio::test]
-async fn test_regression_definition_on_unopened_file_returns_none() {
+async fn definition_on_unopened_file_returns_none() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let def = client.definition("src/nonexistent_file.al", 0, 0).await;
@@ -117,25 +72,8 @@ async fn test_regression_definition_on_unopened_file_returns_none() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Regression: Architecture violation — al-lsp importing al-symbols directly
-//
-// al-lsp/build_dispatch.rs used `al_symbols::ObjectKind` instead of
-// `al_core::symbols::ObjectKind`. Fixed by replacing 6 usages.
-// This is verified at compile time (al-symbols removed from [dependencies]).
-// ===========================================================================
-
-// Compile-time guarantee: al-symbols is only in [dev-dependencies] now.
-
-// ===========================================================================
-// Regression: Code actions return valid objects
-//
-// Verify code actions have valid structure (titles, edits).
-// No custom lint rules are registered, so only source actions are expected.
-// ===========================================================================
-
 #[tokio::test]
-async fn test_regression_code_actions_have_titles() {
+async fn code_actions_have_titles() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let code = r#"codeunit 50100 "Lint Test"
@@ -157,15 +95,8 @@ async fn test_regression_code_actions_have_titles() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Regression: Inlay hints content validation
-//
-// Previous tests only checked `!= crash`. Verify hints contain actual
-// parameter names when available.
-// ===========================================================================
-
 #[tokio::test]
-async fn test_regression_inlay_hints_show_parameter_names() {
+async fn inlay_hints_show_parameter_names() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let code = r#"codeunit 50100 "Hints Content"
@@ -184,8 +115,6 @@ async fn test_regression_inlay_hints_show_parameter_names() {
 
     let hints = client.inlay_hints("src/hints_content.al", 0, 12).await;
 
-    // The Calculate(10, 20) call has named parameters — the server must emit
-    // at least one inlay hint for the call site on line 4.
     assert!(
         !hints.is_empty(),
         "inlay hints should be non-empty for a call with named parameters: {hints:?}"
@@ -223,16 +152,8 @@ async fn test_regression_inlay_hints_show_parameter_names() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Regression: UTF-16 position handling
-//
-// ISSUE-024 and ISSUE-031 document UTF-16/byte offset confusion.
-// This test verifies that hover works correctly on identifiers after
-// multi-byte UTF-8 characters.
-// ===========================================================================
-
 #[tokio::test]
-async fn test_regression_utf16_position_after_multibyte() {
+async fn utf16_position_after_multibyte() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let code = r#"codeunit 50100 "UTF16 Test"
@@ -246,13 +167,10 @@ async fn test_regression_utf16_position_after_multibyte() {
 }"#;
     client.open_file("src/utf16_test.al", code).await;
 
-    // Hover on ØreName. The UTF-16 column for Ø after 8 leading spaces is 8;
-    // line 4 (0-based) is the `ØreName: Text;` declaration. Once tb-003 is
-    // landed, hover must succeed at this position.
     let hover = client.hover("src/utf16_test.al", 4, 8).await;
     assert!(
         hover.is_some(),
-        "tb-003 / ISSUE-024 regression: hover on Ø identifier must resolve. \
+        "hover on Ø identifier must resolve. \
          find_node_at_position must convert LSP UTF-16 column to byte offset."
     );
     let symbols = client.document_symbols("src/utf16_test.al").await;
@@ -264,14 +182,8 @@ async fn test_regression_utf16_position_after_multibyte() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Regression: Prepare rename
-//
-// The LspClient declares prepareSupport: true but never tests it.
-// ===========================================================================
-
 #[tokio::test]
-async fn test_regression_prepare_rename_returns_range() {
+async fn prepare_rename_returns_range() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let code = r#"codeunit 50100 "Rename Test"
@@ -285,8 +197,6 @@ async fn test_regression_prepare_rename_returns_range() {
 }"#;
     client.open_file("src/rename_test.al", code).await;
 
-    // prepareRename on a clearly renamable identifier (`MyVar` at line 4
-    // col 10) — must return a range or range+placeholder.
     let result = client.prepare_rename("src/rename_test.al", 4, 10).await;
     let range = result.expect(
         "prepareRename on a renamable identifier (MyVar) must return Some — \
@@ -297,8 +207,6 @@ async fn test_regression_prepare_rename_returns_range() {
         "prepareRename should return a range or range+placeholder: {range}"
     );
 
-    // Negative case: prepareRename on a keyword (`procedure` at line 2 col 4)
-    // must return None — the server cannot rename language keywords.
     let on_keyword = client.prepare_rename("src/rename_test.al", 2, 4).await;
     assert!(
         on_keyword.is_none(),
@@ -308,48 +216,24 @@ async fn test_regression_prepare_rename_returns_range() {
     client.shutdown().await;
 }
 
-// ===========================================================================
-// Regression: Ghost diagnostics after did_close-during-debounce
-//
-// `schedule_diagnostics` spawns a tokio task that sleeps for the debounce
-// interval (400 ms) before computing and publishing. If the user closed the
-// tab during that window, the prior code would still wake, compute, and
-// publish — resurrecting "ghost squiggles" on a closed document immediately
-// after did_close had cleared them with an empty publish.
-//
-// Fix: did_close aborts the pending task, AND the in-task closure checks
-// `documents.contains(&uri)` before computing/publishing. Either guard is
-// sufficient; both are present for resilience.
-// ===========================================================================
-
 #[tokio::test]
-async fn test_regression_no_ghost_diagnostics_after_close_during_debounce() {
+async fn no_ghost_diagnostics_after_close_during_debounce() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // File with a tree-sitter parse error — guarantees the diagnostics path
-    // would have something to publish if it ran.
     let code = "codeunit 50100 \"Ghost Test\"\n{\n    procedure Broken(\n    begin\n    end;\n}\n";
     client.open_file("src/ghost_test.al", code).await;
 
-    // Drain the open-time diagnostics so the post-close drain only sees
-    // anything our race could resurrect.
     let _ = client.drain_diagnostics();
 
-    // Schedule a debounced diagnostics task and immediately close.
-    // change_file_no_wait does NOT wait for diagnostics, so this races the
-    // 400 ms debounce against the did_close.
     let edit = "codeunit 50100 \"Ghost Test\"\n{\n    procedure Broken(arg: Integer\n    begin\n    end;\n}\n";
     client.change_file_no_wait("src/ghost_test.al", edit).await;
     client.close_file("src/ghost_test.al").await;
 
-    // Wait well past the 400 ms debounce window plus parse time.
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
 
     let diags = client.drain_diagnostics();
     let uri = format!("file://{}/src/ghost_test.al", test_project_dir().display());
 
-    // The only publish after close should be the explicit clear (empty array).
-    // A non-empty publish here proves a ghost-squiggle regression.
     if let Some(published) = diags.get(&uri) {
         for entry in published {
             let arr = entry

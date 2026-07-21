@@ -21,7 +21,7 @@ pub(in crate::server::daemon) fn dispatch_lint(
         // included with an empty diagnostics array — previously only dirty
         // files were returned, so a fully-clean 62-file workspace reported
         // "0 diagnostics across 0 files", indistinguishable from "scanned
-        // nothing" (audit 2026-06-12).
+        // nothing".
         let mut results: Vec<serde_json::Value> = Vec::new();
         for entry in workspace.file_index.files.iter() {
             let path = entry.key();
@@ -113,7 +113,7 @@ pub(in crate::server::daemon) fn dispatch_format(
             ..Default::default()
         }
     } else {
-        // If a file was specified, write back. F-011: routed through
+        // If a file was specified, write it through
         // write_al_file_and_refresh so the document store, file index,
         // and insight graph all see the update.
         if let Some(uri) = file_uri_from_params(params) {

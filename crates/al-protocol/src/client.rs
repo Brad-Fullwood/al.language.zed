@@ -21,8 +21,7 @@ use crate::socket::socket_path;
 const INIT_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Default total time to keep retrying "Workspace is initializing"
 /// responses. Cold daemon startup on a real project loads symbol
-/// packages (seconds, not milliseconds); a short retry budget made
-/// every first command after boot fail spuriously (FB-1).
+/// packages, which can take several seconds.
 #[cfg(unix)]
 const INIT_WAIT_TOTAL: Duration = Duration::from_secs(60);
 /// Default per-request response deadline. Individual commands override
@@ -32,10 +31,7 @@ const INIT_WAIT_TOTAL: Duration = Duration::from_secs(60);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Socket-level read timeout = polling granularity. A timed-out socket
 /// read is NOT a request failure — `read_bounded_line` keeps polling
-/// until the caller's request deadline expires. Previously the socket
-/// timeout WAS the request deadline, so any daemon operation slower
-/// than 30s surfaced as a raw `EAGAIN` ("Resource temporarily
-/// unavailable (os error 11)") to the user (FB-15).
+/// until the caller's request deadline expires.
 #[cfg(unix)]
 const READ_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Hard cap on a single JSON-RPC response line. Enforced *during* read
@@ -122,8 +118,8 @@ enum SpawnLockResult {
     Contended,
 }
 
-/// F-046: serialise daemon startup with a per-socket lock file. Two
-/// simultaneous `DaemonClient::connect` calls would otherwise both fail
+/// Serialise daemon startup with a per-socket lock file. Two simultaneous
+/// `DaemonClient::connect` calls would otherwise both fail
 /// the initial connect, both spawn `al-lsp daemon`, and the later
 /// daemon would unlink+rebind the same socket while the first daemon
 /// kept running. CLI/TUI clients ended up split across two daemons
@@ -191,7 +187,7 @@ pub struct DaemonClient {
 impl DaemonClient {
     /// Connect to the daemon for a project, auto-starting if needed.
     ///
-    /// F-046: concurrent first-time callers are serialised via a per-socket
+    /// concurrent first-time callers are serialised via a per-socket
     /// `.lock` file so only one process spawns `al-lsp daemon`. Losers wait
     /// for the winner's socket to appear, then connect normally.
     pub fn connect(project_root: &Path) -> Result<Self, String> {
@@ -241,7 +237,7 @@ impl DaemonClient {
         // Socket read timeout = poll granularity, NOT the request deadline.
         // `read_bounded_line` retries timed-out reads until the per-request
         // deadline (see `request_timeout`), so long daemon operations no
-        // longer surface as raw EAGAIN errors (FB-15).
+        // longer surface as raw EAGAIN errors.
         stream
             .set_read_timeout(Some(READ_POLL_INTERVAL))
             .map_err(|e| format!("Failed to set read timeout: {}", e))?;
@@ -556,7 +552,6 @@ mod tests {
         let (_listener, _handle) = mock_wrong_id_daemon(&sock);
         let stream = UnixStream::connect(&sock).expect("test");
         let mut client = DaemonClient::from_stream(stream).expect("test");
-        // T-045 added response ID validation — mismatched IDs now return an error.
         let result = client.request("test/ping", None);
         assert!(
             result.is_err(),
@@ -615,10 +610,8 @@ mod tests {
         );
     }
 
-    /// F-022: read_bounded_line must accept any line up to the cap and
-    /// return the bytes excluding the trailing newline.
     #[test]
-    fn f022_bounded_read_accepts_line_at_or_under_cap() {
+    fn bounded_read_accepts_line_at_or_under_cap() {
         let payload = b"hello world\n";
         let mut reader = std::io::BufReader::new(&payload[..]);
         let result =
@@ -626,12 +619,9 @@ mod tests {
         assert_eq!(result.as_deref(), Some("hello world"));
     }
 
-    /// F-022 negative: a line that would exceed the cap must error
-    /// *before* the buffer grows past `max_bytes`. The fix is the
-    /// pre-extend size check — `read_line` previously appended the
-    /// whole oversized line and only checked size after.
+    /// Reject a line before the buffer grows beyond the configured cap.
     #[test]
-    fn f022_bounded_read_rejects_line_exceeding_cap() {
+    fn bounded_read_rejects_line_exceeding_cap() {
         // 100 bytes, no newline; cap is 5 bytes.
         let payload = [b'X'; 100];
         let mut reader = std::io::BufReader::new(&payload[..]);
@@ -640,22 +630,20 @@ mod tests {
         assert!(err.to_string().contains("5 byte limit"));
     }
 
-    /// F-022: empty stream returns Ok(None), not an error and not an
-    /// allocation. Mirrors EOF on the daemon socket.
     #[test]
-    fn f022_bounded_read_returns_none_on_empty_eof() {
+    fn bounded_read_returns_none_on_empty_eof() {
         let payload: &[u8] = &[];
         let mut reader = std::io::BufReader::new(payload);
         let result = read_bounded_line(&mut reader, 64, None).expect("EOF must not error");
         assert!(result.is_none());
     }
 
-    /// F-022 UTF-8 safety: a stream that ends mid-UTF-8-sequence at EOF
+    /// A stream that ends mid-UTF-8-sequence at EOF
     /// (e.g. the daemon dies after writing the lead byte `0xC3` of `é`)
     /// must surface an `InvalidData` error, never panic or silently
     /// truncate. The buffered bytes go through `String::from_utf8`.
     #[test]
-    fn f022_bounded_read_rejects_incomplete_utf8_at_eof() {
+    fn bounded_read_rejects_incomplete_utf8_at_eof() {
         // 0xC3 is a 2-byte-sequence lead byte; no continuation, no newline.
         let payload: &[u8] = &[b'o', b'k', 0xC3];
         let mut reader = std::io::BufReader::new(payload);
@@ -664,11 +652,11 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
-    /// F-022 UTF-8 safety: the newline-terminated path (lines 66-72) also
+    /// The newline-terminated path also
     /// runs through `String::from_utf8`, so an incomplete sequence right
     /// before the `\n` must likewise yield `InvalidData`.
     #[test]
-    fn f022_bounded_read_rejects_incomplete_utf8_before_newline() {
+    fn bounded_read_rejects_incomplete_utf8_before_newline() {
         // Lead byte 0xC3 followed immediately by the newline terminator.
         let payload: &[u8] = &[b'o', b'k', 0xC3, b'\n'];
         let mut reader = std::io::BufReader::new(payload);
@@ -677,7 +665,7 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
-    /// F-OPEN: the client's `read_bounded_line` returns an empty `String`
+    /// The client's `read_bounded_line` returns an empty `String`
     /// for a bare `\n` line (the daemon skips these, but the client must
     /// not panic). `read_response` then surfaces a graceful parse error
     /// for the empty payload rather than corrupting the stream.
@@ -717,10 +705,8 @@ mod tests {
         );
     }
 
-    /// F-046: first acquirer of the per-socket spawn lock gets `Acquired`
-    /// with a real path; the lock file exists on disk.
     #[test]
-    fn f046_spawn_lock_first_acquirer_succeeds() {
+    fn spawn_lock_first_acquirer_succeeds() {
         let sock = unique_sock();
         let result = try_acquire_spawn_lock(&sock).expect("io ok");
         match result {
@@ -733,11 +719,9 @@ mod tests {
         }
     }
 
-    /// F-046 negative: a concurrent acquirer sees `Contended`. The
-    /// AlreadyExists branch is the gate that prevents two daemons from
-    /// being forked.
+    /// A concurrent acquirer must not start a second daemon.
     #[test]
-    fn f046_spawn_lock_second_acquirer_is_contended() {
+    fn spawn_lock_second_acquirer_is_contended() {
         let sock = unique_sock();
         let first = try_acquire_spawn_lock(&sock).expect("io ok");
         let SpawnLockResult::Acquired(lock_path) = first else {
@@ -763,12 +747,12 @@ mod tests {
         }
     }
 
-    /// F-046 sanity: STALE_LOCK_AGE must comfortably exceed the
+    /// STALE_LOCK_AGE must comfortably exceed the
     /// daemon-spawn wait window, otherwise a slow but live spawn
     /// would be incorrectly classified as stale and clobbered.
     /// `wait_for_daemon` polls 50 × 100ms = 5s.
     #[test]
-    fn f046_stale_lock_age_exceeds_spawn_wait_window() {
+    fn stale_lock_age_exceeds_spawn_wait_window() {
         assert!(
             STALE_LOCK_AGE >= Duration::from_secs(10),
             "STALE_LOCK_AGE must comfortably exceed the 5s spawn wait window"
@@ -887,12 +871,12 @@ mod tests {
         assert!(err.contains("Cannot find al-lsp binary"), "got: {err}");
     }
 
-    /// F-046 stale-lock recovery: a `.lock` file older than `STALE_LOCK_AGE`
+    /// A `.lock` file older than `STALE_LOCK_AGE`
     /// is treated as a crashed spawner — it is removed and the caller
     /// re-acquires `Acquired`. Exercises the stale branch (lines 109-122)
     /// that the existing fast-path tests never reach.
     #[test]
-    fn f046_stale_lock_is_reclaimed() {
+    fn stale_lock_is_reclaimed() {
         let sock = unique_sock();
         let lock_path = sock.with_extension("lock");
         if let Some(parent) = lock_path.parent() {
@@ -926,7 +910,7 @@ mod tests {
     /// stale-recovery test and guards against an over-eager staleness check
     /// clobbering a live spawner's lock.
     #[test]
-    fn f046_fresh_lock_is_not_reclaimed() {
+    fn fresh_lock_is_not_reclaimed() {
         let sock = unique_sock();
         let lock_path = sock.with_extension("lock");
         if let Some(parent) = lock_path.parent() {
@@ -976,7 +960,7 @@ mod tests {
         );
     }
 
-    /// FB-15 regression: a daemon that takes longer than one socket poll
+    /// A daemon that takes longer than one socket poll
     /// interval to respond must NOT surface EAGAIN — the client keeps
     /// polling until the request deadline and then returns the real
     /// response. (Previously `download-symbols` & co. died at 30s with

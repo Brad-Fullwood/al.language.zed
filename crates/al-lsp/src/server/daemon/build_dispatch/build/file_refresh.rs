@@ -1,10 +1,10 @@
-//! F-011: shared write/rename helpers that keep the in-memory workspace state
+//! shared write/rename helpers that keep the in-memory workspace state
 //! (document store, file index, insight graph) in sync with disk writes made
 //! by other daemon dispatchers (sort/organize, fixes, etc.).
 
 use al_workspace::Workspace;
 
-/// F-011: Write `.al` content to disk and refresh the workspace's
+/// Write `.al` content to disk and refresh the workspace's
 /// in-memory state so subsequent daemon queries observe the change
 /// without requiring a restart. Updates the document store, the file
 /// index, and invalidates the lazy insight graph. Centralised so every
@@ -16,7 +16,7 @@ pub(crate) fn write_al_file_and_refresh(
 ) -> std::io::Result<()> {
     std::fs::write(path, &content)?;
     if let Ok(uri) = url::Url::from_file_path(path) {
-        // C12: if the editor already has this file open, don't call `open()` —
+        // If the editor already has this file open, don't call `open()`:
         // it resets the internal version to 0, stomping the LSP-synced state and
         // breaking the version/tree-cache pairing until the next did_change.
         // Route the write through a full-replace so versioning stays monotonic.
@@ -125,10 +125,10 @@ mod tests {
         Workspace::new()
     }
 
-    /// F-011 positive: write_al_file_and_refresh writes to disk AND
+    /// positive: write_al_file_and_refresh writes to disk AND
     /// updates documents + file_index + invalidates insight graph.
     #[test]
-    fn f011_write_helper_refreshes_documents_and_file_index() {
+    fn write_helper_refreshes_documents_and_file_index() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("Foo.al");
@@ -147,10 +147,10 @@ mod tests {
         );
     }
 
-    /// F-011 positive: rename_al_file_and_refresh moves the file on disk
+    /// positive: rename_al_file_and_refresh moves the file on disk
     /// AND drops the old file_index entry while adding the new one.
     #[test]
-    fn f011_rename_helper_refreshes_file_index_for_old_and_new_paths() {
+    fn rename_helper_refreshes_file_index_for_old_and_new_paths() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
         let old = tmp.path().join("Old.al");
@@ -208,11 +208,11 @@ mod tests {
         assert_eq!(ws.documents.get_client_version(&new_uri), Some(17));
     }
 
-    /// F-011 negative: write_al_file_and_refresh propagates I/O errors
+    /// `write_al_file_and_refresh` propagates I/O errors
     /// instead of silently succeeding. A path under a non-existent
     /// directory must surface the underlying io::Error.
     #[test]
-    fn f011_write_helper_returns_io_error_for_unwritable_path() {
+    fn write_helper_returns_io_error_for_unwritable_path() {
         let ws = empty_ws();
         let bogus = std::path::PathBuf::from("/nonexistent/parent/dir/Foo.al");
         let err = write_al_file_and_refresh(&ws, &bogus, "x".to_string()).expect_err("must error");
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn c11_rename_refuses_to_overwrite_existing_file() {
+    fn rename_refuses_to_overwrite_existing_file() {
         // Two source files exist; renaming one onto the other must NOT destroy
         // the destination. Both files must survive and an error is returned.
         let ws = empty_ws();
@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn c12_write_to_open_doc_keeps_version_monotonic() {
+    fn write_to_open_doc_keeps_version_monotonic() {
         // When the editor has the file open, a daemon-side write must not reset
         // the document version to 0 (which stomps the LSP-synced state); it must
         // advance monotonically via a full-replace.
@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn c11_rename_to_free_destination_succeeds() {
+    fn rename_to_free_destination_succeeds() {
         let ws = empty_ws();
         let dir = tempfile::tempdir().unwrap();
         let old = dir.path().join("A.al");

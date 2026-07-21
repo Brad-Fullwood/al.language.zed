@@ -15,13 +15,10 @@ pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode 
     match client.request("trace", Some(params)) {
         Ok(result) => {
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&result).unwrap_or_default()
-                );
+                print_json(&result);
             } else if let Some(steps) = result.as_array() {
                 if steps.is_empty() {
-                    // FB-9: be explicit when the input isn't an event rather
+                    // be explicit when the input isn't an event rather
                     // than silently printing nothing.
                     println!("No event chain found for '{event}'.");
                     println!(
@@ -75,10 +72,7 @@ pub fn cmd_graph(format: &str, json: bool) -> ExitCode {
                     println!("{content}");
                 }
             } else if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&result).unwrap_or_default()
-                );
+                print_json(&result);
             } else {
                 let node_count = result
                     .get("nodes")
@@ -122,7 +116,7 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
                 if unused.is_empty() {
                     println!("No dead code found.");
                 } else {
-                    // FB-12: group by confidence so provably-dead findings
+                    // group by confidence so provably-dead findings
                     // are not mixed with "no references found, but could be
                     // used through channels static analysis can't see".
                     let (high, medium): (Vec<_>, Vec<_>) = unused.iter().partition(|item| {

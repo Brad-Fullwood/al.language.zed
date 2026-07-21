@@ -22,7 +22,7 @@ pub(crate) type BindKey = (String, u32, u32);
 ///
 /// When `pos` sits on a declaration's own name, that name *is* the canonical
 /// declaration — an object-local identity that keeps two objects' same-named
-/// `procedure Post()` declarations distinct (C18). (Go-to-definition on a
+/// `procedure Post()` declarations distinct. (Go-to-definition on a
 /// declaration is unreliable: it skips the same-file decl at the cursor and can
 /// fall through to an unrelated same-named procedure in another object.) For
 /// every other position (a usage) we defer to go-to-definition, which resolves

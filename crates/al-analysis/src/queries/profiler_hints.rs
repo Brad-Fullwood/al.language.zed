@@ -1,4 +1,4 @@
-//! Profiler hints query — T1711.
+//! Profiler hints query.
 //!
 //! Parses `.alcpuprofile` data (Chrome-format JSON) and maps hotspots back
 //! to AL source locations so that al-lsp can publish them as LSP inlay hints.
@@ -28,7 +28,7 @@
 //! Each `ProfilerHint` includes timing data and—when found—the file path and
 //! line number of the procedure in the workspace.
 //!
-//! ## Correctness rules (T1711 spec)
+//! ## Correctness rules (spec)
 //! - Must not show hints on wrong lines
 //! - Must not persist after clearing (clearing is handled by al-lsp, not here)
 //! - Hints on a procedure's signature line, not body line
@@ -198,8 +198,7 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
             Some((id, self_ms))
         })
         .collect();
-    // Total time = self + Σ descendants, rolled up over the call tree (B14
-    // follow-up). Keyed by node id; nodes outside the map fall back to self time.
+    // Total time = self + Σ descendants, rolled up over the call tree (    // follow-up). Keyed by node id; nodes outside the map fall back to self time.
     let total_by_node = aggregate_total_time_ms(nodes, &self_ms_by_node);
 
     let mut hints = Vec::new();
@@ -324,17 +323,13 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
         return;
     }
 
-    // Build two lookup tables to support object-name disambiguation (ISSUE-146):
-    //   qualified:  (object_name_lc, proc_name_lc) -> (file, line)
-    //   fallback:   proc_name_lc                   -> (file, line)
-    //
-    // When the hint carries an object name we use the qualified key first so
-    // that two procedures with the same name in different objects resolve to
-    // their correct source files.
+    // Qualified names disambiguate procedures shared by multiple objects. The
+    // unqualified index contains only names that are unique in the workspace.
     let mut qualified: std::collections::HashMap<(String, String), (String, u32)> =
         std::collections::HashMap::new();
     let mut fallback: std::collections::HashMap<String, (String, u32)> =
         std::collections::HashMap::new();
+    let mut ambiguous = std::collections::HashSet::new();
 
     for entry in workspace.file_index.files.iter() {
         let path = entry.key();
@@ -354,6 +349,7 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
             &object_name,
             &mut qualified,
             &mut fallback,
+            &mut ambiguous,
         );
     }
 
@@ -383,6 +379,7 @@ fn collect_procedure_locations(
     object_name: &str,
     qualified: &mut std::collections::HashMap<(String, String), (String, u32)>,
     fallback: &mut std::collections::HashMap<String, (String, u32)>,
+    ambiguous: &mut std::collections::HashSet<String>,
 ) {
     let source = text.as_bytes();
     collect_procs(
@@ -392,6 +389,7 @@ fn collect_procedure_locations(
         object_name,
         qualified,
         fallback,
+        ambiguous,
     );
 }
 
@@ -402,6 +400,7 @@ fn collect_procs(
     object_name: &str,
     qualified: &mut std::collections::HashMap<(String, String), (String, u32)>,
     fallback: &mut std::collections::HashMap<String, (String, u32)>,
+    ambiguous: &mut std::collections::HashSet<String>,
 ) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -412,18 +411,22 @@ fn collect_procs(
                     if !name.is_empty() {
                         let line = node.start_position().row as u32 + 1; // 1-based
                         let loc = (file_path.to_string(), line);
-                        // Qualified key: always insert (overwrites — last file wins per object,
-                        // which is fine since object names should be unique in a workspace).
+                        let name_key = name.to_lowercase();
                         if !object_name.is_empty() {
-                            qualified.insert(
-                                (object_name.to_string(), name.to_lowercase()),
-                                loc.clone(),
-                            );
+                            qualified
+                                .insert((object_name.to_string(), name_key.clone()), loc.clone());
                         }
-                        // Fallback: only the first occurrence (DashMap iteration is unordered,
-                        // so this remains non-deterministic for identically-named procs in
-                        // different objects — the qualified key should be used instead).
-                        fallback.entry(name.to_lowercase()).or_insert(loc);
+                        if !ambiguous.contains(&name_key) {
+                            if fallback
+                                .get(&name_key)
+                                .is_some_and(|existing| existing != &loc)
+                            {
+                                fallback.remove(&name_key);
+                                ambiguous.insert(name_key);
+                            } else {
+                                fallback.entry(name_key).or_insert(loc);
+                            }
+                        }
                     }
                 }
             }
@@ -758,7 +761,7 @@ mod tests {
 
     #[test]
     fn parse_profile_time_based_beats_hit_count() {
-        // B14: the node with FEWER hits but LARGER aggregated timeDeltas must
+        // the node with FEWER hits but LARGER aggregated timeDeltas must
         // rank as the bigger hotspot — proving time-based beats count-based.
         //   ManyHits: hitCount 100, sampled once for 100µs  -> 0.1 ms
         //   FewHits:  hitCount  10, sampled once for 5000µs -> 5.0 ms
@@ -793,7 +796,7 @@ mod tests {
 
     #[test]
     fn parse_profile_mismatched_array_lengths_handled_gracefully() {
-        // B14: samples/timeDeltas of different lengths must not panic; only the
+        // samples/timeDeltas of different lengths must not panic; only the
         // common prefix is aggregated. samples[0]=node 2 charged 1000µs=1.0 ms;
         // node 3 gets nothing.
         let profile_json = r#"{
@@ -824,7 +827,7 @@ mod tests {
 
     #[test]
     fn parse_profile_total_time_rolls_up_the_call_tree() {
-        // B14 follow-up: total_time(node) = self + Σ total_time(descendants).
+        // total_time(node) = self + Σ total_time(descendants).
         // 3-node chain root -> child -> grandchild with distinct self times:
         //   root(1): 1000µs=1.0ms, child(2): 2000µs=2.0ms, grandchild(3): 4000µs=4.0ms
         // => total(root)=7.0, total(child)=6.0, total(grandchild)=4.0.
@@ -876,7 +879,7 @@ mod tests {
 
     #[test]
     fn parse_profile_total_time_handles_cycle_and_dangling_child() {
-        // B14 follow-up: a cycle (1 -> 2 -> 1) and a dangling child id (99) must
+        // a cycle (1 -> 2 -> 1) and a dangling child id (99) must
         // not loop forever or panic.
         //   A(1): 3000µs=3.0ms, children [2, 99]
         //   B(2): 5000µs=5.0ms, children [1]  (back edge -> contributes 0)
@@ -958,10 +961,6 @@ mod tests {
         assert_eq!(validate.line, Some(8), "ValidateEntry on line 8");
     }
 
-    /// ISSUE-146: When two AL objects define a procedure with the same name (e.g.
-    /// OnAfterValidate), the hint must resolve to the correct file by matching on
-    /// the object name.  Previously the result was non-deterministic because DashMap
-    /// iteration order is undefined.
     #[test]
     fn disambiguates_same_proc_name_by_object_name() {
         let file_a = r#"codeunit 50100 "Alpha Codeunit"
@@ -1019,6 +1018,10 @@ mod tests {
             "Should resolve to Alpha.al, got: {:?}",
             h_alpha.file
         );
+
+        let unqualified = profiler_hints(&ws, &[make_hotspot("OnAfterValidate", "", 5.0, 5.0, 5)]);
+        assert_eq!(unqualified[0].file, None);
+        assert_eq!(unqualified[0].line, None);
     }
 
     #[test]

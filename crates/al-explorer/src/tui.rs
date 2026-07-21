@@ -29,8 +29,8 @@ use crate::{App, ViewMode};
 
 pub(crate) fn run_tui() -> Result<(), Box<dyn Error>> {
     // Pre-flight: refuse with a human-readable message instead of letting
-    // crossterm propagate ENXIO (code 6) when stdin/stdout aren't a TTY
-    // (T033 / RT-001). Without this, `al-explorer | tee log` or running
+    // crossterm propagate ENXIO (code 6) when stdin/stdout aren't a TTY.
+    // Without this, `al-explorer | tee log` or running
     // in a CI step prints `Error: Os { code: 6 }` and exits non-zero with
     // no hint that the TUI cannot run headless.
     use std::io::IsTerminal;
@@ -57,7 +57,7 @@ pub(crate) fn run_tui() -> Result<(), Box<dyn Error>> {
     let mut app = App::new();
     // Non-blocking: the first frame renders immediately with a
     // "Loading workspace…" status while the daemon starts and indexes
-    // in the background (FB-1).
+    // in the background.
     app.start_init_workspace();
 
     let res = run_app(&mut terminal, app);
@@ -97,7 +97,7 @@ fn run_app<B: Backend<Error = io::Error>>(
 
                     // Global view switching — F1..F5, with Alt+1..Alt+5 as
                     // equivalents for terminals where the host editor
-                    // swallows the function keys (FB-5: Zed binds F4/F5 to
+                    // swallows the function keys (Zed binds F4/F5 to
                     // its own debugger commands and they never reach the
                     // embedded terminal).
                     let alt_digit = if key.modifiers.contains(KeyModifiers::ALT) {
@@ -180,7 +180,7 @@ fn ui(f: &mut Frame, app: &mut App) {
 
 fn render_mode_bar(f: &mut Frame, area: Rect, mode: ViewMode) {
     // Alt+1..5 are equivalents for terminals where the host editor (e.g.
-    // Zed's debugger keymap) swallows the function keys (FB-5).
+    // Zed's debugger keymap) swallows the function keys.
     let tabs = [
         (" F1|M-1: Objects ", ViewMode::ObjectBrowser),
         (" F2|M-2: Events ", ViewMode::EventChain),

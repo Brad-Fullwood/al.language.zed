@@ -26,7 +26,7 @@ pub struct TextRange {
     pub end_character: u32,
 }
 
-/// Default upper bound on the number of cached parse trees (F-OPEN-043).
+/// Default upper bound on the number of cached parse trees.
 ///
 /// A long-running daemon opens every scanned workspace file (and lazily loads
 /// more from disk on demand) without ever calling [`DocumentStore::close`], so
@@ -40,7 +40,7 @@ pub struct TextRange {
 pub const DEFAULT_MAX_CACHED_TREES: usize = 256;
 
 /// A cached parse tree plus the metadata needed for version validation and
-/// approximate-LRU eviction (F-OPEN-043).
+/// approximate-LRU eviction.
 struct CachedTree {
     /// Document version the tree was parsed against.
     version: i32,
@@ -56,7 +56,7 @@ pub struct DocumentStore {
     trees: DashMap<Url, CachedTree>,
     /// Monotonic source of access stamps for the approximate-LRU tree cache.
     tree_access_counter: std::sync::atomic::AtomicU64,
-    /// Maximum number of parse trees to retain (F-OPEN-043). `0` means
+    /// Maximum number of parse trees to retain. `0` means
     /// "unbounded" (the historical behaviour); the constructor seeds it with
     /// [`DEFAULT_MAX_CACHED_TREES`]. Atomic so the daemon can retune it on a
     /// config update without locking the whole store.
@@ -68,7 +68,7 @@ pub struct DocumentStore {
     /// alongside `docs`/`trees`, so a long-running daemon that opens and closes
     /// many distinct files over its lifetime does not accumulate stale locks.
     parse_locks: DashMap<Url, std::sync::Arc<std::sync::Mutex<()>>>,
-    /// Optional per-document byte cap (F-OPEN-042). `0` means "no cap" (the
+    /// Optional per-document byte cap. `0` means "no cap" (the
     /// default, preserving prior unbounded behaviour). When non-zero, `open`
     /// and full-document replacements refuse content larger than this many
     /// bytes so a single oversized file (e.g. a multi-gigabyte blob opened by
@@ -89,7 +89,7 @@ struct Document {
     /// counter used to key the parse-tree cache. The client version is what the
     /// out-of-order-delivery guard must compare against — the internal counter
     /// starts at 0 and can never exceed the client's number, so comparing to it
-    /// is dead code (C4).
+    /// is dead code.
     client_version: i32,
 }
 
@@ -111,7 +111,7 @@ impl DocumentStore {
         }
     }
 
-    /// Set the maximum number of parse trees the cache will retain (F-OPEN-043).
+    /// Set the maximum number of parse trees the cache will retain.
     /// `None` (or `Some(0)`) disables the cap, restoring unbounded caching;
     /// any other value bounds the cache and triggers least-recently-used
     /// eviction once exceeded. Safe to call at any time — the next
@@ -162,7 +162,7 @@ impl DocumentStore {
         }
     }
 
-    /// Set the per-document byte cap (F-OPEN-042). `None` (or `Some(0)`) clears
+    /// Set the per-document byte cap. `None` (or `Some(0)`) clears
     /// the cap, restoring unbounded ingestion. Applied at the boundary from
     /// `AlConfig::max_document_size_bytes` whenever configuration is (re)loaded.
     pub fn set_max_doc_bytes(&self, cap: Option<usize>) {
@@ -191,7 +191,7 @@ impl DocumentStore {
                     uri = %uri,
                     bytes = len,
                     cap,
-                    "DocumentStore: refusing document exceeding configured max_document_size_bytes (F-OPEN-042)"
+                    "DocumentStore: refusing document exceeding configured max_document_size_bytes"
                 );
                 true
             }
@@ -215,7 +215,7 @@ impl DocumentStore {
     }
 
     pub fn open(&self, uri: Url, text: String) {
-        // F-OPEN-042: refuse to ingest an oversized document. Any previously
+        // Refuse to ingest an oversized document. Any previously
         // open version of this URI is left untouched, and crucially the giant
         // text is never copied into the rope/cache.
         if self.exceeds_cap(&uri, text.len()) {
@@ -286,7 +286,7 @@ impl DocumentStore {
         self.docs.get(uri).map(|d| d.text_cache.as_ref().clone())
     }
 
-    /// Return the document text as a cheaply-cloneable `Arc<String>` (ISSUE-142 fix).
+    /// Return the document text as a cheaply-cloneable `Arc<String>`.
     ///
     /// Cloning the returned `Arc` is a pointer copy -- no string allocation.
     /// Use this on hot query paths to avoid deep-copying large file content.
@@ -317,7 +317,6 @@ impl DocumentStore {
     }
 
     /// The last client-supplied LSP version for `uri`, or `None` if not open.
-    /// Used by the `did_change` out-of-order-delivery guard (C4).
     pub fn get_client_version(&self, uri: &Url) -> Option<i32> {
         self.docs.get(uri).map(|d| d.client_version)
     }
@@ -365,9 +364,9 @@ impl DocumentStore {
     /// concurrent `did_change` notification (tower-lsp can interleave handlers
     /// under load) can run its own `apply_changes` between this call's mutation
     /// and the subsequent read, so the text/version handed to the diagnostics
-    /// task belongs to a *later* keystroke than the one that scheduled it
-    /// (F-OPEN-054). Returning the pair from inside the `get_mut` borrow closes
-    /// that window — the returned text and version are always mutually
+    /// task belongs to a later keystroke than the one that scheduled it.
+    /// Returning the pair from inside the `get_mut` borrow closes that window:
+    /// the returned text and version are always mutually
     /// consistent and reflect exactly the changes this call applied.
     ///
     /// Returns `None` only if the document is not open.
@@ -388,9 +387,8 @@ impl DocumentStore {
                             doc.text.insert(s, &change.text);
                         }
                         // Backward range (end < start). Silently dropping the
-                        // change would mean the editor and server diverge with
-                        // no obvious cause. Log a warn so the bug surfaces in
-                        // daemon logs and skip this change. F-OPEN-(docstore-audit-2).
+                        // change would make the editor and server diverge. Log
+                        // the malformed input and skip it.
                         (Some(s), Some(e)) => {
                             tracing::warn!(
                                 uri = %uri,
@@ -416,20 +414,15 @@ impl DocumentStore {
                         }
                     }
                 } else if self.exceeds_cap(uri, change.text.len()) {
-                    // F-OPEN-042: an oversized full-document replacement is
-                    // skipped rather than ingested. Like the malformed-range
-                    // case above, the prior text is left intact; the editor
-                    // should resync on the next edit.
+                    // Leave the prior text intact after an oversized
+                    // full-document replacement; the editor should resync on
+                    // the next edit.
                 } else {
                     doc.text = Rope::from_str(&change.text);
                 }
             }
-            // C7: the range-edit path above bypasses the size cap that `open`
-            // and full-document replacement enforce, so a document could grow
-            // unbounded through incremental inserts. Re-check the total size
-            // after applying the batch and warn when it exceeds the cap
-            // (matching the F-OPEN-042 intent; mid-stream range edits are not
-            // rolled back).
+            // Incremental inserts cannot be rejected up front based on their
+            // final size, so warn when the completed batch exceeds the cap.
             let cap = self
                 .max_doc_bytes
                 .load(std::sync::atomic::Ordering::Relaxed);
@@ -487,8 +480,8 @@ impl DocumentStore {
         }
     }
 
-    /// Bounded by [`set_max_cached_trees`](Self::set_max_cached_trees)
-    /// (F-OPEN-043): after inserting, the least-recently-used trees are evicted
+    /// Bounded by [`set_max_cached_trees`](Self::set_max_cached_trees): after
+    /// inserting, the least-recently-used trees are evicted
     /// if the cache exceeds its cap, so a long-running daemon that opens many
     /// files cannot accumulate parse trees without limit.
     pub fn cache_tree(&self, uri: &Url, version: i32, tree: tree_sitter::Tree) {
@@ -505,7 +498,7 @@ impl DocumentStore {
     }
 
     /// Number of cached parse trees. Test-only accessor used to assert the
-    /// LRU cap bounds cache growth (F-OPEN-043).
+    /// LRU cap bounds cache growth.
     #[cfg(test)]
     pub(crate) fn cached_trees_len(&self) -> usize {
         self.trees.len()
@@ -536,7 +529,7 @@ fn position_to_offset(rope: &Rope, line: u32, character: u32) -> Option<usize> {
     // it lands *past* the newline and merges this line with the next — text
     // corruption relative to what the client computed. LSP: a character beyond
     // line length "defaults back to the line length", i.e. before the
-    // terminator (C6).
+    // terminator.
     let max_char = line_slice.len_utf16_cu() - line_break_utf16_width(line_slice);
     let utf16_idx = (character as usize).min(max_char);
     let char_in_line = line_slice.utf16_cu_to_char(utf16_idx);
@@ -667,7 +660,7 @@ mod tests {
 
     #[test]
     fn test_tree_cache_evicts_lru_when_over_cap() {
-        // F-OPEN-043 regression: a long-running daemon opens (and parses) many
+        // A long-running daemon may open and parse many
         // distinct files without ever closing them. The tree cache must not
         // grow without bound — once it exceeds the cap, the least-recently-used
         // trees are evicted so memory stays bounded.
@@ -776,7 +769,7 @@ mod tests {
 
     #[test]
     fn test_max_doc_bytes_rejects_oversized_open() {
-        // F-OPEN-042: with a cap set, an oversized open() must not ingest the
+        // With a cap set, an oversized open() must not ingest the
         // document — neither the rope nor the cache should hold the giant text.
         let store = DocumentStore::new();
         store.set_max_doc_bytes(Some(8));
@@ -1059,7 +1052,7 @@ mod tests {
         }
     }
 
-    /// T055 regression: position_to_offset clamps an over-large `character`
+    /// `position_to_offset` clamps an over-large `character`
     /// (UTF-16 code units past end-of-line) to the line's UTF-16 length and
     /// returns Some, never None. The clamp is the contract relied on by
     /// apply_changes when a client sends a position past EOL during a paste.
@@ -1072,14 +1065,13 @@ mod tests {
         // Clamped result must point to the end of the VISIBLE text on line 0
         // (char offset 5, just after 'hello'), BEFORE the trailing '\n' — LSP
         // clamps an over-EOL character to the line length, not past the
-        // terminator. Landing at 6 would swallow the newline and merge lines
-        // (C6).
+        // terminator. Landing at 6 would swallow the newline and merge lines.
         assert_eq!(off, Some(5));
     }
 
     #[test]
     fn position_to_offset_over_eol_does_not_merge_lines() {
-        // C6: replacing (0,2)..(0,999) with "XX" must NOT delete the newline.
+        // replacing (0,2)..(0,999) with "XX" must NOT delete the newline.
         // The end position clamps to offset 5 (before '\n'), so 'hello\nworld\n'
         // becomes 'heXX\nworld\n', not 'heXXworld\n'.
         let rope = Rope::from_str("hello\nworld\n");
@@ -1102,7 +1094,7 @@ mod tests {
         assert_eq!(off, Some(2));
     }
 
-    /// T055 regression: a non-existent line still returns None — the clamp is
+    /// A non-existent line still returns `None`; the clamp is
     /// for `character` only, not for `line`.
     #[test]
     fn position_to_offset_returns_none_for_overflow_line() {
@@ -1112,7 +1104,7 @@ mod tests {
         assert!(off.is_none());
     }
 
-    /// T055 regression: locks in the apply_changes lock-discipline invariant
+    /// Locks in the `apply_changes` lock-discipline invariant
     /// — the version bump and the tree-cache invalidation are observable as a
     /// single atomic step from any concurrent reader. Reading get_cached_tree
     /// either sees (old version, old tree) or (new version, no tree) — never
@@ -1144,7 +1136,7 @@ mod tests {
         assert!(store.get_cached_tree(&uri).is_none());
     }
 
-    /// F-OPEN-054 regression: `apply_changes_and_get` returns the text and
+    /// `apply_changes_and_get` returns the text and
     /// version produced by *this* call, captured under the same write lock that
     /// performed the mutation. `did_change` relies on this so the snapshot fed
     /// into the debounced diagnostics task can never be skewed forward by a
@@ -1178,7 +1170,7 @@ mod tests {
 
     #[test]
     fn client_version_is_tracked_separately_from_internal_counter() {
-        // C4: the client version is what the did_change guard compares against.
+        // the client version is what the did_change guard compares against.
         // It is distinct from the internal edit counter, which starts at 0 and
         // is bumped per apply — the two must not be conflated.
         let store = DocumentStore::new();
@@ -1214,7 +1206,7 @@ mod tests {
         assert_eq!(store.get_client_version(&test_uri("nope")), None);
     }
 
-    /// F-OPEN-054: `apply_changes_and_get` returns `None` (rather than a stale
+    /// `apply_changes_and_get` returns `None` (rather than a stale
     /// snapshot) when the document is not open, so `did_change` skips scheduling
     /// diagnostics for a URI that was closed out from under it.
     #[test]

@@ -59,8 +59,8 @@ pub struct ScopeStack {
     /// Current `eval_expr` recursion depth. Expression evaluation recurses
     /// per AST nesting level; ~400 nested parens overflow a 2 MiB thread
     /// stack (tokio worker default) and ABORT the process. Capped at
-    /// `MAX_EXPR_DEPTH` so degenerate input yields `Eval::Error` instead
-    /// (F-OPEN-265). Statement nesting has its own cap in `DispatchCtx`.
+    /// `MAX_EXPR_DEPTH` so degenerate input yields `Eval::Error` instead.
+    /// Statement nesting has its own cap in `DispatchCtx`.
     expr_depth: usize,
 }
 
@@ -153,10 +153,10 @@ pub enum Eval {
     Error(ErrorInfo),
     Exit(Value),
     /// `break` — unwinds to the nearest enclosing loop, which stops iterating.
-    /// Reaching a procedure body (escaping all loops) is a runtime error. (C24)
+    /// Reaching a procedure body after escaping all loops is a runtime error.
     Break,
     /// `continue` — unwinds to the nearest enclosing loop, which proceeds to
-    /// its next iteration. Escaping all loops is a runtime error. (C24)
+    /// its next iteration. Escaping all loops is a runtime error.
     Continue,
 }
 
@@ -190,7 +190,6 @@ mod tests {
 
     #[test]
     fn missing_binding_returns_none() {
-        // Negative: lookup of an unbound name returns None, not panic.
         let frame = CallFrame::new("Cu", "Proc");
         assert!(frame.get("nope").is_none());
     }
@@ -244,7 +243,6 @@ mod tests {
 
     #[test]
     fn eval_into_value_handles_error_negative() {
-        // Negative: Eval::Error -> None when extracted as a value.
         let err = Eval::Error(ErrorInfo {
             message: "boom".into(),
             error_type: None,
@@ -255,9 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_stack_1000_deep_lookup_no_stack_overflow_adversarial_h_3() {
-        // AUDIT (no bug): ScopeStack.lookup uses iterative rev().find_map,
-        // not recursion — 1000 nested frames cannot cause a call-stack overflow.
+    fn scope_stack_1000_deep_lookup_does_not_overflow() {
         let mut stack = ScopeStack::new();
         for i in 0..1000_usize {
             let mut frame = CallFrame::new("Cu", format!("proc_{i}"));

@@ -1,17 +1,9 @@
-//! Full `.app` package inspector / unpacker.
+//! `.app` package inspection and extraction.
 //!
-//! `app_reader` extracts only the symbol table (`SymbolReference.json`) needed
-//! for indexing. This module lists and extracts EVERY entry in a `.app` -
-//! source, manifest, entitlements, media, and any compiled artifacts - for
-//! inspection and IP auditing.
+//! Unlike `app_reader`, this module exposes every archive entry for inspection.
 //!
-//! A `.app` is a `NAVX` header followed by an OPC/ZIP archive. An `alc`-built
-//! "source" package (target Cloud) contains the AL source in plaintext plus the
-//! symbol table and metadata XML - there is no compiled IL; the BC server
-//! compiles to runtime artifacts at publish time. The `kind` classification
-//! flags an entry that IS a .NET assembly so a caller can tell at a glance
-//! whether a package carries compiled code (e.g. a server-side runtime package)
-//! versus source.
+//! A `.app` is a `NAVX` header followed by an OPC/ZIP archive. Cloud-targeted
+//! packages contain AL source, symbols, and metadata rather than compiled IL.
 
 use std::io::{Cursor, Read};
 use std::path::Path;

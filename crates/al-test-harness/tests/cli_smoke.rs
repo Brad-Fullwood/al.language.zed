@@ -1,5 +1,4 @@
-//! Black-box smoke test for the `al-explorer` CLI surface, driven against the
-//! bundled fixture project. Replaces the CLI half of the former `smoke.sh`.
+//! Black-box smoke tests for the `al-explorer` CLI against the bundled fixture.
 //!
 //! `al-explorer` is a thin client that auto-spawns the `al-lsp` daemon; it
 //! resolves `al-lsp` first as a sibling of its own executable, so running the

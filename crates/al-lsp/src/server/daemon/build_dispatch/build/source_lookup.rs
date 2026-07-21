@@ -29,7 +29,7 @@ pub(in crate::server::daemon) fn dispatch_location(
         };
     }
 
-    // FB-4: not a workspace file — fall back to the symbol index and
+    // not a workspace file — fall back to the symbol index and
     // materialise the package object's source as a virtual .al file, the
     // same mechanism go-to-definition uses. Without this, double-clicking
     // any object from a symbol package (i.e. almost everything in the
@@ -133,7 +133,10 @@ pub(in crate::server::daemon) fn dispatch_source(
     ) {
         Some(result) => Response {
             id,
-            result: Some(serde_json::to_value(&result).unwrap_or_default()),
+            result: Some(
+                serde_json::to_value(&result)
+                    .expect("source lookup result must be JSON serializable"),
+            ),
             error: None,
             ..Default::default()
         },
@@ -166,7 +169,10 @@ pub(in crate::server::daemon) fn dispatch_event_source(
     ) {
         Ok(result) => Response {
             id,
-            result: Some(serde_json::to_value(&result).unwrap_or_default()),
+            result: Some(
+                serde_json::to_value(&result)
+                    .expect("source lookup result must be JSON serializable"),
+            ),
             error: None,
             ..Default::default()
         },

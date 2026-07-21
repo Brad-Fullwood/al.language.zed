@@ -364,11 +364,8 @@ mod tests {
     }
 
     #[test]
-    fn t021_finds_obsolete_method_in_symbol_package() {
-        // T021 / stb0c590a012b: pre-existing tests only exercised the
-        // file-scan branch; the symbol-package scan branch (lines 82-111)
-        // and the attribute-argument trim logic were silently uncovered
-        // because the workspace.symbols index was empty in those tests.
+    fn finds_obsolete_method_in_symbol_package() {
+        // Exercise the symbol-package scan branch and attribute trimming.
         // Build a SymbolEntry with an Obsolete-marked method and confirm
         // it surfaces, with reason and tag arguments correctly trimmed of
         // surrounding quotes.

@@ -75,7 +75,7 @@ enum FieldFilter {
 impl FieldFilter {
     fn matches(&self, value: &Value) -> bool {
         match self {
-            // BC-correct range test (C20 filter leg): a `Code` cell compares
+            // A `Code` cell compares
             // caselessly and a numeric cell numerically, so `SetRange("No.",
             // 'ABC')` matches a stored `'abc'` and cross-type `Text`/`Code`
             // bounds don't fall out via `Value`'s variant-tag ordering.
@@ -198,7 +198,7 @@ impl MockRecord {
     /// `INIT` — reset non-key fields to defaults, but PRESERVE primary-key
     /// fields. BC's `Init` keeps the key so the ubiquitous idiom
     /// `Rec."No." := X; Rec.Init(); Rec.Insert();` inserts under `X`; clearing
-    /// the whole buffer here lost the key and failed the Insert (C20).
+    /// the whole buffer here loses the key and fails the insert.
     pub fn init(&mut self) {
         let preserved: Vec<(FieldNo, Value)> = self
             .primary_key_fields
@@ -299,6 +299,13 @@ impl MockRecord {
     /// `SETRANGE(field, low, high)` — filter a field to an inclusive value range.
     pub fn set_range(&mut self, field: FieldNo, low: Value, high: Value) {
         self.filters.insert(field, FieldFilter::Range(low, high));
+        self.iter_set.clear();
+        self.iter_pos = None;
+    }
+
+    /// Remove the active filter for one field.
+    pub fn clear_filter(&mut self, field: FieldNo) {
+        self.filters.remove(&field);
         self.iter_set.clear();
         self.iter_pos = None;
     }
@@ -405,7 +412,7 @@ impl MockRecord {
         }
         // BC moves as far as possible toward the target and returns the number
         // of steps ACTUALLY taken, rather than staying put and returning 0 on
-        // overshoot (C20). `until Next() = 0` loops behave the same either way,
+        // overshoot. `until Next() = 0` loops behave the same either way,
         // but a batch `Next(N)` that overshoots the end now advances to the
         // boundary and reports the partial move.
         let last = self.iter_set.len() as i64 - 1;
@@ -634,7 +641,7 @@ mod tests {
         assert_eq!(rec.field_get(2), Some(&Value::Text("NewName".to_string())));
     }
 
-    /// C20 filter leg: a `Code` field is caseless, so `SetRange("No.", 'ABC')`
+    /// A `Code` field is caseless, so `SetRange("No.", 'ABC')`
     /// must match a stored `'abc'`, and a `Text` filter bound on a `Code` cell
     /// (different `Value` variants) must not fall out via variant-tag ordering.
     #[test]
@@ -644,11 +651,9 @@ mod tests {
             rec.field_set(1, Value::Code(code.to_string()));
             rec.insert(false).expect("insert should succeed");
         }
-        // Exact case-insensitive point range: upper-case bound, lower-case data.
         rec.set_range(1, Value::Text("ABC".into()), Value::Text("ABC".into()));
         assert_eq!(rec.count(), 1, "SetRange('ABC') must match stored 'abc'");
 
-        // Inclusive span across cases.
         rec.reset();
         rec.set_range(1, Value::Code("ABC".into()), Value::Code("DEF".into()));
         assert_eq!(
@@ -657,18 +662,16 @@ mod tests {
             "range [ABC..DEF] must match 'abc' and 'def'"
         );
 
-        // A non-matching bound still excludes.
         rec.reset();
         rec.set_range(1, Value::Text("QQQ".into()), Value::Text("QQQ".into()));
         assert_eq!(rec.count(), 0);
     }
 
-    /// C20 negative: a `Text` field is case-SENSITIVE (only `Code` is caseless).
+    /// A `Text` field is case-sensitive; only `Code` is caseless.
     /// `SetRange('ABC')` on a Text cell must NOT match a stored `'abc'`.
     #[test]
     fn text_field_setrange_is_case_sensitive() {
         let mut rec = MockRecord::new(50101, "TextKeyed", vec![1]);
-        // Field 1 is the PK (some string); store Text values.
         for v in ["abc", "ABC", "AbC"] {
             rec.field_set(1, Value::Text(v.to_string()));
             rec.insert(false).expect("insert should succeed");
@@ -681,7 +684,7 @@ mod tests {
         );
     }
 
-    /// C20: a numeric field filter is tolerant of Integer/Decimal bound mixing —
+    /// A numeric field filter tolerates mixed Integer and Decimal bounds;
     /// an Integer cell in [1.5 .. 3.5] matches when the bounds are Decimals.
     #[test]
     fn numeric_field_setrange_mixes_integer_and_decimal() {
@@ -712,10 +715,6 @@ mod tests {
 
     #[test]
     fn delete_during_findset_iteration_drains_the_set() {
-        // BC's canonical `if FindSet then repeat Delete until Next() = 0`
-        // deletes every row. Regression: delete() used to clear iter_pos, so
-        // the first Next() after a Delete errored and the loop aborted after a
-        // single row.
         let mut rec = make_table();
         for i in 1..=5i64 {
             insert_row(&mut rec, i, "item");
@@ -734,7 +733,6 @@ mod tests {
     #[test]
     fn test_findset_iteration_order_matches_sort_key() {
         let mut rec = make_table();
-        // Insert in reverse order.
         for i in [5i64, 3, 1, 4, 2] {
             insert_row(&mut rec, i, "x");
         }
@@ -765,15 +763,27 @@ mod tests {
     }
 
     #[test]
+    fn clear_filter_restores_unfiltered_iteration() {
+        let mut rec = make_table();
+        for i in 1i64..=3 {
+            insert_row(&mut rec, i, "x");
+        }
+        rec.set_range(1, Value::Integer(2), Value::Integer(2));
+        assert_eq!(rec.count(), 1);
+
+        rec.clear_filter(1);
+
+        assert_eq!(rec.count(), 3);
+    }
+
+    #[test]
     fn test_set_current_key_changes_iteration_order() {
-        // Two-field table: key = field 1, also field 2 = sort priority field.
         let mut rec = MockRecord::new(99, "Test", vec![1]);
         for (no, priority) in [(10i64, 30i64), (20, 10), (30, 20)] {
             rec.field_set(1, Value::Integer(no));
             rec.field_set(3, Value::Integer(priority));
             rec.insert(false).unwrap();
         }
-        // Sort by field 3 (priority).
         rec.set_current_key(vec![3]);
         assert!(rec.find_set().unwrap());
         let mut seen_no = Vec::new();
@@ -781,7 +791,6 @@ mod tests {
         while rec.next(1).unwrap() != 0 {
             seen_no.push(rec.field_get(1).unwrap().clone());
         }
-        // Field 3 values: 10→no=20, 20→no=30, 30→no=10.
         assert_eq!(
             seen_no,
             vec![Value::Integer(20), Value::Integer(30), Value::Integer(10)]
@@ -900,7 +909,6 @@ mod tests {
 
     #[test]
     fn test_composite_primary_key() {
-        // Fields 1 (doc type) + 2 (no.) form the composite PK.
         let mut rec = MockRecord::new(37, "Sales Line", vec![1, 2]);
         rec.field_set(1, Value::Text("Order".to_string()));
         rec.field_set(2, Value::Integer(1000));
@@ -936,10 +944,8 @@ mod tests {
         assert_eq!(rec.count(), 5);
     }
 
-    // Vector 1: Decimal PK Eq/Ord consistency. With exact `rust_decimal` (C3)
-    // there is no NaN, so `a == a` holds unconditionally and Eq mirrors Ord.
     #[test]
-    fn test_decimal_pk_eq_consistency_adversarial_i_1() {
+    fn decimal_primary_key_equality_is_consistent() {
         let d = Value::Decimal(dec!(1.25));
         assert!(d == d, "Eq contract: a == a must hold for a Decimal value");
         assert_eq!(
@@ -948,16 +954,13 @@ mod tests {
         );
     }
 
-    // Vector 1b: a Decimal primary key round-trips through the store and a
-    // second insert of the same exact key is a DuplicateKey error.
     #[test]
-    fn test_decimal_pk_roundtrip_adversarial_i_1b() {
+    fn decimal_primary_key_round_trips() {
         let mut rec = MockRecord::new(99, "DecTable", vec![1]);
         rec.field_set(1, Value::Decimal(dec!(3.14)));
         rec.field_set(2, Value::Text("decrow".to_string()));
         rec.insert(false).expect("insert Decimal PK should succeed");
 
-        // Second insert with the same PK should be a DuplicateKey error.
         rec.field_set(1, Value::Decimal(dec!(3.14)));
         rec.field_set(2, Value::Text("duplicate".to_string()));
         let err = rec.insert(false).unwrap_err();
@@ -968,58 +971,40 @@ mod tests {
         );
     }
 
-    // Vector 3: Rename to self (same key) should succeed without row loss.
-    // When old_key == new_key: we remove the row, then find no conflict
-    // (since the row is now absent), and re-insert. Result: row survives.
     #[test]
-    fn test_rename_to_same_key_adversarial_i_3() {
+    fn rename_to_same_key_succeeds() {
         let mut rec = make_table();
         insert_row(&mut rec, 42, "SameKey");
         rec.get(vec![Value::Integer(42)]).unwrap();
-        // Rename to the identical key value.
         rec.rename(vec![(1, Value::Integer(42))]).unwrap();
-        // Row must still be findable.
         rec.get(vec![Value::Integer(42)])
             .expect("row must survive no-op rename to same key");
         assert_eq!(rec.field_get(2), Some(&Value::Text("SameKey".to_string())));
     }
 
-    // Vector 4: SetRange then SetFilter on the SAME field — second call
-    // must overwrite the first (last-write-wins). Combined on DIFFERENT
-    // fields must be AND semantics (both filters must match).
     #[test]
-    fn test_setrange_then_setfilter_same_field_overwrite_adversarial_i_4() {
+    fn setfilter_overwrites_setrange_on_same_field() {
         let mut rec = make_table();
         for i in 1i64..=10 {
             insert_row(&mut rec, i, "x");
         }
-        // SetRange to [3,7], then SetFilter >=5 on the same field.
-        // Expected BC behaviour: SetFilter replaces SetRange → only >=5 applies.
         rec.set_range(1, Value::Integer(3), Value::Integer(7));
         rec.set_filter(1, ">=5").unwrap();
-        // If last-write-wins: count == 6 (5..=10).
-        // If AND semantics:    count == 3 (5..=7).
         let count = rec.count();
         assert_eq!(count, 6, "SetFilter after SetRange on same field must overwrite (last-write-wins), giving >=5 → 6 rows");
     }
 
-    // Vector 4b: SetRange and SetFilter on DIFFERENT fields must be AND.
     #[test]
-    fn test_setrange_and_setfilter_different_fields_and_semantics_adversarial_i_4b() {
+    fn setrange_and_setfilter_compose_across_fields() {
         let mut rec = MockRecord::new(99, "Test", vec![1]);
-        // Insert rows: field1 in 1..=10, field2 = "A" or "B" alternating.
         for i in 1i64..=10 {
             rec.field_set(1, Value::Integer(i));
             let label = if i % 2 == 0 { "A" } else { "B" };
             rec.field_set(2, Value::Text(label.to_string()));
             rec.insert(false).unwrap();
         }
-        // SetRange on field1: [3,7] (rows 3,4,5,6,7).
         rec.set_range(1, Value::Integer(3), Value::Integer(7));
-        // SetFilter on field2: only "A" (even rows: 4,6).
         rec.set_filter(2, "A").unwrap();
-        // AND semantics: 5 rows in [3,7] AND field2="A" (case-insensitive).
-        // Even rows in [3,7]: 4, 6 → count = 2.
         assert_eq!(
             rec.count(),
             2,
@@ -1027,12 +1012,8 @@ mod tests {
         );
     }
 
-    // C20: `Init` preserves primary-key fields (only non-key fields reset), so
-    // after inserting row 1 and calling Init the key survives and Modify targets
-    // the existing row 1 successfully. A truly keyless buffer (never set) still
-    // errors with MissingKeyField — see `test_modify_with_no_key_set` below.
     #[test]
-    fn test_modify_after_init_preserves_key_adversarial_i_5() {
+    fn modify_after_init_preserves_key() {
         let mut rec = make_table();
         insert_row(&mut rec, 1, "Row");
         rec.init(); // resets non-key fields, PRESERVES the key
@@ -1047,7 +1028,6 @@ mod tests {
 
     #[test]
     fn test_modify_with_no_key_set() {
-        // A fresh buffer with no key field set errors with MissingKeyField.
         let mut rec = make_table();
         let err = rec.modify(false).unwrap_err();
         assert!(
@@ -1057,27 +1037,22 @@ mod tests {
     }
 
     #[test]
-    fn c20_init_after_key_then_insert_idiom() {
-        // The ubiquitous `Rec."No." := X; Rec.Init(); Rec.Insert();` must insert
-        // under X — Init preserves the key so Insert has a valid primary key.
+    fn init_after_key_supports_insert_idiom() {
         let mut rec = make_table();
         rec.field_set(1, Value::Integer(42));
         rec.init();
         rec.insert(false)
             .expect("Insert after Init-with-key must succeed");
-        // The row is retrievable under key 42.
         rec.get(vec![Value::Integer(42)]).expect("row 42 exists");
     }
 
     #[test]
-    fn c20_next_clamps_and_reports_actual_steps() {
+    fn next_clamps_and_reports_actual_steps() {
         let mut rec = make_table();
         for i in 1i64..=5 {
             insert_row(&mut rec, i, "r");
         }
         rec.find_set().unwrap(); // position at first (pos 0)
-                                 // Overshooting the end moves to the last row and reports the partial
-                                 // move (5 rows → from pos 0, Next(10) can only take 4 steps).
         assert_eq!(
             rec.next(10).unwrap(),
             4,
@@ -1088,20 +1063,15 @@ mod tests {
             Some(&Value::Integer(5)),
             "Next overshoot lands on the last row"
         );
-        // Already at the end: another Next returns 0 (the loop terminator).
         assert_eq!(rec.next(1).unwrap(), 0);
     }
 
-    // Vector 5b: Modify after Reset (NOT init) — current buffer retains
-    // the last loaded row's key. Modify should succeed if the row exists.
     #[test]
-    fn test_modify_after_reset_retains_current_adversarial_i_5b() {
+    fn modify_after_reset_retains_current_record() {
         let mut rec = make_table();
         insert_row(&mut rec, 10, "Ten");
         rec.get(vec![Value::Integer(10)]).unwrap();
-        // reset() does NOT clear the current buffer.
         rec.reset();
-        // Modify a non-PK field and call modify — should succeed.
         rec.field_set(2, Value::Text("TenModified".to_string()));
         rec.modify(false)
             .expect("Modify after reset should succeed when buffer has valid key");
@@ -1112,11 +1082,8 @@ mod tests {
         );
     }
 
-    // Vector 6: FindSet then Modify mid-iteration — cursor (iter_set)
-    // remains stable when a non-PK field is modified. Iteration must
-    // continue to the next row without skipping or panicking.
     #[test]
-    fn test_findset_modify_mid_iteration_adversarial_i_6() {
+    fn findset_allows_modify_during_iteration() {
         let mut rec = make_table();
         for i in 1i64..=5 {
             insert_row(&mut rec, i, "original");
@@ -1149,7 +1116,7 @@ mod tests {
     }
 
     #[test]
-    fn test_count_isempty_after_delete_all_adversarial_i_7() {
+    fn count_and_isempty_reflect_delete_all() {
         let mut rec = make_table();
         for i in 1i64..=5 {
             insert_row(&mut rec, i, "item");
@@ -1172,12 +1139,8 @@ mod tests {
         );
     }
 
-    // Vector 8: xRec after Insert on a fresh record (no prior Get).
-    // In BC, after Insert, xRec should equal the inserted record.
-    // In the mock, insert() does NOT update x_rec — it stays empty.
-    // This test documents the deviation: x_rec is empty after a first Insert.
     #[test]
-    fn test_xrec_after_insert_equals_current_adversarial_i_8() {
+    fn xrec_matches_current_after_insert() {
         let mut rec = make_table();
         rec.field_set(1, Value::Integer(99));
         rec.field_set(2, Value::Text("NewRow".to_string()));
@@ -1190,11 +1153,8 @@ mod tests {
         );
     }
 
-    // Vector 19: SetCurrentKey changes sort key and the NEXT FindSet
-    // rebuilds iter_set in the new order (not stale from old FindSet).
     #[test]
-    fn test_set_current_key_iter_set_rebuilds_adversarial_i_19() {
-        // Two-field rows: field1 = PK, field3 = secondary sort.
+    fn set_current_key_rebuilds_iteration_order() {
         let mut rec = MockRecord::new(99, "SortTest", vec![1]);
         for (no, priority) in [(10i64, 30i64), (20, 10), (30, 20)] {
             rec.field_set(1, Value::Integer(no));
@@ -1214,7 +1174,6 @@ mod tests {
 
         rec.set_current_key(vec![3]);
 
-        // Second FindSet must use new sort key: priority 10→no=20, 20→no=30, 30→no=10.
         assert!(rec.find_set().unwrap());
         let mut second_pass = vec![rec.field_get(1).unwrap().clone()];
         while rec.next(1).unwrap() != 0 {
@@ -1226,8 +1185,6 @@ mod tests {
             "After SetCurrentKey, iter_set must be rebuilt in new sort order"
         );
     }
-
-    // ───────────────────────── FlowField calc_flow (B6) ────────────────────
 
     /// A "Detail" table: fields 1=Doc No.(Code), 2=Line No.(Integer),
     /// 3=Amount, 4=Type, populated with three rows for ORD1 and one for ORD2.
@@ -1252,7 +1209,6 @@ mod tests {
     #[test]
     fn calc_flow_sum_with_field_eq() {
         let rec = detail_table();
-        // Sum(Amount WHERE Doc No. = "ORD1") = 10+20+30 = 60.
         let conds = [(1, FlowFilter::Eq(Value::Code("ORD1".into())))];
         assert_eq!(
             rec.calc_flow(&conds, Some(3), FlowAgg::Sum),
@@ -1286,24 +1242,20 @@ mod tests {
     #[test]
     fn calc_flow_const_filter_and_filter_expr() {
         let rec = detail_table();
-        // CONST(Item) modelled as an exact (type-tolerant) Eq on Type.
         let const_conds = [
             (1, FlowFilter::Eq(Value::Code("ORD1".into()))),
             (4, FlowFilter::Eq(Value::Text("Item".into()))),
         ];
-        // Item rows for ORD1: amounts 10 + 30 = 40.
         assert_eq!(
             rec.calc_flow(&const_conds, Some(3), FlowAgg::Sum),
             Value::Integer(40)
         );
 
-        // FILTER(>15) on Amount, reusing the BC filter engine.
         let expr = filter::parse(">15").unwrap();
         let filter_conds = [
             (1, FlowFilter::Eq(Value::Code("ORD1".into()))),
             (3, FlowFilter::Expr(expr)),
         ];
-        // ORD1 amounts > 15: 20 + 30 = 50.
         assert_eq!(
             rec.calc_flow(&filter_conds, Some(3), FlowAgg::Sum),
             Value::Integer(50)
@@ -1353,7 +1305,6 @@ mod tests {
 
     #[test]
     fn calc_flow_sum_decimal_promotes() {
-        // A mix containing a Decimal cell promotes the Sum result to Decimal.
         let mut rec = MockRecord::new(1, "Dec", vec![1]);
         rec.field_set(1, Value::Integer(1));
         rec.field_set(2, Value::Integer(10));

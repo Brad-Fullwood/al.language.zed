@@ -23,7 +23,7 @@ impl CodeLensKind {
     ///
     /// Single source of truth shared with the LSP server's command dispatch
     /// (`al-lsp` `server::lsp::SUPPORTED_COMMANDS`) so a lens can never emit an
-    /// id the server doesn't handle — the dead-action bug tracked as gap A8.
+    /// id the server doesn't handle.
     #[must_use]
     pub fn command_id(&self) -> &'static str {
         match self {
@@ -35,7 +35,7 @@ impl CodeLensKind {
 }
 
 /// Every command id any `CodeLensKind` can emit. The LSP server asserts each is
-/// backed by an `executeCommand` handler so no clickable lens is a no-op (A8).
+/// backed by an `executeCommand` handler so no clickable lens is a no-op.
 pub const LENS_COMMAND_IDS: &[&str] = &["al.findReferences", "al.showProfiler", "al.runTest"];
 
 /// Status of a single `[Test]` procedure as shown in a CodeLens.
@@ -59,7 +59,7 @@ pub struct CodeLensEntry {
     pub kind: CodeLensKind,
     /// For Test lenses: which test the attached `al.runTest` command targets.
     /// Without this the command is unactionable — the client has no way to
-    /// know which codeunit/method to run (F-OPEN-270).
+    /// know which codeunit/method to run.
     pub test_target: Option<TestTarget>,
 }
 
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn command_id_maps_each_kind_to_a_listed_lens_command() {
         // Every kind's command id must be in LENS_COMMAND_IDS — this is the set
-        // the LSP server asserts it handles, so a drift here is a dead lens (A8).
+        // the LSP server asserts it handles, so a drift here is a dead lens.
         let kinds = [
             CodeLensKind::Reference(3),
             CodeLensKind::Profiler("⏱ 1ms · 1 call".to_string()),

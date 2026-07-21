@@ -1,4 +1,4 @@
-//! Native Rust ports of BC test libraries — Phase 2.
+//! Native Rust ports of Business Central test libraries.
 //!
 //! Each library lives in its own submodule and exposes a `resolve` fn
 //! that maps a procedure name to its implementation. The dispatch layer
@@ -57,8 +57,6 @@ pub const CATALOGS: &[StubCatalog] = &[
 /// can't bleed into the next test that happens to run on the same
 /// thread. Without this, parallel test runs are non-deterministic when
 /// `JoinSet::spawn_blocking` reuses a worker thread.
-///
-/// F-OPEN-032.
 pub fn reset_thread_local_state() {
     library_variable_storage::reset_queue();
     library_random::reset_lcg();
@@ -168,10 +166,7 @@ mod tests {
 
     #[test]
     fn reset_thread_local_state_clears_queue_and_lcg() {
-        // Positive regression for F-OPEN-032. Prime the LVS queue and
-        // advance the LCG (via SetSeed) — the reset must wipe both
-        // back to "fresh thread" defaults so the next test can't see
-        // either.
+        // Prime both stateful stubs before resetting them together.
         let _ = library_variable_storage::enqueue(&[Value::Integer(42)]);
         let _ = library_random::set_seed(&[Value::Integer(99)]);
 

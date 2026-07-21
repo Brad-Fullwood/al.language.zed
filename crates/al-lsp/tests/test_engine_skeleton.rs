@@ -1,5 +1,4 @@
-// Verifies the al_test module integration, its canonical test-result types,
-// and the Workspace::test_results storage used by the test engine.
+// Compile-time guards for canonical test-engine types and workspace state.
 
 use al_test::result::{TestCodeunitResult, TestMethodResult, TestRunnerError, TestStatus};
 use al_workspace::Workspace;

@@ -1,5 +1,5 @@
-//! End-to-end interpreter tests for B5 (workspace procedure dispatch) and
-//! B6 (records in tests, wired to the mock store).
+//! End-to-end interpreter tests for workspace procedure dispatch, records,
+//! FlowFields, and list values.
 //!
 //! Each test builds a tiny workspace (`MockSource`) containing real AL table
 //! and codeunit objects, then drives a test procedure through `dispatch_call`
@@ -65,12 +65,8 @@ fn ok(eval: Eval) -> Value {
     }
 }
 
-// ─────────────────────────── C25: var parameters ───────────────────────────
-
 #[test]
-fn c25_var_param_mutation_propagates_to_caller() {
-    // `var` parameter is by-reference: the callee's mutation must be visible
-    // in the caller's variable after the call returns.
+fn var_param_mutation_propagates_to_caller() {
     let cu = r#"codeunit 50190 "VarParam Tests"
 {
     procedure Bump(var n: Integer)
@@ -92,12 +88,8 @@ fn c25_var_param_mutation_propagates_to_caller() {
     assert_eq!(ok(r), Value::Integer(11));
 }
 
-// ─────────────────────────── C3: exact Decimal ───────────────────────────
-
 #[test]
-fn c3_decimal_arithmetic_is_exact_end_to_end() {
-    // Full evaluation path: `0.1 + 0.2 = 0.3` returns TRUE. Under the old f64
-    // Decimal the sum was 0.30000000000000004 and this comparison was FALSE.
+fn decimal_arithmetic_is_exact_end_to_end() {
     let cu = r#"codeunit 50191 "Decimal Tests"
 {
     procedure SumIsExact(): Boolean
@@ -132,7 +124,6 @@ fn c3_decimal_arithmetic_is_exact_end_to_end() {
         "0.1 + 0.2 must equal 0.3 exactly through the interpreter"
     );
 
-    // Ten accumulations of 0.1 land on exactly 1.0 (f64 drifts to 0.9999…).
     let r = run(
         &[("/ws/Decimal.al", cu)],
         "Decimal Tests",
@@ -143,8 +134,7 @@ fn c3_decimal_arithmetic_is_exact_end_to_end() {
 }
 
 #[test]
-fn c25_value_param_does_not_propagate() {
-    // A plain (by-value) parameter must NOT propagate the callee's mutation.
+fn value_param_does_not_propagate() {
     let cu = r#"codeunit 50191 "ByVal Tests"
 {
     procedure Bump(n: Integer)
@@ -167,9 +157,7 @@ fn c25_value_param_does_not_propagate() {
 }
 
 #[test]
-fn c25_var_param_non_lvalue_arg_is_not_written_back() {
-    // Passing a literal (not an lvalue) to a var parameter must not panic or
-    // corrupt state; the call still runs, the literal simply isn't written back.
+fn var_param_non_lvalue_arg_is_not_written_back() {
     let cu = r#"codeunit 50192 "VarLit Tests"
 {
     procedure Bump(var n: Integer): Integer
@@ -188,12 +176,8 @@ fn c25_var_param_non_lvalue_arg_is_not_written_back() {
     assert_eq!(ok(r), Value::Integer(15));
 }
 
-// ─────────────────────────── C2: Code case semantics ───────────────────────
-
 #[test]
-fn c2_code_equality_is_case_insensitive() {
-    // BC uppercases Code at assignment and compares it caselessly. A Code var
-    // assigned 'abc' equals the literal 'ABC'.
+fn code_equality_is_case_insensitive() {
     let cu = r#"codeunit 50193 "Code Eq"
 {
     procedure Run(): Boolean
@@ -210,8 +194,7 @@ fn c2_code_equality_is_case_insensitive() {
 }
 
 #[test]
-fn c2_text_equality_is_case_sensitive() {
-    // Control: Text equality stays case-sensitive.
+fn text_equality_is_case_sensitive() {
     let cu = r#"codeunit 50194 "Text Eq"
 {
     procedure Run(): Boolean
@@ -228,8 +211,7 @@ fn c2_text_equality_is_case_sensitive() {
 }
 
 #[test]
-fn c2_code_case_matching_is_case_insensitive() {
-    // A CASE over a Code selector matches case-insensitively.
+fn code_case_matching_is_case_insensitive() {
     let cu = r#"codeunit 50195 "Code Case"
 {
     procedure Run(): Integer
@@ -252,10 +234,8 @@ fn c2_code_case_matching_is_case_insensitive() {
     assert_eq!(ok(r), Value::Integer(5));
 }
 
-// ───────────────────────────────── B6: records ─────────────────────────────
-
 #[test]
-fn b6_init_set_insert_get_field_get() {
+fn init_set_insert_get_field_get() {
     let cu = r#"codeunit 50101 "Item Tests"
 {
     procedure InsertAndGet(): Text
@@ -281,7 +261,7 @@ fn b6_init_set_insert_get_field_get() {
 }
 
 #[test]
-fn b6_get_missing_returns_false() {
+fn get_missing_returns_false() {
     let cu = r#"codeunit 50101 "Item Tests"
 {
     procedure GetMissing(): Boolean
@@ -302,8 +282,7 @@ fn b6_get_missing_returns_false() {
 }
 
 #[test]
-fn b6_field_assignment_then_readback() {
-    // Field set/get round-trips a non-PK field through the buffer.
+fn field_assignment_then_readback() {
     let cu = r#"codeunit 50101 "Item Tests"
 {
     procedure SetThenRead(): Decimal
@@ -325,13 +304,11 @@ fn b6_field_assignment_then_readback() {
         "SetThenRead",
         vec![],
     );
-    // 19 is an integer literal assigned to a Decimal field — the mock stores the
-    // value as written (the interpreter does not coerce numeric field types).
     assert_eq!(ok(r), Value::Integer(19));
 }
 
 #[test]
-fn b6_insert_duplicate_key_errors() {
+fn insert_duplicate_key_errors() {
     let cu = r#"codeunit 50101 "Item Tests"
 {
     procedure DupInsert()
@@ -364,9 +341,7 @@ fn b6_insert_duplicate_key_errors() {
 }
 
 #[test]
-fn b6_asserterror_catches_duplicate_insert() {
-    // The duplicate-insert error is catchable by `asserterror`, the way a BC
-    // test would assert it.
+fn asserterror_catches_duplicate_insert() {
     let cu = r#"codeunit 50101 "Item Tests"
 {
     procedure DupCaught(): Integer
@@ -393,7 +368,7 @@ fn b6_asserterror_catches_duplicate_insert() {
 }
 
 #[test]
-fn b6_setrange_then_count() {
+fn setrange_then_count() {
     let cu = r#"codeunit 50103 "Num Tests"
 {
     procedure CountInRange(): Integer
@@ -421,7 +396,7 @@ fn b6_setrange_then_count() {
 }
 
 #[test]
-fn b6_setrange_single_value_exact() {
+fn setrange_single_value_exact() {
     let cu = r#"codeunit 50103 "Num Tests"
 {
     procedure CountExact(): Integer
@@ -449,7 +424,7 @@ fn b6_setrange_single_value_exact() {
 }
 
 #[test]
-fn b6_setfilter_then_count() {
+fn setfilter_then_count() {
     let cu = r#"codeunit 50103 "Num Tests"
 {
     procedure CountFiltered(): Integer
@@ -477,7 +452,7 @@ fn b6_setfilter_then_count() {
 }
 
 #[test]
-fn b6_findset_next_iteration_sums_amount() {
+fn findset_next_iteration_sums_amount() {
     let cu = r#"codeunit 50103 "Num Tests"
 {
     procedure SumAmounts(): Decimal
@@ -507,13 +482,11 @@ fn b6_findset_next_iteration_sums_amount() {
         "SumAmounts",
         vec![],
     );
-    // Amounts 10+20+30+40 = 100. i*10 with Integer i yields Integer values; the
-    // running `total` starts at Integer(0) so the sum stays Integer(100).
     assert_eq!(ok(r), Value::Integer(100));
 }
 
 #[test]
-fn b6_findfirst_reads_lowest_key() {
+fn findfirst_reads_lowest_key() {
     let cu = r#"codeunit 50103 "Num Tests"
 {
     procedure FirstKey(): Integer
@@ -539,7 +512,7 @@ fn b6_findfirst_reads_lowest_key() {
 }
 
 #[test]
-fn b6_isempty_true_then_false() {
+fn isempty_true_then_false() {
     let cu = r#"codeunit 50103 "Num Tests"
 {
     procedure EmptyThenNot(): Boolean
@@ -563,7 +536,7 @@ fn b6_isempty_true_then_false() {
 }
 
 #[test]
-fn b6_delete_then_count() {
+fn delete_then_count() {
     let cu = r#"codeunit 50103 "Num Tests"
 {
     procedure DeleteOne(): Integer
@@ -588,7 +561,7 @@ fn b6_delete_then_count() {
 }
 
 #[test]
-fn b6_deleteall_empties_table() {
+fn deleteall_empties_table() {
     let cu = r#"codeunit 50103 "Num Tests"
 {
     procedure WipeAll(): Integer
@@ -616,7 +589,7 @@ fn b6_deleteall_empties_table() {
 }
 
 #[test]
-fn b6_modify_updates_row() {
+fn modify_updates_row() {
     let cu = r#"codeunit 50101 "Item Tests"
 {
     procedure ModifyDesc(): Text
@@ -645,9 +618,7 @@ fn b6_modify_updates_row() {
 }
 
 #[test]
-fn b6_unknown_table_errors_gracefully() {
-    // A record of a table that is not in the workspace must produce a clear
-    // error rather than a panic.
+fn unknown_table_errors_gracefully() {
     let cu = r#"codeunit 50104 "Cust Tests"
 {
     procedure UseCustomer()
@@ -677,9 +648,7 @@ fn b6_unknown_table_errors_gracefully() {
 }
 
 #[test]
-fn b6_two_record_vars_share_physical_table() {
-    // Inserting through one variable and reading through another variable of the
-    // same table reflects the shared physical table (records keyed by table name).
+fn two_record_vars_share_physical_table() {
     let cu = r#"codeunit 50101 "Item Tests"
 {
     procedure SharedTable(): Text
@@ -704,8 +673,6 @@ fn b6_two_record_vars_share_physical_table() {
     );
     assert_eq!(ok(r), Value::Text("Shared".into()));
 }
-
-// ─────────────────────── B6 follow-up: FlowField / CalcFormula ─────────────
 
 /// A header table with several FlowFields over the detail table below, plus a
 /// detail table with a composite primary key.
@@ -890,58 +857,49 @@ fn run_flow(proc: &str) -> Eval {
 }
 
 #[test]
-fn b6_flowfield_sum_via_calcfields() {
-    // ORD1 amounts 10+20+30 = 60; the ORD2 line (999) is excluded by the
-    // Doc No. = FIELD("No.") condition.
+fn flowfield_sum_via_calcfields() {
     assert_eq!(ok(run_flow("SumViaCalcFields")), Value::Integer(60));
 }
 
 #[test]
-fn b6_flowfield_count_on_read() {
-    // Auto-calc on read of a Count FlowField — three ORD1 lines.
+fn flowfield_count_on_read() {
     assert_eq!(ok(run_flow("CountOnRead")), Value::Integer(3));
 }
 
 #[test]
-fn b6_flowfield_filtered_const() {
-    // Sum WHERE Type = CONST(Item): ORD1 Item lines 10 + 30 = 40.
+fn flowfield_filtered_const() {
     assert_eq!(ok(run_flow("FilteredConst")), Value::Integer(40));
 }
 
 #[test]
-fn b6_flowfield_filtered_expr() {
-    // Sum WHERE Amount = FILTER(>15): ORD1 amounts 20 + 30 = 50.
+fn flowfield_filtered_expr() {
     assert_eq!(ok(run_flow("FilteredExpr")), Value::Integer(50));
 }
 
 #[test]
-fn b6_flowfield_max() {
+fn flowfield_max() {
     assert_eq!(ok(run_flow("MaxOnRead")), Value::Integer(30));
 }
 
 #[test]
-fn b6_flowfield_average() {
-    // Average always returns Decimal: (10+20+30)/3 = 20.0.
+fn flowfield_average() {
     assert_eq!(ok(run_flow("AvgOnRead")), Value::Decimal(dec!(20.0)));
 }
 
 #[test]
-fn b6_flowfield_exist_true() {
+fn flowfield_exist_true() {
     assert_eq!(ok(run_flow("ExistTrue")), Value::Boolean(true));
 }
 
 #[test]
-fn b6_flowfield_empty_sum_is_zero() {
-    // A document with no detail lines sums to 0.
+fn flowfield_empty_sum_is_zero() {
     assert_eq!(ok(run_flow("EmptySum")), Value::Integer(0));
 }
 
 #[test]
-fn b6_flowfield_empty_exist_is_false() {
+fn flowfield_empty_exist_is_false() {
     assert_eq!(ok(run_flow("EmptyExist")), Value::Boolean(false));
 }
-
-// ──────────────────────────── B5: procedure dispatch ───────────────────────
 
 const MATH_LIB: &str = r#"codeunit 50200 "Math Lib"
 {
@@ -958,9 +916,7 @@ const MATH_LIB: &str = r#"codeunit 50200 "Math Lib"
 "#;
 
 #[test]
-fn b5_codeunit_variable_dispatch_executes_real_body() {
-    // `lib.Add(2, 3)` where `lib: Codeunit "Math Lib"` resolves the variable's
-    // declared subtype to the workspace object and runs the real procedure body.
+fn codeunit_variable_dispatch_executes_real_body() {
     let caller = r#"codeunit 50201 "Caller"
 {
     procedure Compute(): Integer
@@ -981,8 +937,7 @@ fn b5_codeunit_variable_dispatch_executes_real_body() {
 }
 
 #[test]
-fn b5_codeunit_variable_nested_calls() {
-    // Two codeunit-variable calls composed in one expression.
+fn codeunit_variable_nested_calls() {
     let caller = r#"codeunit 50201 "Caller"
 {
     procedure Compute(): Integer
@@ -1003,8 +958,7 @@ fn b5_codeunit_variable_nested_calls() {
 }
 
 #[test]
-fn b5_rhs_expression_position_cross_object_dispatch() {
-    // Calling another object's procedure by name in RHS-expression position.
+fn rhs_expression_position_cross_object_dispatch() {
     let caller = r#"codeunit 50202 "Direct"
 {
     procedure Compute(): Integer
@@ -1023,9 +977,7 @@ fn b5_rhs_expression_position_cross_object_dispatch() {
 }
 
 #[test]
-fn b5_unresolved_codeunit_object_is_graceful_error() {
-    // A codeunit variable whose subtype object is missing from the workspace
-    // produces a clear error, not a panic.
+fn unresolved_codeunit_object_is_graceful_error() {
     let caller = r#"codeunit 50201 "Caller"
 {
     procedure Compute(): Integer
@@ -1040,10 +992,8 @@ fn b5_unresolved_codeunit_object_is_graceful_error() {
     assert!(r.is_error(), "expected a graceful error, got {r:?}");
 }
 
-// ──────────────────────────── List of [T] (W2-08) ──────────────────────────
-
 #[test]
-fn b6_list_add_get_count_via_dispatch() {
+fn list_add_get_count_via_dispatch() {
     let cu = r#"codeunit 50300 "List Tests"
 {
     procedure Build(): Integer
@@ -1062,7 +1012,7 @@ fn b6_list_add_get_count_via_dispatch() {
 }
 
 #[test]
-fn b6_list_get_returns_element() {
+fn list_get_returns_element() {
     let cu = r#"codeunit 50300 "List Tests"
 {
     procedure Second(): Text
@@ -1081,7 +1031,7 @@ fn b6_list_get_returns_element() {
 }
 
 #[test]
-fn b6_list_contains() {
+fn list_contains() {
     let cu = r#"codeunit 50300 "List Tests"
 {
     procedure HasIt(): Boolean

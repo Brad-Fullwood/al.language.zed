@@ -9,12 +9,12 @@ use ratatui::text::{Line, Span};
 use al_protocol::DaemonClient;
 
 use crate::types;
-use crate::{DetailTarget, DetailTargetKind, display_object_id};
+use crate::{DetailTarget, display_object_id};
 
 use super::App;
 
 impl App {
-    /// FB-1: the startup symbol dump is slim (no member arrays — a full
+    /// the startup symbol dump is slim (no member arrays — a full
     /// dump is ~60 MB JSON). Hydrate the selected object's members from the
     /// daemon on demand, replacing the slim entry in place.
     fn hydrate_selected_object(&mut self) {
@@ -164,7 +164,6 @@ impl App {
                     self.details_items.push((
                         Some(DetailTarget {
                             name: k.name.clone(),
-                            kind: DetailTargetKind::Key,
                         }),
                         Line::from(vec![
                             Span::raw("    ".to_string()),
@@ -191,7 +190,6 @@ impl App {
                     self.details_items.push((
                         Some(DetailTarget {
                             name: f.name.clone(),
-                            kind: DetailTargetKind::Field,
                         }),
                         Line::from(vec![
                             Span::styled(
@@ -224,7 +222,6 @@ impl App {
                     self.details_items.push((
                         Some(DetailTarget {
                             name: c.name.clone(),
-                            kind: DetailTargetKind::Control(c.kind.clone()),
                         }),
                         Line::from(vec![
                             Span::raw("    ".to_string()),
@@ -251,7 +248,6 @@ impl App {
                     self.details_items.push((
                         Some(DetailTarget {
                             name: v.name.clone(),
-                            kind: DetailTargetKind::EnumValue,
                         }),
                         Line::from(vec![
                             Span::styled(
@@ -306,7 +302,6 @@ impl App {
                     self.details_items.push((
                         Some(DetailTarget {
                             name: m.name.clone(),
-                            kind: DetailTargetKind::Procedure,
                         }),
                         Line::from(spans),
                     ));
@@ -368,7 +363,7 @@ impl App {
                             } else {
                                 1
                             };
-                            // ISSUE-078: use `zed <path>:<line>:<col>` CLI instead of
+                            // use `zed <path>:<line>:<col>` CLI instead of
                             // zed:// URL which is unreliable on Linux.
                             let file_spec = format!("{}:{}:1", path_str, line);
                             if let Err(e) =

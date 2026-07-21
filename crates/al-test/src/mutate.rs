@@ -5,8 +5,7 @@
 //! and reports which mutations were killed (at least one test failed) vs.
 //! survived (all tests still passed — indicates a test gap).
 //!
-//! This is a **Phase 5 starter** implementation — it is intentionally scoped
-//! to the mutators most likely to reveal test gaps in AL business logic:
+//! The built-in mutators target common business-logic test gaps:
 //! conditional boundary, conditional negation, arithmetic operator swap,
 //! boolean literal flip, and integer +/-1 offset.
 //!
@@ -66,8 +65,8 @@ pub struct VariantOutcome {
 /// Identifies which test-execution phase produced this report.
 ///
 /// Current runs execute interp-routed tests against each mutant in-process
-/// (`Interpreter`). `Stub` remains for deserialising older reports produced
-/// before execution was wired (F-OPEN-270), whose 0% scores are meaningless.
+/// (`Interpreter`). `Stub` remains only for deserialising legacy reports that
+/// predate test execution and therefore have no meaningful score.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MutationExecutorPhase {
@@ -121,7 +120,7 @@ impl MutationReport {
 pub struct MutationOptions {
     /// Restrict mutations to files that contain `[Test]` procedures.
     pub affected_only: bool,
-    /// Run variants in parallel (A12). When set, each variant executes against
+    /// Run variants in parallel. Each variant executes against
     /// its own isolated workspace snapshot — concurrent mutants can never
     /// contaminate one another's test run — and the outcomes are reassembled
     /// into the exact same stable order a sequential run would produce.
@@ -175,8 +174,7 @@ pub(crate) fn generate_variants(
     let bytes = source.as_bytes();
     let root = tree.root_node();
 
-    // Iterative walk using an explicit stack (no recursion — see CLAUDE.md).
-    // We visit all nodes (named and unnamed) by pushing all children once.
+    // Visit all named and unnamed nodes once without recursive stack growth.
     // Use node IDs to avoid double-visiting.
     let mut stack = vec![root];
     let mut visited = std::collections::HashSet::new();
@@ -359,9 +357,9 @@ fn make_variant(
 /// Return a copy of `source` with the mutation described by `variant` applied.
 ///
 /// Replaces exactly `variant.byte_start..variant.byte_end` with `variant.mutated`.
-/// Panics are not possible — byte indices are clamped to source length AND
-/// snapped to char boundaries before slicing (F-OPEN-092). Variants produced
-/// by `generate_variants` always sit on char boundaries because the byte
+/// Panics are not possible: byte indices are clamped to source length and
+/// snapped to char boundaries before slicing. Variants produced by
+/// `generate_variants` always sit on char boundaries because the byte
 /// positions come from tree-sitter nodes, but a stale variant from a between-
 /// mutation source edit could end up pointing mid-UTF-8.
 pub fn apply_variant(source: &str, variant: &MutationVariant) -> String {
@@ -436,13 +434,12 @@ pub async fn run_mutation_testing(
     // already sorted by path (`collect_mutation_files`), and `generate_variants`
     // walks each tree deterministically. This single ordered list is the stable
     // spine both the sequential and parallel executors reassemble against, so
-    // `--parallel` results match a sequential run position-for-position (A12).
+    // parallel results match a sequential run position-for-position.
     let mut variants: Vec<MutationVariant> = Vec::new();
     for (file_path, cached) in &files {
         // Reuse the parse cached by `collect_mutation_files` to avoid a
-        // second `get_cached_parse` clone of (text, tree) per file
-        // (F-OPEN-094). If the cache was invalidated between the two reads
-        // (user edit mid-run), fall back to the legacy refetch path.
+        // second `get_cached_parse` clone of (text, tree) per file. If the
+        // cache was invalidated between reads, fetch the current source.
         let file_variants = match cached {
             Some((text, tree)) => generate_variants(file_path, text, tree),
             None => generate_variants_for_file(workspace, file_path),
@@ -465,10 +462,9 @@ pub async fn run_mutation_testing(
         killed,
         survived,
         errored,
-        // run_single_variant executes interp-routed tests in-process against
-        // each mutant (F-OPEN-270); the score is a real signal for code
-        // covered by interpreter-runnable tests. Mutants in code only covered
-        // by live-BC tests still survive (no offline execution path).
+        // Tests execute in-process against each mutant, so the score is a real
+        // signal for code covered by interpreter-runnable tests. Mutants covered
+        // only by live-BC tests still survive because they have no offline path.
         executor_phase: MutationExecutorPhase::Interpreter,
     };
 
@@ -513,7 +509,7 @@ async fn run_variants_sequential(
     outcomes
 }
 
-/// Execute `variants` concurrently (A12).
+/// Execute `variants` concurrently.
 ///
 /// The shared-workspace swap/restore dance used by the sequential path is
 /// fundamentally single-flight: it mutates one global `file_index` and would
@@ -598,7 +594,7 @@ async fn run_variants_parallel(
 
 /// Snapshot the text of every file currently in the workspace `file_index`.
 ///
-/// Used to seed per-variant isolated workspaces (A12). Mirrors the original-text
+/// Used to seed per-variant isolated workspaces. Mirrors the original-text
 /// resolution in `run_single_variant`: the cached parse is preferred, falling
 /// back to the document store when a file is indexed but not yet parsed. The
 /// result is sorted by path for deterministic workspace construction.
@@ -624,7 +620,7 @@ fn snapshot_workspace_files(workspace: &Workspace) -> Vec<(std::path::PathBuf, S
 }
 
 /// Build a fresh, throwaway `Workspace` containing every snapshot file, with
-/// `variant`'s mutation applied to its single target file (A12).
+/// `variant`'s mutation applied to its single target file.
 ///
 /// The interpreter test path reads exclusively from `file_index`
 /// (`discover_tests`, `classify_codeunits`, `InterpMode`), so a workspace
@@ -655,8 +651,8 @@ fn build_isolated_workspace(
 /// Returns `(path_string, Option<(text, tree)>)` per file. The cached parse is
 /// carried forward to the variant-generation step so the run loop doesn't
 /// re-fetch from `file_index` and pay a second `(String, Tree)` clone per
-/// file (F-OPEN-094). When the cache is missed (rare — files added but not
-/// indexed), the tuple's second element is None and the run loop falls back
+/// file. When the cache is missed (rare for files added but not indexed), the
+/// tuple's second element is `None` and the run loop falls back
 /// to the document-store path inside `generate_variants_for_file`.
 fn collect_mutation_files(
     workspace: &Workspace,
@@ -706,10 +702,8 @@ fn collect_mutation_files(
 
 /// Run a single variant: apply mutation, run tests, return outcome.
 ///
-/// This implementation runs tests **in-process** using the AL interpreter
-/// (no live BC round-trip) to keep mutation testing fast.  The current
-/// implementation is a stub that marks each variant as "survived" — the full
-/// interpreter integration is added in a follow-on phase.
+/// Tests run in-process through the AL interpreter; mutation runs never contact
+/// a live Business Central instance.
 async fn run_single_variant(
     workspace: &std::sync::Arc<Workspace>,
     variant: &MutationVariant,
@@ -891,10 +885,6 @@ mod tests {
         AlParser::parse_quick(source).tree
     }
 
-    /// F-OPEN-270: the mutation executor must actually RUN interp-routed tests
-    /// against each mutant — the Stub phase reported every mutant as survived,
-    /// making `test-mutate`'s 0.0% score meaningless. A mutant that flips the
-    /// arithmetic inside a covered [Test] procedure must be KILLED.
     #[tokio::test(flavor = "multi_thread")]
     async fn mutation_run_kills_mutants_via_interpreter() {
         let ws = std::sync::Arc::new(al_workspace::Workspace::new());
@@ -934,7 +924,6 @@ mod tests {
             report.survived,
             report.errored
         );
-        // The original (unmutated) workspace must be restored afterwards.
         let (text, _) = ws
             .file_index
             .get_cached_parse(std::path::Path::new("/proj/src/PureLogicTest.Codeunit.al"))
@@ -945,7 +934,7 @@ mod tests {
         );
     }
 
-    /// A12: `--parallel` must run variants concurrently yet produce the exact
+    /// `--parallel` must run variants concurrently yet produce the exact
     /// same stable-ordered result set as a sequential run — same variants, same
     /// kill/survive verdict, same order. Isolation (one throwaway workspace per
     /// variant) is what makes the concurrency safe; this test pins that the two
@@ -973,7 +962,6 @@ mod tests {
 }
 "#;
 
-        // (id, killed, errored) is the comparable fingerprint of a run.
         async fn run(parallel: bool) -> Vec<(String, bool, bool)> {
             let ws = std::sync::Arc::new(al_workspace::Workspace::new());
             ws.file_index.add_file(
@@ -981,8 +969,6 @@ mod tests {
                 SOURCE.to_string(),
             );
             let (tx, mut rx) = tokio::sync::mpsc::channel(256);
-            // Drain events concurrently so a bounded channel can never stall
-            // the run regardless of how many variants are produced.
             let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
             let opts = MutationOptions {
                 parallel,
@@ -1011,8 +997,6 @@ mod tests {
             "parallel run must equal the sequential run, position-for-position\n\
              sequential: {sequential:#?}\nparallel:   {parallel:#?}"
         );
-        // The fixture is only a meaningful regression guard if it exercises
-        // both verdicts: covered-body mutants killed, uncovered-body survived.
         assert!(
             sequential.iter().any(|(_, killed, _)| *killed),
             "expected some KILLED mutants in the covered [Test] body"
@@ -1122,7 +1106,6 @@ mod tests {
 
     #[test]
     fn apply_variant_replaces_token_byte_precisely() {
-        // Use a full codeunit so the tree-sitter grammar has proper context
         let source = r#"codeunit 1 "X"
 {
     procedure F(): Boolean
@@ -1139,7 +1122,6 @@ mod tests {
             .expect("Should have < → <= variant for simple expression");
 
         let result = apply_variant(source, lt);
-        // The < should have been replaced by <=
         assert!(
             result.contains("<= B"),
             "apply_variant should swap < for <=, got: {result}"
@@ -1155,8 +1137,6 @@ mod tests {
         let source = "if A > B then";
         let tree = parse(source);
         let variants = generate_variants("x.al", source, &tree);
-        // > → >= is not same length, but < → <  produces same length trivially
-        // Just verify no corruption occurs
         for v in &variants {
             let result = apply_variant(source, v);
             assert!(
@@ -1218,8 +1198,6 @@ mod tests {
 
     #[test]
     fn mutation_report_score_none_under_stub_phase() {
-        // The whole point of the executor_phase flag: a stub run must NOT
-        // report a numeric score (which would be a meaningless 0%).
         let report = MutationReport {
             variants: vec![],
             killed: 0,
@@ -1232,7 +1210,6 @@ mod tests {
 
     #[test]
     fn generate_variants_no_panics_on_minimal_source() {
-        // Single keyword line — may not parse to anything useful but must not panic
         let sources = ["", "begin", "end;", "if then", "42", "true", "false"];
         for s in &sources {
             let tree = parse(s);
@@ -1242,7 +1219,6 @@ mod tests {
 
     #[test]
     fn apply_variant_out_of_range_byte_start_clamped() {
-        // Variant with byte_start beyond source length should not panic
         let source = "short";
         let v = MutationVariant {
             id: "test".to_string(),
@@ -1275,8 +1251,6 @@ mod tests {
 
     #[test]
     fn apply_variant_missing_original_token_ignored() {
-        // If original token in source differs from what variant expects,
-        // apply_variant still applies the byte range blindly (caller responsibility)
         let source = "x := y + z;";
         let v = MutationVariant {
             id: "test:x.al:1:5".to_string(),
@@ -1309,7 +1283,6 @@ mod tests {
         assert!(s.contains("unexpected token"));
     }
 
-    // Debug helper — not a real assertion test, useful for understanding tree structure
     #[test]
     fn debug_dump_tree_nodes() {
         let source = "if Age < 18 then exit(false);";
@@ -1327,7 +1300,6 @@ mod tests {
             }
         }
         assert!(!all_kinds.is_empty(), "Should have tree nodes");
-        // Print for diagnostic purposes (only visible with --nocapture)
         for (kind, named, text) in &all_kinds {
             let _ = (kind, named, text);
         }

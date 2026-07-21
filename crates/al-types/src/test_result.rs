@@ -1,9 +1,4 @@
-//! Canonical value types for test execution + persisted history.
-//!
-//! These are tier-0 data types so the workspace hub (which stores results) and
-//! the analysis layer (which renders them as diagnostics/code-lenses) can both
-//! depend on them downward, without depending on the test-engine crate that
-//! produces them.
+//! Test execution results and persisted history.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -80,7 +75,7 @@ pub struct TestRunRecord {
     /// Test duration in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
-    /// Failure message, only present on Fail.
+    /// Failure message, only present for failed tests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

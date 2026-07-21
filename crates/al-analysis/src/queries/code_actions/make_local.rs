@@ -53,7 +53,7 @@ fn external_caller_exists(workspace: &Workspace, current_uri: &Url, proc_name: &
     false
 }
 
-/// T1208: Make method local — offer to add `local` keyword when procedure has no external callers.
+/// Make method local — offer to add `local` keyword when procedure has no external callers.
 pub(super) fn source_action_make_local(
     workspace: &Workspace,
     uri: &Url,

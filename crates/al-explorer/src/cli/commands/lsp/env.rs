@@ -184,10 +184,10 @@ pub fn cmd_doctor(json: bool) -> ExitCode {
         .get("workspaceFiles")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    // T056: distinguish "real misconfiguration" (ALTool / .NET / project
+    // distinguish "real misconfiguration" (ALTool / .NET / project
     // missing) from "daemon still loading" (only the indexedSymbols /
     // workspaceFiles counts are zero) so the CLI exit code reflects the
-    // actual category. Pre-T056 both returned ExitCode::FAILURE which
+    // actual category. Previously, both returned ExitCode::FAILURE, which
     // confused scripted callers — they couldn't distinguish a transient
     // startup race from a real broken setup.
     let mut transient_loading = false;
@@ -226,7 +226,7 @@ pub fn cmd_download_symbols(
     };
     // Symbol downloads pull multi-hundred-MB packages from NuGet or a BC
     // server — allow up to 15 minutes before declaring the daemon stuck
-    // (FB-15: this used to die at 30s with a raw EAGAIN).
+    // (this used to die at 30s with a raw EAGAIN).
     client.set_request_timeout(std::time::Duration::from_secs(900));
     let params = serde_json::json!({
         "source": source.unwrap_or("nuget"),
@@ -287,7 +287,7 @@ mod clear_cache_tests {
 
     #[test]
     fn al_lsp_index_dir_targets_index_subdir() {
-        // Positive: F-049 invariant — al-explorer points at `…/al-lsp/index`,
+        // Positive: invariant — al-explorer points at `…/al-lsp/index`,
         // matching the daemon's `clearCache` target. Previously it pointed
         // at `…/al-lsp/packages` (a stale cache location).
         let dir = al_lsp_index_dir();
@@ -301,7 +301,7 @@ mod clear_cache_tests {
     #[test]
     fn al_lsp_index_dir_is_not_packages_subdir() {
         // Negative: explicitly assert we never resolve to the legacy
-        // `…/al-lsp/packages` path that F-049 flagged.
+        // `…/al-lsp/packages` path that flagged.
         let dir = al_lsp_index_dir();
         let s = dir.to_string_lossy();
         assert!(

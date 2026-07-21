@@ -3,9 +3,6 @@
 //! `bc_debug` module talks directly to BC via REST + SignalR (no external binary).
 //! `client` provides low-level DAP communication for EditorServices.Host.
 //!
-//! Folded into al-core in stage 3 of the crate consolidation; previously the
-//! standalone `crate::dap` crate.
-
 pub mod bc_debug;
 pub mod client;
 pub mod config;

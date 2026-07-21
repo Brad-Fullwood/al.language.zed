@@ -12,7 +12,7 @@
 //! Zed ──DAP/stdio──► al-lsp --dap ──stdio──► EditorServices.Host /startDebugging
 //! ```
 //!
-//! Merged from the standalone `al-dap` crate (T401).
+//! Merged from the standalone `al-dap` crate.
 
 mod editor_services;
 
@@ -118,7 +118,7 @@ pub async fn run_dap_server(toolchain: &AlToolchain) -> Result<(), DapError> {
 /// Spawn EditorServices.Host in DAP mode and proxy stdin/stdout,
 /// patching messages for compatibility in both directions.
 ///
-/// **Cancellation note** (F-OPEN-041). Unlike the native DAP backend
+/// **Cancellation note**. Unlike the native DAP backend
 /// (`al_dap::dap::native_dap`), this proxy does NOT implement the DAP
 /// `cancel` request. Cancellation is delegated to EditorServices.Host
 /// itself; if the BC server takes a long time to honour a Step / Continue
@@ -221,7 +221,7 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
     let capture_out = capture_log.clone();
     let capture_in = capture_log.clone();
 
-    // F-012: both directions need to write Zed-bound DAP frames — the
+    // both directions need to write Zed-bound DAP frames — the
     // stdin_to_child branch fabricates Zed-bound output events during
     // compile / patch_outgoing, while child_to_stdout forwards real
     // EditorServices.Host frames. Without coordination they share the

@@ -1,16 +1,8 @@
-//! Configurable AL formatter — T1705.
+//! Configurable AL formatter.
 //!
 //! Loads `.alformat.json` from the workspace root and applies per-workspace
-//! formatting options. Falls back to `FormatOptions::default()` when no
-//! config file is present or when the file cannot be parsed.
-//!
-//! ## Current implementation status
-//!
-//! All config fields are honoured by `al_syntax::formatting::format_al`:
-//! `tabSize`, `insertSpaces`, and `keywordCasing` in its main pass, and
-//! `blankLinesBetweenProcedures`, `maxLineLength`, `braceStyle`, and
-//! `sortProperties` as post-processing passes (A13). `to_format_options`
-//! simply maps the parsed JSON onto `FormatOptions`.
+//! formatting options. A missing file uses defaults; malformed or unreadable
+//! files are reported to the caller.
 //!
 //! ## Config file (.alformat.json)
 //! ```json
@@ -60,19 +52,25 @@ impl AlFormatConfig {
 
     pub fn load(workspace_root: &Path) -> Option<Result<Self, String>> {
         let path = workspace_root.join(".alformat.json");
-        let text = std::fs::read_to_string(&path).ok()?;
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(error) => return Some(Err(error.to_string())),
+        };
         Some(Self::from_json(&text))
     }
 
     /// Map the parsed `.alformat.json` onto [`FormatOptions`]. Every field is
-    /// applied by `format_al` (A13), so this is a straight mapping — unknown
-    /// enum strings fall back to the corresponding default.
+    /// applied by `format_al`. Unknown enum strings use the corresponding
+    /// default and emit a warning.
     pub fn to_format_options(&self) -> FormatOptions {
         let mut opts = FormatOptions::default();
 
         if let Some(ts) = self.tab_size {
             if ts > 0 {
                 opts.tab_size = ts;
+            } else {
+                tracing::warn!("ignoring zero tabSize in .alformat.json");
             }
         }
         if let Some(spaces) = self.insert_spaces {
@@ -82,14 +80,25 @@ impl AlFormatConfig {
             opts.keyword_casing = match casing.to_lowercase().as_str() {
                 "lower" => KeywordCasing::Lower,
                 "upper" => KeywordCasing::Upper,
-                _ => KeywordCasing::Preserve,
+                "preserve" => KeywordCasing::Preserve,
+                unknown => {
+                    tracing::warn!(value = unknown, "unknown keywordCasing; using preserve");
+                    KeywordCasing::Preserve
+                }
             };
         }
         if let Some(blank_lines) = &self.blank_lines_between_procedures {
             opts.blank_lines_between_procedures = match blank_lines.to_lowercase().as_str() {
                 "one" => BlankLinesBetweenProcedures::One,
                 "two" => BlankLinesBetweenProcedures::Two,
-                _ => BlankLinesBetweenProcedures::Preserve,
+                "preserve" => BlankLinesBetweenProcedures::Preserve,
+                unknown => {
+                    tracing::warn!(
+                        value = unknown,
+                        "unknown blankLinesBetweenProcedures; using preserve"
+                    );
+                    BlankLinesBetweenProcedures::Preserve
+                }
             };
         }
         if let Some(max_len) = self.max_line_length {
@@ -98,7 +107,11 @@ impl AlFormatConfig {
         if let Some(brace) = &self.brace_style {
             opts.brace_style = match brace.to_lowercase().as_str() {
                 "sameline" | "same_line" => BraceStyle::SameLine,
-                _ => BraceStyle::NextLine,
+                "nextline" | "next_line" => BraceStyle::NextLine,
+                unknown => {
+                    tracing::warn!(value = unknown, "unknown braceStyle; using nextLine");
+                    BraceStyle::NextLine
+                }
             };
         }
         if let Some(sort) = self.sort_properties {
@@ -273,7 +286,7 @@ end;
         assert!(!formatted.is_empty());
     }
 
-    // ===== A13: config-driven options actually affect output =====
+    // ===== config-driven options actually affect output =====
 
     #[test]
     fn config_blank_lines_two_applies() {
@@ -324,8 +337,8 @@ end;
     }
 
     #[test]
-    fn config_default_is_a13_noop() {
-        // Identical-baseline check: an empty config leaves all four A13 passes
+    fn config_default_is_noop() {
+        // Identical-baseline check: an empty config leaves all four passes
         // off, so formatting only normalises indentation.
         let cfg = AlFormatConfig::from_json("{}").unwrap();
         let opts = cfg.to_format_options();

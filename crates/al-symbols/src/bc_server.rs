@@ -56,15 +56,14 @@ pub struct BcServerClient {
     /// so it can be cleared in-place when a 401/403 reveals the token is
     /// stale. A plain `OnceCell` permanently memoises the first value and
     /// has no way to forget it, which left concurrent downloads re-using a
-    /// dead token after the disk cache had already been invalidated
-    /// (F-OPEN-013).
+    /// dead token after the disk cache had already been invalidated.
     cached_token: tokio::sync::RwLock<Option<String>>,
     /// Set once a 401/403 is seen while the `BC_ACCESS_TOKEN` env var was the
     /// auth source. The env var is a manual one-shot override; if it is stale
     /// there is no way to refresh it in-process, and re-presenting it on every
     /// retry just burns requests against the same dead credential. Once this
     /// flag is set, `add_auth` stops honouring the env var and falls through to
-    /// the OAuth acquisition flow, which *can* recover (F-OPEN-129).
+    /// the OAuth acquisition flow, which *can* recover.
     stale_env_token: std::sync::atomic::AtomicBool,
 }
 
@@ -107,8 +106,7 @@ impl BcServerClient {
     ///
     /// Called when a 401/403 reveals the cached token is stale. Without this
     /// the session-level cache would keep handing out the dead token to
-    /// concurrent downloads even after the on-disk cache was cleared
-    /// (F-OPEN-013).
+    /// concurrent downloads even after the on-disk cache was cleared.
     async fn reset_cached_token(&self) {
         *self.cached_token.write().await = None;
     }
@@ -183,19 +181,17 @@ impl BcServerClient {
                 // either expired or its grant was revoked. Invalidate it
                 // so the next acquire_token call falls through to refresh
                 // → interactive sign-in instead of re-presenting the same
-                // dead token. F-OPEN-012.
+                // dead token.
                 if let Some(t) = self.tenant.as_deref() {
                     let _ = crate::oauth::invalidate_cached_token(t);
                 }
                 // Also clear the session-level in-memory token so concurrent
                 // downloads in the same batch don't keep re-using the dead
-                // token; the disk-cache invalidation above does not touch it
-                // (F-OPEN-013).
+                // token; the disk-cache invalidation above does not touch it.
                 self.reset_cached_token().await;
                 // If the auth came from the BC_ACCESS_TOKEN env var, mark it
                 // stale so subsequent retries fall through to the OAuth flow
-                // instead of re-presenting the same dead token on every call
-                // (F-OPEN-129).
+                // instead of re-presenting the same dead token on every call.
                 if matches!(self.auth, AuthMethod::AAD) && std::env::var("BC_ACCESS_TOKEN").is_ok()
                 {
                     self.stale_env_token
@@ -203,8 +199,8 @@ impl BcServerClient {
                 }
                 Err(BcServerError::AuthenticationFailed {
                     status,
-                    // Truncate + scrub: never propagate the full BC error body
-                    // (T008 / sec-002). Same helper as bc_client::map_error_response.
+                    // Truncate and scrub: never propagate the full BC error body.
+                    // This is the same helper used by `bc_client::map_error_response`.
                     message: read_error_body_capped(response).await,
                 })
             }
@@ -241,7 +237,7 @@ impl BcServerClient {
     ///
     /// Returns `false` once a 401/403 has flagged the env token as stale, so
     /// `add_auth` falls through to the OAuth acquisition flow instead of
-    /// re-presenting a dead credential on every retry (F-OPEN-129).
+    /// re-presenting a dead credential on every retry.
     fn env_token_active(&self) -> bool {
         !self
             .stale_env_token
@@ -277,7 +273,7 @@ impl BcServerClient {
                 // Check for explicit env var first (manual override). Skip it
                 // once a 401/403 has flagged that env token as stale, so we can
                 // recover via the OAuth flow instead of re-presenting a dead
-                // credential on every retry (F-OPEN-129).
+                // credential on every retry.
                 if self.env_token_active() {
                     if let Ok(token) = std::env::var("BC_ACCESS_TOKEN") {
                         return Ok(request.bearer_auth(token));
@@ -314,7 +310,7 @@ impl BcServerClient {
 ///
 /// Thin wrapper over the shared `bc_client::read_error_body_capped` helper so
 /// every BC client path (bc_server, profiling, snapshot, test_runner) enforces
-/// the same 64 KiB pre-read cap (F-OPEN-014).
+/// the same 64 KiB pre-read cap.
 async fn read_error_body_capped(response: reqwest::Response) -> String {
     al_bc::bc_client::read_error_body_capped(response).await
 }
@@ -327,7 +323,7 @@ async fn read_error_body_capped(response: reqwest::Response) -> String {
 /// directory (`../../evil`, `..\\pwned`, absolute paths, drive letters). We
 /// replace every character that isn't ASCII-alphanumeric, `.`, `-` or `_`
 /// with `_`, and additionally collapse any `..` sequence so no parent-dir
-/// component can survive (F-OPEN-015).
+/// component can survive.
 fn package_filename(publisher: &str, name: &str) -> String {
     format!(
         "{}_{}.app",
@@ -374,7 +370,7 @@ mod tests {
     #[test]
     fn test_filename_rejects_path_traversal() {
         // Parent-directory components and path separators in publisher/name
-        // must not survive into the filename (F-OPEN-015).
+        // must not survive into the filename.
         let filename = package_filename("../../evil", "..\\pwned");
         assert!(!filename.contains(".."), "got {filename}");
         assert!(!filename.contains('/'), "got {filename}");
@@ -411,7 +407,7 @@ mod tests {
     fn test_stale_env_token_disables_env_override() {
         // A fresh client honours the BC_ACCESS_TOKEN env override; once a
         // 401/403 marks it stale, the override is skipped so add_auth can fall
-        // through to the OAuth flow and recover (F-OPEN-129).
+        // through to the OAuth flow and recover.
         let sink: MessageSink = Arc::new(|_: &str| {});
         let client =
             BcServerClient::new(AuthMethod::AAD, Some("tenant".to_string()), sink, false).unwrap();
@@ -645,7 +641,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reset_cached_token_clears_in_memory_token() {
-        // F-OPEN-013: a 401/403 must be able to forget the session-level
+        // a 401/403 must be able to forget the session-level
         // in-memory token so concurrent downloads re-authenticate instead of
         // re-using the dead token. With the old `OnceCell` this was
         // impossible. Here we seed the cache and verify the reset clears it.

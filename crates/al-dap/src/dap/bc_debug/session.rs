@@ -28,7 +28,7 @@ const COMPLETION_CHANNEL_CAPACITY: usize = 32;
 /// Capacity of the SignalR event channel that the reader task forwards
 /// server-push messages into. A misbehaving (or malicious) BC server
 /// flooding the daemon used to grow this channel unboundedly, since the
-/// previous channel was `mpsc::unbounded_channel`. F-OPEN-017.
+/// previous channel was `mpsc::unbounded_channel`.
 ///
 /// 4096 messages × ~few-KB-each = ~MB-scale bound. Variable-expansion
 /// responses can be large (deep AL records); Break / step-complete events
@@ -196,7 +196,7 @@ impl BcDebugSession {
     pub async fn connect(config: &BcDebugConfig, access_token: &str) -> Result<Self> {
         if config.accept_invalid_certs {
             // Match the warn-on-construction parity from BcClient::new at
-            // bc_client.rs:99 (T035). Without this the DAP path silently
+            // bc_client.rs:99. Without this the DAP path silently
             // disables TLS certificate validation when launch.json sets
             // accept_invalid_certs=true.
             al_bc::http_auth::warn_insecure_tls("DAP SignalR debug");
@@ -246,8 +246,8 @@ impl BcDebugSession {
         })?;
 
         // Resolve the WebSocket connection identifier from the negotiate
-        // response, validating the version the server actually negotiated
-        // (F-OPEN-137). We request `negotiateVersion=1`; a spec-compliant
+        // response, validating the version the server actually negotiated.
+        // We request `negotiateVersion=1`; a spec-compliant
         // server echoes the version it agreed to and, for v1, returns a
         // `connectionToken` distinct from `connectionId`. A server that
         // negotiates down to v0 returns no `connectionToken` and the
@@ -299,7 +299,7 @@ impl BcDebugSession {
         // Read handshake response. A SignalR server signals a
         // protocol/version mismatch here via `{"error":...}`; validate it so a
         // rejected handshake fails loudly instead of limping on against an
-        // adapter that will misbehave on every later invoke (F-OPEN-016).
+        // adapter that will misbehave on every later invoke.
         let initial_frames = if let Some(msg) = ws_source.next().await {
             let msg = msg.map_err(|e| DapError::ConnectionFailed(format!("WS read error: {e}")))?;
             debug!("SignalR handshake response: {:?}", msg);
@@ -320,7 +320,7 @@ impl BcDebugSession {
         // Deep-but-bounded event channel. Break events take a dedicated
         // unbounded path below to preserve the "Break must never be lost"
         // invariant; everything else drops with a warn on overflow so a
-        // hostile or misbehaving server can't OOM the daemon. F-OPEN-017.
+        // hostile or misbehaving server can't OOM the daemon.
         let (event_tx, event_rx) = mpsc::channel::<SignalRMessage>(EVENT_CHANNEL_CAPACITY);
         let (completion_tx, completion_rx) =
             mpsc::channel::<SignalRMessage>(COMPLETION_CHANNEL_CAPACITY);
@@ -761,8 +761,6 @@ impl BcDebugSession {
     ///   - `SourcePosition` — `{Line, Column}`
     ///   - `DisplayName` — human-readable frame name
     ///
-    /// TODO: Verify exact hub method name and signature from EditorServices.Protocol.dll.
-    ///       Current best guess based on EditorServices protocol reverse-engineering.
     pub async fn get_call_stack(&self) -> Result<serde_json::Value> {
         let result = self.invoke("GetStackTrace", vec![]).await?;
         Ok(result.unwrap_or(serde_json::json!([])))

@@ -99,7 +99,7 @@ pub(in crate::server::daemon) fn dispatch_new_project(
     // Honor the requested project template. The CLI forwards `--template`
     // verbatim; previously this field was dropped, so every `al new` produced
     // the Default extension scaffold regardless of the flag and an invalid
-    // template was silently accepted (audit 2026-06-20).
+    // template was silently accepted.
     let template = match params.get("template") {
         // Present but not a string is a malformed request, not an absent
         // field — reject it rather than silently falling back to the default.
@@ -142,7 +142,7 @@ pub(in crate::server::daemon) fn dispatch_new_project(
     match al_analysis::scaffold::create_project(&dir, &config) {
         Ok(result) => Response {
             id,
-            // SILENT: serialization of valid struct should not fail
+            // Serialization is infallible for valid values.
             result: Some(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)),
             error: None,
             ..Default::default()
@@ -256,7 +256,7 @@ pub(in crate::server::daemon) fn dispatch_generate(
     };
     let table_name = params.get("table").and_then(|v| v.as_str()).unwrap_or("");
 
-    // Object-ID conflict check (F-OPEN-033). The default of 50100 makes it
+    // Object-ID conflict check. The default of 50100 makes it
     // very easy for users to generate code that collides with an existing
     // object in the workspace. Refuse with a clear error so the offending
     // ID surfaces at generate time instead of at compile time. The check
@@ -282,7 +282,7 @@ pub(in crate::server::daemon) fn dispatch_generate(
         }
     }
 
-    // F-OPEN-268: workspace tables (with their fields) only enter the
+    // workspace tables (with their fields) only enter the
     // SymbolIndex via the call-graph enrichment pass — trigger the cached
     // build first so scaffolding works against the user's own tables.
     let table_entry = if !table_name.is_empty() {
@@ -371,7 +371,7 @@ pub(in crate::server::daemon) fn dispatch_generate(
             // index as a Codeunit. Previously the `subject` param was ignored
             // entirely and the subject was mis-sourced from `table` (which is
             // only ever matched against Tables), so `generate_test_stubs` was
-            // unreachable from `al-explorer generate test --subject` (B12).
+            // unreachable from `al-explorer generate test --subject`.
             // A subject is optional — with none we emit a placeholder test —
             // but if one is named and not found we surface that rather than
             // silently degrading to the placeholder.
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn dispatch_new_project_honors_template_and_rejects_invalid() {
-        // Regression (audit 2026-06-20): the `template` param was dropped, so
+        // Regression: the `template` param was dropped, so
         // every `al new` produced the Default scaffold and invalid templates
         // were silently accepted.
         let tmp = tempfile::tempdir().unwrap();
@@ -713,7 +713,7 @@ mod tests {
         assert!(err.message.contains("NoSuchTable"));
     }
 
-    /// F-OPEN-268: `generate page --table` must work against WORKSPACE tables
+    /// `generate page --table` must work against WORKSPACE tables
     /// (the primary scaffolding use case), with real field controls from the
     /// table's field sections — not just .app package tables.
     #[test]
@@ -763,7 +763,7 @@ mod tests {
         );
     }
 
-    /// B12: `generate test --subject <codeunit>` must reach the
+    /// `generate test --subject <codeunit>` must reach the
     /// subject-driven stub generator (`generate_test_stubs`) and emit a
     /// `[Test]` procedure per public method of the named codeunit. Previously
     /// the `subject` param was ignored, so this path was unreachable.
@@ -828,7 +828,7 @@ mod tests {
         );
     }
 
-    /// B12: a named-but-missing subject must surface an error rather than
+    /// A named-but-missing subject must surface an error rather than
     /// silently degrading to the no-subject placeholder.
     #[test]
     fn generate_test_with_unknown_subject_is_invalid_params() {
@@ -852,7 +852,7 @@ mod tests {
         );
     }
 
-    /// B12: with no subject the test generator still produces a valid
+    /// With no subject, the test generator still produces a valid
     /// placeholder test codeunit (no error, contains `[Test]`).
     #[test]
     fn generate_test_without_subject_emits_placeholder() {

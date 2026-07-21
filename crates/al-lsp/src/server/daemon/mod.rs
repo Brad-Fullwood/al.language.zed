@@ -3,7 +3,7 @@
 //! `al-lsp daemon --project /path/to/project` starts a daemon that:
 //! - Listens on a deterministic Unix socket path
 //! - Initializes a Workspace for the given project
-//! - Accepts JSON-RPC requests, routes to al-core queries
+//! - Accepts JSON-RPC requests and routes them to core queries
 //! - Auto-shuts down after 30 minutes of idle
 //!
 //! # Platform support
@@ -13,7 +13,7 @@
 //! also `#[cfg(unix)]`) connects over `std::os::unix::net::UnixStream`.
 //! Windows has no equivalent here, so the socket-bound transport
 //! (`run_daemon`, `handle_connection`, the `SocketCleanup` guard) is
-//! gated behind `#[cfg(unix)]`. On Windows, [`run_daemon`] is a stub that
+//! gated behind `#[cfg(unix)]`. On Windows, [`run_daemon`]
 //! returns an explanatory error.
 //!
 //! Crucially, the request-dispatch logic (`dispatch_request` and the
@@ -27,7 +27,7 @@
 // and the `extract_*`/`require_*` helpers) is pure logic over `Workspace` and
 // compiles on every platform. It is, however, only *reachable* through the
 // Unix-only socket transport (`run_daemon` → `handle_connection`). On non-Unix
-// targets that transport is a stub, leaving this surface unreferenced, so we
+// targets that transport is unavailable, leaving this surface unreferenced, so we
 // allow dead code there rather than fragmenting every helper with `#[cfg]`.
 // `al-lsp` still ships on Windows for its portable LSP/DAP modes.
 #![cfg_attr(not(unix), allow(dead_code))]
@@ -105,14 +105,13 @@ const ACCEPT_BACKOFF_START: Duration = Duration::from_millis(10);
 #[cfg(unix)]
 const ACCEPT_BACKOFF_CAP: Duration = Duration::from_secs(5);
 
-/// Run the daemon server for a project (Windows stub).
+/// Return an unsupported-platform error for daemon mode on Windows.
 ///
 /// The daemon's IPC transport is an `AF_UNIX` socket, which has no Windows
 /// equivalent here, and its only client (`al-explorer` via
 /// `al_protocol::client`) is itself `#[cfg(unix)]`. Rather than fail to
-/// compile, `al-lsp` builds on Windows with this stub so its portable LSP
-/// (`--stdio`) and DAP (`--dap`) modes work; daemon mode returns a clear
-/// error if invoked. See the module docs and `ecosystem-roadmap.md` item 8.
+/// compile, `al-lsp` builds on Windows while its portable LSP (`--stdio`) and
+/// DAP (`--dap`) modes remain available.
 #[cfg(not(unix))]
 pub async fn run_daemon(_project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     Err(
@@ -174,7 +173,7 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
 
     initialize_daemon_workspace(&workspace, &project_root).await;
 
-    // F-OPEN-068: stored as millis-since-`DAEMON_EPOCH` in an AtomicU64 so
+    // stored as millis-since-`DAEMON_EPOCH` in an AtomicU64 so
     // the hot per-connection-accept + per-dispatch update is lock-free.
     // Previous `Arc<Mutex<Instant>>` serialised every connection at the lock.
     let last_activity = Arc::new(AtomicU64::new(now_activity_ms()));
@@ -192,7 +191,7 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
             if elapsed >= IDLE_TIMEOUT {
                 // Don't shut down if a debug session is active.
                 //
-                // F-OPEN-067: the `try_lock` here is intentional — if the
+                // the `try_lock` here is intentional — if the
                 // `debug_session` mutex is currently held by another task
                 // (mid-RPC) we treat that as "session active" via the
                 // `unwrap_or(true)` fallback. The invariant: the only way
@@ -318,7 +317,7 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
 
     idle_timeout_handle.abort();
 
-    // F-OPEN-070: graceful drain. The accept loop has broken; new connections
+    // graceful drain. The accept loop has broken; new connections
     // are no longer accepted. In-flight connection tasks still hold a
     // semaphore permit each, so when ALL permits are available again every
     // connection has finished cleanly. Wait for that (with a timeout) so a
@@ -403,7 +402,7 @@ async fn handle_connection(
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
-    // F-047: previously a 50 ms ring-buffer dedup over hover / completions /
+    // previously a 50 ms ring-buffer dedup over hover / completions /
     // signatureHelp / inlayHints replied to repeat requests with `null` /
     // `[]`. Editors that legitimately re-issue these (debounce flush, retry
     // after typing, parallel daemon clients) saw missing-info flicker.
@@ -614,7 +613,7 @@ pub(crate) async fn dispatch_request(
             }
         }
         "status" => {
-            let cache_stats = workspace.semantic_cache.read().ok().map(|c| { // SILENT: avoid RwLock poison panic per CLAUDE.md
+            let cache_stats = workspace.semantic_cache.read().ok().map(|c| {
                 let (hits, misses) = c.stats();
                 serde_json::json!({ "types": c.len(), "hits": hits, "misses": misses, "version": c.version() })
             });
@@ -623,7 +622,7 @@ pub(crate) async fn dispatch_request(
                 "indexedSymbols": workspace.symbols.len(),
                 "workspaceFiles": workspace.file_index.len(),
                 "workspaceObjects": workspace.file_index.object_count(),
-                "builtinTypes": workspace.builtins.read().ok().map(|g| g.len()).unwrap_or(0), // SILENT: avoid RwLock poison panic per CLAUDE.md
+                "builtinTypes": workspace.builtins.read().ok().map(|g| g.len()).unwrap_or(0),
                 "semanticCache": cache_stats,
             });
             Response {
@@ -681,7 +680,7 @@ fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
 
 pub(crate) fn extract_uri(params: &serde_json::Value) -> Option<url::Url> {
     let uri_str = params.get("uri")?.as_str()?;
-    url::Url::parse(uri_str).ok() // SILENT: bad client input is not user-affecting
+    url::Url::parse(uri_str).ok()
 }
 
 pub(crate) fn extract_position(
@@ -789,7 +788,7 @@ pub(crate) fn ensure_document(workspace: &Workspace, uri: &url::Url) -> Option<(
         return Some(());
     }
     // Try to read from disk (block_in_place avoids blocking the tokio runtime)
-    let path = uri.to_file_path().ok()?; // SILENT: non-file URIs legitimately have no path
+    let path = uri.to_file_path().ok()?;
     let content = tokio::task::block_in_place(|| std::fs::read_to_string(&path)).ok()?;
     workspace.documents.open(uri.clone(), content);
     Some(())
@@ -805,10 +804,10 @@ pub(crate) fn file_uri_from_params(params: &serde_json::Value) -> Option<url::Ur
         let abs_path = if path.is_absolute() {
             path.to_path_buf()
         } else {
-            std::env::current_dir().ok()?.join(path) // SILENT: current_dir failure handled by returning None
+            std::env::current_dir().ok()?.join(path)
         };
         let canon = abs_path.canonicalize().unwrap_or(abs_path);
-        return url::Url::from_file_path(canon).ok(); // SILENT: non-absolute paths can't become file URIs
+        return url::Url::from_file_path(canon).ok();
     }
     None
 }

@@ -10,9 +10,9 @@
 //!   the header line).
 //! - Lines 2…N: one `Sample` JSON object per line.
 //!
-//! `flate2` is not a workspace dependency, so Phase 4 uses plain JSON.
-//! Compression may be added in a later phase without changing this API —
-//! callers go through `serialize_snapshot` / `deserialize_snapshot`.
+//! The format is plain JSON. Callers use `serialize_snapshot` and
+//! `deserialize_snapshot`, leaving storage and compression concerns outside
+//! this module.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

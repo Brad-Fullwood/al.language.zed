@@ -1,6 +1,6 @@
 //! Emit `SymbolReference.json` for an AL project, natively (no alc).
 //!
-//! Usage: `cargo run -p al-core --example emit_symref -- <project_dir>`
+//! Usage: `cargo run -p al-lsp --example emit_symref -- <project_dir>`
 //! Prints the JSON to stdout — used to differential-test against alc's output.
 
 use std::path::Path;

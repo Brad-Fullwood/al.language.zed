@@ -29,9 +29,9 @@ pub async fn read_dap_body<R: tokio::io::AsyncRead + Unpin>(
     Ok(body)
 }
 
-/// Bounded against header-line DoS (T059 / 3d630127d17fed8a): tokio's
+/// Bounded against header-line DoS: tokio's
 /// `read_line` is unbounded — it grows the destination String until it
-/// hits a newline or EOF. Pre-T059 the post-read length check happened
+/// hits a newline or EOF. Previously, the post-read length check happened
 /// AFTER the allocation, so a misbehaving DAP source could still drive
 /// the client into multi-GB territory before the guard fired. Now the
 /// loop reads byte-by-byte through a per-line cap, refusing input as

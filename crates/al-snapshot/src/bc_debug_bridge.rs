@@ -75,13 +75,20 @@ impl DebuggerSession for BcDebugSessionAdapter {
             .await
             .map_err(|e| ReplayerError::Session(format!("add_breakpoint failed: {e}")))?;
 
-        // BC returns a JSON object with the assigned breakpoint ID.
-        // The field is typically "Id" (PascalCase, Newtonsoft.Json convention).
-        let bp_id = response
+        // Newtonsoft.Json payloads normally use `Id`; accept the camel-case
+        // spelling used by some BC versions as well.
+        let raw_id = response
             .get("Id")
             .or_else(|| response.get("id"))
             .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+            .ok_or_else(|| {
+                ReplayerError::Session(format!(
+                    "add_breakpoint response did not contain a numeric ID: {response}"
+                ))
+            })?;
+        let bp_id = u32::try_from(raw_id).map_err(|_| {
+            ReplayerError::Session(format!("breakpoint ID is outside the u32 range: {raw_id}"))
+        })?;
 
         Ok(bp_id)
     }

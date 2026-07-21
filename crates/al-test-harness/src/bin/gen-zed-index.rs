@@ -2,8 +2,7 @@
 //! extension registers as a normal (non-dev) installed extension — no Zed
 //! dev-compile, no wasi-sdk download. Reads the repo's `extension.toml`,
 //! `languages/<lang>/config.toml`, and theme files, and prints the index JSON
-//! to stdout. Host-side replacement for the former container `gen_index.py`,
-//! so the editor-e2e container needs no Python.
+//! to stdout for the editor end-to-end container.
 //!
 //! Usage: gen-zed-index <repo-root> > index.json
 

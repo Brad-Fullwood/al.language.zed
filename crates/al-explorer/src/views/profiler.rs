@@ -22,7 +22,7 @@ use crate::{
 /// the whole reqwest + tokio networking stack in just to reuse one synchronous
 /// function, and al-bc's only public entry point (`analyze_profile`) would
 /// discard this view's TUI safeguards (node cap, BOM strip, GC filter). Keep the
-/// aggregation convention here in lock-step with al-bc (gap B14).
+/// aggregation convention here in lock-step with al-bc.
 ///
 /// Convention: the `i`-th recorded sample (`samples[i]`, a node id) is charged
 /// the `i`-th time delta (`timeDeltas[i]`, microseconds); deltas are summed per
@@ -61,7 +61,7 @@ fn aggregate_self_time_us(json: &serde_json::Value) -> std::collections::HashMap
 
 /// Roll up `total_time_ms` over the call tree: `total(node) = self(node) + Σ
 /// total(child)` via an iterative post-order DFS (cycle/dangling-safe). Ported
-/// from `al_bc::profiling::aggregate_total_time_ms` (gap B14) — see that canonical
+/// from `al_bc::profiling::aggregate_total_time_ms` — see that canonical
 /// copy; kept here to avoid pulling the heavy al-bc (reqwest/tokio) dep into this
 /// TUI crate. `self_ms_by_node` must be in milliseconds and cover every node.
 fn aggregate_total_time_ms(
@@ -212,7 +212,7 @@ impl ProfilerView {
         // Accurate self time: sum each node's sampled `timeDeltas` (µs). Empty
         // when the profile carries no `samples`/`timeDeltas`, in which case we
         // fall back to the legacy 1 ms-per-hit estimate below. Same convention
-        // as al-bc (gap B14) — see `aggregate_self_time_us` above.
+        // as al-bc — see `aggregate_self_time_us` above.
         let self_time_by_node = aggregate_self_time_us(&json);
         let have_time = !self_time_by_node.is_empty();
 
@@ -264,7 +264,7 @@ impl ProfilerView {
             // the sampler caught this node on top of the stack — accurate as ms
             // only when the sampling interval is exactly 1 ms. We fall back to
             // that legacy estimate only when the profile carries no
-            // samples/timeDeltas to aggregate. (gap B14 — unified with al-bc.)
+            // samples/timeDeltas to aggregate.
             let self_time_ms = if have_time {
                 node_id
                     .and_then(|id| self_time_by_node.get(&id).copied())
@@ -277,7 +277,7 @@ impl ProfilerView {
                 procedure: function_name,
                 object: url,
                 self_time_ms,
-                // B14: total = self + Σ descendants (call-tree roll-up), falling
+                // Total = self + Σ descendants (call-tree roll-up), falling
                 // back to self-time for id-less nodes not in the tree.
                 total_time_ms: node_id
                     .and_then(|id| total_ms_by_node.get(&id).copied())

@@ -3,7 +3,7 @@ name = "al-symbols"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "AL .app/NAVX symbol index: parses SymbolReference.json, builds a concurrent symbol index, renders virtual-file source/outlines, and (feature `nuget`) NuGet + BC symbol download with OAuth/keyring token persistence"
+description = "AL .app symbol indexing, virtual source, and package download"
 repository.workspace = true
 [dependencies]
 al-types = { path = "../al-types", version = "0.1.0" }

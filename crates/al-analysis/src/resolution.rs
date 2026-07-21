@@ -830,7 +830,7 @@ fn strip_inner_tags(s: &str) -> String {
 ///
 /// The plain [`resolve_workspace_object_definition`] goes through
 /// `file_index.objects`, which is keyed by name only — so when a `table` and a
-/// `page` share a name, whichever was indexed last wins (C22). When the
+/// `page` share a name, whichever was indexed last wins. When the
 /// reference carries an AL type keyword (e.g. `Record Customer` → `Record`,
 /// which denotes a table), scan `object_info` (keyed by path, so it holds
 /// *every* object) for the entry whose name matches and whose kind maps to that
@@ -881,7 +881,7 @@ pub(crate) fn resolve_workspace_object_definition(
                                                 // wasteful ts_range -> lsp_types::Range -> queries::Range round-trip
                                                 // through syntax_lsp. The latter only exists for the LSP transport
                                                 // boundary; resolution.rs is business logic and should stay
-                                                // lsp_types-free (T040 / 77c47433db6de8ca review note).
+                                                // free of transport-specific LSP types.
     Some((
         uri,
         al_syntax::ts_range_to_syntax(&obj.range, file_source.as_bytes()).into(),
@@ -921,7 +921,7 @@ pub(crate) enum CompletionCandidateKind {
 /// `format_type_detail`/`format_method_signature`/`format_builtin_signature`,
 /// `workspace_field_items`). Moving it would force those internals to `pub(crate)`
 /// and split two tightly-coupled resolution calls across the layer boundary —
-/// increasing coupling, not reducing it. (Audit A1, considered and declined.)
+/// increasing coupling, not reducing it.
 /// Map of `procedure name (lowercased) -> formatted XML doc` for a symbol-package
 /// object, extracted from the `///` comments in its virtual-file source (the same
 /// source go-to-definition opens). Empty when the package ships no source for the
@@ -1362,7 +1362,7 @@ fn workspace_member(
                 kind: ResolvedMemberKind::Variable {
                     range: Some(
                         // Direct conversion — see object_path_to_uri_and_range above
-                        // for rationale (T040).
+                        // for rationale.
                         al_syntax::ts_range_to_syntax(&var.range, content.as_bytes()).into(),
                     ),
                     scope: "global variable",
@@ -1417,8 +1417,8 @@ fn parse_field_line(trimmed: &str) -> Option<(&str, &str)> {
     Some((name_part, ty))
 }
 
-/// Every `field(id; "Name"; Type ...)` declaration node in `tree`. Tree-based
-/// (C31): a field is a node whose text begins with `field(` — so two `field(...)`
+/// Every `field(id; "Name"; Type ...)` declaration node in `tree`. A field is
+/// a node whose text begins with `field(`, so two `field(...)`
 /// on one line each resolve independently, unlike the old per-line text scan
 /// which only ever saw the first. We stop descending once matched (the paren
 /// child text begins with `(`, not `field(`, so it isn't double-counted).
@@ -1466,7 +1466,7 @@ fn byte_to_position(content: &str, byte: usize) -> Position {
 /// Parse a field declaration `node` into `(name_part, type_str)` plus the byte
 /// range of the name within `content`. Feeds the node's own text to
 /// [`parse_field_line`], so layout (one-per-line vs several on a line) is
-/// irrelevant (C31).
+/// irrelevant.
 fn parse_field_node<'a>(
     node: tree_sitter::Node<'_>,
     content: &'a str,
@@ -1651,8 +1651,8 @@ mod tests {
     }
 
     #[test]
-    fn c31_compact_table_two_fields_on_one_line() {
-        // C31: two field declarations on the same line must both resolve. The
+    fn compact_table_two_fields_on_one_line() {
+        // two field declarations on the same line must both resolve. The
         // old per-line scanner only ever saw the first.
         let text =
             "table 1 T\n{\n    fields\n    { field(1; Amount; Decimal) { } field(2; Qty; Integer) { } }\n}";

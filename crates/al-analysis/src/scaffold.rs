@@ -192,7 +192,6 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
 /// filesystem (always the case here — the temp is in the same directory).
 /// Replaces `std::fs::write(path, content)` calls that would otherwise
 /// leave a half-written `.al` file on disk after a crash / signal.
-/// F-OPEN-034.
 fn atomic_write(path: &Path, content: &[u8], label: &str) -> Result<(), String> {
     use std::io::Write;
 
@@ -298,7 +297,7 @@ fn generate_template_files(dir: &Path, config: &ScaffoldConfig) -> Result<Vec<St
 }
 
 // ---------------------------------------------------------------------------
-// User-defined (custom) templates — gap C12.
+// User-defined (custom) templates
 //
 // A custom template lives at `<templates_root>/<name>/` and contains:
 //   - `template.json` — a [`TemplateDescriptor`].
@@ -1185,7 +1184,7 @@ mod tests {
 
     #[test]
     fn atomic_write_does_not_leave_tempfile_on_success() {
-        // Regression for F-OPEN-034: a successful scaffold must not leave
+        // A successful scaffold must not leave
         // `<file>.<pid>.tmp` lingering next to the final artefact. The
         // helper renames atomically, so the tempfile name should not
         // exist after the call returns.
@@ -1306,7 +1305,7 @@ mod tests {
         assert_al_parses("library codeunit with escaped quote", &src);
     }
 
-    // -- Custom (user-defined) templates — gap C12 ---------------------------
+    // -- Custom (user-defined) templates -----------------------------
 
     /// Write a custom template (`template.json` + `files/`) under `root`.
     fn write_custom_template(root: &Path, name: &str, descriptor: &str, files: &[(&str, &str)]) {

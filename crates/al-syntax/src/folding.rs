@@ -34,7 +34,7 @@ fn extract_structural_ranges(root: Node, source: &[u8], ranges: &mut Vec<Folding
             // which the walk reaches as a child of `object_declaration`. We
             // deliberately do NOT also add a fold here for the declaration's
             // body field — doing so produced a duplicate range for the same
-            // region (F-OPEN-016).
+            // region.
             "procedure_declaration"
             | "trigger_declaration"
             | "event_procedure_declaration"
@@ -169,7 +169,7 @@ mod tests {
     }
 
     /// Assert that no two folding ranges cover the exact same region.
-    /// Guards against the duplicate-object-body regression (F-OPEN-016).
+    /// Guards against the duplicate-object-body regression.
     fn assert_no_duplicate_ranges(ranges: &[FoldingRange]) {
         let mut seen = std::collections::HashSet::new();
         for r in ranges {
@@ -184,8 +184,7 @@ mod tests {
     #[test]
     fn test_folding_no_duplicate_object_body() {
         // The object body must produce exactly one fold, not one from the
-        // `object_declaration` arm and another from the `object_body` arm
-        // (F-OPEN-016).
+        // `object_declaration` arm and another from the `object_body` arm.
         let src = "codeunit 50100 Test\n{\n    procedure P()\n    begin\n        Message('x');\n    end;\n}";
         let mut parser = AlParser::new();
         let result = parser.parse(src);

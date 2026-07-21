@@ -1,8 +1,4 @@
-//! Profiler hotspot data model parsed from `.alcpuprofile` documents.
-//!
-//! The data types live here (tier 0) so the workspace hub can store a
-//! `ProfilerSession` without depending on the analysis crate that produces it.
-//! The parsing/hint-rendering logic stays in the analysis layer.
+//! Profiler hotspot data parsed from `.alcpuprofile` documents.
 
 use serde::Serialize;
 
@@ -10,15 +6,15 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfilerHint {
-    /// Procedure name (from profile callFrame.functionName).
+    /// Procedure name from `callFrame.functionName`.
     pub procedure: String,
-    /// Object name (from profile callFrame.url or manually mapped).
+    /// Object name from `callFrame.url` or a manual mapping.
     pub object: String,
     pub self_time_ms: f64,
     pub total_time_ms: f64,
     /// Number of samples / call count.
     pub hit_count: u64,
-    /// Source file path (workspace-relative or absolute). None if not mapped.
+    /// Source file path, if mapped. May be workspace-relative or absolute.
     pub file: Option<String>,
     /// 1-based line number of the procedure declaration.
     pub line: Option<u32>,

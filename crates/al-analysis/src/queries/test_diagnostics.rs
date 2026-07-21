@@ -1,4 +1,4 @@
-//! Test results as diagnostics — T1503.
+//! Test results as diagnostics.
 //!
 //! Converts `TestCodeunitResult` (from the BC REST API) and static test
 //! discovery (from `queries::tests`) into transport-agnostic `Diagnostic`

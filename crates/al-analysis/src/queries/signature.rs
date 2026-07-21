@@ -34,7 +34,7 @@ pub struct SignatureHelpResult {
     pub active_parameter: Option<u32>,
 }
 
-/// T063: per-overload primitive; callers collect a Vec<SignatureInfo> across all overloads
+/// per-overload primitive; callers collect a Vec<SignatureInfo> across all overloads
 /// matching a name, then assemble the SignatureHelpResult themselves.
 fn build_signature_info_from_method(
     method: &al_symbols::MethodSymbol,
@@ -70,7 +70,7 @@ fn build_signature_info_from_method(
 /// overload only has 3 params), fall back to the **widest** signature so
 /// the editor at least highlights the last valid slot rather than slot 0
 /// of the first overload, which usually doesn't even exist in the
-/// trailing-arg position. F-OPEN-040.
+/// trailing-arg position.
 fn pick_active_signature(signatures: &[SignatureInfo], active_param: u32) -> u32 {
     if let Some(idx) = signatures
         .iter()
@@ -201,7 +201,7 @@ pub fn signature_help(
         return Some(sig);
     }
 
-    // T063: collect ALL overloads of `func_name` — previously returned only the first match,
+    // collect ALL overloads of `func_name` — previously returned only the first match,
     // hiding other overloads from clients that show all signatures (Zed, VS Code).
     {
         let symbols = workspace.symbols.get_by_name(func_name);
@@ -344,7 +344,7 @@ fn resolve_receiver_signature(
         }
     }
 
-    // T063: collect all overloads on the resolved receiver type (same as top-level package-symbol path).
+    // collect all overloads on the resolved receiver type (same as top-level package-symbol path).
     let pkg_symbols = workspace.symbols.get_by_name(subtype);
     let mut sigs: Vec<SignatureInfo> = Vec::new();
     for entry in &pkg_symbols {
@@ -435,11 +435,11 @@ mod tests {
         }
     }
 
-    /// T063: collecting per-overload SignatureInfo from MethodSymbol must
+    /// collecting per-overload SignatureInfo from MethodSymbol must
     /// produce one entry per overload — the building block for the
     /// overload-collection upgrade applied to the package-symbol path.
     #[test]
-    fn t063_build_signature_info_emits_one_per_overload() {
+    fn build_signature_info_emits_one_per_overload() {
         let m_zero = make_method("Send", vec![], Some("Boolean"));
         let m_one = make_method("Send", vec!["Address"], Some("Boolean"));
         let m_two = make_method("Send", vec!["Address", "Subject"], Some("Boolean"));
@@ -459,11 +459,11 @@ mod tests {
         assert_eq!(s2.active_parameter, Some(0));
     }
 
-    /// T063: pick_active_signature returns the index of the first signature
+    /// pick_active_signature returns the index of the first signature
     /// whose parameter count exceeds active_param — the most-likely-overload
     /// rule used by both signature_help and resolve_receiver_signature.
     #[test]
-    fn t063_pick_active_signature_picks_first_compatible_overload() {
+    fn pick_active_signature_picks_first_compatible_overload() {
         let m0 = make_method("Send", vec![], Some("Boolean"));
         let m1 = make_method("Send", vec!["A"], Some("Boolean"));
         let m2 = make_method("Send", vec!["A", "B"], Some("Boolean"));
@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(pick_active_signature(&sigs, 0), 1);
     }
 
-    /// F-OPEN-040: when no signature has enough parameters for the
+    /// when no signature has enough parameters for the
     /// requested `active_param`, fall back to the **widest** overload
     /// rather than the first (index 0). This way the editor's
     /// parameter-highlight at least lands inside a real argument list
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn pick_active_signature_widest_with_ties_picks_last() {
-        // F-OPEN-040: when two overloads tie on parameter count and
+        // when two overloads tie on parameter count and
         // neither accommodates `active_param`, the fallback picks one
         // of them — the exact one isn't load-bearing for the user. The
         // implementation uses `Iterator::max_by_key`, which by Rust's

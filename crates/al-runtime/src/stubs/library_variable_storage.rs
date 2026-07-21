@@ -1,12 +1,5 @@
 //! Library Variable Storage (codeunit 131004) — native Rust port.
 //!
-//! AL source for the real codeunit lives in BCApps at:
-//!   `src/Tools/Test Framework/Test Libraries/Variable Storage/src/LibraryVariableStorage.Codeunit.al`
-//!
-//! This stub uses the same fast-path approach as `library_assert`: the dispatch
-//! layer recognises calls to Library Variable Storage procedure names and invokes
-//! equivalent Rust code here, without interpreting the AL source.
-//!
 //! ## State model
 //!
 //! AL's `Library - Variable Storage` is a stateful codeunit — it owns a

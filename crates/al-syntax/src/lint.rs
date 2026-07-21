@@ -1,23 +1,13 @@
-//! Native lint framework, plus a small starter set of native rules.
+//! Native syntax lint rules.
 //!
-//! Most AL diagnostics come from the .NET semantic bridge (crate::semantic).
-//! A previous, larger native rule set (`AL-L001`..`AL-L0xx`) was deliberately
-//! removed in favor of the bridge, with regression tests asserting those
-//! specific codes never reappear (`al-test-harness/tests/integration_full.rs`,
-//! `edit_lifecycle.rs`). This module re-introduces a conservative starter set
-//! under a fresh `AL-NL*` ("Native Lint") namespace — deliberately distinct
-//! from both the retired `AL-L*` codes and `al-analysis`'s `AL-NC*`
-//! ("Native Check") namespace — so it can never collide with either:
+//! Codes use the `AL-NL*` namespace to remain distinct from semantic bridge
+//! diagnostics and the `AL-NC*` native workspace checks:
 //!
 //! - `AL-NL001`: `FindFirst`/`FindLast` called inside a loop (N+1 query risk).
 //! - `AL-NL002`: a table field with no `DataClassification` property.
 //!
-//! Both rules are text-based scans over the already-parsed source (like the
-//! equivalent workspace-level scans in `al-analysis`'s `sql_patterns.rs` and
-//! `audit.rs`, which this port draws its algorithm from) rather than
-//! tree-sitter AST queries: the AL grammar has no dedicated `field_declaration`
-//! node, and text scanning keeps this rule set self-contained in `al-syntax`
-//! without a new dependency on `al-workspace`.
+//! Both rules scan text within parsed syntax boundaries because the AL grammar
+//! has no dedicated `field_declaration` node.
 
 use tree_sitter::{Point, Range, Tree};
 
@@ -48,13 +38,7 @@ impl std::fmt::Display for LintSeverity {
     }
 }
 
-/// Lint configuration placeholder.
-///
-/// No threshold fields yet — both starter rules are unconditional. Rule
-/// enablement itself is handled by the caller (`AlConfig::is_lint_rule_enabled`
-/// in al-project, which every `lint()` result is already filtered through in
-/// `al-analysis`'s `syntax_diagnostics`). This type is retained so that
-/// callers that construct `LintConfig::default()` continue to compile.
+/// Reserved for future rule-specific options.
 #[derive(Debug, Clone, Default)]
 pub struct LintConfig;
 
@@ -98,10 +82,7 @@ pub fn lint(tree: &Tree, text: &str) -> Vec<LintDiagnostic> {
 
 /// Run all native lint rules on the parsed tree with custom config.
 ///
-/// `LintConfig` currently has no fields to act on, so this is equivalent to
-/// [`lint`]. Kept as a separate entry point for callers that already
-/// construct a `LintConfig` and for forward-compatibility if per-rule
-/// thresholds are added later.
+/// This is currently equivalent to [`lint`].
 pub fn lint_with_config(tree: &Tree, text: &str, _config: &LintConfig) -> Vec<LintDiagnostic> {
     lint(tree, text)
 }
@@ -171,10 +152,8 @@ fn is_loop_start(lower: &str) -> bool {
 
 /// AL-NL001: FindFirst()/FindLast() inside a loop.
 ///
-/// Ported from al-analysis's `sql_patterns.rs::analyze_proc_text` (same
-/// nested begin/end loop-depth tracking, proven against nested-block and
-/// string-literal/comment false positives there), scoped to `procedure_declaration`
-/// / `trigger_declaration` nodes so loop state never leaks across procedures.
+/// Scans individual procedure and trigger nodes so loop state cannot leak
+/// across declarations.
 fn lint_find_in_loop(tree: &Tree, text: &str, out: &mut Vec<LintDiagnostic>) {
     let source = text.as_bytes();
     let root = tree.root_node();

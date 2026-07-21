@@ -1,5 +1,3 @@
-#![allow(clippy::useless_conversion)]
-
 //! Go-to-implementations query.
 //!
 //! Returns all codeunits that implement a given AL interface name.
@@ -44,7 +42,7 @@ pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position
             {
                 locations.push(Location {
                     uri: file_uri,
-                    range: range.into(),
+                    range,
                 });
             }
         }

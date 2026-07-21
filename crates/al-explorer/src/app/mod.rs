@@ -61,7 +61,7 @@ pub(crate) struct App {
     // Background workspace-init handoff. `Some` while the init thread is
     // still running; the event loop polls it every tick so the first frame
     // renders immediately ("Loading workspace…") instead of blocking the
-    // terminal for the whole daemon cold-start (FB-1).
+    // terminal for the whole daemon cold-start.
     pub(crate) init_rx: Option<std::sync::mpsc::Receiver<InitResult>>,
     // Human-readable init state shown in the object browser while loading,
     // or the error if init failed.
@@ -121,10 +121,8 @@ impl App {
 
     /// Connect to the daemon (auto-starting it) and fetch the full symbol
     /// listing. `request()` itself waits through "Workspace is initializing"
-    /// for up to 60s, so no blind sleeps are needed here. A brief
-    /// empty-result re-poll remains as a belt-and-suspenders for the window
-    /// where the daemon answers before its package load has produced
-    /// entries (ISSUE-071).
+    /// for up to 60s. A brief empty-result poll covers the interval between
+    /// workspace initialization and package-index publication.
     fn load_workspace_entries(root: &std::path::Path) -> InitResult {
         let mut client = DaemonClient::connect(root)
             .map_err(|e| format!("Cannot connect to al-lsp daemon: {e}"))?;
@@ -140,7 +138,7 @@ impl App {
                     Some(serde_json::json!({
                         "query": "",
                         "limit": 100_000,
-                        // FB-1: slim entries (no member arrays) — a full
+                        // slim entries (no member arrays) — a full
                         // dump is ~60 MB JSON. Members hydrate lazily per
                         // selected object (`hydrate_selected_object`).
                         "summary": true

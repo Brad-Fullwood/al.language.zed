@@ -125,8 +125,7 @@ fn find_outermost_if_at_point(
 
 /// Each branch is (variable_text, value_text, body_text).  Sets
 /// `common_var` to `None` if variables differ across branches.  An iterative
-/// loop avoids unbounded recursion on deeply nested if/else chains
-/// (CLAUDE.md).
+/// loop avoids unbounded recursion on deeply nested if/else chains.
 fn walk_if_chain(
     node: tree_sitter::Node,
     source: &[u8],
@@ -187,8 +186,7 @@ fn walk_if_chain(
 /// Tree-sitter structure: expression -> unary_expression, binary_operator(operator "="), unary_expression
 fn extract_equality_operands(node: tree_sitter::Node, source: &[u8]) -> Option<(String, String)> {
     // Iteratively unwrap single-child wrapper nodes to avoid recursion on
-    // deeply nested AST wrappers (CLAUDE.md prohibits recursive tree-sitter
-    // traversal).
+    // deeply nested AST wrappers.
     let mut node = node;
     while node.child_count() == 1 {
         node = node.child(0)?;

@@ -74,7 +74,7 @@ fn resolve_output_path_within_project(
                 // path ended in a separator and was later treated as a
                 // directory — `write_junit_to_path` then `create_dir_all`'d the
                 // file-as-directory and the report write failed silently while
-                // the command still reported success (audit 2026-06-20). Only
+                // the command still reported success. Only
                 // push when there is an existing tail to append.
                 tail = if tail.as_os_str().is_empty() {
                     PathBuf::from(file)
@@ -122,7 +122,7 @@ pub(in crate::server::daemon) fn dispatch_tests_coverage(
         ..Default::default()
     }
 }
-/// T1502: Execute tests via BC REST API + T1503: Return results as diagnostics.
+/// Execute tests via BC REST API + Return results as diagnostics.
 ///
 /// Params:
 /// - `codeunit` (i64): codeunit ID to run. Required.
@@ -134,7 +134,7 @@ pub(in crate::server::daemon) fn dispatch_tests_coverage(
 ///
 /// Response includes:
 /// - `result`: `TestCodeunitResult` JSON
-/// - `diagnostics`: array of `TestDiagnostic` for failed/skipped tests (T1503)
+/// - `diagnostics`: array of `TestDiagnostic` for failed/skipped tests
 pub(in crate::server::daemon) async fn dispatch_tests_run(
     workspace: &Workspace,
     id: u64,
@@ -291,7 +291,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
 /// - `junitOut`: str (path to write JUnit XML)
 /// - `coberturaOut`: str (path to write Cobertura XML)
 /// - `filter`: str (forwarded; currently logged only)
-/// - `coverage`: bool (gap C9; default false) — collect *dynamic* executed-line
+/// - `coverage`: bool (default false) — collect *dynamic* executed-line
 ///   coverage on interp-routed tests. Adds a `coverage` object to the result
 ///   (per-file executed lines + branch decisions) and, when `coberturaOut` is
 ///   set, writes a dynamic-mode Cobertura doc instead of the static one.
@@ -409,7 +409,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
             .get("filter")
             .and_then(|v| v.as_str())
             .map(String::from),
-        // gap C9: opt-in dynamic (executed-line) coverage. When set, interp-routed
+        // Opt-in dynamic (executed-line) coverage. When set, interp-routed
         // tests run with a collector and we surface the per-file executed lines in
         // the RPC result + emit a dynamic-mode Cobertura doc to `coberturaOut`.
         coverage: params
@@ -459,7 +459,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
 
     let (tx, mut rx) = mpsc::channel::<TestEvent>(256);
     let mut run_handles = Vec::new();
-    // gap C9: when dynamic coverage is requested, hold a handle to the interp
+    // When dynamic coverage is requested, hold a handle to the interp
     // backend (behind Arc — `run` takes &self) so we can read its aggregated
     // DynamicCoverageReport once the run completes.
     let mut interp_mode_for_report: Option<std::sync::Arc<InterpMode>> = None;
@@ -511,7 +511,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         }
     }
 
-    // gap C9: once every backend has finished, read the interpreter's aggregated
+    // Once every backend has finished, read the interpreter's aggregated
     // dynamic (executed-line) coverage. `None` unless coverage was requested; an
     // empty report when requested but no interp tests ran (e.g. all-live run).
     let dynamic_coverage = if opts.coverage {
@@ -552,7 +552,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         }
     }
     if let Some(path) = &opts.cobertura_out {
-        // gap C9: emit DYNAMIC executed-line coverage when it was requested, else
+        // Emit dynamic executed-line coverage when requested; otherwise emit
         // the historical STATIC call-graph report. The two are unambiguously
         // distinguished in the emitted XML (coverage-mode attribute + comment).
         if let Some(report) = &dynamic_coverage {
@@ -588,7 +588,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
             "skipped": skipped,
         },
     });
-    // gap C9: surface the interpreter's per-file executed-line + branch coverage
+    // Surface the interpreter's per-file executed-line and branch coverage
     // when it was requested. Absent entirely when coverage was off (existing
     // clients see exactly the prior shape).
     if let Some(report) = &dynamic_coverage {
@@ -605,7 +605,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     }
 }
 
-/// Serialize a [`DynamicCoverageReport`] (gap C9) into the `tests.run_batch`
+/// Serialize a [`DynamicCoverageReport`] into the `tests.run_batch`
 /// result shape: `{ mode, files: [{ file, executedLines, branches: [{ line,
 /// thenTaken, elseTaken }] }] }`. Built here rather than via `Serialize` on the
 /// al-runtime type so the runtime crate stays free of a wire-format commitment.
@@ -1109,7 +1109,7 @@ mod tests {
 
     #[test]
     fn output_path_for_nonexistent_nested_file_has_no_trailing_separator() {
-        // Regression (audit 2026-06-20): the tail-reconstruction loop seeded
+        // Regression: the tail-reconstruction loop seeded
         // `tail` with an empty `PathBuf` and `push`ed it, which appended a
         // trailing separator (`junit.xml` -> `junit.xml/`). The resolved path
         // was then treated as a directory, `create_dir_all`'d, and the JUnit /
@@ -1243,7 +1243,7 @@ mod tests {
         assert!(resolved.unwrap().starts_with(&canonical_root));
     }
 
-    /// F-OPEN-270: pure-logic test codeunits (router decision: Interp) must
+    /// Pure-logic test codeunits (router decision: Interp) must
     /// run on the INTERPRETER — actually executing the [Test] procedures —
     /// and must NOT require a BC launch config. Previously everything went
     /// through LiveBcMode: `test-run-all` refused without .zed/debug.json
@@ -1389,7 +1389,7 @@ mod tests {
         (ws, line_of("x := 100"), line_of("x := 200"))
     }
 
-    /// gap C9: with `coverage: true`, an interp-routed run must surface a
+    /// With `coverage: true`, an interp-routed run must surface a
     /// `coverage` object of per-file executed lines (taken branch present,
     /// not-taken absent) AND write a DYNAMIC-mode Cobertura document.
     #[tokio::test(flavor = "multi_thread")]
@@ -1450,7 +1450,7 @@ mod tests {
         );
     }
 
-    /// gap C9 negative: with coverage OFF (the default), the result must carry NO
+    /// With coverage off, the result must carry no
     /// `coverage` key and `coberturaOut` must produce the STATIC document — proving
     /// the existing behaviour is untouched.
     #[tokio::test(flavor = "multi_thread")]

@@ -2,26 +2,25 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    build_semantic_bridge();
+    if std::env::var_os("CARGO_FEATURE_SEMANTIC").is_some() {
+        build_semantic_bridge();
+    }
 }
 
 /// Compile the C# semantic bridge DLL via `dotnet build`.
 ///
 /// The bridge DLL is placed in OUT_DIR/bridge/ and found at runtime by
-/// `host` via the baked-in OUT_DIR path. Skipped if dotnet or the
-/// project file are absent (CI hosts without .NET).
+/// `host` via the baked-in OUT_DIR path.
 fn build_semantic_bridge() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let bridge_dir = manifest_dir.join("bridge");
     let csproj = bridge_dir.join("AlBridge.csproj");
 
-    if !csproj.is_file() {
-        println!(
-            "cargo:warning=Bridge project not found at {}, skipping .NET build",
-            csproj.display()
-        );
-        return;
-    }
+    assert!(
+        csproj.is_file(),
+        "bridge project not found at {}",
+        csproj.display()
+    );
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let output_dir = out_dir.join("bridge");
@@ -35,29 +34,28 @@ fn build_semantic_bridge() {
     if let Ok(prebuilt) = std::env::var("AL_BRIDGE_PREBUILT") {
         let prebuilt_dir = PathBuf::from(&prebuilt);
         let dll = prebuilt_dir.join("AlBridge.dll");
-        if dll.is_file() {
-            let _ = std::fs::create_dir_all(&output_dir);
-            if let Ok(entries) = std::fs::read_dir(&prebuilt_dir) {
-                for entry in entries.flatten() {
-                    let from = entry.path();
-                    if from.is_file() {
-                        if let Some(name) = from.file_name() {
-                            let _ = std::fs::copy(&from, output_dir.join(name));
-                        }
-                    }
+        let runtime_config = prebuilt_dir.join("AlBridge.runtimeconfig.json");
+        assert!(
+            dll.is_file() && runtime_config.is_file(),
+            "AL_BRIDGE_PREBUILT must contain AlBridge.dll and AlBridge.runtimeconfig.json"
+        );
+        std::fs::create_dir_all(&output_dir).expect("create semantic bridge output directory");
+        for entry in std::fs::read_dir(&prebuilt_dir).expect("read AL_BRIDGE_PREBUILT") {
+            let from = entry.expect("read AL_BRIDGE_PREBUILT entry").path();
+            if from.is_file() {
+                if let Some(name) = from.file_name() {
+                    std::fs::copy(&from, output_dir.join(name))
+                        .expect("copy prebuilt semantic bridge artifact");
                 }
             }
-            println!(
-                "cargo:warning=Bridge DLL copied from AL_BRIDGE_PREBUILT={}",
-                prebuilt
-            );
-            println!("cargo:rerun-if-changed=bridge/Bridge.cs");
-            println!("cargo:rerun-if-changed=bridge/AlBridge.csproj");
-            return;
         }
         println!(
-            "cargo:warning=AL_BRIDGE_PREBUILT set to {prebuilt} but AlBridge.dll not found there; falling back to dotnet build"
+            "cargo:warning=Bridge DLL copied from AL_BRIDGE_PREBUILT={}",
+            prebuilt
         );
+        println!("cargo:rerun-if-changed=bridge/Bridge.cs");
+        println!("cargo:rerun-if-changed=bridge/AlBridge.csproj");
+        return;
     }
 
     let status = Command::new("dotnet")
@@ -68,17 +66,18 @@ fn build_semantic_bridge() {
 
     match status {
         Ok(s) if s.success() => {
+            assert!(
+                output_dir.join("AlBridge.dll").is_file()
+                    && output_dir.join("AlBridge.runtimeconfig.json").is_file(),
+                "dotnet build succeeded but did not produce the required bridge artifacts"
+            );
             println!(
                 "cargo:warning=Bridge DLL compiled to {}",
                 output_dir.display()
             );
         }
-        Ok(s) => {
-            println!("cargo:warning=dotnet build exited with {s}, bridge DLL may not be available");
-        }
-        Err(e) => {
-            println!("cargo:warning=dotnet not found ({e}), bridge DLL will not be compiled");
-        }
+        Ok(s) => panic!("dotnet build exited with {s}"),
+        Err(e) => panic!("failed to run dotnet build: {e}"),
     }
 
     println!("cargo:rerun-if-changed=bridge/Bridge.cs");

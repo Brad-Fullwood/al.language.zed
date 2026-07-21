@@ -1,4 +1,4 @@
-//! Gap B1 verification: `al-explorer pack-native --validate` runs the Microsoft
+//! `al-explorer pack-native --validate` runs the Microsoft
 //! AL compiler (alc) as a semantic oracle and refuses to emit a .app for a
 //! parseable-but-semantically-invalid program (which the structural emitter
 //! would otherwise happily pack into an .app the BC server then rejects).

@@ -100,8 +100,6 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
                 }
             }
 
-            // Extract name — grammar doesn't assign a field name to the object name,
-            // so we use the shared extract_object_name helper.
             if let Some(n) = super::extract_object_name(child, source) {
                 name = n;
             }
@@ -115,7 +113,7 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
         }
     }
 
-    // Fallback: walk root children directly for compatibility
+    // Some grammar variants expose the object type directly at the root.
     let child = root.child(0)?;
     let kind = child.kind().to_string();
 
@@ -185,7 +183,7 @@ pub fn find_variable_references(tree: &Tree, text: &str, name: &str) -> Vec<tree
     // identical to the inner `identifier`/`quoted_identifier`. Both kinds match
     // the predicate in `find_refs_iterative`, so the same source span was
     // collected twice — double-counting every reference and inflating
-    // `rename`'s reported edit count to exactly 2× (audit 2026-06-20). A
+    // `rename`'s reported edit count to exactly 2×. A
     // reference is unique by its byte span; drop exact-span duplicates.
     let mut seen = std::collections::HashSet::new();
     refs.retain(|r| seen.insert((r.start_byte, r.end_byte)));
@@ -201,7 +199,7 @@ pub fn find_variable_references(tree: &Tree, text: &str, name: &str) -> Vec<tree
 /// `identifier`/`quoted_identifier`/`name` nodes, so `references` (and anything
 /// built on it) silently missed every subscriber of an event: asking for
 /// references to an event surfaced only its declaration and `Raise` call sites,
-/// never the subscribers that consume it (audit 2026-06-20).
+/// never the subscribers that consume it.
 ///
 /// Scope is deliberately narrow to avoid false positives: only the event-name
 /// argument (the 3rd positional argument, mirroring
@@ -492,10 +490,8 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let root = result.tree.root_node();
-        // Iterative tree-walk (T069 / 8d3018731e108290): the previous
-        // version used a self-recursive `dump()` helper which violates
-        // CLAUDE.md's "iterative tree-sitter traversal — no recursion"
-        // rule even in test code, and was the only recursive walker
+        // The previous version used a self-recursive `dump()` helper. The
+        // iterative form avoids the only recursive walker
         // remaining in al-core. The Vec stack here is bounded by tree
         // depth; AL parses cap at ~30 levels even for nested begin/end.
         let mut stack: Vec<(tree_sitter::Node, usize)> = vec![(root, 0)];
@@ -528,7 +524,7 @@ mod tests {
 
     #[test]
     fn find_variable_references_returns_each_span_once() {
-        // Regression (audit 2026-06-20): the AL grammar wraps some identifiers
+        // Regression: the AL grammar wraps some identifiers
         // in a `name` node whose span equals the inner `identifier`, and both
         // kinds matched the reference predicate, so every reference was
         // collected twice — doubling `references` results and `rename` edit

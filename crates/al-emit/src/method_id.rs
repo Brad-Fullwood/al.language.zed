@@ -94,7 +94,7 @@ pub fn method_id(
     // .NET `ToUpperInvariant` uses *simple* (1:1) Unicode case mapping, whereas
     // Rust's `to_uppercase()` uses *full* mapping — so `'ß'` becomes `"SS"` and
     // ligatures expand, producing a different hash than alc for a quoted
-    // Unicode method name (C9). Approximate simple case mapping by keeping any
+    // Approximate .NET's simple Unicode case mapping by keeping any
     // char whose uppercase expands to more than one char unchanged (which is
     // exactly what those non-1:1 chars do under ToUpperInvariant).
     let mut h = fnv1_utf16(&to_upper_invariant(name));
@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn c9_to_upper_invariant_uses_simple_case_mapping() {
+    fn to_upper_invariant_uses_simple_case_mapping() {
         // ASCII uppercases exactly like ToUpperInvariant.
         assert_eq!(to_upper_invariant("Hello"), "HELLO");
         // 1:1 accented letters DO uppercase (matching ToUpperInvariant).

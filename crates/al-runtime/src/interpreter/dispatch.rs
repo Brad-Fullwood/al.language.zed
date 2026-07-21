@@ -1,4 +1,4 @@
-//! Procedure-call dispatch for the AL interpreter — Phase 2b.
+//! Procedure-call dispatch for the AL interpreter.
 //!
 //! `dispatch_call` is the single entry point for any procedure call that the
 //! statement evaluator encounters. Priority order:
@@ -37,7 +37,7 @@ pub const MAX_AST_DEPTH: usize = 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchMode {
     PureLogic,
-    /// Record store wired in (Phase 3 territory, partial support).
+    /// Enable in-memory record operations.
     WithRecords,
 }
 
@@ -70,17 +70,17 @@ pub struct DispatchCtx {
     /// constructs (while / repeat / for) check this on every iteration so
     /// an adversarial `while true do …` test can't pin the daemon thread
     /// past the configured per-test budget. `None` means "no deadline" —
-    /// used by unit-test paths that need full determinism. F-OPEN-015b.
+    /// used by unit-test paths that need full determinism.
     pub deadline: Option<std::time::Instant>,
     /// Optional external cancellation signal. Loop constructs in
     /// `eval_stmt` check this on every iteration alongside `deadline_exceeded`.
-    /// Closes F-OPEN-093/F-OPEN-096: a daemon `$/cancelRequest` can now
-    /// interrupt the interpreter mid-loop without waiting for the wall-clock
-    /// deadline. The token is `Arc<AtomicBool>` so it can be cheaply shared
+    /// A daemon `$/cancelRequest` can interrupt the interpreter mid-loop without
+    /// waiting for the wall-clock deadline. The token is `Arc<AtomicBool>` so it
+    /// can be cheaply shared
     /// across the call and signalled from a different task. `None` means
     /// "not cancellable" — unit-test path and CLI default.
     pub cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
-    /// Optional dynamic-coverage collector (gap C9). `None` (the default) makes
+    /// Optional dynamic-coverage collector. `None` (the default) makes
     /// coverage zero-cost: the `cov_*` helpers below become a single `Option`
     /// check and do nothing. When `Some`, `eval_stmt` records each executed
     /// statement's line and `eval_if`/`eval_case` record the branch decision.
@@ -92,7 +92,7 @@ pub struct DispatchCtx {
     /// `eval_stmt` drains it and writes each value back into the argument's
     /// variable so mutations propagate to the caller (BC by-ref semantics).
     /// Cleared at the top of every `dispatch_call`, so builtins and
-    /// non-workspace calls leave it empty. See C25.
+    /// non-workspace calls leave it empty.
     pub var_writebacks: Vec<(usize, Value)>,
 }
 
@@ -147,7 +147,7 @@ impl DispatchCtx {
         }
     }
 
-    /// Coverage (gap C9): set the file that subsequent statement/branch records
+    /// Set the file that subsequent coverage records
     /// attribute to, returning the previous file so a caller crossing a
     /// procedure boundary can restore it via [`Self::cov_restore_file`]. A no-op
     /// returning `None` when coverage is disabled.
@@ -155,7 +155,7 @@ impl DispatchCtx {
         self.coverage.as_mut().map(|c| c.set_current_file(file))
     }
 
-    /// Coverage (gap C9): restore the file previously returned by
+    /// Restore the coverage file previously returned by
     /// [`Self::cov_enter_file`]. No-op when coverage is disabled or `prev` is
     /// `None`.
     pub fn cov_restore_file(&mut self, prev: Option<String>) {
@@ -164,7 +164,7 @@ impl DispatchCtx {
         }
     }
 
-    /// Coverage (gap C9): record that the statement at `node` executed. Reads
+    /// Record that the statement at `node` executed. Reads
     /// the node's 1-based start line. Zero-cost when coverage is disabled.
     pub fn cov_record_stmt(&mut self, node: tree_sitter::Node<'_>) {
         if let Some(c) = self.coverage.as_mut() {
@@ -172,7 +172,7 @@ impl DispatchCtx {
         }
     }
 
-    /// Coverage (gap C9): record a two-way branch decision taken at the `if`/
+    /// Record a two-way branch decision taken at the `if` or
     /// `case` head `node`. `taken == true` is THEN / arm-matched; `false` is
     /// ELSE / no-arm. Zero-cost when coverage is disabled.
     pub fn cov_record_decision(&mut self, node: tree_sitter::Node<'_>, taken: bool) {
@@ -197,7 +197,7 @@ pub fn dispatch_call(
 ) -> Eval {
     // Clear any var-parameter write-backs left over from a previous call so
     // builtins and non-workspace calls (which never populate it) leave the
-    // channel empty for the caller to observe. See C25.
+    // channel empty for the caller to observe.
     ctx.var_writebacks.clear();
     if let Some(recv) = receiver {
         if let Some(stub_fn) = stubs::resolve(recv, procedure) {
@@ -239,7 +239,7 @@ pub fn dispatch_call(
 /// 1. If `receiver` is `Some(name)`, search the `file_index` for a codeunit
 ///    object whose name matches `name` (case-insensitive).
 /// 2. If `receiver` is `None`, search every file in the index (same as all
-///    visible procedures in the current object — Phase 2b allows any file).
+///    visible procedures in the current object).
 ///
 /// When the procedure node is found:
 /// - Parse parameter declarations; type-check each arg.
@@ -309,16 +309,17 @@ fn dispatch_workspace_procedure(
             continue;
         };
 
+        if args.len() != params.len() {
+            return simple_error(format!(
+                "procedure '{}' expects {} argument(s), got {}",
+                procedure,
+                params.len(),
+                args.len()
+            ));
+        }
+
         for (i, param) in params.iter().enumerate() {
-            let arg = match args.get(i) {
-                Some(v) => v,
-                None => {
-                    // Missing argument — use default value for the type.
-                    // (AL allows calling with fewer args if trailing params have defaults;
-                    // Phase 2b: treat as type-check pass since we can't check unknown.)
-                    continue;
-                }
-            };
+            let arg = &args[i];
             if let Some(err) = check_param_type(arg, &param.type_name) {
                 return Eval::Error(ErrorInfo {
                     message: format!("type mismatch for parameter '{}': {}", param.name, err),
@@ -350,25 +351,25 @@ fn dispatch_workspace_procedure(
             let val = args.get(i).cloned().unwrap_or(Value::Empty);
             // Coerce an integer argument to the parameter's declared width so a
             // `BigInteger` parameter keeps i64 semantics even when passed a small
-            // Integer literal (and vice versa) — matches BC's fixed param types (C28).
+            // Integer literal and vice versa, matching BC's fixed parameter types.
             let val = coerce_int_width(val, &param.type_name);
             frame.bind(&param.name, val);
         }
         // Bind the procedure's local `var` section to default values so a
         // variable can be read before its first assignment. Handles
         // multi-name declarations (`A, B, C : Integer;`) — every name on the
-        // line gets its own default-initialised slot (B4). Scalar/simple types;
+        // line gets its own default-initialised slot. Scalar and simple types;
         // complex types are skipped here.
         bind_local_vars(proc_node, source, &mut frame);
         // Then pre-bind structured local variables (`Record`/`Codeunit`/
         // `List of [T]`) to their handle defaults so member calls / field
-        // access resolve (B5/B6) — complementary to bind_local_vars.
+        // access resolution, complementing bind_local_vars.
         bind_structured_locals(proc_node, source, &mut frame);
 
         ctx.recursion_depth += 1;
         let mut scope = ScopeStack::new();
         scope.push(frame);
-        // Coverage (gap C9): attribute this procedure's statements to the file
+        // Attribute this procedure's statements to the file
         // it is defined in (which may differ from the caller's file), then
         // restore the caller's file when the call returns.
         let cov_prev_file = ctx.cov_enter_file(&path.to_string_lossy());
@@ -377,7 +378,7 @@ fn dispatch_workspace_procedure(
         ctx.recursion_depth -= 1;
 
         // Record final values of `var` (by-reference) parameters so the caller
-        // can write them back into its own argument variables (C25). Read from
+        // can write them back into its own argument variables. Read from
         // the still-live callee frame before it is dropped. Nested calls during
         // the body already cleared/consumed the channel via their own
         // `dispatch_call`, so populating it here (after the body) is safe.
@@ -392,7 +393,7 @@ fn dispatch_workspace_procedure(
 
         // Unwrap Exit into Normal (exit only unwinds the current procedure).
         // A break/continue that reached here escaped all loops — a runtime
-        // error in AL, not silent success (C24).
+        // error in AL, not silent success.
         return match result {
             Eval::Exit(v) => Eval::Normal(v),
             Eval::Break => simple_error("break statement not inside a loop"),
@@ -413,7 +414,7 @@ fn dispatch_workspace_procedure(
 /// structured locals (`Record`/`Codeunit`/`List of [T]`) to their handle
 /// defaults. Exposed so the test-runner path can share the same frame setup
 /// and not execute `[Test]` bodies with unbound locals — BC zero-initializes
-/// every local, so reading one before assignment must not error (C29).
+/// every local, so reading one before assignment must not error.
 pub fn bind_procedure_locals(
     proc_node: tree_sitter::Node<'_>,
     source: &[u8],
@@ -429,7 +430,7 @@ struct ParamDecl {
     type_name: String,
     /// True when the parameter is declared `var` (passed by reference). The
     /// caller's argument variable is updated with the parameter's final value
-    /// after the call returns. See C25.
+    /// after the call returns.
     is_var: bool,
 }
 
@@ -672,7 +673,8 @@ fn bind_regular_var_decl(reg: tree_sitter::Node<'_>, source: &[u8], frame: &mut 
 /// Check whether a `Value` matches the declared AL type name.
 ///
 /// Returns `Some(error_message)` on mismatch, `None` on pass.
-/// Unknown type names are accepted (Phase 2b: allow through).
+/// Unknown complex type names are accepted because this layer has no complete
+/// runtime type catalog.
 fn check_param_type(arg: &Value, type_name: &str) -> Option<String> {
     if type_name.is_empty() {
         return None;
@@ -699,7 +701,7 @@ fn check_param_type(arg: &Value, type_name: &str) -> Option<String> {
         t if t.starts_with("code") && !matches!(arg, Value::Text(_) | Value::Code(_)) => {
             return Some(format!("expected Code, got {}", arg.type_name()));
         }
-        // All other type names: pass through (Phase 2b can't check complex types).
+        // Complex types require symbol metadata not available in this layer.
         _ => {}
     }
     None
@@ -708,7 +710,7 @@ fn check_param_type(arg: &Value, type_name: &str) -> Option<String> {
 /// Coerce an integer value to the width named by `type_name` (`Integer` vs
 /// `BigInteger`), leaving non-integer values and non-integer types untouched.
 /// Used at parameter binding so a `BigInteger` parameter keeps i64 arithmetic
-/// semantics even when the caller passes a small `Integer` literal (C28).
+/// semantics even when the caller passes a small `Integer` literal.
 fn coerce_int_width(val: Value, type_name: &str) -> Value {
     // Match on the value first so the (allocation-free) type-name check is only
     // reached for integer arguments — the common Text/Record/Boolean args skip
@@ -779,7 +781,7 @@ fn builtin_strsubstno(args: &[Value]) -> Eval {
 
 /// `Format(value[, length[, format_str]])` — convert a value to Text.
 ///
-/// Phase 2 implements only the single-argument form.
+/// Supports the single-argument form.
 fn builtin_format(args: &[Value]) -> Eval {
     match args.first() {
         Some(v) => Eval::Normal(Value::Text(render_value(v))),
@@ -1204,14 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn strsubstno_percent10_placeholder_corrupted_adversarial_h_8() {
-        // FINDING P1 wrong-result: substitute_placeholders iterates i=0..9
-        // and replaces %1 first, consuming the %1 prefix inside %10. Format
-        // "%1 and %10" with 10 args yields "FIRST and FIRST0" not "FIRST and TENTH".
-        // Root cause: str::replace scans the original string left-to-right; the
-        // %1 at position 0 AND the %1 inside %10 both get replaced on iteration 0.
-        // Expected: "FIRST and TENTH"
-        // Observed: "FIRST and FIRST0"
+    fn strsubstno_handles_percent10_without_corrupting_percent1() {
         let mut ctx = ctx();
         let result = dispatch_call(
             None,
@@ -1241,12 +1236,7 @@ mod tests {
     }
 
     #[test]
-    fn copystr_pos_beyond_string_length_adversarial_h_9() {
-        // FINDING P2 spec-deviation: CopyStr("abc", 4, 1) silently returns ""
-        // instead of raising an error. Position 4 is beyond the 3-char string.
-        // AL/BC runtime raises "The value is too large" for out-of-bounds pos.
-        // Expected: Eval::Error
-        // Observed: Normal(Text(""))
+    fn copystr_rejects_position_beyond_string_length() {
         let mut ctx = ctx();
         let result = dispatch_call(
             None,
@@ -1312,11 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn indexof_empty_needle_returns_one_not_zero_adversarial_h_10() {
-        // FINDING P2 edge-case: IndexOf("ab", "") returns Integer(1) because
-        // Rust str::find("") returns Some(0). AL convention: empty needle → 0.
-        // Expected: Integer(0)
-        // Observed: Integer(1)
+    fn indexof_empty_needle_returns_zero() {
         let mut ctx = ctx();
         let result = dispatch_call(
             None,
@@ -1399,6 +1385,25 @@ mod tests {
             "expected 'type' in error message, got: {}",
             e.message
         );
+    }
+
+    #[test]
+    fn workspace_dispatch_rejects_wrong_argument_count() {
+        let ws = workspace_with_helper();
+        let mut ctx = DispatchCtx::new_pure(ws);
+
+        let missing = dispatch_call(Some("Helper"), "Add", vec![Value::Integer(2)], &mut ctx);
+        assert!(err(missing)
+            .message
+            .contains("expects 2 argument(s), got 1"));
+
+        let extra = dispatch_call(
+            Some("Helper"),
+            "Add",
+            vec![Value::Integer(2), Value::Integer(3), Value::Integer(4)],
+            &mut ctx,
+        );
+        assert!(err(extra).message.contains("expects 2 argument(s), got 3"));
     }
 
     #[test]

@@ -1,8 +1,7 @@
 //! AL toolchain discovery, validation, and diagnostics.
 //!
-//! Contains `AlToolchain`, `AnalyzerPaths`, `find_toolchain()` and all discovery
-//! helpers (formerly in al-protocol). Also provides `validate_toolchain()` and
-//! `doctor()` for health-check operations.
+//! Provides command construction, installation discovery, and validation for
+//! Microsoft's AL toolchain.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -21,14 +20,6 @@ use crate::project::home_dir;
 /// path of the desired `dotnet` host executable. If the override is set but does
 /// not point at an existing, executable file, a warning is logged and discovery
 /// falls back to the bare `dotnet` program (it never hard-fails).
-///
-/// TODO(C11): also expose this as an `al.dotnetPath` LSP setting. al-lsp has no
-/// dedicated `config.rs`, and the `dotnet_command*` constructors below sit deep
-/// in the build/bridge hot paths, so threading a config value through directly
-/// would be large surgery. The intended wiring is for the server's settings
-/// handler (`crates/al-lsp/src/server/workspace.rs`) to export this env var from
-/// the parsed `al.dotnetPath` value, leaving this seam unchanged. That lives in
-/// another crate's hot path and is out of scope for this change.
 pub const DOTNET_PATH_ENV: &str = "AL_DOTNET_PATH";
 
 /// True if `path` is a regular file the current user can execute.
@@ -99,12 +90,11 @@ pub fn dotnet_command(alc: &Path) -> std::process::Command {
     cmd
 }
 
-/// Async (tokio) counterpart of [`dotnet_command`]. See its docs for the
-/// roll-forward rationale.
 /// Path to `altool.dll` — the ALTool CLI assembly (v17+) that hosts the
-/// `launchlspserver` / `launchmcpserver` commands. It ships as a SIBLING of
-/// the `alc.dll` compiler the toolchain discovers (alc itself does NOT
-/// understand those commands). Returns None for pre-v17 toolchains.
+/// `launchlspserver` / `launchmcpserver` commands.
+///
+/// The assembly is installed beside `alc.dll`; older toolchains do not include
+/// it and return `None`.
 pub fn find_altool(toolchain: &AlToolchain) -> Option<std::path::PathBuf> {
     let altool = toolchain.alc.with_file_name("altool.dll");
     altool.is_file().then_some(altool)
@@ -113,9 +103,9 @@ pub fn find_altool(toolchain: &AlToolchain) -> Option<std::path::PathBuf> {
 /// Compose the command that launches Microsoft's official AL Language
 /// Server (`altool launchlspserver`, ALTool v17+). Used by
 /// `al-lsp --official-lsp` to delegate the whole stdio LSP session to the
-/// official server (F-OPEN-260).
+/// official server.
 ///
-/// NOTE: altool is an ASP.NET Core app — it additionally requires the
+/// `altool` is an ASP.NET Core app and additionally requires the
 /// Microsoft.AspNetCore.App shared framework at runtime (the dotnet host
 /// reports a precise error if it's missing).
 pub fn official_lsp_command(altool: &Path, extra_args: &[String]) -> std::process::Command {
@@ -127,6 +117,7 @@ pub fn official_lsp_command(altool: &Path, extra_args: &[String]) -> std::proces
     cmd
 }
 
+/// Async counterpart of [`dotnet_command`].
 pub fn dotnet_command_async(alc: &Path) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(dotnet_program());
     cmd.arg(alc);
@@ -334,13 +325,10 @@ fn search_dir_recursive(root: &Path) -> Option<AlToolchain> {
         }
     }
 
-    // Canonicalize the root once so we can confine the traversal to it. The
-    // .store directories searched here live in user-writable locations, so a
-    // symlink planted inside (e.g. `.store/evil -> /etc`) must not let the
-    // search escape into arbitrary filesystem locations and pick up a
-    // malicious alc.dll. If the root itself can't be canonicalized we fall
-    // back to no bounds check rather than aborting discovery.
-    let canonical_root = std::fs::canonicalize(root).ok();
+    // Tool stores are user-writable, so canonical paths must remain below the
+    // requested root. If the root cannot be canonicalized, do not traverse it
+    // without the containment check.
+    let canonical_root = std::fs::canonicalize(root).ok()?;
 
     let mut queue: Vec<(PathBuf, u8)> = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = queue.pop() {
@@ -354,14 +342,11 @@ fn search_dir_recursive(root: &Path) -> Option<AlToolchain> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                // Reject directories whose canonical path escapes the root
-                // (e.g. via a symlink). `is_dir()` transparently follows
-                // symlinks, so this check is what actually confines us.
-                if let Some(root) = canonical_root.as_ref() {
-                    match std::fs::canonicalize(&path) {
-                        Ok(canon) if canon.starts_with(root) => {}
-                        _ => continue,
-                    }
+                // `is_dir()` follows symlinks, so validate the canonical path
+                // before descending.
+                match std::fs::canonicalize(&path) {
+                    Ok(canon) if canon.starts_with(&canonical_root) => {}
+                    _ => continue,
                 }
                 if path.join(ALC_DLL).is_file() {
                     if let Ok(tc) = build_toolchain(&path) {
@@ -514,9 +499,7 @@ mod tests {
         assert_eq!(rf.as_deref(), Some("Major"));
     }
 
-    /// F-OPEN-260: the official-LSP delegation command must run the
-    /// discovered alc assembly's `launchlspserver` entry point under dotnet
-    /// with roll-forward (net8 assembly on newer majors), forwarding args.
+    /// The official LSP must run under dotnet with major-version roll-forward.
     #[test]
     fn official_lsp_command_composes_launchlspserver_invocation() {
         let _g = DotnetEnvGuard::set(None);
@@ -658,7 +641,7 @@ mod tests {
 
     #[test]
     fn search_dotnet_tool_store_finds_user_local_install() {
-        // Mirrors the F-004 reproduction layout: ~/.local/bin/.store/...
+        // User-local dotnet tools live below ~/.local/bin/.store.
         let tmp = tempfile::tempdir().unwrap();
         let store = tmp.path().join(".local/bin/.store");
         std::fs::create_dir_all(&store).unwrap();

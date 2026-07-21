@@ -209,7 +209,7 @@ mod tests {
         );
     }
 
-    // T1307: List of [Interface IFoo] syntax
+    // List of [Interface IFoo] syntax
 
     #[test]
     fn test_parse_list_of_interface_variable() {

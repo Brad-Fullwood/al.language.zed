@@ -726,9 +726,7 @@ mod tests {
         }
     }
 
-    /// Regression: passing the same TestId twice must run the codeunit once and
-    /// report total=1 (not 2). Previously each duplicate invoked the BC API and
-    /// its SuiteComplete summary was tallied, inflating SessionComplete.
+    /// Passing the same TestId twice runs the codeunit once and reports one test.
     #[tokio::test]
     async fn test_live_bc_mode_duplicate_test_ids_deduplicated() {
         let server = MockServer::start().await;

@@ -1,9 +1,7 @@
-//! C6 — deterministic, fixture-based performance benchmarks for the symbol /
+//! Deterministic, fixture-based performance benchmarks for the symbol /
 //! insight hot paths.
 //!
-//! Closes the C6 gap (`Docs/gaps-and-future-work.md`): "benchmark-grade
-//! cold/warm load / lookup / completion / impact / trace + memory data;
-//! CI-deterministic perf audit with fixtures". The hot paths benchmarked here
+//! The hot paths benchmarked here
 //! all sit behind interactive LSP queries (workspace load, go-to-definition,
 //! completion, `al impact`, `al trace`), so a regression in any one of them is
 //! user-visible.
@@ -23,7 +21,7 @@
 //! fixed seed of object names/ids (no randomness, no clock, no filesystem), so
 //! the same work is measured on every run and the memory metric is stable.
 //! See `Docs/benchmarks.md` for how to read the output, including the one-shot
-//! `[C6 MEMORY]` line (indexed symbol count / serialized bytes / graph size).
+//! `[MEMORY]` line (indexed symbol count / serialized bytes / graph size).
 //!
 //! Each benchmark sets up state OUTSIDE the measurement loop so Criterion only
 //! times the hot path (the one exception, `symbols/cold_load_parse_index`,
@@ -291,7 +289,7 @@ fn build_graph(symbols: &SymbolIndex) -> InsightGraph {
 // ---------------------------------------------------------------------------
 // Memory metric — printed exactly once per process, regardless of which group
 // runs (so it shows even under a `-- <filter>`). Reports the approximate memory
-// footprint of the index alongside the timing benches, per the C6 ask.
+// footprint of the index alongside the timing benches.
 
 fn report_stats_once() {
     static DONE: AtomicBool = AtomicBool::new(false);
@@ -310,7 +308,7 @@ fn report_stats_once() {
     idx.add_entries_owned(entries);
     let graph = build_graph(&idx);
     eprintln!(
-        "\n[C6 MEMORY] indexed_symbols={count} serialized_bytes={bytes} \
+        "\n[MEMORY] indexed_symbols={count} serialized_bytes={bytes} \
          bytes_per_symbol={} insight_nodes={} insight_edges={}\n",
         bytes / count.max(1),
         graph.node_count(),

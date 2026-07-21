@@ -249,7 +249,10 @@ pub fn build_profile_symbol_references(
         doc.insert("PageCustomizations".into(), json!([]));
         doc.insert(group.into(), json!([obj]));
         let mut bytes = vec![0xEF, 0xBB, 0xBF];
-        bytes.extend_from_slice(&serde_json::to_vec(&Value::Object(doc)).unwrap_or_default());
+        bytes.extend_from_slice(
+            &serde_json::to_vec(&Value::Object(doc))
+                .expect("serde_json::Value serialization cannot fail"),
+        );
         let filename = format!(
             "ProfileSymbolReferences/{}.json",
             metadata_name(&o.entry.name)
@@ -626,8 +629,8 @@ fn interface_object_id(name: &str, app_id: &str, extended: usize, methods: usize
     } else {
         name.to_string()
     };
-    // alc uppercases with .NET ToUpperInvariant (simple 1:1 mapping), not
-    // Rust's full case mapping — the same C9 divergence method_id fixes.
+    // Match .NET ToUpperInvariant's simple one-to-one mapping rather than
+    // Rust's full case mapping, as method ID normalization does.
     let mut h = fnv1_hash(&crate::method_id::to_upper_invariant(&display));
     if let Some(bytes) = guid_to_bytes_le(app_id) {
         h = combine_hash(h, fnv1_hash_bytes(&bytes));
@@ -802,7 +805,7 @@ fn is_subtype_kind(base: &str) -> bool {
 /// alc's `GetSubTypeHashCodeForNewVersions` (top-level): the referenced object's
 /// id for object-reference kinds, `FNV(name)` for an interface, `1` for scalars.
 fn subtype_hash_for(type_str: &str, resolver: &Resolver) -> i32 {
-    let (base, subtype) = split_type(type_str);
+    let (_, subtype) = split_type(type_str);
     match base_type_name(type_str).to_ascii_lowercase().as_str() {
         "record" | "table" | "codeunit" | "page" | "xmlport" | "query" | "enum" | "testpage"
         | "testrequestpage" => subtype
@@ -811,10 +814,7 @@ fn subtype_hash_for(type_str: &str, resolver: &Resolver) -> i32 {
             .unwrap_or(0),
         // Interface: FNV of the name (NOT upper-cased, unlike method names).
         "interface" => subtype.as_deref().map(fnv1_hash).unwrap_or(0),
-        _ => {
-            let _ = base;
-            1
-        }
+        _ => 1,
     }
 }
 

@@ -49,7 +49,7 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
     if changed && !dry_run {
         if let Some(uri) = &file_uri {
             if let Ok(path) = uri.to_file_path() {
-                // F-011: refresh document store + file index + insight graph
+                // refresh document store + file index + insight graph
                 // so subsequent daemon queries observe the sorted content.
                 if let Err(e) = tokio::task::block_in_place(|| {
                     write_al_file_and_refresh(workspace, &path, sorted.clone())
@@ -93,7 +93,7 @@ pub(in crate::server::daemon) fn dispatch_organize_files(
 
     let mut results = Vec::new();
 
-    // Snapshot (path, text) pairs BEFORE the rename loop (F-OPEN-271):
+    // Snapshot (path, text) pairs BEFORE the rename loop:
     // `rename_al_file_and_refresh` mutates `file_index.files`, and holding
     // the DashMap iter guard across those writes deadlocked the daemon —
     // clients sat in their 30s read timeout and surfaced a raw EAGAIN.
@@ -134,7 +134,7 @@ pub(in crate::server::daemon) fn dispatch_organize_files(
 
         let new_path = path.parent().unwrap_or(&root).join(&expected_name);
 
-        // F-011: route the rename through rename_al_file_and_refresh so
+        // route the rename through rename_al_file_and_refresh so
         // file_index + insight_graph are kept in sync. Without it, the
         // old path stayed in file_index after the disk rename.
         let renamed = if !dry_run {
@@ -260,7 +260,7 @@ mod tests {
         );
     }
 
-    /// F-OPEN-271: organize-files deadlocked the daemon — the dispatcher held
+    /// organize-files deadlocked the daemon — the dispatcher held
     /// a `file_index.files` DashMap shard guard across the rename loop while
     /// `rename_al_file_and_refresh` mutated the same map (the documented
     /// DashMap gotcha). Clients then hit their 30s read timeout and surfaced

@@ -146,25 +146,9 @@ pub(crate) enum ClickTarget {
 }
 
 #[cfg(unix)]
-/// What kind of member a `DetailTarget` refers to.
-/// Stored for future use (deep-link precision when virtual file support
-/// is added in ISSUE-017 follow-up work).
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub(crate) enum DetailTargetKind {
-    Field,
-    Key,
-    Control(String),
-    EnumValue,
-    Procedure,
-}
-
-#[cfg(unix)]
 #[derive(Debug, Clone)]
 pub(crate) struct DetailTarget {
     pub(crate) name: String,
-    #[allow(dead_code)]
-    pub(crate) kind: DetailTargetKind,
 }
 
 /// Object ID for display: `None` when the kind has no developer-visible ID
@@ -213,18 +197,13 @@ pub(crate) fn pad_center(s: String, width: usize) -> String {
 /// The Zed extension does not need al-explorer: it spawns the portable `al-lsp`
 /// server directly over stdio.
 ///
-/// This helper is deliberately **not** behind `#[cfg]` so the wording can be
-/// unit-tested on Linux; the `#[cfg(not(unix))]` `run()` stub that prints it is
-/// the only caller and is gated-by-construction to non-Unix targets.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(any(test, not(unix)))]
 pub(crate) fn unsupported_platform_message() -> &'static str {
     "al-explorer is not available on Windows.\n\
      \n\
      The al-explorer daemon uses Unix domain sockets (AF_UNIX) to talk to the \
      al-lsp language server, and those exist only on Unix-like systems (Linux, \
-     macOS). A Windows transport is not implemented (planned — see gap B16 in \
-     Docs/gaps-and-future-work.md and the Platform support section in \
-     Docs/00-overview.md).\n\
+     macOS). A Windows transport is not implemented.\n\
      \n\
      What still works on Windows: the AL language server (al-lsp) itself — \
      parsing, symbols, the full LSP surface, formatting, and linting — over \
@@ -236,7 +215,7 @@ pub(crate) fn unsupported_platform_message() -> &'static str {
 // (`al_protocol::DaemonClient` is `#[cfg(unix)]`), so the whole binary is
 // Unix-only. The Zed extension does NOT need al-explorer — it spawns the
 // portable `al-lsp` server directly — so on non-Unix targets we compile a small
-// stub that exits with an actionable message instead of failing to build. This
+// unsupported-platform entry point that exits with an actionable message. This
 // is what keeps `cargo build --workspace` (and the Windows release job) green.
 #[cfg(not(unix))]
 pub fn run() -> std::process::ExitCode {
@@ -376,7 +355,7 @@ mod tests {
 // (which pulls in the Unix-only TUI `views`), this module is platform-
 // independent so it runs on every host — including Linux/CI here — and pins the
 // wording of the Windows "not available" message that the `#[cfg(not(unix))]`
-// `run()` stub prints. The stub itself is gated-by-construction (only compiled
+// non-Unix `run()` prints. That function is gated by construction (only compiled
 // on non-Unix), so this is the layer we can actually exercise on Linux.
 #[cfg(test)]
 mod platform_tests {
@@ -397,11 +376,6 @@ mod platform_tests {
         assert!(
             msg.contains("Windows"),
             "message must name the unsupported platform: {msg}"
-        );
-        // Honest about status: no transport, it's planned.
-        assert!(
-            msg.contains("planned"),
-            "message must say a Windows transport is planned, not present: {msg}"
         );
         // Points at the alternative that does work everywhere.
         assert!(

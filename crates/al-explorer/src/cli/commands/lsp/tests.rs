@@ -41,7 +41,7 @@ pub fn cmd_tests_coverage(json: bool) -> ExitCode {
             // The daemon returns `{ coverage: [{ testProcedure, covers: [...] }],
             // untested: [...] }`. The previous formatter read `coveredProcedures`/
             // `totalProcedures`, which the daemon never emits, so it always printed
-            // "0/0 procedures (0%)" (audit 2026-06-20). Derive real counts here.
+            // "0/0 procedures (0%)". Derive real counts here.
             let coverage = result.get("coverage").and_then(|v| v.as_array());
             let untested = result.get("untested").and_then(|v| v.as_array());
             let test_count = coverage.map_or(0, Vec::len);
@@ -250,7 +250,7 @@ fn print_history_row(r: &serde_json::Value) {
 /// Human-readable note clarifying where a test with the given routing decision
 /// **actually executes today** — not where the class name implies.
 ///
-/// A9 honesty fix: `interpRecord` reads like "records run locally", but the
+/// `interpRecord` reads like "records run locally", but the
 /// local mock-record backend is not wired yet, so those tests are routed to
 /// live BC by the runner. Keep this wording in lockstep with
 /// `al_test::router::RoutingDecision::execution_note` (al-explorer talks to the
@@ -328,7 +328,7 @@ pub fn cmd_test_classify(json: bool) -> ExitCode {
 /// endpoint. Streams a per-codeunit summary then a final totals line; exits
 /// non-zero if any test failed.
 ///
-/// `--coverage` (gap C9) collects *dynamic* executed-line coverage on
+/// `--coverage` collects *dynamic* executed-line coverage on
 /// interpreter-routed tests: the daemon returns a `coverage` object and, when
 /// `--cobertura-out` is also given, writes a dynamic-mode Cobertura document.
 pub fn cmd_test_run_all(
@@ -430,7 +430,7 @@ mod classify_note_tests {
 
     #[test]
     fn interp_record_note_says_live_bc_not_local() {
-        // A9: the surface must not let the `interpRecord` name imply local
+        // The surface must not let the `interpRecord` name imply local
         // execution — the note has to state it routes to live BC.
         let note = classify_execution_note("interpRecord");
         assert!(note.contains("live BC"), "got: {note:?}");

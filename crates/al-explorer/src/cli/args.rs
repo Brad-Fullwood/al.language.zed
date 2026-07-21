@@ -473,7 +473,7 @@ Examples:
     },
     /// Show test coverage summary
     TestCoverage,
-    /// Run mutation testing on workspace AL files (Phase 5)
+    /// Run mutation testing on workspace AL files
     #[command(name = "test-mutate")]
     TestMutate {
         /// Restrict to these files (optional, default: all test files)
@@ -486,19 +486,19 @@ Examples:
         #[arg(long)]
         timeout_ms: Option<u64>,
     },
-    /// Show which tests are affected by a set of changed files (p2)
+    /// Show which tests are affected by a set of changed files
     #[command(name = "test-affected")]
     TestAffected {
         /// File paths considered changed (space-separated)
         #[arg(num_args = 1..)]
         files: Vec<String>,
     },
-    /// Show the routing decision for every discovered test (p2). NOTE: only the
+    /// Show the routing decision for every discovered test. Only the
     /// `interp` class runs locally; `interpRecord` is a classification that
     /// still routes to live BC (the local mock record store is not wired yet).
     #[command(name = "test-classify")]
     TestClassify,
-    /// Record / replay / diff test execution snapshots (Phase 4). NOTE:
+    /// Record, replay, or diff test execution snapshots.
     /// file-based today — `replay`/`diff` work on .snap.json files on disk;
     /// live-BC record/replay is not wired yet (see each subcommand's --help).
     #[command(name = "test-snapshot")]
@@ -506,7 +506,7 @@ Examples:
         #[command(subcommand)]
         subcmd: TestSnapshotCommands,
     },
-    /// Show persisted test result history (p2)
+    /// Show persisted test result history
     #[command(name = "test-results")]
     TestResults {
         /// Filter to a specific codeunit ID
@@ -516,7 +516,7 @@ Examples:
         #[arg(long)]
         method: Option<String>,
     },
-    /// Run all discovered tests, optionally writing JUnit/Cobertura output (p1-6)
+    /// Run all discovered tests, optionally writing JUnit/Cobertura output
     #[command(name = "test-run-all")]
     TestRunAll {
         /// Run codeunits in parallel
@@ -531,11 +531,11 @@ Examples:
         /// Path to write Cobertura XML coverage report
         #[arg(long)]
         cobertura_out: Option<String>,
-        /// Optional method-name filter (logged only in Phase 1)
+        /// Optional method-name filter
         #[arg(long)]
         filter: Option<String>,
-        /// Collect dynamic (executed-line) coverage on interpreter-routed tests
-        /// (gap C9). Surfaces per-file executed lines in the result and, with
+        /// Collect dynamic (executed-line) coverage on interpreter-routed tests.
+        /// Surfaces per-file executed lines in the result and, with
         /// --cobertura-out, writes a dynamic-mode Cobertura doc instead of static.
         #[arg(long)]
         coverage: bool,

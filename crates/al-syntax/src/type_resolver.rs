@@ -131,20 +131,11 @@ impl<'a> TypeResolver<'a> {
             if proc.kind() == "trigger_declaration" {
                 self.add_trigger_implicit_vars(root, &mut result);
             }
-        } else {
-            // Fallback: the grammar doesn't produce trigger_declaration nodes for
-            // triggers nested inside action blocks (e.g., `trigger OnAction()` in a
-            // page action). Scan the text backwards to find a var section.
-            self.collect_action_trigger_vars(position, &mut result);
         }
 
         // Rec/xRec are available across table-bound object members, including
         // page/report layout expressions outside procedure bodies.
         //
-        // F-OPEN-104: resolve the source table once and hand it to
-        // `add_record_implicit_vars`. The function previously called
-        // `find_source_table` itself, so this branch ran two full root-children
-        // walks per LSP request — wasted work on every hover/definition/etc.
         let source_table = self.find_source_table(root);
         if let Some(ref table) = source_table {
             self.add_record_implicit_vars_for(table, root, &mut result);
@@ -192,10 +183,6 @@ impl<'a> TypeResolver<'a> {
         // identifiers resolve to the wrong descendant and we silently fall
         // through to the text-scanning fallback.
         //
-        // T050 perf: previously this allocated a `String` per call via
-        // `lines().nth(row).map(str::to_string)`. Borrow the line as `&str`
-        // so signature-help / hover / definition queries (which all funnel
-        // through here) avoid the per-keystroke allocation.
         let row = position.line as usize;
         let source_str = std::str::from_utf8(self.source).ok()?;
         let line = source_str.lines().nth(row).unwrap_or("");
@@ -349,7 +336,7 @@ impl<'a> TypeResolver<'a> {
             type_subtype,
             is_var: false,
             scope,
-            range: node.range(),
+            range: name_node.range(),
         })
     }
 
@@ -370,7 +357,7 @@ impl<'a> TypeResolver<'a> {
             type_subtype: None,
             is_var: false,
             scope,
-            range: node.range(),
+            range: name_node.range(),
         })
     }
 
@@ -612,7 +599,7 @@ impl<'a> TypeResolver<'a> {
             Err(_) => return,
         };
 
-        // F-OPEN-105 short-circuit: most AL files don't contain `dataitem`
+        // short-circuit: most AL files don't contain `dataitem`
         // (only Report and Query objects use it). Skip the line-starts
         // scan entirely when the keyword isn't present. AL keywords are
         // case-insensitive, so we scan case-insensitively for `dataitem(` —
@@ -701,161 +688,8 @@ impl<'a> TypeResolver<'a> {
         }
     }
 
-    /// Fallback: collect local variables from action trigger var sections.
-    ///
-    /// Historical: the tree-sitter grammar previously produced `braced_block`
-    /// instead of `trigger_declaration` for `trigger OnAction()` inside page
-    /// action blocks. T031 (cycle 1) verified the current grammar emits
-    /// `trigger_declaration` natively — making this fallback redundant on
-    /// the happy path. We keep it as defence-in-depth so the LSP remains
-    /// functional against older grammar artifacts (cached parser binaries,
-    /// vendor forks). Safe to delete once the grammar's action-trigger
-    /// corpus tests are part of a release contract.
-    ///
-    /// This scans the text backwards from the cursor to find a `var` section
-    /// between a `trigger` header and a `begin` keyword, then parses variable
-    /// declarations from it.
-    fn collect_action_trigger_vars(&self, position: Position, result: &mut Vec<VariableDecl>) {
-        let text = match std::str::from_utf8(self.source) {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-        let lines: Vec<&str> = text.lines().collect();
-        let cursor_line = position.line as usize;
-        if cursor_line >= lines.len() {
-            return;
-        }
-
-        let mut begin_line = None;
-        let mut var_line = None;
-        let mut trigger_line = None;
-
-        for i in (0..=cursor_line).rev() {
-            let trimmed = lines[i].trim();
-            let lower = trimmed.to_lowercase();
-
-            if begin_line.is_none() {
-                if lower == "begin" {
-                    begin_line = Some(i);
-                }
-                continue;
-            }
-
-            if var_line.is_none() {
-                if lower == "var" {
-                    var_line = Some(i);
-                    continue;
-                }
-                // A declaration line (contains `:`) between begin and var — skip
-                if trimmed.contains(':') {
-                    continue;
-                }
-                // If we hit something else before finding `var`, this isn't
-                // a trigger-with-vars pattern. Check if it's the trigger line.
-                if lower.starts_with("trigger ") {
-                    // Trigger with no var section — no locals to add
-                    return;
-                }
-                return;
-            }
-
-            if lower.starts_with("trigger ") {
-                trigger_line = Some(i);
-                break;
-            }
-            // Allow blank lines or declaration lines between var and trigger
-            if trimmed.is_empty() || trimmed.contains(':') {
-                continue;
-            }
-            return;
-        }
-
-        if trigger_line.is_none() || var_line.is_none() || begin_line.is_none() {
-            return;
-        }
-
-        let Some(var_start) = var_line else {
-            return;
-        };
-        let Some(begin_at) = begin_line else {
-            return;
-        };
-
-        // Build a line_starts table so we can compute real byte offsets
-        // for the synthetic VariableDecl ranges (mirrors collect_dataitem_vars).
-        // Without this start_byte = end_byte = 0 makes downstream byte-range
-        // checks (e.g. `is_inside`, hover.byte_offset filtering) treat every
-        // action-trigger var as a zero-width match at file offset 0.
-        let mut line_starts: Vec<usize> = Vec::with_capacity(lines.len() + 1);
-        line_starts.push(0);
-        let mut cursor = 0usize;
-        for line in &lines {
-            cursor += line.len() + 1; // +1 for the elided '\n'
-            line_starts.push(cursor);
-        }
-
-        for line_idx in (var_start + 1)..begin_at {
-            if line_idx >= lines.len() {
-                break;
-            }
-            let line = lines[line_idx];
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Some(colon_pos) = trimmed.find(':') {
-                let var_name = trimmed[..colon_pos].trim();
-                let type_part = trimmed[colon_pos + 1..].trim().trim_end_matches(';');
-                if var_name.is_empty() || type_part.is_empty() {
-                    continue;
-                }
-                let (type_name, type_subtype) = parse_type_text(type_part);
-                let col = line.find(var_name).unwrap_or(0);
-                let line_start = line_starts.get(line_idx).copied().unwrap_or(0);
-                let start_byte = line_start + col;
-                let end_byte = line_start + col + trimmed.len();
-                result.push(VariableDecl {
-                    name: var_name.to_string(),
-                    type_name,
-                    type_subtype,
-                    is_var: false,
-                    scope: VariableScope::Local,
-                    range: tree_sitter::Range {
-                        start_byte,
-                        end_byte,
-                        start_point: tree_sitter::Point {
-                            row: line_idx,
-                            column: col,
-                        },
-                        end_point: tree_sitter::Point {
-                            row: line_idx,
-                            column: col + trimmed.len(),
-                        },
-                    },
-                });
-            }
-        }
-    }
-
     fn node_text_clean(&self, node: Node<'a>) -> Option<String> {
         super::node_text_clean(node, self.source)
-    }
-}
-
-/// Parse a type expression from plain text (e.g., `Record "Customer"` → ("Record", Some("Customer"))).
-fn parse_type_text(type_text: &str) -> (String, Option<String>) {
-    let trimmed = type_text.trim();
-    if let Some(space_pos) = trimmed.find(|c: char| c.is_whitespace()) {
-        let type_name = trimmed[..space_pos].to_string();
-        let rest = trimmed[space_pos..].trim();
-        let subtype = rest.trim_matches('"').trim_matches('\'');
-        if subtype.is_empty() {
-            (type_name, None)
-        } else {
-            (type_name, Some(subtype.to_string()))
-        }
-    } else {
-        (trimmed.to_string(), None)
     }
 }
 

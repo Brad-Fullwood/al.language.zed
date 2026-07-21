@@ -80,7 +80,7 @@ pub struct ResolvedObject {
 /// `resolve_object` maps a file path to its AL object type + ID using the workspace index.
 /// `resolve_path` is the reverse: given a BC (ObjectType, ObjectNumber) returns the source file.
 /// Both are provided by the caller (al-lsp binary) since they depend on `crate::symbols`.
-/// Shared state + host callbacks for the native DAP server (F-OPEN-257).
+/// Shared state + host callbacks for the native DAP server.
 ///
 /// Every DAP request is handled by a method on this struct that writes its
 /// messages through a generic [`tokio::io::AsyncWrite`] sink — production
@@ -100,7 +100,7 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     cancel_tx: watch::Sender<u64>,
     cancel_rx: watch::Receiver<u64>,
     /// Channel for the BC-event forwarding task to send pre-serialized DAP
-    /// event bytes to the main loop (bounded 1024 — T010).
+    /// event bytes to the main loop (bounded to 1024 messages).
     dap_event_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     project_root: String,
     alc_path: Option<PathBuf>,
@@ -109,7 +109,7 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     resolve_path: P,
     /// Compile the project; `Ok(build log)` on success, `Err(log)` on failure.
     /// Injected by the caller (al-lsp) so this crate never names the build /
-    /// emit pipeline (still parked in al-core).
+    /// emit pipeline.
     compile: C,
     /// Locate the deploy `.app` for a project root. Injected for the same
     /// reason as `compile`.
@@ -241,7 +241,6 @@ where
         *self.debug_config.lock().await = Some(config.clone());
 
         if command == "launch" {
-            // Fix #7: only emit "Compiling" for launch, not attach
             write_dap(
                 out,
                 &make_event(
@@ -424,7 +423,7 @@ where
                     }
                 }
             } else {
-                // F-013: a missing .app means compile failed (or
+                // a missing .app means compile failed (or
                 // hasn't run). Continuing into publish/attach would
                 // either silently use a stale .app from a previous
                 // build (worse — debugging the wrong source) or
@@ -588,7 +587,7 @@ where
                 // BC, both add fresh breakpoints, and one caller's `new_ids`
                 // would overwrite the other in the map — leaving the BC
                 // server's bp set as the union of both adds but the local map
-                // tracking only one half, orphaning the rest. F-OPEN-014.
+                // tracking only one half and orphaning the rest.
                 let mut bps = self.breakpoints.lock().await;
                 let old_ids: Vec<i64> = bps.remove(&source_path).unwrap_or_default();
                 for id in old_ids {
@@ -819,7 +818,6 @@ where
         request_seq: i64,
         command: &str,
     ) -> Result<()> {
-        // Fix #5: call get_call_stack() and map BC StackFrame[] to DAP StackFrames.
         let session_arc = self.session.lock().await.clone();
         let stack_frames = if let Some(s) = session_arc {
             match s.get_call_stack().await {
@@ -858,14 +856,13 @@ where
         command: &str,
         arguments: &serde_json::Value,
     ) -> Result<()> {
-        // Fix #6: use result of get_globals() to build proper scope entries.
         // variablesReference is encoded as (frame_id * 100 + scope_index) so the
         // "variables" handler can decode which frame and scope to fetch.
         let frame_id = arguments
             .get("frameId")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-        // Clone Arc and drop guard before any async work (T-023).
+        // Clone Arc and drop guard before any async work.
         let session_arc = self.session.lock().await.clone();
         let mut scopes = Vec::new();
         if let Some(s) = session_arc {
@@ -934,7 +931,7 @@ where
         // scope_index 2 → globals, otherwise → locals
         let frame_id = vars_ref / 100;
         let scope_index = vars_ref % 100;
-        // Clone Arc and drop guard before async work (T-023).
+        // Clone Arc and drop guard before async work.
         let session_arc = self.session.lock().await.clone();
         let variables = if let Some(s) = session_arc {
             if scope_index == 2 {
@@ -995,7 +992,7 @@ where
             .get("frameId")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-        // Clone Arc and drop guard before async work (T-023).
+        // Clone Arc and drop guard before async work.
         let session_arc = self.session.lock().await.clone();
         let result = if let Some(s) = session_arc {
             s.evaluate(frame_id, expression)
@@ -1032,7 +1029,7 @@ where
         request_seq: i64,
         command: &str,
     ) -> Result<()> {
-        // Clone Arc, drop guard, then stop (T-023: don't hold mutex across await).
+        // Clone Arc, drop guard, then stop (don't hold mutex across await).
         let session_arc = self.session.lock().await.clone();
         if let Some(s) = session_arc {
             let _ = s.stop_debugging().await;
@@ -1144,7 +1141,7 @@ where
                     // try_send + warn-log preserves the producer side's
                     // back-pressure semantics: if Zed is wedged and the
                     // 1024-slot channel fills, drop the event with a log
-                    // rather than block this task forever (T010).
+                    // rather than block this task forever.
                     match event_tx_clone.try_send(body) {
                         Ok(()) => {}
                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
@@ -1211,7 +1208,7 @@ where
 
     let mut stdout = io::stdout();
 
-    // C17: read stdin in a dedicated task that forwards each parsed DAP request
+    // Read stdin in a dedicated task that forwards each parsed DAP request
     // body to a channel. The main loop then `select!`s over client requests and
     // BC push events — both channel `recv()`s, which are cancel-safe — so a
     // `stopped`/`output` event queued while the adapter is parked (e.g. after a
@@ -1360,10 +1357,6 @@ async fn write_dap<W: tokio::io::AsyncWrite + Unpin>(
     write_dap_frame(writer, &body).await
 }
 
-// The `find_app_file` wrapper was removed in the al-dap extraction: the .app
-// selection logic lives in al-core's build module and is now supplied through
-// the injected `find_app` callback on `NativeDapState`.
-
 fn open_browser(url: &str) -> bool {
     let ok = {
         #[cfg(target_os = "linux")]
@@ -1421,8 +1414,8 @@ fn extract_breakpoint_id(result: &serde_json::Value) -> Option<i64> {
 /// camelCase on older ones; the DAP `variables` response requires lowercase
 /// `name`/`value` and a `variablesReference` (0 = not expandable). The native
 /// `variables` handler previously forwarded the raw BC JSON, so editors keying
-/// on `name`/`value` rendered an empty or broken Variables pane (audit
-/// 2026-06-20). Structured-value expansion is not yet wired, so
+/// on `name`/`value` rendered an empty or broken Variables pane.
+/// Structured-value expansion is not yet wired, so
 /// `variablesReference` is always 0. A non-string `Value` (e.g. a JSON number)
 /// is stringified rather than dropped.
 fn bc_vars_to_dap(variables: &serde_json::Value) -> Vec<serde_json::Value> {
@@ -2037,7 +2030,7 @@ mod tests {
     // compile_timeout + the alc run/timeout policy now live in crate::build
     // (run_alc_with_timeout), shared with the daemon build path. Their env-var
     // parsing is covered by build.rs's compile_timeout_* tests; the DAP
-    // duplicates were removed to keep a single source of truth (DUP-1/DUP-2).
+    // duplicates were removed to keep a single source of truth.
 
     // -----------------------------------------------------------------------
     // write_dap — serialises a JSON value into a DAP frame with a valid
@@ -2112,7 +2105,7 @@ mod tests {
 
 #[cfg(test)]
 mod handler_tests {
-    //! F-OPEN-257: per-request handler tests over `NativeDapState` — no
+    //! per-request handler tests over `NativeDapState` — no
     //! stdio loop, no BC server. Handlers write DAP frames into a duplex
     //! pipe; tests read them back through the real framing parser.
 

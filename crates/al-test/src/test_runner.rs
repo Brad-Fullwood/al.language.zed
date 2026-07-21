@@ -138,7 +138,7 @@ impl TestRunnerClient {
             });
         }
 
-        // Content-Length-capped read (F-OPEN-044). BC test-run responses
+        // Cap reads based on Content-Length. BC test-run responses
         // are typically a few KB; 16 MB is a defence-in-depth bound.
         let raw: DevTestRunResponse = al_bc::bc_client::read_json_body_capped(response)
             .await
@@ -182,7 +182,7 @@ impl TestRunnerClient {
             });
         }
 
-        // Content-Length-capped read (F-OPEN-044).
+        // Cap reads based on Content-Length.
         let raw: DevTestListResponse = al_bc::bc_client::read_json_body_capped(response)
             .await
             .map_err(|e| TestRunnerError::ServerError {
@@ -420,15 +420,13 @@ mod tests {
 }
 
 #[cfg(test)]
-mod adversarial_j_tests {
+mod url_tests {
     use super::*;
     use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 
-    /// Finding adversarial_j_1: build_base_url must include an http:// scheme even
-    /// when config.server omits it.  Without a scheme, reqwest cannot parse the URL.
-    /// This test currently FAILS (RED) because build_base_url does not inject the scheme.
+    /// A bare hostname receives an `http://` scheme so reqwest accepts the URL.
     #[test]
-    fn test_on_prem_url_without_scheme_adds_http_adversarial_j_1() {
+    fn on_prem_url_without_scheme_adds_http() {
         let config = BcServerConfig {
             name: "plain-host".to_string(),
             environment_type: EnvironmentType::OnPrem,
@@ -441,19 +439,17 @@ mod adversarial_j_tests {
             accept_invalid_certs: false,
         };
         let url = build_base_url(&config);
-        // The URL must be parseable by reqwest — must start with http:// or https://
         assert!(
             url.starts_with("http://") || url.starts_with("https://"),
             "build_base_url must include a scheme; got: {url}"
         );
-        // Must still contain port and instance
         assert!(url.contains("7049"), "URL should contain port: {url}");
         assert!(url.contains("/BC"), "URL should contain instance: {url}");
     }
 
-    /// Finding adversarial_j_1 (negative companion): server already has http:// — must not double it.
+    /// An existing scheme is preserved.
     #[test]
-    fn test_on_prem_url_with_scheme_not_doubled_adversarial_j_1() {
+    fn on_prem_url_with_scheme_is_not_doubled() {
         let config = BcServerConfig {
             name: "with-scheme".to_string(),
             environment_type: EnvironmentType::OnPrem,

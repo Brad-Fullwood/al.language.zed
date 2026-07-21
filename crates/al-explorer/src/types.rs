@@ -4,7 +4,7 @@
 //! al-explorer has ZERO compile-time dependency on any al-* analysis crate.
 //! Data is received via JSON-RPC from the al-lsp daemon and deserialized here.
 //!
-//! ISSUE-017: al-explorer must route all data through al-lsp daemon (JSON-RPC).
+//! al-explorer must route all data through al-lsp daemon (JSON-RPC).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -70,8 +70,7 @@ impl ObjectKind {
     /// AL syntax. Interfaces, profiles, page customizations, control
     /// add-ins, entitlements, and .NET packages are declared without one —
     /// symbol packages store an internal compiler hash in the `Id` slot for
-    /// some of these, which is meaningless to users and must not be shown
-    /// (FB-3).
+    /// some of these, which is meaningless to users and must not be shown.
     pub fn has_numeric_id(&self) -> bool {
         !matches!(
             self,
