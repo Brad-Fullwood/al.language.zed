@@ -11,8 +11,7 @@
 ///
 /// These are runtime-ABI strings emitted into `.app` symbol JSON by
 /// Microsoft's compiler. They are NOT AL language keywords / built-in
-/// functions / object types (which the CLAUDE.md "no hardcoded AL values"
-/// rule targets) — they are stable identifiers in the event system that
+/// functions or object types. They are stable identifiers in the event system that
 /// have not been renamed since BC's introduction. Centralised here so any
 /// future rename happens in one place and a `grep` for usage is easy.
 pub mod attr_names {
@@ -25,7 +24,7 @@ pub mod attr_names {
 /// by `search.rs`. Centralised so a typo at either end is caught by the
 /// compiler (the alternative — `match node_type { "even" => ... }` — would
 /// silently fall through). Not AL language surface; these are internal
-/// graph-node discriminants. .
+/// graph-node discriminants.
 pub mod node_kind {
     pub const EVENT: &str = "event";
     pub const PROCEDURE: &str = "procedure";

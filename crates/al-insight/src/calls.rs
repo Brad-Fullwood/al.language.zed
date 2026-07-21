@@ -38,9 +38,8 @@ impl RecordOp {
     ///
     /// The four operations are the stable AL record-runtime tokens since
     /// NAV 2.0 — they're part of the BC record ABI (each fires OnBefore/OnAfter
-    /// table events), not AL *language* keywords or built-in functions. The
-    /// CLAUDE.md no-hardcoded-AL-values rule targets the surface that drifts
-    /// with BC releases; this set is fixed by Microsoft and has not changed in
+    /// table events), not AL *language* keywords or built-in functions. This
+    /// set is fixed by Microsoft and has not changed in
     /// 20+ years. Locked in here rather than fetched from `LanguageData` so
     /// the call-graph builder has no runtime dependency on language data load
     /// order.
@@ -259,7 +258,7 @@ fn collect_record_from_parameter(
 /// Companion to `extract_procedure_var_types` (which handles only `Record`);
 /// used by member-call resolution to translate `MyVar.Method()` →
 /// `<ObjectName>.Method()` when the variable's declared type is an object
-/// reference. Closes . Excludes `Record` because those don't act
+/// reference. Excludes `Record` because those don't act
 /// as method-call receivers in the same sense (their methods live on the
 /// table object, but the call-graph already routes those via the
 /// `RecordOp` trigger path).
@@ -440,8 +439,7 @@ pub fn extract_call_sites(
 
 /// Iteratively collect call sites from a `begin_end_block` or any child node.
 ///
-/// Uses an explicit stack to avoid unbounded recursion on deeply nested AL
-/// (CLAUDE.md requires iterative tree-sitter traversal).
+/// Uses an explicit stack to avoid unbounded recursion on deeply nested AL.
 fn collect_call_sites_from_block(
     node: tree_sitter::Node,
     source: &[u8],
@@ -607,7 +605,6 @@ fn parse_run_trigger_arg(
                 // edges show up as extra entries in deadcode/impact, not
                 // missed dependencies. Logged at debug so the false-positive
                 // rate is observable when investigating dead-code reports.
-                // .
                 tracing::debug!(
                     expr = %text.trim(),
                     op = ?op,
@@ -690,7 +687,7 @@ pub fn populate_call_edges_for_procedure(
 ) {
     let call_sites = extract_call_sites(tree, source, procedure_name);
     let var_types = extract_procedure_var_types(tree, source, procedure_name);
-    // collect ALL object-typed var declarations (codeunit / page /
+    // Collect object-typed variable declarations (codeunit / page /
     // report / xmlport / query / interface), not just Record. Used to resolve
     // `MyVar.Method()` where `MyVar` is e.g. `Codeunit "Sales-Post"` — the
     // prior code looked up `MyVar` itself in the symbol index, only matching
@@ -866,9 +863,8 @@ fn find_interface_implementors(
 /// **Hardcoded naming convention:** the `OnBefore{Op}Event` /
 /// `OnAfter{Op}Event` pattern is part of the BC record runtime contract,
 /// not AL language surface — Microsoft has not changed the convention since
-/// the introduction of `IntegrationEvent` on tables. The CLAUDE.md
-/// no-hardcoded-AL-values rule targets the language surface that drifts
-/// with BC releases; this is a stable ABI string format. If a future BC
+/// the introduction of `IntegrationEvent` on tables. This is a stable ABI
+/// string format. If a future BC
 /// release introduces a new table-event naming scheme (e.g.
 /// `OnValidateField{Op}`) this function will need extending — at which
 /// point the right move is to derive the patterns from a symbol scan of
@@ -927,11 +923,11 @@ pub fn register_workspace_nodes(
 ) {
     let mut workspace_entries: Vec<al_symbols::SymbolEntry> = Vec::new();
 
-    // Snapshot the (path, info) pairs in one short-lived shard iteration
-    //: the body of this loop calls
+    // Snapshot the (path, info) pairs in one short-lived shard iteration.
+    // The body of this loop calls
     // file_index.get_cached_parse(path) which acquires *other* DashMap
     // shards (files / file_trees) and runs a full tree walk per entry —
-    // pre-we held the object_info shard read lock the entire time,
+    // Previously, we held the object_info shard read lock the entire time,
     // blocking concurrent did_change writers to that shard for the
     // duration of the build. Cloning the snapshot is cheap (kB-scale)
     // versus the cost of an N-file tree walk that follows.
@@ -1185,7 +1181,7 @@ fn collect_implements_from_object(node: tree_sitter::Node, source: &[u8]) -> Vec
                         push_interface(&mut result, t);
                     }
                 }
-                // ...plus any trailing `, IBar` siblings the grammar leaves at
+                // Include any trailing `, IBar` siblings the grammar leaves at
                 // the object_declaration level.
                 let mut j = i + 1;
                 while j < children.len() {
@@ -1373,7 +1369,7 @@ fn extract_single_parameter(
 /// appears, parameter `type_reference` nodes have already been consumed via
 /// the `parameter_list` parent. The previous comment ("Check if preceded by
 /// `:`") was aspirational and not implemented; the grammar's child ordering
-/// makes that check unnecessary in practice. .
+/// makes that check unnecessary in practice.
 fn extract_return_type(proc_node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
@@ -1416,8 +1412,8 @@ fn parse_attr_args_from_text(attr_text: &str) -> Vec<String> {
 
 /// Iteratively walk the AST registering procedure/trigger declarations.
 ///
-/// Uses an explicit stack to avoid unbounded recursion on deeply nested AL
-/// (CLAUDE.md requires iterative tree-sitter traversal). When a procedure
+/// Uses an explicit stack to avoid unbounded recursion on deeply nested AL.
+/// When a procedure
 /// or trigger node is found, it is dispatched but its body is NOT pushed
 /// onto the stack — nested procedures inside a procedure body are not legal
 /// AL anyway.
