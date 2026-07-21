@@ -42,6 +42,7 @@ const MAX_RESPONSE_LINE: usize = 64 * 1024 * 1024;
 /// retried until this instant, preserving any partially-read line bytes.
 /// `None` means a single socket timeout is fatal (legacy behaviour, used
 /// by tests).
+#[cfg(not(windows))]
 fn read_bounded_line<R: BufRead>(
     reader: &mut R,
     max_bytes: usize,
@@ -110,6 +111,74 @@ fn read_bounded_line<R: BufRead>(
             return String::from_utf8(buf)
                 .map(Some)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+        }
+        let len = available.len();
+        buf.extend_from_slice(available);
+        reader.consume(len);
+    }
+}
+
+/// Windows named-pipe reads in `interprocess` are implemented with
+/// `ReadFileEx` followed by an unbounded alertable wait. `PIPE_NOWAIT` does
+/// not make that wait observe our request deadline, so calling `fill_buf`
+/// before bytes exist can strand the CLI forever. Poll `PeekNamedPipe` first
+/// and only enter the library read once data is available.
+#[cfg(windows)]
+fn read_bounded_pipe_line(
+    reader: &mut BufReader<Stream>,
+    max_bytes: usize,
+    deadline: std::time::Instant,
+) -> std::io::Result<Option<String>> {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        while reader.buffer().is_empty() {
+            let Stream::NamedPipe(pipe) = reader.get_ref();
+            let mut available = 0_u32;
+            let ok = unsafe {
+                PeekNamedPipe(
+                    pipe.as_handle().as_raw_handle(),
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut available,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if available > 0 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "named-pipe response deadline elapsed",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let available = reader.fill_buf()?;
+        let prospective_take = available
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .unwrap_or(available.len());
+        if buf.len().saturating_add(prospective_take) > max_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("line exceeds {max_bytes} byte limit"),
+            ));
+        }
+        if let Some(pos) = available.iter().position(|&byte| byte == b'\n') {
+            buf.extend_from_slice(&available[..pos]);
+            reader.consume(pos + 1);
+            return String::from_utf8(buf)
+                .map(Some)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
         }
         let len = available.len();
         buf.extend_from_slice(available);
@@ -393,8 +462,9 @@ impl DaemonClient {
 
     fn read_response(&mut self, timeout: Duration) -> Result<Response, String> {
         let deadline = std::time::Instant::now() + timeout;
-        let line = read_bounded_line(&mut self.reader, MAX_RESPONSE_LINE, Some(deadline))
-            .map_err(|e| {
+        #[cfg(not(windows))]
+        let line = read_bounded_line(&mut self.reader, MAX_RESPONSE_LINE, Some(deadline)).map_err(
+            |e| {
                 if matches!(
                     e.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
@@ -408,8 +478,26 @@ impl DaemonClient {
                 } else {
                     format!("Failed to read response: {}", e)
                 }
-            })?
-            .ok_or_else(|| "Connection closed by daemon (EOF)".to_string())?;
+            },
+        )?;
+        #[cfg(windows)]
+        let line =
+            read_bounded_pipe_line(&mut self.reader, MAX_RESPONSE_LINE, deadline).map_err(|e| {
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) {
+                    format!(
+                        "Daemon did not respond within {}s — the operation may still be \
+                         running. Retry with a longer timeout, or check the daemon log at \
+                         ~/.local/share/al-lsp/logs/al-lsp.log",
+                        timeout.as_secs()
+                    )
+                } else {
+                    format!("Failed to read response: {}", e)
+                }
+            })?;
+        let line = line.ok_or_else(|| "Connection closed by daemon (EOF)".to_string())?;
         serde_json::from_str(line.trim()).map_err(|e| format!("Failed to parse response: {}", e))
     }
 
@@ -1001,6 +1089,8 @@ mod cross_platform_tests {
     use super::{connect_stream, DaemonClient};
     use crate::jsonrpc::{Request, Response};
     use crate::socket::socket_path_with_runtime_dir;
+    #[cfg(unix)]
+    use interprocess::local_socket::traits::Stream as _;
     use interprocess::local_socket::{
         traits::Listener as _, GenericFilePath, ListenerOptions, ToFsName,
     };
@@ -1078,6 +1168,66 @@ mod cross_platform_tests {
         response_read_tx
             .send(())
             .expect("notify fixture server that response was consumed");
+
+        drop(client);
+        server.join().expect("server thread completed");
+        #[cfg(unix)]
+        let _ = std::fs::remove_file(&endpoint);
+        let _ = std::fs::remove_dir_all(&root);
+        #[cfg(unix)]
+        let _ = std::fs::remove_dir_all(&runtime);
+    }
+
+    #[test]
+    fn local_transport_request_deadline_is_enforced() {
+        let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root =
+            std::env::temp_dir().join(format!("al-protocol-deadline-{}-{n}", std::process::id()));
+        let project = root.join("project");
+        #[cfg(unix)]
+        let runtime = std::path::PathBuf::from(format!(
+            "/tmp/al-protocol-deadline-{}-{n}",
+            std::process::id()
+        ));
+        #[cfg(windows)]
+        let runtime = root.join("runtime");
+        std::fs::create_dir_all(&project).expect("create project directory");
+        std::fs::create_dir_all(runtime.join("al-lsp")).expect("create runtime directory");
+
+        let endpoint = socket_path_with_runtime_dir(&project, runtime.to_string_lossy())
+            .expect("create platform endpoint");
+        let name = endpoint
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .expect("convert endpoint name");
+        let listener = ListenerOptions::new()
+            .name(name)
+            .create_sync()
+            .expect("bind platform local transport");
+
+        let server = std::thread::spawn(move || {
+            let conn = listener.accept().expect("accept client");
+            let mut reader = std::io::BufReader::new(&conn);
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read request frame");
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        });
+
+        let stream = connect_stream(&endpoint).expect("connect platform local transport");
+        let mut client = DaemonClient::from_stream(stream).expect("construct daemon client");
+        #[cfg(unix)]
+        client
+            .reader
+            .get_ref()
+            .set_recv_timeout(Some(std::time::Duration::from_millis(50)))
+            .expect("shorten Unix socket poll interval for deadline test");
+        let error = client
+            .request_with_timeout("test/never", None, std::time::Duration::from_millis(200))
+            .expect_err("silent platform peer must hit the request deadline");
+        assert!(
+            error.contains("did not respond"),
+            "deadline error must be actionable: {error}"
+        );
 
         drop(client);
         server.join().expect("server thread completed");
