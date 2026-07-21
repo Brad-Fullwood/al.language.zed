@@ -135,7 +135,7 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
         );
     }
 
-    // C15: supplement the direct, name-based coverage with indirect-dispatch
+    // supplement the direct, name-based coverage with indirect-dispatch
     // edges from the workspace call graph (interface dispatch, Codeunit.Run,
     // event publish→subscriber). Runs before `untested` is computed so an
     // indirectly-covered procedure is not reported as a false-negative.
@@ -162,7 +162,7 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
     CoverageReport { coverage, untested }
 }
 
-/// Credit indirect-dispatch coverage (gap C15) on top of the direct pass.
+/// Credit indirect-dispatch coverage on top of the direct pass.
 ///
 /// For each test procedure already in `coverage`, look up its node in the
 /// workspace call graph and follow one hop of [`EdgeKind::IndirectCall`] edges
@@ -183,7 +183,7 @@ fn augment_coverage_with_indirect_calls(
     }
 
     // Build a fully-resolved call graph (same as the affected-test path). This
-    // resolves every workspace procedure's edges, including the C15 indirect
+    // resolves every workspace procedure's edges, including the indirect
     // ones, so a low-fanout test file is not silently skipped.
     let (insight, _cg_guard) = workspace.get_or_build_call_graph();
     let mut cg = CallGraph::build_from_insight(&insight);
@@ -819,7 +819,7 @@ mod tests {
         assert_eq!(private_is_local, Some(true), "local procedure is local");
     }
 
-    // ---- C15: indirect-dispatch coverage --------------------------------
+    // ---- indirect-dispatch coverage --------------------------------
 
     #[test]
     fn coverage_credits_interface_dispatch_to_implementor() {

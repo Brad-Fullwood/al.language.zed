@@ -1,6 +1,6 @@
 //! Dependency graph with transitive resolution.
 //!
-//! T1704: Build and query full dependency graph from app.json and .app packages.
+//! Build and query full dependency graph from app.json and .app packages.
 //! Includes DOT export, transitive dependencies, and version conflict detection.
 
 use serde::Serialize;
@@ -434,7 +434,7 @@ mod tests {
         );
         assert!(
             dot.contains("\"Base Application\" -> \"System Application\""),
-            "expected package->package edge (the path under T016 fix); got: {dot}"
+            "expected package-to-package edge; got: {dot}"
         );
     }
 

@@ -221,7 +221,7 @@ pub struct PermissionCoverageEntry {
 /// a table granted `RIMD` that is only ever read (so `IMD` is over-broad) is
 /// *not* flagged as long as the table is referenced somewhere. Right-level
 /// (RIMDX) over-grant detection needs per-table record-access analysis that the
-/// workspace does not yet expose (B13).
+/// workspace does not yet expose.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverBroadGrantEntry {
@@ -239,7 +239,7 @@ pub struct OverBroadGrantEntry {
 
 /// A `tabledata` grant whose table is referenced (read) but whose granted
 /// Insert/Modify/Delete rights exceed the write access the workspace actually
-/// exercises (B13 right-level / RIMDX check).
+/// exercises (right-level / RIMDX check).
 ///
 /// **Precision: write-site over-approximation in the safe direction.** A right
 /// (I/M/D) is reported as over-granted only when **no** matching write site is
@@ -272,7 +272,7 @@ pub struct OverGrantedRightsEntry {
 }
 
 /// Full result of the permission-set audit: per-object coverage plus over-broad
-/// (unused) grants. B13 added the `over_broad` (object-level) and
+/// (unused) grants. added the `over_broad` (object-level) and
 /// `over_granted_rights` (right-level / RIMDX) sections; `coverage` is unchanged.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -446,7 +446,7 @@ fn count_object_refs(scan_files: &[(String, tree_sitter::Tree)], object: &str) -
         .sum()
 }
 
-/// Right-level / RIMDX over-grant detection (B13 follow-up).
+/// Right-level / RIMDX over-grant detection ().
 ///
 /// For each `tabledata` grant whose table **is** referenced in the workspace
 /// (so it is not already an object-level over-broad finding), compare the
@@ -930,7 +930,7 @@ mod tests {
         assert_eq!(some_page.unwrap().rights, "X");
     }
 
-    // ---- B13 follow-up: right-level (RIMDX) over-grant ----------------------
+    // ---- right-level (RIMDX) over-grant ----------------------
 
     /// A table granted `RIMD` that the workspace only *reads* (via `Get`) must
     /// have its Insert/Modify/Delete rights flagged as over-granted — and `R`

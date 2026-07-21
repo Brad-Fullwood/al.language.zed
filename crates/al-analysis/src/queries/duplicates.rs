@@ -1,6 +1,6 @@
 //! Duplicate code detection.
 //!
-//! T1708: Find structurally similar code blocks across AL source files using AST comparison.
+//! Find structurally similar code blocks across AL source files using AST comparison.
 //! Uses normalized procedure body hashing to detect duplicates.
 
 use serde::Serialize;

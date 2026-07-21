@@ -1,6 +1,6 @@
 //! Cross-extension breaking change analysis.
 //!
-//! T1703: Compare two symbol sets (baseline vs current) to identify breaking changes.
+//! Compare two symbol sets (baseline vs current) to identify breaking changes.
 //! Breaking changes are API surface removals or signature changes.
 
 use serde::Serialize;
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn detects_return_type_change() {
-        // T019: previously untested ReturnTypeChanged variant.
+        // previously untested ReturnTypeChanged variant.
         let old_cu = make_codeunit(
             "Calc",
             vec![make_method("Total", vec![], Some("Decimal".to_string()))],
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn detects_enum_value_removed() {
-        // T019: previously untested EnumValueRemoved variant.
+        // previously untested EnumValueRemoved variant.
         use al_symbols::EnumValueSymbol;
         let make_enum = |values: Vec<&str>| SymbolEntry {
             synthetic: false,
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn detects_signature_change_parameter_count() {
-        // T019: signature-change tests previously only covered TYPE changes;
+        // signature-change tests previously only covered TYPE changes;
         // adding/removing a parameter is also a SignatureChanged report.
         let old_cu = make_codeunit(
             "API",

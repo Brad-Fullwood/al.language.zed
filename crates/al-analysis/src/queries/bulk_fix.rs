@@ -1,9 +1,9 @@
 //! Bulk fix operations for AL projects.
 //!
 //! Implements project-wide fixes:
-//! - `add_application_area` — add ApplicationArea to page fields/actions missing it (T1603)
-//! - `add_tooltips` — add ToolTip to page fields from symbol data (T1604)
-//! - `add_data_classification` — add DataClassification to table fields (T1605)
+//! - `add_application_area` — add ApplicationArea to page fields/actions missing it
+//! - `add_tooltips` — add ToolTip to page fields from symbol data
+//! - `add_data_classification` — add DataClassification to table fields
 
 use std::path::{Path, PathBuf};
 
@@ -169,9 +169,8 @@ fn collect_al_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Read the first whitespace-delimited token of `source`'s first non-blank,
-/// non-comment line and resolve it via `LanguageData` (T013/T042: was a
-/// hardcoded prefix list — silently dropped reportextension, requestpage
-/// variations, etc.). Returns the canonical lowercase keyword.
+/// non-comment line and resolve it via `LanguageData`. Returns the canonical
+/// lowercase keyword.
 fn detect_object_keyword(source: &str) -> Option<&'static str> {
     let first = source
         .lines()

@@ -286,7 +286,7 @@ end;
         assert!(!formatted.is_empty());
     }
 
-    // ===== A13: config-driven options actually affect output =====
+    // ===== config-driven options actually affect output =====
 
     #[test]
     fn config_blank_lines_two_applies() {
@@ -337,8 +337,8 @@ end;
     }
 
     #[test]
-    fn config_default_is_a13_noop() {
-        // Identical-baseline check: an empty config leaves all four A13 passes
+    fn config_default_is_noop() {
+        // Identical-baseline check: an empty config leaves all four passes
         // off, so formatting only normalises indentation.
         let cfg = AlFormatConfig::from_json("{}").unwrap();
         let opts = cfg.to_format_options();

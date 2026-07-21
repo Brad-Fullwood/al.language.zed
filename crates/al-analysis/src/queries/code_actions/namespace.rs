@@ -205,7 +205,7 @@ pub(super) fn parse_using_directives(text: &str) -> (Vec<String>, u32) {
 
     for (i, line) in text.lines().enumerate() {
         let trimmed = line.trim();
-        // AL keywords are case-insensitive per language spec — pre-T062 we
+        // AL keywords are case-insensitive per language spec — we
         // only recognised two case variants ("namespace " / "Namespace ",
         // "using " / "Using ") which silently dropped legitimate
         // NAMESPACE / USING / mixed-case forms (e.g. "uSiNg ").

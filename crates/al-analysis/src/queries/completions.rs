@@ -344,7 +344,7 @@ fn add_default_completions(
         }
     }
 
-    // O(1): uses pre-computed cache instead of a linear scan over all indexed symbols (ISSUE-162).
+    // Use the precomputed cache instead of scanning all indexed symbols.
     let index_results = workspace.symbols.get_default_completions();
     for entry in &index_results {
         let kind = match entry.kind {
@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn add_default_completions_signature_is_transport_agnostic() {
         // Compile-time guard against re-introducing the lsp_types boundary leak
-        // fixed by T015 / arch-001. If anyone widens the parameter back to
+        // at this boundary. If anyone widens the parameter back to
         // tower_lsp::lsp_types::Position the function pointer coercion below
         // will fail to type-check.
         let _: fn(&Workspace, &Url, Position, &mut Vec<CompletionEntry>) = add_default_completions;

@@ -27,7 +27,7 @@ pub enum UnusedReason {
 
 /// How certain the analysis is that the symbol is genuinely dead.
 ///
-/// FB-12: static analysis over workspace source CANNOT prove some symbols
+/// Static analysis over workspace source cannot prove some symbols
 /// dead — table fields are reachable via `FieldRef`/`RecordRef` by number,
 /// report layouts, and other extensions; public procedures are callable
 /// from any dependent extension. Presenting those as certainly-dead made
@@ -77,7 +77,7 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
     // The owned Vec is required so that `all_files` borrows below have a stable backing store
     // for the lifetime of the cross-file reference scans.
     //
-    // F-OPEN-114: sort by path BEFORE the main loop so output is stable
+    // Sort by path before the main loop so output is stable
     // across runs. `file_trees` is a DashMap whose iteration order varies
     // across process restarts, and the results Vec inherits that order.
     // CI snapshots and human diff review of deadcode output need
@@ -97,7 +97,7 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
 
     // Build a workspace-global lowercase set of all call-site identifier
     // names ONCE, instead of re-scanning every file for every procedure
-    // (T020: pre-T020 inner loop was O(F²·P) in the cross-file walk; this
+    // (the inner loop was O(F²·P) in the cross-file walk; this
     // makes per-procedure membership checks O(1)). The text-fallback set
     // captures call sites inside action triggers that braced_block doesn't
     // parse — same coverage as text_contains_call_outside_declaration but
@@ -106,7 +106,7 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
         std::collections::HashSet::with_capacity(parsed_files.len() * 32);
     let mut all_text_call_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 16);
-    // F-OPEN-117: build the workspace-global member-access name set in the
+    // Build the workspace-global member-access name set in the
     // same pre-pass. Previously `find_unused_fields` walked every other
     // file's full text per-field → O(F²·L). Now field-lookup is O(1).
     let mut all_member_access_names: std::collections::HashSet<String> =
@@ -127,7 +127,7 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
         }
     }
 
-    // F-OPEN-118: parallelise per-file scans with rayon. Each file's
+    // Parallelise per-file scans with rayon. Each file's
     // procedure / field / subscriber checks are independent given the
     // pre-built workspace-global sets — no shared mutable state needed.
     // Per-file results accumulate into thread-local Vecs and flat_map back
@@ -212,16 +212,16 @@ fn find_unused_procedures(
             continue;
         }
 
-        // Workspace-global O(1) membership check (T020 perf fix).
+        // Workspace-global O(1) membership check (perf fix).
         // The two sets together cover the same surface as the previous
         // per-procedure scan: tree-sitter call references + text-fallback
-        // for calls inside action triggers (ISSUE-076: braced_block doesn't
+        // for calls inside action triggers (braced_block doesn't
         // parse trigger bodies).
         let lname = proc_name.to_ascii_lowercase();
         let referenced = all_call_names.contains(&lname) || all_text_call_names.contains(&lname);
 
         if !referenced {
-            // FB-12: locality decides confidence. A `local` procedure with
+            // Locality decides confidence. A `local` procedure with
             // zero call sites is provably dead; a public one may be called
             // by dependent extensions we can't see.
             let (confidence, note) = if *is_local {
@@ -255,7 +255,7 @@ fn extract_text_call_names(line: &str) -> Vec<String> {
     let lower = line.to_ascii_lowercase();
     let bytes = lower.as_bytes();
     let mut i = 0;
-    // F-OPEN-116: `(` inside `'...'` or `"..."` must not register as a call site.
+    // `(` inside `'...'` or `"..."` must not register as a call site.
     let mut in_single_quote = false;
     let mut in_double_quote = false;
     while i < bytes.len() {
@@ -381,7 +381,7 @@ fn collect_procedures(
 
                     // `local`/`internal` procedures are unreachable from
                     // other extensions — locality drives the confidence of
-                    // a zero-reference finding (FB-12).
+                    // a zero-reference finding.
                     let is_local = node_has_local_modifier(node, source);
 
                     procs.push((name, is_event, line, is_local));
@@ -419,7 +419,7 @@ fn node_has_local_modifier(node: tree_sitter::Node, source: &[u8]) -> bool {
 /// **handler** (`[…Handler]`, invoked by the test runtime). Such procedures have
 /// zero textual call sites by design, so the unused-procedure pass must skip
 /// them — otherwise it reports the single most common BC extension pattern
-/// (subscriber codeunits) as provably dead (C26). Genuinely-orphaned
+/// (subscriber codeunits) as provably dead. Genuinely-orphaned
 /// subscribers are still surfaced by `find_orphaned_subscribers`.
 fn is_framework_invoked_procedure(node: tree_sitter::Node, source: &[u8]) -> bool {
     fn attr_is_framework(text: &str) -> bool {
@@ -495,7 +495,7 @@ fn find_unused_fields(
         let referenced = all_member_access_names.contains(&field_name.to_lowercase());
 
         if !referenced {
-            // FB-12: a field with no NAME references is never provably
+            // A field with no name references is never provably
             // dead — FieldRef/RecordRef access it by NUMBER, report
             // layouts and dataset configs reference it outside AL source,
             // and any dependent extension can read it. JIG UK's ForNAV
@@ -521,7 +521,7 @@ fn find_unused_fields(
 }
 
 // The grammar doesn't expose a `field_declaration` node type so we scan source as text.
-// T045: skips field( inside `/* ... */` block comments to avoid false-positive phantom fields.
+// Skip field declarations inside block comments to avoid phantom fields.
 // Single-line comments are already filtered naturally because the strip_prefix fails on `//`.
 fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
     let mut in_block_comment = false;
@@ -540,7 +540,7 @@ fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
         // try to handle */ inside string literals — a malicious-looking
         // file with `Message('*/')` would just cause a (rare) false miss
         // of one field, which is strictly safer than the false-positive
-        // we were producing pre-T045.
+        // we were producing .
         let after_initial = &line[search_from..];
         if let Some(open) = after_initial.find("/*") {
             in_block_comment = true;
@@ -569,7 +569,7 @@ fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
 }
 
 /// Helper: parse `<id>; "Name"; ...)` and push the field name + 1-based line.
-/// Refactored out of `collect_fields_from_text` (T045) so the block-comment
+/// Refactored out of `collect_fields_from_text` so the block-comment
 /// state machine and the inline-on-same-line cases share the same parser.
 fn extract_field_name_from_args(rest: &str, line_idx: usize, fields: &mut Vec<(String, u32)>) {
     if let Some(after_semi) = rest.find(';').map(|i| &rest[i + 1..]) {
@@ -818,10 +818,10 @@ mod tests {
     }
 
     #[test]
-    fn c26_event_subscriber_and_test_not_flagged_as_dead() {
+    fn event_subscriber_and_test_not_flagged_as_dead() {
         // A local [EventSubscriber] is dispatched by the event system and a
         // [Test] is runner-invoked; neither has a direct call site, but neither
-        // must be reported as dead code (C26). A genuinely-unused plain helper
+        // must be reported as dead code. A genuinely-unused plain helper
         // in the same object still must be.
         let ws = workspace_with_files(vec![
             (
@@ -932,8 +932,8 @@ mod tests {
     }
 
     #[test]
-    fn t045_collect_fields_skips_block_comments() {
-        // T045 / 0b9b650928095b99 regression: a multi-line /* */ block
+    fn collect_fields_skips_block_comments() {
+        // A multi-line block
         // comment containing a `field(...)` line previously yielded a
         // phantom "Foo" entry that then surfaced as a false-positive
         // unused field. The block-comment scanner in collect_fields_from_text
@@ -966,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn t045_collect_fields_handles_inline_block_comment() {
+    fn collect_fields_handles_inline_block_comment() {
         // Same-line /* ... */ around the `field(` token — the scanner
         // treats the post-closer tail as scannable, so a real field
         // declaration after an inline block comment is still picked up.
@@ -1107,7 +1107,7 @@ mod tests {
         );
     }
 
-    /// F-OPEN-116 regression: a procedure name that appears ONLY inside a
+    /// A procedure name that appears only inside a
     /// string literal must NOT count as a reference. Previously
     /// `extract_text_call_names` walked any `ident(` token in the line
     /// regardless of quote state — so a literal like `Message('DoStuff(')`
@@ -1149,7 +1149,7 @@ mod tests {
         );
     }
 
-    /// Regression for 936cc2d1497178b1: an unused table field with a common
+    /// Regression: an unused table field with a common
     /// name (here `Description`) must be detected as unused even when other
     /// files contain bare identifiers `Description` (e.g. as variable names).
     /// The field-reference scan must require an actual member-access pattern
@@ -1197,7 +1197,7 @@ mod tests {
         );
     }
 
-    /// Regression for fbaec79d6e62960f: a real call to a procedure with a
+    /// Regression: a real call to a procedure with a
     /// short name like `Post` must not be skipped just because another file
     /// declares a procedure whose name *contains* `Post` (e.g.
     /// `procedure PostDocument()`). Previously the skip predicate matched
@@ -1342,7 +1342,7 @@ mod tests {
     }
 
     #[test]
-    fn t045_collect_fields_handles_unclosed_quoted_name() {
+    fn collect_fields_handles_unclosed_quoted_name() {
         // Malformed AL: the field name opens a quote but never closes it. The
         // helper must drop it gracefully (no panic, no garbage name).
         let mut fields: Vec<(String, u32)> = Vec::new();
@@ -1354,7 +1354,7 @@ mod tests {
     }
 
     #[test]
-    fn t045_collect_fields_extracts_quoted_name() {
+    fn collect_fields_extracts_quoted_name() {
         let mut fields: Vec<(String, u32)> = Vec::new();
         extract_field_name_from_args("(1; \"My Field\"; Integer)", 4, &mut fields);
         assert_eq!(fields, vec![("My Field".to_string(), 5)]);

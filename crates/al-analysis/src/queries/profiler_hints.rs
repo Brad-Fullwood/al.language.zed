@@ -1,4 +1,4 @@
-//! Profiler hints query — T1711.
+//! Profiler hints query.
 //!
 //! Parses `.alcpuprofile` data (Chrome-format JSON) and maps hotspots back
 //! to AL source locations so that al-lsp can publish them as LSP inlay hints.
@@ -28,7 +28,7 @@
 //! Each `ProfilerHint` includes timing data and—when found—the file path and
 //! line number of the procedure in the workspace.
 //!
-//! ## Correctness rules (T1711 spec)
+//! ## Correctness rules (spec)
 //! - Must not show hints on wrong lines
 //! - Must not persist after clearing (clearing is handled by al-lsp, not here)
 //! - Hints on a procedure's signature line, not body line
@@ -198,8 +198,7 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
             Some((id, self_ms))
         })
         .collect();
-    // Total time = self + Σ descendants, rolled up over the call tree (B14
-    // follow-up). Keyed by node id; nodes outside the map fall back to self time.
+    // Total time = self + Σ descendants, rolled up over the call tree (    // follow-up). Keyed by node id; nodes outside the map fall back to self time.
     let total_by_node = aggregate_total_time_ms(nodes, &self_ms_by_node);
 
     let mut hints = Vec::new();
@@ -762,7 +761,7 @@ mod tests {
 
     #[test]
     fn parse_profile_time_based_beats_hit_count() {
-        // B14: the node with FEWER hits but LARGER aggregated timeDeltas must
+        // the node with FEWER hits but LARGER aggregated timeDeltas must
         // rank as the bigger hotspot — proving time-based beats count-based.
         //   ManyHits: hitCount 100, sampled once for 100µs  -> 0.1 ms
         //   FewHits:  hitCount  10, sampled once for 5000µs -> 5.0 ms
@@ -797,7 +796,7 @@ mod tests {
 
     #[test]
     fn parse_profile_mismatched_array_lengths_handled_gracefully() {
-        // B14: samples/timeDeltas of different lengths must not panic; only the
+        // samples/timeDeltas of different lengths must not panic; only the
         // common prefix is aggregated. samples[0]=node 2 charged 1000µs=1.0 ms;
         // node 3 gets nothing.
         let profile_json = r#"{
@@ -828,7 +827,7 @@ mod tests {
 
     #[test]
     fn parse_profile_total_time_rolls_up_the_call_tree() {
-        // B14 follow-up: total_time(node) = self + Σ total_time(descendants).
+        // total_time(node) = self + Σ total_time(descendants).
         // 3-node chain root -> child -> grandchild with distinct self times:
         //   root(1): 1000µs=1.0ms, child(2): 2000µs=2.0ms, grandchild(3): 4000µs=4.0ms
         // => total(root)=7.0, total(child)=6.0, total(grandchild)=4.0.
@@ -880,7 +879,7 @@ mod tests {
 
     #[test]
     fn parse_profile_total_time_handles_cycle_and_dangling_child() {
-        // B14 follow-up: a cycle (1 -> 2 -> 1) and a dangling child id (99) must
+        // a cycle (1 -> 2 -> 1) and a dangling child id (99) must
         // not loop forever or panic.
         //   A(1): 3000µs=3.0ms, children [2, 99]
         //   B(2): 5000µs=5.0ms, children [1]  (back edge -> contributes 0)

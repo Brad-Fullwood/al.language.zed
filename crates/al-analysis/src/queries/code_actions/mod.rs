@@ -56,7 +56,7 @@ fn single_edit_ws(uri: &Url, edits: Vec<TextEdit>) -> WorkspaceEdit {
 /// Diagnostic-based quick fixes are handled by `quick_fix_for_diagnostic`.
 #[must_use]
 pub fn source_actions(workspace: &Workspace, uri: &Url, range: Range) -> Vec<CodeActionEntry> {
-    // F-OPEN-266: honor the `enableCodeActions` setting (VS Code parity) at
+    // honor the `enableCodeActions` setting (VS Code parity) at
     // the query level so both the LSP and daemon transports respect it.
     if !code_actions_enabled(workspace) {
         return Vec::new();
@@ -138,7 +138,7 @@ pub fn namespace_quick_fix_for_diagnostic(
     text: &str,
     diag: &DiagnosticInfo,
 ) -> Vec<CodeActionEntry> {
-    // F-OPEN-266: quick fixes are code actions too — honor the toggle.
+    // quick fixes are code actions too — honor the toggle.
     if !code_actions_enabled(workspace) {
         return Vec::new();
     }
@@ -220,7 +220,7 @@ pub fn quick_fix_for_diagnostic(
 
 /// Whether code actions are enabled in the workspace config
 /// (`enableCodeActions`, default true). Checked at the query level so the
-/// LSP and daemon transports both honor the setting (F-OPEN-266).
+/// LSP and daemon transports both honor the setting.
 fn code_actions_enabled(workspace: &Workspace) -> bool {
     // `config` is a tokio RwLock and this query is sync — try_read and fail
     // OPEN on contention (a briefly-contended lock must not hide actions).
@@ -308,7 +308,7 @@ mod tests {
     use super::*;
     use al_workspace::Workspace;
 
-    /// F-OPEN-266: `enableCodeActions` was parsed from user settings but never
+    /// `enableCodeActions` was parsed from user settings but never
     /// consumed — setting it to false had no effect. The query (the common
     /// choke point for both the LSP and daemon transports) must honor it.
     #[test]
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn detect_object_kind_now_recognises_previously_missed_types() {
-        // The hardcoded prefix list pre-T014 silently dropped these,
+        // The hardcoded prefix list silently dropped these,
         // disabling code-actions on them. Each must now resolve.
         for (txt, label) in [
             ("permissionset 50 X { }", "permissionset"),

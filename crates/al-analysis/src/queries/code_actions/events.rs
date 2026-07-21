@@ -306,7 +306,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // T1211: Move Tooltip from Page Controls to Table Fields
+    // Move Tooltip from Page Controls to Table Fields
     // -----------------------------------------------------------------------
 
     #[test]
@@ -396,7 +396,7 @@ mod tests {
         );
     }
 
-    // ISSUE-091: if_to_case UTF-16 column vs byte offset
+    // if_to_case UTF-16 column vs byte offset
     // When a non-ASCII character appears before the cursor on the same line,
     // tree-sitter Point::column must be a byte offset, not a UTF-16 code unit.
     // The two differ for characters with len_utf16 > 1 (e.g. emoji, surrogate pairs)

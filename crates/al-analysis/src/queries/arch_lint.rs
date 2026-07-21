@@ -1,6 +1,6 @@
 //! Architectural linting (.alarch.json rules).
 //!
-//! T1709: Enforce project-specific architectural rules from .alarch.json.
+//! Enforce project-specific architectural rules from .alarch.json.
 
 use serde::{Deserialize, Serialize};
 
@@ -30,9 +30,8 @@ pub struct ArchViolation {
 /// - `"[A-Z]"` — object name must start with an uppercase character.
 ///
 /// Any other value is silently ignored (no violation emitted). This is
-/// documented behaviour, not a bug; see CLAUDE.md "no hardcoded language
-/// values" — we deliberately avoid baking AL naming conventions into the
-/// linter and instead rely on `.alarch.json` to enumerate them explicitly.
+/// documented behaviour. The linter relies on `.alarch.json` to enumerate AL
+/// naming conventions instead of baking them into the implementation.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ArchRuleKind {
@@ -368,7 +367,7 @@ mod tests {
         assert_eq!(cfg.rules.len(), 1);
     }
 
-    /// Regression for 2039244ed8d4aa5d: NamingConvention's pattern field is a
+    /// Regression: NamingConvention's pattern field is a
     /// literal token, not a regex. A pattern that *contains* `[A-Z]` (e.g.
     /// `^[A-Z][a-z]+`) used to silently match against the substring search
     /// `name_pattern.contains("[A-Z]")` and behave as if the user had set

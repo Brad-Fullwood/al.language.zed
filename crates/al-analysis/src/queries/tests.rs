@@ -80,7 +80,7 @@ pub struct AffectedTest {
 
 /// How a set of [`AffectedTest`]s was selected. Surfaced so callers and any
 /// user-facing output stay honest about whether the precise call-graph path
-/// ran or we fell back to coarse file-name matching (gap B7).
+/// ran or we fell back to coarse file-name matching ().
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AffectedMode {
@@ -105,7 +105,7 @@ pub struct AffectedTestsResult {
 
 /// Return the tests affected by a set of changed files.
 ///
-/// Prefers **call-graph reachability** (gap B7): each changed file is mapped to
+/// Prefers **call-graph reachability** (): each changed file is mapped to
 /// its AL object, every member (procedure / event / subscriber) of that object
 /// seeds a backward walk of the call graph, and a test is affected iff its
 /// procedure node is reached. This catches tests whose *helpers* changed — not
@@ -293,9 +293,9 @@ fn affected_tests_file_based(workspace: &Workspace, changed_paths: &[String]) ->
 
 /// Check if the codeunit has `Subtype = Test`.
 ///
-/// T046: tightened from a fragile substring match
+/// tightened from a fragile substring match
 /// (`lower.contains("subtype") && lower.contains("test")`) to a proper
-/// `<key> = <value>` parse. Pre-T046 a property like
+/// `<key> = <value>` parse. Pre-a property like
 /// `Description = 'Has Subtype = Test in description';` would have
 /// false-matched, and any property whose name contained both substrings
 /// (e.g. a hypothetical SubtypeFilter property) would have too. Now we
@@ -345,9 +345,7 @@ pub fn collect_test_procedures(root: tree_sitter::Node, source: &[u8]) -> Vec<Te
 /// Iterative tree-walk (despite the historical `_recursive` name, retained
 /// elsewhere in this crate's history): uses `tree_sitter::TreeCursor`
 /// goto_first_child / goto_next_sibling / goto_parent. No self-recursion,
-/// no Vec stack needed because the cursor IS the stack. Renamed in T065
-/// to reflect the actual shape so a CLAUDE.md "no recursive tree-sitter"
-/// audit can pass on a grep without manually inspecting the body.
+/// no Vec stack needed because the cursor is the stack.
 fn collect_test_procs_iterative(
     root: tree_sitter::Node,
     source: &[u8],
@@ -528,7 +526,7 @@ mod adversarial_j_tests {
     use super::*;
     use al_syntax::AlParser;
 
-    /// Finding adversarial_j_3: has_test_subtype must NOT fire on a codeunit that has
+    /// `has_test_subtype` must not fire on a codeunit that has
     /// Subtype = Normal even if the text of the property node contains the word "test"
     /// in a different context (e.g. a second property line).
     ///
@@ -576,7 +574,7 @@ mod adversarial_j_tests {
         );
     }
 
-    /// Finding adversarial_j_3: has_test_subtype substring match — verify that a
+    /// Verify that `has_test_subtype` does not treat a
     /// property like Subtype = Normal with a trailing comment containing the word
     /// "test" does NOT trigger a false positive.  This tests the boundary case where
     /// tree-sitter might include comment trivia in the property node text.
@@ -604,11 +602,11 @@ mod adversarial_j_tests {
     }
 }
 
-/// B7: call-graph reachability for affected-test detection. A test is affected
+/// call-graph reachability for affected-test detection. A test is affected
 /// iff it transitively calls a procedure of a changed object — not merely
 /// because its own file changed (the old file-based heuristic).
 #[cfg(test)]
-mod affected_call_graph_b7 {
+mod affected_call_graph {
     use super::*;
     use std::path::PathBuf;
 

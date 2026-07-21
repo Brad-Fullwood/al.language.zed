@@ -900,7 +900,7 @@ mod tests {
     }
 
     /// None of the emitted codes leak into the removed-native-lint (`AL-L*`)
-    /// namespace nor the Microsoft (`AL####`) namespace (gap A1 guard, local).
+    /// namespace nor the Microsoft (`AL####`) namespace.
     #[test]
     fn codes_use_distinct_nc_namespace() {
         for code in [DUPLICATE_ID, ID_OUT_OF_RANGE, DUPLICATE_NAME] {

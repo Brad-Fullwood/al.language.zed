@@ -35,7 +35,7 @@ pub fn rename(
 ) -> Option<WorkspaceEdit> {
     // Reject a new name that would splice invalid AL into every touched file.
     // Without this, renaming to `my var`, `2Start`, `` or a reserved keyword
-    // returns a WorkspaceEdit that writes syntax errors workspace-wide (C19).
+    // returns a WorkspaceEdit that writes syntax errors workspace-wide.
     if !is_valid_rename_target(new_name) {
         return None;
     }
@@ -99,7 +99,7 @@ pub fn rename(
         }
     }
 
-    // C18: for non-local symbols, rename only references that BIND to the same
+    // for non-local symbols, rename only references that BIND to the same
     // declaration as the symbol under the cursor — not every identifier that
     // happens to be spelled the same. Two objects that each declare
     // `procedure Post()` resolve to different declarations, so renaming one no
@@ -194,7 +194,7 @@ fn ref_decl_loc(workspace: &Workspace, uri: &Url, text: &str, r: &tree_sitter::R
 /// (`[A-Za-z_][A-Za-z0-9_]*` that is not a reserved keyword) or an
 /// already-quoted identifier (`"…"` with a non-empty, quote-free interior).
 /// Rejects empty names, names containing spaces or other characters that would
-/// require quoting, and bare keywords (C19).
+/// require quoting, and bare keywords.
 fn is_valid_rename_target(new_name: &str) -> bool {
     let name = new_name.trim();
     if name.is_empty() {
@@ -411,7 +411,7 @@ mod tests {
         );
     }
 
-    /// C18: two separate objects each declare `procedure Post()`. These are
+    /// two separate objects each declare `procedure Post()`. These are
     /// distinct declarations. Renaming the one in object A must not rewrite the
     /// same-spelled procedure (or its call) in object B.
     #[test]
@@ -478,7 +478,7 @@ mod tests {
         );
     }
 
-    /// C18 adversarial: two tables each declare a field `Amount`. Renaming the
+    /// adversarial: two tables each declare a field `Amount`. Renaming the
     /// field in table A must not rewrite table B's same-named field. Fields are
     /// the other common non-local symbol (besides procedures).
     #[test]
@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn c19_invalid_new_names_rejected() {
+    fn invalid_new_names_rejected() {
         assert!(!is_valid_rename_target(""));
         assert!(!is_valid_rename_target("   "));
         assert!(!is_valid_rename_target("my var with spaces"));
@@ -561,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn c19_valid_new_names_accepted() {
+    fn valid_new_names_accepted() {
         assert!(is_valid_rename_target("NewVar"));
         assert!(is_valid_rename_target("_leading"));
         assert!(is_valid_rename_target("Var123"));
@@ -569,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn c19_rename_to_invalid_name_produces_no_edit() {
+    fn rename_to_invalid_name_produces_no_edit() {
         let ws = Workspace::new();
         let uri = test_uri();
         open_doc(
