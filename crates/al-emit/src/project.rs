@@ -224,7 +224,7 @@ pub fn build_app_from_project(
     // `:`, quotes, …) doesn't produce a filename that is invalid on Windows —
     // where the native emit would otherwise fail with a raw IO error. The
     // archive *contents* already round-trip such names exactly; only the
-    // on-disk artifact name needs sanitizing (C32).
+    // on-disk artifact name needs sanitizing.
     let file_name = format!(
         "{}_{}_{}.app",
         sanitize_filename_component(&publisher),

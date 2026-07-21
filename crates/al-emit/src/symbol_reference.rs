@@ -629,8 +629,8 @@ fn interface_object_id(name: &str, app_id: &str, extended: usize, methods: usize
     } else {
         name.to_string()
     };
-    // alc uppercases with .NET ToUpperInvariant (simple 1:1 mapping), not
-    // Rust's full case mapping — the same C9 divergence method_id fixes.
+    // Match .NET ToUpperInvariant's simple one-to-one mapping rather than
+    // Rust's full case mapping, as method ID normalization does.
     let mut h = fnv1_hash(&crate::method_id::to_upper_invariant(&display));
     if let Some(bytes) = guid_to_bytes_le(app_id) {
         h = combine_hash(h, fnv1_hash_bytes(&bytes));
