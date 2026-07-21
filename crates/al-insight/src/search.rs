@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn trace_event_is_deterministic_across_repeated_builds() {
-        // Regression for the audit finding: trace_event used to iterate
+        // trace_event used to iterate
         // `graph.index` (a HashMap) directly, so the order of matching
         // event roots was arbitrary between graph rebuilds. The fix
         // sorts matching NodeIndex values before walking. This test

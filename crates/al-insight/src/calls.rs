@@ -500,7 +500,7 @@ fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -> Option<Ca
                 })
             } else if is_codeunit_run_method(&method_name) {
                 // `Codeunit.Run(Codeunit::"X")` / `RunModal(...)` — resolve the
-                // literal codeunit reference (C15). Falls back to a plain
+                // literal codeunit reference. Falls back to a plain
                 // member call when the argument is not a `Codeunit::<name>`
                 // literal (e.g. a variable), which keeps the dispatch sound.
                 if let Some(target) = extract_codeunit_run_target(*last, source) {
@@ -834,7 +834,7 @@ fn link_event_subscribers(caller_id: NodeId, event_id: NodeId, call_graph: &mut 
 
 /// Find every codeunit whose `implements` clause names `interface_name`.
 ///
-/// Used by interface-dispatch resolution (C15): a call through an
+/// A call through an
 /// `Interface "IFoo"`-typed variable can land in any implementor at runtime,
 /// so all of them are returned (the over-approximation). Interface names are
 /// compared case-insensitively after stripping the quotes that the symbol
@@ -1092,7 +1092,7 @@ fn info_extends_from_tree(root: tree_sitter::Node, source: &[u8]) -> Option<Stri
     None
 }
 
-/// Extract the interface names from an object's `implements` clause (C15).
+/// Extract the interface names from an object's `implements` clause.
 ///
 /// The grammar emits only the *first* interface inside `implements_clause`
 /// (`metadata_keyword` + `name`); any further comma-separated interfaces appear
@@ -2669,7 +2669,7 @@ mod tests {
     }
 
     #[test]
-    fn c15_interface_call_reaches_all_implementors() {
+    fn interface_call_reaches_all_implementors() {
         let iface = r#"interface IFoo
 {
     procedure Bar()
@@ -2748,7 +2748,7 @@ mod tests {
     }
 
     #[test]
-    fn c15_codeunit_run_reaches_onrun() {
+    fn codeunit_run_reaches_onrun() {
         let worker = r#"codeunit 50201 "Worker CU"
 {
     trigger OnRun()
@@ -2792,7 +2792,7 @@ mod tests {
     }
 
     #[test]
-    fn c15_published_event_reaches_subscriber() {
+    fn published_event_reaches_subscriber() {
         let publisher = r#"codeunit 50300 "Publisher CU"
 {
     procedure DoWork()
@@ -2862,7 +2862,7 @@ mod tests {
     }
 
     #[test]
-    fn c15_implements_clause_extracted_from_header() {
+    fn implements_clause_extracted_from_header() {
         let src = r#"codeunit 50100 "Impl A" implements "IFoo", IBar
 {
     procedure Bar()
@@ -2883,7 +2883,7 @@ mod tests {
     }
 
     #[test]
-    fn c15_codeunit_run_target_parsed() {
+    fn codeunit_run_target_parsed() {
         // Literal forms resolve; a variable argument does not.
         assert_eq!(
             parse_codeunit_ref("Codeunit::\"Sales-Post\"").as_deref(),
