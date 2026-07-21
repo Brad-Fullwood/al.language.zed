@@ -291,7 +291,7 @@ pub struct SymbolEntry {
     /// AL source — currently the pseudo-enums synthesized from
     /// Option-typed fields/parameters so the type resolver can complete
     /// their members. Synthetic entries are excluded from user-facing
-    /// search/browse results (FB-2: they swamped the real enums with
+    /// search/browse results (they swamped the real enums with
     /// `id: -1` rows) but remain in the index for type resolution.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub synthetic: bool,
@@ -712,7 +712,7 @@ impl SymbolReferenceJson {
                     id: -1,
                     // Fabricated from an Option-typed field/parameter so the
                     // type resolver can complete its members — not a real AL
-                    // enum object. Hidden from search/browse (FB-2).
+                    // enum object. Hidden from search and browse results.
                     synthetic: true,
                     name: field_name.clone(),
                     package: pkg.clone(),
@@ -880,11 +880,11 @@ impl EnumValueJson {
 mod tests {
     use super::*;
 
-    /// F-OPEN-267: `ObjectKind` must cover every object type the grammar's
+    /// `ObjectKind` must cover every object type the grammar's
     /// LanguageData JSON declares — Microsoft adds object types per BC
     /// release, and a missing variant silently drops those objects from the
-    /// symbol model (per CLAUDE.md's no-hardcoded-language-values rule, the
-    /// data files are the source of truth this enum must track).
+    /// symbol model; the language-data files are the source of truth this enum
+    /// must track.
     #[test]
     fn object_kind_covers_every_language_data_object_type() {
         let types = al_syntax::language_data::object_types();
@@ -1158,7 +1158,7 @@ mod tests {
     #[test]
     fn test_kinds_without_extensions() {
         // Profile moved out of this list when ProfileExtension was added
-        // (F-OPEN-267 / BC profileextension object type). PageCustomization is
+        // when the ProfileExtension object type was added. PageCustomization is
         // NOT here: object_types.json lists it under page's `extensions`, so it
         // is a page extension (see pagecustomization_is_a_page_extension).
         let no_ext = [

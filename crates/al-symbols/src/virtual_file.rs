@@ -223,7 +223,7 @@ fn sanitize_filename(s: &str) -> String {
 /// signatures, fields, keys, enum values, properties — but not the procedure
 /// bodies (those are compiled away). So this outline is the public API surface,
 /// not the call-site source: "who calls X" / the implementation cannot be
-/// recovered from package symbols alone (workspace source fills that in). C7 in
+/// recovered from package symbols alone (workspace source fills that in). in
 /// `Docs/gaps-and-future-work.md`.
 ///
 /// Written as AL line comments so the virtual file still parses. Worded to avoid
@@ -698,7 +698,7 @@ mod tests {
         assert_eq!(r.col_end, r.col_start + 3);
     }
 
-    // ----- C7: package symbols = public declaration, not call-site bodies -----
+    // ----- package symbols = public declaration, not call-site bodies -----
 
     use crate::model::{MethodSymbol, ObjectKind, ParameterSymbol};
 

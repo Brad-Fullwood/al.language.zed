@@ -59,7 +59,7 @@ pub enum OAuthError {
 /// Successful token response from the token endpoint.
 ///
 /// The `access_token`/`refresh_token` byte buffers are wiped from memory when
-/// this value drops (F-OPEN-010): al-lsp runs as a long-lived daemon (30-min
+/// this value drops: al-lsp runs as a long-lived daemon (30-min
 /// idle window), so without an explicit scrub the bearer/refresh secrets would
 /// linger in freed heap allocations for the life of the process and could be
 /// recovered from a core dump or `/proc/<pid>/mem` read.
@@ -899,7 +899,7 @@ mod cache_io_tests {
         // Concurrency: hammer save_cached_token from one thread while a
         // reader thread repeatedly loads the file. The reader must NEVER
         // observe an empty / partial / unparseable file — every successful
-        // read must yield a complete CachedToken. F-OPEN-011 regression.
+        // read must yield a complete `CachedToken`.
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
         use std::thread;
@@ -979,7 +979,7 @@ mod cache_io_tests {
 
 #[cfg(test)]
 mod zeroize_tests {
-    //! F-OPEN-010 — OAuth secrets must be scrubbed from memory, not left in
+    //! OAuth secrets must be scrubbed from memory, not left in
     //! freed heap allocations for the life of the (long-lived) daemon.
     use super::*;
 
@@ -1254,7 +1254,7 @@ fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
     // when source and dest are on the same filesystem, so concurrent
     // `acquire_token` callers for the same tenant can't observe a half-
     // written file *and* can't race on truncate — last-writer-wins still
-    // applies but every observer sees a complete, valid token. F-OPEN-011.
+    // applies but every observer sees a complete, valid token.
     let pid = std::process::id();
     let mut tmp_path = path.clone();
     let tmp_name = match path.file_name() {
@@ -1304,7 +1304,7 @@ fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
 /// Delete the cached OAuth token for `tenant`, if any. Call this when an
 /// upstream API returns 401/403 against a cached access token so the next
 /// `acquire_token` call falls through to refresh-then-interactive sign-in
-/// instead of re-using the same stale token (F-OPEN-012).
+/// instead of re-using the same stale token.
 ///
 /// Returns `true` if a token existed (in the OS keyring or the file) and was
 /// removed, `false` if none was present or removal failed (logged at warn level).

@@ -227,7 +227,7 @@ impl SymbolIndex {
         // (0 = "no id assigned" for builtins; -1 = synthetic-enum marker
         // emitted by table-field inline OptionMembers — see model.rs:731)
         // would otherwise all collide under (Enum, -1) / (kind, 0) and
-        // pollute lookups via by_kind_id (T029 / c2d935).
+        // pollute lookups via `by_kind_id`.
         if arc.id > 0 {
             self.by_kind_id
                 .entry((arc.kind, arc.id))
@@ -293,7 +293,7 @@ impl SymbolIndex {
     /// Return the pre-computed default completion entries (up to DEFAULT_COMPLETIONS_CAP).
     ///
     /// O(1) pointer copies — never iterates the full symbol index. Use in place of
-    /// `search("", 30)` on completion hot paths (ISSUE-162).
+    /// `search("", 30)` on completion hot paths.
     pub fn get_default_completions(&self) -> Vec<Arc<SymbolEntry>> {
         self.default_completions
             .read()
@@ -306,7 +306,7 @@ impl SymbolIndex {
 
         // Synthetic entries (pseudo-enums fabricated from Option-typed
         // fields) stay out of user-facing search results — they swamped
-        // real enums with `id: -1` rows (FB-2). Exact-name lookups
+        // real enums with `id: -1` rows. Exact-name lookups
         // (`get_by_name`) still see them for type resolution.
         if query.is_empty() {
             for entry in self.all.iter() {
@@ -627,7 +627,7 @@ mod tests {
 
     #[test]
     fn synthetic_enum_sentinel_id_does_not_pollute_lookup() {
-        // T029 / c2d935 regression: synthetic Option enums emitted by table-
+        // regression: synthetic Option enums emitted by table-
         // field OptionMembers carry id: -1 (model.rs:731). Pre-fix they all
         // accumulated under (Enum, -1) in by_kind_id and a get_by_id(Enum, -1)
         // returned every synthetic enum across the workspace, drowning real
@@ -710,7 +710,7 @@ mod tests {
         assert_eq!(index.len(), 1);
     }
 
-    /// T049 regression: removing a package must clear EVERY secondary
+    /// regression: removing a package must clear EVERY secondary
     /// index in lockstep. Adds entries that populate by_name, by_kind_id,
     /// by_kind, and by_extends, then removes the package and asserts each
     /// secondary index is empty for those entries. Adding a new secondary
@@ -762,7 +762,7 @@ mod tests {
         assert_eq!(index.len(), 0, "primary `all` index leak");
     }
 
-    /// T049 negative: remove_package_entries on a non-existent package is
+    /// negative: remove_package_entries on a non-existent package is
     /// a no-op (no panic, no spurious removals).
     #[test]
     fn remove_package_entries_no_match_is_noop() {
@@ -806,7 +806,7 @@ mod tests {
         assert_eq!(results[0].methods.len(), 1);
     }
 
-    // ----- C7: `appLocalFolderPaths` — what is actually supported -----
+    // ----- `appLocalFolderPaths` — what is actually supported -----
     //
     // The `al.appLocalFolderPaths` setting is parsed into `AlConfig`
     // (`al-project`) but is NOT yet wired into symbol loading — nothing reads

@@ -112,7 +112,7 @@ fn read_manifest(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<NavxManifest
     // manifest XML (consistent only in SymbolReference.json). When present,
     // the BOM appears as bytes before `<?xml ?>` and quick-xml rejects the
     // file with a "characters before XML declaration" error. Strip it so
-    // both BC versions parse identically. F-OPEN-(symbol-index-audit-3).
+    // Both BC versions must parse identically.
     let xml_slice = strip_utf8_bom(&xml_bytes);
 
     Ok(manifest::parse_manifest(xml_slice)?)
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn manifest_with_utf8_bom_is_parsed() {
-        // Regression for F-OPEN-(symbol-index-audit-3): BC's .app toolchain
+        // BC's .app toolchain
         // sometimes emits a UTF-8 BOM in NavxManifest.xml (consistent only
         // in SymbolReference.json). Without stripping, quick-xml rejects
         // the file. Verify both BOM-prefixed and BOM-less manifests parse

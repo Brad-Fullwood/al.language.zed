@@ -169,7 +169,7 @@ pub struct NuGetClient {
     /// package id will serialise on the same `tokio::sync::Mutex`, so the
     /// second observer hits the on-disk artefact written by the first and
     /// skips the network round-trip. Downloads of DIFFERENT packages still
-    /// run concurrently up to the `download_all` semaphore. F-OPEN-019.
+    /// run concurrently up to the `download_all` semaphore.
     package_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     /// `al.symbolsCountryRegion` — selects localized core packages
     /// (e.g. `Microsoft.Application.DE.symbols`). None/"w1" = worldwide.
@@ -425,7 +425,7 @@ fn parse_version(version: &str) -> (u64, u64, u64, u64) {
 /// Upper bound for NuGet metadata responses (service index + version list).
 /// These should be a few hundred KB at most for normal feeds; the cap is a
 /// defence against a hostile or misconfigured server streaming gigabytes of
-/// JSON before parser-side truncation kicks in. F-OPEN-018.
+/// JSON before parser-side truncation kicks in.
 const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Fetch a JSON metadata response from `url`, refusing bodies larger than
@@ -596,7 +596,7 @@ mod tests {
         assert_eq!(refs[0].version.as_deref(), Some("24.0.12345.0"));
     }
 
-    /// F-OPEN-259 (`al.symbolsCountryRegion` parity): localized core apps
+    /// (`al.symbolsCountryRegion` parity): localized core apps
     /// resolve to country-specific packages; platform packages and the "w1"
     /// worldwide marker stay unsuffixed.
     #[test]
