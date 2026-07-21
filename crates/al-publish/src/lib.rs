@@ -25,7 +25,6 @@ pub struct PublishConfig {
     pub project_root: PathBuf,
     /// Launch configuration name to use (uses first AL config if None).
     pub config_name: Option<String>,
-    pub no_debug: bool,
     /// Use the RAD API for incremental (delta) deploy instead of full upload.
     pub incremental: bool,
 }
@@ -35,7 +34,6 @@ impl PublishConfig {
         Self {
             project_root: project_root.into(),
             config_name: None,
-            no_debug: false,
             incremental: false,
         }
     }
@@ -46,7 +44,6 @@ impl PublishConfig {
 pub enum PublishPhase {
     Compile,
     Upload,
-    Install,
     Rad,
 }
 
@@ -87,18 +84,16 @@ pub enum PublishError {
     ConfigNotFound { name: String },
     #[error("Toolchain not available (ALTool not installed)")]
     NoToolchain,
-    #[error("Toolchain lock is busy — another operation is in progress, please try again")]
-    ToolchainBusy,
     #[error("No project loaded")]
     NoProject,
-    #[error("Compilation failed with {count} error(s)")]
-    CompilationFailed { count: usize },
     #[error("No .app file produced by compiler")]
     NoAppFile,
     #[error("BC server error: {0}")]
     BcServer(#[from] BcClientError),
     #[error("Build error: {0}")]
     Build(String),
+    #[error("Invalid app.json: {0}")]
+    InvalidManifest(String),
 }
 
 /// Run the publish pipeline for the project.
@@ -167,36 +162,26 @@ pub async fn publish(
     let bc_client = BcClient::new(&server_config);
 
     let (app_id, app_version, upload_success) = if config.incremental {
-        let app_id = extract_app_id_from_manifest(&config.project_root);
-        match app_id {
-            Some(id) => {
-                debug!(app_id = %id, "Using RAD incremental deploy");
-                match bc_client.rad_publish(&id, &app_path).await {
-                    Ok(resp) => {
-                        let success = resp.status.as_deref() != Some("Failed");
-                        steps.push(PublishStep {
-                            phase: PublishPhase::Rad,
-                            success,
-                            message: resp.status.clone(),
-                        });
-                        (resp.app_id, resp.version, success)
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "RAD publish failed");
-                        steps.push(PublishStep {
-                            phase: PublishPhase::Rad,
-                            success: false,
-                            message: Some(e.to_string()),
-                        });
-                        (None, None, false)
-                    }
-                }
+        let app_id = extract_app_id_from_manifest(&config.project_root)?;
+        debug!(app_id = %app_id, "Using RAD incremental deploy");
+        match bc_client.rad_publish(&app_id, &app_path).await {
+            Ok(resp) => {
+                let success = resp.status.as_deref() != Some("Failed");
+                steps.push(PublishStep {
+                    phase: PublishPhase::Rad,
+                    success,
+                    message: resp.status.clone(),
+                });
+                (resp.app_id, resp.version, success)
             }
-            None => {
-                warn!(
-                    "Cannot use RAD: app.json has no 'id' field, falling back to standard publish"
-                );
-                do_standard_publish(&bc_client, &app_path, &mut steps).await
+            Err(e) => {
+                warn!(error = %e, "RAD publish failed");
+                steps.push(PublishStep {
+                    phase: PublishPhase::Rad,
+                    success: false,
+                    message: Some(e.to_string()),
+                });
+                (None, None, false)
             }
         }
     } else {
@@ -314,10 +299,19 @@ fn resolve_server_config(
 }
 
 /// Extract the app GUID from app.json (needed for RAD).
-fn extract_app_id_from_manifest(project_root: &Path) -> Option<String> {
-    let bytes = std::fs::read(project_root.join("app.json")).ok()?;
-    let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    json.get("id")?.as_str().map(|s| s.to_string())
+fn extract_app_id_from_manifest(project_root: &Path) -> Result<String, PublishError> {
+    let path = project_root.join("app.json");
+    let bytes = std::fs::read(&path).map_err(|e| {
+        PublishError::InvalidManifest(format!("cannot read {}: {e}", path.display()))
+    })?;
+    let json: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+        PublishError::InvalidManifest(format!("cannot parse {}: {e}", path.display()))
+    })?;
+    json.get("id")
+        .and_then(|value| value.as_str())
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| PublishError::InvalidManifest("`id` must be a non-empty string".to_string()))
 }
 
 #[cfg(test)]
@@ -327,7 +321,6 @@ mod tests {
     #[test]
     fn publish_config_defaults() {
         let cfg = PublishConfig::new("/tmp/myproject");
-        assert!(!cfg.no_debug);
         assert!(!cfg.incremental);
         assert!(cfg.config_name.is_none());
         assert_eq!(cfg.project_root, PathBuf::from("/tmp/myproject"));
@@ -370,53 +363,50 @@ mod tests {
             r#"{"id":"test-guid-123","name":"Test","publisher":"Me","version":"1.0.0"}"#,
         )
         .unwrap();
-        let id = extract_app_id_from_manifest(dir.path());
-        assert_eq!(id.as_deref(), Some("test-guid-123"));
+        let id = extract_app_id_from_manifest(dir.path()).unwrap();
+        assert_eq!(id, "test-guid-123");
     }
 
     #[test]
-    fn extract_app_id_missing_manifest_returns_none() {
+    fn extract_app_id_missing_manifest_returns_error() {
         let dir = tempfile::tempdir().unwrap();
         let id = extract_app_id_from_manifest(dir.path());
-        assert!(id.is_none());
+        assert!(matches!(id, Err(PublishError::InvalidManifest(_))));
     }
 
-    // -----------------------------------------------------------------------
-    // extract_app_id_from_manifest — error / edge paths
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn extract_app_id_malformed_json_returns_none() {
+    fn extract_app_id_malformed_json_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        // Not valid JSON at all — serde_json::from_slice must fail and the
-        // function must swallow it into None rather than panicking.
         std::fs::write(dir.path().join("app.json"), b"{ this is not json ]").unwrap();
-        assert!(extract_app_id_from_manifest(dir.path()).is_none());
+        assert!(matches!(
+            extract_app_id_from_manifest(dir.path()),
+            Err(PublishError::InvalidManifest(_))
+        ));
     }
 
     #[test]
-    fn extract_app_id_missing_id_field_returns_none() {
+    fn extract_app_id_missing_id_field_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        // Valid JSON, but no "id" key.
         std::fs::write(
             dir.path().join("app.json"),
             br#"{"name":"Test","publisher":"Me"}"#,
         )
         .unwrap();
-        assert!(extract_app_id_from_manifest(dir.path()).is_none());
+        assert!(matches!(
+            extract_app_id_from_manifest(dir.path()),
+            Err(PublishError::InvalidManifest(_))
+        ));
     }
 
     #[test]
-    fn extract_app_id_non_string_id_returns_none() {
+    fn extract_app_id_non_string_id_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        // "id" present but not a JSON string — as_str() returns None.
         std::fs::write(dir.path().join("app.json"), br#"{"id":12345}"#).unwrap();
-        assert!(extract_app_id_from_manifest(dir.path()).is_none());
+        assert!(matches!(
+            extract_app_id_from_manifest(dir.path()),
+            Err(PublishError::InvalidManifest(_))
+        ));
     }
-
-    // -----------------------------------------------------------------------
-    // resolve_server_config — named-config matching / failure modes
-    // -----------------------------------------------------------------------
 
     /// Write a `.zed/debug.json` containing the given config entries.
     fn write_zed_debug(dir: &Path, body: &str) {
@@ -497,10 +487,6 @@ mod tests {
         assert!(matches!(result, Err(PublishError::NoLaunchConfig)));
     }
 
-    // -----------------------------------------------------------------------
-    // PublishError — documented Display messages
-    // -----------------------------------------------------------------------
-
     #[test]
     fn publish_error_display_messages() {
         assert_eq!(
@@ -515,18 +501,10 @@ mod tests {
             "Named configuration 'Prod' not found in launch.json"
         );
         assert_eq!(
-            PublishError::CompilationFailed { count: 3 }.to_string(),
-            "Compilation failed with 3 error(s)"
-        );
-        assert_eq!(
             PublishError::NoAppFile.to_string(),
             "No .app file produced by compiler"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // PublishResult serialization — skip_serializing_if omits None fields
-    // -----------------------------------------------------------------------
 
     #[test]
     fn publish_result_omits_optional_none_fields() {
@@ -563,10 +541,6 @@ mod tests {
         assert!(json.contains("\"success\":false"));
         assert!(!json.contains("message"));
     }
-
-    // -----------------------------------------------------------------------
-    // do_standard_publish — exercised against a mock BC server (wiremock)
-    // -----------------------------------------------------------------------
 
     /// Config whose base_url is the wiremock server with instance "BC", so the
     /// publish endpoint is `{uri}/BC/dev/extensions`. Windows auth means no
