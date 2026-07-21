@@ -48,14 +48,7 @@ pub fn rename(
     let mut changes: Vec<(Url, Vec<TextEdit>)> = Vec::new();
     let source_bytes = text.as_bytes();
 
-    // F-038: when the symbol at the cursor binds locally to a procedure
-    // (parameter or `var`-declared local), restrict the rename to that
-    // procedure's source range. Workspace-wide lexical rename of a local
-    // would silently edit every other procedure / object that happens to
-    // use the same name. Until proper symbol-aware rename exists this
-    // scope-local fast path is the safe default for locals; non-local
-    // identifiers (cross-file procedures, fields, types) still get the
-    // workspace-wide pass below.
+    // Procedure-local bindings must not enter the workspace-wide rename path.
     if let Some(proc) = al_syntax::find_procedure_at(&tree, &text, position.into()) {
         let is_local_binding = proc
             .parameters
@@ -330,9 +323,6 @@ mod tests {
         }
     }
 
-    /// F-038 positive: when two procedures each declare a local with the
-    /// same name (`Status`), renaming the local in procedure A must NOT
-    /// touch procedure B's same-named local.
     #[test]
     fn rename_local_var_does_not_touch_other_procedure_with_same_name() {
         let ws = Workspace::new();
@@ -367,7 +357,7 @@ mod tests {
         for e in edits {
             assert!(
                 e.range.start.line <= 7,
-                "F-038: leaked edit at line {} into Bar's procedure",
+                "rename leaked into Bar at line {}",
                 e.range.start.line
             );
         }
@@ -378,9 +368,6 @@ mod tests {
         );
     }
 
-    /// F-038 negative: a non-local identifier (the procedure name itself,
-    /// which IS workspace-visible) should still be renamed across the
-    /// workspace — only locals get the scope-restricted treatment.
     #[test]
     fn rename_procedure_name_still_workspace_wide() {
         let ws = Workspace::new();
@@ -478,9 +465,7 @@ mod tests {
         );
     }
 
-    /// adversarial: two tables each declare a field `Amount`. Renaming the
-    /// field in table A must not rewrite table B's same-named field. Fields are
-    /// the other common non-local symbol (besides procedures).
+    /// Same-named fields in different tables are distinct declarations.
     #[test]
     fn rename_field_does_not_touch_same_name_in_other_table() {
         let ws = Workspace::new();

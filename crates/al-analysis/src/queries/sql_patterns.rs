@@ -398,10 +398,6 @@ mod tests {
         );
     }
 
-    /// Regression: a FindFirst() substring buried inside
-    /// a string literal or a // comment must not trigger a false-positive
-    /// FindInLoop violation. The text scanner now strips literal contents
-    /// and skips comment lines.
     #[test]
     fn no_false_positive_for_findfirst_in_string_literal_or_comment() {
         let ws = workspace_with(vec![(

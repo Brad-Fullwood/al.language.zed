@@ -370,10 +370,6 @@ mod tests {
 
     #[test]
     fn detect_object_kind_routes_extensions_and_extras_distinctly() {
-        // F-045: each recognised object keyword now resolves to its own
-        // variant instead of bucketing into `Other`. Page-specific
-        // actions therefore can no longer fire inside queries / xmlports
-        // / enums / unrelated extensions.
         for (txt, expected, label) in [
             (
                 "pageextension 50 X extends Y { }",
@@ -421,8 +417,6 @@ mod tests {
 
     #[test]
     fn detect_object_kind_now_recognises_previously_missed_types() {
-        // The hardcoded prefix list silently dropped these,
-        // disabling code-actions on them. Each must now resolve.
         for (txt, label) in [
             ("permissionset 50 X { }", "permissionset"),
             ("profile X { }", "profile"),
@@ -447,10 +441,6 @@ mod tests {
 
     #[test]
     fn page_only_actions_do_not_match_query_or_xmlport() {
-        // F-045 regression: a `query` or `xmlport` previously matched
-        // `AlObjectKind::Other` and slipped past `Page | Other` gates,
-        // wrongly offering page-specific code actions. Now they resolve
-        // to their own variants and must NOT equal the page-action gate.
         let query_kind = detect_object_kind("query 50 X { }").unwrap();
         let xmlport_kind = detect_object_kind("xmlport 50 X { }").unwrap();
         for k in [query_kind, xmlport_kind] {
@@ -459,7 +449,7 @@ mod tests {
             assert_ne!(
                 k,
                 AlObjectKind::Other,
-                "Other catch-all is what F-045 fixed; concrete variants required"
+                "known object kinds must not use the catch-all variant"
             );
         }
     }
@@ -490,9 +480,6 @@ mod tests {
         ws.documents.open(uri.clone(), al_code.to_string());
     }
 
-    /// Regression / test-gap: handle_code_action passes the raw LSP Range
-    /// straight into source_actions(). Malformed ranges (u32::MAX line, start
-    /// past document end, backwards range) must be handled without panicking.
     #[test]
     fn source_actions_handles_malformed_ranges_without_panic() {
         let ws = Workspace::new();

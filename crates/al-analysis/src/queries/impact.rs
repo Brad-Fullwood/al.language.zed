@@ -524,10 +524,6 @@ mod tests {
         assert!(member.is_none());
     }
 
-    /// Regression: impact() must not call `search("", usize::MAX)` — extensions
-    /// of the target object must come from the by_extends index, so unrelated
-    /// objects in the index (here: an unrelated `Item` extension) do not
-    /// contaminate results.
     #[test]
     fn impact_extends_uses_targeted_lookup() {
         let ws = Workspace::new();
@@ -580,8 +576,6 @@ mod tests {
         );
     }
 
-    /// Regression: TableRelation matching must not be a substring match — a
-    /// relation to `CustomerBank` must NOT be reported as an impact on `Customer`.
     #[test]
     fn impact_table_relation_no_substring_false_positive() {
         let ws = Workspace::new();
@@ -607,8 +601,6 @@ mod tests {
         );
     }
 
-    /// Regression: parameter-type matching must not be a substring match — a
-    /// `Record "CustomerBank"` parameter must NOT be reported as using `Customer`.
     #[test]
     fn impact_param_type_no_substring_false_positive() {
         let ws = Workspace::new();
@@ -761,9 +753,6 @@ mod tests {
         );
     }
 
-    /// Regression: a member query (`Customer.OnBeforePost`) must NOT report a
-    /// method merely because it takes a `Record Customer` parameter — only
-    /// actual subscribers to that event count.
     #[test]
     fn impact_member_query_ignores_unrelated_param_methods() {
         let ws = Workspace::new();

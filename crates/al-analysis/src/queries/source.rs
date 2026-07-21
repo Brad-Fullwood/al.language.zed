@@ -335,10 +335,6 @@ pub fn render_method_signature(m: &MethodSymbol) -> String {
     sig
 }
 
-// ---------------------------------------------------------------------------
-// Event-source resolution — `al-explorer event-source`
-// ---------------------------------------------------------------------------
-
 /// Result of resolving the publisher behind an `[EventSubscriber(...)]`
 /// attribute at a cursor position.
 #[derive(Debug, Clone, Serialize)]
@@ -368,12 +364,8 @@ pub struct EventSourceResult {
 /// Resolve the actual event publisher for the `[EventSubscriber(...)]`
 /// attribute at `line_1based` in `file`.
 ///
-/// "Show Event Source" previously ran a name substring search and
-/// returned a pile of unrelated matches. This resolves the attribute's
-/// `(ObjectType, Object, EventName)` triple to the publisher's declaration
-/// — in the workspace when possible, otherwise materialised from the
-/// symbol package. Positions without a subscriber attribute get a
-/// clear error instead of garbage results.
+/// Resolves the attribute's `(ObjectType, Object, EventName)` triple in the
+/// workspace or package symbols.
 pub fn event_source(
     workspace: &Workspace,
     file: &std::path::Path,
@@ -924,12 +916,8 @@ mod tests {
         );
     }
 
-    // -- extract_signature_from_text edge / boundary paths -----------------
-
     #[test]
     fn extract_signature_no_parens_falls_back_to_first_line() {
-        // No '(' or ')' at all: `end` stays 0 and the function returns the
-        // first line (fallback branch).
         let text = "trigger OnInsert\nbegin\nend;";
         let sig = extract_signature_from_text(text);
         assert_eq!(sig, "trigger OnInsert");
@@ -937,7 +925,6 @@ mod tests {
 
     #[test]
     fn extract_signature_strips_trailing_semicolon_on_return_type() {
-        // Return type on the same line, terminated by ';' — the ';' must be stripped.
         let text = "procedure GetValue(): Decimal;\nbegin\nend;";
         let sig = extract_signature_from_text(text);
         assert_eq!(sig, "procedure GetValue(): Decimal");
@@ -945,20 +932,16 @@ mod tests {
 
     #[test]
     fn extract_signature_empty_input_returns_empty() {
-        // No parens, no newline: lines().next() yields "" -> fallback returns "".
         let sig = extract_signature_from_text("");
         assert_eq!(sig, "");
     }
 
     #[test]
     fn extract_signature_no_return_type_after_close_paren() {
-        // ')' closes the signature and the rest of the line has no ':'.
         let text = "procedure Foo(a: Integer) // comment\nbegin\nend;";
         let sig = extract_signature_from_text(text);
         assert_eq!(sig, "procedure Foo(a: Integer)");
     }
-
-    // -- extract_procedure_from_text ---------------------------------------
 
     #[test]
     fn extract_procedure_from_text_finds_target() {
@@ -975,8 +958,6 @@ mod tests {
         assert!(extract_procedure_from_text(src, "DoesNotExist").is_none());
     }
 
-    // -- find_procedure_node branches --------------------------------------
-
     #[test]
     fn find_procedure_node_matches_trigger_and_quoted_name_case_insensitive() {
         let src = "table 50100 \"My Tab\"\n{\n    trigger OnInsert()\n    begin\n    end;\n\n    procedure \"Do Work\"()\n    begin\n    end;\n}\n";
@@ -985,16 +966,10 @@ mod tests {
 
         assert!(find_procedure_node(&root, src, "oninsert").is_some());
 
-        // Quoted procedure name: the surrounding quotes are trimmed before compare.
         assert!(find_procedure_node(&root, src, "Do Work").is_some());
 
         assert!(find_procedure_node(&root, src, "Nope").is_none());
     }
-
-    // -- try_package_source via the public source() entrypoint -------------
-    //
-    // No app path is registered for the package, so source() falls through to
-    // the SymbolReference.json outline-rendering branches.
 
     fn ws_with(entry: SymbolEntry) -> al_workspace::Workspace {
         let ws = al_workspace::Workspace::new();

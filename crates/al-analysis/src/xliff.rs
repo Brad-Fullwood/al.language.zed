@@ -1364,10 +1364,6 @@ mod tests {
 
     #[test]
     fn label_ids_are_stable_across_extraction_order() {
-        // Regression: make_label_id previously used the cumulative units.len()
-        // as the index, so the same label in the same file got a different ID
-        // depending on how many units earlier files contributed. The ID must
-        // depend only on the label's position within its own object.
         let al = r#"codeunit 50100 "My Codeunit"
 {
     var
@@ -1379,7 +1375,6 @@ mod tests {
         extract_from_file(Path::new("a.al"), al, &mut units_a);
         let ids_a: Vec<String> = units_a.iter().map(|u| u.id.clone()).collect();
 
-        // Extract into a vector that already holds units from an "earlier" file.
         let mut units_b = vec![make_test_unit("preexisting one"), make_test_unit("two")];
         let pre_len = units_b.len();
         extract_from_file(Path::new("a.al"), al, &mut units_b);
@@ -1395,10 +1390,6 @@ mod tests {
 
     #[test]
     fn parse_xliff_preserves_empty_single_line_source() {
-        // Regression: a single-line `<source></source>` with an empty body
-        // used to make extract_single_line return None, which switched the
-        // parser into multi-line mode hunting for a closing tag that had
-        // already passed — silently dropping the whole trans-unit.
         let xml = r#"<?xml version="1.0" encoding="utf-8"?>
 <xliff version="1.2">
   <file datatype="xml" source-language="en-US" target-language="de-DE" original="MyApp">
@@ -1579,13 +1570,8 @@ mod tests {
         );
     }
 
-    // --- Multi-line body handling -------------------------------------------
-
     #[test]
     fn parse_xliff_preserves_multi_line_source_body() {
-        // Regression: extract_xml_text previously stopped at the first
-        // newline, silently dropping line 2+ of a multi-line <source>.
-        // The new parser accumulates until </source>.
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <xliff version="1.2">
   <file>
@@ -1682,11 +1668,6 @@ le monde</target>
 
     #[test]
     fn parse_xliff_preserves_ms_format_note_with_attributes() {
-        // Regression: BC and the MS AL extension emit `<note>` elements WITH
-        // attributes (`from`, `annotates`, `priority`). The earlier exact
-        // `starts_with("<note>")` check dropped every such note, so a
-        // refresh/merge of a real-world language `.xlf` silently lost the
-        // developer context. Both the bare and the attributed form must parse.
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <xliff version="1.2">
   <file>

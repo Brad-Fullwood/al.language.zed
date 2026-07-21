@@ -305,10 +305,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Move Tooltip from Page Controls to Table Fields
-    // -----------------------------------------------------------------------
-
     #[test]
     fn tooltip_on_page_field_offered_for_removal() {
         let ws = Workspace::new();

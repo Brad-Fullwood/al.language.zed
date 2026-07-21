@@ -915,15 +915,6 @@ mod tests {
         assert_eq!(deduped.len(), 1);
     }
 
-    // -----------------------------------------------------------------------
-    // Traversal-safety tests (white-box, exercise trace_from_node directly).
-    //
-    // The depth limit and `visited` set are the two safeguards that keep
-    // call-graph traversal bounded on deep, cyclic, or fan-out graphs. The
-    // higher-level query tests above only build shallow, acyclic graphs, so
-    // these drive the recursion bounds explicitly via a hand-built graph.
-    // -----------------------------------------------------------------------
-
     use al_insight::graph::InsightEdge;
 
     fn add_proc(g: &mut InsightGraph, object: &str, name: &str) -> NodeId {

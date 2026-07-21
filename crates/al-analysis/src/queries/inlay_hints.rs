@@ -82,11 +82,7 @@ fn inclusive_last_row(node: tree_sitter::Node<'_>) -> u32 {
     }
 }
 
-// Eight arguments is past the clippy threshold but each one is genuinely
-// independent — tree-sitter root / raw source bytes / rope text / tree
-// handle / workspace / pre-computed doc symbols / requested range /
-// output buffer — and bundling them into a Context struct would only
-// move the cognitive load, not reduce it. We accept the lint here.
+// The inputs belong to distinct ownership domains and do not form a reusable context.
 #[allow(clippy::too_many_arguments)]
 fn collect_inlay_hints(
     root: tree_sitter::Node<'_>,
@@ -356,10 +352,7 @@ fn extract_receiver_before(suffix_node: tree_sitter::Node<'_>, source: &[u8]) ->
     }
 }
 
-// Two allows: (1) `lsp_types::*` deprecation around inlay-hint label parts
-// in older tower-lsp versions — we can't avoid the API; (2) eight unrelated
-// inputs (workspace, source/tree/cursor context, resolver state) that don't
-// gain clarity from being bundled.
+// Kept compatible with the lsp-types version used by tower-lsp.
 #[allow(deprecated)]
 #[allow(clippy::too_many_arguments)]
 fn lookup_parameter_names(

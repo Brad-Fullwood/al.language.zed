@@ -861,8 +861,6 @@ codeunit 50100 MyCodeunit
         );
     }
 
-    // Regression: an oversized failure message must be truncated in the title
-    // so we never embed multi-KB stack traces in the LSP payload.
     #[test]
     fn test_lens_title_truncates_long_error() {
         let long_error = "x".repeat(10_000);

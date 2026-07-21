@@ -222,12 +222,9 @@ pub async fn completions_full(
     let Ok(path) = uri.to_file_path() else {
         return items;
     };
-    // F-036: bridge `completions` consumes 0-based (line, column) — see
-    // `bridge::SemanticBridge::completions_at` doc and the matching C#
-    // `LineColToOffset` invariant.
+    // The bridge uses the same zero-based coordinates as LSP.
     let pos = (position.line, position.character);
-    // F-037: pass the open-document text so the bridge sees unsaved edits
-    // instead of stale on-disk content.
+    // Open-document text takes precedence over on-disk content.
     let unsaved_text = workspace.documents.get_text(uri);
     let bridge_items = match bridge
         .completions_at(&path, pos, unsaved_text.as_deref())

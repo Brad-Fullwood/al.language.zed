@@ -520,9 +520,7 @@ fn find_unused_fields(
     }
 }
 
-// The grammar doesn't expose a `field_declaration` node type so we scan source as text.
-// Skip field declarations inside block comments to avoid phantom fields.
-// Single-line comments are already filtered naturally because the strip_prefix fails on `//`.
+// The grammar has no field-declaration node, so this scanner ignores comments.
 fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
     let mut in_block_comment = false;
     for (line_idx, line) in text.lines().enumerate() {
@@ -535,11 +533,8 @@ fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
                 continue;
             }
         }
-        // Inline-comment scan: walk left-to-right toggling the flag for any
-        // /* and */ openers/closers on this line. We deliberately don't
-        // handle */ inside string literals. A file with `Message('*/')` may
-        // cause a false negative, which is safer than reporting a false
-        // positive.
+        // A delimiter inside a string may cause a false negative, never a
+        // field-removal recommendation based on a false positive.
         let after_initial = &line[search_from..];
         if let Some(open) = after_initial.find("/*") {
             in_block_comment = true;
@@ -1148,11 +1143,6 @@ mod tests {
         );
     }
 
-    /// Regression: an unused table field with a common
-    /// name (here `Description`) must be detected as unused even when other
-    /// files contain bare identifiers `Description` (e.g. as variable names).
-    /// The field-reference scan must require an actual member-access pattern
-    /// (`.Description` or `."Description"`).
     #[test]
     fn unused_field_detected_despite_bare_identifier_in_other_files() {
         let ws = workspace_with_files(vec![
@@ -1196,11 +1186,6 @@ mod tests {
         );
     }
 
-    /// Regression: a real call to a procedure with a
-    /// short name like `Post` must not be skipped just because another file
-    /// declares a procedure whose name *contains* `Post` (e.g.
-    /// `procedure PostDocument()`). Previously the skip predicate matched
-    /// any "procedure ..." line containing the substring `post`.
     #[test]
     fn dead_code_does_not_skip_real_call_when_other_procedure_name_contains_target() {
         let ws = workspace_with_files(vec![
@@ -1229,7 +1214,6 @@ mod tests {
 
         let unused = dead_code(&ws);
 
-        // `Post` IS called from the second file — must not be flagged unused.
         assert!(
             !unused
                 .iter()
@@ -1238,11 +1222,6 @@ mod tests {
             unused
         );
     }
-
-    // Unit tests for the quote-aware parsing helpers. These functions are on
-    // the dead-code hot path and track string-literal state; without direct
-    // coverage a refactor to quote handling could silently reintroduce false
-    // positives/negatives. (test-gap closed iteration 86)
 
     #[test]
     fn extract_text_call_names_basic() {
