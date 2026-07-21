@@ -9,3 +9,6 @@ results/
 # Python bytecode generated while running benchmark helpers.
 __pycache__/
 *.py[cod]
+
+# Local machine paths (copy of bench.env.example).
+bench.env

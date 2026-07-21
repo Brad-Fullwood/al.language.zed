@@ -35,6 +35,15 @@ pub enum NuGetError {
     Zip(#[from] zip::result::ZipError),
     #[error("Downloaded package contains an invalid .app: {0}")]
     InvalidApp(#[from] super::app_reader::AppReaderError),
+    #[error(
+        "Downloaded .app identity/version mismatch: requested id {expected_id} version {expected_version}, got id {actual_id} version {actual_version}"
+    )]
+    PackageIdentityMismatch {
+        expected_id: String,
+        expected_version: String,
+        actual_id: String,
+        actual_version: String,
+    },
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -46,6 +55,7 @@ pub struct PackageRef {
     /// Desired version (e.g., "24.0.12345.0"), or None for latest.
     pub version: Option<String>,
     pub display_name: String,
+    pub app_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +110,7 @@ pub fn resolve_dependencies_for_country(
                 id,
                 version: Some(dep.version.clone()),
                 display_name: dep.name.clone(),
+                app_id: dep.id.clone(),
             }
         })
         .collect()
@@ -246,7 +257,7 @@ impl NuGetClient {
             .get(&completion_key)
             .cloned();
         if let Some(path) = completed {
-            if super::app_reader::read_app_manifest_file(&path).is_ok() {
+            if nuget_manifest_satisfies(&path, pkg) {
                 debug!(package = %pkg.display_name, path = %path.display(), "Reusing completed NuGet package download");
                 return Ok(path);
             }
@@ -401,7 +412,13 @@ async fn download(
         return Err(error);
     }
 
-    let app_result = extract_app_from_nupkg_file(&nupkg_tmp, dest, &pkg.display_name);
+    let app_result = extract_app_from_nupkg_file(
+        &nupkg_tmp,
+        dest,
+        &pkg.display_name,
+        &pkg.app_id,
+        pkg.version.as_deref().unwrap_or(&version),
+    );
     let _ = tokio::fs::remove_file(&nupkg_tmp).await;
     let app_path = app_result?;
     info!(
@@ -631,21 +648,29 @@ fn extract_app_from_nupkg(
     display_name: &str,
 ) -> Result<PathBuf, NuGetError> {
     let cursor = std::io::Cursor::new(nupkg_bytes);
-    extract_app_from_nupkg_reader(cursor, dest, display_name)
+    extract_app_from_nupkg_reader(cursor, dest, display_name, None)
 }
 
 fn extract_app_from_nupkg_file(
     nupkg_path: &Path,
     dest: &Path,
     display_name: &str,
+    expected_app_id: &str,
+    expected_version: &str,
 ) -> Result<PathBuf, NuGetError> {
-    extract_app_from_nupkg_reader(std::fs::File::open(nupkg_path)?, dest, display_name)
+    extract_app_from_nupkg_reader(
+        std::fs::File::open(nupkg_path)?,
+        dest,
+        display_name,
+        Some((expected_app_id, expected_version)),
+    )
 }
 
 fn extract_app_from_nupkg_reader<R: std::io::Read + std::io::Seek>(
     reader: R,
     dest: &Path,
     display_name: &str,
+    expected: Option<(&str, &str)>,
 ) -> Result<PathBuf, NuGetError> {
     let mut archive = zip::ZipArchive::new(reader)?;
     const MAX_ARCHIVE_ENTRIES: usize = 200_000;
@@ -716,9 +741,25 @@ fn extract_app_from_nupkg_reader<R: std::io::Read + std::io::Seek>(
             // Reject corrupt/truncated payloads before they become visible in
             // the package folder. Manifest-only validation avoids the much
             // larger SymbolReference parse that normal indexing performs next.
-            if let Err(error) = super::app_reader::read_app_manifest_file(&tmp_path) {
-                let _ = std::fs::remove_file(&tmp_path);
-                return Err(error.into());
+            let manifest = match super::app_reader::read_app_manifest_file(&tmp_path) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(error.into());
+                }
+            };
+            if let Some((expected_id, expected_version)) = expected {
+                if !manifest.app_id.eq_ignore_ascii_case(expected_id)
+                    || !crate::model::version_at_least(&manifest.version, expected_version)
+                {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(NuGetError::PackageIdentityMismatch {
+                        expected_id: expected_id.to_string(),
+                        expected_version: expected_version.to_string(),
+                        actual_id: manifest.app_id,
+                        actual_version: manifest.version,
+                    });
+                }
             }
             // Atomic rename: only the complete file is ever visible at the final path.
             if let Err(error) = std::fs::rename(&tmp_path, &out_path) {
@@ -742,11 +783,25 @@ fn extract_app_from_nupkg_reader<R: std::io::Read + std::io::Seek>(
     Err(NuGetError::NoAppInNupkg)
 }
 
+fn nuget_manifest_satisfies(path: &Path, package: &PackageRef) -> bool {
+    super::app_reader::read_app_manifest_file(path).is_ok_and(|manifest| {
+        manifest.app_id.eq_ignore_ascii_case(&package.app_id)
+            && package
+                .version
+                .as_deref()
+                .is_none_or(|version| crate::model::version_at_least(&manifest.version, version))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn valid_app_bytes() -> Vec<u8> {
+        app_bytes("test-id", "1.0.0.0")
+    }
+
+    fn app_bytes(app_id: &str, version: &str) -> Vec<u8> {
         let mut app = Vec::new();
         app.extend_from_slice(b"NAVX");
         app.extend_from_slice(&1u32.to_le_bytes());
@@ -757,8 +812,9 @@ mod tests {
             let options = zip::write::SimpleFileOptions::default();
             zip.start_file("NavxManifest.xml", options)
                 .expect("manifest entry");
-            zip.write_all(
-                br#"<Package><App Id="test-id" Name="Test" Publisher="Test" Version="1.0.0.0" /></Package>"#,
+            write!(
+                zip,
+                r#"<Package><App Id="{app_id}" Name="Test" Publisher="Test" Version="{version}" /></Package>"#
             )
             .expect("manifest body");
             zip.start_file("SymbolReference.json", options)
@@ -1299,6 +1355,7 @@ mod tests {
             id: "Microsoft.Cached.symbols".into(),
             version: Some("1.0.0.0".into()),
             display_name: "Cached".into(),
+            app_id: "test-id".into(),
         };
         client.completed_downloads.lock().unwrap().insert(
             (
@@ -1314,6 +1371,28 @@ mod tests {
             .await
             .expect("completed artifact should be reused even with no feeds");
         assert_eq!(resolved, artifact);
+    }
+
+    #[test]
+    fn completed_download_requires_matching_identity_and_minimum_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let artifact = tmp.path().join("Cached.app");
+        std::fs::write(&artifact, app_bytes("expected-id", "2.1.0.0")).unwrap();
+
+        let mut package = PackageRef {
+            id: "Microsoft.Cached.symbols".into(),
+            version: Some("2.0.0.0".into()),
+            display_name: "Cached".into(),
+            app_id: "EXPECTED-ID".into(),
+        };
+        assert!(nuget_manifest_satisfies(&artifact, &package));
+
+        package.app_id = "different-id".into();
+        assert!(!nuget_manifest_satisfies(&artifact, &package));
+
+        package.app_id = "expected-id".into();
+        package.version = Some("2.2.0.0".into());
+        assert!(!nuget_manifest_satisfies(&artifact, &package));
     }
 
     /// Mount a service index that advertises `base_id` as a PackageBaseAddress

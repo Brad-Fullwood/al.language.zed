@@ -37,18 +37,21 @@ Common queries become direct map lookups. Package ZIP/JSON parsing runs in paral
 shorter index commit is applied in input order; reloading a package therefore replaces its previous
 generation deterministically instead of racing duplicate entries into secondary indexes. Search is
 stable and relevance-ranked (exact name, prefix, then substring), with synthetic pseudo-types kept
-out of user-facing results. A
-pre-computed 30-entry default-completions slice answers the "blank completion at top level" path in
-O(1) (ISSUE-162). On package removal, all secondary indexes are pruned in lockstep (the "T049"
+out of user-facing results; bounded searches retain only the requested best candidates rather than
+sorting every match. A pre-computed 30-entry default-completions slice answers the "blank completion
+at top level" path in O(1) (ISSUE-162). On package removal, all secondary indexes are pruned in
+lockstep (the "T049"
 discipline), source/path caches are removed, and affected composed views are invalidated, so a hot
 reload cannot serve stale or dangling data. Synthetic pseudo-enums (generated for Option-typed
 fields, id = -1) are excluded from id-based lookups, search, and default completion.
 
 ### Reading `.app` (`app_reader.rs`, `manifest.rs`, `app_inspect.rs`)
 
-A `.app` is a NAVX header followed by a ZIP. The reader validates the `NAVX` magic, locates the ZIP
-(fast path at the standard offset, with a bounded fallback that verifies candidate ZIPs), and decompresses `NavxManifest.xml`
-and `SymbolReference.json` (stripping UTF-8 BOMs, which BC emits inconsistently, and tolerating
+A `.app` is a NAVX header followed by a ZIP. The reader validates the `NAVX` magic and reads ZIP
+entries directly from the package file, avoiding a duplicate whole-package allocation. Byte-buffer
+callers use a standard-offset fast path plus a bounded fallback that verifies candidate ZIPs. It
+decompresses `NavxManifest.xml` and `SymbolReference.json` (stripping UTF-8 BOMs, which BC emits
+inconsistently, and tolerating
 trailing NUL/EOF padding). Nested namespaces are flattened into a flat `Vec<SymbolEntry>`.
 `app_inspect` separately enumerates every archive entry and classifies it (AL source / JSON / XML /
 .NET assembly / other) by name and magic bytes, so you can tell a source-bearing package from a
@@ -79,7 +82,7 @@ Composing 15 extensions runs in <5 ms.
 For go-to-definition into a dependency, `source_index` reads ZIP metadata directly from the `.app`
 without buffering or memory-mapping the whole package, and scans bounded `.al` headers
 to map (kind, id) / (kind, name) → internal ZIP path (with double-checked per-path locking and
-mtime-based staleness). `virtual_file` then either extracts the embedded `.al` source or, when the
+mtime+size staleness). `virtual_file` then either extracts the embedded `.al` source or, when the
 package ships no source, **renders an outline** (fields, methods, keys, enum values, properties) as a
 read-only virtual file and locates the member's range so the editor can jump to it. Cache files are
 regenerated when either the `.app` or the `al-lsp` binary is newer (F-041), and temp+rename
@@ -98,12 +101,13 @@ Two download backends:
   for the same package, retries transient feed failures, and streams through a 200 MiB cap rather than
   buffering a whole package in RAM. Version resolution is numeric and deterministic; a requested
   release line never silently falls forward to an unrelated major/minor. The inner `.app` is
-  size-capped, manifest-validated, and atomically published.
+  size-capped, identity/version-validated against the requested dependency, and atomically published.
 - **BC server (`bc_server.rs`):** GETs `/dev/packages?publisher=…&appName=…&versionText=…` with auth,
   with four-request concurrency, same-package request dedupe, bounded retry/backoff for transient
-  transport/429/502/503/504 failures, and a 200 MiB streaming cap. It verifies NAVX and the manifest
-  before atomically publishing a publisher/name/version-qualified filename. It caches the access token
-  in an `RwLock` and clears it on 401/403 to recover from stale tokens (F-OPEN-013).
+  transport/429/502/503/504 failures, and a 200 MiB streaming cap. It verifies NAVX plus manifest
+  identity/minimum-version before atomically publishing a publisher/name/version-qualified filename.
+  It caches the access token in an `RwLock` and clears it on 401/403 to recover from stale tokens
+  (F-OPEN-013).
 - **OAuth (`oauth.rs`):** Microsoft Entra authorization-code flow with **PKCE** (browser → localhost
   redirect) and a **device-code** fallback for headless environments, with disk-cached refresh
   tokens, tenant/GUID validation, env-var overrides (`BC_CLIENT_ID`/`BC_ACCESS_TOKEN`/`BC_TENANT`),
@@ -155,8 +159,10 @@ The `al.appLocalFolderPaths` setting — the way the Microsoft AL extension poin
 folders — is applied during LSP, daemon/CLI/TUI, and core-workspace initialization. Relative paths are
 resolved from the directory containing `app.json`; the package cache has first priority, followed by
 local folders in configured order. Scans are deterministic, ignore non-files/non-`.app` entries, and
-keep only the newest version of a package. LSP configuration changes replace the file-backed symbol
-generation in place, reload runtime enums, and invalidate dependent analysis without a restart.
+keep the newest parseable versioned filename across folders (exact filename ties keep the earlier
+folder). LSP configuration changes replace the file-backed symbol generation in place, reload runtime
+enums, and invalidate dependent analysis without a restart. If every file in a non-empty replacement
+set is invalid, the last good generation is retained instead of blanking the index.
 
 Dependency acquisition checks each loaded package's manifest GUID and minimum version. A single
 cached package therefore cannot suppress downloads for unrelated missing dependencies, and a package
@@ -177,6 +183,7 @@ with the right filename but the wrong identity/version does not count as satisfi
   - Cross-package "who calls this" cannot be recovered from package symbols alone; workspace source
     fills this in (affected-test selection treats `.app`-only declarations as having no call sites —
     see gap B7).
-- `ROADMAP.md` (Symbol And Package Engine): add benchmark-grade cold/warm load data, make the symbol
-  perf audit CI-deterministic with fixtures, add byte-level memory accounting, and distinguish embedded
-  source vs generated outline vs metadata-only in all user-facing output.
+- `ROADMAP.md` (Symbol And Package Engine): turn the existing deterministic synthetic cold/warm
+  benchmarks into a CI regression gate with committed `.app` fixtures, add byte-level memory
+  accounting, and distinguish embedded source vs generated outline vs metadata-only in all
+  user-facing output.

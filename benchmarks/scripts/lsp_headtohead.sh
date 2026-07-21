@@ -10,12 +10,19 @@ OPENF="${OPENF:-$PROJ/src/Page_60000.al}"
 ITERS="${ITERS:-11}"
 TAG="${TAG:-medium}"
 
-# Positions chosen against the generated page template:
+# Positions chosen against the generated page template, 0-based line:character.
 #   COMP — just after `Rec.` in `Rec.SetRange(Active, true)` (member completion)
 #   HOV/DEF — inside the "Bench Table N" identifier on the SourceTable line
-COMP="${COMP:-45:12}"
-HOV="${HOV:-4:20}"
-DEF="${DEF:-4:20}"
+#
+# These MUST be verified against the actual file whenever gen_projects.py
+# changes. An earlier revision pointed hover and definition at a property VALUE
+# (`UsageCategory = Administration`) rather than a symbol; both servers dutifully
+# returned nothing, very fast. A probe that resolves to an empty result measures
+# nothing — check `result_size` in the JSON is non-zero before believing a
+# latency number.
+COMP="${COMP:-62:12}"
+HOV="${HOV:-5:20}"
+DEF="${DEF:-5:20}"
 
 mkdir -p "$BENCH/results"
 echo "project=$PROJ open=$OPENF iters=$ITERS comp=$COMP hov=$HOV def=$DEF"
