@@ -180,6 +180,7 @@ async fn main() {
 
     let args: Vec<String> = env::args().collect();
 
+    #[cfg(unix)]
     let is_daemon_mode = args.iter().any(|a| a == "daemon");
     #[cfg(unix)]
     if !is_daemon_mode {

@@ -1027,6 +1027,14 @@ mod cross_platform_tests {
             .create_sync()
             .expect("bind platform local transport");
 
+        // Keep the server-side named-pipe handle alive until the client has
+        // consumed the response. The Windows local-socket wrapper's `flush`
+        // is intentionally a no-op, so dropping the short-lived fixture
+        // server immediately after `write_all` can race the client and turn a
+        // valid buffered response into EOF. Real daemons keep the connection
+        // open for subsequent requests.
+        let (response_read_tx, response_read_rx) = std::sync::mpsc::channel();
+
         let server = std::thread::spawn(move || {
             let conn = listener.accept().expect("accept client");
             let mut reader = std::io::BufReader::new(&conn);
@@ -1043,6 +1051,7 @@ mod cross_platform_tests {
             let mut writer = &conn;
             writer.write_all(&frame).expect("write response frame");
             writer.flush().expect("flush response frame");
+            let _ = response_read_rx.recv_timeout(std::time::Duration::from_secs(5));
         });
 
         let stream = connect_stream(&endpoint).expect("connect platform local transport");
@@ -1052,6 +1061,9 @@ mod cross_platform_tests {
             .expect("complete platform round trip");
         assert_eq!(response["transport"], "local");
         assert_eq!(response["method"], "test/platform");
+        response_read_tx
+            .send(())
+            .expect("notify fixture server that response was consumed");
 
         drop(client);
         server.join().expect("server thread completed");
