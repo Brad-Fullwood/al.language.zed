@@ -354,41 +354,31 @@ fn make_variant(
     }
 }
 
-/// Return a copy of `source` with the mutation described by `variant` applied.
-///
-/// Replaces exactly `variant.byte_start..variant.byte_end` with `variant.mutated`.
-/// Panics are not possible: byte indices are clamped to source length and
-/// snapped to char boundaries before slicing. Variants produced by
-/// `generate_variants` always sit on char boundaries because the byte
-/// positions come from tree-sitter nodes, but a stale variant from a between-
-/// mutation source edit could end up pointing mid-UTF-8.
-pub fn apply_variant(source: &str, variant: &MutationVariant) -> String {
-    let start = floor_char_boundary(source, variant.byte_start.min(source.len()));
-    let end = floor_char_boundary(source, variant.byte_end.min(source.len()));
-    let (start, end) = if start <= end {
-        (start, end)
-    } else {
-        (end, start)
-    };
+/// Apply a mutation only when its byte range still identifies the original token.
+pub fn apply_variant(source: &str, variant: &MutationVariant) -> Result<String, MutationError> {
+    let start = variant.byte_start;
+    let end = variant.byte_end;
+    if start > end
+        || end > source.len()
+        || !source.is_char_boundary(start)
+        || !source.is_char_boundary(end)
+    {
+        return Err(MutationError::ApplyFailed(format!(
+            "invalid byte range {start}..{end} for {} bytes",
+            source.len()
+        )));
+    }
+    if source.get(start..end) != Some(variant.original.as_str()) {
+        return Err(MutationError::ApplyFailed(format!(
+            "source changed at {start}..{end}: expected {:?}",
+            variant.original
+        )));
+    }
     let mut result = String::with_capacity(source.len() + variant.mutated.len());
     result.push_str(&source[..start]);
     result.push_str(&variant.mutated);
     result.push_str(&source[end..]);
-    result
-}
-
-/// Walk `idx` down to the nearest char boundary at or below it. `&str` slice
-/// indexing requires char-boundary positions; UTF-8 continuation bytes
-/// (0b10xxxxxx) panic. `std::str::floor_char_boundary` is unstable, so we
-/// implement it locally.
-fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
-    if idx >= s.len() {
-        return s.len();
-    }
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    idx
+    Ok(result)
 }
 
 /// Generate mutation variants for a specific file in the workspace.
@@ -560,8 +550,15 @@ async fn run_variants_parallel(
                 })
                 .await;
 
-            let isolated = build_isolated_workspace(&snapshot, &variant);
-            let outcome = run_interp_tests_against_mutant(&isolated, &variant).await;
+            let outcome = match build_isolated_workspace(&snapshot, &variant) {
+                Ok(isolated) => run_interp_tests_against_mutant(&isolated, &variant).await,
+                Err(error) => VariantOutcome {
+                    variant: variant.clone(),
+                    killed: false,
+                    killing_test: None,
+                    error: Some(error.to_string()),
+                },
+            };
 
             let _ = tx
                 .send(MutationEvent::VariantFinished {
@@ -629,18 +626,18 @@ fn snapshot_workspace_files(workspace: &Workspace) -> Vec<(std::path::PathBuf, S
 fn build_isolated_workspace(
     snapshot: &[(std::path::PathBuf, String)],
     variant: &MutationVariant,
-) -> std::sync::Arc<Workspace> {
+) -> Result<std::sync::Arc<Workspace>, MutationError> {
     let workspace = Workspace::new();
     let target = std::path::Path::new(&variant.file);
     for (path, text) in snapshot {
         let content = if path.as_path() == target {
-            apply_variant(text, variant)
+            apply_variant(text, variant)?
         } else {
             text.clone()
         };
         workspace.file_index.add_file(path.clone(), content);
     }
-    std::sync::Arc::new(workspace)
+    Ok(std::sync::Arc::new(workspace))
 }
 
 /// Collect the set of file paths to mutate.
@@ -738,7 +735,17 @@ async fn run_single_variant(
         }
     };
 
-    let mutated_source = apply_variant(&original_text, variant);
+    let mutated_source = match apply_variant(&original_text, variant) {
+        Ok(source) => source,
+        Err(error) => {
+            return VariantOutcome {
+                variant: variant.clone(),
+                killed: false,
+                killing_test: None,
+                error: Some(error.to_string()),
+            }
+        }
+    };
 
     // The mutant is swapped into the shared file_index for the duration of
     // the run, then the original is restored. Mutation runs are explicit,
@@ -1121,7 +1128,7 @@ mod tests {
             .find(|v| v.original == "<" && v.mutated == "<=")
             .expect("Should have < → <= variant for simple expression");
 
-        let result = apply_variant(source, lt);
+        let result = apply_variant(source, lt).unwrap();
         assert!(
             result.contains("<= B"),
             "apply_variant should swap < for <=, got: {result}"
@@ -1138,7 +1145,7 @@ mod tests {
         let tree = parse(source);
         let variants = generate_variants("x.al", source, &tree);
         for v in &variants {
-            let result = apply_variant(source, v);
+            let result = apply_variant(source, v).unwrap();
             assert!(
                 !result.is_empty(),
                 "apply_variant must not produce empty result"
@@ -1218,7 +1225,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_variant_out_of_range_byte_start_clamped() {
+    fn apply_variant_rejects_out_of_range_byte_start() {
         let source = "short";
         let v = MutationVariant {
             id: "test".to_string(),
@@ -1230,8 +1237,7 @@ mod tests {
             byte_start: 1000, // way past end
             byte_end: 1005,
         };
-        let result = apply_variant(source, &v);
-        assert!(result.contains("long_replacement") || result == source);
+        assert!(apply_variant(source, &v).is_err());
     }
 
     #[test]
@@ -1250,7 +1256,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_variant_missing_original_token_ignored() {
+    fn apply_variant_rejects_mismatched_original_token() {
         let source = "x := y + z;";
         let v = MutationVariant {
             id: "test:x.al:1:5".to_string(),
@@ -1262,8 +1268,7 @@ mod tests {
             byte_start: 5,
             byte_end: 6,
         };
-        let result = apply_variant(source, &v);
-        assert!(!result.is_empty());
+        assert!(apply_variant(source, &v).is_err());
     }
 
     #[test]
@@ -1283,25 +1288,4 @@ mod tests {
         assert!(s.contains("unexpected token"));
     }
 
-    #[test]
-    fn debug_dump_tree_nodes() {
-        let source = "if Age < 18 then exit(false);";
-        let tree = parse(source);
-        let mut all_kinds: Vec<(String, bool, String)> = Vec::new();
-        let root = tree.root_node();
-        let mut stack = vec![root];
-        while let Some(node) = stack.pop() {
-            let text = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-            all_kinds.push((node.kind().to_string(), node.is_named(), text.clone()));
-            for i in 0..node.child_count() {
-                if let Some(c) = node.child(i) {
-                    stack.push(c);
-                }
-            }
-        }
-        assert!(!all_kinds.is_empty(), "Should have tree nodes");
-        for (kind, named, text) in &all_kinds {
-            let _ = (kind, named, text);
-        }
-    }
 }

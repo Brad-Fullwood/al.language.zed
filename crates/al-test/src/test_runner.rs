@@ -77,10 +77,7 @@ impl TestRunnerClient {
             .danger_accept_invalid_certs(config.accept_invalid_certs)
             .timeout(Duration::from_secs(300))
             .build()
-            .unwrap_or_else(|e| {
-                warn!(error = %e, "TLS client build failed; falling back to default");
-                Client::default()
-            });
+            .expect("failed to construct BC test-runner HTTP client");
 
         let base_url = build_base_url(config);
 
