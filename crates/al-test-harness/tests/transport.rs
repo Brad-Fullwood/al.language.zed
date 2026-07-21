@@ -1,29 +1,13 @@
-//! Adversarial tests for the al-test-harness transport abstraction.
+//! Edge-case tests for the in-memory LSP transport helpers.
 //!
-//! Tests focus on edge cases in the `Lifecycle`, `Writer`, `from_transport`,
-//! `connect`, `read_loop`, and `shutdown` code paths introduced when the
-//! harness was generalised to support both stdio and Unix-socket transports.
-//!
-//! These tests do NOT require a running al-lsp binary.  They use
+//! These tests do not require a running `al-lsp` binary. They use
 //! `tokio::io::duplex` (in-memory pipes) to talk directly to the internal
-//! machinery that `from_transport` wires together.
-//!
-//! # Visibility constraint
-//!
-//! `from_transport` is a private `fn`.  The only public constructor is
-//! `LspClient::spawn` (requires a real binary). Every test that needs a
-//! harness without a real binary drives the mock-server task itself and
-//! reaches the code under test through `spawn` with a fake binary — OR it
-//! tests the public API surface directly.
-//!
-//! Naming convention: `test_adversarial_<what>`.
+//! read loop.
 
 use tokio::io::AsyncWriteExt;
 use tokio::time::{timeout, Duration};
 
-// ---------------------------------------------------------------------------
 // Helpers — a minimal in-memory JSON-RPC server
-// ---------------------------------------------------------------------------
 
 /// Write a single LSP message (Content-Length framed JSON) to `writer`.
 async fn write_lsp_message(writer: &mut (impl AsyncWriteExt + Unpin), body: &str) {
@@ -33,9 +17,7 @@ async fn write_lsp_message(writer: &mut (impl AsyncWriteExt + Unpin), body: &str
     writer.flush().await.unwrap();
 }
 
-// ---------------------------------------------------------------------------
 // ST-01  no `connect()` API
-// ---------------------------------------------------------------------------
 
 // `LspClient::connect()` was removed (F-051) — al-lsp's daemon mode speaks a
 // different (non-LSP) protocol via `al_protocol::DaemonClient`, so the two
@@ -43,9 +25,7 @@ async fn write_lsp_message(writer: &mut (impl AsyncWriteExt + Unpin), body: &str
 // drive `DaemonClient` directly. The previous panic-stub assertion test was
 // removed alongside the API.
 
-// ---------------------------------------------------------------------------
 // ST-02  read_loop: missing Content-Length header → silent skip, no panic
-// ---------------------------------------------------------------------------
 
 /// A message with no Content-Length must be silently discarded.
 /// The read_loop must continue processing subsequent valid messages,
@@ -80,9 +60,7 @@ async fn test_adversarial_read_loop_missing_content_length_is_skipped() {
     assert!(pending_map.try_lock().is_ok());
 }
 
-// ---------------------------------------------------------------------------
 // ST-03  read_loop: invalid JSON body → silent skip, loop continues
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_adversarial_read_loop_invalid_json_body_is_skipped() {
@@ -110,9 +88,7 @@ async fn test_adversarial_read_loop_invalid_json_body_is_skipped() {
     assert_eq!(method, "test/alive");
 }
 
-// ---------------------------------------------------------------------------
 // ST-04  read_loop: response for unknown ID is silently dropped
-// ---------------------------------------------------------------------------
 
 /// If the server sends a response with an ID that is not in the pending map
 /// (e.g., duplicate response, stale ID) it must be silently discarded.
@@ -144,9 +120,7 @@ async fn test_adversarial_read_loop_unknown_response_id_is_dropped() {
     assert_eq!(method, "test/still-alive");
 }
 
-// ---------------------------------------------------------------------------
 // ST-05  read_loop: zero Content-Length body → not a panic
-// ---------------------------------------------------------------------------
 
 /// A Content-Length: 0 causes `read_exact` to read 0 bytes, producing an
 /// empty slice.  `serde_json::from_slice(b"")` returns an error, so the
@@ -175,39 +149,23 @@ async fn test_adversarial_read_loop_zero_content_length_is_skipped() {
     assert_eq!(method, "test/post-zero");
 }
 
-// ---------------------------------------------------------------------------
-// ST-06  read_loop: very large Content-Length that is never fulfilled → EOF
-// ---------------------------------------------------------------------------
-
-/// If the server claims a 1 GB body but then closes the connection, `read_exact`
-/// will fail with UnexpectedEof and read_loop must exit cleanly (not OOM).
-///
-/// GAP: `vec![0u8; content_length]` allocates `content_length` bytes before
-/// reading.  A server that lies about Content-Length can OOM the process.
-/// This test proves the vulnerability exists.  Do NOT increase `huge_length`
-/// past what the test machine can safely allocate or the test runner will OOM.
-///
-/// IMPORTANT: this test documents a KNOWN VULNERABILITY (ST-14 in the atlas).
-/// The code allocates `content_length` bytes without checking against a
-/// reasonable maximum.  A malicious server could exhaust memory.
+/// Content lengths above the harness's 64 MiB cap are rejected before reading
+/// or allocating the body.
 #[tokio::test]
-async fn test_adversarial_read_loop_truncated_large_body_exits_cleanly() {
+async fn test_adversarial_read_loop_rejects_oversized_body() {
     let (mut server_write, client_read) = tokio::io::duplex(65536);
     let (_pending_map, mut notif_rx) = make_dispatch_pair(client_read);
 
-    // Claim 10 MB body, send only 4 bytes, then close
-    let huge_length = 10 * 1024 * 1024usize;
+    let huge_length = 65 * 1024 * 1024usize;
     let header = format!("Content-Length: {huge_length}\r\n\r\n");
     server_write.write_all(header.as_bytes()).await.unwrap();
-    server_write.write_all(b"ABCD").await.unwrap();
-    // Close the write half — causes EOF on the client
-    drop(server_write);
+    server_write.flush().await.unwrap();
 
     let result = timeout(Duration::from_secs(3), notif_rx.recv()).await;
 
     assert!(
         result.is_ok(),
-        "read_loop must not hang indefinitely when body is truncated"
+        "read_loop must reject the oversized body promptly"
     );
     // Channel is closed (None) because loop exited — this is expected
     assert!(
@@ -216,9 +174,7 @@ async fn test_adversarial_read_loop_truncated_large_body_exits_cleanly() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // ST-07  read_loop: notification with no "params" field → defaults to null
-// ---------------------------------------------------------------------------
 
 /// The server sends a notification without a `params` field.
 /// `msg.get("params").cloned().unwrap_or(Value::Null)` must provide Null.
@@ -242,16 +198,9 @@ async fn test_adversarial_read_loop_notification_no_params_defaults_to_null() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // ST-08  read_loop: response id sent as float (e.g. 1.0) → not dispatched
-// ---------------------------------------------------------------------------
 
-/// LSP spec says id can be integer | string | null.  The code uses
-/// `msg.get("id").and_then(|v| v.as_i64())`.  A response with
-/// `"id": 1.0` (float) returns None from `as_i64()` and is silently dropped.
-///
-/// This is a spec deviation that would cause request timeouts in practice.
-/// Document it as a KNOWN SILENT FAILURE.
+/// Fractional JSON-RPC IDs are invalid and must not resolve an integer request.
 #[tokio::test]
 async fn test_adversarial_read_loop_float_id_response_is_silently_dropped() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
@@ -280,14 +229,11 @@ async fn test_adversarial_read_loop_float_id_response_is_silently_dropped() {
     let resolved = rx.try_recv();
     assert!(
         resolved.is_err(),
-        "SILENT FAILURE: float id 1.0 was incorrectly matched to pending request id=1. \
-         In practice this would cause request timeout."
+        "fractional id 1.0 must not match integer request id 1"
     );
 }
 
-// ---------------------------------------------------------------------------
 // ST-09  shutdown(): Daemon lifecycle does NOT wait for a child process
-// ---------------------------------------------------------------------------
 
 /// When lifecycle is Daemon, shutdown() must complete quickly (no child.wait()
 /// call).  We cannot construct a Daemon LspClient directly (private ctor),
@@ -338,9 +284,7 @@ async fn test_adversarial_shutdown_stdio_lifecycle_completes_within_timeout() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // ST-10  send_message: message with empty body
-// ---------------------------------------------------------------------------
 
 /// An LSP message whose body is `null` (2 bytes: `null`) must be framed
 /// correctly and parsed back correctly by read_loop.
@@ -362,18 +306,11 @@ async fn test_adversarial_send_message_null_body_round_trips() {
     assert!(params.is_null());
 }
 
-// ---------------------------------------------------------------------------
 // ST-11  read_loop: response with string id → not dispatched (integer-only)
-// ---------------------------------------------------------------------------
 
-/// The LSP spec allows string IDs.  The harness only handles integer IDs
-/// (`as_i64()`).  A string-id response is silently dropped, causing timeouts
-/// for any caller using a string ID.
-///
-/// This documents a KNOWN ARCHITECTURAL GAP: if the server ever returns
-/// string IDs (e.g., "1" instead of 1) requests will time out.
+/// A string response ID must not resolve an integer request ID.
 #[tokio::test]
-async fn test_adversarial_read_loop_string_id_response_is_silently_dropped() {
+async fn test_adversarial_read_loop_string_id_does_not_match_integer_request() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
     let (pending_map, _notif_rx) = make_dispatch_pair(client_read);
 
@@ -389,23 +326,14 @@ async fn test_adversarial_read_loop_string_id_response_is_silently_dropped() {
     let resolved = rx.try_recv();
     assert!(
         resolved.is_err(),
-        "SILENT FAILURE: string id '42' matched integer pending id 42. \
-         The harness would fail to deliver this response in production."
+        "string id '42' must not match integer request id 42"
     );
 }
 
-// ---------------------------------------------------------------------------
 // ST-12  read_loop: CRLF vs LF line endings in headers
-// ---------------------------------------------------------------------------
 
-/// LSP spec requires CRLF in headers.  Test that LF-only (non-standard) causes
-/// a hang or silent drop rather than incorrect parsing, to document the
-/// strict-CRLF requirement.
-///
-/// The read_loop uses `read_line` which reads until `\n` (not `\r\n`), so
-/// LF-only headers will still be parsed — the `trim()` removes the `\r`.
-/// This means LF-only actually WORKS even though spec requires CRLF.
-/// Document this as a permissive behavior.
+/// The parser deliberately accepts LF-only headers even though LSP specifies
+/// CRLF framing.
 #[tokio::test]
 async fn test_adversarial_read_loop_lf_only_headers_are_accepted() {
     let (mut server_write, client_read) = tokio::io::duplex(4096);
@@ -419,130 +347,11 @@ async fn test_adversarial_read_loop_lf_only_headers_are_accepted() {
     server_write.flush().await.unwrap();
 
     let received = timeout(Duration::from_secs(2), notif_rx.recv()).await;
-    match received {
-        Ok(Some((method, _))) => {
-            // LF-only was accepted — permissive behavior, document it
-            assert_eq!(method, "test/lf-only", "LF-only header parsed correctly");
-        }
-        Ok(None) => panic!("channel closed unexpectedly"),
-        Err(_) => {
-            // Timed out — LF-only headers were NOT parsed.
-            // This is strict-CRLF behavior.  Document either way.
-            panic!(
-                "read_loop does not accept LF-only headers. \
-                 This is a SILENT FAILURE if the server sends LF-only (non-standard but common)."
-            );
-        }
-    }
+    let (method, _) = received
+        .expect("read_loop timed out on LF-only header")
+        .expect("notification channel closed");
+    assert_eq!(method, "test/lf-only");
 }
-
-// ---------------------------------------------------------------------------
-// ST-13  from_transport is not pub — gap in testability
-// ---------------------------------------------------------------------------
-
-/// This test documents the gap: `from_transport` is a private constructor.
-/// Tests that need an LspClient without a real binary cannot be written
-/// without either making `from_transport` pub(crate) and using `#[cfg(test)]`,
-/// or adding a `#[doc(hidden)] pub fn from_transport_for_testing(...)`.
-///
-/// As a consequence, every transport-level unit test must either:
-///   a) spawn a real binary (integration test), or
-///   b) drive read_loop/send_message directly via the module's internal helpers.
-///
-/// Since those helpers are also private, we extract them by copy in this file
-/// (see `make_dispatch_pair`).
-///
-/// This test always PASSES — it documents the architectural gap rather than
-/// testing runtime behavior.
-#[test]
-#[ignore = "documents a testability gap; no runtime assertion"]
-fn test_adversarial_from_transport_is_not_pub_testability_gap() {
-    // from_transport is private — this is a compilation assertion.
-    // The following would NOT compile if uncommented:
-    //
-    // let client = al_test_harness::LspClient::from_transport(...);
-    //
-    // Instead, verify that the only public constructors are spawn and connect.
-    // We can inspect the public API by checking what compiles.
-    // spawn requires a real binary; connect panics.
-    // Therefore: from_transport CANNOT be tested from external test code.
-
-    // Verify the compilation assertion: from_transport is not in scope here,
-    // which means the privacy is enforced. If it were pub, the lines below
-    // would compile and this test would need to change.
-    // This is a structural assertion — it passes by successfully compiling.
-}
-
-// ---------------------------------------------------------------------------
-// ST-14  file_uri: spaces in path are percent-encoded
-// ---------------------------------------------------------------------------
-
-/// `file_uri()` (lib.rs) percent-encodes every byte outside the RFC 3986
-/// unreserved set (plus `/`), so paths containing `#`, `?`, spaces, etc. produce
-/// URIs that match what the server emits. This replaces an earlier test that
-/// asserted a "KNOWN GAP" (only spaces encoded) — that gap is fixed; the test
-/// had been left replicating the old, stale logic and was actively misleading.
-///
-/// `file_uri` takes `&self` (an `LspClient`), so the pure encoding rule is
-/// mirrored here; production `file_uri` is exercised by every e2e test via its
-/// call sites. Keep this mirror in sync with `lib.rs::file_uri`.
-#[test]
-fn test_file_uri_percent_encodes_reserved_chars() {
-    let encode = |path: &str| -> String {
-        let mut out = String::new();
-        for b in path.bytes() {
-            let unreserved =
-                b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/');
-            if unreserved {
-                out.push(b as char);
-            } else {
-                out.push_str(&format!("%{b:02X}"));
-            }
-        }
-        out
-    };
-
-    // Spaces, '#' and '?' are now percent-encoded (the old "gap").
-    assert_eq!(
-        encode("/home/user/my project/file.al"),
-        "/home/user/my%20project/file.al"
-    );
-    assert_eq!(encode("/home/user/file#1.al"), "/home/user/file%231.al");
-    assert_eq!(encode("/home/user/file?.al"), "/home/user/file%3F.al");
-
-    // Unreserved characters and path separators pass through untouched.
-    assert_eq!(encode("/a-b_c.d~e/f.al"), "/a-b_c.d~e/f.al");
-}
-
-// ---------------------------------------------------------------------------
-// ST-15  drain_notifications: buffered notifications are returned first
-// ---------------------------------------------------------------------------
-
-/// `drain_notifications` must return buffered notifications (from open_file's
-/// internal wait) before draining the live channel.  Verify ordering contract.
-///
-/// Since we cannot call open_file without a real client, we test this by
-/// examining the drain_notifications logic through a direct channel construction.
-/// This is impossible from outside the crate (buffered_notifications is private).
-///
-/// Document the gap: the ordering guarantee cannot be externally verified
-/// without white-box access.
-#[test]
-#[ignore = "documents a testability gap; no runtime assertion"]
-fn test_adversarial_drain_notifications_ordering_is_not_externally_verifiable() {
-    // buffered_notifications is a private field — cannot be set from tests.
-    // The ordering guarantee (buffered first, then channel) is an internal
-    // contract that is invisible to callers.
-    //
-    // A caller that relies on notification ordering after open_file() has
-    // no way to verify it without a running server.
-    //
-    // This is a testability gap — documented here so it isn't lost.
-}
-
-// ---------------------------------------------------------------------------
-// ST-16  read_loop: Content-Length with trailing whitespace is tolerated
-// ---------------------------------------------------------------------------
 
 /// The header line is `trim()`'d before extracting the Content-Length value.
 /// Because `trim()` applies to the WHOLE line (including the value portion),
@@ -577,9 +386,7 @@ async fn test_adversarial_read_loop_content_length_trailing_whitespace_is_tolera
     );
 }
 
-// ---------------------------------------------------------------------------
 // Internal: replicate read_loop + pending map for white-box testing
-// ---------------------------------------------------------------------------
 
 /// Construct a (pending_map, notification_rx) pair backed by `read_loop`
 /// running on `reader`.  This replicates what `from_transport` does internally,

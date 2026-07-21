@@ -1,9 +1,8 @@
 //! End-to-end tests for the test engine against the LSP binary.
 //!
 //! Spawns the real `al-lsp` binary over stdio (the LSP transport), opens
-//! the test fixture, and exercises the static-discovery path that
-//! Phase 2 relies on (`queries::tests::discover_tests` indirectly via
-//! the `workspace/symbol` channel that's already exposed).
+//! the test fixture, and exercises static discovery through the
+//! `workspace/symbol` channel.
 //!
 //! These tests stay on the LSP path — the new daemon endpoints
 //! (`tests.run_batch`, `tests.classify`, ...) live behind the daemon

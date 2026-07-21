@@ -5,12 +5,10 @@
 
 use al_test_harness::*;
 
-// ===========================================================================
-// Regression: Inlay hints daemon panic (BUG 2 / ISSUE-P7)
+// Inlay hints must not panic the daemon.
 //
 // The inlay_hints query used `workspace.config.blocking_read()` which panics
 // when called from within a tokio runtime. Fixed by using `try_read()`.
-// ===========================================================================
 
 #[tokio::test]
 async fn test_regression_inlay_hints_no_panic() {
@@ -43,36 +41,30 @@ async fn test_regression_inlay_hints_no_panic() {
     client.shutdown().await;
 }
 
-// ===========================================================================
 // Regression: Sort-members --dry-run modifying files (BUG 1)
 //
 // dispatch_sort_members ignored the dryRun parameter and always wrote to disk.
 // Fixed by checking dryRun before writing.
 // This test verifies the server-side behavior via the sortMembers JSON-RPC method.
-// ===========================================================================
 
 // Note: This is tested at the CLI level (al-cli integration tests), not via LSP.
 // The LSP server receives the dryRun parameter from the CLI and should respect it.
 // The daemon fix was to check `params.dryRun` before calling `std::fs::write`.
 
-// ===========================================================================
 // Regression: No-op test assertions (3 tests in views.rs)
 //
 // Three tests used bare `matches!()` without `assert!()`, making them always pass.
 // Fixed by wrapping in `assert!(matches!(...))`.
 // This is a compile-time guarantee — if someone removes the assert!, clippy warns.
-// ===========================================================================
 
 // Note: These are al-explorer unit tests, not integration tests. The fix is in
 // crates/al-explorer/src/views.rs. Verified by running `cargo test -p al-explorer`.
 
-// ===========================================================================
 // Regression: File-not-found error consistency
 //
 // 5 places in build_dispatch.rs manually constructed the same error Response.
 // Fixed by extracting `file_not_found(id)` helper.
 // Verify the error is returned consistently.
-// ===========================================================================
 
 #[tokio::test]
 async fn test_regression_hover_on_unopened_file_returns_error() {
@@ -117,22 +109,18 @@ async fn test_regression_definition_on_unopened_file_returns_none() {
     client.shutdown().await;
 }
 
-// ===========================================================================
 // Regression: Architecture violation — al-lsp importing al-symbols directly
 //
 // al-lsp/build_dispatch.rs used `al_symbols::ObjectKind` instead of
 // `al_core::symbols::ObjectKind`. Fixed by replacing 6 usages.
 // This is verified at compile time (al-symbols removed from [dependencies]).
-// ===========================================================================
 
 // Compile-time guarantee: al-symbols is only in [dev-dependencies] now.
 
-// ===========================================================================
 // Regression: Code actions return valid objects
 //
 // Verify code actions have valid structure (titles, edits).
 // No custom lint rules are registered, so only source actions are expected.
-// ===========================================================================
 
 #[tokio::test]
 async fn test_regression_code_actions_have_titles() {
@@ -157,12 +145,10 @@ async fn test_regression_code_actions_have_titles() {
     client.shutdown().await;
 }
 
-// ===========================================================================
 // Regression: Inlay hints content validation
 //
 // Previous tests only checked `!= crash`. Verify hints contain actual
 // parameter names when available.
-// ===========================================================================
 
 #[tokio::test]
 async fn test_regression_inlay_hints_show_parameter_names() {
@@ -223,13 +209,11 @@ async fn test_regression_inlay_hints_show_parameter_names() {
     client.shutdown().await;
 }
 
-// ===========================================================================
 // Regression: UTF-16 position handling
 //
-// ISSUE-024 and ISSUE-031 document UTF-16/byte offset confusion.
+// Non-ASCII identifiers exercise UTF-16/byte offset conversion.
 // This test verifies that hover works correctly on identifiers after
 // multi-byte UTF-8 characters.
-// ===========================================================================
 
 #[tokio::test]
 async fn test_regression_utf16_position_after_multibyte() {
@@ -252,7 +236,7 @@ async fn test_regression_utf16_position_after_multibyte() {
     let hover = client.hover("src/utf16_test.al", 4, 8).await;
     assert!(
         hover.is_some(),
-        "tb-003 / ISSUE-024 regression: hover on Ø identifier must resolve. \
+        "hover on Ø identifier must resolve. \
          find_node_at_position must convert LSP UTF-16 column to byte offset."
     );
     let symbols = client.document_symbols("src/utf16_test.al").await;
@@ -264,11 +248,9 @@ async fn test_regression_utf16_position_after_multibyte() {
     client.shutdown().await;
 }
 
-// ===========================================================================
 // Regression: Prepare rename
 //
 // The LspClient declares prepareSupport: true but never tests it.
-// ===========================================================================
 
 #[tokio::test]
 async fn test_regression_prepare_rename_returns_range() {
@@ -308,7 +290,6 @@ async fn test_regression_prepare_rename_returns_range() {
     client.shutdown().await;
 }
 
-// ===========================================================================
 // Regression: Ghost diagnostics after did_close-during-debounce
 //
 // `schedule_diagnostics` spawns a tokio task that sleeps for the debounce
@@ -320,7 +301,6 @@ async fn test_regression_prepare_rename_returns_range() {
 // Fix: did_close aborts the pending task, AND the in-task closure checks
 // `documents.contains(&uri)` before computing/publishing. Either guard is
 // sufficient; both are present for resilience.
-// ===========================================================================
 
 #[tokio::test]
 async fn test_regression_no_ghost_diagnostics_after_close_during_debounce() {

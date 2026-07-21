@@ -1,4 +1,4 @@
-//! AL LSP Test Harness
+//! End-to-end test client for the AL language server.
 //!
 //! Spawns the `al-lsp` binary over stdio and speaks the LSP protocol,
 //! providing a high-level API for end-to-end testing of every capability.
@@ -42,8 +42,8 @@ pub fn test_project_dir() -> PathBuf {
 /// and valid.
 ///
 /// Checks `AL_TEST_PROJECT_PATH` and confirms it contains `app.json`.
-/// Returns `None` (with a message to stderr) if the variable is absent or the
-/// project root cannot be found.  Used by `zed_simulation`, `data_driven`, and
+/// Returns `None` if the variable is absent or the project root cannot be
+/// found. Used by `zed_simulation`, `data_driven`, and
 /// `performance` test files.
 pub fn test_project_from_env() -> Option<PathBuf> {
     let path = std::env::var("AL_TEST_PROJECT_PATH")
@@ -71,10 +71,7 @@ fn find_binary() -> PathBuf {
     // so the al-lsp subprocess contributes to coverage (see scripts/coverage.sh);
     // CI / Zed packaging can also pin an exact path here.
     if let Some(path) = std::env::var_os("AL_LSP_BIN") {
-        let path = PathBuf::from(path);
-        if path.exists() {
-            return path;
-        }
+        return PathBuf::from(path);
     }
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -204,7 +201,7 @@ impl LspClient {
     ) -> Self {
         let pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        // F-OPEN-048: bounded so a misbehaving server flooding $/progress or
+        // Bound notification buffering so a misbehaving server flooding $/progress or
         // window/logMessage notifications can't grow memory unbounded. 10k is
         // huge for a test session — well above the largest legitimate burst
         // we've seen. On overflow `read_loop` logs+drops the notification
@@ -851,15 +848,9 @@ impl LspClient {
         // separators ('/') and unreserved characters pass through; everything
         // else is percent-encoded.
         //
-        // F-OPEN-052: non-UTF-8 paths produce a "" prefix here. The harness
-        // only runs against test fixtures we control (all ASCII), so the
-        // fallback is acceptable — but assert in debug builds so a future
-        // contributor handing in an OsStr path that isn't valid UTF-8 sees
-        // the mismatch immediately rather than silently building `file://`.
-        let path_str = full_path.to_str().unwrap_or_else(|| {
-            debug_assert!(false, "non-UTF-8 path in test harness: {full_path:?}");
-            ""
-        });
+        let path_str = full_path
+            .to_str()
+            .expect("test harness paths must be valid UTF-8");
         let mut encoded = String::new();
         for b in path_str.bytes() {
             let unreserved = b.is_ascii_alphanumeric()
@@ -1051,7 +1042,6 @@ pub async fn read_loop(
                 _ => serde_json::json!({ "__server_req_id__": id_value }),
             };
             // try_send so a slow consumer can't backpressure the reader.
-            // Overflow is logged + dropped per F-OPEN-048.
             if let Err(e) = notif_tx.try_send((method, params_with_id)) {
                 tracing::warn!(error = ?e, "harness: dropping server-request notification (channel full)");
             }
@@ -1062,7 +1052,7 @@ pub async fn read_loop(
                 let _ = tx.send(msg);
             }
         } else if msg.get("id").is_some() && msg.get("method").is_none() {
-            // F-OPEN-050: response carries a non-numeric id (LSP allows string
+            // A response carries a non-numeric id (LSP allows string
             // ids per JSON-RPC 2.0 §5). The harness only ever issues numeric
             // ids so a string id here means the server echoed one we didn't
             // send — which is a server bug. Log loudly so a future server
@@ -1106,7 +1096,7 @@ fn diag_wait_timeout() -> tokio::time::Duration {
     tokio::time::Duration::from_millis(ms)
 }
 
-/// F-023 helper: returns a guard whose Drop removes the pending-request
+/// Returns a guard whose `Drop` removes the pending-request
 /// entry from the shared map, so that EVERY exit path — write failure,
 /// timeout, channel close, LSP error, panic in the calling test — drains
 /// the map. Only the happy path triggers a no-op (the read_loop already
@@ -1122,15 +1112,8 @@ fn scopeguard_remove(
     }
     impl Drop for Guard {
         fn drop(&mut self) {
-            // F-OPEN-049: drop must be sync, but the tokio::sync::Mutex
-            // requires an async lock. Strategy:
-            //   1. Best-effort try_lock — covers the happy path with no
-            //      runtime call (the read_loop already removed the entry).
-            //   2. On contention, hand off to a spawned async task so the
-            //      cleanup runs eventually even when the map is busy. This
-            //      requires a tokio runtime handle; if none is available
-            //      (drop in a pure-sync test teardown), fall back to a
-            //      silent no-op — the map dies with the LspClient anyway.
+            // `Drop` cannot await a Tokio mutex. Remove synchronously when
+            // uncontended; otherwise hand cleanup to the active runtime.
             if let Ok(mut guard) = self.pending.try_lock() {
                 guard.remove(&self.id);
                 return;
