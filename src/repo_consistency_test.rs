@@ -209,7 +209,7 @@ fn asset_not_found_is_actionable() {
     );
 }
 
-/// the COMMITTED state must always target a RELEASED extension API.
+/// Committed code must always target a released extension API.
 ///
 /// Unreleased APIs (git `main`) load only on Dev/Nightly Zed; on Stable/Preview
 /// the extension silently fails to load and `al-lsp` never spawns. This trap
