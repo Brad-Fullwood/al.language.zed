@@ -23,6 +23,7 @@ pub struct NativeDebugSession {
     /// file path → list of BC breakpoint IDs
     breakpoints: HashMap<String, Vec<i64>>,
     history: VecDeque<BreakpointHit>,
+    last_stack: Vec<serde_json::Value>,
     /// BC only accepts DebugAdapterConfigurationDone after a concrete client
     /// has attached. Break-on-next web sessions attach asynchronously after
     /// the debug-context browser URL is opened, so configuration is deferred
@@ -56,6 +57,7 @@ impl NativeDebugSession {
             config,
             breakpoints: HashMap::new(),
             history: VecDeque::new(),
+            last_stack: Vec::new(),
             configured: false,
         })
     }
@@ -110,7 +112,20 @@ impl NativeDebugSession {
                         .or_else(|| resp.get("verified"))
                         .and_then(|v| v.as_bool())
                         .unwrap_or(bp_id != 0);
-                    if bp_id != 0 {
+                    let echoed_object = resp.get("ObjectId").or_else(|| resp.get("objectId"));
+                    let object_matches = echoed_object.is_none_or(|echoed| {
+                        let echoed_type = echoed
+                            .get("ObjectType")
+                            .or_else(|| echoed.get("objectType"))
+                            .and_then(|value| value.as_i64());
+                        let echoed_number = echoed
+                            .get("ObjectNumber")
+                            .or_else(|| echoed.get("objectNumber"))
+                            .and_then(|value| value.as_i64());
+                        echoed_type == Some(i64::from(object_type))
+                            && echoed_number == Some(i64::from(object_id))
+                    });
+                    if bp_id != 0 && object_matches {
                         new_ids.push(bp_id);
                     }
                     results.push(make_bp_info(
@@ -118,7 +133,7 @@ impl NativeDebugSession {
                         line,
                         cond,
                         bp_id,
-                        verified && bp_id != 0,
+                        verified && bp_id != 0 && object_matches,
                     ));
                 }
                 Err(e) => {
@@ -148,9 +163,13 @@ impl NativeDebugSession {
         let mut next_seq = self.history.back().map(|h| h.seq + 1).unwrap_or(1);
         for event in pending.into_iter().chain(pushed) {
             if let crate::dap::bc_debug::BcEvent::Break {
-                reason, location, ..
+                reason,
+                location,
+                frames,
+                ..
             } = event
             {
+                self.last_stack = frames;
                 // Use the actual break site carried by the BC Break event's top
                 // StackFrame so history records the real stop position instead
                 // of a stale copy of the previous entry. The daemon doesn't
@@ -159,8 +178,8 @@ impl NativeDebugSession {
                 let location = match location {
                     Some(loc) => Location {
                         file: String::new(),
-                        line: loc.line,
-                        column: loc.column,
+                        line: loc.line.saturating_add(1),
+                        column: loc.column.saturating_add(1),
                         procedure: loc.procedure,
                     },
                     None => Location {
@@ -217,6 +236,9 @@ impl NativeDebugSession {
         if is_stopped {
             if let Ok(vars_json) = self.session.get_variables(0).await {
                 variables = parse_bc_variables(&vars_json);
+                if let Some(hit) = self.history.back_mut() {
+                    hit.variables = variables.clone();
+                }
             }
         }
 
@@ -224,7 +246,11 @@ impl NativeDebugSession {
             status,
             session_id: self.session.connection_id.clone(),
             location: self.history.back().map(|h| h.location.clone()),
-            stack: Vec::new(), // BC doesn't expose a full stack via SignalR
+            stack: if is_stopped {
+                parse_bc_stack(&self.last_stack)
+            } else {
+                Vec::new()
+            },
             variables,
             thread_id: Some(1),
         })
@@ -236,7 +262,7 @@ impl NativeDebugSession {
     /// or eval without reverse-engineering the DAP frontend's mapping.
     pub async fn stack(&mut self) -> Result<serde_json::Value> {
         self.drain_events().await;
-        let mut frames = self.session.get_call_stack().await?;
+        let mut frames = serde_json::Value::Array(self.last_stack.clone());
         if let Some(array) = frames.as_array_mut() {
             for (frame_id, frame) in array.iter_mut().enumerate() {
                 if let Some(object) = frame.as_object_mut() {
@@ -280,6 +306,8 @@ impl NativeDebugSession {
         let value = result
             .get("Value")
             .or_else(|| result.get("value"))
+            .or_else(|| result.get("Summary"))
+            .or_else(|| result.get("summary"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
@@ -373,6 +401,7 @@ impl NativeDebugSession {
             config,
             breakpoints: HashMap::new(),
             history: VecDeque::new(),
+            last_stack: Vec::new(),
             configured: false,
         }
     }
@@ -409,32 +438,84 @@ fn parse_bc_variables(json: &serde_json::Value) -> Vec<Variable> {
         None => return Vec::new(),
     };
 
-    arr.iter()
-        .filter_map(|node| {
-            let name = node
-                .get("Name")
-                .or_else(|| node.get("name"))
-                .and_then(|v| v.as_str())?
-                .to_string();
-            let value = node
-                .get("Value")
-                .or_else(|| node.get("value"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let type_name = node
-                .get("TypeName")
-                .or_else(|| node.get("typeName"))
-                .or_else(|| node.get("Type"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            Some(Variable {
-                name,
-                value,
-                type_name,
-                fields: Vec::new(),
-            })
+    arr.iter().filter_map(parse_bc_variable).collect()
+}
+
+fn parse_bc_variable(node: &serde_json::Value) -> Option<Variable> {
+    let name = node
+        .get("Name")
+        .or_else(|| node.get("name"))
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let value = node
+        .get("Value")
+        .or_else(|| node.get("value"))
+        .or_else(|| node.get("Summary"))
+        .or_else(|| node.get("summary"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let type_name = node
+        .get("TypeName")
+        .or_else(|| node.get("typeName"))
+        .or_else(|| node.get("Type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let fields = node
+        .get("Children")
+        .or_else(|| node.get("children"))
+        .and_then(|value| value.as_array())
+        .map(|children| children.iter().filter_map(parse_bc_variable).collect())
+        .unwrap_or_default();
+    Some(Variable {
+        name,
+        value,
+        type_name,
+        fields,
+    })
+}
+
+fn parse_bc_stack(frames: &[serde_json::Value]) -> Vec<StackFrame> {
+    frames
+        .iter()
+        .enumerate()
+        .map(|(id, frame)| {
+            let position = frame
+                .get("StatementSpan")
+                .or_else(|| frame.get("statementSpan"))
+                .and_then(|span| span.get("From").or_else(|| span.get("from")))
+                .or_else(|| {
+                    frame
+                        .get("SourcePosition")
+                        .or_else(|| frame.get("sourcePosition"))
+                });
+            StackFrame {
+                id: id as i64,
+                name: frame
+                    .get("MethodName")
+                    .or_else(|| frame.get("methodName"))
+                    .or_else(|| frame.get("DisplayName"))
+                    .or_else(|| frame.get("displayName"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                source: frame
+                    .get("ObjectName")
+                    .or_else(|| frame.get("objectName"))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                line: position
+                    .and_then(|value| value.get("Line").or_else(|| value.get("line")))
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value.saturating_add(1) as u32)
+                    .unwrap_or(0),
+                column: position
+                    .and_then(|value| value.get("Column").or_else(|| value.get("column")))
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value.saturating_add(1) as u32)
+                    .unwrap_or(0),
+            }
         })
         .collect()
 }
@@ -709,7 +790,7 @@ mod make_bp_info_tests {
 
 #[cfg(test)]
 mod parse_bc_variables_tests {
-    use super::parse_bc_variables;
+    use super::{parse_bc_stack, parse_bc_variables};
     use serde_json::json;
 
     #[test]
@@ -777,6 +858,43 @@ mod parse_bc_variables_tests {
         assert_eq!(vars[0].name, "flag");
         assert_eq!(vars[0].value, "");
         assert_eq!(vars[0].type_name, "");
+    }
+
+    #[test]
+    fn parses_current_bc_summary_and_children_shape() {
+        let json = json!([{
+            "Name": "Customer",
+            "Summary": "Record Customer",
+            "TypeName": "Record Customer",
+            "Children": [{
+                "Name": "No.",
+                "Summary": "10000",
+                "TypeName": "Code[20]"
+            }]
+        }]);
+
+        let vars = parse_bc_variables(&json);
+        assert_eq!(vars[0].value, "Record Customer");
+        assert_eq!(vars[0].fields.len(), 1);
+        assert_eq!(vars[0].fields[0].name, "No.");
+        assert_eq!(vars[0].fields[0].value, "10000");
+    }
+
+    #[test]
+    fn parses_current_bc_stack_frame_shape() {
+        let frames = [json!({
+            "MethodName": "RunProbe - OnAction",
+            "ObjectId": 70200,
+            "ObjectName": "MCP Debug Probe",
+            "StatementSpan": { "From": { "Line": 42, "Column": 8 } }
+        })];
+
+        let stack = parse_bc_stack(&frames);
+        assert_eq!(stack[0].id, 0);
+        assert_eq!(stack[0].name, "RunProbe - OnAction");
+        assert_eq!(stack[0].source.as_deref(), Some("MCP Debug Probe"));
+        assert_eq!(stack[0].line, 43);
+        assert_eq!(stack[0].column, 9);
     }
 
     #[test]
@@ -849,8 +967,8 @@ mod native_session_tests {
         let frames = fake.sent_frames();
         assert_eq!(frames.len(), 1, "exactly one AddBreakpoint invoke");
         assert_eq!(frames[0]["target"], "AddBreakpoint");
-        assert_eq!(frames[0]["arguments"][0]["objectType"], 5);
-        assert_eq!(frames[0]["arguments"][0]["objectNumber"], 50100);
+        assert_eq!(frames[0]["arguments"][0]["ObjectType"], 5);
+        assert_eq!(frames[0]["arguments"][0]["ObjectNumber"], 50100);
         assert_eq!(frames[0]["arguments"][1]["line"], 9);
     }
 
@@ -868,6 +986,22 @@ mod native_session_tests {
 
         assert_eq!(infos[0].id, 5, "camelCase id parsed");
         assert!(!infos[0].verified, "camelCase verified parsed");
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_rejects_silently_coerced_object_id() {
+        let (mut nds, fake) = session("c1");
+        fake.reply_ok(
+            "AddBreakpoint",
+            json!({ "Id": 5, "Verified": true, "ObjectId": { "ObjectType": 0, "ObjectNumber": 0 } }),
+        );
+
+        let infos = nds
+            .set_breakpoints("src/A.al", &[(3, None)], 8, 70200)
+            .await
+            .unwrap();
+
+        assert!(!infos[0].verified, "BC accepted the wrong object identity");
     }
 
     #[tokio::test]
@@ -962,8 +1096,8 @@ mod native_session_tests {
         assert_eq!(st.variables[0].name, "Customer");
         assert_eq!(st.variables[0].type_name, "Record");
         let loc = st.location.expect("location recorded from Break");
-        assert_eq!(loc.line, 42);
-        assert_eq!(loc.column, 8);
+        assert_eq!(loc.line, 43);
+        assert_eq!(loc.column, 9);
         assert_eq!(loc.procedure.as_deref(), Some("OnRun"));
     }
 
@@ -1018,8 +1152,8 @@ mod native_session_tests {
         assert_eq!(hist.len(), 2);
         assert_eq!(hist[0].seq, 1);
         assert_eq!(hist[1].seq, 2);
-        assert_eq!(hist[0].location.line, 1);
-        assert_eq!(hist[1].location.line, 2);
+        assert_eq!(hist[0].location.line, 2);
+        assert_eq!(hist[1].location.line, 3);
     }
 
     #[tokio::test]
@@ -1038,8 +1172,8 @@ mod native_session_tests {
 
         let st = nds.state().await.unwrap();
         let loc = st.location.expect("camelCase location extracted");
-        assert_eq!(loc.line, 7);
-        assert_eq!(loc.column, 3);
+        assert_eq!(loc.line, 8);
+        assert_eq!(loc.column, 4);
         assert_eq!(loc.procedure.as_deref(), Some("MyProc"));
     }
 
@@ -1069,15 +1203,15 @@ mod native_session_tests {
 
         let hist = nds.history(None);
         assert_eq!(hist.len(), 1, "buffered Break flushed by next drain");
-        assert_eq!(hist[0].location.line, 5);
+        assert_eq!(hist[0].location.line, 6);
     }
 
     #[tokio::test]
     async fn agent_inspection_methods_forward_frame_and_path() {
         let (mut nds, fake) = session("inspect");
-        fake.reply_ok(
-            "GetStackTrace",
-            json!([{ "DisplayName": "OnRun", "SourcePosition": { "Line": 12 } }]),
+        fake.push_callback(
+            "Break",
+            json!([null, [{ "DisplayName": "OnRun", "SourcePosition": { "Line": 12 } }], ""]),
         );
         fake.reply_ok(
             "GetVariables",
@@ -1104,14 +1238,13 @@ mod native_session_tests {
         assert_eq!(fields[0].name, "No.");
 
         let sent = fake.sent_frames();
-        assert_eq!(sent[0]["target"], "GetStackTrace");
-        assert_eq!(sent[1]["target"], "GetVariables");
+        assert_eq!(sent[0]["target"], "GetVariables");
+        assert_eq!(sent[0]["arguments"][0], 7);
+        assert_eq!(sent[1]["target"], "ExpandGlobals");
         assert_eq!(sent[1]["arguments"][0], 7);
-        assert_eq!(sent[2]["target"], "ExpandGlobals");
+        assert_eq!(sent[2]["target"], "ExpandNode");
         assert_eq!(sent[2]["arguments"][0], 7);
-        assert_eq!(sent[3]["target"], "ExpandNode");
-        assert_eq!(sent[3]["arguments"][0], 7);
-        assert_eq!(sent[3]["arguments"][1], "Customer");
+        assert_eq!(sent[2]["arguments"][1], "Customer");
     }
 
     #[tokio::test]
@@ -1191,7 +1324,7 @@ mod native_session_tests {
 
         let hist = nds.history(None);
         assert_eq!(hist.len(), 1, "Break recorded before resume");
-        assert_eq!(hist[0].location.line, 12);
+        assert_eq!(hist[0].location.line, 13);
 
         let resume = fake
             .sent_frames()
@@ -1244,7 +1377,7 @@ mod native_session_tests {
 
         let hist = nds.history(None);
         assert_eq!(hist.len(), 1, "Break recorded before step");
-        assert_eq!(hist[0].location.line, 8);
+        assert_eq!(hist[0].location.line, 9);
     }
 
     #[tokio::test]

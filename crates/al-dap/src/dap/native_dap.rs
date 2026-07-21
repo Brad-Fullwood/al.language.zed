@@ -1340,7 +1340,7 @@ pub fn build_debug_browser_url(config: &BcDebugConfig, conn_id: &str) -> String 
         let tenant = percent_encode_url(&config.tenant);
         let env = percent_encode_url(config.environment_name.as_deref().unwrap_or("sandbox"));
         format!(
-            "https://businesscentral.dynamics.com/{tenant}/{env}?page={}&noSignUpCheck=1&connectioncontext={conn_id}&debuggingcontext={conn_id}&sk={conn_id}",
+            "https://businesscentral.dynamics.com/{tenant}/{env}/?page={}&noSignUpCheck=1&connectioncontext={conn_id}&debuggingcontext={conn_id}&sk={conn_id}",
             config.startup_object_id
         )
     }
@@ -1662,7 +1662,7 @@ mod tests {
         };
         let url = build_debug_browser_url(&config, "conn");
         assert!(
-            url.contains("/tenant1/sandbox?"),
+            url.contains("/tenant1/sandbox/?"),
             "missing env should default to sandbox: {url}"
         );
     }

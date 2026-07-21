@@ -713,12 +713,12 @@ impl BcDebugSession {
         column: i64,
         condition: &str,
     ) -> Result<serde_json::Value> {
-        // Microsoft's SignalR JSON protocol serializes the CLR properties as
-        // camelCase. Keep the enum numeric: ObjectTypeWrapper is not configured
-        // with a string-enum converter in EditorServices.
+        // ApplicationObjectIdWrapper comes from TypeWrappers and requires its
+        // CLR property names. camelCase silently becomes object 0/type 0 on
+        // current BC hubs, producing an accepted but inert breakpoint.
         let object_id = serde_json::json!({
-            "objectType": object_type,
-            "objectNumber": object_number,
+            "ObjectType": object_type,
+            "ObjectNumber": object_number,
         });
         let position = serde_json::json!({
             "line": line,
@@ -823,22 +823,36 @@ impl BcDebugSession {
         Ok(result.unwrap_or(serde_json::json!([])))
     }
 
-    /// BC hub method: `GetWatchNode(int frameId, string expression)` → `LocalNode`
+    /// BC hub method: `GetWatchNode(int frameId, string expression, WatchOption)` → `LocalNode`
     pub async fn evaluate(&self, frame_id: i64, expression: &str) -> Result<serde_json::Value> {
-        let result = self
+        let result = match self
             .invoke(
                 "GetWatchNode",
-                vec![serde_json::json!(frame_id), serde_json::json!(expression)],
+                vec![
+                    serde_json::json!(frame_id),
+                    serde_json::json!(expression),
+                    serde_json::json!(0),
+                ],
             )
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                self.invoke(
+                    "GetWatchNode",
+                    vec![serde_json::json!(frame_id), serde_json::json!(expression)],
+                )
+                .await?
+            }
+        };
         Ok(result.unwrap_or(serde_json::Value::Null))
     }
 
     /// BC hub method: `GetSource(ApplicationObjectIdWrapper)` → `string`
     pub async fn get_source(&self, object_type: i32, object_number: i32) -> Result<String> {
         let object_id = serde_json::json!({
-            "objectType": object_type,
-            "objectNumber": object_number,
+            "ObjectType": object_type,
+            "ObjectNumber": object_number,
         });
         let result = self.invoke("GetSource", vec![object_id]).await?;
         Ok(result
@@ -1298,8 +1312,8 @@ mod tests {
         assert_eq!(frame["target"], "AddBreakpoint");
         assert_eq!(frame["invocationId"], "1");
         let args = frame["arguments"].as_array().unwrap();
-        assert_eq!(args[0]["objectType"], 5);
-        assert_eq!(args[0]["objectNumber"], 50100);
+        assert_eq!(args[0]["ObjectType"], 5);
+        assert_eq!(args[0]["ObjectNumber"], 50100);
         assert_eq!(args[1]["line"], 42);
         assert_eq!(args[1]["column"], 8);
         assert_eq!(args[2], "Rec.\"No.\" = '10000'");
@@ -1582,6 +1596,7 @@ mod tests {
         assert_eq!(f["target"], "GetWatchNode");
         assert_eq!(f["arguments"][0], 7);
         assert_eq!(f["arguments"][1], "Customer.Name");
+        assert_eq!(f["arguments"][2], 0);
     }
 
     #[tokio::test]
@@ -1599,8 +1614,8 @@ mod tests {
         assert_eq!(src, "codeunit 50100 X { }");
         let f = next_frame(&mut ws_rx);
         assert_eq!(f["target"], "GetSource");
-        assert_eq!(f["arguments"][0]["objectType"], 5);
-        assert_eq!(f["arguments"][0]["objectNumber"], 50100);
+        assert_eq!(f["arguments"][0]["ObjectType"], 5);
+        assert_eq!(f["arguments"][0]["ObjectNumber"], 50100);
     }
 
     #[tokio::test]

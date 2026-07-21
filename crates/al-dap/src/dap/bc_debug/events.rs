@@ -20,6 +20,7 @@ pub enum BcEvent {
         reason: String,
         thread_id: i64,
         location: Option<BreakLocation>,
+        frames: Vec<serde_json::Value>,
     },
     Detached {
         terminate: bool,
@@ -59,7 +60,13 @@ fn break_location_from_args(arguments: &Option<Vec<serde_json::Value>>) -> Optio
 
     let source_position = frame
         .get("SourcePosition")
-        .or_else(|| frame.get("sourcePosition"));
+        .or_else(|| frame.get("sourcePosition"))
+        .or_else(|| {
+            frame
+                .get("StatementSpan")
+                .or_else(|| frame.get("statementSpan"))
+                .and_then(|span| span.get("From").or_else(|| span.get("from")))
+        });
     let line = source_position
         .and_then(|sp| sp.get("Line").or_else(|| sp.get("line")))
         .and_then(|v| v.as_i64())
@@ -72,13 +79,17 @@ fn break_location_from_args(arguments: &Option<Vec<serde_json::Value>>) -> Optio
     let procedure = frame
         .get("DisplayName")
         .or_else(|| frame.get("displayName"))
+        .or_else(|| frame.get("MethodName"))
+        .or_else(|| frame.get("methodName"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
     let object_id = frame
         .get("ApplicationObjectId")
-        .or_else(|| frame.get("applicationObjectId"));
+        .or_else(|| frame.get("applicationObjectId"))
+        .or_else(|| frame.get("ObjectId"))
+        .or_else(|| frame.get("objectId"));
     let object_type = object_id
         .and_then(|oid| oid.get("ObjectType").or_else(|| oid.get("objectType")))
         .and_then(|v| v.as_i64())
@@ -142,6 +153,13 @@ pub(super) fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
             reason: "breakpoint".to_string(),
             thread_id: 1,
             location: break_location_from_args(&msg.arguments),
+            frames: msg
+                .arguments
+                .as_ref()
+                .and_then(|args| args.get(1))
+                .and_then(|frames| frames.as_array())
+                .cloned()
+                .unwrap_or_default(),
         }),
         "OnDetachedFromConnection" => {
             let terminate = msg
@@ -246,6 +264,7 @@ mod tests {
                 reason,
                 thread_id,
                 location,
+                ..
             }) => {
                 assert_eq!(reason, "breakpoint");
                 assert_eq!(thread_id, 1);
