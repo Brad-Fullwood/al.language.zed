@@ -333,7 +333,7 @@ impl<'a> TypeResolver<'a> {
             type_subtype,
             is_var: false,
             scope,
-            range: node.range(),
+            range: name_node.range(),
         })
     }
 
@@ -354,7 +354,7 @@ impl<'a> TypeResolver<'a> {
             type_subtype: None,
             is_var: false,
             scope,
-            range: node.range(),
+            range: name_node.range(),
         })
     }
 
@@ -377,7 +377,7 @@ impl<'a> TypeResolver<'a> {
             type_subtype,
             is_var,
             scope: VariableScope::Parameter,
-            range: node.range(),
+            range: name_node.range(),
         })
     }
 

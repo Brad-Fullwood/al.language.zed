@@ -26,7 +26,7 @@ pub fn references(
     // The canonical declaration the cursor binds to. Every *identifier*
     // reference we keep must bind to this same declaration — otherwise "find
     // references" on `A::Post` would also list the unrelated `B::Post` and its
-    // callers (the same binding-awareness rename got in , applied here).
+    // callers. This applies the same binding awareness used by rename.
     // Event-subscriber string-literal references are already specific to the
     // named event, so they are kept without the binding filter.
     let cursor_decl = super::binding::decl_loc(workspace, uri, position);
@@ -167,6 +167,32 @@ mod tests {
         assert!(
             with_decl.len() >= without_decl.len(),
             "include_declaration=true should not return fewer results"
+        );
+    }
+
+    #[test]
+    fn references_bind_record_parameter_member_accesses() {
+        let uri = Url::parse("file:///test/record_param.al").expect("test URI");
+        let src = r#"codeunit 50100 "Refs"
+{
+    procedure Process(var Staging: Record Customer)
+    begin
+        if Staging.FindSet() then
+            repeat
+                Staging.Modify();
+            until Staging.Next() = 0;
+    end;
+}"#;
+        let ws = ws_with_doc(&uri, src);
+        let pos = Position {
+            line: 2,
+            character: 26,
+        };
+        let locs = references(&ws, &uri, pos, true);
+        assert_eq!(
+            locs.len(),
+            4,
+            "the declaration and each receiver use must share one binding"
         );
     }
 

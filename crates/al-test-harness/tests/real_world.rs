@@ -597,9 +597,9 @@ async fn test_references_staging_variable() {
     client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
 
     // "Staging" is used extensively in PrecheckRecord
-    // Line 17: local procedure PrecheckRecord(var Staging: Record "Item Journal Staging")
+    // Line 15: local procedure PrecheckRecord(var Staging: Record "Item Journal Staging")
     // Staging is used on lines 21, 23, 24, 25, 27, 28, 30, 32, 34, 35, 37, 39
-    let refs = client.references("objects/codeunit.al", 17, 42).await;
+    let refs = client.references("objects/codeunit.al", 15, 42).await;
     assert!(
         refs.len() >= 3,
         "Should find multiple references to Staging. Got: {}",
