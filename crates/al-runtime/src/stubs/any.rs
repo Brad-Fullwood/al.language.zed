@@ -618,7 +618,11 @@ mod tests {
         ok_val(set_default_seed(&[]));
         let after = crate::interpreter::dispatch::clock_time().max(1) as u64;
         let seed = super::super::library_random::lcg_state();
-        assert!((before..=after).contains(&seed));
+        if before <= after {
+            assert!((before..=after).contains(&seed));
+        } else {
+            assert!(seed >= before || seed <= after, "seed={seed}");
+        }
     }
 
     #[test]

@@ -88,7 +88,7 @@ pub enum Value {
     DateTime(AlDateTime),
     /// AL `Duration` — milliseconds.
     Duration(i64),
-    /// AL `Guid` — opaque 16-byte identifier (string form for now).
+    /// AL `Guid` — opaque identifier stored in string form.
     Guid(String),
     /// AL `Option` — name + ordinal pair.
     Option {
