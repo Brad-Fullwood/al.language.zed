@@ -257,8 +257,8 @@ pub async fn download_snapshot(
     let file_name = format!("{safe_id}.alvsc");
     let dest = config.output_dir.join(&file_name);
 
-    // Content-Length-capped binary read (follow-up). A misbehaving
-    // server could otherwise stream gigabytes through `bytes()` straight into
+    // A misbehaving server could otherwise stream gigabytes through
+    // `bytes()` straight into
     // the daemon's memory; the helper enforces a 500 MB cap pre- and post-read.
     let bytes = crate::bc_client::read_binary_body_capped(resp)
         .await

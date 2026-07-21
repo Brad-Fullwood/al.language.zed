@@ -177,8 +177,8 @@ pub async fn stop_profiling(
     let file_name = format!("profile-{timestamp}.alcpuprofile");
     let dest = config.output_dir.join(&file_name);
 
-    // Content-Length-capped binary read (follow-up). A misbehaving
-    // server could otherwise stream gigabytes through `bytes()` straight into
+    // A misbehaving server could otherwise stream gigabytes through
+    // `bytes()` straight into
     // the daemon's memory; the helper enforces a 500 MB cap pre- and post-read.
     let bytes = crate::bc_client::read_binary_body_capped(resp)
         .await
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn time_based_self_time_beats_hit_count_ranking() {
-        // B14: the node with FEWER hits but LARGER aggregated timeDeltas must
+        // The node with fewer hits but larger aggregated timeDeltas must
         // rank as the bigger hotspot — proving time-based beats count-based.
         //
         //   ManyHits: hitCount 100, but sampled once for 100µs  -> 0.1 ms
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn mismatched_samples_timedeltas_lengths_handled_gracefully() {
-        // B14: a malformed profile whose samples/timeDeltas arrays differ in
+        // A malformed profile whose samples/timeDeltas arrays differ in
         // length must not panic — we aggregate over the common prefix only.
         // samples has 3 entries, timeDeltas has 1: only samples[0] (node 2) is
         // charged, for 1000µs = 1.0 ms; node 3 gets nothing.
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn total_time_rolls_up_the_call_tree() {
-        // B14 follow-up: total_time(node) = self + Σ total_time(descendants).
+        // total_time(node) = self + Σ total_time(descendants).
         // A 3-node chain root -> child -> grandchild with distinct self times.
         //   root(1):       sampled 1000µs -> 1.0 ms self
         //   child(2):      sampled 2000µs -> 2.0 ms self
@@ -679,7 +679,7 @@ mod tests {
 
     #[test]
     fn total_time_handles_cycle_and_dangling_child_without_hanging() {
-        // B14 follow-up: a malformed profile with a cycle (1 -> 2 -> 1) and a
+        // A malformed profile with a cycle (1 -> 2 -> 1) and a
         // dangling child id (99, no such node) must not loop forever or panic.
         //   A(1): sampled 3000µs -> 3.0 ms self, children [2, 99]
         //   B(2): sampled 5000µs -> 5.0 ms self, children [1]   (back edge)
