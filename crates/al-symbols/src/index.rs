@@ -627,11 +627,6 @@ mod tests {
 
     #[test]
     fn synthetic_enum_sentinel_id_does_not_pollute_lookup() {
-        // regression: synthetic Option enums emitted by table-
-        // field OptionMembers carry id: -1 (model.rs:731). Pre-fix they all
-        // accumulated under (Enum, -1) in by_kind_id and a get_by_id(Enum, -1)
-        // returned every synthetic enum across the workspace, drowning real
-        // lookups. The fix: only positive ids enter by_kind_id.
         let index = SymbolIndex::new();
         index.add_entries(&[
             make_entry(ObjectKind::Enum, -1, "InlineOpt1"),
@@ -641,7 +636,6 @@ mod tests {
             make_entry(ObjectKind::Codeunit, 0, "BuiltinHelper"),
         ]);
 
-        // Sentinel ids must NOT be reachable through by_kind_id.
         assert!(
             index.get_by_id(ObjectKind::Enum, -1).is_empty(),
             "synthetic-enum sentinel id -1 must not be queryable"
@@ -651,14 +645,10 @@ mod tests {
             "no-id sentinel 0 must not be queryable"
         );
 
-        // Real positive id stays reachable as before.
         let real = index.get_by_id(ObjectKind::Enum, 50200);
         assert_eq!(real.len(), 1, "real enum id must still be reachable");
         assert_eq!(real[0].name, "RealEnum");
 
-        // The entries are still discoverable via by_name (which doesn't gate
-        // on sentinel ids). This proves we only narrowed by_kind_id, not
-        // dropped the entries entirely.
         let by_name = index.get_by_name("InlineOpt1");
         assert!(
             !by_name.is_empty(),
@@ -710,13 +700,6 @@ mod tests {
         assert_eq!(index.len(), 1);
     }
 
-    /// regression: removing a package must clear EVERY secondary
-    /// index in lockstep. Adds entries that populate by_name, by_kind_id,
-    /// by_kind, and by_extends, then removes the package and asserts each
-    /// secondary index is empty for those entries. Adding a new secondary
-    /// index later without wiring it through `retain_arcs_not_in` would
-    /// leave its entries dangling — this test would still pass, so the
-    /// followup discipline lives in the doc comment on the helper.
     #[test]
     fn remove_package_entries_clears_all_secondary_indexes() {
         let index = SymbolIndex::new();
@@ -806,19 +789,6 @@ mod tests {
         assert_eq!(results[0].methods.len(), 1);
     }
 
-    // ----- `appLocalFolderPaths` — what is actually supported -----
-    //
-    // The `al.appLocalFolderPaths` setting is parsed into `AlConfig`
-    // (`al-project`) but is NOT yet wired into symbol loading — nothing reads
-    // that field to feed paths into the index. What IS supported, and what such
-    // wiring would ultimately call, is loading `.app` packages from an
-    // *arbitrary directory* via `SymbolIndex::load_packages`. This test pins
-    // that supported behavior: a package dropped in a non-`.alpackages` folder
-    // resolves, its objects become queryable, and the index records the folder
-    // the symbols came from.
-
-    /// Build a minimal NAVX `.app` (header + ZIP of NavxManifest.xml +
-    /// SymbolReference.json) so the loader has a real package to read.
     fn build_app(name: &str, table_id: i32, table_name: &str) -> Vec<u8> {
         use std::io::{Cursor, Write};
         use zip::write::SimpleFileOptions;

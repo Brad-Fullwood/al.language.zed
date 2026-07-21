@@ -215,35 +215,15 @@ fn sanitize_filename(s: &str) -> String {
         .collect()
 }
 
-/// Header prefixed to a rendered outline (the no-embedded-source path) so a
-/// reader of the virtual file knows it is reconstructed from package symbol
-/// metadata and is missing implementation bodies.
+/// Notice prefixed to outlines reconstructed from package metadata.
 ///
-/// AL `.app` symbol packages carry the **public declaration** of every object —
-/// signatures, fields, keys, enum values, properties — but not the procedure
-/// bodies (those are compiled away). So this outline is the public API surface,
-/// not the call-site source: "who calls X" / the implementation cannot be
-/// recovered from package symbols alone (workspace source fills that in). in
-/// `Docs/gaps-and-future-work.md`.
-///
-/// Written as AL line comments so the virtual file still parses. Worded to avoid
-/// the keywords `procedure`/`trigger`/`field`/`key`/`value` so the comment never
-/// shadows a real member when [`find_member_range`] scans the file for navigation.
+/// The wording avoids AL member keywords because [`find_member_range`] scans
+/// the rendered file as text.
 pub const OUTLINE_NOTE: &str = "\
-// ----------------------------------------------------------------------------\n\
-// Reconstructed from package symbols (SymbolReference.json): public API only.\n\
-// AL .app symbol packages do not ship implementation bodies, so the method\n\
-// bodies are unavailable here. Open the workspace source for the implementation.\n\
-// ----------------------------------------------------------------------------\n\n";
+// Reconstructed public API from SymbolReference.json.\n\
+// Implementation bodies are not included in AL symbol packages.\n\n";
 
-/// Like [`render_outline`], but prefixed with [`OUTLINE_NOTE`] documenting that
-/// the outline is the package's public declaration with no implementation
-/// bodies. This is what [`get_or_create`] writes for packages without embedded
-/// source, so the limitation is explicit in the file the editor opens.
-///
-/// Kept separate from [`render_outline`] so callers that frame the signature in
-/// their own output (e.g. the `source` query's structured `note` field) get the
-/// bare outline without a duplicate inline note.
+/// Render a package outline with [`OUTLINE_NOTE`].
 pub fn render_outline_with_note(entry: &SymbolEntry) -> String {
     let body = render_outline(entry);
     let mut out = String::with_capacity(OUTLINE_NOTE.len() + body.len());
@@ -698,12 +678,8 @@ mod tests {
         assert_eq!(r.col_end, r.col_start + 3);
     }
 
-    // ----- package symbols = public declaration, not call-site bodies -----
-
     use crate::model::{MethodSymbol, ObjectKind, ParameterSymbol};
 
-    /// A package-sourced codeunit with one public method, the way a `.app`
-    /// symbol entry looks: a signature but no body.
     fn package_codeunit() -> SymbolEntry {
         SymbolEntry {
             kind: ObjectKind::Codeunit,
@@ -746,30 +722,20 @@ mod tests {
         let entry = package_codeunit();
         let noted = render_outline_with_note(&entry);
 
-        // The note appears for a package-sourced symbol...
         assert!(noted.starts_with(OUTLINE_NOTE));
-        assert!(noted.contains("public API only"));
-        assert!(noted.contains("do not ship implementation bodies"));
-        // ...and the declaration is still present below it.
+        assert!(noted.contains("Reconstructed public API"));
+        assert!(noted.contains("Implementation bodies are not included"));
         assert!(noted.contains("codeunit 80 \"Sales-Post\""));
         assert!(noted.contains("procedure PostDocument(Preview: Boolean): Boolean;"));
 
-        // The bare `render_outline` stays note-free so callers that frame the
-        // signature in their own output (e.g. the `source` query) don't get a
-        // duplicate inline note. (Pins render_outline byte-stability vs. the
-        // downstream al-analysis tests.)
-        assert!(!render_outline(&entry).contains("Reconstructed from package symbols"));
+        assert!(!render_outline(&entry).starts_with(OUTLINE_NOTE));
     }
 
     #[test]
     fn outline_note_does_not_shadow_member_navigation() {
-        // The note is prepended to the file the editor opens. Navigation must
-        // still resolve a real member after the note (the note is worded to
-        // avoid the `procedure`/`field`/… keyword scanners).
         let noted = render_outline_with_note(&package_codeunit());
         let r = find_member_range_in_text(&noted, "PostDocument", MemberKind::Procedure)
             .expect("member must still be locatable past the prepended note");
-        // It resolves to the declaration line, not a line inside the note block.
         let line = noted.lines().nth(r.line as usize).unwrap();
         assert!(line.contains("procedure PostDocument"));
     }
@@ -777,10 +743,6 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn get_or_create_writes_the_note_for_a_sourceless_package() {
-        // The real user-facing surface: with no embedded `.app` source, the
-        // virtual file the editor opens must carry the limitation note.
-        // Isolate the on-disk cache via XDG_CACHE_HOME so we don't touch the
-        // developer's real cache dir.
         let tmp = tempfile::tempdir().unwrap();
         let prev = std::env::var_os("XDG_CACHE_HOME");
         std::env::set_var("XDG_CACHE_HOME", tmp.path());
@@ -789,14 +751,13 @@ mod tests {
         let path = get_or_create(&entry, None).expect("virtual file should be written");
         let content = fs::read_to_string(&path).expect("virtual file should be readable");
 
-        // restore env before asserting so a failure can't leak the override
         match prev {
             Some(v) => std::env::set_var("XDG_CACHE_HOME", v),
             None => std::env::remove_var("XDG_CACHE_HOME"),
         }
 
         assert!(
-            content.contains("do not ship implementation bodies"),
+            content.contains("Implementation bodies are not included"),
             "virtual file must document the no-body limitation; got:\n{content}"
         );
         assert!(content.contains("codeunit 80 \"Sales-Post\""));

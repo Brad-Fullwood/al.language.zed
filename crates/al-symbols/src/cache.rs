@@ -104,10 +104,7 @@ impl SymbolCache {
             return None;
         }
 
-        // Deserialize the objects. A failure here means the on-disk format is
-        // incompatible with the current SymbolEntry struct (schema migration,
-        // truncated file, corruption). Logging at warn surfaces the cause —
-        // previously this returned None and silently re-parsed the .app.
+        // An incompatible or corrupt cache is rebuilt from the package.
         let objects: Vec<super::model::SymbolEntry> = match serde_json::from_slice(objects_data) {
             Ok(v) => v,
             Err(e) => {
