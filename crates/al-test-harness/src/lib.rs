@@ -614,14 +614,22 @@ impl LspClient {
     }
 
     pub async fn document_symbols(&mut self, relative_path: &str) -> Vec<Value> {
+        self.try_document_symbols(relative_path)
+            .await
+            .expect("documentSymbol request failed")
+    }
+
+    /// Fallible document-symbol request for protocol tests that intentionally
+    /// exercise cancellation or error responses.
+    pub async fn try_document_symbols(
+        &mut self,
+        relative_path: &str,
+    ) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({ "textDocument": { "uri": uri } });
 
-        let result = self
-            .request("textDocument/documentSymbol", params)
-            .await
-            .expect("documentSymbol request failed");
-        response_array("textDocument/documentSymbol", result)
+        let result = self.request("textDocument/documentSymbol", params).await?;
+        Ok(response_array("textDocument/documentSymbol", result))
     }
 
     pub async fn semantic_tokens(&mut self, relative_path: &str) -> Option<Value> {

@@ -1026,6 +1026,15 @@ mod cross_platform_tests {
             std::process::id()
         ));
         let project = root.join("project");
+        // Unix-domain sockets have a small path cap (104 bytes on macOS).
+        // GitHub's checkout and temp paths can exceed it before the endpoint
+        // filename is appended, so keep this real-backend fixture beneath the
+        // short, conventional Unix temp root. Windows named pipes are not
+        // filesystem paths and retain the fully isolated fixture directory.
+        #[cfg(unix)]
+        let runtime =
+            std::path::PathBuf::from(format!("/tmp/al-protocol-{}-{n}", std::process::id()));
+        #[cfg(windows)]
         let runtime = root.join("runtime");
         std::fs::create_dir_all(&project).expect("create project directory");
         std::fs::create_dir_all(runtime.join("al-lsp")).expect("create runtime directory");
@@ -1072,5 +1081,7 @@ mod cross_platform_tests {
         #[cfg(unix)]
         let _ = std::fs::remove_file(&endpoint);
         let _ = std::fs::remove_dir_all(&root);
+        #[cfg(unix)]
+        let _ = std::fs::remove_dir_all(&runtime);
     }
 }

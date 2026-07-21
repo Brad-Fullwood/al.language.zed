@@ -307,8 +307,9 @@ mod path_tests {
 
     #[test]
     fn absolutize_path_passes_through_absolute_paths() {
-        let abs = "/tmp/foo/bar";
-        assert_eq!(absolutize_path(abs), abs);
+        let abs = std::env::current_dir().expect("current_dir is required for this test");
+        let abs = abs.to_string_lossy();
+        assert_eq!(absolutize_path(&abs), abs);
     }
 
     #[test]

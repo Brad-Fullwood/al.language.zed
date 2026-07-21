@@ -63,7 +63,7 @@ async fn cancel_before_request_does_not_panic_server() {
     // Now issue document_symbols — its id will be `id` (the next assigned id
     // matches what we cancelled). Either it resolves normally or returns an
     // error; either way the server must not panic.
-    let _ = client.document_symbols("src/cancel_test.al").await;
+    let _ = client.try_document_symbols("src/cancel_test.al").await;
 
     let symbols = client.document_symbols("src/cancel_test.al").await;
     assert!(
