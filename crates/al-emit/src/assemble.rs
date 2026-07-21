@@ -1,12 +1,7 @@
 //! Assemble a complete `.app` from its parts.
 //!
-//! Ties the [`super::manifest`] generator and [`super::package`] writer together
-//! with the static/simple metadata parts (`[Content_Types].xml`,
-//! `DocComments.xml`) into a single `.app`. The one part this does NOT generate
-//! is `SymbolReference.json` — that is the public symbol table (the remaining
-//! emitter milestone) and is injected by the caller, so the whole container is
-//! usable and testable now with whatever symbol bytes are available (alc's, or
-//! the native emitter's once it lands).
+//! Combines manifest, symbols, metadata, resources, and source files into a
+//! NAVX package.
 
 use super::manifest::AppManifest;
 use super::package::{write_app_package, EmitError};
@@ -705,17 +700,11 @@ fn control_addin_bundle(
     Ok(out)
 }
 
-/// The report rendering-layout file entries: each `rendering { layout(...) {
-/// LayoutFile = '…'; } }` bundles the referenced file verbatim at
-/// `layout/<LayoutFile path>`. Read relative to `project_root` (skipped when
-/// `None` or the file is missing). Empty when no report declares a layout file.
+/// Read report layout files relative to the project root.
 fn report_layout_files(
     objects: &[EmitObject],
     project_root: Option<&std::path::Path>,
-) -> Vec<(String, Vec<u8>)> {
-    let Some(root) = project_root else {
-        return Vec::new();
-    };
+) -> Result<Vec<(String, Vec<u8>)>, EmitError> {
     let mut out = Vec::new();
     for o in objects {
         if !matches!(
@@ -730,14 +719,19 @@ fn report_layout_files(
                 .iter()
                 .find(|p| p.name.eq_ignore_ascii_case("LayoutFile"))
             {
+                let root = project_root.ok_or_else(|| {
+                    EmitError::Project(format!(
+                        "cannot resolve layout file {} without a project root",
+                        file.value
+                    ))
+                })?;
                 let rel = file.value.replace('\\', "/");
-                if let Ok(content) = std::fs::read(root.join(&rel)) {
-                    out.push((format!("layout/{rel}"), content));
-                }
+                let content = std::fs::read(root.join(&rel))?;
+                out.push((format!("layout/{rel}"), content));
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Percent-encode a `.app` archive path component the way alc does (spaces →
@@ -766,12 +760,18 @@ pub fn assemble_app(
     package_guid: [u8; 16],
     project_root: Option<&std::path::Path>,
 ) -> Result<Vec<u8>, EmitError> {
-    let runtime_major: u32 = manifest
-        .runtime
-        .split('.')
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let runtime_major = if manifest.runtime.is_empty() {
+        0
+    } else {
+        manifest
+            .runtime
+            .split('.')
+            .next()
+            .and_then(|value| value.parse::<u32>().ok())
+            .ok_or_else(|| {
+                EmitError::Project(format!("invalid runtime version: {:?}", manifest.runtime))
+            })?
+    };
 
     let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(sources.len() + 8);
     entries.push((
@@ -819,7 +819,7 @@ pub fn assemble_app(
     for entry in control_addin_bundle(objects, &manifest.name, project_root)? {
         entries.push(entry);
     }
-    for entry in report_layout_files(objects, project_root) {
+    for entry in report_layout_files(objects, project_root)? {
         entries.push(entry);
     }
     if let Some(nav) = navigation_xml(objects, &manifest.name)? {

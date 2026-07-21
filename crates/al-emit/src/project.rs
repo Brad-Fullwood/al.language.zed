@@ -11,12 +11,7 @@ use super::symbol_extract::{extract_objects, EmitObject};
 use super::symbol_reference::{build_symbol_reference, ExternalSymbols, ObjectRef, SymbolRefMeta};
 use al_symbols::model::ObjectKind;
 
-/// In-process cache of parsed `.alpackages` symbols, keyed on a fingerprint of
-/// the `.app` files (path + mtime + size). Parsing the referenced symbol packages
-/// (dominated by the ~6 MB Base Application `SymbolReference.json`) is the bulk of
-/// a native build's wall-clock; caching it means a repeat build with unchanged
-/// `.alpackages` skips the parse entirely — the same mtime-keyed pattern the
-/// symbol index uses (`SymbolIndex::load_packages_cached`).
+/// Parsed dependency symbols keyed by package path, modification time, and size.
 static EXTERNAL_CACHE: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<u64, std::sync::Arc<ExternalSymbols>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
