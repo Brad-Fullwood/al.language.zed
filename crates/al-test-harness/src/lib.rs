@@ -361,7 +361,8 @@ impl LspClient {
         if let Err(e) = self.notify("textDocument/didOpen", params).await {
             tracing::warn!("textDocument/didOpen notify failed: {e}");
         }
-        self.wait_for_diagnostics(&uri, diag_wait_timeout()).await;
+        self.wait_for_diagnostics(&uri, version, diag_wait_timeout())
+            .await;
     }
 
     /// Send a text change to an already-open file (simulates Zed keystroke).
@@ -387,10 +388,12 @@ impl LspClient {
         if let Err(e) = self.notify("textDocument/didChange", params).await {
             tracing::warn!("textDocument/didChange notify failed: {e}");
         }
-        self.wait_for_diagnostics(&uri, diag_wait_timeout()).await;
+        self.wait_for_diagnostics(&uri, version, diag_wait_timeout())
+            .await;
     }
 
-    /// Wait for `textDocument/publishDiagnostics` for `uri`, up to `timeout`.
+    /// Wait for `textDocument/publishDiagnostics` for `uri` and `version`, up to
+    /// `timeout`.
     ///
     /// Returns `true` if the diagnostic arrived, `false` on timeout or channel
     /// close. Notifications consumed while waiting are buffered so tests can
@@ -400,13 +403,19 @@ impl LspClient {
     /// missed signal even when test stdout is captured — silent timeouts here
     /// can produce passing tests that never actually exercised the diagnostic
     /// path.
-    async fn wait_for_diagnostics(&mut self, uri: &str, timeout: tokio::time::Duration) -> bool {
+    async fn wait_for_diagnostics(
+        &mut self,
+        uri: &str,
+        version: i32,
+        timeout: tokio::time::Duration,
+    ) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             match tokio::time::timeout_at(deadline, self.notifications.recv()).await {
                 Ok(Some((method, params))) => {
                     let is_our_diag = method == "textDocument/publishDiagnostics"
-                        && params.get("uri").and_then(|v| v.as_str()) == Some(uri);
+                        && params.get("uri").and_then(|v| v.as_str()) == Some(uri)
+                        && params.get("version").and_then(|v| v.as_i64()) == Some(version.into());
                     self.buffered_notifications.push((method, params));
                     if is_our_diag {
                         return true;

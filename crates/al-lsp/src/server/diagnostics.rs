@@ -161,10 +161,11 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
     }
 
     let phase1_count = diagnostics.len();
+    let document_version = server.workspace.documents.get_client_version(uri);
     tracing::debug!(uri = %uri, phase1_count, "publish_diagnostics: publishing phase 1");
     server
         .client
-        .publish_diagnostics(uri.clone(), diagnostics.clone(), None)
+        .publish_diagnostics(uri.clone(), diagnostics.clone(), document_version)
         .await;
 
     let semantic_diags = run_semantic_analysis(server, uri, text).await;
@@ -174,7 +175,7 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
         tracing::debug!(uri = %uri, total_count, "publish_diagnostics: publishing phase 2");
         server
             .client
-            .publish_diagnostics(uri.clone(), diagnostics, None)
+            .publish_diagnostics(uri.clone(), diagnostics, document_version)
             .await;
     }
 }
