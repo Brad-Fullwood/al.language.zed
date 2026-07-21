@@ -14,62 +14,15 @@ use super::model::{ObjectKind, SymbolEntry, SymbolPackage};
 
 const DEFAULT_COMPLETIONS_CAP: usize = 30;
 
-struct SearchMatch {
-    rank: u8,
-    name: String,
-    kind: ObjectKind,
-    id: i32,
-    package: String,
-    seq: usize,
-    entry: Arc<SymbolEntry>,
-}
-
-impl PartialEq for SearchMatch {
-    fn eq(&self, other: &Self) -> bool {
-        self.rank == other.rank
-            && self.name == other.name
-            && self.kind == other.kind
-            && self.id == other.id
-            && self.package == other.package
-            && self.seq == other.seq
-    }
-}
-
-impl Eq for SearchMatch {}
-
-impl PartialOrd for SearchMatch {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for SearchMatch {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (
-            self.rank,
-            &self.name,
-            self.kind,
-            self.id,
-            &self.package,
-            self.seq,
-        )
-            .cmp(&(
-                other.rank,
-                &other.name,
-                other.kind,
-                other.id,
-                &other.package,
-                other.seq,
-            ))
-    }
-}
-
 /// Thread-safe symbol index over multiple AL packages.
 #[derive(Debug)]
 pub struct SymbolIndex {
     /// Objects keyed by lowercase name. Multiple objects can share a name
     /// (e.g., a Table and a Page with the same name, or objects from different packages).
     by_name: DashMap<String, Vec<Arc<SymbolEntry>>>,
+    /// Sorted unique names make relevance-ranked prefix/substring search
+    /// deterministic without collecting and sorting every symbol hit.
+    sorted_names: std::sync::RwLock<std::collections::BTreeSet<String>>,
     by_kind_id: DashMap<(ObjectKind, i32), Vec<Arc<SymbolEntry>>>,
     by_kind: DashMap<ObjectKind, Vec<Arc<SymbolEntry>>>,
     by_extends: DashMap<String, Vec<Arc<SymbolEntry>>>,
@@ -93,6 +46,7 @@ impl SymbolIndex {
     pub fn new() -> Self {
         Self {
             by_name: DashMap::new(),
+            sorted_names: std::sync::RwLock::new(std::collections::BTreeSet::new()),
             by_kind_id: DashMap::new(),
             by_kind: DashMap::new(),
             by_extends: DashMap::new(),
@@ -374,20 +328,36 @@ impl SymbolIndex {
 
     pub fn add_entries(&self, entries: &[SymbolEntry]) {
         self.invalidate_composed_for_entries(entries.iter());
+        let names: Vec<String> = entries
+            .iter()
+            .map(|entry| entry.name.to_lowercase())
+            .collect();
         let new_arcs: Vec<Arc<SymbolEntry>> = entries
             .iter()
             .map(|entry| self.add_arc(Arc::new(entry.clone())))
             .collect();
+        self.sorted_names
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .extend(names);
         self.update_default_completions(&new_arcs);
     }
 
     /// Like `add_entries` but takes owned entries, avoiding the clone into Arc.
     pub fn add_entries_owned(&self, entries: Vec<SymbolEntry>) {
         self.invalidate_composed_for_entries(entries.iter());
+        let names: Vec<String> = entries
+            .iter()
+            .map(|entry| entry.name.to_lowercase())
+            .collect();
         let new_arcs: Vec<Arc<SymbolEntry>> = entries
             .into_iter()
             .map(|entry| self.add_arc(Arc::new(entry)))
             .collect();
+        self.sorted_names
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .extend(names);
         self.update_default_completions(&new_arcs);
     }
 
@@ -437,44 +407,61 @@ impl SymbolIndex {
         }
 
         let query_lower = query.to_lowercase();
-        // Keep only the best `limit` candidates while scanning. Sorting every
-        // substring hit made broad queries allocate and sort the full index
-        // even when the caller requested the usual 30 results.
-        let mut matches = std::collections::BinaryHeap::with_capacity(limit.min(self.all.len()));
-        for entry in self.all.iter() {
-            let seq = *entry.key();
-            let (arc, name_lower) = entry.value();
-            if arc.synthetic || !name_lower.contains(&query_lower) {
-                continue;
-            }
-            let rank = if query_lower.is_empty() || *name_lower == query_lower {
-                0
-            } else if name_lower.starts_with(&query_lower) {
-                1
-            } else {
-                2
-            };
-            let candidate = SearchMatch {
-                rank,
-                name: name_lower.clone(),
-                kind: arc.kind,
-                id: arc.id,
-                package: arc.package.clone(),
-                seq,
-                entry: Arc::clone(arc),
-            };
-            if matches.len() < limit {
-                matches.push(candidate);
-            } else if matches.peek().is_some_and(|worst| candidate < *worst) {
-                matches.pop();
-                matches.push(candidate);
+        let names = self
+            .sorted_names
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut results = Vec::with_capacity(limit.min(DEFAULT_COMPLETIONS_CAP));
+
+        if !query_lower.is_empty() {
+            self.append_search_name(&query_lower, limit, &mut results);
+        }
+
+        if results.len() < limit {
+            let range = names.range(query_lower.clone()..);
+            for name in range {
+                if !name.starts_with(&query_lower) {
+                    break;
+                }
+                if name != &query_lower {
+                    self.append_search_name(name, limit, &mut results);
+                    if results.len() == limit {
+                        return results;
+                    }
+                }
             }
         }
-        matches
-            .into_sorted_vec()
-            .into_iter()
-            .map(|candidate| candidate.entry)
-            .collect()
+
+        if !query_lower.is_empty() && results.len() < limit {
+            for name in names.iter() {
+                if name.contains(&query_lower) && !name.starts_with(&query_lower) {
+                    self.append_search_name(name, limit, &mut results);
+                    if results.len() == limit {
+                        break;
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    fn append_search_name(&self, name: &str, limit: usize, results: &mut Vec<Arc<SymbolEntry>>) {
+        let Some(entries) = self.by_name.get(name) else {
+            return;
+        };
+        let mut entries: Vec<_> = entries
+            .iter()
+            .filter(|entry| !entry.synthetic)
+            .cloned()
+            .collect();
+        entries.sort_unstable_by(|left, right| {
+            (left.kind, left.id, &left.package).cmp(&(right.kind, right.id, &right.package))
+        });
+        results.extend(
+            entries
+                .into_iter()
+                .take(limit.saturating_sub(results.len())),
+        );
     }
 
     pub fn search_in_package(&self, package_name: &str, query: &str) -> Vec<Arc<SymbolEntry>> {
@@ -687,6 +674,14 @@ impl SymbolIndex {
         Self::retain_arcs_not_in(&self.by_kind_id, &ptrs);
         Self::retain_arcs_not_in(&self.by_kind, &ptrs);
         Self::retain_arcs_not_in(&self.by_extends, &ptrs);
+        *self
+            .sorted_names
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = self
+            .by_name
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
 
         for package_name in package_names {
             self.app_paths.remove(package_name);
@@ -976,6 +971,7 @@ mod tests {
             index.get_extensions_of("Customer").is_empty(),
             "by_extends leak"
         );
+        assert!(index.search("Customer", 10).is_empty(), "sorted-name leak");
         assert_eq!(index.len(), 0, "primary `all` index leak");
     }
 

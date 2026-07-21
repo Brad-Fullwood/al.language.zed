@@ -289,15 +289,39 @@ quiet-machine check rather than run under the load described above.
 
 ## 5. Symbol index — cold ingest vs warm recall
 
-⏳ **Pending** (same quiet-machine queue).
+Measured on a quiet machine (load 4.5). **Recorded as a gap for comparison
+purposes**: Microsoft's package loading happens inside the EditorServices host
+and is not separately invocable or observable, so there is no counterpart to
+divide by. These are absolute numbers, not a ratio against Microsoft.
 
-Recorded as a **gap**: there is no Microsoft equivalent to measure against, for
-the reason given in §3.
+| | |
+|---|--:|
+| Cold ingest — 6 packages parsed from `.app` containers | **493.5 ms** |
+| Objects indexed | **11,799** |
+| Warm recall — same query, index served from disk cache | **3.1 ms** (min 2.5, max 4.1) |
+| **Cold → warm** | **161×** |
 
-What is already established from the runs above: a cold start loads **6
-packages / 11,799 objects** (Base Application 9,369; System Application 1,327;
-System 529 + 503; Business Foundation 71) and reaches ready in roughly 500 ms,
-with the parsed result persisted to `~/.cache/al-lsp/`.
+Package breakdown: Base Application 9,369 objects; System Application 1,327;
+System 529 + 503; Business Foundation 71; Application 0.
+
+Fuzzy symbol search across all 11,799 objects, warm:
+
+| Query | Median | Hits |
+|---|--:|--:|
+| `Bench` | 3.85 ms | 20 |
+| `Customer` | 4.40 ms | 20 |
+| `Item Ledger` | 6.87 ms | 17 |
+| `Sales Post` | 6.93 ms | 4 |
+| `Gen. Journal` | 13.56 ms | 20 |
+
+Each of those is a **fresh process** — spawn, load the index from cache, run
+the query, exit. The long-lived daemon and LSP server keep the index resident
+and answer `workspace/symbol` in well under a millisecond (§4).
+
+The honest framing: ingesting 11,799 objects in under half a second is good,
+but the 161× cold→warm ratio is the number that matters for daily use — it is
+the difference between paying the parse once per machine and paying it on every
+invocation.
 
 ---
 
