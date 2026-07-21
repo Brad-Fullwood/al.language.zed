@@ -392,28 +392,6 @@ async fn test_fixture_exact_navigation_and_hover_regressions() {
         "Work Order Staging definition should point to WorkOrderStaging.Table.al"
     );
 
-    // Builtin RecordRef.FieldCount hover. Resolves through downloaded BC symbol
-    // packages, which aren't available in a bridge-free/no-NuGet CI
-    // environment — best-effort only.
-    let (field_count_line, field_count_col) =
-        find_position(helper, "RecRef.FieldCount").expect("FieldCount usage should exist");
-    let field_count_hover = client
-        .hover(
-            "src/WorkOrderHelper.Codeunit.al",
-            field_count_line,
-            field_count_col + 7,
-        )
-        .await;
-    if let Some(ref hover) = field_count_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("FieldCount hover: {}", text);
-        assert!(text.contains("FieldCount"));
-    } else {
-        eprintln!(
-            "NOTE: FieldCount hover returned None — builtin symbol packages may not be loaded"
-        );
-    }
-
     client.shutdown().await;
 }
 
@@ -703,27 +681,6 @@ async fn test_fixture_member_navigation_hover_and_completion_regressions() {
         enum_labels
     );
 
-    // Resolves through downloaded BC symbol packages, which aren't available
-    // in a bridge-free/no-NuGet CI environment — best-effort only.
-    let (field_count_line, field_count_col) =
-        find_position(&helper, "RecRef.FieldCount").expect("FieldCount usage");
-    let field_count_hover = client
-        .hover(helper_rel, field_count_line, field_count_col + 8)
-        .await;
-    if let Some(ref hover) = field_count_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("FieldCount hover: {}", text);
-        assert!(
-            text.contains("FieldCount"),
-            "Built-in method hover should include FieldCount details. Got: {:?}",
-            text
-        );
-    } else {
-        eprintln!(
-            "NOTE: FieldCount hover returned None — builtin symbol packages may not be loaded"
-        );
-    }
-
     client.shutdown().await;
 }
 
@@ -862,17 +819,6 @@ async fn test_fixture_multilevel_member_chain() {
         );
     }
 
-    let run_col = run_line_text.find("Run(").expect("Run( in line") as u32;
-    let run_hover = client.hover(report_rel, run_line, run_col + 1).await;
-    // Run() resolves through PostTask (Codeunit "Work Order Post Task") — may or
-    // may not have hover depending on whether the server resolves through the
-    // variable type to the codeunit's procedure. This is an aspirational test —
-    // we just verify no crash for now.
-    if let Some(ref hover) = run_hover {
-        let run_text = hover_content(hover).unwrap_or("");
-        eprintln!("Run() hover: {}", run_text);
-    }
-
     client.shutdown().await;
 }
 
@@ -892,144 +838,24 @@ async fn test_fixture_codeunit_scope_access() {
     let name_col = scope_line_text
         .find("\"Work Order Post Task\"")
         .expect("quoted name") as u32;
-    let name_hover = client.hover(post_task_rel, scope_line, name_col + 2).await;
-    if let Some(ref hover) = name_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("Codeunit::\"Work Order Post Task\" hover: {}", text);
-        assert!(
-            text.contains("Codeunit") || text.contains("Work Order Post Task"),
-            "Hover should reference the codeunit. Got: {:?}",
-            text
-        );
-    }
+    let name_hover = client
+        .hover(post_task_rel, scope_line, name_col + 2)
+        .await
+        .expect("codeunit scope hover");
+    let text = hover_content(&name_hover).expect("hover contents");
+    assert!(text.contains("Codeunit") || text.contains("Work Order Post Task"));
 
     let name_def = client
         .definition(post_task_rel, scope_line, name_col + 2)
-        .await;
-    if let Some(ref def) = name_def {
-        assert!(
-            definition_uri(def)
-                .map(|uri| uri.contains("WorkOrderPostTask.Codeunit.al")
-                    || uri.contains("Work Order"))
-                .unwrap_or(false),
-            "Codeunit:: scope should resolve to the codeunit file. Got: {:?}",
-            def
-        );
-    }
-
-    client.shutdown().await;
-}
-
-/// Test Rec.SystemId hover — SystemId is a built-in system field on all records.
-/// Built-in system fields resolve through downloaded BC symbol packages, which
-/// aren't available in a bridge-free/no-NuGet CI environment — best-effort only.
-#[tokio::test]
-async fn test_fixture_builtin_system_field_hover() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    open_test_files(&mut client).await;
-
-    let page_rel = "src/WorkOrderStagingList.Page.al";
-    let page = std::fs::read_to_string(test_project_dir().join(page_rel)).unwrap();
-
-    let (sysid_line, _) = find_position(&page, "Rec.SystemId").expect("Rec.SystemId usage");
-    let sysid_line_text = page.lines().nth(sysid_line as usize).unwrap();
-    let sysid_col = sysid_line_text.find("SystemId").expect("SystemId in line") as u32;
-
-    let sysid_hover = client.hover(page_rel, sysid_line, sysid_col + 2).await;
-    if let Some(ref hover) = sysid_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("SystemId hover: {}", text);
-        assert!(
-            text.contains("SystemId"),
-            "SystemId hover should mention SystemId. Got: {:?}",
-            text
-        );
-    } else {
-        eprintln!("NOTE: SystemId hover returned None — builtin symbol packages may not be loaded");
-    }
-
-    client.shutdown().await;
-}
-
-/// Test GetLastErrorText() hover — built-in global function.
-#[tokio::test]
-async fn test_fixture_builtin_global_function_hover() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-
-    let post_task_rel = "src/WorkOrderPostTask.Codeunit.al";
-    let post_task_path = test_project_dir().join(post_task_rel);
-    let post_task = std::fs::read_to_string(&post_task_path).unwrap();
-    client.open_file(post_task_rel, &post_task).await;
-
-    let (gle_line, _) =
-        find_position(&post_task, "GetLastErrorText()").expect("GetLastErrorText usage");
-    let gle_line_text = post_task.lines().nth(gle_line as usize).unwrap();
-    let gle_col = gle_line_text
-        .find("GetLastErrorText")
-        .expect("GetLastErrorText in line") as u32;
-
-    let gle_hover = client.hover(post_task_rel, gle_line, gle_col + 2).await;
-    // GetLastErrorText is a built-in function — may resolve through builtins or not
-    // (depends on whether semantic bridge is running). Record the result.
-    if let Some(ref hover) = gle_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("GetLastErrorText hover: {}", text);
-        assert!(
-            text.contains("GetLastErrorText") || text.contains("Error"),
-            "GetLastErrorText hover should be relevant. Got: {:?}",
-            text
-        );
-    } else {
-        eprintln!(
-            "NOTE: GetLastErrorText hover returned None — semantic bridge may not be running"
-        );
-    }
-
-    client.shutdown().await;
-}
-
-/// Test TaskScheduler.CreateTask() hover — built-in type method.
-#[tokio::test]
-async fn test_fixture_builtin_type_method_hover() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    open_test_files(&mut client).await;
-
-    let post_task_rel = "src/WorkOrderPostTask.Codeunit.al";
-    let post_task = std::fs::read_to_string(test_project_dir().join(post_task_rel)).unwrap();
-
-    let (ts_line, _) =
-        find_position(&post_task, "TaskScheduler.CreateTask").expect("TaskScheduler usage");
-    let ts_line_text = post_task.lines().nth(ts_line as usize).unwrap();
-
-    let ts_col = ts_line_text
-        .find("TaskScheduler")
-        .expect("TaskScheduler in line") as u32;
-    let ts_hover = client.hover(post_task_rel, ts_line, ts_col + 2).await;
-    if let Some(ref hover) = ts_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("TaskScheduler hover: {}", text);
-        assert!(
-            text.contains("TaskScheduler"),
-            "TaskScheduler hover should mention the type. Got: {:?}",
-            text
-        );
-    } else {
-        eprintln!("NOTE: TaskScheduler hover returned None — built-in type may not be loaded");
-    }
-
-    let ct_col = ts_line_text.find("CreateTask").expect("CreateTask in line") as u32;
-    let ct_hover = client.hover(post_task_rel, ts_line, ct_col + 2).await;
-    if let Some(ref hover) = ct_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("CreateTask hover: {}", text);
-        assert!(
-            text.contains("CreateTask"),
-            "CreateTask hover should mention the method. Got: {:?}",
-            text
-        );
-    } else {
-        eprintln!("NOTE: CreateTask hover returned None — semantic bridge may not be running");
-    }
+        .await
+        .expect("codeunit scope definition");
+    assert!(
+        definition_uri(&name_def)
+            .map(|uri| uri.contains("WorkOrderPostTask.Codeunit.al") || uri.contains("Work Order"))
+            .unwrap_or(false),
+        "Codeunit:: scope should resolve to the codeunit file. Got: {:?}",
+        name_def
+    );
 
     client.shutdown().await;
 }
@@ -1066,63 +892,6 @@ async fn test_fixture_report_semantic_tokens() {
         "Should have at least 3 different token types. Got: {:?}",
         token_types
     );
-
-    client.shutdown().await;
-}
-
-/// Test built-in type method hover (Record.FindSet, JsonObject.ReadFrom).
-/// Builtin-method hover resolves through downloaded BC symbol packages, which
-/// aren't available in a bridge-free/no-NuGet CI environment — best-effort only.
-#[tokio::test]
-async fn test_fixture_builtin_method_hover() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    open_test_files(&mut client).await;
-
-    let helper_rel = "src/WorkOrderHelper.Codeunit.al";
-    let helper = std::fs::read_to_string(test_project_dir().join(helper_rel)).unwrap();
-
-    let (findset_line, _) =
-        find_position(&helper, "Staging.FindSet(false)").expect("FindSet usage");
-    let findset_col = helper
-        .lines()
-        .nth(findset_line as usize)
-        .and_then(|line| line.find("FindSet"))
-        .expect("FindSet position") as u32;
-
-    let findset_hover = client
-        .hover(helper_rel, findset_line, findset_col + 2)
-        .await;
-    if let Some(ref hover) = findset_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("FindSet hover: {}", text);
-        assert!(
-            text.contains("FindSet"),
-            "FindSet hover should mention FindSet. Got: {:?}",
-            text
-        );
-    } else {
-        eprintln!("NOTE: FindSet hover returned None — builtin symbol packages may not be loaded");
-    }
-
-    let table_rel = "src/WorkOrderStaging.Table.al";
-    let table = std::fs::read_to_string(test_project_dir().join(table_rel)).unwrap();
-
-    let (readfrom_line, _) =
-        find_position(&table, "JsonObj.ReadFrom(Result)").expect("ReadFrom usage");
-    let readfrom_col = table
-        .lines()
-        .nth(readfrom_line as usize)
-        .and_then(|line| line.find("ReadFrom"))
-        .expect("ReadFrom position") as u32;
-
-    let readfrom_hover = client
-        .hover(table_rel, readfrom_line, readfrom_col + 2)
-        .await;
-    if let Some(ref hover) = readfrom_hover {
-        eprintln!("ReadFrom hover: {}", hover_content(hover).unwrap_or(""));
-    } else {
-        eprintln!("NOTE: ReadFrom hover returned None — builtin symbol packages may not be loaded");
-    }
 
     client.shutdown().await;
 }
@@ -1230,36 +999,6 @@ async fn test_fixture_signature_help_local_procedure() {
         "Signature should show InsertJournalLine with params. Got: {:?}",
         label
     );
-
-    client.shutdown().await;
-}
-
-/// Signature help for a built-in Record method: Staging.SetRange(Status, ...).
-#[tokio::test]
-async fn test_fixture_signature_help_builtin_method() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    open_test_files(&mut client).await;
-
-    let post_task_rel = "src/WorkOrderPostTask.Codeunit.al";
-    let post_task = std::fs::read_to_string(test_project_dir().join(post_task_rel)).unwrap();
-
-    let (line, _) = find_position(&post_task, "Staging.SetRange(Status,").expect("SetRange call");
-    let col = post_task
-        .lines()
-        .nth(line as usize)
-        .and_then(|l| l.find("SetRange("))
-        .expect("SetRange( position") as u32
-        + 9; // after the (
-
-    // Builtin-method signature help resolves through downloaded BC symbol
-    // packages, which aren't available in a bridge-free/no-NuGet CI
-    // environment — best-effort only.
-    let sig = client.signature_help(post_task_rel, line, col).await;
-    if sig.is_none() {
-        eprintln!(
-            "NOTE: SetRange signature help returned None — builtin symbol packages may not be loaded"
-        );
-    }
 
     client.shutdown().await;
 }

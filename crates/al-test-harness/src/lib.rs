@@ -502,7 +502,7 @@ impl LspClient {
         let result = self
             .request("textDocument/prepareRename", params)
             .await
-            .ok()?;
+            .expect("prepareRename request failed");
         if result.is_null() {
             None
         } else {
@@ -517,18 +517,14 @@ impl LspClient {
             "position": { "line": line, "character": character }
         });
 
-        match self.request("textDocument/hover", params).await {
-            Ok(result) => {
-                if result.is_null() {
-                    None
-                } else {
-                    Some(result)
-                }
-            }
-            Err(e) => {
-                tracing::warn!(uri = %uri, line, character, error = %e, "hover request failed");
-                None
-            }
+        let result = self
+            .request("textDocument/hover", params)
+            .await
+            .expect("hover request failed");
+        if result.is_null() {
+            None
+        } else {
+            Some(result)
         }
     }
 
@@ -544,20 +540,18 @@ impl LspClient {
             "position": { "line": line, "character": character }
         });
 
-        match self.request("textDocument/completion", params).await {
-            Ok(result) => {
-                if let Some(items) = result.get("items").and_then(|v| v.as_array()) {
-                    items.clone()
-                } else if let Some(arr) = result.as_array() {
-                    arr.clone()
-                } else {
-                    vec![]
-                }
-            }
-            Err(e) => {
-                tracing::warn!(uri = %uri, line, character, error = %e, "completion request failed");
-                vec![]
-            }
+        let result = self
+            .request("textDocument/completion", params)
+            .await
+            .expect("completion request failed");
+        if let Some(items) = result.get("items").and_then(Value::as_array) {
+            items.clone()
+        } else if let Some(items) = result.as_array() {
+            items.clone()
+        } else if result.is_null() {
+            Vec::new()
+        } else {
+            panic!("invalid completion response: {result}");
         }
     }
 
@@ -573,7 +567,10 @@ impl LspClient {
             "position": { "line": line, "character": character }
         });
 
-        let result = self.request("textDocument/definition", params).await.ok()?; // test helper: LSP errors are non-fatal
+        let result = self
+            .request("textDocument/definition", params)
+            .await
+            .expect("definition request failed");
         if result.is_null() {
             None
         } else {
@@ -594,26 +591,22 @@ impl LspClient {
             "context": { "includeDeclaration": true }
         });
 
-        match self.request("textDocument/references", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, line, character, error = %e, "references request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/references", params)
+            .await
+            .expect("references request failed");
+        result.as_array().cloned().unwrap_or_default()
     }
 
     pub async fn document_symbols(&mut self, relative_path: &str) -> Vec<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({ "textDocument": { "uri": uri } });
 
-        match self.request("textDocument/documentSymbol", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "documentSymbol request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/documentSymbol", params)
+            .await
+            .expect("documentSymbol request failed");
+        result.as_array().cloned().unwrap_or_default()
     }
 
     pub async fn semantic_tokens(&mut self, relative_path: &str) -> Option<Value> {
@@ -623,7 +616,7 @@ impl LspClient {
         let result = self
             .request("textDocument/semanticTokens/full", params)
             .await
-            .ok()?; // test helper: LSP errors are non-fatal
+            .expect("semanticTokens request failed");
         if result.is_null() {
             None
         } else {
@@ -635,13 +628,11 @@ impl LspClient {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({ "textDocument": { "uri": uri } });
 
-        match self.request("textDocument/foldingRange", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "foldingRange request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/foldingRange", params)
+            .await
+            .expect("foldingRange request failed");
+        result.as_array().cloned().unwrap_or_default()
     }
 
     pub async fn format(&mut self, relative_path: &str) -> Vec<Value> {
@@ -651,13 +642,11 @@ impl LspClient {
             "options": { "tabSize": 4, "insertSpaces": true }
         });
 
-        match self.request("textDocument/formatting", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "formatting request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/formatting", params)
+            .await
+            .expect("formatting request failed");
+        result.as_array().cloned().unwrap_or_default()
     }
 
     pub async fn signature_help(
@@ -675,7 +664,7 @@ impl LspClient {
         let result = self
             .request("textDocument/signatureHelp", params)
             .await
-            .ok()?; // test helper: LSP errors are non-fatal
+            .expect("signatureHelp request failed");
         if result.is_null() {
             None
         } else {
@@ -694,13 +683,11 @@ impl LspClient {
             "textDocument": { "uri": uri },
         });
 
-        match self.request("textDocument/codeLens", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "codeLens request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/codeLens", params)
+            .await
+            .expect("codeLens request failed");
+        result.as_array().cloned().unwrap_or_default()
     }
 
     pub async fn code_actions(
@@ -719,13 +706,11 @@ impl LspClient {
             "context": { "diagnostics": [] }
         });
 
-        match self.request("textDocument/codeAction", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "codeAction request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/codeAction", params)
+            .await
+            .expect("codeAction request failed");
+        result.as_array().cloned().unwrap_or_default()
     }
 
     pub async fn inlay_hints(
@@ -743,13 +728,11 @@ impl LspClient {
             }
         });
 
-        match self.request("textDocument/inlayHint", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "inlayHint request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("textDocument/inlayHint", params)
+            .await
+            .expect("inlayHint request failed");
+        result.as_array().cloned().unwrap_or_default()
     }
 
     pub async fn rename(
@@ -766,7 +749,10 @@ impl LspClient {
             "newName": new_name
         });
 
-        let result = self.request("textDocument/rename", params).await.ok()?; // test helper: LSP errors are non-fatal
+        let result = self
+            .request("textDocument/rename", params)
+            .await
+            .expect("rename request failed");
         if result.is_null() {
             None
         } else {
@@ -777,13 +763,11 @@ impl LspClient {
     pub async fn workspace_symbol(&mut self, query: &str) -> Vec<Value> {
         let params = serde_json::json!({ "query": query });
 
-        match self.request("workspace/symbol", params).await {
-            Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(query, error = %e, "workspace/symbol request failed");
-                vec![]
-            }
-        }
+        let result = self
+            .request("workspace/symbol", params)
+            .await
+            .expect("workspace/symbol request failed");
+        result.as_array().cloned().unwrap_or_default()
     }
 
     /// Includes notifications buffered by internal waits (e.g. `open_file`).

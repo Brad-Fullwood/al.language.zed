@@ -954,63 +954,21 @@ async fn test_multi_file_references() {
 }
 
 #[tokio::test]
-async fn test_hover_on_keyword() {
-    let project_dir = test_project_dir();
-    let mut client = LspClient::spawn(&project_dir).await.unwrap();
-
-    client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
-
-    // Hover on "begin" keyword - should return None (keywords don't have hover info)
-    let _hover = client.hover("objects/codeunit.al", 6, 4).await;
-    // This is fine if it returns None or Some
-
-    client.shutdown().await;
-}
-
-#[tokio::test]
-async fn test_hover_on_string_literal() {
-    let project_dir = test_project_dir();
-    let mut client = LspClient::spawn(&project_dir).await.unwrap();
-
-    client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
-
-    // Hover on a string literal - should return None
-    let _hover = client.hover("objects/codeunit.al", 28, 35).await;
-    // This is fine if it returns None or Some
-
-    client.shutdown().await;
-}
-
-#[tokio::test]
 async fn test_empty_file() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
     client.open_file("objects/empty.al", "").await;
 
-    let _symbols = client.document_symbols("objects/empty.al").await;
-    let _tokens = client.semantic_tokens("objects/empty.al").await;
-    let _ranges = client.folding_ranges("objects/empty.al").await;
-
-    client.shutdown().await;
-}
-
-#[tokio::test]
-async fn test_incomplete_code() {
-    let project_dir = test_project_dir();
-    let mut client = LspClient::spawn(&project_dir).await.unwrap();
-
-    // Incomplete code that a user might be in the middle of typing
-    let code = r#"codeunit 50100 "Test"
-{
-    procedure
-"#;
-
-    client.open_file("objects/incomplete.al", code).await;
-
-    let _symbols = client.document_symbols("objects/incomplete.al").await;
-    let _tokens = client.semantic_tokens("objects/incomplete.al").await;
-    let _hover = client.hover("objects/incomplete.al", 2, 10).await;
+    assert!(client.document_symbols("objects/empty.al").await.is_empty());
+    let tokens = client.semantic_tokens("objects/empty.al").await;
+    assert!(
+        tokens.is_none()
+            || tokens
+                .as_ref()
+                .is_some_and(|value| value["data"] == serde_json::json!([]))
+    );
+    assert!(client.folding_ranges("objects/empty.al").await.is_empty());
 
     client.shutdown().await;
 }

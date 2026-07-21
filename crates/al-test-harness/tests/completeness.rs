@@ -801,7 +801,7 @@ async fn test_completeness_i01_references_include_declaration() {
 }
 
 #[tokio::test]
-async fn test_completeness_j01_all_declared_capabilities_are_functional() {
+async fn core_navigation_and_symbol_requests_are_functional() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let code = r#"codeunit 50100 "Cap Test"
@@ -827,9 +827,6 @@ async fn test_completeness_j01_all_declared_capabilities_are_functional() {
     let comp = client.completion("src/cap_test.al", 7, 8).await;
     assert!(!comp.is_empty(), "completion capability must work");
 
-    let _def = client.definition("src/cap_test.al", 6, 14).await;
-    // May or may not resolve — just must not error
-
     let refs = client.references("src/cap_test.al", 4, 10).await;
     assert!(!refs.is_empty(), "references capability must work");
 
@@ -841,20 +838,6 @@ async fn test_completeness_j01_all_declared_capabilities_are_functional() {
 
     let folds = client.folding_ranges("src/cap_test.al").await;
     assert!(!folds.is_empty(), "foldingRange capability must work");
-
-    let _fmt = client.format("src/cap_test.al").await;
-    // May or may not produce edits
-
-    let _sig = client.signature_help("src/cap_test.al", 6, 20).await;
-    // May or may not resolve
-
-    // codeAction — native lint rules have been removed so AL-L001 quickfixes will
-    // not appear, but the capability must respond without crashing.
-    let _acts = client.code_actions("src/cap_test.al", 12, 14).await;
-    // May or may not return actions depending on context — just verify no crash.
-
-    let _hints = client.inlay_hints("src/cap_test.al", 0, 15).await;
-    // May or may not produce hints
 
     let ren = client.rename("src/cap_test.al", 4, 10, "Length").await;
     assert!(ren.is_some(), "rename capability must work");
