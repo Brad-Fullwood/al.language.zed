@@ -297,7 +297,6 @@ async fn test_completeness_c01_semantic_tokens_cover_all_token_types() {
         data.len()
     );
 
-    // Verify each token group has 5 elements (delta_line, delta_start, length, type, modifiers)
     for (i, group) in data.iter().enumerate() {
         assert!(group[2] > 0, "token {i} length must be > 0: {group:?}");
     }
@@ -318,8 +317,12 @@ async fn test_completeness_d01_cross_file_hover_after_edit() {
     );
     client.change_file("src/helper.al", &edited_helper).await;
 
-    let hover = client.hover("src/caller.al", 4, 20).await;
-    assert!(hover.is_some(), "cross-file hover disappeared after edit");
+    let hover = client.hover("src/caller.al", 4, 28).await;
+    let content = hover.as_ref().and_then(hover_content);
+    assert!(
+        content.is_some_and(|text| text.contains("Helper CU")),
+        "cross-file hover disappeared after edit: {content:?}"
+    );
     let symbols = client.workspace_symbol("Helper CU").await;
     assert!(
         !symbols.is_empty(),
