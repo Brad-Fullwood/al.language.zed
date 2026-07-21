@@ -112,6 +112,11 @@ fn main() {
         .spawn(|| {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
+                // Daemon connections and CPU-bound query fallbacks run on
+                // Tokio-owned threads, not the explicitly sized main thread.
+                // Give those threads the same stack reserve or Windows can
+                // accept a pipe connection and then stall while dispatching.
+                .thread_stack_size(8 * 1024 * 1024)
                 .build()
                 .unwrap_or_else(|error| {
                     eprintln!("al-lsp: failed to create async runtime: {error}");

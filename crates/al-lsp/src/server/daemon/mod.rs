@@ -491,7 +491,24 @@ pub(crate) async fn dispatch_request(
         "entrypoints" => insight_dispatch::dispatch_entrypoints(workspace, id),
         "graphExport" => insight_dispatch::dispatch_graph_export(workspace, id, &params),
         "insightStats" => insight_dispatch::dispatch_insight_stats(workspace, id),
-        "deadCode" => insight_dispatch::dispatch_dead_code(workspace, id),
+        "deadCode" => {
+            // This whole-workspace graph walk is synchronous CPU work. Keep it
+            // off the async connection worker so the same runtime can continue
+            // driving named-pipe I/O while the result is computed.
+            let workspace = Arc::clone(workspace);
+            match tokio::task::spawn_blocking(move || {
+                insight_dispatch::dispatch_dead_code(&workspace, id)
+            })
+            .await
+            {
+                Ok(response) => response,
+                Err(error) => rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("dead-code query worker failed: {error}"),
+                ),
+            }
+        }
         "nativeCheck" => insight_dispatch::dispatch_native_check(workspace, id).await,
         "impact" => insight_dispatch::dispatch_impact(workspace, id, &params),
         "tableImpact" => insight_dispatch::dispatch_table_impact(workspace, id, &params),
