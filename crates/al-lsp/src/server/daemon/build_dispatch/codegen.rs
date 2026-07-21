@@ -1,15 +1,15 @@
 //! Code-generation dispatchers — permissions, new-project, generate, error-codes, types.
 
 use super::super::{extract_i32, invalid_params, rpc_error};
-use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
+use al_workspace::Workspace;
 
 pub(in crate::server::daemon) fn dispatch_permissions(
     workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let entries = crate::permissions::collect_permissions(workspace);
+    let entries = al_analysis::permissions::collect_permissions(workspace);
     let format = params
         .get("format")
         .and_then(|v| v.as_str())
@@ -37,7 +37,7 @@ pub(in crate::server::daemon) fn dispatch_permissions(
 
     match format {
         "xml" => {
-            let output = crate::permissions::render_xml(&entries, role_id, name);
+            let output = al_analysis::permissions::render_xml(&entries, role_id, name);
             Response {
                 id,
                 result: Some(serde_json::json!({
@@ -50,7 +50,7 @@ pub(in crate::server::daemon) fn dispatch_permissions(
             }
         }
         _ => {
-            let output = crate::permissions::render_al(&entries, name, perm_id);
+            let output = al_analysis::permissions::render_al(&entries, name, perm_id);
             Response {
                 id,
                 result: Some(serde_json::json!({
@@ -116,15 +116,15 @@ pub(in crate::server::daemon) fn dispatch_new_project(
             let Some(t) = v.as_str() else {
                 return invalid("'template' must be a string".to_string());
             };
-            match t.parse::<crate::scaffold::ProjectTemplate>() {
+            match t.parse::<al_analysis::scaffold::ProjectTemplate>() {
                 Ok(tpl) => tpl,
                 Err(msg) => return invalid(msg),
             }
         }
-        None => crate::scaffold::ProjectTemplate::default(),
+        None => al_analysis::scaffold::ProjectTemplate::default(),
     };
 
-    let config = crate::scaffold::ScaffoldConfig {
+    let config = al_analysis::scaffold::ScaffoldConfig {
         name: params
             .get("name")
             .and_then(|v| v.as_str())
@@ -136,10 +136,10 @@ pub(in crate::server::daemon) fn dispatch_new_project(
             .unwrap_or("Default Publisher")
             .to_string(),
         template,
-        ..crate::scaffold::ScaffoldConfig::default()
+        ..al_analysis::scaffold::ScaffoldConfig::default()
     };
 
-    match crate::scaffold::create_project(&dir, &config) {
+    match al_analysis::scaffold::create_project(&dir, &config) {
         Ok(result) => Response {
             id,
             // SILENT: serialization of valid struct should not fail
@@ -197,7 +197,7 @@ pub(in crate::server::daemon) async fn dispatch_builtin_types(
                 result: Some(serde_json::json!([])),
                 error: None,
                 ..Default::default()
-            }
+            };
         }
     };
     let value: Vec<serde_json::Value> = builtins
@@ -263,9 +263,9 @@ pub(in crate::server::daemon) fn dispatch_generate(
     // is scoped to the same object kind — a Page 50100 and Table 50100 can
     // legitimately coexist in BC's ID space.
     let target_kind = match kind {
-        "page" => Some(crate::symbols::ObjectKind::Page),
-        "report" => Some(crate::symbols::ObjectKind::Report),
-        "test" => Some(crate::symbols::ObjectKind::Codeunit),
+        "page" => Some(al_symbols::ObjectKind::Page),
+        "report" => Some(al_symbols::ObjectKind::Report),
+        "test" => Some(al_symbols::ObjectKind::Codeunit),
         _ => None,
     };
     if let Some(target_kind) = target_kind {
@@ -292,8 +292,7 @@ pub(in crate::server::daemon) fn dispatch_generate(
             .search(table_name, 10)
             .into_iter()
             .find(|e| {
-                e.kind == crate::symbols::ObjectKind::Table
-                    && e.name.eq_ignore_ascii_case(table_name)
+                e.kind == al_symbols::ObjectKind::Table && e.name.eq_ignore_ascii_case(table_name)
             })
     } else {
         None
@@ -311,7 +310,7 @@ pub(in crate::server::daemon) fn dispatch_generate(
                 .and_then(|v| v.as_str())
                 .unwrap_or("List");
             let page_type = page_type_str
-                .parse::<crate::generators::PageType>()
+                .parse::<al_analysis::generators::PageType>()
                 .unwrap_or_default();
 
             let Some(source) = table_entry else {
@@ -321,13 +320,13 @@ pub(in crate::server::daemon) fn dispatch_generate(
                     &format!("Table '{}' not found in symbol index", table_name),
                 );
             };
-            let config = crate::generators::GeneratePageConfig {
+            let config = al_analysis::generators::GeneratePageConfig {
                 object_id,
                 page_name,
                 page_type,
                 source_table: (*source).clone(),
             };
-            let code = crate::generators::generate_page(&config);
+            let code = al_analysis::generators::generate_page(&config);
             Response {
                 id,
                 result: Some(serde_json::json!({ "code": code, "kind": "page" })),
@@ -348,12 +347,12 @@ pub(in crate::server::daemon) fn dispatch_generate(
                     &format!("Table '{}' not found in symbol index", table_name),
                 );
             };
-            let config = crate::generators::GenerateReportConfig {
+            let config = al_analysis::generators::GenerateReportConfig {
                 object_id,
                 report_name,
                 source_table: (*source).clone(),
             };
-            let code = crate::generators::generate_report(&config);
+            let code = al_analysis::generators::generate_report(&config);
             Response {
                 id,
                 result: Some(serde_json::json!({ "code": code, "kind": "report" })),
@@ -389,7 +388,7 @@ pub(in crate::server::daemon) fn dispatch_generate(
                     .search(subject_name, 10)
                     .into_iter()
                     .find(|e| {
-                        e.kind == crate::symbols::ObjectKind::Codeunit
+                        e.kind == al_symbols::ObjectKind::Codeunit
                             && e.name.eq_ignore_ascii_case(subject_name)
                     }) {
                     Some(found) => Some((*found).clone()),
@@ -405,12 +404,12 @@ pub(in crate::server::daemon) fn dispatch_generate(
                     }
                 }
             };
-            let config = crate::generators::GenerateTestConfig {
+            let config = al_analysis::generators::GenerateTestConfig {
                 object_id,
                 test_name,
                 subject,
             };
-            let code = crate::generators::generate_test(&config);
+            let code = al_analysis::generators::generate_test(&config);
             Response {
                 id,
                 result: Some(serde_json::json!({ "code": code, "kind": "test" })),
@@ -433,8 +432,8 @@ pub(in crate::server::daemon) fn dispatch_generate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
     use al_protocol::jsonrpc::error_codes;
+    use al_workspace::Workspace;
 
     fn empty_ws() -> Workspace {
         Workspace::new()
@@ -498,8 +497,8 @@ mod tests {
     #[test]
     fn dispatch_generate_rejects_object_id_collision() {
         let ws = empty_ws();
-        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
-            kind: crate::symbols::ObjectKind::Page,
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Page,
             id: 50100,
             name: "Existing Page".to_string(),
             ..Default::default()
@@ -532,8 +531,8 @@ mod tests {
         // full success path without a workspace root, but we verify the
         // collision check doesn't fire cross-kind.
         let ws = empty_ws();
-        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
-            kind: crate::symbols::ObjectKind::Table,
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
             id: 50100,
             name: "Existing Table".to_string(),
             ..Default::default()
@@ -566,8 +565,8 @@ mod tests {
         // conflict check against the wrong ID. Seed a Page at i32::MIN to
         // prove the truncated lookup is never reached.
         let ws = empty_ws();
-        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
-            kind: crate::symbols::ObjectKind::Page,
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Page,
             id: i32::MIN,
             name: "Wrapped Page".to_string(),
             ..Default::default()
@@ -599,8 +598,8 @@ mod tests {
     #[test]
     fn dispatch_generate_defaults_object_id_when_absent() {
         let ws = empty_ws();
-        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
-            kind: crate::symbols::ObjectKind::Page,
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Page,
             id: 50100,
             name: "Default Page".to_string(),
             ..Default::default()

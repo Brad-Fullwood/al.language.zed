@@ -6,8 +6,8 @@ use super::super::{
     require_document_text, require_project_root, rpc_error,
 };
 use super::build::write_al_file_and_refresh;
-use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response};
+use al_workspace::Workspace;
 
 pub(in crate::server::daemon) fn dispatch_lint(
     workspace: &Workspace,
@@ -28,7 +28,7 @@ pub(in crate::server::daemon) fn dispatch_lint(
             let Some((content, tree)) = workspace.file_index.get_cached_parse(path) else {
                 continue;
             };
-            let diagnostics = crate::syntax::lint(&tree, &content);
+            let diagnostics = al_syntax::lint(&tree, &content);
             let diags: Vec<serde_json::Value> = diagnostics.iter().map(lint_diag_to_json).collect();
             results.push(serde_json::json!({
                 "file": path.display().to_string(),
@@ -51,15 +51,15 @@ pub(in crate::server::daemon) fn dispatch_lint(
         Err(resp) => return resp,
     };
 
-    let result = crate::syntax::AlParser::parse_quick(&text);
-    let mut diagnostics = crate::syntax::lint(&result.tree, &text);
+    let result = al_syntax::AlParser::parse_quick(&text);
+    let mut diagnostics = al_syntax::lint(&result.tree, &text);
 
     for err in &result.errors {
-        diagnostics.push(crate::syntax::LintDiagnostic {
+        diagnostics.push(al_syntax::LintDiagnostic {
             code: "parse-error".to_string(),
             message: err.message.clone(),
             range: err.range,
-            severity: crate::syntax::LintSeverity::Error,
+            severity: al_syntax::LintSeverity::Error,
         });
     }
 
@@ -100,9 +100,9 @@ pub(in crate::server::daemon) fn dispatch_format(
         .try_read()
         .ok()
         .and_then(|g| g.as_ref().map(|p| p.root.clone()))
-        .map(|root| crate::queries::format::AlFormatConfig::load_options(&root))
+        .map(|root| al_analysis::queries::format::AlFormatConfig::load_options(&root))
         .unwrap_or_default();
-    let formatted = crate::syntax::format_al(&content, &options);
+    let formatted = al_syntax::format_al(&content, &options);
     let changed = formatted != content;
 
     if check {
@@ -162,8 +162,8 @@ pub(in crate::server::daemon) fn dispatch_fix(
         return file_not_found(id);
     };
 
-    let result = crate::syntax::AlParser::parse_quick(&text);
-    let diagnostics = crate::syntax::lint(&result.tree, &text);
+    let result = al_syntax::AlParser::parse_quick(&text);
+    let diagnostics = al_syntax::lint(&result.tree, &text);
     let filtered: Vec<_> = diagnostics
         .iter()
         .filter(|d| {
@@ -194,7 +194,7 @@ pub(in crate::server::daemon) fn dispatch_fix(
     }
 }
 pub(in crate::server::daemon) fn dispatch_rules(id: u64) -> Response {
-    let rules = crate::syntax::lint_rules();
+    let rules = al_syntax::lint_rules();
     let value: Vec<serde_json::Value> = rules
         .iter()
         .map(|r| {
@@ -228,10 +228,10 @@ pub(in crate::server::daemon) fn dispatch_parse(
     };
 
     let start = std::time::Instant::now();
-    let result = crate::syntax::AlParser::parse_quick(&text);
+    let result = al_syntax::AlParser::parse_quick(&text);
     let elapsed = start.elapsed();
 
-    let node_count = crate::parsing::count_nodes(&result.tree);
+    let node_count = al_source::parsing::count_nodes(&result.tree);
 
     Response {
         id,
@@ -268,7 +268,7 @@ pub(in crate::server::daemon) fn dispatch_fix_application_area(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    match crate::queries::bulk_fix::add_application_area(&project_root, value, dry_run) {
+    match al_analysis::queries::bulk_fix::add_application_area(&project_root, value, dry_run) {
         Ok(result) => Response {
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
@@ -302,7 +302,7 @@ pub(in crate::server::daemon) fn dispatch_fix_tooltips(
             .symbols
             .get_by_name(table_name)
             .into_iter()
-            .filter(|e| e.kind == crate::symbols::ObjectKind::Table)
+            .filter(|e| e.kind == al_symbols::ObjectKind::Table)
             .flat_map(|e| {
                 e.fields
                     .iter()
@@ -321,7 +321,7 @@ pub(in crate::server::daemon) fn dispatch_fix_tooltips(
         Vec::new()
     };
 
-    match crate::queries::bulk_fix::add_tooltips(&project_root, &tooltips, dry_run) {
+    match al_analysis::queries::bulk_fix::add_tooltips(&project_root, &tooltips, dry_run) {
         Ok(result) => Response {
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
@@ -350,7 +350,7 @@ pub(in crate::server::daemon) fn dispatch_fix_data_classification(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    match crate::queries::bulk_fix::add_data_classification(&project_root, value, dry_run) {
+    match al_analysis::queries::bulk_fix::add_data_classification(&project_root, value, dry_run) {
         Ok(result) => Response {
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
@@ -370,9 +370,9 @@ pub(in crate::server::daemon) fn dispatch_arch_lint(workspace: &Workspace, id: u
         .ok()
         .and_then(|p| p.as_ref().map(|p| p.root.join(".alarch.json")))
         .and_then(|path| tokio::task::block_in_place(|| std::fs::read_to_string(path).ok()))
-        .and_then(|json| crate::queries::arch_lint::ArchConfig::from_json(&json).ok())
+        .and_then(|json| al_analysis::queries::arch_lint::ArchConfig::from_json(&json).ok())
         .unwrap_or_default();
-    let violations = crate::queries::arch_lint::arch_lint(workspace, &config);
+    let violations = al_analysis::queries::arch_lint::arch_lint(workspace, &config);
     let value = serde_json::to_value(&violations).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -385,8 +385,8 @@ pub(in crate::server::daemon) fn dispatch_arch_lint(workspace: &Workspace, id: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
     use al_protocol::jsonrpc::error_codes;
+    use al_workspace::Workspace;
 
     fn empty_ws() -> Workspace {
         Workspace::new()
@@ -513,7 +513,7 @@ mod tests {
             .expect("array");
         assert_eq!(
             arr.len(),
-            crate::syntax::lint_rules().len(),
+            al_syntax::lint_rules().len(),
             "dispatch_rules length must mirror the lint-rule registry"
         );
     }

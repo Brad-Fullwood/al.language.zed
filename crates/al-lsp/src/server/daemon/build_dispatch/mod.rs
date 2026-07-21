@@ -15,8 +15,8 @@ pub(super) use symbols_auth::*;
 pub(super) use tests_dispatch::*;
 pub(super) use xliff::*;
 
-use crate::workspace::Workspace;
 use al_protocol::jsonrpc::Response;
+use al_workspace::Workspace;
 
 pub(super) const ERR_INITIALIZING: &str = "Workspace is initializing, try again";
 pub(super) const ERR_NO_PROJECT: &str = "No project loaded";
@@ -46,7 +46,7 @@ fn clamp_min_similarity(s: Option<f64>) -> f32 {
 }
 
 pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
-    let entries = crate::queries::obsolescence::obsolescence_timeline(workspace);
+    let entries = al_analysis::queries::obsolescence::obsolescence_timeline(workspace);
     let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -57,7 +57,7 @@ pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
 }
 
 pub(super) fn dispatch_audit_data_classification(workspace: &Workspace, id: u64) -> Response {
-    let entries = crate::queries::audit::data_classification_audit(workspace);
+    let entries = al_analysis::queries::audit::data_classification_audit(workspace);
     let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -68,7 +68,7 @@ pub(super) fn dispatch_audit_data_classification(workspace: &Workspace, id: u64)
 }
 
 pub(super) fn dispatch_permission_set_audit(workspace: &Workspace, id: u64) -> Response {
-    let entries = crate::queries::audit::permission_set_audit(workspace);
+    let entries = al_analysis::queries::audit::permission_set_audit(workspace);
     let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -103,9 +103,9 @@ pub(super) fn dispatch_deps_graph(
         })
         .unwrap_or_default();
 
-    let packages: Vec<crate::queries::deps::PackageEntry> = Vec::new();
+    let packages: Vec<al_analysis::queries::deps::PackageEntry> = Vec::new();
 
-    let graph = crate::queries::deps::build_dependency_graph(&app_json, &packages);
+    let graph = al_analysis::queries::deps::build_dependency_graph(&app_json, &packages);
 
     if format == "dot" {
         let dot = graph.to_dot();
@@ -132,13 +132,13 @@ pub(super) fn dispatch_deps_graph(
 /// absent/non-array field yields an empty baseline so the call stays backward-
 /// compatible (A5/A6). The expected shape matches the wire form produced by
 /// the `symbols` daemon method (and by `analyze_breaking_changes` callers).
-fn baseline_symbols_from_params(params: &serde_json::Value) -> Vec<crate::symbols::SymbolEntry> {
+fn baseline_symbols_from_params(params: &serde_json::Value) -> Vec<al_symbols::SymbolEntry> {
     let Some(arr) = params.get("baselineSymbols").and_then(|v| v.as_array()) else {
         return Vec::new();
     };
     let mut baseline = Vec::with_capacity(arr.len());
     for (i, value) in arr.iter().enumerate() {
-        match serde_json::from_value::<crate::symbols::SymbolEntry>(value.clone()) {
+        match serde_json::from_value::<al_symbols::SymbolEntry>(value.clone()) {
             Ok(entry) => baseline.push(entry),
             Err(e) => {
                 tracing::warn!(
@@ -161,14 +161,15 @@ pub(super) fn dispatch_breaking_changes(
     // `params.baselineSymbols`; an absent baseline finds every current symbol
     // as new (the pre-fix behaviour). Populating it lets removals/changes be
     // reported against a real previous version.
-    let current: Vec<crate::symbols::SymbolEntry> = workspace
+    let current: Vec<al_symbols::SymbolEntry> = workspace
         .symbols
         .all_entries()
         .into_iter()
         .map(|a| (*a).clone())
         .collect();
     let baseline = baseline_symbols_from_params(params);
-    let changes = crate::queries::breaking_changes::analyze_breaking_changes(&baseline, &current);
+    let changes =
+        al_analysis::queries::breaking_changes::analyze_breaking_changes(&baseline, &current);
     let value = serde_json::to_value(&changes).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -187,7 +188,7 @@ pub(super) fn dispatch_find_duplicates(
     let min_tokens = clamp_min_tokens(params.get("minTokens").and_then(|v| v.as_u64()));
     let min_similarity = clamp_min_similarity(params.get("minSimilarity").and_then(|v| v.as_f64()));
     let duplicates =
-        crate::queries::duplicates::find_duplicates(workspace, min_tokens, min_similarity);
+        al_analysis::queries::duplicates::find_duplicates(workspace, min_tokens, min_similarity);
     let value = serde_json::to_value(&duplicates).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -206,14 +207,14 @@ pub(super) fn dispatch_upgrade_report(
     // `params.baselineSymbols` (e.g. extracted from a previous `.app`). An
     // absent baseline finds all current symbols as new/changed; populating it
     // produces a real upgrade-impact report against the previous version.
-    let current: Vec<crate::symbols::SymbolEntry> = workspace
+    let current: Vec<al_symbols::SymbolEntry> = workspace
         .symbols
         .all_entries()
         .into_iter()
         .map(|a| (*a).clone())
         .collect();
     let baseline = baseline_symbols_from_params(params);
-    let issues = crate::queries::upgrade::upgrade_report(&baseline, &current);
+    let issues = al_analysis::queries::upgrade::upgrade_report(&baseline, &current);
     let value = serde_json::to_value(&issues).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -228,7 +229,7 @@ pub(super) fn dispatch_sql_patterns(
     id: u64,
     _params: &serde_json::Value,
 ) -> Response {
-    let findings = crate::queries::sql_patterns::detect_sql_patterns(workspace);
+    let findings = al_analysis::queries::sql_patterns::detect_sql_patterns(workspace);
     let value = serde_json::to_value(&findings).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -240,7 +241,7 @@ pub(super) fn dispatch_sql_patterns(
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use crate::workspace::Workspace;
+    use al_workspace::Workspace;
     pub(crate) fn empty_ws() -> Workspace {
         Workspace::new()
     }
@@ -335,7 +336,7 @@ mod tests {
     // `add_entries_owned`. No ALTool / BC server is required.
     // needsAltoolForLiveE2e=false.
     // =======================================================================
-    use crate::symbols::{MethodSymbol, ObjectKind, SymbolEntry};
+    use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry};
 
     fn codeunit(name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {

@@ -8,7 +8,7 @@ pub(crate) async fn handle_hover(
     position: Position,
 ) -> Option<Hover> {
     let core_pos = position.into();
-    let result = crate::queries::hover::hover_full(&server.workspace, uri, core_pos).await?;
+    let result = al_analysis::queries::hover::hover_full(&server.workspace, uri, core_pos).await?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,

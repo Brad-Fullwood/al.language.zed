@@ -1,6 +1,6 @@
 //! AlServer state and LSP lifecycle.
 
-use crate::workspace::Workspace;
+use al_workspace::Workspace;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -283,10 +283,12 @@ impl AlServer {
             let config = workspace.config.read().await.clone();
             let diag_uri = uri.clone();
             let lsp_diags: Vec<Diagnostic> = match tokio::task::spawn_blocking(move || {
-                crate::queries::diagnostics::syntax_diagnostics(&workspace, &diag_uri, &config)
-                    .iter()
-                    .map(crate::server::diagnostics::syntax_diag_to_lsp)
-                    .collect()
+                al_analysis::queries::diagnostics::syntax_diagnostics(
+                    &workspace, &diag_uri, &config,
+                )
+                .iter()
+                .map(crate::server::diagnostics::syntax_diag_to_lsp)
+                .collect()
             })
             .await
             {
@@ -404,11 +406,11 @@ impl LanguageServer for AlServer {
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
                             legend: SemanticTokensLegend {
-                                token_types: crate::syntax::tokens::token_types::LEGEND
+                                token_types: al_syntax::tokens::token_types::LEGEND
                                     .iter()
                                     .map(|s| SemanticTokenType::new(s))
                                     .collect(),
-                                token_modifiers: crate::syntax::tokens::token_modifiers::LEGEND
+                                token_modifiers: al_syntax::tokens::token_modifiers::LEGEND
                                     .iter()
                                     .map(|s| SemanticTokenModifier::new(s))
                                     .collect(),
@@ -516,7 +518,7 @@ impl LanguageServer for AlServer {
         self.workspace
             .documents
             .set_client_version(&uri, params.text_document.version);
-        crate::workspace::on_document_change(&self.workspace, &uri, &text);
+        al_workspace::on_document_change(&self.workspace, &uri, &text);
 
         diagnostics::publish_diagnostics(self, &uri, &text).await;
     }
@@ -544,11 +546,11 @@ impl LanguageServer for AlServer {
             }
         }
 
-        let changes: Vec<crate::documents::TextChange> = params
+        let changes: Vec<al_source::documents::TextChange> = params
             .content_changes
             .iter()
-            .map(|c| crate::documents::TextChange {
-                range: c.range.map(|r| crate::documents::TextRange {
+            .map(|c| al_source::documents::TextChange {
+                range: c.range.map(|r| al_source::documents::TextRange {
                     start_line: r.start.line,
                     start_character: r.start.character,
                     end_line: r.end.line,
@@ -573,11 +575,11 @@ impl LanguageServer for AlServer {
             self.workspace
                 .documents
                 .set_client_version(&uri, client_version);
-            crate::workspace::on_document_change(&self.workspace, &uri, &text_arc);
+            al_workspace::on_document_change(&self.workspace, &uri, &text_arc);
             // Only schedule per-keystroke diagnostics when trigger is Continuous.
             // In OnSave mode, diagnostics are deferred to did_save to avoid per-keystroke work.
             let trigger = self.workspace.config.read().await.diagnostics_trigger;
-            if trigger == crate::config::DiagnosticsTrigger::Continuous {
+            if trigger == al_project::config::DiagnosticsTrigger::Continuous {
                 self.schedule_diagnostics(uri).await;
             } else {
                 // Cancel any lingering debounced task from a previous Continuous session.
@@ -602,12 +604,12 @@ impl LanguageServer for AlServer {
         }
 
         // Targeted composed invalidation — only evict the object from this file (ISSUE-146)
-        crate::workspace::on_document_close(&self.workspace, &uri);
+        al_workspace::on_document_close(&self.workspace, &uri);
 
         if let Ok(path) = uri.to_file_path() {
             // Don't remove from file_index if project-scoped diagnostics — the file still exists
             let scope = self.workspace.config.read().await.diagnostics_scope;
-            if scope != crate::config::DiagnosticsScope::Project {
+            if scope != al_project::config::DiagnosticsScope::Project {
                 self.workspace.file_index.remove_file(&path);
                 self.client.publish_diagnostics(uri, vec![], None).await;
             }
@@ -709,7 +711,7 @@ impl LanguageServer for AlServer {
         let uri_for_log = uri.clone();
         let result = tokio::task::spawn_blocking(move || {
             let core_pos = position.into();
-            let locations = crate::queries::references::references(
+            let locations = al_analysis::queries::references::references(
                 &workspace,
                 &uri,
                 core_pos,
@@ -750,7 +752,7 @@ impl LanguageServer for AlServer {
         let uri_for_log = uri.clone();
         let hierarchical = self.document_symbol_hierarchical.load(Ordering::Relaxed);
         let result = tokio::task::spawn_blocking(move || {
-            crate::queries::symbols::document_symbols(&workspace, &uri).map(|symbols| {
+            al_analysis::queries::symbols::document_symbols(&workspace, &uri).map(|symbols| {
                 if hierarchical {
                     DocumentSymbolResponse::Nested(symbols.into_iter().map(Into::into).collect())
                 } else {
@@ -818,7 +820,8 @@ impl LanguageServer for AlServer {
         let workspace = Arc::clone(&self.workspace);
         let uri_for_log = uri.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let tokens = crate::queries::semantic_tokens::semantic_tokens_full(&workspace, &uri);
+            let tokens =
+                al_analysis::queries::semantic_tokens::semantic_tokens_full(&workspace, &uri);
             if tokens.is_empty() {
                 return None;
             }
@@ -997,14 +1000,14 @@ impl LanguageServer for AlServer {
         self.await_ready().await;
         let uri = &params.text_document.uri;
         let start = std::time::Instant::now();
-        let entries = crate::queries::code_lens::code_lens(&self.workspace, uri);
+        let entries = al_analysis::queries::code_lens::code_lens(&self.workspace, uri);
         let elapsed = start.elapsed();
         let count = entries.len();
         tracing::debug!(uri = %uri, lenses = count, elapsed_us = elapsed.as_micros() as u64, "code_lens");
         if entries.is_empty() {
             return Ok(None);
         }
-        use crate::queries::code_lens::CodeLensKind;
+        use al_analysis::queries::code_lens::CodeLensKind;
         let lenses: Vec<CodeLens> = entries
             .into_iter()
             .map(|e| {
@@ -1333,8 +1336,8 @@ mod code_lens_command_wiring_tests {
     //! `None`).
 
     use super::*;
-    use crate::queries::code_lens::LENS_COMMAND_IDS;
-    use crate::queries::profiler_hints::{ProfilerHint, ProfilerSession};
+    use al_analysis::queries::code_lens::LENS_COMMAND_IDS;
+    use al_analysis::queries::profiler_hints::{ProfilerHint, ProfilerSession};
 
     // A test codeunit exercising all three lens kinds: TestBeta is called once
     // (reference lens), both methods are `[Test]` (test lenses), and a profiler
@@ -1618,7 +1621,7 @@ mod workspace_diagnostic_tests {
         let uri = Url::parse("file:///proj/Bad.al").expect("valid uri");
         // Mirror an indexed-but-unopened file: on_document_change parses + indexes
         // without inserting into the open-document set.
-        crate::workspace::on_document_change(&server.workspace, &uri, BAD_SRC);
+        al_workspace::on_document_change(&server.workspace, &uri, BAD_SRC);
 
         let result = server
             .workspace_diagnostic(ws_diag_params())
@@ -1648,7 +1651,7 @@ mod workspace_diagnostic_tests {
             .workspace
             .documents
             .open(uri.clone(), BAD_SRC.to_string());
-        crate::workspace::on_document_change(&server.workspace, &uri, BAD_SRC);
+        al_workspace::on_document_change(&server.workspace, &uri, BAD_SRC);
 
         let result = server
             .workspace_diagnostic(ws_diag_params())
@@ -1679,10 +1682,10 @@ mod workspace_diagnostic_tests {
             .workspace
             .documents
             .open(open_uri.clone(), GOOD_SRC.to_string());
-        crate::workspace::on_document_change(&server.workspace, &open_uri, GOOD_SRC);
+        al_workspace::on_document_change(&server.workspace, &open_uri, GOOD_SRC);
         // A second clean file that is only indexed, never opened.
         let bg_uri = Url::parse("file:///proj/BgGood.al").expect("valid uri");
-        crate::workspace::on_document_change(&server.workspace, &bg_uri, GOOD_SRC);
+        al_workspace::on_document_change(&server.workspace, &bg_uri, GOOD_SRC);
 
         let result = server
             .workspace_diagnostic(ws_diag_params())

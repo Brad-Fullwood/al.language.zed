@@ -1,7 +1,7 @@
 //! LSP method dispatchers — hover, definition, references, completions, etc.
 
-use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
+use al_workspace::Workspace;
 use serde::Serialize;
 
 use super::{extract_position, extract_uri, invalid_params};
@@ -60,7 +60,7 @@ pub(super) async fn dispatch_hover(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let result = crate::queries::hover::hover_full(workspace, &uri, position).await;
+    let result = al_analysis::queries::hover::hover_full(workspace, &uri, position).await;
     ok_response_opt(id, result, "textDocument/hover")
 }
 
@@ -75,7 +75,7 @@ pub(super) fn dispatch_definition(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let result = crate::queries::definition::definition(workspace, &uri, position);
+    let result = al_analysis::queries::definition::definition(workspace, &uri, position);
     match result {
         Some(locations) => ok_response(id, &locations, "textDocument/definition"),
         None => Response {
@@ -102,8 +102,12 @@ pub(super) fn dispatch_references(
         .get("includeDeclaration")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
-    let locations =
-        crate::queries::references::references(workspace, &uri, position, include_declaration);
+    let locations = al_analysis::queries::references::references(
+        workspace,
+        &uri,
+        position,
+        include_declaration,
+    );
     ok_response(id, &locations, "textDocument/references")
 }
 
@@ -118,7 +122,8 @@ pub(super) fn dispatch_implementations(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let locations = crate::queries::implementation::find_implementations(workspace, &uri, position);
+    let locations =
+        al_analysis::queries::implementation::find_implementations(workspace, &uri, position);
     ok_response(id, &locations, "textDocument/implementation")
 }
 
@@ -133,7 +138,8 @@ pub(super) async fn dispatch_completions(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let entries = crate::queries::completions::completions_full(workspace, &uri, position).await;
+    let entries =
+        al_analysis::queries::completions::completions_full(workspace, &uri, position).await;
     ok_response(id, &entries, "textDocument/completion")
 }
 
@@ -148,7 +154,7 @@ pub(super) fn dispatch_signature_help(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let result = crate::queries::signature::signature_help(workspace, &uri, position);
+    let result = al_analysis::queries::signature::signature_help(workspace, &uri, position);
     ok_response_opt(id, result, "textDocument/signatureHelp")
 }
 
@@ -166,7 +172,7 @@ pub(super) fn dispatch_rename(
     let Some(new_name) = params.get("newName").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    let result = crate::queries::rename::rename(workspace, &uri, position, new_name);
+    let result = al_analysis::queries::rename::rename(workspace, &uri, position, new_name);
     match result {
         Some(we) => ok_response(id, &we, "textDocument/rename"),
         None => Response {
@@ -188,7 +194,7 @@ pub(super) fn dispatch_document_symbols(
     };
     // Serialize the transport-agnostic AlDocumentSymbol vec directly. The daemon
     // returns JSON, so there is no need to round-trip through tower_lsp types.
-    let result = crate::queries::symbols::document_symbols(workspace, &uri);
+    let result = al_analysis::queries::symbols::document_symbols(workspace, &uri);
     ok_response_opt(id, result, "textDocument/documentSymbol")
 }
 
@@ -200,7 +206,7 @@ pub(super) fn dispatch_folding_ranges(
     let Some(uri) = extract_uri(params) else {
         return invalid_params(id);
     };
-    let result = crate::queries::folding::folding_ranges(workspace, &uri);
+    let result = al_analysis::queries::folding::folding_ranges(workspace, &uri);
     ok_response_opt(id, result, "textDocument/foldingRange")
 }
 
@@ -212,7 +218,7 @@ pub(super) fn dispatch_semantic_tokens(
     let Some(uri) = extract_uri(params) else {
         return invalid_params(id);
     };
-    let tokens = crate::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
+    let tokens = al_analysis::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
     ok_response(id, &tokens, "textDocument/semanticTokens/full")
 }
 
@@ -242,18 +248,18 @@ pub(super) fn dispatch_inlay_hints(
             None => return invalid_params(id),
         },
     };
-    let range = crate::queries::Range {
-        start: crate::queries::Position {
+    let range = al_analysis::queries::Range {
+        start: al_analysis::queries::Position {
             line: start_line,
             character: 0,
         },
-        end: crate::queries::Position {
+        end: al_analysis::queries::Position {
             line: end_line,
             character: u32::MAX,
         },
     };
     let hints =
-        crate::queries::inlay_hints::inlay_hints(workspace, &uri, range).unwrap_or_default();
+        al_analysis::queries::inlay_hints::inlay_hints(workspace, &uri, range).unwrap_or_default();
     match serde_json::to_value(&hints) {
         Ok(v) => Response {
             id,
@@ -287,11 +293,11 @@ pub(super) fn dispatch_code_actions(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let range = crate::queries::Range {
+    let range = al_analysis::queries::Range {
         start: position,
         end: position,
     };
-    let actions = crate::queries::code_actions::source_actions(workspace, &uri, range);
+    let actions = al_analysis::queries::code_actions::source_actions(workspace, &uri, range);
     ok_response(id, &actions, "textDocument/codeAction")
 }
 
@@ -334,7 +340,7 @@ pub(super) fn dispatch_search(
         .collect();
     // Workspace file objects — use al-core search to avoid duplicating the filter logic.
     let remaining = limit.saturating_sub(value.len());
-    let ws_results = crate::queries::search::workspace_search(workspace, query, remaining);
+    let ws_results = al_analysis::queries::search::workspace_search(workspace, query, remaining);
     for r in ws_results {
         value.push(workspace_object_to_json(&r.info));
     }
@@ -360,8 +366,8 @@ fn resolve_unique_kind_by_name(
     id: u64,
     name: &str,
     command: &str,
-) -> std::result::Result<crate::symbols::ObjectKind, Response> {
-    let mut kinds: Vec<crate::symbols::ObjectKind> = workspace
+) -> std::result::Result<al_symbols::ObjectKind, Response> {
+    let mut kinds: Vec<al_symbols::ObjectKind> = workspace
         .symbols
         .get_by_name(name)
         .iter()
@@ -488,13 +494,13 @@ fn dedup_objects_by_identity(objects: &mut Vec<serde_json::Value>) {
 /// Convert a workspace CachedObjectInfo to JSON matching SymbolEntry shape.
 ///
 /// `info.kind` is the tree-sitter node kind (lowercase, e.g. "table"). The wire
-/// schema for SymbolEntry uses the crate::symbols ObjectKind enum, whose serde
+/// schema for SymbolEntry uses the al_symbols ObjectKind enum, whose serde
 /// representation is PascalCase. Normalize via `ObjectKind::from_str` so the
 /// payload deserializes cleanly on al-cli / al-explorer.
-fn workspace_object_to_json(info: &crate::file_index::CachedObjectInfo) -> serde_json::Value {
+fn workspace_object_to_json(info: &al_source::file_index::CachedObjectInfo) -> serde_json::Value {
     let kind_value = info
         .kind
-        .parse::<crate::symbols::ObjectKind>()
+        .parse::<al_symbols::ObjectKind>()
         .ok()
         .and_then(|k| serde_json::to_value(k).ok())
         .unwrap_or_else(|| serde_json::Value::String(info.kind.clone()));
@@ -831,14 +837,14 @@ mod tests {
         );
     }
 
-    /// Workspace-object payloads must deserialize as `crate::symbols::SymbolEntry` so
+    /// Workspace-object payloads must deserialize as `al_symbols::SymbolEntry` so
     /// downstream daemon clients (al-cli, al-explorer) accept them. The `kind`
     /// field arrives from tree-sitter as a lowercase string but the wire schema
     /// is the PascalCase `ObjectKind` enum — regression test for the
     /// daemon→explorer launch failure observed in cycle 4.
     #[test]
     fn workspace_object_to_json_round_trips_through_symbol_entry() {
-        let info = crate::file_index::CachedObjectInfo {
+        let info = al_source::file_index::CachedObjectInfo {
             kind: "table".to_string(),
             id: Some(50_000),
             name: "Customer".to_string(),
@@ -850,9 +856,9 @@ mod tests {
             },
         };
         let json = workspace_object_to_json(&info);
-        let entry: crate::symbols::SymbolEntry =
+        let entry: al_symbols::SymbolEntry =
             serde_json::from_value(json).expect("workspace object must deserialize as SymbolEntry");
-        assert_eq!(entry.kind, crate::symbols::ObjectKind::Table);
+        assert_eq!(entry.kind, al_symbols::ObjectKind::Table);
         assert_eq!(entry.name, "Customer");
         assert_eq!(entry.id, 50_000);
     }
@@ -871,13 +877,13 @@ mod tests {
         // ObjectKind addition or an explicit exclusion — the correct prompt.
         const NON_OBJECT_KEYWORDS: &[&str] = &["value"];
         let mut covered = 0;
-        for ot in crate::syntax::language_data::object_types() {
+        for ot in al_syntax::language_data::object_types() {
             let k = ot.keyword.as_str();
             if NON_OBJECT_KEYWORDS.contains(&k) {
                 continue;
             }
             covered += 1;
-            let info = crate::file_index::CachedObjectInfo {
+            let info = al_source::file_index::CachedObjectInfo {
                 kind: k.to_string(),
                 id: Some(1),
                 name: "X".to_string(),
@@ -889,7 +895,7 @@ mod tests {
                 },
             };
             let json = workspace_object_to_json(&info);
-            let _: crate::symbols::SymbolEntry = serde_json::from_value(json)
+            let _: al_symbols::SymbolEntry = serde_json::from_value(json)
                 .unwrap_or_else(|e| panic!("kind {k:?} must deserialize: {e}"));
         }
         // Floor so the test can't silently degrade to covering nothing if the
@@ -906,10 +912,10 @@ mod tests {
     /// for an object that `object codeunit "Hello World"` found.
     #[test]
     fn dispatch_by_id_finds_workspace_objects() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         ws.file_index.object_info.insert(
             std::path::PathBuf::from("/proj/src/HelloWorld.al"),
-            crate::file_index::CachedObjectInfo {
+            al_source::file_index::CachedObjectInfo {
                 kind: "codeunit".to_string(),
                 id: Some(50_100),
                 name: "Hello World".to_string(),
@@ -945,7 +951,7 @@ mod tests {
     /// defined in the user's own project.
     #[test]
     fn dispatch_events_finds_workspace_publishers() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         ws.file_index.add_file(
             std::path::PathBuf::from("/proj/src/Pub.al"),
             r#"codeunit 50101 "Test Event Publisher"
@@ -977,9 +983,9 @@ mod tests {
     /// unambiguous, and explain itself when it is not.
     #[test]
     fn dispatch_composed_resolves_kind_from_bare_name() {
-        let ws = crate::workspace::Workspace::new();
-        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
-            kind: crate::symbols::ObjectKind::Table,
+        let ws = al_workspace::Workspace::new();
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
             package: "Base".to_string(),
@@ -999,8 +1005,8 @@ mod tests {
         assert!(err.message.contains("not found"), "got: {}", err.message);
 
         // Two kinds sharing the name → ambiguity error listing kinds.
-        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
-            kind: crate::symbols::ObjectKind::Page,
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Page,
             id: 21,
             name: "Customer".to_string(),
             package: "Base".to_string(),
@@ -1017,7 +1023,7 @@ mod tests {
 
     #[test]
     fn dispatch_composed_merges_workspace_table_and_extension() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         ws.file_index.add_file(
             std::path::PathBuf::from("/proj/src/TestCustomer.Table.al"),
             r#"table 50100 "Test Customer"
@@ -1066,7 +1072,7 @@ mod tests {
     /// F-OPEN-268 guard: an id that matches nothing still errors.
     #[test]
     fn dispatch_by_id_unknown_id_still_errors() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_by_id(&ws, 1, &serde_json::json!({"kind": "codeunit", "id": 1}));
         assert!(resp.error.is_some(), "unknown id must keep erroring");
     }
@@ -1076,7 +1082,7 @@ mod tests {
     /// hardening verified by `extract_position_rejects_overflow` in mod.rs.
     #[test]
     fn dispatch_inlay_hints_rejects_overflow_start_line() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_inlay_hints(
             &ws,
             7,
@@ -1096,7 +1102,7 @@ mod tests {
     /// An out-of-range `endLine` must likewise be rejected, not wrapped.
     #[test]
     fn dispatch_inlay_hints_rejects_overflow_end_line() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_inlay_hints(
             &ws,
             8,
@@ -1117,7 +1123,7 @@ mod tests {
     /// succeed — no document is open so the hints list is simply empty.
     #[test]
     fn dispatch_inlay_hints_defaults_lines_when_absent() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_inlay_hints(&ws, 9, &serde_json::json!({ "uri": "file:///tmp/x.al" }));
         assert!(
             resp.error.is_none(),
@@ -1155,28 +1161,28 @@ mod tests {
 
     #[test]
     fn dispatch_definition_rejects_missing_uri() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_definition(&ws, 1, &serde_json::json!({ "line": 0, "character": 0 }));
         assert_invalid_params(&resp, 1);
     }
 
     #[test]
     fn dispatch_definition_rejects_missing_position() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_definition(&ws, 2, &serde_json::json!({ "uri": "file:///tmp/x.al" }));
         assert_invalid_params(&resp, 2);
     }
 
     #[test]
     fn dispatch_references_rejects_missing_position() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_references(&ws, 5, &serde_json::json!({ "uri": "file:///tmp/x.al" }));
         assert_invalid_params(&resp, 5);
     }
 
     #[test]
     fn dispatch_implementations_rejects_missing_uri() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp =
             dispatch_implementations(&ws, 6, &serde_json::json!({ "line": 0, "character": 0 }));
         assert_invalid_params(&resp, 6);
@@ -1184,7 +1190,7 @@ mod tests {
 
     #[test]
     fn dispatch_signature_help_rejects_missing_position() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp =
             dispatch_signature_help(&ws, 7, &serde_json::json!({ "uri": "file:///tmp/x.al" }));
         assert_invalid_params(&resp, 7);
@@ -1192,14 +1198,14 @@ mod tests {
 
     #[test]
     fn dispatch_document_symbols_rejects_missing_uri() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_document_symbols(&ws, 8, &serde_json::json!({}));
         assert_invalid_params(&resp, 8);
     }
 
     #[test]
     fn dispatch_code_actions_rejects_missing_position() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_code_actions(&ws, 9, &serde_json::json!({ "uri": "file:///tmp/x.al" }));
         assert_invalid_params(&resp, 9);
     }
@@ -1207,7 +1213,7 @@ mod tests {
     /// rename has an extra required `newName` parameter beyond uri/position.
     #[test]
     fn dispatch_rename_rejects_missing_new_name() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_rename(
             &ws,
             10,
@@ -1218,14 +1224,14 @@ mod tests {
 
     #[test]
     fn dispatch_search_rejects_missing_query() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_search(&ws, 11, &serde_json::json!({ "limit": 5 }));
         assert_invalid_params(&resp, 11);
     }
 
     #[test]
     fn dispatch_search_empty_workspace_returns_empty_array() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_search(&ws, 12, &serde_json::json!({ "query": "Customer" }));
         assert!(
             resp.error.is_none(),
@@ -1247,7 +1253,7 @@ mod tests {
     /// array on an empty workspace.
     #[test]
     fn dispatch_search_clamps_oversized_limit() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_search(
             &ws,
             13,
@@ -1259,7 +1265,7 @@ mod tests {
 
     #[test]
     fn dispatch_object_rejects_unknown_kind() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_object(
             &ws,
             14,
@@ -1276,7 +1282,7 @@ mod tests {
 
     #[test]
     fn dispatch_object_rejects_missing_name() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_object(&ws, 15, &serde_json::json!({ "kind": "table" }));
         assert_invalid_params(&resp, 15);
     }
@@ -1285,7 +1291,7 @@ mod tests {
     /// whose message names the object, not a silent empty success.
     #[test]
     fn dispatch_object_not_found_returns_error() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_object(
             &ws,
             16,
@@ -1303,7 +1309,7 @@ mod tests {
 
     #[test]
     fn dispatch_by_id_rejects_overflowing_id() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         // (i32::MAX as i64) + 1 must be rejected by extract_i32, not wrapped.
         let resp = dispatch_by_id(
             &ws,
@@ -1315,7 +1321,7 @@ mod tests {
 
     #[test]
     fn dispatch_by_id_not_found_returns_error() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_by_id(
             &ws,
             18,
@@ -1333,7 +1339,7 @@ mod tests {
 
     #[test]
     fn dispatch_composed_not_found_returns_error() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_composed(
             &ws,
             19,
@@ -1347,14 +1353,14 @@ mod tests {
 
     #[test]
     fn dispatch_events_rejects_missing_name() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_events(&ws, 20, &serde_json::json!({}));
         assert_invalid_params(&resp, 20);
     }
 
     #[test]
     fn dispatch_events_empty_returns_empty_array() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_events(&ws, 21, &serde_json::json!({ "name": "OnAfterPost" }));
         assert!(resp.error.is_none());
         assert_eq!(resp.result, Some(serde_json::json!([])));
@@ -1362,14 +1368,14 @@ mod tests {
 
     #[test]
     fn dispatch_subscribers_rejects_missing_event() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_subscribers(&ws, 22, &serde_json::json!({}));
         assert_invalid_params(&resp, 22);
     }
 
     #[test]
     fn dispatch_subscribers_empty_returns_empty_array() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_subscribers(&ws, 23, &serde_json::json!({ "event": "OnAfterPost" }));
         assert!(resp.error.is_none());
         assert_eq!(resp.result, Some(serde_json::json!([])));
@@ -1377,7 +1383,7 @@ mod tests {
 
     #[test]
     fn dispatch_packages_empty_returns_empty_array() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_packages(&ws, 24);
         assert!(resp.error.is_none());
         assert_eq!(resp.result, Some(serde_json::json!([])));
@@ -1388,7 +1394,7 @@ mod tests {
     /// "project with zero dependencies".
     #[test]
     fn dispatch_deps_no_project_returns_internal_error() {
-        let ws = crate::workspace::Workspace::new();
+        let ws = al_workspace::Workspace::new();
         let resp = dispatch_deps(&ws, 25);
         assert!(resp.result.is_none());
         let err = resp.error.expect("no project must be an error");

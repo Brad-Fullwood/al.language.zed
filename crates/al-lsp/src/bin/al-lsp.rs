@@ -200,7 +200,9 @@ async fn main() {
             Ok(tc) => tc,
             Err(e) => {
                 tracing::error!(error = %e, "--official-lsp requires the AL toolchain");
-                eprintln!("al-lsp: --official-lsp requires Microsoft's AL toolchain. {install_hint} ({e})");
+                eprintln!(
+                    "al-lsp: --official-lsp requires Microsoft's AL toolchain. {install_hint} ({e})"
+                );
                 std::process::exit(1);
             }
         };
@@ -251,7 +253,7 @@ async fn main() {
 
         let alc_path = al_lsp::toolchain::find_toolchain().ok().map(|tc| tc.alc);
 
-        let file_index = std::sync::Arc::new(al_lsp::file_index::FileIndex::new());
+        let file_index = std::sync::Arc::new(al_source::file_index::FileIndex::new());
         {
             let root = PathBuf::from(&project_root);
             if root.join("app.json").is_file() {
@@ -265,12 +267,12 @@ async fn main() {
         let fi = file_index.clone();
         let fi2 = file_index.clone();
 
-        if let Err(e) = al_lsp::dap::native_dap::run_native_dap(
+        if let Err(e) = al_dap::dap::native_dap::run_native_dap(
             &project_root,
             alc_path.as_deref(),
             |tenant| async move {
                 let client = reqwest::Client::new();
-                al_lsp::symbols::oauth::acquire_token(&client, &tenant, |msg| {
+                al_symbols::oauth::acquire_token(&client, &tenant, |msg| {
                     tracing::info!("{msg}");
                 })
                 .await
@@ -280,8 +282,8 @@ async fn main() {
                 let path = PathBuf::from(file_path);
                 fi.object_info
                     .get(&path)
-                    .map(|info| al_lsp::dap::native_dap::ResolvedObject {
-                        object_type: al_lsp::dap::native_dap::kind_to_object_type(&info.kind),
+                    .map(|info| al_dap::dap::native_dap::ResolvedObject {
+                        object_type: al_dap::dap::native_dap::kind_to_object_type(&info.kind),
                         object_id: info.id.unwrap_or(-1) as i32,
                     })
             },
@@ -289,20 +291,20 @@ async fn main() {
                 fi2.object_info
                     .iter()
                     .find(|entry| {
-                        al_lsp::dap::native_dap::kind_to_object_type(&entry.kind) == object_type
+                        al_dap::dap::native_dap::kind_to_object_type(&entry.kind) == object_type
                             && entry.id == Some(object_id as i64)
                     })
                     .map(|entry| entry.key().clone())
             },
             |project_root: &std::path::Path| {
-                let cr = al_lsp::build::native_compile(project_root);
+                let cr = al_compile::native_compile(project_root);
                 if cr.success {
                     Ok(cr.output)
                 } else {
                     Err(cr.output)
                 }
             },
-            |project_root: &std::path::Path| al_lsp::build::find_app_file(project_root),
+            |project_root: &std::path::Path| al_compile::find_app_file(project_root),
         )
         .await
         {

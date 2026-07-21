@@ -1,8 +1,8 @@
 //! XLIFF translation-file dispatchers.
 
 use super::super::{require_project_root, rpc_error};
-use crate::workspace::Workspace;
 use al_protocol::jsonrpc::Response;
+use al_workspace::Workspace;
 
 pub(in crate::server::daemon) async fn dispatch_xlf_generate(
     workspace: &Workspace,
@@ -28,7 +28,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_generate(
         }
     };
 
-    match crate::xliff::build_xliff(workspace, &project_root) {
+    match al_analysis::xliff::build_xliff(workspace, &project_root) {
         Ok(Some((path, count))) => Response {
             id,
             result: Some(serde_json::json!({
@@ -72,7 +72,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
                 id,
                 al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
                 "Missing 'xlf' param",
-            )
+            );
         }
     };
     if !xlf_path.is_absolute() {
@@ -109,14 +109,14 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
         ("generated", generated_path.as_path()),
         ("lang", xlf_path.as_path()),
     ] {
-        if matches!(crate::xliff::xlf_exceeds_cap(p), Some(true)) {
+        if matches!(al_analysis::xliff::xlf_exceeds_cap(p), Some(true)) {
             return rpc_error(
                 id,
                 al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
                 &format!(
                     "{label} xlf {} exceeds {} byte size limit — refusing to parse",
                     p.display(),
-                    crate::xliff::MAX_XLF_FILE_BYTES
+                    al_analysis::xliff::MAX_XLF_FILE_BYTES
                 ),
             );
         }
@@ -128,7 +128,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
                 id,
                 al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
                 &format!("Cannot read {}: {e}", generated_path.display()),
-            )
+            );
         }
     };
     let lang_content = match tokio::fs::read_to_string(&xlf_path).await {
@@ -138,15 +138,16 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
                 id,
                 al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
                 &format!("Cannot read {}: {e}", xlf_path.display()),
-            )
+            );
         }
     };
 
-    let gen_units_map = crate::xliff::parse_xliff(&gen_content);
-    let gen_units: Vec<crate::xliff::TranslationUnit> = gen_units_map.into_values().collect();
-    let lang_units = crate::xliff::parse_xliff(&lang_content);
+    let gen_units_map = al_analysis::xliff::parse_xliff(&gen_content);
+    let gen_units: Vec<al_analysis::xliff::TranslationUnit> = gen_units_map.into_values().collect();
+    let lang_units = al_analysis::xliff::parse_xliff(&lang_content);
 
-    let (updated_units, refresh_result) = crate::xliff::refresh_xliff(&gen_units, &lang_units);
+    let (updated_units, refresh_result) =
+        al_analysis::xliff::refresh_xliff(&gen_units, &lang_units);
 
     let app_name = xlf_path
         .file_stem()
@@ -158,7 +159,8 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
     // (e.g. `de-DE.xlf` -> `de-DE`). The generated `.g.xlf` is always en-US,
     // so the language file's target-language must reflect its own locale.
     let target_lang = xlf_target_language(&xlf_path);
-    let new_xlf = crate::xliff::generate_xliff(&app_name, "en-US", &target_lang, &updated_units);
+    let new_xlf =
+        al_analysis::xliff::generate_xliff(&app_name, "en-US", &target_lang, &updated_units);
     if let Err(e) = tokio::task::block_in_place(|| std::fs::write(&xlf_path, new_xlf)) {
         return rpc_error(
             id,
@@ -186,7 +188,7 @@ pub(in crate::server::daemon) fn dispatch_xlf_untranslated(
                 id,
                 al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
                 "Missing 'xlf' param",
-            )
+            );
         }
     };
     if !std::path::Path::new(xlf_path).is_absolute() {
@@ -200,7 +202,7 @@ pub(in crate::server::daemon) fn dispatch_xlf_untranslated(
     // translation files are tiny; anything larger is a misconfigured or
     // hostile input we shouldn't even start to parse.
     if matches!(
-        crate::xliff::xlf_exceeds_cap(std::path::Path::new(xlf_path)),
+        al_analysis::xliff::xlf_exceeds_cap(std::path::Path::new(xlf_path)),
         Some(true)
     ) {
         return rpc_error(
@@ -208,7 +210,7 @@ pub(in crate::server::daemon) fn dispatch_xlf_untranslated(
             al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
             &format!(
                 "{xlf_path} exceeds {} byte .xlf size limit — refusing to parse",
-                crate::xliff::MAX_XLF_FILE_BYTES
+                al_analysis::xliff::MAX_XLF_FILE_BYTES
             ),
         );
     }
@@ -219,12 +221,12 @@ pub(in crate::server::daemon) fn dispatch_xlf_untranslated(
                 id,
                 al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
                 &format!("Cannot read {xlf_path}: {e}"),
-            )
+            );
         }
     };
-    let units_map = crate::xliff::parse_xliff(&xlf_content);
-    let all_units: Vec<crate::xliff::TranslationUnit> = units_map.into_values().collect();
-    let untranslated = crate::xliff::find_untranslated(&all_units);
+    let units_map = al_analysis::xliff::parse_xliff(&xlf_content);
+    let all_units: Vec<al_analysis::xliff::TranslationUnit> = units_map.into_values().collect();
+    let untranslated = al_analysis::xliff::find_untranslated(&all_units);
     let items: Vec<serde_json::Value> = untranslated
         .iter()
         .map(|u| {
@@ -257,7 +259,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
                 id,
                 al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
                 "Missing 'xlf' param",
-            )
+            );
         }
     };
     if !std::path::Path::new(xlf_path).is_absolute() {
@@ -270,7 +272,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
 
     // F-OPEN-045: refuse to load .xlf files past the 64 MB cap.
     if matches!(
-        crate::xliff::xlf_exceeds_cap(std::path::Path::new(xlf_path)),
+        al_analysis::xliff::xlf_exceeds_cap(std::path::Path::new(xlf_path)),
         Some(true)
     ) {
         return rpc_error(
@@ -278,7 +280,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
             al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
             &format!(
                 "{xlf_path} exceeds {} byte .xlf size limit — refusing to parse",
-                crate::xliff::MAX_XLF_FILE_BYTES
+                al_analysis::xliff::MAX_XLF_FILE_BYTES
             ),
         );
     }
@@ -289,19 +291,19 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
                 id,
                 al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
                 &format!("Cannot read {xlf_path}: {e}"),
-            )
+            );
         }
     };
 
-    let units_map = crate::xliff::parse_xliff(&xlf_content);
-    let all_units: Vec<crate::xliff::TranslationUnit> = units_map.into_values().collect();
-    let untranslated = crate::xliff::find_untranslated(&all_units);
+    let units_map = al_analysis::xliff::parse_xliff(&xlf_content);
+    let all_units: Vec<al_analysis::xliff::TranslationUnit> = units_map.into_values().collect();
+    let untranslated = al_analysis::xliff::find_untranslated(&all_units);
     // C13: mine this file's already-translated units as a translation memory so
     // suggestions prefer existing project translations (tm-exact/tm-fuzzy) over
     // bare symbol-name matching. `from_units` filters to trustworthy pairs.
-    let memory: Vec<&crate::xliff::TranslationUnit> = all_units.iter().collect();
+    let memory: Vec<&al_analysis::xliff::TranslationUnit> = all_units.iter().collect();
     let suggestions =
-        crate::xliff::suggest_translations_with_memory(&untranslated, &memory, workspace);
+        al_analysis::xliff::suggest_translations_with_memory(&untranslated, &memory, workspace);
 
     Response {
         id,
@@ -317,8 +319,8 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
     use al_protocol::jsonrpc::error_codes;
+    use al_workspace::Workspace;
 
     fn empty_ws() -> Workspace {
         Workspace::new()

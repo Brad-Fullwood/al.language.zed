@@ -1,7 +1,7 @@
 //! Insight engine dispatchers — trace, entrypoints, graph export, dead code, impact, suggest_event.
 
-use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
+use al_workspace::Workspace;
 
 use super::invalid_params;
 
@@ -26,7 +26,7 @@ pub(super) fn dispatch_trace(
     // objects/procedures/calls), not the package-only one. The enriched build
     // is cached; the returned call-graph read guard is held only while serving.
     let (graph, _cg_guard) = workspace.get_or_build_call_graph();
-    let steps = crate::insight::search::trace_event(&graph, event_name, max_depth);
+    let steps = al_insight::search::trace_event(&graph, event_name, max_depth);
     // SILENT: serialization of valid Vec<TraceStep> should not fail
     let value = serde_json::to_value(&steps).unwrap_or(serde_json::Value::Null);
     Response {
@@ -39,7 +39,7 @@ pub(super) fn dispatch_trace(
 
 pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
     let (graph, _cg_guard) = workspace.get_or_build_call_graph();
-    let entry_points = crate::insight::search::find_entry_points(&graph);
+    let entry_points = al_insight::search::find_entry_points(&graph);
     // SILENT: serialization of valid Vec<&InsightNode> should not fail
     let value = serde_json::to_value(&entry_points).unwrap_or(serde_json::Value::Null);
     Response {
@@ -84,7 +84,7 @@ pub(super) fn dispatch_graph_export(
 
     match format {
         "dot" => {
-            let dot = crate::insight::search::export_dot(&graph);
+            let dot = al_insight::search::export_dot(&graph);
             Response {
                 id,
                 result: Some(serde_json::json!({ "format": "dot", "content": dot })),
@@ -93,7 +93,7 @@ pub(super) fn dispatch_graph_export(
             }
         }
         _ => {
-            let json = crate::insight::search::export_json(&graph);
+            let json = al_insight::search::export_json(&graph);
             // SILENT: serialization of valid GraphJson should not fail
             let value = serde_json::to_value(&json).unwrap_or(serde_json::Value::Null);
             Response {
@@ -120,7 +120,7 @@ pub(super) fn dispatch_insight_stats(workspace: &Workspace, id: u64) -> Response
 }
 
 pub(super) fn dispatch_dead_code(workspace: &Workspace, id: u64) -> Response {
-    let unused = crate::queries::dead_code::dead_code(workspace);
+    let unused = al_analysis::queries::dead_code::dead_code(workspace);
     // SILENT: serialization of valid Vec<DeadCodeEntry> should not fail
     let value = serde_json::to_value(&unused).unwrap_or(serde_json::Value::Null);
     Response {
@@ -135,7 +135,7 @@ pub(super) fn dispatch_dead_code(workspace: &Workspace, id: u64) -> Response {
 /// the declared `app.json` idRanges, and duplicate object names. Additive and
 /// entirely separate from the `diagnostics`/`lint` paths — emits `AL-NC*` codes.
 pub(super) fn dispatch_native_check(workspace: &Workspace, id: u64) -> Response {
-    let findings = crate::queries::native_check::native_semantic_checks(workspace);
+    let findings = al_analysis::queries::native_check::native_semantic_checks(workspace);
     // SILENT: serialization of valid Vec<NativeFinding> should not fail
     let value = serde_json::to_value(&findings).unwrap_or(serde_json::Value::Null);
     Response {
@@ -163,7 +163,7 @@ pub(super) fn dispatch_impact(
             ..Default::default()
         };
     }
-    let entries = crate::queries::impact::impact(workspace, symbol);
+    let entries = al_analysis::queries::impact::impact(workspace, symbol);
     Response {
         id,
         result: Some(serde_json::json!({ "symbol": symbol, "impacted": entries })),
@@ -184,23 +184,23 @@ pub(super) fn dispatch_suggest_event(
         .cloned()
         .unwrap_or_else(|| params.clone());
 
-    let query: crate::queries::suggest_event::EventQuery = match serde_json::from_value(query_value)
-    {
-        Ok(q) => q,
-        Err(e) => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INVALID_PARAMS,
-                    message: format!("Invalid suggestEvent query: {e}"),
-                }),
-                ..Default::default()
-            };
-        }
-    };
+    let query: al_analysis::queries::suggest_event::EventQuery =
+        match serde_json::from_value(query_value) {
+            Ok(q) => q,
+            Err(e) => {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INVALID_PARAMS,
+                        message: format!("Invalid suggestEvent query: {e}"),
+                    }),
+                    ..Default::default()
+                };
+            }
+        };
 
-    let result = crate::queries::suggest_event::suggest_event(workspace, &query);
+    let result = al_analysis::queries::suggest_event::suggest_event(workspace, &query);
     // SILENT: serialization of valid SuggestEventResult should not fail
     let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
     Response {
@@ -224,7 +224,7 @@ pub(super) fn dispatch_table_impact(
     let Some(table) = params.get("table").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    let result = crate::insight::analysis::table_impact(&workspace.symbols, table);
+    let result = al_insight::analysis::table_impact(&workspace.symbols, table);
     let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -255,9 +255,9 @@ pub(super) fn dispatch_trace_chain(
     let (insight, cg_guard) = workspace.get_or_build_call_graph();
     let chain = match cg_guard.as_ref() {
         Some(call_graph) => {
-            crate::insight::search::trace_event_chain(&insight, call_graph, event_name, max_depth)
+            al_insight::search::trace_event_chain(&insight, call_graph, event_name, max_depth)
         }
-        None => crate::insight::search::EventChain {
+        None => al_insight::search::EventChain {
             event_name: event_name.to_string(),
             publisher_object: String::new(),
             chains: Vec::new(),
@@ -281,7 +281,7 @@ pub(super) fn dispatch_trace_chain(
 /// `insight::discovery::discover_events`. Backs `al intercept`.
 pub(super) fn dispatch_event_map(workspace: &Workspace, id: u64) -> Response {
     let (insight, _cg_guard) = workspace.get_or_build_call_graph();
-    let result = crate::insight::discovery::discover_events(&insight);
+    let result = al_insight::discovery::discover_events(&insight);
     let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
     Response {
         id,
