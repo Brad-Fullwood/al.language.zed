@@ -79,7 +79,7 @@ fn try_workspace_source(
 ) -> Option<SourceResult> {
     let file_path = workspace.file_index.find_by_object_name(name)?;
 
-    // SILENT: non-absolute paths can't become file URIs
+    // Only absolute paths can be converted to file URIs.
     let uri = url::Url::from_file_path(&file_path).ok()?;
     let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, &uri)?;
 

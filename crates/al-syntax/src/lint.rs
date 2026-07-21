@@ -38,10 +38,6 @@ impl std::fmt::Display for LintSeverity {
     }
 }
 
-/// Reserved for future rule-specific options.
-#[derive(Debug, Clone, Default)]
-pub struct LintConfig;
-
 #[derive(Debug, Clone)]
 pub struct LintRuleInfo {
     pub code: &'static str,
@@ -78,13 +74,6 @@ pub fn lint(tree: &Tree, text: &str) -> Vec<LintDiagnostic> {
     lint_find_in_loop(tree, text, &mut diagnostics);
     lint_missing_data_classification(tree, text, &mut diagnostics);
     diagnostics
-}
-
-/// Run all native lint rules on the parsed tree with custom config.
-///
-/// This is currently equivalent to [`lint`].
-pub fn lint_with_config(tree: &Tree, text: &str, _config: &LintConfig) -> Vec<LintDiagnostic> {
-    lint(tree, text)
 }
 
 /// Build a `tree_sitter::Range` covering an entire source line, given its
@@ -426,10 +415,5 @@ mod tests {
         let result = AlParser::parse_quick(src);
         let diags = lint(&result.tree, src);
         assert!(diags.is_empty(), "expected no diagnostics, got {diags:?}");
-    }
-
-    #[test]
-    fn lint_config_has_default() {
-        let _cfg: LintConfig = Default::default();
     }
 }

@@ -10,8 +10,8 @@ permission sets — all natively, with consistent identifier escaping and atomic
 
 `create_project(dir, config)` writes a new project: `app.json` (with template-appropriate target,
 features, and analyzers), `.gitignore`, a `.zed/debug.json` launch config, and template source files.
-Writes are atomic (temp + rename) so a crash never leaves a half-written file. Defaults come from
-settings: `al.publisher`, `al.rootNamespace`, `al.namespaceTemplate`, `al.algoSuggestedFolder`.
+Writes are atomic (temp + rename) so a crash never leaves a half-written file. Project name,
+publisher, and template are supplied explicitly by the CLI or daemon request.
 
 Templates:
 

@@ -159,41 +159,6 @@
       "default": false,
       "description": "Escape hatch: compile via Microsoft's `dotnet alc` subprocess instead of the pure-Rust verified `.app` pipeline. The native default runs syntax, project/dependency, declaration, declared-symbol binding, and package-integrity checks with structured diagnostics and no `alc` or C# bridge. Set this to `true` when exact Microsoft expression/type semantics, analyzers, or compatibility behaviour are required."
     },
-    "al.editorServicesPath": {
-      "type": ["string", "null"],
-      "default": null,
-      "description": "Path to the EditorServices.Host binary used by the debug adapter. If unset, it is auto-discovered.",
-      "examples": ["/opt/al/EditorServices.Host"]
-    },
-    "al.editorServicesLogLevel": {
-      "type": "string",
-      "enum": ["off", "error", "warning", "info", "debug", "trace"],
-      "default": "warning",
-      "description": "Log verbosity for the EditorServices.Host debug-adapter process."
-    },
-    "al.rootNamespace": {
-      "type": ["string", "null"],
-      "default": null,
-      "description": "Default root namespace for scaffolding new objects.",
-      "examples": ["MyCompany.MyApp"]
-    },
-    "al.publisher": {
-      "type": ["string", "null"],
-      "default": null,
-      "description": "Default publisher name for scaffolding.",
-      "examples": ["My Company"]
-    },
-    "al.namespaceTemplate": {
-      "type": ["string", "null"],
-      "default": null,
-      "description": "Template for namespaces of scaffolded objects. Supports placeholders such as {publisher} and {name}.",
-      "examples": ["{publisher}.{name}"]
-    },
-    "al.algoSuggestedFolder": {
-      "type": ["string", "null"],
-      "default": null,
-      "description": "Suggested folder for AL-Go scaffolding output."
-    },
     "al.maxDocumentSizeBytes": {
       "type": ["integer", "null"],
       "minimum": 1,

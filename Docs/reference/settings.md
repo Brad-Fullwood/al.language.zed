@@ -57,22 +57,6 @@ Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
 | `al.incrementalBuild` | boolean | `false` | ✅ official `alc` backend only |
 | `al.useOfficialCompiler` | boolean | `false` | ✅ escape hatch → `dotnet alc` |
 
-## Debug adapter
-
-| Setting | Type | Default | Status |
-| --- | --- | --- | --- |
-| `al.editorServicesPath` | string\|null | `null` | ✅ (legacy DAP) |
-| `al.editorServicesLogLevel` | off/error/warning/info/debug/trace | `warning` | ✅ |
-
-## Project scaffolding
-
-| Setting | Type | Default | Status |
-| --- | --- | --- | --- |
-| `al.rootNamespace` | string\|null | `null` | ✅ |
-| `al.publisher` | string\|null | `null` | ✅ |
-| `al.namespaceTemplate` | string\|null | `null` | ✅ |
-| `al.algoSuggestedFolder` | string\|null | `null` | ✅ |
-
 ## Resource limits & escape hatches
 
 | Setting | Type | Default | Status |

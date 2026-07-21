@@ -307,12 +307,6 @@ impl DaemonClient {
         self.request_timeout = timeout;
     }
 
-    /// Deprecated name for [`Self::set_request_timeout`] — older call sites
-    /// used the socket read timeout as the de-facto request deadline.
-    pub fn set_read_timeout(&mut self, timeout: Duration) {
-        self.set_request_timeout(timeout);
-    }
-
     /// Override how long `request` keeps retrying while the daemon reports
     /// "Workspace is initializing" (and the delay between retries).
     /// Primarily for tests; production callers keep the 60s default.
@@ -912,23 +906,6 @@ mod tests {
         assert!(
             contended,
             "a fresh lock must not be reclaimed; second caller must be Contended"
-        );
-    }
-
-    #[test]
-    fn set_read_timeout_adjusts_request_deadline_not_socket() {
-        let sock = unique_sock();
-        let _listener = UnixListener::bind(&sock).expect("bind");
-        let stream = UnixStream::connect(&sock).expect("connect");
-        let mut client = DaemonClient::from_stream(test_stream(stream)).expect("from_stream");
-
-        assert_eq!(client.request_timeout, DEFAULT_REQUEST_TIMEOUT);
-
-        client.set_read_timeout(Duration::from_secs(900));
-        assert_eq!(
-            client.request_timeout,
-            Duration::from_secs(900),
-            "set_read_timeout must adjust the request deadline"
         );
     }
 

@@ -258,6 +258,10 @@ pub(super) async fn dispatch_debug(
             match NativeDebugSession::start(config, &access_token).await {
                 Ok(session) => {
                     let session_id = session.session_id().to_string();
+                    let browser_url = al_dap::dap::native_dap::build_debug_browser_url(
+                        &session.config,
+                        &session_id,
+                    );
                     *workspace.debug_session.lock().await = Some(session);
                     Response {
                         id,
@@ -265,6 +269,7 @@ pub(super) async fn dispatch_debug(
                             "cmd": "start",
                             "status": "running",
                             "session": session_id,
+                            "browserUrl": browser_url,
                         })),
                         error: None,
                         ..Default::default()

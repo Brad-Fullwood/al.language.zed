@@ -596,7 +596,7 @@ pub(crate) fn resolve_member(
     let cache = workspace
         .semantic_cache
         .read()
-        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(builtin) = builtin_for(&cache, receiver) {
         for method in &builtin.methods {
             if method.name.eq_ignore_ascii_case(target_name) {
@@ -643,7 +643,7 @@ pub(crate) fn resolve_builtin_overloads(
     let cache = workspace
         .semantic_cache
         .read()
-        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(builtin) = builtin_for(&cache, receiver) {
         for method in &builtin.methods {
             if method.name.eq_ignore_ascii_case(target_name) {
@@ -876,12 +876,8 @@ pub(crate) fn resolve_workspace_object_definition(
     let path = resolve_object_path(workspace, None, name)?;
     let (file_source, tree) = workspace.file_index.get_cached_parse(&path)?;
     let obj = al_syntax::find_object_declaration(&tree, &file_source)?;
-    let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
-                                                // Direct ts_range -> queries::Range conversion (one hop) instead of the
-                                                // wasteful ts_range -> lsp_types::Range -> queries::Range round-trip
-                                                // through syntax_lsp. The latter only exists for the LSP transport
-                                                // boundary; resolution.rs is business logic and should stay
-                                                // free of transport-specific LSP types.
+    let uri = Url::from_file_path(&path).ok()?;
+    // Keep transport-specific LSP types out of the analysis layer.
     Some((
         uri,
         al_syntax::ts_range_to_syntax(&obj.range, file_source.as_bytes()).into(),
@@ -1070,7 +1066,7 @@ pub(crate) fn completion_items_for_receiver(
     let cache = workspace
         .semantic_cache
         .read()
-        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(builtin) = builtin_for(&cache, receiver) {
         for method in &builtin.methods {
             builtin_methods += 1;
@@ -1187,7 +1183,7 @@ pub(crate) fn enum_completion_items(
         let cache = workspace
             .semantic_cache
             .read()
-            .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(bt) = cache.get_type(enum_name) {
             if !bt.enum_values.is_empty() {
                 for value in &bt.enum_values {
@@ -1298,7 +1294,7 @@ fn workspace_member(
                             .and_then(extract_return_type)
                             .map(parse_type_expr),
 
-                        uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
+                        uri: Url::from_file_path(path).ok(),
                         kind: ResolvedMemberKind::Procedure {
                             range: Some(child.selection_range.into()),
                             signature: child
@@ -1330,7 +1326,7 @@ fn workspace_member(
                             type_subtype: Some(symbol.name.clone()),
                         }),
 
-                        uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
+                        uri: Url::from_file_path(path).ok(),
                         kind: ResolvedMemberKind::EnumValue {
                             range: Some(child.selection_range.into()),
                         },
@@ -1358,7 +1354,7 @@ fn workspace_member(
                     type_name: var.type_name.clone(),
                     type_subtype: var.type_subtype.clone(),
                 }),
-                uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
+                uri: Url::from_file_path(path).ok(),
                 kind: ResolvedMemberKind::Variable {
                     range: Some(
                         // Direct conversion — see object_path_to_uri_and_range above
@@ -1376,7 +1372,7 @@ fn workspace_member(
             ResolvedMember {
                 name: member_name.to_string(),
                 type_info: Some(field_type),
-                uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
+                uri: Url::from_file_path(path).ok(),
                 kind: ResolvedMemberKind::Field {
                     range: Some(field_range),
                 },

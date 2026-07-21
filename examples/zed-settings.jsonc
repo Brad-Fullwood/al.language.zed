@@ -53,16 +53,6 @@
         "al.incrementalBuild": false,
         "al.useOfficialCompiler": false,
 
-        // ── Debug adapter (EditorServices.Host) ──
-        "al.editorServicesPath": null, // auto-discovered when null
-        "al.editorServicesLogLevel": "warning", // off|error|warning|info|debug|trace
-
-        // ── Project scaffolding ──
-        "al.rootNamespace": null,
-        "al.publisher": null,
-        "al.namespaceTemplate": null, // e.g. "{publisher}.{name}"
-        "al.algoSuggestedFolder": null,
-
         // ── Resource limits ──
         "al.maxDocumentSizeBytes": null, // null = no cap
 

@@ -48,7 +48,8 @@ pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position
         }
     }
 
-    let current_path = uri.to_file_path().ok(); // SILENT: non-file URIs legitimately have no path
+    // Non-file URIs have no filesystem path.
+    let current_path = uri.to_file_path().ok();
     for file_entry in workspace.file_index.files.iter() {
         let file_path = file_entry.key().clone();
         if current_path.as_ref() == Some(&file_path) {

@@ -106,8 +106,15 @@ pub(super) fn dispatch_dead_code(workspace: &Workspace, id: u64) -> Response {
 /// Native semantic workspace checks duplicate object ids, ids outside
 /// the declared `app.json` idRanges, and duplicate object names. Additive and
 /// entirely separate from the `diagnostics`/`lint` paths — emits `AL-NC*` codes.
-pub(super) fn dispatch_native_check(workspace: &Workspace, id: u64) -> Response {
-    let findings = al_analysis::queries::native_check::native_semantic_checks(workspace);
+pub(super) async fn dispatch_native_check(workspace: &Workspace, id: u64) -> Response {
+    let root = workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone());
+    let findings =
+        al_analysis::queries::native_check::native_semantic_checks(workspace, root.as_deref());
     serialized_response(id, &findings, "nativeCheck")
 }
 
@@ -424,10 +431,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dispatch_native_check_returns_array_result() {
+    #[tokio::test]
+    async fn dispatch_native_check_returns_array_result() {
         let ws = Workspace::new();
-        let resp = dispatch_native_check(&ws, 14);
+        let resp = dispatch_native_check(&ws, 14).await;
         assert!(resp.error.is_none());
         let value = resp.result.expect("native_check must carry a result");
         assert!(
@@ -438,8 +445,8 @@ mod tests {
         assert_eq!(value.as_array().map(Vec::len), Some(0));
     }
 
-    #[test]
-    fn dispatch_native_check_reports_duplicate_id() {
+    #[tokio::test]
+    async fn dispatch_native_check_reports_duplicate_id() {
         use std::path::PathBuf;
         let ws = Workspace::new();
         // Two codeunits sharing id 50100 in the workspace file index.
@@ -451,7 +458,7 @@ mod tests {
             PathBuf::from("/virtual/nc/Bar.al"),
             "codeunit 50100 \"Bar\" { }".to_string(),
         );
-        let resp = dispatch_native_check(&ws, 15);
+        let resp = dispatch_native_check(&ws, 15).await;
         let value = resp.result.expect("result");
         let text = value.to_string();
         assert!(

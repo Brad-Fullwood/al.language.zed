@@ -1328,7 +1328,7 @@ fn make_event(seq: &AtomicU64, event: &str, body: Option<serde_json::Value>) -> 
 /// values containing special characters (spaces, ampersands, slashes) produce
 /// valid URLs — matching the encoding already applied in
 /// [`bc_debug::BcDebugConfig::base_url`] and `debug_hub_url`.
-fn build_debug_browser_url(config: &BcDebugConfig, conn_id: &str) -> String {
+pub fn build_debug_browser_url(config: &BcDebugConfig, conn_id: &str) -> String {
     if config.environment_type.eq_ignore_ascii_case("OnPrem") {
         // Use onprem_base() to include the port number in the URL.
         let base = config.onprem_base();

@@ -462,8 +462,8 @@ fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
     let (paren_open, paren_close) = find_diagnostic_coord_span(line)?;
     let coords = &line[paren_open + 1..paren_close];
     let mut parts = coords.split(',');
-    let line_num: u32 = parts.next()?.trim().parse().ok()?; // SILENT: non-numeric coords skipped
-    let col_num: u32 = parts.next()?.trim().parse().ok()?; // SILENT: non-numeric coords skipped
+    let line_num: u32 = parts.next()?.trim().parse().ok()?;
+    let col_num: u32 = parts.next()?.trim().parse().ok()?;
 
     let file = line[..paren_open].to_string();
 

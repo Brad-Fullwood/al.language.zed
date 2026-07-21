@@ -141,6 +141,15 @@ fn tools() -> &'static [ToolDef] {
                             "minimum": 0,
                             "description": "For start: attach to a specific existing BC session instead of breakOnNext."
                         },
+                        "startupObjectType": {
+                            "type": "string",
+                            "description": "For an inline start: startup object type used in the returned debug browser URL; defaults to Page."
+                        },
+                        "startupObjectId": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "For an inline start: startup object ID used in the returned debug browser URL; defaults to 22."
+                        },
                         "file": {
                             "type": "string",
                             "description": "For breakpoint: AL source path or file URI."

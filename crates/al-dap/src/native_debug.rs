@@ -23,6 +23,11 @@ pub struct NativeDebugSession {
     /// file path → list of BC breakpoint IDs
     breakpoints: HashMap<String, Vec<i64>>,
     history: VecDeque<BreakpointHit>,
+    /// BC only accepts DebugAdapterConfigurationDone after a concrete client
+    /// has attached. Break-on-next web sessions attach asynchronously after
+    /// the debug-context browser URL is opened, so configuration is deferred
+    /// from `start` until event draining observes that callback.
+    configured: bool,
 }
 
 /// Append a Break event to history with the configured cap. Pure (no `self`
@@ -43,14 +48,6 @@ impl NativeDebugSession {
         let session = BcDebugSession::connect(&config, access_token).await?;
 
         session.attach(&config).await?;
-        // Match the editor-facing DAP adapter: a successful Attach establishes
-        // the usable debug session. Some current BC cloud tenants reject both
-        // known DebugAdapterConfigurationDone signatures even though the
-        // attached session remains valid, so this compatibility call must not
-        // turn a successful attach into a failed MCP/CLI start.
-        if let Err(error) = session.configuration_done(&config).await {
-            warn!(%error, "configurationDone rejected after successful attach; continuing");
-        }
 
         info!(connection_id = %session.connection_id, "Native debug session started");
 
@@ -59,6 +56,7 @@ impl NativeDebugSession {
             config,
             breakpoints: HashMap::new(),
             history: VecDeque::new(),
+            configured: false,
         })
     }
 
@@ -185,6 +183,23 @@ impl NativeDebugSession {
                 );
                 next_seq += 1;
                 tracing::debug!(reason = %reason, "native_debug: recorded Break event in history");
+            }
+        }
+
+        // The Attach RPC registers a break-on-next debugger but does not mean
+        // a WebClient/NST session is bound yet. Current BC online rejects
+        // configurationDone before OnAttachedToConnection, leaving accepted
+        // breakpoints inert. Complete configuration exactly once after that
+        // callback has been processed above.
+        if !self.configured && self.session.is_attached().await {
+            match self.session.configuration_done(&self.config).await {
+                Ok(()) => {
+                    self.configured = true;
+                    info!("Native debug session configured after client attach");
+                }
+                Err(error) => {
+                    warn!(%error, "configurationDone rejected after client attach; will retry");
+                }
             }
         }
     }
@@ -358,6 +373,7 @@ impl NativeDebugSession {
             config,
             breakpoints: HashMap::new(),
             history: VecDeque::new(),
+            configured: false,
         }
     }
 
@@ -965,6 +981,22 @@ mod native_session_tests {
                 .all(|f| f["target"] != "GetVariables"),
             "running state must not query variables"
         );
+    }
+
+    #[tokio::test]
+    async fn state_configures_once_after_client_attach_callback() {
+        let (mut nds, fake) = session("c");
+        fake.push_callback("OnAttachedToConnection", json!(null));
+
+        nds.state().await.unwrap();
+        nds.state().await.unwrap();
+
+        let configured = fake
+            .sent_frames()
+            .into_iter()
+            .filter(|frame| frame["target"] == "DebugAdapterConfigurationDone")
+            .count();
+        assert_eq!(configured, 1, "configurationDone is deferred and sent once");
     }
 
     #[tokio::test]

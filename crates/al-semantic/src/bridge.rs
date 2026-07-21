@@ -1,4 +1,4 @@
-//! .NET bridge for CodeAnalysis API — semantic analysis, analyzers, compilation.
+//! .NET bridge for CodeAnalysis API semantic analysis and analyzers.
 //!
 //! Hosts the .NET CLR in-process via `netcorehost` and communicates with a thin
 //! C# bridge DLL using JSON-in/JSON-out over function pointers. No subprocess.
@@ -38,18 +38,6 @@ pub struct AnalyzeRequest {
     pub source: String,
     pub analyzers: Vec<String>,
     pub package_cache: PathBuf,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CompileResult {
-    pub success: bool,
-    pub diagnostics: Vec<DiagnosticEntry>,
-    pub app_path: Option<PathBuf>,
-    /// Raw compiler stdout+stderr (capped bridge-side). Present so a
-    /// failed compile with no parseable diagnostics is never silent.
-    #[serde(default)]
-    pub output: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -653,24 +641,6 @@ impl SemanticBridge {
         Ok(codes)
     }
 
-    /// Legacy bridge-compile entry point retained for source compatibility.
-    ///
-    /// Compilation is owned by `al-compile`; allowing this in-process bridge to
-    /// spawn a 120-second child compiler would violate the bridge's 30-second
-    /// timeout/cooldown contract. The method therefore fails closed.
-    #[deprecated(note = "use the al-compile crate; bridge compile is disabled")]
-    pub async fn compile(
-        &self,
-        _project: &Path,
-        _alc_path: Option<&Path>,
-        _package_cache: Option<&Path>,
-    ) -> Result<CompileResult, SemanticError> {
-        Err(SemanticError::RpcError {
-            code: -32601,
-            message: "Bridge compile is retired; use the al-compile backend".to_string(),
-        })
-    }
-
     pub async fn ping(&self) -> Result<(), SemanticError> {
         let result = self.call("ping", serde_json::Value::Null).await?;
         let status = result.get("status").and_then(serde_json::Value::as_str);
@@ -703,45 +673,6 @@ mod tests {
         assert_eq!(json["file"], "/src/MyTable.al");
         assert_eq!(json["analyzers"].as_array().unwrap().len(), 2);
         assert!(json.get("packageCache").is_some());
-    }
-
-    #[test]
-    fn test_compile_result_deserialization() {
-        let json = serde_json::json!({
-            "success": true,
-            "diagnostics": [],
-            "appPath": "/output/My.app"
-        });
-        let result: CompileResult = serde_json::from_value(json).unwrap();
-        assert!(result.success);
-        assert!(result.diagnostics.is_empty());
-        assert_eq!(result.app_path.unwrap(), PathBuf::from("/output/My.app"));
-    }
-
-    #[test]
-    fn test_compile_result_with_diagnostics() {
-        let json = serde_json::json!({
-            "success": false,
-            "diagnostics": [
-                {
-                    "file": "/src/test.al",
-                    "line": 10,
-                    "column": 5,
-                    "endLine": 10,
-                    "endColumn": 15,
-                    "severity": "Error",
-                    "code": "AL0001",
-                    "message": "Syntax error"
-                }
-            ],
-            "appPath": null
-        });
-        let result: CompileResult = serde_json::from_value(json).unwrap();
-        assert!(!result.success);
-        assert_eq!(result.diagnostics.len(), 1);
-        assert_eq!(result.diagnostics[0].code, "AL0001");
-        assert_eq!(result.diagnostics[0].line, 10);
-        assert!(result.app_path.is_none());
     }
 
     #[test]
@@ -1142,24 +1073,33 @@ mod tests {
     #[test]
     fn test_parse_response_ok_maps_through() {
         let value = serde_json::json!({
-            "success": true,
-            "diagnostics": [],
-            "appPath": "/out/My.app"
+            "file": "/src/a.al",
+            "line": 1,
+            "column": 2,
+            "endLine": 1,
+            "endColumn": 9,
+            "severity": "Error",
+            "code": "AL0001",
+            "message": "boom"
         });
-        let parsed: CompileResult =
+        let parsed: DiagnosticEntry =
             SemanticBridge::parse_response(value).expect("valid payload should decode");
-        assert!(parsed.success);
-        assert_eq!(parsed.app_path.unwrap(), PathBuf::from("/out/My.app"));
+        assert_eq!(parsed.code, "AL0001");
     }
 
     #[test]
     fn test_parse_response_type_mismatch_is_serialization_error() {
         let value = serde_json::json!({
-            "success": "yes",          // wrong type
-            "diagnostics": [],
-            "appPath": null
+            "file": "/src/a.al",
+            "line": "1",
+            "column": 2,
+            "endLine": 1,
+            "endColumn": 9,
+            "severity": "Error",
+            "code": "AL0001",
+            "message": "boom"
         });
-        match SemanticBridge::parse_response::<CompileResult>(value) {
+        match SemanticBridge::parse_response::<DiagnosticEntry>(value) {
             Err(SemanticError::SerializationError(msg)) => {
                 assert!(!msg.is_empty(), "serde message should be propagated");
             }
@@ -1169,12 +1109,17 @@ mod tests {
 
     #[test]
     fn test_parse_response_missing_required_field_is_serialization_error() {
-        // `diagnostics` is a required (non-defaulted) field of CompileResult.
-        // Its absence is a decode failure that must surface as
-        // SerializationError, mirroring a malformed bridge response.
-        let value = serde_json::json!({ "success": true, "appPath": null });
+        let value = serde_json::json!({
+            "file": "/src/a.al",
+            "line": 1,
+            "column": 2,
+            "endLine": 1,
+            "endColumn": 9,
+            "severity": "Error",
+            "code": "AL0001"
+        });
         assert!(matches!(
-            SemanticBridge::parse_response::<CompileResult>(value),
+            SemanticBridge::parse_response::<DiagnosticEntry>(value),
             Err(SemanticError::SerializationError(_))
         ));
     }
@@ -1242,14 +1187,6 @@ mod tests {
         assert_eq!(bt.name, "Boolean");
         assert!(bt.methods.is_empty());
         assert!(bt.enum_values.is_empty());
-    }
-
-    #[test]
-    fn test_compile_result_missing_app_path_defaults_to_none() {
-        let value = serde_json::json!({ "success": true, "diagnostics": [] });
-        let r: CompileResult =
-            serde_json::from_value(value).expect("missing appPath should decode to None");
-        assert!(r.app_path.is_none());
     }
 
     #[test]

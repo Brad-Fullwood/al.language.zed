@@ -441,7 +441,7 @@ Useful validation:
 ```bash
 cargo fmt --all --check
 cargo test --workspace --exclude zed-al
-cargo test -p zed-al --target wasm32-wasip1
+cargo test -p zed-al
 cargo test -p al-protocol
 make wasm
 cargo test -p al-test-harness

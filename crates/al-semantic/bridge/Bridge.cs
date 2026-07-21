@@ -336,7 +336,7 @@ internal class CodeAnalysisBridge
         var col = prms.GetProperty("column").GetUInt32();
         var pkgCache = GetOptionalString(prms, "packageCache");
 
-        // F-037: prefer caller-supplied unsaved text over disk so hover
+        // Prefer caller-supplied unsaved text over disk so hover
         // reflects the editor buffer, not the last-saved file. Disk read is
         // the fallback for callers that don't have the buffer (analyze).
         string? source = null;
@@ -395,7 +395,7 @@ internal class CodeAnalysisBridge
         var col = prms.GetProperty("column").GetUInt32();
         var pkgCache = GetOptionalString(prms, "packageCache");
 
-        // F-037: prefer caller-supplied unsaved text over disk; see
+        // Prefer caller-supplied unsaved text over disk; see
         // HandleTypeAt for the same fallback contract.
         string? source = null;
         if (prms.TryGetProperty("text", out var textProp) && textProp.ValueKind == JsonValueKind.String)
@@ -494,208 +494,6 @@ internal class CodeAnalysisBridge
                 });
             }
             catch { /* skip */ }
-        }
-        return results;
-    }
-
-    public object? HandleCompile(JsonElement prms)
-    {
-        var project = prms.GetProperty("project").GetString()
-            ?? throw new Exception("Missing 'project' parameter");
-        if (!Directory.Exists(project))
-            throw new Exception($"Project directory not found: {project}");
-
-        var alcPath = "";
-        if (prms.TryGetProperty("alcPath", out var ae)) alcPath = ae.GetString() ?? "";
-        if (prms.TryGetProperty("alc_path", out var ae2)) alcPath = ae2.GetString() ?? "";
-
-        if (string.IsNullOrEmpty(alcPath))
-        {
-            var candidates = new[]
-            {
-                Path.Combine(_alExtDir, "bin", "alc.dll"),
-                Path.Combine(_alExtDir, "alc.dll"),
-                Path.Combine(_alExtDir, "bin", "win32", "alc.exe"),
-                Path.Combine(_alExtDir, "bin", "alc.exe"),
-            };
-            alcPath = candidates.FirstOrDefault(File.Exists) ?? "";
-        }
-
-        if (string.IsNullOrEmpty(alcPath) || !File.Exists(alcPath))
-            throw new Exception($"alc compiler not found in {_alExtDir}");
-
-        var pkgCache = "";
-        if (prms.TryGetProperty("packageCachePath", out var pe)) pkgCache = pe.GetString() ?? "";
-        if (prms.TryGetProperty("package_cache_path", out var pe2)) pkgCache = pe2.GetString() ?? "";
-        if (string.IsNullOrEmpty(pkgCache)) pkgCache = Path.Combine(project, ".alpackages");
-
-        var errorLogPath = Path.Combine(Path.GetTempPath(), $"al-errorlog-{Guid.NewGuid():N}.json");
-        try
-        {
-            var isAlcDll = alcPath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
-            var startInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-
-            var alcArgs = $"/project:\"{project}\" /packagecachepath:\"{pkgCache}\" /errorlog:\"{errorLogPath}\"";
-            if (isAlcDll)
-            {
-                startInfo.FileName = "dotnet";
-                startInfo.Arguments = $"\"{alcPath}\" {alcArgs}";
-                // Permit alc.dll to run when only a newer .NET runtime is installed.
-                startInfo.EnvironmentVariables["DOTNET_ROLL_FORWARD"] = "Major";
-            }
-            else
-            {
-                startInfo.FileName = alcPath;
-                startInfo.Arguments = alcArgs;
-            }
-
-            using var process = System.Diagnostics.Process.Start(startInfo);
-            if (process == null) throw new Exception("Failed to start alc compiler process");
-
-            // Read stderr on a background task: reading both pipes
-            // sequentially can deadlock when the child fills the un-drained
-            // pipe's kernel buffer.
-            var stderrTask = process.StandardError.ReadToEndAsync();
-            var stdout = process.StandardOutput.ReadToEnd();
-            if (!process.WaitForExit(120000))
-            {
-                try { process.Kill(entireProcessTree: true); } catch { }
-                throw new Exception("alc compiler timed out after 120s");
-            }
-            var stderr = stderrTask.GetAwaiter().GetResult();
-
-            var diagnostics = new List<object>();
-            string? appPath = null;
-
-            if (File.Exists(errorLogPath))
-                diagnostics = ParseSarifErrorLog(errorLogPath);
-
-            if (diagnostics.Count == 0 && !string.IsNullOrWhiteSpace(stdout))
-                diagnostics = ParseAlcStdout(stdout);
-
-            var appJsonPath = Path.Combine(project, "app.json");
-            if (File.Exists(appJsonPath))
-            {
-                var appJson = JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(appJsonPath));
-                if (appJson.TryGetProperty("name", out var nameProperty)
-                    && appJson.TryGetProperty("publisher", out var publisherProperty)
-                    && appJson.TryGetProperty("version", out var versionProperty))
-                {
-                    var name = nameProperty.GetString();
-                    var publisher = publisherProperty.GetString();
-                    var version = versionProperty.GetString();
-                    if (string.IsNullOrWhiteSpace(name)
-                        || string.IsNullOrWhiteSpace(publisher)
-                        || string.IsNullOrWhiteSpace(version))
-                    {
-                        throw new InvalidDataException("app.json contains empty package identity fields");
-                    }
-                    var expected = Path.Combine(project, "output", $"{publisher}_{name}_{version}.app");
-                    if (File.Exists(expected)) appPath = expected;
-                }
-            }
-
-            // Retain capped compiler output when structured diagnostics are unavailable.
-            var rawOutput = (stdout + (string.IsNullOrWhiteSpace(stderr) ? "" : "\n" + stderr)).Trim();
-            if (rawOutput.Length > 64 * 1024) rawOutput = rawOutput.Substring(0, 64 * 1024) + "\n…(truncated)";
-
-            return new { success = process.ExitCode == 0, diagnostics, appPath, output = rawOutput };
-        }
-        finally
-        {
-            try { if (File.Exists(errorLogPath)) File.Delete(errorLogPath); } catch { }
-        }
-    }
-
-    private List<object> ParseSarifErrorLog(string path)
-    {
-        var results = new List<object>();
-        try
-        {
-            var content = File.ReadAllText(path);
-            if (!content.TrimStart().StartsWith("{")) return results;
-            var sarif = JsonSerializer.Deserialize<JsonElement>(content);
-            if (!sarif.TryGetProperty("runs", out var runs) || runs.GetArrayLength() == 0) return results;
-            if (!runs[0].TryGetProperty("results", out var sarifResults)) return results;
-
-            foreach (var r in sarifResults.EnumerateArray())
-            {
-                try
-                {
-                    var ruleId = r.TryGetProperty("ruleId", out var ri) ? ri.GetString() ?? "" : "";
-                    var message = "";
-                    if (r.TryGetProperty("message", out var msg) && msg.TryGetProperty("text", out var mt))
-                        message = mt.GetString() ?? "";
-                    var level = r.TryGetProperty("level", out var lv) ? lv.GetString() ?? "warning" : "warning";
-                    var severity = NormSev(level == "note" ? "info" : level);
-
-                    uint line = 0, col = 0, eLine = 0, eCol = 0;
-                    var file = "";
-                    if (r.TryGetProperty("locations", out var locs) && locs.GetArrayLength() > 0)
-                    {
-                        var loc = locs[0];
-                        if (loc.TryGetProperty("physicalLocation", out var pl))
-                        {
-                            if (pl.TryGetProperty("artifactLocation", out var al) && al.TryGetProperty("uri", out var u))
-                            {
-                                file = u.GetString() ?? "";
-                                if (file.StartsWith("file:///")) file = new Uri(file).LocalPath;
-                            }
-                            if (pl.TryGetProperty("region", out var rg))
-                            {
-                                line = rg.TryGetProperty("startLine", out var sl) ? (uint)sl.GetInt32() : 0;
-                                col = rg.TryGetProperty("startColumn", out var sc) ? (uint)sc.GetInt32() : 0;
-                                eLine = rg.TryGetProperty("endLine", out var el) ? (uint)el.GetInt32() : line;
-                                eCol = rg.TryGetProperty("endColumn", out var ec) ? (uint)ec.GetInt32() : col;
-                            }
-                        }
-                    }
-                    results.Add(new { file, line, column = col, endLine = eLine, endColumn = eCol, severity, code = ruleId, message });
-                }
-                catch { }
-            }
-        }
-        catch { }
-        return results;
-    }
-
-    private static List<object> ParseAlcStdout(string stdout)
-    {
-        var results = new List<object>();
-        foreach (var rawLine in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var ln = rawLine.Trim();
-            var p1 = ln.IndexOf('('); var p2 = ln.IndexOf(')', p1 + 1);
-            if (p1 < 0 || p2 < 0) continue;
-            var file = ln[..p1];
-            var posStr = ln[(p1 + 1)..p2]; var rest = ln[(p2 + 1)..].TrimStart(':', ' ');
-            // Only accept the `path(line,col)` diagnostic shape: the parens
-            // content must be numeric. Without this check, banner lines like
-            // "Microsoft (R) AL Compiler version ..." parsed as phantom
-            // warnings ("Microsoft :0:0: warning : AL Compiler version ...").
-            if (!posStr.Split(',').All(part => part.Trim().Length > 0 && part.Trim().All(char.IsDigit)))
-                continue;
-            var pp = posStr.Split(',');
-            uint lineNum = 0, colNum = 0;
-            if (pp.Length >= 1) uint.TryParse(pp[0], out lineNum);
-            if (pp.Length >= 2) uint.TryParse(pp[1], out colNum);
-
-            var severity = "warning"; var code = ""; var message = rest;
-            var ci = rest.IndexOf(':');
-            if (ci > 0)
-            {
-                var prefix = rest[..ci].Trim(); message = rest[(ci + 1)..].Trim();
-                if (prefix.StartsWith("error", StringComparison.OrdinalIgnoreCase)) { severity = "error"; code = prefix.Length > 6 ? prefix[6..].Trim() : ""; }
-                else if (prefix.StartsWith("warning", StringComparison.OrdinalIgnoreCase)) { severity = "warning"; code = prefix.Length > 8 ? prefix[8..].Trim() : ""; }
-                else if (prefix.StartsWith("info", StringComparison.OrdinalIgnoreCase)) { severity = "info"; code = prefix.Length > 5 ? prefix[5..].Trim() : ""; }
-            }
-            results.Add(new { file, line = lineNum, column = colNum, endLine = lineNum, endColumn = colNum, severity, code, message });
         }
         return results;
     }

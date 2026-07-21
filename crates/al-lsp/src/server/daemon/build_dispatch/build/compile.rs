@@ -30,9 +30,13 @@ fn diagnostics_json(diagnostics: &[al_compile::CompileDiagnostic]) -> Vec<serde_
 fn workspace_diagnostics_json(
     workspace: &Workspace,
     config: &al_project::config::AlConfig,
+    project_root: &std::path::Path,
 ) -> (Vec<serde_json::Value>, bool) {
-    let diagnostics =
-        al_analysis::queries::diagnostics::native_workspace_diagnostics(workspace, config);
+    let diagnostics = al_analysis::queries::diagnostics::native_workspace_diagnostics_at_root(
+        workspace,
+        config,
+        Some(project_root),
+    );
     let has_errors = diagnostics.iter().any(|(_, diagnostic)| {
         diagnostic.severity == al_analysis::queries::diagnostics::SyntaxDiagnosticSeverity::Error
     });
@@ -111,7 +115,7 @@ pub(in crate::server::daemon) async fn dispatch_compile(
         // syntax/project/binding verification and returns structured diagnostics.
         if !use_official_compiler {
             let (workspace_diagnostics, has_workspace_errors) =
-                workspace_diagnostics_json(workspace, &config_snapshot);
+                workspace_diagnostics_json(workspace, &config_snapshot, &project_root);
             if has_workspace_errors {
                 return Ok(serde_json::json!({
                     "success": false,
@@ -272,7 +276,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
     let use_official_compiler = config_snapshot.use_official_compiler;
     if !use_official_compiler {
         let (workspace_diagnostics, has_workspace_errors) =
-            workspace_diagnostics_json(workspace, &config_snapshot);
+            workspace_diagnostics_json(workspace, &config_snapshot, &project_root);
         if has_workspace_errors {
             return Response {
                 id,

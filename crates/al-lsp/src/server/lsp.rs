@@ -282,10 +282,19 @@ impl AlServer {
             // previous task before its sleep elapses never clone AlConfig. The
             // clone is needed so per-rule lint filtering works in spawn_blocking.
             let config = workspace.config.read().await.clone();
+            let project_root = workspace
+                .project
+                .read()
+                .await
+                .as_ref()
+                .map(|project| project.root.clone());
             let diag_uri = uri.clone();
             let lsp_diags: Vec<Diagnostic> = match tokio::task::spawn_blocking(move || {
-                al_analysis::queries::diagnostics::syntax_diagnostics(
-                    &workspace, &diag_uri, &config,
+                al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
+                    &workspace,
+                    &diag_uri,
+                    &config,
+                    project_root.as_deref(),
                 )
                 .iter()
                 .map(crate::server::diagnostics::syntax_diag_to_lsp)

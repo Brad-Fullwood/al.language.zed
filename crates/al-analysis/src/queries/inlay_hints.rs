@@ -395,7 +395,7 @@ fn lookup_parameter_names(
         return best;
     }
 
-    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner());
     let candidates: Vec<OverloadCandidate> = builtins
         .iter()
         .flat_map(|bt| bt.methods.iter())
@@ -436,7 +436,7 @@ fn lookup_via_receiver(
     let cache = workspace
         .semantic_cache
         .read()
-        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+        .unwrap_or_else(|e| e.into_inner());
     let type_names: Vec<&str> = {
         let mut names = vec![decl.type_name.as_str()];
         if let Some(sub) = decl.type_subtype.as_deref() {

@@ -49,6 +49,15 @@ pub fn syntax_diagnostics(
     uri: &Url,
     config: &AlConfig,
 ) -> Vec<SyntaxDiagnostic> {
+    syntax_diagnostics_at_root(workspace, uri, config, None)
+}
+
+pub fn syntax_diagnostics_at_root(
+    workspace: &Workspace,
+    uri: &Url,
+    config: &AlConfig,
+    project_root: Option<&std::path::Path>,
+) -> Vec<SyntaxDiagnostic> {
     let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
         // Document not in DocumentStore. Callers (did_open / did_change) are
         // expected to pre-populate the store, so a cache miss is unexpected.
@@ -65,7 +74,7 @@ pub fn syntax_diagnostics(
     let mut diagnostics = collect_diagnostics_from_tree(&tree, &text, config);
     if let Ok(path) = uri.to_file_path() {
         diagnostics.extend(
-            native_workspace_diagnostics(workspace, config)
+            native_workspace_diagnostics_at_root(workspace, config, project_root)
                 .into_iter()
                 .filter_map(|(finding_path, diagnostic)| {
                     (finding_path == path).then_some(diagnostic)
@@ -95,6 +104,14 @@ pub fn workspace_syntax_diagnostics(
     workspace: &Workspace,
     config: &AlConfig,
 ) -> Vec<(std::path::PathBuf, Vec<SyntaxDiagnostic>)> {
+    workspace_syntax_diagnostics_at_root(workspace, config, None)
+}
+
+pub fn workspace_syntax_diagnostics_at_root(
+    workspace: &Workspace,
+    config: &AlConfig,
+    project_root: Option<&std::path::Path>,
+) -> Vec<(std::path::PathBuf, Vec<SyntaxDiagnostic>)> {
     let mut results: Vec<_> = workspace
         .file_index
         .iter_parsed()
@@ -107,7 +124,8 @@ pub fn workspace_syntax_diagnostics(
 
     let mut native_by_file: std::collections::HashMap<std::path::PathBuf, Vec<SyntaxDiagnostic>> =
         std::collections::HashMap::new();
-    for (path, diagnostic) in native_workspace_diagnostics(workspace, config) {
+    for (path, diagnostic) in native_workspace_diagnostics_at_root(workspace, config, project_root)
+    {
         native_by_file.entry(path).or_default().push(diagnostic);
     }
     for (path, diagnostics) in &mut results {
@@ -132,12 +150,20 @@ pub fn native_workspace_diagnostics(
     workspace: &Workspace,
     config: &AlConfig,
 ) -> Vec<(std::path::PathBuf, SyntaxDiagnostic)> {
+    native_workspace_diagnostics_at_root(workspace, config, None)
+}
+
+pub fn native_workspace_diagnostics_at_root(
+    workspace: &Workspace,
+    config: &AlConfig,
+    project_root: Option<&std::path::Path>,
+) -> Vec<(std::path::PathBuf, SyntaxDiagnostic)> {
     if !config.enable_native_lint {
         return Vec::new();
     }
 
     let mut diagnostics = Vec::new();
-    for finding in super::native_check::native_semantic_checks(workspace) {
+    for finding in super::native_check::native_semantic_checks(workspace, project_root) {
         if !config.is_lint_rule_enabled(finding.code) {
             continue;
         }

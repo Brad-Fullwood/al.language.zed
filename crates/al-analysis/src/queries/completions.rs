@@ -390,7 +390,7 @@ fn add_default_completions(
         });
     }
 
-    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner());
     for bt in builtins.iter() {
         items.push(CompletionEntry {
             label: bt.name.clone(),

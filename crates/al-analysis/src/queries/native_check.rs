@@ -24,6 +24,8 @@ use al_workspace::Workspace;
 
 /// AL-NC001 — two objects of the same type share an ID.
 pub const DUPLICATE_ID: &str = "AL-NC001";
+/// AL-NC000 — project configuration could not be read or parsed.
+pub const CONFIGURATION_ERROR: &str = "AL-NC000";
 /// AL-NC002 — an object's ID falls outside every declared `app.json` idRange.
 pub const ID_OUT_OF_RANGE: &str = "AL-NC002";
 /// AL-NC003 — two objects of the same type share a (case-insensitive) name.
@@ -46,6 +48,12 @@ pub struct NativeRuleInfo {
 }
 
 const RULES: &[NativeRuleInfo] = &[
+    NativeRuleInfo {
+        code: CONFIGURATION_ERROR,
+        name: "invalid-project-configuration",
+        severity: NativeSeverity::Error,
+        description: "A required project configuration file is unreadable or malformed.",
+    },
     NativeRuleInfo {
         code: DUPLICATE_ID,
         name: "duplicate-object-id",
@@ -141,18 +149,54 @@ pub struct ObjectRecord {
 /// `app.json`, the affix rules from `AppSourceCop.json`, and the set of base
 /// objects available in loaded packages, then delegates to the pure check
 /// functions and returns a single deterministically-sorted finding list.
-pub fn native_semantic_checks(workspace: &Workspace) -> Vec<NativeFinding> {
+pub fn native_semantic_checks(
+    workspace: &Workspace,
+    project_root: Option<&Path>,
+) -> Vec<NativeFinding> {
     let objects = collect_objects(&workspace.file_index);
-    let id_ranges = workspace_id_ranges(workspace);
-    let affixes = workspace_affix_rules(workspace);
     let pkg_targets = package_targets(workspace);
+    let mut config_findings = Vec::new();
+    let (id_ranges, affixes) = match project_root {
+        Some(root) => {
+            let id_ranges = id_ranges_from_app_json(root).unwrap_or_else(|message| {
+                config_findings.push(configuration_finding(root.join("app.json"), message));
+                Vec::new()
+            });
+            let affixes = affix_rules_from_appsourcecop(root).unwrap_or_else(|message| {
+                config_findings.push(configuration_finding(
+                    root.join("AppSourceCop.json"),
+                    message,
+                ));
+                AffixRules::default()
+            });
+            (id_ranges, affixes)
+        }
+        None => (Vec::new(), AffixRules::default()),
+    };
 
     let mut findings = check_objects(&objects, &id_ranges);
     findings.extend(affix_findings(&objects, &affixes));
     findings.extend(dangling_extension_findings(&objects, &pkg_targets));
     findings.extend(duplicate_member_id_findings(&objects));
+    findings.extend(config_findings);
     sort_findings(&mut findings);
     findings
+}
+
+fn configuration_finding(file: PathBuf, message: String) -> NativeFinding {
+    NativeFinding {
+        code: CONFIGURATION_ERROR,
+        severity: NativeSeverity::Error,
+        object_type: "configuration".to_string(),
+        object_id: None,
+        object_name: file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("project configuration")
+            .to_string(),
+        file: Some(file.display().to_string()),
+        message,
+    }
 }
 
 /// Build [`ObjectRecord`]s from the workspace file index's cached object info,
@@ -188,20 +232,6 @@ fn collect_objects(file_index: &al_source::file_index::FileIndex) -> Vec<ObjectR
         .collect()
 }
 
-/// Read the affix rules from the loaded project's `AppSourceCop.json`.
-///
-/// Non-blocking `try_read` on the project lock; if the project is not loaded the
-/// affix check no-ops (returns the empty ruleset). Never blocks the daemon.
-fn workspace_affix_rules(workspace: &Workspace) -> AffixRules {
-    workspace
-        .project
-        .try_read()
-        .ok()
-        .and_then(|g| g.as_ref().map(|p| p.root.clone()))
-        .map(|root| affix_rules_from_appsourcecop(&root))
-        .unwrap_or_default()
-}
-
 /// Build the `(kind_keyword, lowercase_name)` set of every non-synthetic object
 /// available in loaded packages (`.alpackages`). Used by AL-NC005 to resolve an
 /// extension's base target against dependencies, not just the workspace.
@@ -215,47 +245,47 @@ fn package_targets(workspace: &Workspace) -> HashSet<(String, String)> {
         .collect()
 }
 
-/// Read `idRanges` from the loaded project's `app.json`.
-///
-/// Uses a non-blocking `try_read` on the project lock; if the project is not
-/// loaded (or the lock is momentarily held by a writer) the range check simply
-/// no-ops by returning an empty list — it never blocks the daemon worker.
-fn workspace_id_ranges(workspace: &Workspace) -> Vec<(i64, i64)> {
-    workspace
-        .project
-        .try_read()
-        .ok()
-        .and_then(|g| g.as_ref().map(|p| p.root.clone()))
-        .map(|root| id_ranges_from_app_json(&root))
-        .unwrap_or_default()
-}
-
 /// Parse the `idRanges` array out of `<root>/app.json`.
 ///
-/// Tolerant by design: a missing file, invalid JSON, or an absent `idRanges`
-/// key all yield an empty list (and the range check then no-ops). Mirrors the
-/// extraction in `al-emit`'s manifest builder, kept inline to avoid an upward
-/// crate dependency from the analysis layer.
-pub fn id_ranges_from_app_json(root: &Path) -> Vec<(i64, i64)> {
-    let Ok(content) = std::fs::read_to_string(root.join("app.json")) else {
-        return Vec::new();
+/// Missing or malformed manifests return an actionable error. An absent
+/// `idRanges` key is valid and disables only the range rule.
+pub fn id_ranges_from_app_json(root: &Path) -> Result<Vec<(i64, i64)>, String> {
+    let path = root.join("app.json");
+    let content = std::fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|error| format!("Invalid {}: {error}", path.display()))?;
+    let Some(raw_ranges) = value.get("idRanges") else {
+        return Ok(Vec::new());
     };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return Vec::new();
-    };
-    value
-        .get("idRanges")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|r| {
-                    let from = r.get("from").and_then(|v| v.as_i64())?;
-                    let to = r.get("to").and_then(|v| v.as_i64())?;
-                    Some((from, to))
-                })
-                .collect()
+    let ranges = raw_ranges
+        .as_array()
+        .ok_or_else(|| format!("Invalid {}: idRanges must be an array", path.display()))?;
+    ranges
+        .iter()
+        .enumerate()
+        .map(|(index, range)| {
+            let from = range
+                .get("from")
+                .and_then(|value| value.as_i64())
+                .ok_or_else(|| {
+                    format!(
+                        "Invalid {}: idRanges[{index}].from must be an integer",
+                        path.display()
+                    )
+                })?;
+            let to = range
+                .get("to")
+                .and_then(|value| value.as_i64())
+                .ok_or_else(|| {
+                    format!(
+                        "Invalid {}: idRanges[{index}].to must be an integer",
+                        path.display()
+                    )
+                })?;
+            Ok((from, to))
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// Mandatory naming-affix rules, as declared in `AppSourceCop.json`.
@@ -312,42 +342,64 @@ impl AffixRules {
 
 /// Parse the affix rules out of `<root>/AppSourceCop.json`.
 ///
-/// Tolerant by design (mirrors [`id_ranges_from_app_json`]): a missing file,
-/// invalid JSON, or absent keys all yield an empty ruleset (and AL-NC004 then
-/// no-ops). Reads `mandatoryAffixes` (array), `mandatoryPrefix` (string), and
-/// `mandatorySuffix` (string); empty strings are ignored.
-pub fn affix_rules_from_appsourcecop(root: &Path) -> AffixRules {
-    let Ok(content) = std::fs::read_to_string(root.join("AppSourceCop.json")) else {
-        return AffixRules::default();
+/// The file is optional. When present, read and schema errors are returned so
+/// AppSourceCop is not silently disabled by malformed configuration.
+pub fn affix_rules_from_appsourcecop(root: &Path) -> Result<AffixRules, String> {
+    let path = root.join("AppSourceCop.json");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(AffixRules::default())
+        }
+        Err(error) => return Err(format!("Failed to read {}: {error}", path.display())),
     };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return AffixRules::default();
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|error| format!("Invalid {}: {error}", path.display()))?;
+    let affixes = match value.get("mandatoryAffixes") {
+        None => Vec::new(),
+        Some(value) => value
+            .as_array()
+            .ok_or_else(|| {
+                format!(
+                    "Invalid {}: mandatoryAffixes must be an array",
+                    path.display()
+                )
+            })?
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        format!(
+                            "Invalid {}: mandatoryAffixes[{index}] must be a string",
+                            path.display()
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .collect(),
     };
-    let affixes = value
-        .get("mandatoryAffixes")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|s| s.as_str())
+    let str_key = |key: &str| -> Result<Option<String>, String> {
+        match value.get(key) {
+            None => Ok(None),
+            Some(value) => value
+                .as_str()
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
                 .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    let str_key = |key: &str| {
-        value
-            .get(key)
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
+                .map(|value| (!value.is_empty()).then_some(value))
+                .ok_or_else(|| format!("Invalid {}: {key} must be a string", path.display())),
+        }
     };
-    AffixRules {
+    Ok(AffixRules {
         affixes,
-        prefix: str_key("mandatoryPrefix"),
-        suffix: str_key("mandatorySuffix"),
-    }
+        prefix: str_key("mandatoryPrefix")?,
+        suffix: str_key("mandatorySuffix")?,
+    })
 }
 
 /// Extract the `extends`/`customizes` target object name from a parse tree.
@@ -979,12 +1031,10 @@ mod tests {
         )
         .unwrap();
 
-        let ranges = id_ranges_from_app_json(&dir);
+        let ranges = id_ranges_from_app_json(&dir).unwrap();
         assert_eq!(ranges, vec![(50000, 50099), (60000, 60010)]);
 
-        // Missing file → empty, no panic.
-        let empty = id_ranges_from_app_json(&dir.join("does-not-exist"));
-        assert!(empty.is_empty());
+        assert!(id_ranges_from_app_json(&dir.join("does-not-exist")).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1093,15 +1143,52 @@ mod tests {
         )
         .unwrap();
 
-        let rules = affix_rules_from_appsourcecop(&dir);
+        let rules = affix_rules_from_appsourcecop(&dir).unwrap();
         assert_eq!(rules.affixes, vec!["ABC".to_string(), "XYZ".to_string()]);
         assert_eq!(rules.suffix.as_deref(), Some("_Ext"));
         assert!(rules.prefix.is_none());
 
         // Missing file → empty ruleset, no panic.
-        assert!(affix_rules_from_appsourcecop(&dir.join("nope")).is_empty());
+        assert!(affix_rules_from_appsourcecop(&dir.join("nope"))
+            .unwrap()
+            .is_empty());
+
+        std::fs::write(dir.join("AppSourceCop.json"), "{not json").unwrap();
+        assert!(affix_rules_from_appsourcecop(&dir).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn malformed_native_configuration_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.json"), r#"{"idRanges":"wrong"}"#).unwrap();
+        assert!(id_ranges_from_app_json(dir.path()).is_err());
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"idRanges":[{"from":50100,"to":"wrong"}]}"#,
+        )
+        .unwrap();
+        assert!(id_ranges_from_app_json(dir.path()).is_err());
+        std::fs::write(
+            dir.path().join("AppSourceCop.json"),
+            r#"{"mandatoryAffixes":["ABC",42]}"#,
+        )
+        .unwrap();
+        assert!(affix_rules_from_appsourcecop(dir.path()).is_err());
+    }
+
+    #[test]
+    fn malformed_project_configuration_is_a_native_finding() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.json"), "{not json").unwrap();
+        let workspace = Workspace::new();
+        let findings = native_semantic_checks(&workspace, Some(dir.path()));
+        assert!(findings.iter().any(|finding| {
+            finding.code == CONFIGURATION_ERROR
+                && finding.severity == NativeSeverity::Error
+                && finding.message.contains("Invalid")
+        }));
     }
 
     // ---- AL-NC005: dangling extension target -------------------------------

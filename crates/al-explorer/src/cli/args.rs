@@ -221,10 +221,7 @@ Examples:
         #[arg(long)]
         dry_run: bool,
     },
-    /// List native lint rules. Semantic AL diagnostics (CodeCop, AppSourceCop,
-    /// UICop, PerTenantCop) are produced by the Microsoft analyzers via the
-    /// compiler bridge, not this native registry, so this list is empty unless
-    /// native rules are registered.
+    /// List native lint and workspace-check rules.
     Rules,
     /// List all compiler error codes from CodeAnalysis
     #[command(name = "error-codes")]

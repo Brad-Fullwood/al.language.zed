@@ -183,6 +183,10 @@ pub struct BcDebugSession {
     next_id: AtomicI64,
     /// SignalR connection ID — used in browser URL for debug context
     pub connection_id: String,
+    /// True after BC confirms that a concrete client session has attached.
+    /// `Attach` itself only registers the debugger; configurationDone must be
+    /// deferred until this callback for break-on-next web-client sessions.
+    is_attached: Mutex<bool>,
     is_stopped: Mutex<bool>,
     /// Receives `true` when a Break event arrives and `false` when the session
     /// ends (Detached or FatalError). Populated by the WebSocket reader task,
@@ -406,6 +410,7 @@ impl BcDebugSession {
             completion_rx: Mutex::new(completion_rx),
             next_id: AtomicI64::new(1),
             connection_id,
+            is_attached: Mutex::new(false),
             is_stopped: Mutex::new(false),
             break_event_rx: Mutex::new(break_event_rx),
         })
@@ -527,6 +532,7 @@ impl BcDebugSession {
                 }
                 "OnAttachedToConnection" => {
                     info!("Attached to debug connection");
+                    *self.is_attached.lock().await = true;
                 }
                 "OnDetachedFromConnection" => {
                     let terminate = msg
@@ -536,6 +542,7 @@ impl BcDebugSession {
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
                     info!("Detached from debug connection (terminate={terminate})");
+                    *self.is_attached.lock().await = false;
                 }
                 "OnFatalDebuggerException" => {
                     let message = fatal_exception_message(&msg.arguments);
@@ -607,6 +614,13 @@ impl BcDebugSession {
     pub async fn wait_for_break_event(&self) -> bool {
         let mut rx = self.break_event_rx.lock().await;
         rx.recv().await.unwrap_or(false)
+    }
+
+    /// Whether BC has bound this debugger connection to a concrete NST client
+    /// session. For break-on-next attaches this becomes true asynchronously
+    /// through `OnAttachedToConnection` after the debug browser is opened.
+    pub async fn is_attached(&self) -> bool {
+        *self.is_attached.lock().await
     }
 
     pub async fn attach(&self, config: &BcDebugConfig) -> Result<()> {
@@ -921,6 +935,7 @@ impl BcDebugSession {
             completion_rx: Mutex::new(completion_rx),
             next_id: AtomicI64::new(1),
             connection_id,
+            is_attached: Mutex::new(false),
             is_stopped: Mutex::new(false),
             break_event_rx: Mutex::new(break_event_rx),
         };

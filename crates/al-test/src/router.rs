@@ -835,7 +835,7 @@ fn promote(
         RoutingReason {
             message,
             file: Some(file.to_string_lossy().into_owned()),
-            line: Some(node.start_position().row as u32),
+            line: Some(node.start_position().row as u32 + 1),
         },
     );
 }
@@ -1292,6 +1292,15 @@ mod tests {
                 .iter()
                 .any(|reason| reason.message.contains("reachable procedure")),
             "expected a transitive reason: {:?}",
+            result.reasons
+        );
+        assert!(
+            result
+                .reasons
+                .iter()
+                .filter_map(|reason| reason.line)
+                .all(|line| line >= 1),
+            "routing reasons must use one-based source lines: {:?}",
             result.reasons
         );
     }

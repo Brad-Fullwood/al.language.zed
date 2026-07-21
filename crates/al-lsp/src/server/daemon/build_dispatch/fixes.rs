@@ -9,7 +9,7 @@ use super::build::write_al_file_and_refresh;
 use al_protocol::jsonrpc::{error_codes, Response};
 use al_workspace::Workspace;
 
-pub(in crate::server::daemon) fn dispatch_lint(
+pub(in crate::server::daemon) async fn dispatch_lint(
     workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
@@ -21,13 +21,19 @@ pub(in crate::server::daemon) fn dispatch_lint(
         // by editor diagnostics. Clean files remain present so "scanned all,
         // clean" is distinguishable from "scanned nothing".
         let mut results: Vec<serde_json::Value> = Vec::new();
-        let config = workspace
-            .config
-            .try_read()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let config = workspace.config.read().await.clone();
+        let project_root = workspace
+            .project
+            .read()
+            .await
+            .as_ref()
+            .map(|project| project.root.clone());
         for (path, diagnostics) in
-            al_analysis::queries::diagnostics::workspace_syntax_diagnostics(workspace, &config)
+            al_analysis::queries::diagnostics::workspace_syntax_diagnostics_at_root(
+                workspace,
+                &config,
+                project_root.as_deref(),
+            )
         {
             let diags: Vec<serde_json::Value> =
                 diagnostics.iter().map(syntax_diag_to_json).collect();
@@ -52,13 +58,19 @@ pub(in crate::server::daemon) fn dispatch_lint(
         Err(resp) => return resp,
     };
 
-    let config = workspace
-        .config
-        .try_read()
-        .map(|guard| guard.clone())
-        .unwrap_or_default();
-    let diagnostics =
-        al_analysis::queries::diagnostics::syntax_diagnostics(workspace, &uri, &config);
+    let config = workspace.config.read().await.clone();
+    let project_root = workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone());
+    let diagnostics = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
+        workspace,
+        &uri,
+        &config,
+        project_root.as_deref(),
+    );
     let diags: Vec<serde_json::Value> = diagnostics.iter().map(syntax_diag_to_json).collect();
     Response {
         id,
@@ -415,18 +427,41 @@ pub(in crate::server::daemon) fn dispatch_fix_data_classification(
         Err(e) => rpc_error(id, error_codes::INTERNAL_ERROR, &e),
     }
 }
-pub(in crate::server::daemon) fn dispatch_arch_lint(workspace: &Workspace, id: u64) -> Response {
-    // fs::read_to_string is wrapped in block_in_place so the async runtime can
-    // re-schedule the parked thread for other work while the read is in flight
-    // (matches dispatch_format).
-    let config = workspace
+pub(in crate::server::daemon) async fn dispatch_arch_lint(
+    workspace: &Workspace,
+    id: u64,
+) -> Response {
+    let root = workspace
         .project
-        .try_read()
-        .ok()
-        .and_then(|p| p.as_ref().map(|p| p.root.join(".alarch.json")))
-        .and_then(|path| tokio::task::block_in_place(|| std::fs::read_to_string(path).ok()))
-        .and_then(|json| al_analysis::queries::arch_lint::ArchConfig::from_json(&json).ok())
-        .unwrap_or_default();
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone());
+    let config = if let Some(root) = root {
+        let path = root.join(".alarch.json");
+        match tokio::fs::read_to_string(&path).await {
+            Ok(json) => match al_analysis::queries::arch_lint::ArchConfig::from_json(&json) {
+                Ok(config) => config,
+                Err(error) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INVALID_PARAMS,
+                        &format!("Invalid {}: {error}", path.display()),
+                    )
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Default::default(),
+            Err(error) => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("Failed to read {}: {error}", path.display()),
+                )
+            }
+        }
+    } else {
+        Default::default()
+    };
     let violations = al_analysis::queries::arch_lint::arch_lint(workspace, &config);
     let value = serde_json::to_value(&violations).unwrap_or(serde_json::Value::Null);
     Response {
@@ -456,21 +491,21 @@ mod tests {
         path.canonicalize().unwrap().to_string_lossy().to_string()
     }
 
-    #[test]
-    fn lint_missing_file_param_is_invalid_params() {
+    #[tokio::test]
+    async fn lint_missing_file_param_is_invalid_params() {
         let ws = empty_ws();
-        let resp = dispatch_lint(&ws, 1, &serde_json::json!({}));
+        let resp = dispatch_lint(&ws, 1, &serde_json::json!({})).await;
         let err = resp.error.expect("missing file/uri must be invalid params");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
     }
 
-    #[test]
-    fn lint_single_file_reports_parse_errors() {
+    #[tokio::test]
+    async fn lint_single_file_reports_parse_errors() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
         // Deliberately malformed AL — unterminated object.
         let file = write_al(&tmp, "Bad.al", "codeunit 50100 \"Bad\" { procedure X( ");
-        let resp = dispatch_lint(&ws, 2, &serde_json::json!({ "file": file }));
+        let resp = dispatch_lint(&ws, 2, &serde_json::json!({ "file": file })).await;
         assert!(
             resp.error.is_none(),
             "lint should succeed: {:?}",
@@ -489,16 +524,51 @@ mod tests {
         );
     }
 
-    #[test]
-    fn lint_all_mode_returns_array_for_empty_workspace() {
+    #[tokio::test]
+    async fn lint_all_mode_returns_array_for_empty_workspace() {
         let ws = empty_ws();
-        let resp = dispatch_lint(&ws, 3, &serde_json::json!({ "all": true }));
+        let resp = dispatch_lint(&ws, 3, &serde_json::json!({ "all": true })).await;
         assert!(resp.error.is_none());
         let arr = resp
             .result
             .and_then(|v| v.as_array().cloned())
             .expect("array");
         assert!(arr.is_empty(), "empty workspace → no per-file lint entries");
+    }
+
+    #[tokio::test]
+    async fn arch_lint_rejects_malformed_configuration() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(".alarch.json"),
+            r#"{"rules":[{"id":"CX","description":"complexity","kind":"maxComplexity","values":["not-a-number"]}]}"#,
+        )
+        .unwrap();
+        let workspace = Workspace::new();
+        *workspace.project.write().await = Some(al_project::project::AlProject {
+            root: tmp.path().to_path_buf(),
+            app_json: al_project::project::AppManifest {
+                id: "test".to_string(),
+                name: "Test".to_string(),
+                publisher: "Test".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: Vec::new(),
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: tmp.path().join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: Vec::new(),
+        });
+
+        let response = dispatch_arch_lint(&workspace, 4).await;
+        let error = response
+            .error
+            .expect("malformed config must be an RPC error");
+        assert_eq!(error.code, error_codes::INVALID_PARAMS);
+        assert!(error.message.contains(".alarch.json"));
+        assert!(error.message.contains("complexity threshold"));
     }
 
     #[test]

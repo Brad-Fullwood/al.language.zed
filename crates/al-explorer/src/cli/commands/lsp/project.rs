@@ -222,7 +222,7 @@ pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode
     };
 
     if cmd == "login" {
-        client.set_read_timeout(std::time::Duration::from_secs(120));
+        client.set_request_timeout(std::time::Duration::from_secs(120));
     }
 
     let mut params = serde_json::json!({ "cmd": cmd });

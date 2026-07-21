@@ -54,10 +54,18 @@ pub(crate) async fn compute_diagnostics(
 
     {
         let config_guard = server.workspace.config.read().await;
-        let syntax_diags = al_analysis::queries::diagnostics::syntax_diagnostics(
+        let project_root = server
+            .workspace
+            .project
+            .read()
+            .await
+            .as_ref()
+            .map(|project| project.root.clone());
+        let syntax_diags = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
             &server.workspace,
             uri,
             &config_guard,
+            project_root.as_deref(),
         );
         drop(config_guard);
         diagnostics.extend(syntax_diags.iter().map(syntax_diag_to_lsp));
@@ -112,9 +120,18 @@ pub(crate) async fn compute_workspace_diagnostics(
 
     // Phase 2 — remaining indexed files (syntax only, from cached trees).
     let config = server.workspace.config.read().await.clone();
-    for (path, diags) in
-        al_analysis::queries::diagnostics::workspace_syntax_diagnostics(&server.workspace, &config)
-    {
+    let project_root = server
+        .workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone());
+    for (path, diags) in al_analysis::queries::diagnostics::workspace_syntax_diagnostics_at_root(
+        &server.workspace,
+        &config,
+        project_root.as_deref(),
+    ) {
         if diags.is_empty() {
             continue;
         }
@@ -147,10 +164,18 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
     {
         let parse_start = std::time::Instant::now();
         let config_guard = server.workspace.config.read().await;
-        let syntax_diags = al_analysis::queries::diagnostics::syntax_diagnostics(
+        let project_root = server
+            .workspace
+            .project
+            .read()
+            .await
+            .as_ref()
+            .map(|project| project.root.clone());
+        let syntax_diags = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
             &server.workspace,
             uri,
             &config_guard,
+            project_root.as_deref(),
         );
         drop(config_guard);
         let parse_elapsed = parse_start.elapsed();

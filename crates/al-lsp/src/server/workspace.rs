@@ -284,11 +284,19 @@ pub(crate) async fn initialize_workspace(
         if config.enable_native_lint
             && config.diagnostics_scope == al_project::config::DiagnosticsScope::Project
         {
+            let project_root = workspace
+                .project
+                .read()
+                .await
+                .as_ref()
+                .map(|project| project.root.clone());
             // Compute the same combined syntax/file/project/call-graph result
             // used by pull diagnostics and CLI lint. Running the workspace
             // semantic pass once avoids rebuilding it independently per file.
-            let results = al_analysis::queries::diagnostics::workspace_syntax_diagnostics(
-                &workspace, &config,
+            let results = al_analysis::queries::diagnostics::workspace_syntax_diagnostics_at_root(
+                &workspace,
+                &config,
+                project_root.as_deref(),
             );
             let file_count = results.len();
             for (i, (path, diagnostics)) in results.into_iter().enumerate() {

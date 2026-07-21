@@ -11,7 +11,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            client.set_read_timeout(std::time::Duration::from_secs(120));
+            client.set_request_timeout(std::time::Duration::from_secs(120));
             let params = serde_json::json!({
                 "cmd": "start",
                 "config": config,

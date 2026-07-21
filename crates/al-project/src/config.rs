@@ -29,10 +29,7 @@ pub struct AlConfig {
     /// Which analyzers to run (e.g., "CodeCop", "AppSourceCop", "UICop", "PerTenantCop").
     pub code_analyzers: Vec<String>,
 
-    // These four map 1:1 to alc / CodeAnalysis-bridge parameters (--ruleset,
-    // --assemblyprobingpaths, analyzer statistics) but the plumbing into
-    // build::compile_project / semantic::bridge is not yet written. They are
-    // retained so existing user configs keep deserializing.
+    // These settings are forwarded to the official alc backend.
     /// Enable external rulesets (local .ruleset.json files).
     pub enable_external_rulesets: bool,
 
@@ -80,24 +77,6 @@ pub struct AlConfig {
     /// Use Microsoft's `alc` instead of the native package emitter.
     pub use_official_compiler: bool,
 
-    /// Path to EditorServices.Host binary. If None, auto-discovered.
-    pub editor_services_path: Option<PathBuf>,
-
-    /// Log level for EditorServices.Host DAP process.
-    pub editor_services_log_level: LogLevel,
-
-    /// Default root namespace for scaffolding new objects.
-    pub root_namespace: Option<String>,
-
-    /// Default publisher name for scaffolding.
-    pub publisher: Option<String>,
-
-    /// Namespace template for scaffolded objects (e.g., "{publisher}.{name}").
-    pub namespace_template: Option<String>,
-
-    /// Suggested folder for AL:Go scaffolding.
-    pub algo_suggested_folder: Option<PathBuf>,
-
     /// Optional per-document size cap in bytes.
     pub max_document_size_bytes: Option<usize>,
 }
@@ -127,18 +106,6 @@ pub enum DiagnosticsTrigger {
     #[default]
     Continuous,
     OnSave,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum LogLevel {
-    Off,
-    Error,
-    #[default]
-    Warning,
-    Info,
-    Debug,
-    Trace,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,12 +147,6 @@ impl Default for AlConfig {
             compilation_options: Vec::new(),
             incremental_build: false,
             use_official_compiler: false,
-            editor_services_path: None,
-            editor_services_log_level: LogLevel::default(),
-            root_namespace: None,
-            publisher: None,
-            namespace_template: None,
-            algo_suggested_folder: None,
             max_document_size_bytes: None,
         }
     }
@@ -393,27 +354,6 @@ impl AlConfig {
                 "compilationOptions" => merge_string_array(obj, key, &mut self.compilation_options),
                 "incrementalBuild" => merge_bool(obj, key, &mut self.incremental_build),
                 "useOfficialCompiler" => merge_bool(obj, key, &mut self.use_official_compiler),
-                "editorServicesPath" => {
-                    merge_optional_path(obj, key, &mut self.editor_services_path)
-                }
-                "editorServicesLogLevel" => {
-                    if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
-                        match serde_json::from_value::<LogLevel>(serde_json::Value::String(
-                            s.to_string(),
-                        )) {
-                            Ok(level) => self.editor_services_log_level = level,
-                            Err(_) => unknown_keys.push(format!("editorServicesLogLevel={s:?}")),
-                        }
-                    }
-                }
-                "rootNamespace" => merge_optional_string(obj, key, &mut self.root_namespace),
-                "publisher" => merge_optional_string(obj, key, &mut self.publisher),
-                "namespaceTemplate" => {
-                    merge_optional_string(obj, key, &mut self.namespace_template)
-                }
-                "algoSuggestedFolder" => {
-                    merge_optional_path(obj, key, &mut self.algo_suggested_folder)
-                }
                 "maxDocumentSizeBytes" => match obj.get(key) {
                     Some(serde_json::Value::Null) => self.max_document_size_bytes = None,
                     Some(v) => match v.as_u64() {
@@ -542,12 +482,6 @@ mod tests {
         assert!(!config.use_only_custom_feeds);
         assert!(config.compilation_options.is_empty());
         assert!(!config.incremental_build);
-        assert!(config.editor_services_path.is_none());
-        assert_eq!(config.editor_services_log_level, LogLevel::Warning);
-        assert!(config.root_namespace.is_none());
-        assert!(config.publisher.is_none());
-        assert!(config.namespace_template.is_none());
-        assert!(config.algo_suggested_folder.is_none());
         assert!(config.enable_native_lint);
         assert!(config.native_lint_rules.is_empty());
     }
@@ -642,14 +576,11 @@ mod tests {
     #[test]
     fn serde_roundtrip() {
         let config = AlConfig {
-            root_namespace: Some("MyApp".to_string()),
-            publisher: Some("Contoso".to_string()),
             nuget_feeds: vec![NuGetFeedConfig {
                 name: "Custom".to_string(),
                 url: "https://example.com/nuget".to_string(),
             }],
             incremental_build: true,
-            editor_services_log_level: LogLevel::Debug,
             ..AlConfig::default()
         };
 
@@ -659,14 +590,8 @@ mod tests {
         assert_eq!(config.enable_code_analysis, parsed.enable_code_analysis);
         assert_eq!(config.code_analyzers, parsed.code_analyzers);
         assert_eq!(config.package_cache_path, parsed.package_cache_path);
-        assert_eq!(config.root_namespace, parsed.root_namespace);
-        assert_eq!(config.publisher, parsed.publisher);
         assert_eq!(config.nuget_feeds, parsed.nuget_feeds);
         assert_eq!(config.incremental_build, parsed.incremental_build);
-        assert_eq!(
-            config.editor_services_log_level,
-            parsed.editor_services_log_level
-        );
     }
 
     #[test]
@@ -768,71 +693,6 @@ mod tests {
     }
 
     #[test]
-    fn merge_dap_settings() {
-        let mut config = AlConfig::default();
-        let settings = serde_json::json!({
-            "editorServicesPath": "/custom/EditorServices.Host",
-            "editorServicesLogLevel": "debug",
-        });
-        config.merge(&settings);
-
-        assert_eq!(
-            config.editor_services_path,
-            Some(PathBuf::from("/custom/EditorServices.Host"))
-        );
-        assert_eq!(config.editor_services_log_level, LogLevel::Debug);
-    }
-
-    #[test]
-    fn merge_scaffolding_settings() {
-        let mut config = AlConfig::default();
-        let settings = serde_json::json!({
-            "rootNamespace": "Contoso.App",
-            "publisher": "Contoso",
-            "namespaceTemplate": "{publisher}.{name}",
-            "algoSuggestedFolder": "/home/user/al-projects",
-        });
-        config.merge(&settings);
-
-        assert_eq!(config.root_namespace, Some("Contoso.App".to_string()));
-        assert_eq!(config.publisher, Some("Contoso".to_string()));
-        assert_eq!(
-            config.namespace_template,
-            Some("{publisher}.{name}".to_string())
-        );
-        assert_eq!(
-            config.algo_suggested_folder,
-            Some(PathBuf::from("/home/user/al-projects"))
-        );
-    }
-
-    #[test]
-    fn merge_empty_string_clears_optional_string() {
-        let mut config = AlConfig {
-            root_namespace: Some("OldNamespace".to_string()),
-            ..AlConfig::default()
-        };
-        config.merge(&serde_json::json!({ "rootNamespace": "" }));
-        assert!(config.root_namespace.is_none());
-    }
-
-    #[test]
-    fn log_level_serde() {
-        assert_eq!(
-            serde_json::to_string(&LogLevel::Debug).unwrap(),
-            r#""debug""#
-        );
-        assert_eq!(
-            serde_json::from_str::<LogLevel>(r#""trace""#).unwrap(),
-            LogLevel::Trace
-        );
-        assert_eq!(
-            serde_json::from_str::<LogLevel>(r#""off""#).unwrap(),
-            LogLevel::Off
-        );
-    }
-
-    #[test]
     fn nuget_feed_config_serde() {
         let feed = NuGetFeedConfig {
             name: "MyFeed".to_string(),
@@ -857,7 +717,6 @@ mod tests {
     fn persist_and_load_roundtrip() {
         let config = AlConfig {
             enable_code_analysis: false,
-            root_namespace: Some("Test.Namespace".to_string()),
             incremental_build: true,
             ..AlConfig::default()
         };
@@ -870,7 +729,6 @@ mod tests {
 
         let loaded = AlConfig::load(&path).expect("load should succeed");
         assert!(!loaded.enable_code_analysis);
-        assert_eq!(loaded.root_namespace, Some("Test.Namespace".to_string()));
         assert!(loaded.incremental_build);
     }
 

@@ -29,9 +29,7 @@ pub struct ArchViolation {
 /// Currently supported NamingConvention `values[0]` tokens:
 /// - `"[A-Z]"` — object name must start with an uppercase character.
 ///
-/// Any other value is silently ignored (no violation emitted). This is
-/// documented behaviour. The linter relies on `.alarch.json` to enumerate AL
-/// naming conventions instead of baking them into the implementation.
+/// Other values are rejected when `.alarch.json` is loaded.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ArchRuleKind {
@@ -43,6 +41,7 @@ pub enum ArchRuleKind {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct ArchRule {
     pub id: String,
     pub description: String,
@@ -55,6 +54,7 @@ pub struct ArchRule {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct ArchConfig {
     #[serde(default)]
     pub rules: Vec<ArchRule>,
@@ -62,7 +62,76 @@ pub struct ArchConfig {
 
 impl ArchConfig {
     pub fn from_json(json: &str) -> Result<Self, String> {
-        serde_json::from_str(json).map_err(|e| e.to_string())
+        let config: Self = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for (index, rule) in self.rules.iter().enumerate() {
+            let label = if rule.id.trim().is_empty() {
+                format!("rule {}", index + 1)
+            } else {
+                format!("rule '{}'", rule.id)
+            };
+            if rule.id.trim().is_empty() {
+                return Err(format!("{label} must have a non-empty id"));
+            }
+            if rule.description.trim().is_empty() {
+                return Err(format!("{label} must have a non-empty description"));
+            }
+            match rule.kind {
+                ArchRuleKind::NamingConvention if rule.values.as_slice() != ["[A-Z]"] => {
+                    return Err(format!(
+                        "{label} uses an unsupported naming convention; values must be [\"[A-Z]\"]"
+                    ))
+                }
+                ArchRuleKind::ForbiddenPattern
+                    if rule.values.is_empty() || rule.values.iter().any(|v| v.is_empty()) =>
+                {
+                    return Err(format!(
+                        "{label} must provide at least one non-empty forbidden value"
+                    ))
+                }
+                ArchRuleKind::RequiredProperty => {
+                    let [range] = rule.values.as_slice() else {
+                        return Err(format!(
+                            "{label} must provide exactly one inclusive ID range"
+                        ));
+                    };
+                    let Some((lo, hi)) = range.split_once('-') else {
+                        return Err(format!("{label} has invalid ID range '{range}'"));
+                    };
+                    if hi.contains('-') {
+                        return Err(format!("{label} has invalid ID range '{range}'"));
+                    }
+                    let lo: u32 = lo
+                        .parse()
+                        .map_err(|_| format!("{label} has invalid ID range '{range}'"))?;
+                    let hi: u32 = hi
+                        .parse()
+                        .map_err(|_| format!("{label} has invalid ID range '{range}'"))?;
+                    if lo > hi {
+                        return Err(format!("{label} has descending ID range '{range}'"));
+                    }
+                }
+                ArchRuleKind::MaxComplexity => {
+                    let [threshold] = rule.values.as_slice() else {
+                        return Err(format!(
+                            "{label} must provide exactly one positive complexity threshold"
+                        ));
+                    };
+                    let threshold: u32 = threshold.parse().map_err(|_| {
+                        format!("{label} has invalid complexity threshold '{threshold}'")
+                    })?;
+                    if threshold == 0 {
+                        return Err(format!("{label} has invalid complexity threshold '0'"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// Opinionated, always-on AL architecture rules applied to every workspace
@@ -262,12 +331,9 @@ fn apply_rule(
                 // with zero or multiple dashes (e.g. `"100-200-300"`) rather
                 // than silently parsing `LO` and falling back to u32::MAX for
                 // the upper bound, which would let out-of-range IDs slip past.
-                if range.matches('-').count() != 1 {
-                    return;
-                }
-                if let Some(dash) = range.find('-') {
-                    let lo: u32 = range[..dash].parse().unwrap_or(0);
-                    let hi: u32 = range[dash + 1..].parse().unwrap_or(u32::MAX);
+                if let Some((lo, hi)) = range.split_once('-') {
+                    let lo: u32 = lo.parse().expect("validated range");
+                    let hi: u32 = hi.parse().expect("validated range");
                     if !(lo..=hi).contains(&(id as u32)) {
                         violations.push(ArchViolation {
                             rule_id: rule.id.clone(),
@@ -287,8 +353,9 @@ fn apply_rule(
             let max: u32 = rule
                 .values
                 .first()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(10);
+                .expect("validated threshold")
+                .parse()
+                .expect("validated threshold");
             let metrics = al_syntax::complexity::compute_complexity(tree, text);
             for m in &metrics {
                 if m.cyclomatic > max {
@@ -362,7 +429,7 @@ mod tests {
 
     #[test]
     fn arch_config_from_json() {
-        let json = r#"{"rules":[{"id":"X","description":"Test","kind":"namingConvention","pattern":"codeunit","values":["^[A-Z]"]}]}"#;
+        let json = r#"{"rules":[{"id":"X","description":"Test","kind":"namingConvention","pattern":"codeunit","values":["[A-Z]"]}]}"#;
         let cfg = ArchConfig::from_json(json).unwrap();
         assert_eq!(cfg.rules.len(), 1);
     }
@@ -374,18 +441,9 @@ mod tests {
             "codeunit 50100 lowercase\n{\n}\n",
         )]);
 
-        let unsupported = ArchConfig {
-            rules: vec![ArchRule {
-                id: "N1".to_string(),
-                description: "must start uppercase".to_string(),
-                kind: ArchRuleKind::NamingConvention,
-                pattern: String::new(),
-                values: vec!["^[A-Z][a-z]+".to_string()],
-            }],
-        };
         assert!(
-            arch_lint(&ws, &unsupported).is_empty(),
-            "Unsupported regex-style pattern must be a no-op, not silently behave as [A-Z]"
+            ArchConfig::from_json(r#"{"rules":[{"id":"N1","description":"uppercase","kind":"namingConvention","values":["^[A-Z][a-z]+"]}]}"#).is_err(),
+            "unsupported regex-style patterns must be rejected"
         );
 
         let supported = ArchConfig {
@@ -497,18 +555,12 @@ mod tests {
 
     #[test]
     fn required_property_malformed_range_is_rejected() {
-        let ws = workspace_with(vec![("/src/Mal.al", "codeunit 50500 \"Mal\"\n{\n}\n")]);
-        let v = arch_lint(&ws, &required_property_rule("50000-50100-50200"));
-        assert!(
-            v.is_empty(),
-            "Malformed multi-dash range must be rejected, not parsed to u32::MAX: {v:?}"
-        );
-
-        let v2 = arch_lint(&ws, &required_property_rule("50000"));
-        assert!(
-            v2.is_empty(),
-            "Range without a dash must be ignored: {v2:?}"
-        );
+        for range in ["50000-50100-50200", "50000", "word-50100"] {
+            let json = format!(
+                r#"{{"rules":[{{"id":"R","description":"range","kind":"requiredProperty","values":["{range}"]}}]}}"#
+            );
+            assert!(ArchConfig::from_json(&json).is_err(), "accepted {range}");
+        }
     }
 
     fn max_complexity_rule(threshold: &str) -> ArchConfig {
@@ -571,24 +623,16 @@ mod tests {
     }
 
     #[test]
-    fn max_complexity_non_numeric_threshold_uses_default_10() {
-        // A non-numeric / empty threshold falls back to the default of 10.
-        // A simple procedure stays well under 10, so no violation.
-        let ws = workspace_with(vec![(
-            "/src/Default.al",
-            r#"codeunit 50100 "Default"
-{
-    procedure DoWork()
-    begin
-        Message('hi');
-    end;
-}"#,
-        )]);
-        let v = arch_lint(&ws, &max_complexity_rule("not-a-number"));
-        assert!(
-            v.is_empty(),
-            "Simple procedure under default threshold 10 must not violate: {v:?}"
-        );
+    fn invalid_complexity_threshold_is_rejected() {
+        for threshold in ["not-a-number", "0"] {
+            let json = format!(
+                r#"{{"rules":[{{"id":"CX","description":"complexity","kind":"maxComplexity","values":["{threshold}"]}}]}}"#
+            );
+            assert!(
+                ArchConfig::from_json(&json).is_err(),
+                "accepted {threshold}"
+            );
+        }
     }
 
     // ----- Built-in rules (ArchConfig::builtin_rules) -------------------------

@@ -254,7 +254,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         let cache = workspace
             .semantic_cache
             .read()
-            .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(bt) = cache.get_type(clean_name) {
             let methods_list: Vec<String> = bt
                 .methods

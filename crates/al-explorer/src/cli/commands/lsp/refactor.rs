@@ -189,7 +189,7 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
                 Ok(client) => client,
                 Err(error) => return report_error(&error, json),
             };
-            client.set_read_timeout(std::time::Duration::from_secs(360));
+            client.set_request_timeout(std::time::Duration::from_secs(360));
             match client.request("tests.snapshot_record", Some(params)) {
                 Ok(result) => {
                     if json {
@@ -223,7 +223,7 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            client.set_read_timeout(std::time::Duration::from_secs(120));
+            client.set_request_timeout(std::time::Duration::from_secs(120));
             let mut params = serde_json::json!({
                 "snapshotPath": abs_path.display().to_string(),
             });
