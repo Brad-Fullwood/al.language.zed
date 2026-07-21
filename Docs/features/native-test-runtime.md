@@ -118,8 +118,7 @@ al-explorer test-run-all [--parallel] [--timeout-ms N] [--coverage]
     [--junit-out P] [--cobertura-out P] [--filter G]
 al-explorer test-coverage        al-explorer test-classify    al-explorer test-results
 al-explorer test-affected <files...>    al-explorer test-mutate [--files ...] [--parallel]
-al-explorer test-snapshot record <codeunit-id> <method> --breakpoint FILE:LINE [--output P]
-al-explorer test-snapshot replay <snapshot> [--config NAME]
+al-explorer test-snapshot validate <snapshot>
 al-explorer test-snapshot diff <baseline> <actual>
 ```
 
@@ -138,8 +137,8 @@ only the remaining tests require a launch configuration and live BC.
   symbols do not provide executable source through the interpreter's source catalog.
 - `MaxStrLen` is exact for bounded `Text[N]` and `Code[N]` variables and parameters. Unbounded text
   and computed expressions have no finite declaration capacity in the native value model.
-- Live snapshot record/replay requires a launch configuration and authentication. Sampling remains
-  breakpoint-based because BC's debug protocol exposes variables only while execution is stopped.
+- Snapshot files can be validated and compared. Live capture and replay are not exposed because the
+  debug protocol does not provide a reliable way to identify the stopped test breakpoint.
 
 Live BC fallback is a permanent correctness boundary, not a failure of the native runner: the project
 does not guess platform behavior it cannot reproduce safely.

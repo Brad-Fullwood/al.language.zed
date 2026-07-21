@@ -127,7 +127,7 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | `test-affected <files…>` | — | Tests affected by changed files |
 | `test-results` | `--codeunit --method` | Persisted result history |
 | `test-mutate` | `--files … --parallel --timeout-ms N` | Mutation testing |
-| `test-snapshot` | `replay <path> · diff <a> <b>` | Validate or compare snapshot files |
+| `test-snapshot` | `validate <path> · diff <a> <b>` | Validate or compare snapshot files |
 
 ## Translation
 

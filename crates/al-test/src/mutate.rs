@@ -782,7 +782,7 @@ async fn run_interp_tests_against_mutant(
         let (is_local, needs_records) = match c.decision {
             RoutingDecision::Interp => (true, false),
             RoutingDecision::InterpRecord => (true, true),
-            RoutingDecision::LiveBc | RoutingDecision::Snapshot => (false, false),
+            RoutingDecision::LiveBc => (false, false),
         };
         local_capability
             .entry(c.codeunit_id)

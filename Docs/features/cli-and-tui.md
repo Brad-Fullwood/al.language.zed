@@ -30,7 +30,7 @@ A complete list lives in the [CLI command reference](../reference/cli-commands.m
 - **Debug/profiling:** `debug {start|breakpoint|state|eval|continue|step|history|stop}`,
   `snapshot {start|list|download}`, `profile {start|stop|analyze}`.
 - **Tests:** `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`,
-  `test-classify`, `test-snapshot {replay|diff}`, `test-results`.
+  `test-classify`, `test-snapshot {validate|diff}`, `test-results`.
 - **Translation:** `xlf {generate|refresh|untranslated|suggest}`.
 
 ### `--json` mode
@@ -102,7 +102,7 @@ cross-compiling it. See [Testing guide — daemon IPC](../testing-guide.md#daemo
 ## Limitations & roadmap
 
 - Windows uses a per-user named pipe; Linux and macOS use owner-only Unix-domain sockets.
-- Some CLI workflows aren't yet Zed tasks (affected tests, snapshot diff/replay, `deps-graph`, XLIFF
+- Some CLI workflows aren't yet Zed tasks (affected tests, snapshot diff/validation, `deps-graph`, XLIFF
   refresh/untranslated/suggest, table impact) — see `ROADMAP.md` (Zed UX).
 - Event-subscriber/call-site coverage in the CLI/TUI is workspace-source-only (package `.app` symbols
   have no method bodies).

@@ -58,9 +58,6 @@ pub enum RoutingDecision {
     InterpRecord,
     /// Anything risky / not yet supported — runs against live BC.
     LiveBc,
-    /// Replays a previously-captured snapshot if one exists, else falls
-    /// back to `LiveBc`.
-    Snapshot,
 }
 
 impl RoutingDecision {
@@ -70,15 +67,14 @@ impl RoutingDecision {
             RoutingDecision::Interp => "interp",
             RoutingDecision::InterpRecord => "interpRecord",
             RoutingDecision::LiveBc => "liveBc",
-            RoutingDecision::Snapshot => "snapshot",
         }
     }
 
     /// Whether a test with this decision **actually executes locally** today
     /// (pure Rust interpreter, no Business Central server contact).
     ///
-    /// Both interpreter tiers run locally; `LiveBc` and `Snapshot` require an
-    /// external or previously captured runtime.
+    /// Both interpreter tiers run locally; `LiveBc` requires an external
+    /// runtime.
     pub fn runs_locally(self) -> bool {
         matches!(
             self,
@@ -93,7 +89,6 @@ impl RoutingDecision {
         match self {
             RoutingDecision::Interp => "runs locally on the Rust interpreter",
             RoutingDecision::InterpRecord => "runs locally with the in-memory record runtime",
-            RoutingDecision::Snapshot => "replays a captured snapshot, else routes to live BC",
             RoutingDecision::LiveBc => "routes to live BC",
         }
     }
@@ -995,8 +990,7 @@ impl RoutingDecision {
             match d {
                 RoutingDecision::Interp => 0,
                 RoutingDecision::InterpRecord => 1,
-                RoutingDecision::Snapshot => 2,
-                RoutingDecision::LiveBc => 3,
+                RoutingDecision::LiveBc => 2,
             }
         }
         if rank(self) >= rank(other) {
@@ -1102,10 +1096,6 @@ mod tests {
             RoutingDecision::Interp.max(RoutingDecision::LiveBc),
             RoutingDecision::LiveBc
         );
-        assert_eq!(
-            RoutingDecision::Snapshot.max(RoutingDecision::Interp),
-            RoutingDecision::Snapshot
-        );
     }
 
     #[test]
@@ -1113,7 +1103,6 @@ mod tests {
         assert_eq!(RoutingDecision::Interp.as_str(), "interp");
         assert_eq!(RoutingDecision::InterpRecord.as_str(), "interpRecord");
         assert_eq!(RoutingDecision::LiveBc.as_str(), "liveBc");
-        assert_eq!(RoutingDecision::Snapshot.as_str(), "snapshot");
     }
 
     #[test]
@@ -1121,7 +1110,6 @@ mod tests {
         assert!(RoutingDecision::Interp.runs_locally());
         assert!(RoutingDecision::InterpRecord.runs_locally());
         assert!(!RoutingDecision::LiveBc.runs_locally());
-        assert!(!RoutingDecision::Snapshot.runs_locally());
     }
 
     #[test]

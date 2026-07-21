@@ -42,9 +42,10 @@ Compatibility depends heavily on the shape and identifiers in `SymbolReference.j
   `Hash.Combine` (`((h<<5)+h+(h>>27))^h2`) and the system-codeunit positive-range adjustment.
 - `serde_json` is configured with `preserve_order` so `Map` keeps insertion order and reproduces
   `alc`'s key ordering.
-- A focused golden fixture checks serialized `SymbolReference.json` bytes. The live differential
-  corpus compares parsed JSON values because archive metadata and output ordering are not a general
-  byte-for-byte package contract.
+- A focused golden fixture checks serialized `SymbolReference.json` bytes. The differential fixture
+  compares parsed JSON values because archive metadata and output ordering are not a general
+  byte-for-byte package contract. A 206-file real-world comparison found symbol, path-encoding, and
+  bundled-resource differences; see [`benchmarks/FINDINGS.md`](../../benchmarks/FINDINGS.md).
 - `.app` selection prefers the manifest-derived `{publisher}_{name}_{version}.app` name.
 
 ## Build orchestration (`crates/al-compile/src/lib.rs`, `toolchain.rs`)
@@ -174,7 +175,7 @@ native parser, interpreter, symbol-index, graph, and completion regressions. No 
 | Comparative performance | Current verified-pipeline measurement pending | Current verified-pipeline measurement pending |
 | Build-time validation | **yes** — shipped native syntax/project/declaration/declared-binding checks | **yes** — authoritative Microsoft semantics |
 | Optional parity | `pack-native --validate` runs native first, then `alc` | reference |
-| Output fidelity | Semantic `SymbolReference.json` parity on the live corpus; focused byte-level golden fixture | reference |
+| Output fidelity | Supported-fixture semantic parity; known real-world symbol and resource gaps | reference |
 | Availability | default; runs anywhere | `al.useOfficialCompiler: true` |
 
 ## Why this approach

@@ -1,6 +1,6 @@
 //! `TestSession` trait and related types for the test engine.
 //!
-//! Backends (live BC, interpreter, snapshot replay) implement `TestSession`.
+//! Backends (live BC and the interpreter) implement `TestSession`.
 //! Uses stable `async fn` in trait (Rust 1.75+, edition 2021); no `async-trait` dep.
 //! Events are streamed back via a caller-provided `tokio::sync::mpsc::Sender`,
 //! which lets parallel codeunit runs share one event stream cleanly.
@@ -77,7 +77,7 @@ pub enum TestEvent {
 
 /// Trait for running AL test sessions.
 ///
-/// Backends (live BC, interpreter, snapshot replay) implement this. Events
+/// Backends (live BC and the interpreter) implement this. Events
 /// are streamed via the caller-provided `tx`; the future resolves once the
 /// session has emitted `SessionComplete` or fatally errored.
 ///

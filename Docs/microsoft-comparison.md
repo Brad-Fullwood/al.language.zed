@@ -27,7 +27,7 @@ delegate by design)
 
 | Capability | This project | Microsoft |
 | --- | --- | --- |
-| Produce `.app` | ✅ pure-Rust verified emitter; semantic `SymbolReference.json` parity on the live differential corpus | 🔷 `alc` (parse→bind→type-check→emit) |
+| Produce `.app` | ✅ pure-Rust verified emitter for the documented subset; real-world packages can differ in symbols, path encoding, and bundled resources | 🔷 `alc` (parse→bind→type-check→emit) |
 | Compile-time validation | ✅ native syntax/project/declaration/declared-binding/integrity checks; optional `alc` compatibility gate | 🔷 `alc` (authoritative complete semantics) |
 | `.app` reading / inspection | ✅ native NAVX/ZIP, cached, composed objects | internal |
 | Symbol download | ✅ NuGet + BC server, concurrent, deduped, no restart | ✅ download-symbols |
@@ -60,7 +60,7 @@ delegate by design)
 | Routing transparency (`test-classify`) | ✅ | ❌ |
 | JUnit output / coverage | ✅ (coverage static) | partial (needs BC) |
 | Mutation testing | ✅ interpreter-routed, optionally parallel | ❌ |
-| Snapshot files | replay validation and file diff | partial (snapshot debugging) |
+| Snapshot files | format validation and file diff | partial (snapshot debugging) |
 | DB/HTTP/UI/report tests | 🔷 route to live BC | 🔷 live BC |
 
 ## Debugging

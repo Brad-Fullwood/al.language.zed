@@ -82,6 +82,12 @@ Recorded because each produced a wrong result that flattered one side:
 
 ## 2. `.app` output fidelity vs `alc`
 
+The synthetic fixture and the real-world project produce materially different
+results. The synthetic result is useful regression coverage, but it is not
+evidence of general package parity.
+
+### Synthetic fixture
+
 Entry-by-entry hash comparison of the same project built both ways.
 
 | Archive entry | Native vs `alc` |
@@ -96,6 +102,22 @@ Entry-by-entry hash comparison of the same project built both ways.
 The `navigation.xml` GUIDs are regenerated on every build by **both** tools —
 verified by diffing two consecutive native builds, which differ in exactly those
 bytes and nowhere else. That is intentional nondeterminism, not a divergence.
+
+### Real-world project
+
+A separate 206-file application comparison did not reproduce the synthetic
+fixture's package parity:
+
+- `SymbolReference.json` differs between the native and Microsoft packages.
+- Some archive paths use different encoding.
+- The native package omits project resources that `alc` includes, including
+  report layouts, a logo, and `.res` resources.
+
+These gaps mean the native emitter should not be described as generally
+equivalent to `alc`. Its supported fixture remains valuable as a precise test
+of the implemented subset, while `pack-native --validate` or the official
+compiler remains the appropriate release gate for applications using broader
+artifact types.
 
 ### XLIFF TextData is emitted, but for a narrower set of properties than `alc`
 

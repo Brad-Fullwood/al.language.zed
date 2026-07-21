@@ -373,7 +373,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     let classifications = al_test::router::classify_codeunits(workspace, &discovered);
     // A codeunit is executed locally only when every discovered [Test] method
     // fits one of the native capability tiers. Mixed pure/record codeunits use
-    // the record-enabled interpreter; any LiveBc/Snapshot method keeps the
+    // the record-enabled interpreter; any LiveBc method keeps the
     // whole codeunit on the authoritative server so codeunit-level lifecycle
     // and shared state cannot be split across backends.
     let mut local_capability: std::collections::HashMap<i32, (bool, bool)> =
@@ -382,7 +382,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         let (is_local, needs_records) = match c.decision {
             RoutingDecision::Interp => (true, false),
             RoutingDecision::InterpRecord => (true, true),
-            RoutingDecision::LiveBc | RoutingDecision::Snapshot => (false, false),
+            RoutingDecision::LiveBc => (false, false),
         };
         local_capability
             .entry(c.codeunit_id)
@@ -2027,7 +2027,6 @@ mod tests {
         assert_eq!(RoutingDecision::Interp.as_str(), "interp");
         assert_eq!(RoutingDecision::InterpRecord.as_str(), "interpRecord");
         assert_eq!(RoutingDecision::LiveBc.as_str(), "liveBc");
-        assert_eq!(RoutingDecision::Snapshot.as_str(), "snapshot");
     }
 
     #[test]

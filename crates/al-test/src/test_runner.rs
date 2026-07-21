@@ -63,7 +63,6 @@ pub struct TestRunnerClient {
     base_url: String,
     auth: AuthMethod,
     tenant: Option<String>,
-    bearer_token: Option<String>,
 }
 
 impl TestRunnerClient {
@@ -87,16 +86,7 @@ impl TestRunnerClient {
             base_url,
             auth: config.authentication.clone(),
             tenant: config.tenant.clone(),
-            bearer_token: None,
         }
-    }
-
-    /// Supply an OAuth bearer token obtained by the daemon's shared auth
-    /// cache. This avoids routing snapshot-triggered test runs through the
-    /// legacy `BC_TOKEN` environment-variable path.
-    pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
-        self.bearer_token = Some(token.into());
-        self
     }
 
     /// Run all [Test] procedures in the specified codeunit.
@@ -230,10 +220,7 @@ impl TestRunnerClient {
                 }
             }
             AuthMethod::AAD => {
-                let token = self
-                    .bearer_token
-                    .clone()
-                    .unwrap_or_else(|| std::env::var("BC_TOKEN").unwrap_or_default());
+                let token = std::env::var("BC_TOKEN").unwrap_or_default();
                 let token = token.trim();
                 if token.is_empty() {
                     return Err(TestRunnerError::MissingCredentials);

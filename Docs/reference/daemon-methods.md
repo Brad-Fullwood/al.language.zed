@@ -30,7 +30,7 @@ Set `al.useOfficialCompiler: true` to select the explicit Microsoft `alc` backen
 silent fallback from native to Microsoft tooling.
 
 Tests: `tests.discover`, `tests.run`, `tests.coverage`, `tests.run_batch`, `tests.run_auto`,
-`tests.last_results`, `tests.affected`, `tests.classify`, `tests.snapshot_replay`,
+`tests.last_results`, `tests.affected`, `tests.classify`, `tests.snapshot_validate`,
 `tests.snapshot_diff`, `tests.mutate`.
 
 ## Insight (`insight_dispatch.rs`)
@@ -59,6 +59,6 @@ calls.
   runtime-directory fallbacks) on Linux/macOS; per-user named pipe on Windows.
 
 Common parameter shapes: position queries accept `uri` plus `{line, character}`; `breaking` and
-`upgrade` accept `baselineSymbols`; `tests.snapshot_replay` accepts `snapshotPath`; and
-`tests.snapshot_diff` accepts `snapshotA` and `snapshotB`. Other method shapes are defined beside
+`upgrade` accept `baselineSymbols`; `tests.snapshot_validate` accepts `snapshotPath`; and
+`tests.snapshot_diff` accepts `pathA` and `pathB`. Other method shapes are defined beside
 their dispatcher and mirrored by `al-explorer`; MCP passes the same object through `al_call`.

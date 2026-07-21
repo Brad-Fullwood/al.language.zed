@@ -15,9 +15,11 @@ They are not release benchmarks.
 - Deterministic native micro-benchmarks cover parsing, formatting, interpreter operations, symbol
   indexing, graph construction, completion, impact, and event tracing. See
   [`Docs/benchmarks.md`](Docs/benchmarks.md).
-- The live emitter differential test compares parsed `SymbolReference.json` values across a
+- The emitter differential test compares parsed `SymbolReference.json` values across a
   self-contained AL object corpus. Focused golden tests additionally cover selected serialized
-  symbol shapes and method identifiers.
+  symbol shapes and method identifiers. A separate 206-file project comparison found differences
+  in symbols, path encoding, and bundled resources; the fixture result is not general package
+  parity.
 - The native emitter writes `TextData/*.xliff` and registers the XLIFF content type when the project
   contains translatable text.
 - The latest correctness and package-fidelity observations are recorded separately in

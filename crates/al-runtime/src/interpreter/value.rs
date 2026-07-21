@@ -2,7 +2,7 @@
 //!
 //! **Stability contract.** This enum is the boundary type between the
 //! interpreter, mock BC runtime, and consumers such as DAP variable inspection
-//! and snapshot replay. Variants here are considered stable for parallel work;
+//! and test execution. Variants here are considered stable for parallel work;
 //! new variants may be appended, but existing variants must not be renamed or
 //! reordered.
 //!

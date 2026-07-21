@@ -139,7 +139,7 @@ The router is conservative and currently pattern-based. `Interp` and supported `
 
 The record runtime is wired to workspace table definitions, with isolated in-memory data, keys, BC-style filters, common CRUD/navigation methods, and CalcFormula-backed FlowFields. It intentionally does not emulate platform triggers, transactions, permissions, RecordRef/FieldRef, or package-only table schemas.
 
-`test-snapshot replay` validates an existing snapshot file and `test-snapshot diff` compares two
+`test-snapshot validate` validates an existing snapshot file and `test-snapshot diff` compares two
 files. Live Business Central snapshot capture is not exposed as a command.
 
 ## Specialized AL Workflows
@@ -249,7 +249,7 @@ The CLI command surface includes:
 - Tests: `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`, `test-classify`, `test-snapshot`, `test-results`.
 - Translation: `xlf`.
 
-Nested command groups include `debug start|breakpoint|state|eval|continue|step|history|stop`, `snapshot start|list|download`, `profile start|stop|analyze`, `test-snapshot replay|diff`, and `xlf generate|refresh|untranslated|suggest`.
+Nested command groups include `debug start|breakpoint|state|eval|continue|step|history|stop`, `snapshot start|list|download`, `profile start|stop|analyze`, `test-snapshot validate|diff`, and `xlf generate|refresh|untranslated|suggest`.
 
 ### Daemon Protocol
 

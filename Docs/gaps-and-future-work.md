@@ -40,7 +40,7 @@ not belong in either user-facing document.
 - Test lifecycle and handler semantics are not executed locally.
 - Dynamic coverage records statements and two-way decisions; per-case-arm and
   condition coverage are not modelled.
-- `test-snapshot replay` validates an existing file and `diff` compares files.
+- `test-snapshot validate` validates an existing file and `diff` compares files.
   Live snapshot capture is not exposed through the CLI or daemon.
 
 ## Debugging and Business Central
