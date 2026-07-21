@@ -56,8 +56,8 @@ pub struct InterpMode {
 }
 
 impl InterpMode {
-    /// Construct a backend that runs tests without collecting dynamic coverage
-    /// (the historical behaviour). Static coverage is produced separately.
+    /// Construct a backend without dynamic coverage. Static coverage is
+    /// produced separately.
     pub fn new(workspace: Arc<Workspace>) -> Self {
         Self {
             workspace,
