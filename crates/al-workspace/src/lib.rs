@@ -6,10 +6,6 @@
 
 use std::sync::Arc;
 
-// Workspace-coupled glue parked in the hub crate. The lower-tier crates
-// (al-project, al-semantic) and the higher-tier al-test crate must never
-// reference `Workspace`, so the lifecycle glue, the doctor health check, and
-// the per-project test-result store live here alongside the hub they operate on.
 mod doctor;
 mod semantic_lifecycle;
 mod test_results;
@@ -55,7 +51,7 @@ pub struct PackageInfo {
 /// Owns all per-project state: documents, symbols, workspace file index,
 /// semantic bridge, builtins, and configuration.
 ///
-/// ## Lock strategy (ISSUE-114)
+/// ## Lock strategy
 ///
 /// Two RwLock flavors are used intentionally:
 /// - `tokio::sync::RwLock` -- fields written in async contexts that hold the lock
@@ -94,13 +90,13 @@ pub struct Workspace {
     /// Set by al-lsp after workspace construction. In the LSP path the closure
     /// calls `client.show_message`; in the daemon path it logs. Not set in tests.
     pub notify_sink: std::sync::OnceLock<NotifySink>,
-    /// Cached insight graph. Built lazily; invalidated when packages reload (ISSUE-132 fix).
+    /// Cached insight graph, built lazily and invalidated when packages reload.
     /// Private — access via `get_or_build_insight_graph()` / `invalidate_insight_graph()`
     /// only, so the DCL build path and the `call_graph → insight_graph` lock-ordering
-    /// invariant cannot be bypassed from outside the module (T005).
+    /// invariant cannot be bypassed from outside the module.
     insight_graph: std::sync::RwLock<Option<Arc<InsightGraph>>>,
     /// Cached call graph. Built lazily after insight graph; invalidated with it.
-    /// Private — access via `get_or_build_call_graph()` only (T005).
+    /// Private; access via `get_or_build_call_graph()` only.
     call_graph: std::sync::RwLock<Option<CallGraph>>,
     /// Serialises concurrent call-graph builds so two callers can't waste CPU
     /// running the (100-200ms) build twice. *Not* the data lock — readers and
@@ -155,7 +151,7 @@ impl Workspace {
         }
     }
 
-    /// Get (or lazily build) the cached InsightGraph (ISSUE-132 fix).
+    /// Get or lazily build the cached insight graph.
     ///
     /// The graph is built once from the current symbol index and cached.
     /// Call `invalidate_insight_graph()` after reloading packages.
@@ -236,7 +232,7 @@ impl Workspace {
     /// Invalidate ONLY the call_graph, leaving the insight_graph intact.
     /// Used by `on_document_change` when the edit is body-only (procedure
     /// signatures unchanged) — the insight graph's node topology stays
-    /// valid; only call-edge edges might have shifted. F-OPEN-066.
+    /// valid; only call edges might have shifted.
     pub fn invalidate_call_graph_only(&self) {
         let mut cg = self.call_graph.write().unwrap_or_else(|e| e.into_inner());
         *cg = None;
@@ -394,20 +390,9 @@ pub struct CoreInitResult {
 
 /// Initialize the common parts of a workspace.
 ///
-/// Shared by the LSP and daemon initialisation paths.  Performs:
-/// 1. `find_project(project_root)` — discover `app.json` and package paths.
-/// 2. `load_packages_cached(packages, cache)` — load symbol packages.
-/// 3. `workspace.symbols.load_runtime_enums()` — load runtime enum definitions.
-/// 4. `workspace.invalidate_insight_graph()` — reset the cached graph.
-/// 5. `file_index.scan(root)` — discover workspace .al files.
-/// 6. Store package metadata in `workspace.package_info`.
-/// 7. Write the project into `workspace.project`.
-/// 8. `find_toolchain()` — discover the AL toolchain.
-/// 9. Write the toolchain into `workspace.toolchain`.
-///
-/// The caller is responsible for transport-specific steps such as: notifying the
-/// user, opening files in DocumentStore, auto-downloading missing packages, or
-/// loading builtins from disk cache.
+/// Shared by the LSP and daemon initialization paths. Discovers the project and
+/// toolchain, loads symbols, and indexes workspace files. The caller remains
+/// responsible for transport-specific notifications and document setup.
 ///
 /// Returns `Ok(CoreInitResult)` on success; the workspace may be partially
 /// initialised (e.g. project not found but toolchain found) — errors are logged
@@ -447,10 +432,6 @@ pub async fn initialize_core_workspace(
                 symbols = total_symbols,
                 "workspace: loaded symbol packages"
             );
-            // F-OPEN-071: when one or more `.app` packages fail to load, the
-            // symbol count is silently lower and the user sees no surface
-            // beyond a daemon-log warn. Notify via the workspace's sink so
-            // editor clients (LSP) and CLI tooling can report partial state.
             let attempted = project.packages.len();
             if package_count < attempted {
                 let missing = attempted - package_count;
@@ -484,7 +465,7 @@ pub async fn initialize_core_workspace(
             *workspace
                 .package_info
                 .write()
-                .unwrap_or_else(|e| e.into_inner()) = pkg_info; // SILENT: recover from RwLock poison
+                .unwrap_or_else(|e| e.into_inner()) = pkg_info;
 
             // Scan workspace .al files. file_index.scan walks the tree
             // synchronously (read_dir + read_to_string per file) so wrap
@@ -552,10 +533,8 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
         .documents
         .cache_tree(uri, version, result.tree.clone());
 
-    // F-OPEN-066: capture the procedure-name set BEFORE re-indexing so we
-    // can tell whether this edit changed graph topology (added/removed/
-    // renamed a procedure) or was body-only. Body-only edits invalidate
-    // just the call_graph; topology changes invalidate the full graph.
+    // Capture procedure names before re-indexing to distinguish topology
+    // changes from body-only edits.
     let topology_change = if let Ok(path) = uri.to_file_path() {
         let prev_procs: std::collections::HashSet<String> = workspace
             .file_index
@@ -567,7 +546,6 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
             .file_index
             .add_file_with_tree(path.clone(), text.to_string(), result.tree);
 
-        // add_file_with_tree already updated object_info, so we can read the name immediately.
         if let Some(info) = workspace.file_index.object_info.get(&path) {
             workspace.symbols.invalidate_composed(&info.name);
         } else {
@@ -628,10 +606,6 @@ mod workspace_lifecycle_tests {
         Workspace::new()
     }
 
-    /// T005 regression: get_or_build_insight_graph must collapse concurrent
-    /// first-callers onto a single Arc. Without DCL, N callers each ran the
-    /// 50–200 ms build independently and discarded all but the first result;
-    /// the fix mirrors get_or_build_call_graph.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn insight_graph_dcl_returns_same_arc_under_concurrency() {
         let workspace = std::sync::Arc::new(make_workspace());
@@ -657,8 +631,6 @@ mod workspace_lifecycle_tests {
         }
     }
 
-    /// T005 negative companion: invalidating the graph must let the next
-    /// call build a fresh one (a different Arc).
     #[test]
     fn insight_graph_invalidation_yields_new_arc() {
         let workspace = make_workspace();
@@ -699,14 +671,9 @@ mod workspace_lifecycle_tests {
         assert_eq!(info.name.to_lowercase(), "test table");
     }
 
-    /// Negative test: on_document_change with a non-file URI falls back gracefully.
-    ///
-    /// Uses a URI whose scheme guarantees `to_file_path()` returns `Err` (e.g. http://),
-    /// so the fallback path `invalidate_all_composed` is exercised and no file is added.
     #[test]
     fn on_document_change_non_file_uri_does_not_panic() {
         let workspace = make_workspace();
-        // http: URIs are never valid file paths — to_file_path() always returns Err.
         let uri = Url::parse("http://example.com/Untitled-1.al").unwrap();
         let text = r#"codeunit 50200 "Test" { }"#;
 
@@ -714,10 +681,8 @@ mod workspace_lifecycle_tests {
         assert!(workspace.file_index.is_empty());
     }
 
-    /// F-008: a fresh workspace starts with an empty `last_compile_affected`
-    /// set so the first compile run has no stale entries to clear.
     #[tokio::test]
-    async fn f008_last_compile_affected_starts_empty() {
+    async fn last_compile_affected_starts_empty() {
         let workspace = make_workspace();
         let guard = workspace.last_compile_affected.lock().await;
         assert!(
@@ -726,11 +691,8 @@ mod workspace_lifecycle_tests {
         );
     }
 
-    /// F-008: the al.compile handler computes "stale" as set difference
-    /// (previous - current). This unit-tests that pure computation in
-    /// isolation from the LSP/toolchain plumbing.
     #[test]
-    fn f008_stale_is_set_difference_previous_minus_current() {
+    fn stale_is_set_difference_previous_minus_current() {
         let previous: std::collections::HashSet<String> = ["/p/A.al", "/p/B.al", "/p/C.al"]
             .iter()
             .map(|s| s.to_string())
@@ -744,10 +706,8 @@ mod workspace_lifecycle_tests {
         assert_eq!(stale, vec!["/p/B.al".to_string(), "/p/C.al".to_string()]);
     }
 
-    /// F-008 negative: when the new compile result equals the previous
-    /// result, no stale entries are produced (no spurious clears).
     #[test]
-    fn f008_no_stale_when_compile_set_unchanged() {
+    fn no_stale_when_compile_set_unchanged() {
         let previous: std::collections::HashSet<String> = ["/p/A.al", "/p/B.al"]
             .iter()
             .map(|s| s.to_string())
@@ -877,8 +837,6 @@ mod workspace_lifecycle_tests {
         );
     }
 
-    /// on_document_close with a non-file URI takes the fallback branch
-    /// (invalidate_all_composed) and must not panic.
     #[test]
     fn on_document_close_non_file_uri_does_not_panic() {
         let workspace = make_workspace();
@@ -887,9 +845,6 @@ mod workspace_lifecycle_tests {
         assert!(workspace.file_index.is_empty());
     }
 
-    /// invalidate_call_graph_only drops the call graph but keeps the insight
-    /// graph cached (F-OPEN-066 body-only-edit optimisation). The insight Arc
-    /// must survive; only the call graph is rebuilt.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn invalidate_call_graph_only_keeps_insight_graph() {
         let workspace = make_workspace();

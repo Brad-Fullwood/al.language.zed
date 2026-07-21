@@ -25,11 +25,11 @@ pub fn set_builtins(workspace: &Workspace, builtins: Vec<BuiltinType>, version: 
     let mut builtins_guard = workspace
         .builtins
         .write()
-        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from RwLock poison
+        .unwrap_or_else(|e| e.into_inner());
     let mut cache_guard = workspace
         .semantic_cache
         .write()
-        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from RwLock poison
+        .unwrap_or_else(|e| e.into_inner());
     if !builtins_guard.is_empty() && !cache_guard.is_stale(version) {
         return; // Another concurrent caller already populated with matching version — skip.
     }
@@ -218,7 +218,7 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), al_project::err
         drop(old);
     }
 
-    // NOTE: Between take() above and re-acquiring the write lock below, another
+    // Between take() above and re-acquiring the write lock below, another
     // task could start its own init via get_or_init_bridge. This race is safe:
     // the triple-check inside init_bridge_inner prevents overwriting a bridge that
     // was just restored. Worst case is a redundant CLR init (resource waste, not
@@ -453,9 +453,6 @@ mod tests {
     /// Locks in the invariant that `shutdown_bridge` actually replaces the
     /// stored `Some(_)` with `None` (regardless of whether the inner value's
     /// Drop chain has observable side effects in this build configuration).
-    /// Regression cover for T066: prior `let _ = …take()` was indistinguishable
-    /// from `…take(); drop(_)` only as long as the take's value is genuinely
-    /// dropped here.
     #[tokio::test]
     async fn shutdown_replaces_some_with_none() {
         let ws = Workspace::new();
