@@ -340,9 +340,6 @@ impl NativeDebugSession {
         if let Err(e) = self.session.stop_debugging().await {
             warn!(error = %e, "stop_debugging failed during shutdown");
         }
-        if let Err(e) = self.session.terminate().await {
-            warn!(error = %e, "terminate failed during shutdown");
-        }
         info!("Native debug session stopped");
         Ok(())
     }
@@ -1252,10 +1249,9 @@ mod native_session_tests {
     }
 
     #[tokio::test]
-    async fn stop_invokes_stop_debugging_then_terminate() {
+    async fn stop_invokes_the_supported_stop_debugging_rpc_only() {
         let (mut nds, fake) = session("c");
         fake.reply_ok("StopDebugging", json!(null));
-        fake.reply_ok("TerminateSession", json!(null));
 
         nds.stop().await.unwrap();
 
@@ -1264,22 +1260,13 @@ mod native_session_tests {
             .iter()
             .map(|f| f["target"].as_str().unwrap_or("").to_string())
             .collect();
-        let stop_idx = targets
-            .iter()
-            .position(|t| t == "StopDebugging")
-            .expect("StopDebugging invoked");
-        let term_idx = targets
-            .iter()
-            .position(|t| t == "TerminateSession")
-            .expect("TerminateSession invoked");
-        assert!(stop_idx < term_idx, "stop_debugging before terminate");
+        assert_eq!(targets, vec!["StopDebugging"]);
     }
 
     #[tokio::test]
-    async fn stop_tolerates_errors_and_still_attempts_both_teardowns() {
+    async fn stop_tolerates_stop_debugging_errors() {
         let (mut nds, fake) = session("c");
         fake.reply_err("StopDebugging", "already gone");
-        fake.reply_err("TerminateSession", "no session");
 
         nds.stop().await.expect("stop tolerates teardown errors");
 
@@ -1288,10 +1275,6 @@ mod native_session_tests {
             .iter()
             .map(|f| f["target"].as_str().unwrap_or("").to_string())
             .collect();
-        assert!(targets.iter().any(|t| t == "StopDebugging"));
-        assert!(
-            targets.iter().any(|t| t == "TerminateSession"),
-            "terminate attempted even after stop_debugging errored"
-        );
+        assert_eq!(targets, vec!["StopDebugging"]);
     }
 }

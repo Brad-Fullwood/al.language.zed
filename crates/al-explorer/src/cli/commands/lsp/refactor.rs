@@ -143,7 +143,76 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
     use crate::cli::TestSnapshotCommands;
 
     match subcmd {
-        TestSnapshotCommands::Replay { path } => {
+        TestSnapshotCommands::Record {
+            codeunit_id,
+            method,
+            breakpoints,
+            output,
+            config,
+        } => {
+            let parsed: Result<Vec<serde_json::Value>, String> = breakpoints
+                .iter()
+                .map(|breakpoint| {
+                    let (file, line) = breakpoint.rsplit_once(':').ok_or_else(|| {
+                        format!("Invalid breakpoint '{breakpoint}'; expected FILE:LINE")
+                    })?;
+                    let line = line.parse::<u32>().map_err(|_| {
+                        format!("Invalid breakpoint line in '{breakpoint}'; expected positive u32")
+                    })?;
+                    if line == 0 {
+                        return Err(format!(
+                            "Invalid breakpoint line in '{breakpoint}'; line is 1-based"
+                        ));
+                    }
+                    let file = std::path::Path::new(file).canonicalize().map_err(|error| {
+                        format!("Cannot resolve breakpoint file '{file}': {error}")
+                    })?;
+                    Ok(serde_json::json!({ "file": file, "line": line }))
+                })
+                .collect();
+            let breakpoints = match parsed {
+                Ok(breakpoints) => breakpoints,
+                Err(error) => return report_error(&error, json),
+            };
+            let mut params = serde_json::json!({
+                "codeunitId": codeunit_id,
+                "methodName": method,
+                "breakpoints": breakpoints,
+            });
+            if let Some(output) = output {
+                params["outputPath"] = serde_json::json!(output);
+            }
+            if let Some(config) = config {
+                params["config"] = serde_json::json!(config);
+            }
+            let mut client = match connect(None) {
+                Ok(client) => client,
+                Err(error) => return report_error(&error, json),
+            };
+            client.set_read_timeout(std::time::Duration::from_secs(360));
+            match client.request("tests.snapshot_record", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json(&result);
+                    } else {
+                        println!(
+                            "Recorded {} sample(s) to {}",
+                            result
+                                .get("sampleCount")
+                                .and_then(|value| value.as_u64())
+                                .unwrap_or(0),
+                            result
+                                .get("snapshotPath")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("?")
+                        );
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(error) => report_error(&error, json),
+            }
+        }
+        TestSnapshotCommands::Replay { path, config } => {
             let abs_path = match std::path::Path::new(path).canonicalize() {
                 Ok(p) => p,
                 Err(e) => {
@@ -155,9 +224,12 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
                 Err(e) => return report_error(&e, json),
             };
             client.set_read_timeout(std::time::Duration::from_secs(120));
-            let params = serde_json::json!({
+            let mut params = serde_json::json!({
                 "snapshotPath": abs_path.display().to_string(),
             });
+            if let Some(config) = config {
+                params["config"] = serde_json::json!(config);
+            }
             match client.request("tests.snapshot_replay", Some(params)) {
                 Ok(result) => {
                     if json {

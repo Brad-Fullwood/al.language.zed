@@ -102,7 +102,7 @@ fn resolve_object_metadata(workspace: &Workspace, file: &str) -> Option<(i32, i3
 /// wrong BC environment). Only fall back to the first config when no name
 /// was supplied. Extracted for unit-testability — the surrounding
 /// `resolve_debug_config` adds project + file IO that is hard to mock.
-fn pick_named_config<'a>(
+pub(super) fn pick_named_config<'a>(
     configs: &'a [al_bc::launch::BcServerConfig],
     requested_name: Option<&str>,
 ) -> Result<&'a al_bc::launch::BcServerConfig, String> {
@@ -117,7 +117,7 @@ fn pick_named_config<'a>(
     }
 }
 
-fn resolve_debug_config(
+pub(super) fn resolve_debug_config(
     workspace: &Workspace,
     params: &serde_json::Value,
 ) -> Result<al_dap::dap::bc_debug::BcDebugConfig, String> {
@@ -168,7 +168,7 @@ fn resolve_debug_config(
     })
 }
 
-fn debug_uses_oauth(config: &al_dap::dap::bc_debug::BcDebugConfig) -> bool {
+pub(super) fn debug_uses_oauth(config: &al_dap::dap::bc_debug::BcDebugConfig) -> bool {
     !config.environment_type.eq_ignore_ascii_case("OnPrem")
         || config.authentication.eq_ignore_ascii_case("AAD")
         || config

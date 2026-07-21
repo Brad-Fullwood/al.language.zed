@@ -531,7 +531,7 @@ pub(crate) async fn dispatch_request(
             build_dispatch::dispatch_tests_snapshot_record(workspace, id, &params).await
         }
         "tests.snapshot_replay" => {
-            build_dispatch::dispatch_tests_snapshot_replay(id, &params).await
+            build_dispatch::dispatch_tests_snapshot_replay(workspace, id, &params).await
         }
         "tests.snapshot_diff" => build_dispatch::dispatch_tests_snapshot_diff(id, &params).await,
         "tests.mutate" => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,

@@ -19,8 +19,8 @@ discover [Test] tests ──► router classifies each test ──► backend ex
 - **InterpRecord** tests run locally with an isolated in-memory database when every referenced table
   is defined in the workspace and every operation is in the supported record subset.
 - **LiveBc** runs HTTP/UI/report/session/transaction/package-table and other platform tests against BC.
-- **Snapshot** represents replay from captured state; file replay/diff exists, while the daemon's live
-  record/replay path remains incomplete.
+- **Snapshot** records breakpoint-sampled state from a live BC test run and replays the same test
+  against a fresh debug session; file-to-file diff remains available without BC.
 
 ## The interpreter (`crates/al-runtime`)
 
@@ -36,8 +36,8 @@ Blob; plus Null/Empty/ErrorInfo. Variant ordering is stable because values can b
 `continue`, and `asserterror`.
 
 **Expressions (`interpreter/eval_expr.rs`):** literals (including Date/Time/BigInteger), identifiers
-(case-insensitive), unary and binary operators, enum scope access, member calls, and string
-concatenation.
+(case-insensitive), unary and binary operators, workspace-enum scope access with declared ordinals,
+member calls, and string concatenation. `MaxStrLen` retains `Text[N]` / `Code[N]` declaration capacity.
 
 **Dispatch (`interpreter/dispatch.rs`):** receiver-specific stubs → catalog stubs → built-in globals
 → real workspace procedures found through the file index. Calls work in statement and expression
@@ -67,16 +67,21 @@ fails with a capability error instead of silently granting database behavior.
 
 ## Orchestration (`crates/al-test`)
 
-- **Discovery:** codeunits with `Subtype = Test` or `[Test]` procedures are found without BC. Only
-  `[Test]` methods are executable tests; lifecycle methods are not listed as tests.
-- **Routing:** conservative per-procedure pattern classification. Supported workspace records select
-  InterpRecord. Validate/CalcSums/RecordRef/FieldRef/Rename/LockTable, base-app/package-only tables,
-  HTTP/UI/report/session/transaction features, and other unsupported semantics select LiveBc.
+- **Discovery:** codeunits with `Subtype = Test` or `[Test]` procedures are found without BC.
+  `[TestInitialize]`, `[TestCleanup]`, and each test's `[HandlerFunctions(...)]` are retained as
+  execution metadata rather than listed as independent tests.
+- **Routing:** syntax-aware classification follows the fully resolved transitive workspace call,
+  trigger, interface, and event graph. Typed collection calls are not mistaken for record calls.
+  Supported workspace records select InterpRecord; dependency bodies without native stubs and all
+  platform-bound behavior select LiveBc with file/line reasons.
 - **Codeunit integrity:** a codeunit runs locally only when every discovered test is local. Mixed
   Interp/InterpRecord codeunits use WithRecords; any LiveBc method keeps the whole codeunit on BC.
 - **Entry points:** single-codeunit, batch, automatic/MCP, and TUI runs use the same router.
 - **Backends:** InterpMode executes real bodies with per-test deadlines and parallel codeunit support;
   LiveBcMode calls `POST /dev/tests/{codeunit}/run` with basic/bearer/Windows authentication.
+- **Lifecycle/handlers:** initialize, test, and cleanup share one per-test record context; cleanup
+  always runs. MessageHandler and ConfirmHandler execute locally (including `var Reply` write-back),
+  while UI/page/report handler kinds route to live BC.
 - **Results:** Pass/Fail/Skip, JUnit XML, Cobertura, and append-only NDJSON history capped at 1000
   records per codeunit/method.
 
@@ -113,7 +118,9 @@ al-explorer test-run-all [--parallel] [--timeout-ms N] [--coverage]
     [--junit-out P] [--cobertura-out P] [--filter G]
 al-explorer test-coverage        al-explorer test-classify    al-explorer test-results
 al-explorer test-affected <files...>    al-explorer test-mutate [--files ...] [--parallel]
-al-explorer test-snapshot record|replay|diff ...
+al-explorer test-snapshot record <codeunit-id> <method> --breakpoint FILE:LINE [--output P]
+al-explorer test-snapshot replay <snapshot> [--config NAME]
+al-explorer test-snapshot diff <baseline> <actual>
 ```
 
 MCP `al_runtests` maps to `tests.run_auto`: pure logic and supported workspace records run locally;
@@ -121,16 +128,18 @@ only the remaining tests require a launch configuration and live BC.
 
 ## Honest limitations
 
-- Backend routing is still a substring classifier over each test procedure and does not yet follow
-  the full call graph. A missed record call fails at the enforced PureLogic boundary rather than
-  running with the wrong capability. Affected-test selection is already graph-based.
-- Record execution requires workspace table definitions. Field/table triggers, FlowFilters, Linked
-  formulas, transactions, permissions, locking, RecordRef/FieldRef, and unlisted APIs are not emulated.
-- Only `[Test]` procedures execute locally; test lifecycle and handler semantics are not modelled.
-- Snapshot file load/diff is available and a live BC debug adapter exists, but the daemon's live
-  snapshot record/replay commands are not connected end to end.
-- Remaining fidelity gaps include the tree-sitter multi-arm CASE grammar issue, unresolved enum
-  ordinals, and exact declared-length semantics for MaxStrLen.
+- Record execution requires workspace table definitions. Tables declaring triggers, FlowFilters,
+  Linked formulas, or permission behavior are detected before execution and routed to live BC.
+  Transactions, locking, RecordRef/FieldRef, unsupported record APIs, and dependency-only table
+  schemas likewise remain live-BC behavior; the native runtime does not approximate them.
+- MessageHandler and ConfirmHandler are native. ModalPageHandler, PageHandler, ReportHandler,
+  RequestPageHandler, SendNotificationHandler, and other platform UI handlers route to live BC.
+- Workspace enum ordinals are exact. Dependency-only enum values route to live BC because package
+  symbols do not provide executable source through the interpreter's source catalog.
+- `MaxStrLen` is exact for bounded `Text[N]` and `Code[N]` variables and parameters. Unbounded text
+  and computed expressions have no finite declaration capacity in the native value model.
+- Live snapshot record/replay requires a launch configuration and authentication. Sampling remains
+  breakpoint-based because BC's debug protocol exposes variables only while execution is stopped.
 
 Live BC fallback is a permanent correctness boundary, not a failure of the native runner: the project
 does not guess platform behavior it cannot reproduce safely.

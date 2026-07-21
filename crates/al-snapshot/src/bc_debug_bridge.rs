@@ -94,10 +94,14 @@ impl DebuggerSession for BcDebugSessionAdapter {
     }
 
     async fn configuration_done(&self) -> Result<(), ReplayerError> {
-        self.session
-            .configuration_done(&self.config)
-            .await
-            .map_err(|e| ReplayerError::Session(format!("configuration_done failed: {e}")))
+        // Attach is the usable-session boundary. Some current BC cloud hubs
+        // reject both known configurationDone signatures after a successful
+        // attach; the native debugger treats that compatibility call as
+        // best-effort, so snapshot sessions must do the same.
+        if let Err(error) = self.session.configuration_done(&self.config).await {
+            tracing::warn!(%error, "snapshot configurationDone rejected after attach; continuing");
+        }
+        Ok(())
     }
 
     /// Wait for the next BC `Break` event.

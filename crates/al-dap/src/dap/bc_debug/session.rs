@@ -648,9 +648,13 @@ impl BcDebugSession {
         // CLR types but is rejected by current BC online hubs.
         let debug_options = serde_json::json!({
             "breakOnError": config.break_on_error,
-            "breakOnErrorBehaviour": if config.break_on_error { 1 } else { 0 }, // All=1, None=0
+            // Current EditorServices enum values are Unspecified=0, None=1,
+            // All=2, ExcludeTry=3. Sending the old 0/1 assumption causes
+            // configurationDone to be rejected (or interpreted incorrectly)
+            // by current Business Central online tenants.
+            "breakOnErrorBehaviour": if config.break_on_error { 2 } else { 1 },
             "breakOnRecordWrite": config.break_on_record_write,
-            "breakOnRecordWriteBehaviour": if config.break_on_record_write { 1 } else { 0 },
+            "breakOnRecordWriteBehaviour": if config.break_on_record_write { 2 } else { 1 },
             "skipSystemTriggers": true,
             "enableSqlInformationDebugger": true,
             "enableLongRunningSqlStatements": true,
@@ -1374,8 +1378,8 @@ mod tests {
         let args = frame["arguments"].as_array().unwrap();
         assert_eq!(args.len(), 1, "debug options arg present on first attempt");
         assert_eq!(args[0]["breakOnError"], true);
-        assert_eq!(args[0]["breakOnErrorBehaviour"], 1);
-        assert_eq!(args[0]["breakOnRecordWriteBehaviour"], 0);
+        assert_eq!(args[0]["breakOnErrorBehaviour"], 2);
+        assert_eq!(args[0]["breakOnRecordWriteBehaviour"], 1);
         // A successful first attempt must NOT send the no-args fallback frame.
         assert!(
             ws_rx.try_recv().is_err(),
