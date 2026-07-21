@@ -11,27 +11,35 @@ use std::time::{Duration, Instant};
 use al_test_harness::{al_explorer_binary, test_project_dir};
 
 fn run_al(args: &[&str]) -> std::process::Output {
+    let capture_root = std::env::temp_dir().join(format!(
+        "al-cli-smoke-{}-{}",
+        std::process::id(),
+        args.first().copied().unwrap_or("command")
+    ));
+    let stdout_path = capture_root.with_extension("stdout");
+    let stderr_path = capture_root.with_extension("stderr");
+    let stdout = std::fs::File::create(&stdout_path).expect("create al-explorer stdout capture");
+    let stderr = std::fs::File::create(&stderr_path).expect("create al-explorer stderr capture");
     let mut child = Command::new(al_explorer_binary())
         .args(args)
         .current_dir(test_project_dir())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        // A Windows daemon descendant can inherit a capture pipe handle even
+        // though its standard stream is redirected to NUL. The CLI exits, but
+        // `wait_with_output` then waits forever for pipe EOF. Files let us
+        // collect output after waiting only for the direct CLI process.
+        .stdout(std::process::Stdio::from(stdout))
+        .stderr(std::process::Stdio::from(stderr))
         .spawn()
         .expect("spawn al-explorer");
     let deadline = Instant::now() + Duration::from_secs(40);
     loop {
         match child.try_wait().expect("poll al-explorer") {
-            Some(_) => {
-                return child
-                    .wait_with_output()
-                    .expect("collect al-explorer output")
-            }
+            Some(status) => return collect_output(status, &stdout_path, &stderr_path),
             None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             None => {
                 let _ = child.kill();
-                let output = child
-                    .wait_with_output()
-                    .expect("collect timed-out al-explorer output");
+                let status = child.wait().expect("wait for killed al-explorer");
+                let output = collect_output(status, &stdout_path, &stderr_path);
                 panic!(
                     "`al-explorer {}` exceeded 40s\nstdout:\n{}\nstderr:\n{}\ndaemon log:\n{}",
                     args.join(" "),
@@ -41,6 +49,22 @@ fn run_al(args: &[&str]) -> std::process::Output {
                 );
             }
         }
+    }
+}
+
+fn collect_output(
+    status: std::process::ExitStatus,
+    stdout_path: &std::path::Path,
+    stderr_path: &std::path::Path,
+) -> std::process::Output {
+    let stdout = std::fs::read(stdout_path).expect("read al-explorer stdout capture");
+    let stderr = std::fs::read(stderr_path).expect("read al-explorer stderr capture");
+    let _ = std::fs::remove_file(stdout_path);
+    let _ = std::fs::remove_file(stderr_path);
+    std::process::Output {
+        status,
+        stdout,
+        stderr,
     }
 }
 
