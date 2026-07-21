@@ -2,8 +2,8 @@
 
 This page collects the per-feature roadmaps that appear at the bottom of each feature doc, organized so
 you can see where native coverage is expanding. It mirrors and cross-references the repository's
-[`ROADMAP.md`](../ROADMAP.md) (the canonical work queue) and
-[`docs/csharp-bridge-retirement.md`](../docs/csharp-bridge-retirement.md). Status tags: ✅ shipped ·
+[`ROADMAP.md`](../ROADMAP.md) (the canonical work queue) and the
+[semantic bridge notes](./features/semantic-bridge.md). Status tags: ✅ shipped ·
 🟡 partial/phase-gated · ⛔ not yet wired / inert.
 
 ## North star

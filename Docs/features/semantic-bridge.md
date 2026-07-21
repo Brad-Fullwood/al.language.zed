@@ -79,8 +79,7 @@ official extension couples the same engine to the .NET AL Language Server and VS
 Exact compile-time semantics belong to Microsoft, so for diagnostics/hover/completion the project
 delegates to the real compiler rather than approximating it. But an in-process CLR is heavy: it adds a
 .NET runtime dependency, serializes all calls, and is the slowest part of the editor loop. The native
-emitter already removed the bridge from the build path (2026-06-17), and `docs/csharp-bridge-retirement.md`
-tracks replacing the rest with native Rust:
+emitter already removed the bridge from the build path. Replacing the remaining bridge work requires:
 
 1. native semantic diagnostics (replace `analyze`),
 2. native type resolver + hover (replace `typeAt`),

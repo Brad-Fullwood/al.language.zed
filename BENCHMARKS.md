@@ -15,8 +15,8 @@ referenced symbols are cached). The *emit itself* is **40–400× faster** — t
 time is almost entirely loading the referenced symbol packages (the 6 MB Base Application),
 which is now cached across builds. This is expected: the native path does parse → emit, while
 `alc` does parse → bind → type-check → emit. **See the caveat — this is not an apples-to-apples
-comparison of the same work** (the native path skips semantic validation; that is the bridge's
-/ the LSP's job — see `docs/csharp-bridge-retirement.md` §6).
+comparison of the same work** (the native path skips semantic validation; that remains the semantic
+bridge/LSP's job — see [`Docs/features/semantic-bridge.md`](Docs/features/semantic-bridge.md)).
 
 ## Environment
 

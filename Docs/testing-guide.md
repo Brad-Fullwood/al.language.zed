@@ -2,8 +2,7 @@
 
 A change is **not verified by `cargo build`**, and often not by unit tests
 alone. Match the verification to the layer you touched, **run it**, and assert on
-real output (or inspect the screenshot) — not just an exit code. This expands the
-verification table in `CLAUDE.md` into concrete commands.
+real output (or inspect the screenshot), not just an exit code.
 
 | You changed… | Run this |
 |---|---|
@@ -107,8 +106,7 @@ AL_TOOL_PATH=<ext>/bin/linux cargo test  -p al-test-harness --test semantic_brid
 
 Reminder: a plain `cargo build --workspace` links `al-lsp` against the **no-op
 semantic stub** and rewrites `target/debug/al-lsp`; only a `--features semantic`
-build has the real bridge. Don't symlink `target/debug/al-lsp` onto `PATH` (see
-`CLAUDE.md`).
+build has the real bridge. Don't symlink the plain `target/debug/al-lsp` onto `PATH`.
 
 ## 5. Reproducible generated artifacts
 

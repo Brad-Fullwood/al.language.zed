@@ -27,12 +27,11 @@ tree-sitter-al/  (git submodule)        Generated AL grammar + generator (al-gen
 languages/al/                           Generated Zed language package (queries, config, tasks)
 schemas/                                JSON Schemas for app.json, rulesets, settings, migration
 snippets/, themes/                      AL/JSON snippets and Business Central themes
-docs/, examples/                        Settings reference, retirement plan, example settings
+Docs/, examples/                        Reference documentation and example settings
 ```
 
 The engine was originally one monolithic crate (`al-core`) and was later split into the layered
-crates above (see `Docs/redesign-crate-split-plan.md` for the historical rationale — that document
-describes the split *plan*, not the current state). `al-lsp` still re-exports several of these
+crates above. `al-lsp` still re-exports several of these
 crates under their pre-split module names (`crate::syntax`, `crate::symbols`, `crate::build`, …) so
 call sites written before the split keep resolving; new code should depend on the real crates
 directly rather than through `al-lsp`'s re-exports.

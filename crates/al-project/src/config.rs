@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 /// All fields have sensible defaults matching MS extension behavior.
 /// Settings can be updated at runtime via `workspace/didChangeConfiguration`.
 ///
-/// See `docs/settings.md` for the full MS→Zed setting mapping.
+/// See `Docs/reference/settings.md` for the full MS→Zed setting mapping.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AlConfig {

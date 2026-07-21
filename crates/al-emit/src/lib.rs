@@ -8,8 +8,7 @@
 //! method signature. This module reproduces that hash exactly (see
 //! [`method_id`]); the package writer and full symbol emitter build on it.
 //!
-//! Reverse-engineered against alc 17.0.34. See
-//! `docs/spikes/2026-06-15-al-compiler-emit-feasibility.md`.
+//! Reverse-engineered against alc 17.0.34.
 
 pub mod assemble;
 pub mod manifest;

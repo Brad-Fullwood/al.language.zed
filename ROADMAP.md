@@ -77,7 +77,7 @@ of the originally-scoped rule set:
 - Keep semantic compiler diagnostics separate from native lint diagnostics in output so users know the source
   (already true today — they carry distinct `AL-NL*` codes vs. the bridge's own codes).
 - Add tests that prove disabled native lint rules (`al.nativeLintRules`) stay disabled.
-- Keep `schemas/settings.json`, `docs/settings.md`, and README wording in lockstep with actual diagnostics behavior.
+- Keep `schemas/settings.json`, `Docs/reference/settings.md`, and README wording in lockstep with actual diagnostics behavior.
 
 ## Symbol And Package Engine
 
@@ -139,7 +139,7 @@ The README should stay high-signal and factual. Detailed operating docs should l
 
 - Keep README focused on project identity, architecture, feature surfaces, install, and development.
 - Keep `ROADMAP.md` for incomplete work and future goals.
-- Keep settings details in `docs/settings.md` and examples in `examples/zed-settings.jsonc`.
+- Keep settings details in `Docs/reference/settings.md` and examples in `examples/zed-settings.jsonc`.
 - Add a tester guide with minimal reproducible report templates for Zed, CLI, MCP, DAP, tests, and symbols.
 - Add architecture diagrams once entrypoint boundaries stabilize.
 

@@ -1,16 +1,7 @@
-//! MCP (Model Context Protocol) server mode — `al-lsp mcp`.
+//! MCP server mode for AL workspace tools.
 //!
-//! Exposes a curated set of AL development tools to MCP-compatible agents
-//! (Claude Code, Zed's agent panel via `context_servers`, custom agents)
-//! over stdio, using newline-delimited JSON-RPC 2.0 per the MCP spec.
-//!
-//! Tool names mirror Microsoft's AL agent tools (`al_build`,
-//! `al_symbolsearch`, `al_getdiagnostics`, …) so agents trained on the
-//! official surface transfer, plus this project's differentiators
-//! (dead-code, SQL anti-patterns, event tracing, impact analysis) that the
-//! official tooling does not offer. Tool arguments are forwarded VERBATIM
-//! as daemon-dispatch params — validation happens in the dispatchers,
-//! which already return structured JSON-RPC errors.
+//! Uses newline-delimited JSON-RPC over stdio and forwards validated tool
+//! arguments to the daemon dispatchers.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,8 +14,6 @@ use al_workspace::Workspace;
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
-/// One exposed MCP tool: its public name, the daemon method it forwards to,
-/// a description for the agent, and a JSON Schema for its arguments.
 struct ToolDef {
     name: &'static str,
     method: &'static str,

@@ -26,19 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-# Historical/point-in-time documents that intentionally describe a past
-# architecture (a completed redesign plan, a dated progress log, dated
-# spikes). Matched as a grep -F fixed-string prefix against the repo-relative
-# path.
-ALLOWLIST=(
-    "Docs/redesign-crate-split-plan.md"
-    "Docs/redesign-crate-split-plan-HARDENED.md"
-    "Docs/autonomous-progress.md"
-    "docs/csharp-bridge-retirement.md"
-    "docs/csharp-bridge-agent-loop-plan.md"
-    "docs/spikes/"
-    "CODEBASE_REVIEW.md"
-)
+ALLOWLIST=()
 
 is_allowlisted() {
     local path="$1"

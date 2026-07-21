@@ -351,17 +351,17 @@ Common AL settings:
 
 `al.useOfficialLsp` is the explicit escape hatch for delegating to Microsoft's official AL LSP. The default path is this project's native `al-lsp`. Custom `dotnet` path configuration is not currently supported; the toolchain invokes `dotnet` by name.
 
-**Every setting - with types, defaults, and descriptions - is documented in [docs/settings.md](docs/settings.md), and a ready-to-copy, fully-commented template is at [examples/zed-settings.jsonc](examples/zed-settings.jsonc).** `al.enableNativeLint` and `al.nativeLintRules` are parsed for forward compatibility but currently inert; diagnostics come from syntax parsing and the semantic CodeAnalysis bridge.
+**Every setting - with types, defaults, and descriptions - is documented in [Docs/reference/settings.md](Docs/reference/settings.md), and a ready-to-copy template is at [examples/zed-settings.jsonc](examples/zed-settings.jsonc).** `al.enableNativeLint` and `al.nativeLintRules` are parsed for forward compatibility but currently inert; diagnostics come from syntax parsing and the semantic CodeAnalysis bridge.
 
 On Zed Dev/Nightly (extension API >= 0.8) the `lsp.al-lsp.settings` keys autocomplete and validate as you type; on Stable Zed the settings still apply, just without in-editor autocomplete (use the template above). This lights up on Stable automatically once the 0.8 extension API reaches the registry.
 
 ### Project-file schemas (app.json, rulesets)
 
-This extension ships JSON Schemas for the AL project files you edit by hand: `app.json`, `*.ruleset.json`, `AppSourceCop.json`, and `migration.json`. Associate them with Zed's bundled JSON language server (the `json.schemas` block in [examples/zed-settings.jsonc](examples/zed-settings.jsonc)) to get autocomplete and validation for those files on **every Zed channel today**. See [docs/settings.md](docs/settings.md#project-file-schemas-appjson-rulesets-) for the mapping.
+This extension ships JSON Schemas for the AL project files you edit by hand: `app.json`, `*.ruleset.json`, `AppSourceCop.json`, and `migration.json`. Associate them with Zed's bundled JSON language server (the `json.schemas` block in [examples/zed-settings.jsonc](examples/zed-settings.jsonc)) to get autocomplete and validation for those files on **every Zed channel today**. See [Docs/reference/settings.md](Docs/reference/settings.md#project-file-schemas) for the mapping.
 
 ## Debugging
 
-The extension registers the `al` debug adapter and debug locator. Snippets cover common Business Central launch and attach configurations, including browser launch, tenant/environment settings, sandbox attach, agent-session fields, and MCP-related debug fields. Debug-config schemas are tracked in the repository for reference; debug configurations are authored via the bundled snippets rather than a registered settings-editor schema. (For language-server settings and project-file schema autocomplete, see [Zed Settings](#zed-settings) above and [docs/settings.md](docs/settings.md).)
+The extension registers the `al` debug adapter and debug locator. Snippets cover common Business Central launch and attach configurations, including browser launch, tenant/environment settings, sandbox attach, agent-session fields, and MCP-related debug fields. Debug-config schemas are tracked in the repository for reference; debug configurations are authored via the bundled snippets rather than a registered settings-editor schema. (For language-server settings and project-file schema autocomplete, see [Zed Settings](#zed-settings) above and [Docs/reference/settings.md](Docs/reference/settings.md).)
 
 Debug support has two important layers:
 

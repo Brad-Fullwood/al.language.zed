@@ -1014,18 +1014,7 @@ impl LanguageServer for AlServer {
         let lenses: Vec<CodeLens> = entries
             .into_iter()
             .map(|e| {
-                // The command id is owned by the lens kind (single source of
-                // truth shared with `SUPPORTED_COMMANDS`), so a lens can never
-                // emit an id the `execute_command` dispatch doesn't handle.
                 let command_id = e.kind.command_id();
-                // `data` carries the lens kind + payload so clients can
-                // distinguish test lenses; `arguments` makes every lens
-                // actionable. Reference/profiler lenses pass `{uri, position}`
-                // so the handler can locate the symbol; test lenses pass the
-                // codeunit/method to run. Both were previously dropped at this
-                // boundary. The payload shape is deliberate — the
-                // internal enums are both internally tagged with "kind" and
-                // would collide if serialized directly.
                 let data = match &e.kind {
                     CodeLensKind::Reference(count) => {
                         serde_json::json!({ "kind": "reference", "count": count })

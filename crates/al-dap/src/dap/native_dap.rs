@@ -2011,27 +2011,8 @@ mod tests {
         );
     }
 
-    // compile_timeout + the alc run/timeout policy now live in crate::build
-    // (run_alc_with_timeout), shared with the daemon build path. Their env-var
-    // parsing is covered by build.rs's compile_timeout_* tests; the DAP
-    // duplicates were removed to keep a single source of truth.
-
-    // -----------------------------------------------------------------------
-    // write_dap — serialises a JSON value into a DAP frame with a valid
-    // Content-Length header. Exercises the framing boundary without stdio.
-    // -----------------------------------------------------------------------
-
-    // -----------------------------------------------------------------------
-    // try_spawn / open_browser — the process-spawn helper used to auto-open the
-    // AAD device-code page. Pure enough to unit-test both outcomes without a GUI:
-    // a real binary spawns successfully; a guaranteed-missing binary fails. The
-    // child does no work (true / a missing name), so no window or side effect.
-    // -----------------------------------------------------------------------
-
     #[test]
     fn try_spawn_returns_true_for_spawnable_command() {
-        // `true` exists on every supported unix; on Windows `cmd` is always
-        // present. We pick a per-platform no-op that exits immediately.
         #[cfg(not(target_os = "windows"))]
         let spawned = try_spawn("true", &[]);
         #[cfg(target_os = "windows")]

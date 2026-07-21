@@ -147,5 +147,5 @@ From `ROADMAP.md` (Native Lint And Diagnostics): implement a high-value native r
 `FindFirst` in loops, missing `SetLoadFields`, missing `ApplicationArea`/`DataClassification`/
 tooltips, obsolete usage, architecture-layer violations), keep native lint output distinct from
 semantic-compiler diagnostics, add tests proving disabled rules stay disabled, and keep
-`schemas/settings.json` / `docs/settings.md` / README wording in lockstep with actual behavior —
+`schemas/settings.json` / `Docs/reference/settings.md` / README wording in lockstep with actual behavior —
 or rename/remove the inert settings until the engine starts.

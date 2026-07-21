@@ -1091,8 +1091,6 @@ mod tests {
 
     #[test]
     fn trailing_comma_before_nested_close_like_real_zed_settings() {
-        // Reproduces the reported failure: a trailing comma after the last key
-        // of a nested object (the `theme` block in a real Zed settings.json).
         let input = "{\n  \"ui_font_size\": 16,\n  \"theme\": {\n    \"mode\": \"dark\",\n    \"dark\": \"Business Central Dark\",\n  },\n}";
         let parsed = strip_jsonc_comments_and_parse(input).unwrap();
         assert_eq!(parsed["ui_font_size"], 16);
@@ -1101,9 +1099,6 @@ mod tests {
 
     #[test]
     fn multibyte_utf8_survives_trailing_comma_strip() {
-        // Regression: the previous in-module `strip_trailing_commas` cast each
-        // byte to `char`, corrupting multi-byte UTF-8 (e.g. emoji in a theme
-        // name or comment) whenever the settings had a trailing comma.
         let input = r#"{ "name": "Test 😀", "accent": "café", "value": 1, }"#;
         let parsed = strip_jsonc_comments_and_parse(input).unwrap();
         assert_eq!(parsed["name"], "Test 😀");
