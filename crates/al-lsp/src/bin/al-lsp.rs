@@ -144,8 +144,8 @@ async fn main() {
         .with_writer(std::io::stderr)
         .with_target(false);
 
-    let env_filter = tracing_subscriber::EnvFilter::from_default_env()
-        .add_directive(tracing::Level::INFO.into());
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
     // File log level: INFO by default; override with AL_LOG_FILE_LEVEL (e.g.
     // `debug`, or `al_core=trace`) to capture detail for a hard-to-reproduce

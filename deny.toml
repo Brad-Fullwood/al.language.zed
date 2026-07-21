@@ -7,10 +7,6 @@ wildcards = "warn"
 highlight = "all"
 
 [advisories]
-# Keep this empty as policy: fix advisories by upgrading, not ignoring
-# (SYSTEM_REVIEW_ACTION_PLAN F11). The previous RUSTSEC-2017-0008 (`serial`)
-# entry became stale when portable-pty 0.9 dropped the dep — cargo-deny now
-# warns advisory-not-detected for it.
 ignore = []
 
 [licenses]
