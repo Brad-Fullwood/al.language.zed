@@ -129,7 +129,7 @@ pub fn rand_dec(args: &[Value]) -> Eval {
     let pow = 10_i64.pow(places as u32);
     let scaled_max = max_val.saturating_mul(pow).max(1);
     let raw = next_rand(scaled_max);
-    // Exact: raw / 10^places as a base-10 decimal (no float division, C3).
+    // Divide by 10^places as an exact base-10 decimal, without float division.
     ok(Value::Decimal(Decimal::new(raw, places as u32)))
 }
 

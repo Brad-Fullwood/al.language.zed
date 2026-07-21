@@ -380,8 +380,6 @@ fn parse_key_fields(section: Node<'_>, source: &[u8]) -> Vec<String> {
     }
 }
 
-// ───────────────────────────── method dispatch ─────────────────────────────
-
 /// True if `method` is a record API method handled by [`dispatch_record_method`].
 pub(crate) fn is_record_method(method: &str) -> bool {
     matches!(
@@ -825,8 +823,6 @@ fn descend_to_postfix(node: Node<'_>) -> Option<Node<'_>> {
     }
 }
 
-// ───────────────────────────── list dispatch ───────────────────────────────
-
 /// True if `method` is a `List of [T]` method handled by [`dispatch_list_method`].
 pub(crate) fn is_list_method(method: &str) -> bool {
     matches!(
@@ -910,8 +906,6 @@ pub(crate) fn dispatch_list_method(
     }
 }
 
-// ───────────────────────────── binding helpers ─────────────────────────────
-
 /// Build a default `Value` for a structured local variable type the scalar
 /// `Value::default_for` does not cover: `Record <Subtype>`, `Codeunit <Subtype>`,
 /// and `List of [T]`. Returns `None` for anything else.
@@ -949,8 +943,6 @@ fn subtype_after_keyword(type_text: &str, keyword: &str) -> String {
     let rest = type_text[keyword.len()..].trim();
     rest.trim_matches('"').trim().to_string()
 }
-
-// ───────────────────────────── small helpers ───────────────────────────────
 
 fn node_text(node: Node<'_>, source: &[u8]) -> String {
     node.utf8_text(source)

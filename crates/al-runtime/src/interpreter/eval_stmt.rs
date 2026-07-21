@@ -859,7 +859,6 @@ fn extract_call_parts<'a>(
     node: Node<'a>,
     source: &[u8],
 ) -> (Option<String>, String, Option<Node<'a>>) {
-    // ── Shape 2: postfix_expression ──────────────────────────────────────────
     // Children: primary_expression, [member_call_suffix | scope_call_suffix | call_suffix]
     // member_call_suffix has: "." identifier argument_list
     // scope_call_suffix  has: "::" identifier argument_list
@@ -924,7 +923,6 @@ fn extract_call_parts<'a>(
         }
     }
 
-    // ── Shape 1 (legacy flat shape) ──────────────────────────────────────────
     let child_count = node.child_count();
     let parts: Vec<(bool, Node)> = (0..child_count)
         .filter_map(|i| node.child(i))
@@ -987,9 +985,7 @@ fn find_argument_list(node: Node<'_>) -> Option<Node<'_>> {
 enum ArgsShort {
     Error(ErrorInfo),
     /// AL semantics: `exit(v)` inside `Foo(exit(42), 1)` unwinds the
-    /// caller's procedure with value `v`, not the inner expression. The
-    /// prior code pushed the Exit value as a regular argument and
-    /// continued, which is a wrong-control-flow bug.
+    /// caller's procedure with value `v`, not the inner expression.
     Exit(Value),
 }
 
@@ -1107,9 +1103,7 @@ fn named_stmt_child(node: Node<'_>, n: usize) -> Option<Node<'_>> {
 
 // CASE selector-vs-arm matching uses the same `values_equal` as `=`/`<>`
 // BC evaluates a CASE arm exactly like an equality test, so Text is
-// case-sensitive and Code is case-insensitive. The former separate
-// `values_equal_for_case` compared Text case-insensitively, which matched
-// `'ABC'` against `'abc'` where BC does not.
+// case-sensitive and Code is case-insensitive.
 
 #[cfg(test)]
 mod tests {

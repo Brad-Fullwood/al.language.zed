@@ -1,4 +1,4 @@
-//! Dynamic statement & branch coverage for the AL interpreter (gap C9).
+//! Dynamic statement and branch coverage for the AL interpreter.
 //!
 //! This is *dynamic* coverage: it records what the tree-walking interpreter
 //! actually executed, as opposed to the *static* call-graph coverage produced

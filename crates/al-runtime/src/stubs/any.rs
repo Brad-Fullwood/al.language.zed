@@ -141,7 +141,7 @@ fn decimal_in_range_impl(min: Decimal, max: Decimal, places: i64) -> Eval {
     let scale = places as u32;
     let pow = Decimal::from(10_i64.pow(scale));
     // Scale the bounds to whole units of the least significant place, then pick
-    // an integer in [min_scaled, max_scaled] and divide back — all exact (C3).
+    // an integer in [min_scaled, max_scaled] and divide back exactly.
     // A bound (or the span) that overflows the decimal/i64 range at this scale
     // is reported rather than panicking (Decimal `*` panics on overflow) or
     // being silently truncated to 0 (which would return an out-of-range value).

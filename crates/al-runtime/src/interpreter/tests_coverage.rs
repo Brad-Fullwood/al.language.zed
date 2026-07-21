@@ -1,4 +1,4 @@
-//! Dynamic statement/branch coverage integration tests (gap C9).
+//! Dynamic statement and branch coverage integration tests.
 //!
 //! These drive the real statement evaluator over parsed AL and assert on the
 //! collected [`Coverage`]: a taken `if`/`case` branch's body lines are
