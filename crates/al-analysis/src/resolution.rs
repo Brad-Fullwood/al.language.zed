@@ -1854,8 +1854,6 @@ mod tests {
                 character: utf16_len as u32,
             },
         )
-        // Before the fix this returned None because the prefix was sliced at byte 5
-        // (UTF-16 col used as byte index), cutting off the trailing '.'.
         .expect("receiver before trailing dot when line has multi-byte prefix");
         assert_eq!(receiver, "ÿRec");
         assert_eq!(kind, AccessKind::Member);

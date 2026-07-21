@@ -30,10 +30,7 @@ pub enum UnusedReason {
 /// Static analysis over workspace source cannot prove some symbols
 /// dead — table fields are reachable via `FieldRef`/`RecordRef` by number,
 /// report layouts, and other extensions; public procedures are callable
-/// from any dependent extension. Presenting those as certainly-dead made
-/// the analysis untrustworthy on real projects (ForNAV dataset tables on
-/// JIG UK). Findings now carry an explicit confidence and the CLI shows
-/// why each medium-confidence finding might still be alive.
+/// from any dependent extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Confidence {
@@ -73,15 +70,7 @@ pub struct UnusedSymbol {
 pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
     let mut results = Vec::new();
 
-    // Collect all cached (path, text, tree) triples in one pass — no re-parsing needed.
-    // The owned Vec is required so that `all_files` borrows below have a stable backing store
-    // for the lifetime of the cross-file reference scans.
-    //
-    // Sort by path before the main loop so output is stable
-    // across runs. `file_trees` is a DashMap whose iteration order varies
-    // across process restarts, and the results Vec inherits that order.
-    // CI snapshots and human diff review of deadcode output need
-    // deterministic ordering.
+    // The owned, sorted collection keeps borrows stable and output deterministic.
     let mut parsed_files: Vec<(String, String, tree_sitter::Tree)> = workspace
         .file_index
         .iter_parsed()
@@ -95,20 +84,13 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
         .map(|(p, t, tree)| (p.as_str(), t.as_str(), tree))
         .collect();
 
-    // Build a workspace-global lowercase set of all call-site identifier
-    // names ONCE, instead of re-scanning every file for every procedure
-    // (the inner loop was O(F²·P) in the cross-file walk; this
-    // makes per-procedure membership checks O(1)). The text-fallback set
-    // captures call sites inside action triggers that braced_block doesn't
-    // parse — same coverage as text_contains_call_outside_declaration but
-    // collected in a single pass per file.
+    // Action-trigger bodies need a text scan because the grammar does not
+    // expose them as braced blocks.
     let mut all_call_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 32);
     let mut all_text_call_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 16);
-    // Build the workspace-global member-access name set in the
-    // same pre-pass. Previously `find_unused_fields` walked every other
-    // file's full text per-field → O(F²·L). Now field-lookup is O(1).
+    // Build member-access names once for constant-time field lookups.
     let mut all_member_access_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 16);
     for (_, text, tree) in &all_files {
@@ -212,11 +194,6 @@ fn find_unused_procedures(
             continue;
         }
 
-        // Workspace-global O(1) membership check (perf fix).
-        // The two sets together cover the same surface as the previous
-        // per-procedure scan: tree-sitter call references + text-fallback
-        // for calls inside action triggers (braced_block doesn't
-        // parse trigger bodies).
         let lname = proc_name.to_ascii_lowercase();
         let referenced = all_call_names.contains(&lname) || all_text_call_names.contains(&lname);
 
@@ -485,22 +462,11 @@ fn find_unused_fields(
     collect_fields_from_text(file_text, &mut fields);
 
     for (field_name, line) in &fields {
-        // O(1) lookup against the pre-built set. The set captures lowercase
-        // names referenced as `.<name>` or `."<name>"` anywhere in the
-        // workspace; a true positive means SOME file (possibly the defining
-        // file itself) member-accesses that name. That intentional over-
-        // approximation matches the prior all-files scan's coverage: a
-        // field referenced only by its own table's procedures is still
-        // "used" by virtue of that table's internal usage.
         let referenced = all_member_access_names.contains(&field_name.to_lowercase());
 
         if !referenced {
-            // A field with no name references is never provably
-            // dead — FieldRef/RecordRef access it by NUMBER, report
-            // layouts and dataset configs reference it outside AL source,
-            // and any dependent extension can read it. JIG UK's ForNAV
-            // buffer tables were exactly this: every field flagged, all in
-            // use via field-number config records.
+            // FieldRef/RecordRef, report layouts, and dependent extensions are
+            // not visible to this analysis.
             results.push(UnusedSymbol {
                 kind: UnusedKind::Field,
                 name: field_name.clone(),
@@ -927,11 +893,6 @@ mod tests {
 
     #[test]
     fn collect_fields_skips_block_comments() {
-        // A multi-line block
-        // comment containing a `field(...)` line previously yielded a
-        // phantom "Foo" entry that then surfaced as a false-positive
-        // unused field. The block-comment scanner in collect_fields_from_text
-        // must skip these.
         let mut fields = Vec::new();
         let text = r#"table 50100 "T"
 {
@@ -1059,9 +1020,6 @@ mod tests {
 
     #[test]
     fn procedure_named_name_not_masked_by_field_access() {
-        // Regression test for the name-collision bug:
-        // A procedure called "Name" must be flagged as unused even when another file
-        // has `Rec.Name` field accesses — field accesses must NOT count as call references.
         let ws = workspace_with_files(vec![
             (
                 "/src/MyCodeunit.al",
@@ -1091,7 +1049,6 @@ mod tests {
 
         let unused = dead_code(&ws);
 
-        // The procedure "Name" is never CALLED — field accesses must not suppress detection
         assert!(
             unused
                 .iter()
@@ -1101,11 +1058,6 @@ mod tests {
         );
     }
 
-    /// A procedure name that appears only inside a
-    /// string literal must NOT count as a reference. Previously
-    /// `extract_text_call_names` walked any `ident(` token in the line
-    /// regardless of quote state — so a literal like `Message('DoStuff(')`
-    /// suppressed dead-code detection of a real unused `DoStuff` procedure.
     #[test]
     fn dead_code_procedure_in_string_literal_does_not_count_as_call() {
         let ws = workspace_with_files(vec![
@@ -1159,10 +1111,6 @@ mod tests {
             ),
             (
                 "/src/Caller.al",
-                // Has a local variable named `Description` but never accesses
-                // the table field via `.Description`. Old behaviour
-                // (find_variable_references) would have matched the bare
-                // identifier and falsely reported the field as referenced.
                 r#"codeunit 50301 "Caller"
 {
     procedure DoIt()

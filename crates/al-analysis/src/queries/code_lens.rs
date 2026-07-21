@@ -329,21 +329,13 @@ fn reference_label(count: usize) -> String {
 /// scanning every file in the workspace exactly once.
 ///
 /// Complexity: O(F) where F is the number of workspace files (times the work
-/// of walking each file's parse tree).  The caller then does O(P) lookups —
-/// total O(F + P) versus the previous O(P * F).
+/// of walking each file's parse tree). The caller then does O(P) lookups.
 fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<String, usize> {
     // name_lower → set of (uri_string, line, col) to deduplicate locations
     let mut seen: HashMap<String, std::collections::HashSet<(String, u32, u32)>> = HashMap::new();
 
-    /// Walk a single file's parse tree once, recording the *name* of every
+    /// Walk a single file's parse tree once, recording the name of every
     /// call site (`Foo()`, `obj.Foo()`, `T::Foo()`) into `seen`.
-    ///
-    /// Previously this counted every `identifier` / `quoted_identifier` /
-    /// `name` node, which conflated declaration sites, type references and
-    /// bare field references with actual call sites — a procedure declared
-    /// once and never called appeared as "1 reference" because of the
-    /// declaration itself, and any field with the same name doubled the
-    /// count.
     ///
     /// AL grammar shapes (mirrors `al_syntax::is_call_reference`):
     /// - bare call `Foo()`: `identifier → name → primary_expression`,

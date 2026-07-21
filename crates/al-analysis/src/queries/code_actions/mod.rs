@@ -416,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn detect_object_kind_now_recognises_previously_missed_types() {
+    fn detect_object_kind_recognises_supported_types() {
         for (txt, label) in [
             ("permissionset 50 X { }", "permissionset"),
             ("profile X { }", "profile"),

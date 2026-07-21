@@ -1,11 +1,6 @@
 //! Transport-agnostic syntax diagnostics query.
 //!
-//! Consolidates the parse+lint+config-filter pattern that was previously
-//! duplicated across `al-lsp/src/server.rs` (schedule_diagnostics) and
-//! `al-lsp/src/diagnostics.rs` (compute_diagnostics + publish_diagnostics).
-//!
-//! Uses the DocumentStore parse cache (`parsing::get_or_parse`) and falls back
-//! to a direct parse only when the document is not in the store.
+//! Uses the document store's version-validated parse cache.
 
 use url::Url;
 
@@ -34,10 +29,6 @@ pub struct SyntaxDiagnostic {
 
 /// Compute syntax and lint diagnostics for a single document.
 ///
-/// Uses the DocumentStore parse cache when the document is present; falls back
-/// to a direct parse on a cache miss so callers that pre-populate the store
-/// (e.g. `did_open` / `did_change`) get a zero-cost cache hit.
-///
 /// Lint results are filtered by `config.is_lint_rule_enabled`.
 /// `al_syntax::lint()` runs a small native rule set (AL-NL001, AL-NL002) in
 /// addition to the syntax-error pass on the parse tree; most AL diagnostics
@@ -51,10 +42,6 @@ pub fn syntax_diagnostics(
     config: &AlConfig,
 ) -> Vec<SyntaxDiagnostic> {
     let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
-        // Document not in DocumentStore. Callers (did_open / did_change) are
-        // expected to pre-populate the store, so a cache miss is unexpected.
-        // Surface it via tracing rather than silently parsing an empty string,
-        // which would always return zero diagnostics and mask real issues.
         tracing::warn!(
             target: "al_core::diagnostics",
             uri = %uri,

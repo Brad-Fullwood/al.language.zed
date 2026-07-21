@@ -365,9 +365,6 @@ mod tests {
         assert!(detect_sql_patterns(&Workspace::new()).is_empty());
     }
 
-    /// A FindFirst() call after a nested if..begin..end inside a for loop
-    /// must still be flagged.  Previously the inner "end;" prematurely zeroed
-    /// `in_loop`, making code after the nested block invisible to the detector.
     #[test]
     fn detects_findfirst_after_nested_begin_end_in_loop() {
         let ws = workspace_with(vec![(

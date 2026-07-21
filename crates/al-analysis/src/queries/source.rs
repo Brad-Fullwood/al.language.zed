@@ -888,9 +888,6 @@ mod tests {
         assert_eq!(outline, "codeunit 50100 \"Empty CU\"\n{\n}\n");
     }
 
-    /// Regression for the recursive→iterative conversion of find_procedure_node:
-    /// a deeply nested if-then-begin chain used to risk stack overflow under recursion.
-    /// The iterative version must locate a procedure regardless of nesting depth.
     #[test]
     fn find_procedure_node_handles_deep_nesting() {
         const DEPTH: usize = 200;

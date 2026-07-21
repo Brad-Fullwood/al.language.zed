@@ -451,10 +451,8 @@ fn xml_escape(s: &str) -> String {
 /// Uses a simple line-based parser that handles typical AL XLIFF output without
 /// requiring a full XML parser dependency.
 ///
-/// Multi-line `<source>` / `<target>` / `<note>` bodies are collected until
-/// their closing tag is found on a later line. Earlier versions truncated at
-/// the first newline, silently losing the rest of the translation
-/// Multi-line source and target bodies are accumulated before parsing.
+/// Multi-line `<source>` / `<target>` / `<note>` bodies are collected through
+/// their closing tags.
 pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
     let mut units: HashMap<String, TranslationUnit> = HashMap::new();
     let mut current_id: Option<String> = None;
@@ -911,7 +909,7 @@ pub fn suggest_translations(
 /// unit, in order:
 /// 1. an exact normalized-source TM match (origin `tm-exact`, confidence 1.0);
 /// 2. else the best token-overlap fuzzy TM match (origin `tm-fuzzy`, lower);
-/// 3. else symbol-name matching as before (origin `name`).
+/// 3. else symbol-name matching (origin `name`).
 ///
 /// Suggestions are sorted by confidence (highest first), then unit id so the
 /// output is deterministic.
@@ -991,8 +989,7 @@ fn name_match_suggestions(
 /// Returns:
 /// - `Ok(Some((path, count)))` on success.
 /// - `Ok(None)` when no translatable units exist (not an error).
-/// - `Err(io::Error)` when directory creation or file write fails — previously
-///   these were silently swallowed via `.ok()?`, masking real disk problems.
+/// - `Err(io::Error)` when directory creation or file write fails.
 pub fn build_xliff(
     workspace: &Workspace,
     project_root: &Path,
@@ -1594,8 +1591,6 @@ Line three</source>
 
     #[test]
     fn parse_xliff_preserves_multi_line_target_body() {
-        // Same regression for translated content. A real translator's
-        // newline in `<target>` text must survive parse + round-trip.
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <xliff version="1.2">
   <file>
@@ -1626,8 +1621,6 @@ le monde</target>
 
     #[test]
     fn xlf_exceeds_cap_huge_file_returns_some_true() {
-        // Negative: a virtual 100 MB .xlf is refused. Sparse-file trick
-        // — disk usage is one block, but metadata reports the full size.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("huge.xlf");
         let f = std::fs::File::create(&path).unwrap();
@@ -1644,9 +1637,6 @@ le monde</target>
 
     #[test]
     fn parse_xliff_single_line_body_still_works() {
-        // Positive: the common single-line case must continue to work
-        // exactly as before — this is what 99% of BC-generated XLIFF
-        // files look like.
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <xliff version="1.2">
   <file>

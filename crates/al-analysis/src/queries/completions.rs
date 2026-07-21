@@ -133,13 +133,6 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                     sort_text: None,
                 });
             }
-            // Use get_by_kind for each wanted kind directly. Previously this
-            // was a single all_entries() pass with per-kind counters and an
-            // early-exit that required ALL four counters to hit 50 — so if
-            // (say) Interface had fewer than 50 entries, the loop kept
-            // scanning every other entry in the index after the other three
-            // were already full. The targeted lookups bound work to the
-            // requested kind sets and the per-kind cap.
             const TYPE_COMPLETION_CAP: usize = 50;
             for kind in [
                 al_symbols::ObjectKind::Table,

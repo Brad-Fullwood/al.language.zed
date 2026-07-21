@@ -277,12 +277,7 @@ fn check_object_consumers(
         }
     }
 
-    // Object-scope (global) Record variables referencing the target. The
-    // parameter scan above only sees procedure signatures; a base-app codeunit
-    // commonly holds `Cust: Record Customer` as a global, which the generic
-    // impact analysis previously missed entirely (only the orphaned
-    // insight::analysis::table_impact caught it — now merged here so `al impact`
-    // covers global-variable consumers too).
+    // Procedure signatures do not include object-scope record variables.
     for var in &entry.variables {
         if is_record_of(&var.type_name, target_object) {
             results.push(ImpactEntry {
@@ -632,10 +627,6 @@ mod tests {
         );
     }
 
-    /// A global (object-scope) `Record Customer` variable IS an impact — merged
-    /// from the orphaned table_impact, which the generic impact previously missed
-    /// (it only scanned method parameters). Red-green: drop the entry.variables
-    /// loop in check_object_consumers and this fails.
     #[test]
     fn impact_global_record_variable_is_found() {
         let ws = Workspace::new();
@@ -661,8 +652,6 @@ mod tests {
         );
     }
 
-    /// Substring guard for the variable path: a `Record "CustomerBank"` global
-    /// must NOT match `Customer`.
     #[test]
     fn impact_global_record_variable_no_substring_false_positive() {
         let ws = Workspace::new();
