@@ -238,9 +238,6 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
     }
 }
 
-// cmd_diag removed — diag subcommands had no daemon handler (T1905).
-// T2702 will implement proper diagnostic tracing.
-
 pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
     match subcmd {
         SnapshotCommands::Start {

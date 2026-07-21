@@ -22,7 +22,7 @@ pub fn print_json<T: Serialize>(value: &T) {
 /// customizations, control add-ins, entitlements, and .NET packages are
 /// declared without one — for some of these the symbol packages store an
 /// internal compiler hash in the `Id` slot, which must not be displayed
-/// as if it were a real object ID (FB-3).
+/// as if it were a real object ID.
 pub fn kind_has_numeric_id(kind: &str) -> bool {
     !matches!(
         kind,
@@ -68,7 +68,7 @@ pub fn bc_server_params(
 /// `outputDir`, …) reject relative paths with `"… must be an absolute
 /// path"`. The CLI accepts shell-style relative paths like `MyApp` or
 /// `trace.alcpuprofile` because users naturally type them, so the CLI
-/// must absolutize before forwarding (F-050). `canonicalize()` is
+/// must absolutize before forwarding. `canonicalize()` is
 /// unsuitable here because it requires the target to exist; for `new`
 /// the directory is being created on the daemon side.
 pub fn absolutize_path(input: &str) -> String {
@@ -313,7 +313,7 @@ mod path_tests {
 
     #[test]
     fn absolutize_path_resolves_relative_paths_against_cwd() {
-        // Positive: relative paths must come out absolute (F-050).
+        // Positive: relative paths must come out absolute.
         let cwd = std::env::current_dir().expect("current_dir is required for this test");
         let resolved = absolutize_path("MyApp");
         assert!(

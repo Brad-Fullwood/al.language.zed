@@ -12,7 +12,7 @@ pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
     // The daemon's `profiler_hints` resolver keys on a `procedure` field (and
     // an optional `object` field to disambiguate same-named procedures), so
     // emit those keys — a previous `{"name": …}` payload was silently ignored
-    // and every lookup returned zero hints (audit 2026-06-20). Accept the
+    // and every lookup returned zero hints. Accept the
     // `Object.Procedure` shorthand used elsewhere (e.g. `impact`) by splitting
     // on the last dot.
     let hotspot_values: Vec<serde_json::Value> = hotspots
@@ -287,7 +287,7 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
                         // `old_value` / `new_value`. The previous formatter read
                         // a top-level array with `sampleIndex`/`field`/`expected`/
                         // `actual`, so it always printed "Snapshots are
-                        // identical." even when they differed (audit 2026-06-20).
+                        // identical." even when they differed.
                         let divs = result
                             .get("divergences")
                             .and_then(|v| v.as_array())
@@ -380,8 +380,7 @@ pub fn cmd_test_mutate(
                         // The mutation details (id/file/line/description) live in
                         // the nested `variant` object; the top-level keys are
                         // `killed`/`killingTest`/`error`. Reading them at the top
-                        // level printed "?  ?  0  ?" for every survivor row
-                        // (audit 2026-06-20).
+                        // level printed "?  ?  0  ?" for every survivor row.
                         let variant = v.get("variant").unwrap_or(v);
                         let id = variant.get("id").and_then(|x| x.as_str()).unwrap_or("?");
                         let file = variant.get("file").and_then(|x| x.as_str()).unwrap_or("?");

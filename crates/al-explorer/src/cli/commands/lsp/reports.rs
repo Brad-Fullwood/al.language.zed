@@ -127,7 +127,7 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
                 }
             }
 
-            // B13: over-broad / unused grants (object-level; RIMDX not verified).
+            // Report over-broad and unused object-level grants.
             if over_broad.is_empty() {
                 println!("\nNo over-broad grants detected (object-level check).");
             } else {
@@ -147,7 +147,7 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
                 eprintln!("\n{} over-broad grant(s)", over_broad.len());
             }
 
-            // B13 follow-up: right-level (RIMDX) over-grant on referenced tables.
+            // Report right-level (RIMDX) over-grants on referenced tables.
             if over_granted.is_empty() {
                 println!("\nNo over-granted RIMDX rights detected (right-level check).");
             } else {

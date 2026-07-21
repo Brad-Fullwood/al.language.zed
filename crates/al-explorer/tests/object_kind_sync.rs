@@ -1,5 +1,5 @@
 //! Compile-time cross-check: al-explorer's ObjectKind must stay in sync with
-//! al-symbols::ObjectKind (ISSUE-017).
+//! al-symbols::ObjectKind.
 //!
 //! al-explorer intentionally duplicates ObjectKind locally to avoid a
 //! compile-time dependency on al-symbols. This test reads the source of

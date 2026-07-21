@@ -29,7 +29,7 @@ pub fn cmd_search(query: &str, limit: usize, json: bool) -> ExitCode {
                     let pkg = e.get("package").and_then(|v| v.as_str()).unwrap_or("?");
                     // Interfaces & co. have no developer-visible object ID —
                     // symbol packages put an internal compiler hash in the
-                    // Id slot. Render blank instead of the hash / -1 (FB-2/3).
+                    // Id slot. Render blank instead of the hash or -1.
                     let id_text = if id > 0 && kind_has_numeric_id(kind) {
                         id.to_string()
                     } else {
@@ -75,7 +75,7 @@ pub fn cmd_events(name: &str, json: bool) -> ExitCode {
                     eprintln!("No event publishers matching '{name}'");
                     return ExitCode::SUCCESS;
                 }
-                // FB-6: enrich each publisher with its workspace subscribers
+                // enrich each publisher with its workspace subscribers
                 // so the result is a chain view, not a flat name list. One
                 // extra daemon round-trip per distinct event name, capped.
                 const SUBSCRIBER_LOOKUP_CAP: usize = 25;
@@ -174,7 +174,7 @@ pub fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
                     println!("{obj}.{method} → {target_type}::{target_name}.{target_event}");
                 }
                 eprintln!("\n{} subscribers", subs.len());
-                // FB-7: be explicit about coverage — Microsoft symbol
+                // be explicit about coverage — Microsoft symbol
                 // packages strip EventSubscriber attributes, so package
                 // subscribers are fundamentally invisible to any tool.
                 eprintln!(
@@ -189,7 +189,7 @@ pub fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
     }
 }
 
-/// FB-9/FB-10: resolve and show the actual publisher declaration behind the
+/// /resolve and show the actual publisher declaration behind the
 /// `[EventSubscriber(...)]` attribute at FILE:LINE.
 pub fn cmd_event_source(file: &str, line: u32, json: bool) -> ExitCode {
     let abs = absolutize_path(file);
@@ -247,7 +247,7 @@ pub fn cmd_composed(kind_or_name: &str, name: Option<&str>, json: bool) -> ExitC
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    // Two forms (audit 2026-06-12 — the Zed task only has the symbol under
+    // Two forms (the Zed task only has the symbol under
     // the cursor): `composed <kind> <name>` and `composed <name>` (kind
     // resolved daemon-side, with an actionable error when ambiguous).
     let params = match name {

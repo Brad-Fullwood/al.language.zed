@@ -422,7 +422,7 @@ pub(crate) fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
 
     if let Some(status) = &app.init_status {
         // Workspace still loading (or failed): show the status where the
-        // objects will appear instead of a silently empty pane (FB-1).
+        // objects will appear instead of a silently empty pane.
         let style = if status.starts_with("Workspace load failed") {
             Style::default().fg(Color::Red)
         } else {
@@ -445,7 +445,7 @@ pub(crate) fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
                 // Object IDs: AL interfaces (and a few other kinds) have no
                 // developer-visible ID — symbol packages carry an internal
                 // compiler hash there. Render blank instead of the hash /
-                // `-1` sentinel (FB-2/FB-3).
+                // `-1` sentinel.
                 let display = match display_object_id(entry) {
                     Some(id) => format!("{} {}", id, entry.name),
                     None => entry.name.clone(),

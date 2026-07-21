@@ -56,7 +56,7 @@ fn print_build_result(result: &Value, json: bool) -> ExitCode {
                 eprintln!("{file}:{line}:{col}: {severity} {code}: {msg}");
             }
         }
-        // ISSUE-077: when no structured diagnostics, show raw output
+        // when no structured diagnostics, show raw output
         if !success && diag_count == 0 {
             if let Some(output) = result.get("output").and_then(|v| v.as_str()) {
                 if !output.trim().is_empty() {
@@ -111,12 +111,20 @@ pub fn cmd_pack_native(
 ) -> ExitCode {
     let dir = match project_dir {
         Some(d) => std::path::PathBuf::from(d),
-        None => std::env::current_dir().unwrap_or_default(),
+        None => match std::env::current_dir() {
+            Ok(dir) => dir,
+            Err(error) => {
+                return report_error(
+                    &format!("Cannot determine the current project directory: {error}"),
+                    json,
+                );
+            }
+        },
     };
 
-    // B1: optional semantic validation gate. The native emitter is structural
-    // only — a parseable-but-invalid program would otherwise be packed into an
-    // .app the BC server then rejects. With --validate, run the Microsoft AL
+    // The optional semantic validation gate uses the Microsoft compiler as the
+    // gate. A parseable-but-invalid program would otherwise be packed into an
+    // application the BC server then rejects. With --validate, run the Microsoft AL
     // compiler (alc) as the diagnostic oracle and refuse to emit on errors.
     if validate {
         if let Some(code) = validate_with_alc(&dir, json) {
@@ -179,7 +187,7 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
     Ok(())
 }
 
-/// B1 validation gate: compile `dir` with the Microsoft AL compiler (alc) and,
+/// Compile `dir` with the Microsoft AL compiler (alc) and,
 /// if it reports errors (or no toolchain is available), return an exit code so
 /// the caller refuses to emit. Returns `None` when validation passes and the
 /// native emit should proceed. Runs in a temp copy of the project so alc's
