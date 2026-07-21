@@ -56,7 +56,7 @@ pub enum EdgeKind {
     RecordTrigger,
     /// A *polymorphic / indirect* call that cannot be resolved to a single
     /// concrete callee at the call site, so it is **over-approximated** to all
-    /// possible runtime targets (gap C15). Three patterns are modelled, all as
+    /// possible runtime targets. Three patterns are modelled, all as
     /// forward `caller → possible-target` edges:
     ///
     /// - **Interface dispatch** — an `Interface "IFoo"`-typed variable calling
@@ -232,7 +232,7 @@ impl CallGraph {
     /// plus the seeds themselves.
     ///
     /// This is the core primitive for call-graph-based affected-test detection
-    /// (gap B7): seed with the procedures/events of a changed object and the
+    /// seed with the procedures/events of a changed object and the
     /// returned set contains every procedure (test or otherwise) that
     /// transitively depends on the change. A test is "affected" iff its
     /// procedure node is in this set.

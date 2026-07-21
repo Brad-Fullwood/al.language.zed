@@ -70,7 +70,7 @@ pub enum CallSite {
         run_trigger: bool,
     },
     /// `Codeunit.Run(Codeunit::"X")` / `Codeunit.RunModal(Codeunit::X)` with a
-    /// literal codeunit reference as the first argument (gap C15). The dispatch
+    /// literal codeunit reference as the first argument. The dispatch
     /// target is `X`'s `OnRun` trigger. Only the *literal* form is captured;
     /// `Codeunit.Run(SomeVariable)` is left unresolved (no sound static target).
     CodeunitRun {
@@ -259,7 +259,7 @@ fn collect_record_from_parameter(
 /// Companion to `extract_procedure_var_types` (which handles only `Record`);
 /// used by member-call resolution to translate `MyVar.Method()` →
 /// `<ObjectName>.Method()` when the variable's declared type is an object
-/// reference. Closes F-OPEN-084. Excludes `Record` because those don't act
+/// reference. Closes . Excludes `Record` because those don't act
 /// as method-call receivers in the same sense (their methods live on the
 /// table object, but the call-graph already routes those via the
 /// `RecordOp` trigger path).
@@ -607,7 +607,7 @@ fn parse_run_trigger_arg(
                 // edges show up as extra entries in deadcode/impact, not
                 // missed dependencies. Logged at debug so the false-positive
                 // rate is observable when investigating dead-code reports.
-                // F-OPEN-087.
+                // .
                 tracing::debug!(
                     expr = %text.trim(),
                     op = ?op,
@@ -690,7 +690,7 @@ pub fn populate_call_edges_for_procedure(
 ) {
     let call_sites = extract_call_sites(tree, source, procedure_name);
     let var_types = extract_procedure_var_types(tree, source, procedure_name);
-    // F-OPEN-084: collect ALL object-typed var declarations (codeunit / page /
+    // collect ALL object-typed var declarations (codeunit / page /
     // report / xmlport / query / interface), not just Record. Used to resolve
     // `MyVar.Method()` where `MyVar` is e.g. `Codeunit "Sales-Post"` — the
     // prior code looked up `MyVar` itself in the symbol index, only matching
@@ -723,13 +723,13 @@ pub fn populate_call_edges_for_procedure(
                     let event_key = NodeKey::Event(object_kind, obj_lower, name_lower);
                     if let Some(event_id) = CallGraph::node_id_for(insight, &event_key) {
                         call_graph.add_direct_call(caller_id, event_id);
-                        // C15: firing the event also runs every subscriber.
+                        // Firing the event also runs every subscriber.
                         link_event_subscribers(caller_id, event_id, call_graph);
                     }
                 }
             }
             CallSite::MemberCall { object, method } => {
-                // F-OPEN-084: prefer the variable's declared type when known.
+                // prefer the variable's declared type when known.
                 // `MyVar.Method()` where `MyVar: Codeunit "Sales-Post"` should
                 // resolve against "Sales-Post" methods, not against a hypothetical
                 // object literally named "MyVar". Fall back to the bare name
@@ -754,7 +754,7 @@ pub fn populate_call_edges_for_procedure(
                     if let Some(callee_id) = CallGraph::node_id_for(insight, &callee_key) {
                         call_graph.add_direct_call(caller_id, callee_id);
                     }
-                    // C15: a member call may target an event publisher on
+                    // A member call may target an event publisher on
                     // another object (e.g. `PublisherVar.OnSomeEvent()`).
                     // Firing it reaches the event node and every subscriber.
                     let event_key =
@@ -764,7 +764,7 @@ pub fn populate_call_edges_for_procedure(
                         link_event_subscribers(caller_id, event_id, call_graph);
                     }
                 }
-                // C15: interface dispatch. When the receiver is `Interface "IFoo"`,
+                // Interface dispatch: when the receiver is `Interface "IFoo"`,
                 // the concrete callee is unknown statically, so over-approximate
                 // to `<method>` in every codeunit that `implements IFoo`.
                 if saw_interface {
@@ -807,7 +807,7 @@ pub fn populate_call_edges_for_procedure(
                 run_trigger: false, ..
             } => {}
             CallSite::CodeunitRun { target } => {
-                // C15: `Codeunit.Run(Codeunit::"X")` dispatches to X.OnRun.
+                // `Codeunit.Run(Codeunit::"X")` dispatches to X.OnRun.
                 let onrun_key = NodeKey::Procedure(
                     ObjectKind::Codeunit,
                     target.to_lowercase(),
@@ -825,7 +825,7 @@ pub fn populate_call_edges_for_procedure(
 ///
 /// Firing an event runs every `[EventSubscriber]` bound to it, so for
 /// reachability the publishing procedure can reach each subscriber handler
-/// (gap C15). The subscriber → event `EventSubscription` edges are already in
+/// The subscriber → event `EventSubscription` edges are already in
 /// `call_graph` (added by [`CallGraph::build_from_insight`]); we read them via
 /// [`CallGraph::subscribers_of`] and add the forward indirect edges.
 fn link_event_subscribers(caller_id: NodeId, event_id: NodeId, call_graph: &mut CallGraph) {
@@ -863,7 +863,7 @@ fn find_interface_implementors(
 ///
 /// BC table events follow the pattern: `OnBefore{Op}Event` / `OnAfter{Op}Event`.
 ///
-/// **Hardcoded naming convention (F-OPEN-083):** the `OnBefore{Op}Event` /
+/// **Hardcoded naming convention:** the `OnBefore{Op}Event` /
 /// `OnAfter{Op}Event` pattern is part of the BC record runtime contract,
 /// not AL language surface — Microsoft has not changed the convention since
 /// the introduction of `IntegrationEvent` on tables. The CLAUDE.md
@@ -928,10 +928,10 @@ pub fn register_workspace_nodes(
     let mut workspace_entries: Vec<al_symbols::SymbolEntry> = Vec::new();
 
     // Snapshot the (path, info) pairs in one short-lived shard iteration
-    // (T039 / 3c892bcd20cdd0a3): the body of this loop calls
+    //: the body of this loop calls
     // file_index.get_cached_parse(path) which acquires *other* DashMap
     // shards (files / file_trees) and runs a full tree walk per entry —
-    // pre-T039 we held the object_info shard read lock the entire time,
+    // pre-we held the object_info shard read lock the entire time,
     // blocking concurrent did_change writers to that shard for the
     // duration of the build. Cloning the snapshot is cheap (kB-scale)
     // versus the cost of an N-file tree walk that follows.
@@ -980,7 +980,7 @@ pub fn register_workspace_nodes(
         // Also extract MethodSymbol + FieldSymbol data and add to the
         // SymbolIndex so that parameter lookups (lookup_event_params) find
         // workspace methods and scaffolding (`generate page --table`) finds
-        // workspace table fields (F-OPEN-268). Always push the entry — even a
+        // workspace table fields. Always push the entry — even a
         // member-less object must be resolvable by name/id/composition.
         let methods = extract_methods_from_tree(tree.root_node(), source_bytes);
         let fields = match ok {
@@ -997,7 +997,7 @@ pub fn register_workspace_nodes(
             methods,
             fields,
             extends: info_extends_from_tree(tree.root_node(), source_bytes),
-            // C15: capture the `implements` clause so interface-dispatch
+            // Capture the `implements` clause so interface dispatch
             // resolution can find implementors. This pass is the authoritative
             // source for workspace symbol entries (it clobbers the "workspace"
             // package), so without it `implements` would always be empty.
@@ -1013,7 +1013,7 @@ pub fn register_workspace_nodes(
         symbols.add_entries_owned(workspace_entries);
     }
 
-    // FB-8: connect workspace Subscriber nodes to their target Event nodes.
+    // connect workspace Subscriber nodes to their target Event nodes.
     // Without this pass the subscribers registered above carried their
     // target on the node but had no SubscribesTo edge, so `trace` showed
     // origins and nothing else.
@@ -1025,7 +1025,7 @@ pub fn register_workspace_nodes(
 /// Fields parse as `object_section` nodes with keyword `field` and a
 /// parenthesized `(ID; Name; Type)` triplet. Used by the workspace
 /// enrichment pass so scaffolding (`generate page --table`) works against
-/// the user's own tables (F-OPEN-268).
+/// the user's own tables.
 fn extract_fields_from_tree(
     root: tree_sitter::Node,
     source: &[u8],
@@ -1063,7 +1063,7 @@ fn extract_fields_from_tree(
 /// as `implements_clause` (positional `metadata_keyword` + `name` children,
 /// shared between `implements` and `extends`). Needed so workspace extension
 /// objects participate in composition (`composed table <base>`) once
-/// registered in the SymbolIndex (F-OPEN-268).
+/// registered in the SymbolIndex.
 fn info_extends_from_tree(root: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -1373,7 +1373,7 @@ fn extract_single_parameter(
 /// appears, parameter `type_reference` nodes have already been consumed via
 /// the `parameter_list` parent. The previous comment ("Check if preceded by
 /// `:`") was aspirational and not implemented; the grammar's child ordering
-/// makes that check unnecessary in practice. F-OPEN-086.
+/// makes that check unnecessary in practice. .
 fn extract_return_type(proc_node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
@@ -1763,7 +1763,7 @@ pub fn populate_workspace_call_edges(
 /// The tiered builder only resolves high-fanout ("Tier 1") files eagerly, so a
 /// procedure in a low-fanout file can have unresolved outgoing edges. That is
 /// fine for the daemon's interactive queries (which resolve on demand) but
-/// **not** for call-graph-based affected-test detection (gap B7): a missing
+/// **not** for call-graph-based affected-test detection: a missing
 /// edge there is a false negative — a test that depends on a changed procedure
 /// would be silently skipped. This function walks all files and resolves any
 /// procedure not already marked [`EdgeResolutionState::Resolved`], so the
@@ -1883,7 +1883,7 @@ mod tests {
     use super::*;
     use al_symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
 
-    /// F-OPEN-268: in the current grammar `[IntegrationEvent(...)]` parses as a
+    /// in the current grammar `[IntegrationEvent(...)]` parses as a
     /// PRECEDING SIBLING of `procedure_declaration`, not a child. The method
     /// extractor only walked children, so every workspace method reached the
     /// SymbolIndex with zero attributes — making `events`/`subscribers` (and
@@ -1933,7 +1933,7 @@ mod tests {
         );
     }
 
-    /// F-OPEN-268: workspace TABLES must reach the SymbolIndex with their
+    /// workspace TABLES must reach the SymbolIndex with their
     /// FIELDS, so `generate page --table <workspace table>` can scaffold real
     /// field controls (the primary scaffolding use case). Previously the
     /// enrichment only extracted methods, leaving workspace tables hollow.
@@ -1964,7 +1964,7 @@ mod tests {
         assert_eq!(fields[1].type_name, "Text[100]");
     }
 
-    /// F-OPEN-268: the enrichment must populate `extends` for extension
+    /// the enrichment must populate `extends` for extension
     /// objects so workspace extensions participate in composition.
     #[test]
     fn extends_target_extracted_from_extension_header() {
@@ -2086,7 +2086,7 @@ mod tests {
 
     #[test]
     fn extract_object_var_types_finds_codeunit_and_page_and_report_vars() {
-        // F-OPEN-084 regression: object-typed variables (Codeunit / Page /
+        // regression: object-typed variables (Codeunit / Page /
         // Report etc.) should be captured so member-call resolution can
         // translate `MyVar.Method()` to `<ObjectName>.Method()`.
         let source = r#"codeunit 50100 "Test CU"
@@ -2364,7 +2364,7 @@ mod tests {
         assert_eq!(score, 0, "Empty codeunit should have fanout score 0");
     }
 
-    /// FB-8 regression: a workspace subscriber to a workspace event must be
+    /// regression: a workspace subscriber to a workspace event must be
     /// reachable from `trace_event` — i.e. `register_workspace_nodes` must
     /// produce the `SubscribesTo` EDGE, not just the Subscriber node.
     /// Before the fix, `trace` printed `[origin]` lines and nothing else on
@@ -2416,7 +2416,7 @@ mod tests {
         );
     }
 
-    /// FB-8 follow-on: subscribers to platform-implicit events (table
+    /// follow-on: subscribers to platform-implicit events (table
     /// trigger events like OnAfterInsertEvent, never declared in AL) get a
     /// synthesized Event node under the target object so the chain stays
     /// traceable.
@@ -2648,7 +2648,7 @@ mod tests {
         assert_eq!(tier1_threshold(&files), 4);
     }
 
-    // ---- C15: indirect / polymorphic dispatch resolution ----------------
+    // Indirect and polymorphic dispatch resolution.
 
     /// Build a fully-resolved (node-complete, all-edges) workspace call graph
     /// from in-memory AL files, exactly as the daemon's affected-test /

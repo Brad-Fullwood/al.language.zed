@@ -3,7 +3,7 @@
 //! Provides traversal queries: event chain tracing, entry point finding,
 //! and graph export (DOT, JSON).
 //!
-//! ## Event chain tracing (T902)
+//! ## Event chain tracing
 //!
 //! Two APIs are available:
 //!
@@ -27,7 +27,7 @@ use super::node_kind;
 /// branches of the recursion. The existing `max_depth` cap protects
 /// against deep chains, but a wide-but-shallow event tree (one publisher
 /// with thousands of subscribers, each fanning out further) can clone
-/// thousands of `ChainNode` strings before exhausting depth. F-OPEN-027.
+/// thousands of `ChainNode` strings before exhausting depth.
 ///
 /// 10_000 nodes × ~100-byte chain entries = ~1 MB worst-case response —
 /// the bound is per-query so well-behaved BC workspaces (typically <1k
@@ -49,12 +49,7 @@ pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> 
     let mut steps = Vec::new();
     let mut visited = std::collections::HashSet::new();
 
-    // F-OPEN-088: pre-compute the obj→event-indices index once per call.
-    // The recursive `trace_from_node` previously scanned the entire
-    // `graph.index` HashMap per subscriber to find "events published by the
-    // same object" — O(V) per subscriber, O(N·V) total on a workspace with
-    // N subscribers and V graph nodes. With the per-call obj index, each
-    // fanout lookup is O(1).
+    // Index events by object once so recursive fanout lookup is constant-time.
     let mut events_by_object: std::collections::HashMap<String, Vec<petgraph::graph::NodeIndex>> =
         std::collections::HashMap::new();
     for (key, indices) in &graph.index {
@@ -178,7 +173,7 @@ fn trace_from_node(
     }
 }
 
-// T902: Full event chain tracing via CallGraph
+// Full event chain tracing via CallGraph
 
 /// A node in the event chain tree.
 #[derive(Debug, Clone, Serialize)]
@@ -521,15 +516,11 @@ pub fn export_json(graph: &InsightGraph) -> GraphJson {
         .node_indices()
         .map(|idx| {
             let node = &graph.graph[idx];
-            // `InsightNode` is a plain `Serialize` derive, so to_value cannot
-            // fail in practice. Failure here would be a programmer error (a
-            // future derive change that breaks Serialize); we log it loudly
-            // and emit a placeholder object with just the id so the export
-            // still has a valid JSON shape. F-OPEN-090.
-            let mut v = serde_json::to_value(node).unwrap_or_else(|e| {
-                tracing::error!(error = %e, idx = idx.index(), "export_json: InsightNode serialization failed — emitting id-only placeholder");
-                serde_json::json!({})
-            });
+            // InsightNode contains only JSON-compatible fields. A failure
+            // indicates a broken serialization contract and must not produce
+            // a plausible but incomplete graph.
+            let mut v = serde_json::to_value(node)
+                .expect("InsightNode serialization must produce a JSON value");
             if let serde_json::Value::Object(ref mut m) = v {
                 m.insert("id".to_string(), serde_json::json!(idx.index()));
             }
@@ -638,7 +629,7 @@ mod tests {
         // event roots was arbitrary between graph rebuilds. The fix
         // sorts matching NodeIndex values before walking. This test
         // builds the same graph 5 times and asserts trace output is
-        // byte-identical every time. F-OPEN-(insight-audit-13).
+        // byte-identical every time.
         let index = SymbolIndex::new();
         // Two publishers emitting the same event name — without the
         // sort, their relative order in the trace would be HashMap-
@@ -756,7 +747,7 @@ mod tests {
         assert!(entry_points.is_empty());
     }
 
-    // T902: trace_event_chain tests
+    // trace_event_chain tests
 
     fn make_cu(
         id: i32,

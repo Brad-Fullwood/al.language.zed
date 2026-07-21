@@ -25,7 +25,7 @@ pub mod attr_names {
 /// by `search.rs`. Centralised so a typo at either end is caught by the
 /// compiler (the alternative — `match node_type { "even" => ... }` — would
 /// silently fall through). Not AL language surface; these are internal
-/// graph-node discriminants. F-OPEN-091.
+/// graph-node discriminants. .
 pub mod node_kind {
     pub const EVENT: &str = "event";
     pub const PROCEDURE: &str = "procedure";
