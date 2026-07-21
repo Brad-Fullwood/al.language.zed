@@ -444,25 +444,46 @@ fn run_procedure_interp(
     // One context (especially one record store and deadline) spans the full BC
     // lifecycle for this test method. Cleanup always runs, including after a
     // failing initializer or test body.
+    let mut stack = ScopeStack::new();
+    let mut globals = CallFrame::new(codeunit_name, "<globals>");
+    al_runtime::interpreter::dispatch::bind_object_globals(root, source, &mut globals);
+    stack.push(globals);
     let mut result = Eval::Normal(al_runtime::interpreter::value::Value::Null);
     for initializer in &cu.test_initializers {
-        let lifecycle =
-            eval_named_procedure(root, source, codeunit_name, &initializer.name, &mut ctx);
-        if lifecycle.is_error() {
+        let lifecycle = eval_named_procedure(
+            root,
+            source,
+            codeunit_name,
+            &initializer.name,
+            &mut stack,
+            &mut ctx,
+        );
+        if !eval_succeeded(&lifecycle) {
             result = lifecycle;
             break;
         }
     }
-    if !result.is_error() {
-        result = eval_named_procedure(root, source, codeunit_name, proc_name, &mut ctx);
+    if eval_succeeded(&result) {
+        result = eval_named_procedure(root, source, codeunit_name, proc_name, &mut stack, &mut ctx);
     }
     for cleanup in &cu.test_cleanups {
-        let lifecycle = eval_named_procedure(root, source, codeunit_name, &cleanup.name, &mut ctx);
-        if !result.is_error() && lifecycle.is_error() {
+        let lifecycle = eval_named_procedure(
+            root,
+            source,
+            codeunit_name,
+            &cleanup.name,
+            &mut stack,
+            &mut ctx,
+        );
+        if eval_succeeded(&result) && !eval_succeeded(&lifecycle) {
             result = lifecycle;
         }
     }
     (result, ctx.coverage)
+}
+
+fn eval_succeeded(result: &Eval) -> bool {
+    matches!(result, Eval::Normal(_) | Eval::Exit(_))
 }
 
 fn configured_handlers(
@@ -530,6 +551,7 @@ fn eval_named_procedure(
     source: &[u8],
     codeunit_name: &str,
     proc_name: &str,
+    stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
     let Some(proc_node) = find_procedure_node(root, source, proc_name) else {
@@ -546,11 +568,12 @@ fn eval_named_procedure(
             source: None,
         });
     };
-    let mut stack = ScopeStack::new();
     let mut frame = CallFrame::new(codeunit_name, proc_name);
     al_runtime::interpreter::dispatch::bind_procedure_locals(proc_node, source, &mut frame);
     stack.push(frame);
-    eval_stmt(body, source, &mut stack, ctx)
+    let result = eval_stmt(body, source, stack, ctx);
+    stack.pop();
+    result
 }
 
 /// Locate the `begin_end_block` (body) of a named procedure.
@@ -1097,11 +1120,14 @@ mod tests {
         let tests_source = r#"codeunit 50141 "Lifecycle Tests"
 {
     Subtype = Test;
+    var
+        Initialized: Boolean;
 
     [TestInitialize]
     procedure SetUp()
     var Entry: Record "Lifecycle Entry";
     begin
+        Initialized := true;
         Entry."No." := 'INIT';
         Entry.Insert();
     end;
@@ -1110,6 +1136,8 @@ mod tests {
     procedure SeesInitializedRecord()
     var Entry: Record "Lifecycle Entry";
     begin
+        if not Initialized then
+            Error('initializer global was not visible');
         if not Entry.Get('INIT') then
             Error('initializer record was not visible');
     end;

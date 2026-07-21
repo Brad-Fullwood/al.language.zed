@@ -1232,6 +1232,128 @@ mod tests {
             package.reasons
         );
     }
+
+    #[test]
+    fn routing_follows_transitive_workspace_helpers() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/DeepEntry.Table.al"),
+            r#"table 50150 "Deep Entry"
+{
+    fields { field(1; "No."; Code[20]) { } }
+    keys { key(PK; "No.") { } }
+}"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/DeepHelper.Codeunit.al"),
+            r#"codeunit 50151 "Deep Helper"
+{
+    procedure TouchRecord()
+    var Entry: Record "Deep Entry";
+    begin
+        Entry.Insert();
+    end;
+}"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/MiddleHelper.Codeunit.al"),
+            r#"codeunit 50152 "Middle Helper"
+{
+    procedure Run()
+    var Helper: Codeunit "Deep Helper";
+    begin
+        Helper.TouchRecord();
+    end;
+}"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/GraphTests.Codeunit.al"),
+            r#"codeunit 50153 "Graph Tests"
+{
+    Subtype = Test;
+    [Test]
+    procedure CallsTwoHelpers()
+    var Helper: Codeunit "Middle Helper";
+    begin
+        Helper.Run();
+    end;
+}"#
+            .to_string(),
+        );
+
+        let result = classify_all(&workspace).remove(0);
+        assert_eq!(result.decision, RoutingDecision::InterpRecord);
+        assert!(
+            result
+                .reasons
+                .iter()
+                .any(|reason| reason.message.contains("reachable procedure")),
+            "expected a transitive reason: {:?}",
+            result.reasons
+        );
+    }
+
+    #[test]
+    fn list_count_is_not_misclassified_as_record_count() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/ListTests.Codeunit.al"),
+            r#"codeunit 50154 "List Tests"
+{
+    Subtype = Test;
+    [Test]
+    procedure CountsAList()
+    var Values: List of [Integer]; N: Integer;
+    begin
+        Values.Add(1);
+        N := Values.Count();
+    end;
+}"#
+            .to_string(),
+        );
+        assert_eq!(
+            classify_all(&workspace)[0].decision,
+            RoutingDecision::Interp
+        );
+    }
+
+    #[test]
+    fn table_triggers_are_routed_to_live_bc() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TriggeredEntry.Table.al"),
+            r#"table 50155 "Triggered Entry"
+{
+    fields { field(1; "No."; Code[20]) { } }
+    keys { key(PK; "No.") { } }
+    trigger OnInsert() begin end;
+}"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TriggerTests.Codeunit.al"),
+            r#"codeunit 50156 "Trigger Tests"
+{
+    Subtype = Test;
+    [Test]
+    procedure Inserts()
+    var Entry: Record "Triggered Entry";
+    begin
+        Entry.Insert();
+    end;
+}"#
+            .to_string(),
+        );
+        let result = &classify_all(&workspace)[0];
+        assert_eq!(result.decision, RoutingDecision::LiveBc);
+        assert!(result
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("triggers")));
+    }
 }
 
 /// End-to-end through the test-engine entry point: changing a helper's file

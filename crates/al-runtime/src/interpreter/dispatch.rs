@@ -485,6 +485,41 @@ pub fn bind_procedure_locals(
     bind_structured_locals(proc_node, source, frame);
 }
 
+/// Bind object-level `var` declarations into a long-lived frame. Test
+/// lifecycle execution keeps this frame beneath initialize/test/cleanup
+/// procedure frames so scalar and structured codeunit globals retain state.
+pub fn bind_object_globals(root: tree_sitter::Node<'_>, source: &[u8], frame: &mut CallFrame) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "object_var_section" {
+            let mut cursor = node.walk();
+            for declaration in node.named_children(&mut cursor) {
+                if declaration.kind() != "object_variable_declaration" {
+                    continue;
+                }
+                if declaration.kind() == "regular_variable_declaration" {
+                    bind_regular_var_decl(declaration, source, frame);
+                    bind_structured_var_decl(declaration, source, frame);
+                    continue;
+                }
+                let mut declaration_cursor = declaration.walk();
+                for regular in declaration.named_children(&mut declaration_cursor) {
+                    if regular.kind() == "regular_variable_declaration" {
+                        bind_regular_var_decl(regular, source, frame);
+                        bind_structured_var_decl(regular, source, frame);
+                    }
+                }
+            }
+            continue;
+        }
+        if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ParamDecl {
     name: String,
