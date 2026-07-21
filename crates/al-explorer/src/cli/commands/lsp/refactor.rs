@@ -222,8 +222,8 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
                         // an object `{"kind":"match"}` or `{"kind":"diverged",
                         // "divergences":[…]}` — not a bare string. The previous
                         // `as_str() == "Match"` check never matched, so a
-                        // successful replay always printed "[FAIL]" (audit
-                        // 2026-06-20). Divergence fields are `field_path` /
+                        // successful replay always printed "[FAIL]". Divergence
+                        // fields are `field_path` /
                         // `old_value` / `new_value`.
                         let verdict = result.get("verdict");
                         let kind = verdict
