@@ -37,12 +37,10 @@ pub struct AlConfig {
     /// Which analyzers to run (e.g., "CodeCop", "AppSourceCop", "UICop", "PerTenantCop").
     pub code_analyzers: Vec<String>,
 
-    // ----- Analyzer plumbing fields (parsed, not yet passed through). -----
     // These four map 1:1 to alc / CodeAnalysis-bridge parameters (--ruleset,
     // --assemblyprobingpaths, analyzer statistics) but the plumbing into
     // build::compile_project / semantic::bridge is not yet written. They are
-    // retained so existing user configs keep deserializing; wiring them is
-    // tracked work, not dead weight (F-OPEN-266 audit, 2026-06-12).
+    // retained so existing user configs keep deserializing.
     /// Enable external rulesets (local .ruleset.json files).
     pub enable_external_rulesets: bool,
 
@@ -120,7 +118,7 @@ pub struct AlConfig {
     /// refuses to ingest a single document whose content exceeds this many
     /// bytes (e.g. a multi-gigabyte file accidentally opened in the workspace),
     /// keeping it out of the in-memory rope/parse-tree store rather than letting
-    /// it consume memory unbounded (F-OPEN-042). `None` (the default) means no
+    /// it consume memory unbounded. `None` (the default) means no
     /// cap, matching prior behaviour.
     pub max_document_size_bytes: Option<usize>,
 }
@@ -301,28 +299,28 @@ impl AlConfig {
     /// Unknown top-level keys are logged at WARN — symmetrical with `merge`'s
     /// `unknown_keys` return value, so disk-loaded configs surface typos the
     /// same way as init-options. Unknown keys do not block loading; the
-    /// known fields take effect. (F-OPEN-061.)
+    /// known fields take effect.
     pub fn load(path: &Path) -> Option<Self> {
         let data = std::fs::read_to_string(path).ok()?;
-        // Route through `merge` so disk-loaded configs benefit from the same
-        // unknown-key reporting as runtime-merged init-options. Failing the
-        // Value-parse step falls back to the old direct path so a deeply-
-        // structured config that merge() doesn't yet support still loads.
-        match serde_json::from_str::<serde_json::Value>(&data) {
-            Ok(value) => {
-                let mut cfg = AlConfig::default();
-                let unknown = cfg.merge(&value);
-                if !unknown.is_empty() {
-                    tracing::warn!(
-                        path = %path.display(),
-                        unknown_keys = ?unknown,
-                        "AlConfig::load: unrecognised top-level keys in settings file"
-                    );
-                }
-                Some(cfg)
-            }
-            Err(_) => serde_json::from_str(&data).ok(),
+        let value: serde_json::Value = serde_json::from_str(&data).ok()?;
+        if !value.is_object() {
+            tracing::warn!(
+                path = %path.display(),
+                "settings file must contain a JSON object"
+            );
+            return None;
         }
+
+        let mut cfg = AlConfig::default();
+        let unknown = cfg.merge(&value);
+        if !unknown.is_empty() {
+            tracing::warn!(
+                path = %path.display(),
+                unknown_keys = ?unknown,
+                "unrecognised top-level keys in settings file"
+            );
+        }
+        Some(cfg)
     }
 
     /// Merge new settings into this config. Only fields present in
@@ -349,9 +347,6 @@ impl AlConfig {
                             s.to_string(),
                         )) {
                             Ok(scope) => self.diagnostics_scope = scope,
-                            // F-OPEN-062: an invalid enum variant was silently
-                            // retained as the current value. Now surfaced as
-                            // unknown so the user sees a typo in their settings.
                             Err(_) => unknown_keys.push(format!("diagnosticsScope={s:?}")),
                         }
                     }
@@ -408,9 +403,6 @@ impl AlConfig {
                         for (i, v) in arr.iter().enumerate() {
                             match serde_json::from_value::<NuGetFeedConfig>(v.clone()) {
                                 Ok(f) => accepted.push(f),
-                                // F-OPEN-062: malformed feed entries were
-                                // silently dropped. Surface so the user
-                                // notices their typo. Index lets them find it.
                                 Err(_) => unknown_keys.push(format!("nugetFeeds[{i}]")),
                             }
                         }
@@ -951,6 +943,15 @@ mod tests {
     fn load_returns_none_for_invalid_json() {
         let path = std::env::temp_dir().join("al-lsp-test-bad.json");
         std::fs::write(&path, b"not valid json").unwrap();
+        let result = AlConfig::load(&path);
+        assert!(result.is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_returns_none_for_non_object_json() {
+        let path = std::env::temp_dir().join("al-lsp-test-array.json");
+        std::fs::write(&path, b"[]").unwrap();
         let result = AlConfig::load(&path);
         assert!(result.is_none());
         let _ = std::fs::remove_file(&path);
