@@ -1,13 +1,7 @@
-//! Parser/formatter performance benchmarks for al-core.
-//!
-//! T050: closes the deferred observability gap that previously prevented
-//! us from detecting regressions in `AlParser::parse`,
-//! `AlParser::parse_incremental`, and `format_al`. These three functions
-//! sit on the LSP keystroke-triggered hot path, so a 2× regression in any
-//! one of them is user-visible (lag while typing).
+//! Parser and formatter performance benchmarks.
 //!
 //! Run with:
-//!   cargo bench -p al-core --bench parser
+//!   cargo bench -p al-syntax --bench parser
 //!
 //! Each benchmark sets up state outside the measurement loop so Criterion
 //! only measures the parser/formatter cost.

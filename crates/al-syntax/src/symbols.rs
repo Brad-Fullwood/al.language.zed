@@ -485,8 +485,6 @@ fn extract_dataitem_from_section(node: Node, source: &[u8]) -> Option<DocumentSy
 
     let mut children = Vec::new();
     if let Some(body) = node.child_by_field_name("body") {
-        // F-OPEN-102: extract_section_body_children now folds in the
-        // raw-trigger pass inline (was a second full sweep).
         extract_section_body_children(body, source, &mut children);
     }
 
@@ -519,11 +517,8 @@ fn control_keyword_to_symbol_kind(keyword: &str) -> SymbolKind {
 }
 
 fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
-    // Iterative in-order walk with an explicit frame stack (CLAUDE.md rule;
-    // F-OPEN-265): nested braced_blocks previously recursed, so degenerate
-    // nesting could overflow the native stack on the documentSymbol hot
-    // path. Each frame materialises one block's children and remembers the
-    // resume index, preserving the original depth-first emission order.
+    // Use an explicit frame stack so deeply nested blocks cannot overflow the
+    // native stack. Frames preserve depth-first emission order.
     struct Frame<'t> {
         children: Vec<Node<'t>>,
         idx: usize,
@@ -598,9 +593,7 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
             "braced_block" => {
                 stack.push(frame_for(child));
             }
-            // F-OPEN-102: fold the trigger-extraction pass into this walk
-            // instead of running `extract_triggers_from_braced_block` as a
-            // second full sweep. Raw `trigger OnFoo()` patterns inside
+            // Raw `trigger OnFoo()` patterns inside
             // dataitem/action bodies have a `control_keyword` parent (text
             // "trigger") followed by an identifier + parenthesized_block.
             // Handle inline here; the standalone function is retained for
@@ -618,7 +611,7 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
 
 /// Try to extract a "trigger Name()" symbol starting at a `control_keyword`
 /// node. Returns None when the node isn't the "trigger" keyword or the
-/// expected siblings aren't present. Closes F-OPEN-102.
+/// expected siblings aren't present.
 fn try_extract_inline_trigger(kw_node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let text = kw_node.utf8_text(source).ok()?;
     if !text.eq_ignore_ascii_case("trigger") {

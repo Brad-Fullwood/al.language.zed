@@ -100,8 +100,6 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
                 }
             }
 
-            // Extract name — grammar doesn't assign a field name to the object name,
-            // so we use the shared extract_object_name helper.
             if let Some(n) = super::extract_object_name(child, source) {
                 name = n;
             }
@@ -115,7 +113,7 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
         }
     }
 
-    // Fallback: walk root children directly for compatibility
+    // Some grammar variants expose the object type directly at the root.
     let child = root.child(0)?;
     let kind = child.kind().to_string();
 

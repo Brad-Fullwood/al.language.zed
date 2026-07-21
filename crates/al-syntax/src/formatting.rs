@@ -1,7 +1,6 @@
 //! AL code formatter — line-by-line indentation state machine.
 //!
-//! Ported from v2. This is a text-based formatter that does not require
-//! tree-sitter; it operates on raw AL source lines.
+//! This text-based formatter operates on raw AL source lines.
 //!
 //! Key rules:
 //! - Indent after: begin, {, (, var, trigger body, procedure body, repeat,
@@ -13,21 +12,9 @@
 //! - **Blank lines drain single-statement stack**
 //! - **Property continuation**: preserve whitespace when `prev_ended_with_comma`
 //!
-//! ## Hardcoded AL block-keyword literals (F-OPEN-111)
-//!
-//! This file matches against AL keyword text directly: `begin`, `end`,
-//! `end;`, `var`, `repeat`, `until`, `else`, `case`, `of`. These are grammar
-//! terminals of AL's Pascal-derived block syntax — stable since AL/NAV's
-//! introduction and not part of the keyword surface that drifts with BC
-//! releases (built-ins, object types, attribute names). Per the CLAUDE.md
-//! "no hardcoded AL values" rule's targeted scope, these block terminals
-//! are exempt — the same way single-statement openers were judged exempt
-//! when first loaded from `single_stmt_openers.json` (those have grown
-//! over time; block keywords have not). If a future BC release alters the
-//! block-syntax grammar, the right fix is to add a `block_keywords.json`
-//! and route every match through `language_data`. Until then, the
-//! literal-match path is documented here rather than scattered as a
-//! debt-tracked comment per call site.
+//! Block-structure terminals such as `begin`, `end`, and `var` are matched
+//! directly. Versioned language data remains the source for the keyword surface
+//! that changes across Business Central releases.
 
 #[derive(Debug, Clone, Default)]
 pub enum KeywordCasing {
@@ -60,10 +47,10 @@ pub enum BraceStyle {
 ///
 /// **Wiring status:** all fields are honoured by `format_al`. `tab_size`,
 /// `insert_spaces`, and `keyword_casing` are applied by the main
-/// indentation/casing pass; the four A13 fields
+/// indentation/casing pass; the advanced formatting fields
 /// (`sort_properties`, `blank_lines_between_procedures`, `max_line_length`,
 /// `brace_style`) are applied by dedicated post-processing passes that run
-/// after the main pass. Each A13 pass is a strict no-op at its default value
+/// after the main pass. Each pass is a strict no-op at its default value
 /// and is idempotent.
 #[derive(Debug, Clone)]
 pub struct FormatOptions {
@@ -168,7 +155,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         prev_was_empty = false;
 
         let trimmed_lower = trimmed.to_lowercase();
-        // C14: block-transition heuristics must look at the code only — a line
+        // Block-transition heuristics must look at the code only: a line
         // like `x: Integer; // then begin` must not be treated as ending in
         // `begin`. `code`/`code_lower` strip any trailing line comment.
         let code = code_portion(trimmed);
@@ -214,8 +201,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // multi-word string labels like `"Foo Bar"`) and the trailing colon.
         // Use the code portion (comment stripped) and reject disqualifying
         // characters only when they occur OUTSIDE a string, so a quoted label
-        // like `'a;b':` — whose `;` lives inside the quotes — is still a label
-        // (C14).
+        // like `'a;b':` is still a label because its semicolon is quoted.
         let label_code = code_portion(trimmed);
         let is_case_label = case_depth > 0
             && label_code.ends_with(':')
@@ -425,22 +411,8 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         result.push('\n');
     }
 
-    // ---- A13 post-processing passes ------------------------------------
-    //
-    // These run AFTER the indentation/casing state machine above, on the
-    // already-formatted text. Each pass is a STRICT no-op at its option's
-    // default value (returning the input `String` untouched), and each is
-    // INDIVIDUALLY IDEMPOTENT. Because the main pass re-runs first on a
-    // second `format_al` call, the composition is also idempotent: the main
-    // pass collapses inserted blanks / re-indents wrapped continuations to
-    // the exact shape these passes produce, so a second pass reproduces the
-    // first pass's output verbatim.
-    //
-    // Order: sort (reorders property runs) → blank lines (procedure gaps) →
-    // wrap (splits long single-line properties) → brace style (merges `{`).
-    // Wrapping after sort means a wrapped multi-line property is recognised
-    // as already-multi-line on re-entry and skipped; brace merging runs last
-    // so the earlier passes always see `{` on its own line.
+    // The pass order is significant for idempotence: sort properties, normalize
+    // procedure gaps, wrap long properties, then merge braces.
     let result = sort_object_properties(result, options);
     let result = normalize_blank_lines_between_procedures(result, options);
     let result = wrap_long_property_lines(result, options);
@@ -526,16 +498,14 @@ pub fn format_range(
 /// The formatter collapses consecutive blank lines (two → one). We walk orig and fmt
 /// in lockstep, skipping orig-only collapsed blanks without advancing the fmt cursor.
 ///
-/// **Invariant** (F-OPEN-025). The only documented asymmetry between
+/// The only supported asymmetry between
 /// `orig_lines` and `fmt_lines` is collapsed double-blanks. If a future
 /// formatter rule drops or duplicates any other line, the lockstep walk
 /// here silently mis-aligns and emits the wrong fmt rows for the requested
 /// range. To make that regression loud instead of silent, a `debug_assert`
 /// at the bottom of this function verifies that the fmt cursor advanced by
 /// the same count as the non-collapsed-blank orig rows we visited up to
-/// `end`. Release builds skip the check (the function still returns a
-/// best-effort slice — wrong but non-crashing) so production never panics
-/// on a benign mismatch.
+/// `end`.
 fn extract_formatted_region<'a>(
     orig_lines: &[&str],
     fmt_lines: &[&'a str],
@@ -678,14 +648,8 @@ fn is_single_statement_opener(trimmed_lower: &str) -> bool {
     })
 }
 
-// ======================================================================
-// A13 post-processing passes and their shared helpers.
-//
-// All four passes operate on the fully-formatted text emitted by the main
-// `format_al` state machine (lines already trimmed-and-reindented, output
-// terminated by a single `\n`). They take the buffer by value and return it
-// by value so the caller can chain them without cloning.
-// ======================================================================
+// Post-processing passes operate on the fully formatted text and take the
+// buffer by value so callers can chain them without cloning.
 
 /// The single indentation unit the main pass uses (spaces or one tab).
 fn indent_unit(options: &FormatOptions) -> String {
@@ -894,7 +858,7 @@ fn has_line_comment_outside_strings(s: &str) -> bool {
 /// The code portion of a line with any trailing `//` comment removed (and
 /// trailing whitespace trimmed). Used before block-transition heuristics so a
 /// comment tail like `x: Integer; // then begin` can't trip the `ends_with
-/// "begin"` / case-label detection (C14).
+/// `"begin"` / case-label detection.
 fn code_portion(s: &str) -> &str {
     let end = line_comment_start(s).unwrap_or(s.len());
     s[..end].trim_end()
@@ -902,7 +866,7 @@ fn code_portion(s: &str) -> &str {
 
 /// True if any of `needles` appears in `s` **outside** a string literal.
 /// Lets case-label detection accept quoted labels like `'a;b'` whose `;`
-/// lives inside the quotes (C14).
+/// lives inside the quotes.
 fn contains_char_outside_strings(s: &str, needles: &[char]) -> bool {
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -1966,9 +1930,7 @@ codeunit 50100 Test
         assert_eq!(pass1, pass2, "format must be idempotent");
     }
 
-    // ===================================================================
-    // A13 options: sort_properties
-    // ===================================================================
+    // sort_properties
 
     const SORT_INPUT: &str = "\
 table 50100 Test
@@ -2059,9 +2021,7 @@ codeunit 50100 T
         assert_eq!(out, pass2, "must remain idempotent with multi-line values");
     }
 
-    // ===================================================================
-    // A13 options: blank_lines_between_procedures
-    // ===================================================================
+    // blank_lines_between_procedures
 
     const PROC_NO_GAP: &str = "\
 codeunit 50100 T
@@ -2168,9 +2128,7 @@ codeunit 50100 T
         assert_eq!(pass1, pass2, "blank_lines must be idempotent");
     }
 
-    // ===================================================================
-    // A13 options: max_line_length
-    // ===================================================================
+    // max_line_length
 
     const LONG_PROP: &str = "\
 codeunit 50100 T
@@ -2236,9 +2194,7 @@ codeunit 50100 T
         assert_eq!(pass1, pass2, "max_line_length must be idempotent");
     }
 
-    // ===================================================================
-    // A13 options: brace_style
-    // ===================================================================
+    // brace_style
 
     const BRACE_INPUT: &str = "\
 table 50100 Test

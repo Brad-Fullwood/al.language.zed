@@ -223,8 +223,7 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
                 // Multi-line token (block comment, multi-line string): one
                 // entry per line.
                 //
-                // F-OPEN-106 (verified correct): `text.lines()` strips BOTH
-                // `\r` and `\n` line terminators on each iteration. The
+                // `text.lines()` strips both `\r` and `\n` terminators. The
                 // resulting `line.encode_utf16().count()` is the visible-
                 // content length, which matches the LSP semantic-tokens
                 // spec: positions/lengths exclude line terminators (the
@@ -250,10 +249,8 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
         }
         // Push children in reverse order for left-to-right DFS.
         //
-        // F-OPEN-108: previously used `(0..child_count()).rev()` with
-        // `child(i)`. Each `child(i)` call is a linked-list walk in
-        // tree-sitter — that loop was O(n²) per node. Collect via cursor
-        // (O(n) total) then iterate in reverse for the stack push.
+        // `child(i)` is a linked-list walk in tree-sitter. Collect through a
+        // cursor in O(n), then reverse for the stack push.
         let mut cursor = current.walk();
         let mut children: Vec<Node> = current.children(&mut cursor).collect();
         while let Some(child) = children.pop() {
@@ -311,7 +308,7 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         // an identifier). Instead return None so the DFS recurses into the
         // directive's children; the directive's leading `#` token and any
         // `kw_*` child (`kw_if`, `kw_endif`, etc.) end up classified
-        // individually via the existing kw_* path. F-OPEN-107.
+        // individually via the existing kw_* path.
         "directive" => None,
         // `inactive_code` is left as a single EXCLUDED_CODE span by design
         // (the whole block is dimmed by clients; recursing into it would
