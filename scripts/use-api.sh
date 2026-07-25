@@ -27,18 +27,41 @@ STABLE_VER="0.7.0"
 DEV_DEP='zed_extension_api = { git = "https://github.com/zed-industries/zed", branch = "main" }'
 STABLE_DEP="zed_extension_api = \"$STABLE_VER\""
 
+# `sed -i` is not portable: GNU takes an optional suffix, BSD/macOS *requires*
+# one, so a bare `-i` fails on macOS (a supported dev platform — CI builds on
+# macos-latest). Edit through a temp file instead, which behaves the same
+# everywhere.
+sed_inplace() { # $1 = sed expression, $2 = file
+  local tmp
+  tmp="$(mktemp)" || return 1
+  # Only touch the target once sed has succeeded — writing the target directly
+  # (or copying back unconditionally) would truncate a manifest to whatever
+  # partial output a failing sed produced.
+  if ! sed "$1" "$2" > "$tmp"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to rewrite $2 (sed expression: $1)" >&2
+    return 1
+  fi
+  # Copy back rather than `mv`: this keeps the target's existing mode and
+  # inode. `mktemp` creates 0600, and `mv` would leave a tracked manifest
+  # owner-only. `chmod --reference` is GNU-only, so it is not an option in a
+  # script whose whole point is BSD/macOS portability.
+  cat "$tmp" > "$2"
+  rm -f "$tmp"
+}
+
 set_lib_version() { # $1 = version
   # Replace `version = "..."` only inside the [lib] table of extension.toml.
-  sed -i "/^\[lib\]/,/^\[/ s/^version = .*/version = \"$1\"/" extension.toml
+  sed_inplace "/^\[lib\]/,/^\[/ s/^version = .*/version = \"$1\"/" extension.toml
 }
 
 case "${1:-}" in
   dev)
-    sed -i "s#^zed_extension_api = .*#${DEV_DEP//#/\\#}#" Cargo.toml
+    sed_inplace "s#^zed_extension_api = .*#${DEV_DEP//#/\\#}#" Cargo.toml
     set_lib_version "$DEV_VER"
     echo "DEV API (git main, $DEV_VER). Loads on Zed dev/nightly only." ;;
   stable)
-    sed -i "s#^zed_extension_api = .*#${STABLE_DEP}#" Cargo.toml
+    sed_inplace "s#^zed_extension_api = .*#${STABLE_DEP}#" Cargo.toml
     set_lib_version "$STABLE_VER"
     echo "STABLE API ($STABLE_VER). Loads on stable Zed + public registry." ;;
   show)
