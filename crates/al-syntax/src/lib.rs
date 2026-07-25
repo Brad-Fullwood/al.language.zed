@@ -134,42 +134,75 @@ pub fn extract_object_name(node: tree_sitter::Node, source: &[u8]) -> Option<Str
 
 /// Count net occurrences of `open` minus `close` delimiters on `line`.
 ///
-/// Characters inside single-quoted string literals are skipped so that
-/// delimiter characters inside strings do not affect the count.
+/// Delimiters that are not code are skipped: single-quoted string literals
+/// (`'…'`, with `''` as the escape), double-quoted identifiers (`"…"` — a BC
+/// name may legitimately contain `'`, `{` or `(`), `//` line comments, and
+/// `/* … */` block comments.
+///
+/// The scan is per-line and starts outside any comment, so a block comment
+/// spanning several lines is only handled up to the end of this one. Callers
+/// that walk multi-line text should strip comments with their own carried
+/// state before calling.
 ///
 /// Common uses:
 /// - `count_net_delimiters(line, '(', ')')` — net parentheses
 /// - `count_net_delimiters(line, '{', '}')` — net braces
 pub fn count_net_delimiters(line: &str, open: char, close: char) -> i32 {
     let mut depth = 0i32;
-    let mut in_string = false;
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         let ch = bytes[i] as char;
-        // Stop counting once we hit a `//` comment outside any string —
-        // delimiters in comments do not affect line continuation.
-        if !in_string && ch == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+        // `//` — the rest of the line is a comment.
+        if ch == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
             break;
         }
-        if ch == '\'' {
-            // AL escapes single quotes inside string literals by doubling
-            // them ('').  A `''` sequence inside a string keeps `in_string`
-            // true; a single `'` toggles the flag.
-            if in_string && i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                i += 2;
-                continue;
+        // `/* … */` — skip to the terminator, or to end of line if unterminated.
+        if ch == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            i += 2;
+            while i < bytes.len() {
+                if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
             }
-            in_string = !in_string;
-            i += 1;
             continue;
         }
-        if !in_string {
-            if ch == open {
-                depth += 1;
-            } else if ch == close {
-                depth -= 1;
+        // `'…'` string literal — AL escapes an inner quote by doubling it.
+        if ch == '\'' {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\'' {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
             }
+            continue;
+        }
+        // `"…"` quoted identifier — opaque. Without this, a name like
+        // `"Cust's Name"` left the scanner stuck in string state and swallowed
+        // the rest of the line's delimiters.
+        if ch == '"' {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if ch == open {
+            depth += 1;
+        } else if ch == close {
+            depth -= 1;
         }
         i += 1;
     }
@@ -247,5 +280,48 @@ pub fn ts_range_to_syntax(range: &tree_sitter::Range, source: &[u8]) -> types::S
             line: range.end_point.row as u32,
             character: byte_col_to_utf16_col(end_line, range.end_point.column),
         },
+    }
+}
+
+#[cfg(test)]
+mod delimiter_tests {
+    use super::count_net_delimiters;
+
+    #[test]
+    fn counts_plain_delimiters() {
+        assert_eq!(count_net_delimiters("f(a, b)", '(', ')'), 0);
+        assert_eq!(count_net_delimiters("f(a,", '(', ')'), 1);
+        assert_eq!(count_net_delimiters("b);", '(', ')'), -1);
+        assert_eq!(count_net_delimiters("{", '{', '}'), 1);
+    }
+
+    #[test]
+    fn skips_single_quoted_string_literals() {
+        assert_eq!(count_net_delimiters("Message('(')", '(', ')'), 0);
+        // `''` is an escaped quote, not a terminator.
+        assert_eq!(count_net_delimiters("Message('it''s (ok)')", '(', ')'), 0);
+    }
+
+    #[test]
+    fn skips_double_quoted_identifiers() {
+        // A BC name may contain an apostrophe. Treating `"…"` as opaque is what
+        // stops the scanner from entering string state and swallowing the
+        // closing paren of the enclosing call.
+        assert_eq!(
+            count_net_delimiters(r#"field(1; "Cust's Name"; Text[50])"#, '(', ')'),
+            0
+        );
+        assert_eq!(count_net_delimiters(r#"x := "A{B";"#, '{', '}'), 0);
+        assert_eq!(count_net_delimiters(r#"x := "A(B";"#, '(', ')'), 0);
+    }
+
+    #[test]
+    fn skips_comments() {
+        assert_eq!(count_net_delimiters("x := 1; // (", '(', ')'), 0);
+        assert_eq!(count_net_delimiters("x := 1; /* ( */", '(', ')'), 0);
+        assert_eq!(count_net_delimiters("x := 1; /* ( */ f()", '(', ')'), 0);
+        assert_eq!(count_net_delimiters("{ /* } */", '{', '}'), 1);
+        // Unterminated `/*` swallows the rest of the line.
+        assert_eq!(count_net_delimiters("x; /* (", '(', ')'), 0);
     }
 }

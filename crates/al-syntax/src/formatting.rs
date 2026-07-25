@@ -985,6 +985,14 @@ fn sort_object_properties(text: String, options: &FormatOptions) -> String {
     let mut run: Vec<Vec<String>> = Vec::new();
     let mut depth: i32 = 0; // brace depth BEFORE the current line
     let mut i = 0;
+    // Block-comment state carried across lines, so a `{` in commented-out text
+    // does not shift `depth` and pull unrelated lines into a property run.
+    let mut in_block = false;
+    let brace_delta = |line: &str, in_block: &mut bool| -> i32 {
+        let (code, still_open) = strip_comments(line, *in_block);
+        *in_block = still_open;
+        super::count_net_delimiters(&code, '{', '}')
+    };
 
     fn flush(run: &mut Vec<Vec<String>>, out: &mut Vec<String>) {
         if run.is_empty() {
@@ -1001,7 +1009,7 @@ fn sort_object_properties(text: String, options: &FormatOptions) -> String {
         let line = lines[i];
         let trimmed = line.trim();
 
-        if depth == 1 && is_property_opener(trimmed) {
+        if depth == 1 && !in_block && is_property_opener(trimmed) {
             // Collect this property's lines: from the opener until the line
             // that carries the statement-terminating top-level `;`.
             let mut j = i;
@@ -1013,7 +1021,7 @@ fn sort_object_properties(text: String, options: &FormatOptions) -> String {
             // Properties carry no braces, so depth is unchanged; account for
             // any stray braces defensively.
             for l in &prop {
-                depth += super::count_net_delimiters(l, '{', '}');
+                depth += brace_delta(l, &mut in_block);
             }
             depth = depth.max(0);
             run.push(prop);
@@ -1023,7 +1031,7 @@ fn sort_object_properties(text: String, options: &FormatOptions) -> String {
 
         // Any non-property line ends the current run.
         flush(&mut run, &mut out);
-        depth += super::count_net_delimiters(line, '{', '}');
+        depth += brace_delta(line, &mut in_block);
         depth = depth.max(0);
         out.push(line.to_string());
         i += 1;
@@ -1889,6 +1897,26 @@ codeunit 50100 T
         let out = format_al(input, &FormatOptions::default());
         assert!(out.contains("'a /* b */ c // d'"), "got:\n{out}");
         assert_eq!(indent_width(&out, "Foo()"), 8, "got:\n{out}");
+    }
+
+    #[test]
+    fn apostrophe_in_a_quoted_name_does_not_open_a_paren_continuation() {
+        // BC names are double-quoted and may contain an apostrophe. The
+        // delimiter scanner used to enter string state on that `'` and miss the
+        // call's closing paren, so every following line was indented as a
+        // paren continuation.
+        let input = "\
+table 50100 T
+{
+    fields
+    {
+        field(1; \"Cust's Name\"; Text[50]) { }
+        field(2; Other; Integer) { }
+    }
+}
+";
+        let out = format_al(input, &FormatOptions::default());
+        assert_eq!(indent_width(&out, "field(2"), 8, "got:\n{out}");
     }
 
     #[test]
