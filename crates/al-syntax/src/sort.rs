@@ -41,6 +41,9 @@ pub fn sort_members(text: &str) -> Option<String> {
         return Some(text.to_string());
     }
 
+    // At most one object-level `var` block is legal; anything further is either
+    // malformed input or a mis-split. Keep the first and pass the rest through
+    // as `other` so no line can be dropped on the floor.
     let mut var_block: Option<Vec<&str>> = None;
     let mut triggers: Vec<(String, Vec<&str>)> = Vec::new();
     let mut procedures: Vec<(String, Vec<&str>)> = Vec::new();
@@ -55,7 +58,11 @@ pub fn sort_members(text: &str) -> Option<String> {
         let trimmed = first.trim().to_lowercase();
 
         if trimmed == "var" || trimmed.starts_with("var ") || trimmed.starts_with("var\t") {
-            var_block = Some(member);
+            if var_block.is_none() {
+                var_block = Some(member);
+            } else {
+                other.push(member);
+            }
         } else if trimmed.starts_with("trigger ") {
             let name = extract_member_name(first, "trigger");
             triggers.push((name, member));
@@ -120,6 +127,14 @@ pub fn sort_members(text: &str) -> Option<String> {
         result_lines.push(l);
     }
 
+    // Sorting is a pure reordering: every input line must appear in the output
+    // exactly as many times as it did on the way in. Bail out (no edit) rather
+    // than hand back a mangled object if the member split ever mis-segments —
+    // this runs behind an editor command, so a silent drop is lost user code.
+    if !is_pure_reordering(&lines, &result_lines) {
+        return None;
+    }
+
     let mut out = result_lines.join("\n");
     if text.ends_with('\n') {
         out.push('\n');
@@ -127,67 +142,77 @@ pub fn sort_members(text: &str) -> Option<String> {
     Some(out)
 }
 
+/// True when `after` is a permutation of `before` — same lines, same counts.
+fn is_pure_reordering(before: &[&str], after: &[&str]) -> bool {
+    if before.len() != after.len() {
+        return false;
+    }
+    let mut a: Vec<&str> = before.to_vec();
+    let mut b: Vec<&str> = after.to_vec();
+    a.sort_unstable();
+    b.sort_unstable();
+    a == b
+}
+
 /// Split body lines into member blocks.
-/// Each member is a contiguous block of lines starting with a member keyword
-/// and continuing until the next member keyword at the same depth.
+///
+/// A member starts at a member keyword that is at the object's own level —
+/// outside any `{ … }` sub-block (`fields`, `keys`, `layout`, `actions`, …) and
+/// outside any comment.
+///
+/// `var` needs one extra condition. AL procedure bodies are delimited by
+/// `begin`/`end`, not braces, so brace depth alone cannot tell an object-level
+/// `var` block from a procedure's *local* `var` section — and treating the
+/// latter as a member start splits a procedure in half, orphaning its header
+/// from its body and (because only one `var` member survives) silently dropping
+/// code.
+///
+/// A procedure's local declarations are exactly the `var` section between its
+/// header and its `begin`. So a `var` is local — and therefore not a member
+/// start — only while the current block has a procedure/trigger header whose
+/// `begin` has not been seen yet. An object-level `var` written after a
+/// procedure's body still starts a member. `procedure`/`trigger`/`[attribute]`
+/// are unambiguous member starts either way.
 fn split_into_members<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
     let mut members: Vec<Vec<&'a str>> = Vec::new();
     let mut current: Vec<&'a str> = Vec::new();
     let mut depth = 0i32;
+    let mut in_block_comment = false;
+    // Does the block being accumulated have a procedure/trigger header …
+    let mut current_has_body_member = false;
+    // … and has that member's body opened yet?
+    let mut seen_begin = false;
 
     for &line in lines {
-        let trimmed = line.trim().to_lowercase();
+        let (code, still_in_comment) = crate::formatting::strip_comments(line, in_block_comment);
+        let was_in_comment = in_block_comment;
+        in_block_comment = still_in_comment;
 
-        let is_member_start = depth == 0 && is_member_keyword(&trimmed);
+        let trimmed = code.trim().to_lowercase();
+        let is_var_keyword =
+            trimmed == "var" || trimmed.starts_with("var ") || trimmed.starts_with("var\t");
+        let is_local_var = is_var_keyword && current_has_body_member && !seen_begin;
+
+        let is_member_start =
+            depth == 0 && !was_in_comment && is_member_keyword(&trimmed) && !is_local_var;
 
         if is_member_start && !current.is_empty() {
             members.push(current);
             current = Vec::new();
+            current_has_body_member = false;
+            seen_begin = false;
+        }
+        if is_member_start && !is_var_keyword {
+            current_has_body_member = true;
+        }
+        if trimmed == "begin" || trimmed.ends_with(" begin") {
+            seen_begin = true;
         }
 
-        // Track brace depth — skip over string literal contents so that
-        // braces inside strings (e.g. `Caption = '{'`) don't corrupt the counter.
-        {
-            let mut chars = line.chars().peekable();
-            while let Some(ch) = chars.next() {
-                match ch {
-                    // Single-quoted string: skip until closing `'`, handling `''` escape
-                    '\'' => {
-                        loop {
-                            match chars.next() {
-                                None => break,
-                                Some('\'') => {
-                                    // Doubled quote is an escape — peek to check
-                                    if chars.peek() == Some(&'\'') {
-                                        chars.next();
-                                    } else {
-                                        break;
-                                    }
-                                }
-                                Some(_) => {}
-                            }
-                        }
-                    }
-                    // Double-quoted identifier: skip until closing `"`, handling `""` escape
-                    '"' => loop {
-                        match chars.next() {
-                            None => break,
-                            Some('"') => {
-                                if chars.peek() == Some(&'"') {
-                                    chars.next();
-                                } else {
-                                    break;
-                                }
-                            }
-                            Some(_) => {}
-                        }
-                    },
-                    '{' => depth += 1,
-                    '}' => depth -= 1,
-                    _ => {}
-                }
-            }
-        }
+        // Brace depth from the comment-stripped code; `count_net_delimiters`
+        // also skips `'…'` literals and `"…"` identifiers, so a brace inside
+        // `Caption = '{'` or a quoted name cannot corrupt the counter.
+        depth += crate::count_net_delimiters(&code, '{', '}');
 
         current.push(line);
     }
@@ -278,6 +303,88 @@ mod tests {
         let zebra_pos = result.find("procedure Zebra").expect("should have Zebra");
         assert!(apple_pos < mango_pos, "Apple before Mango");
         assert!(mango_pos < zebra_pos, "Mango before Zebra");
+    }
+
+    /// Non-whitespace characters, sorted — sorting is a reordering, so this
+    /// multiset must be identical before and after.
+    fn content_multiset(s: &str) -> Vec<char> {
+        let mut v: Vec<char> = s.chars().filter(|c| !c.is_whitespace()).collect();
+        v.sort_unstable();
+        v
+    }
+
+    #[test]
+    fn procedures_with_local_vars_keep_their_bodies() {
+        // A procedure's local `var` section used to be treated as an
+        // object-level member start. That split each procedure into a bodiless
+        // header plus an orphaned `var` member — and since only one `var`
+        // member was kept, every other one was silently discarded.
+        let input = "\
+codeunit 50104 \"T\"
+{
+    var
+        GlobalCounter: Integer;
+
+    procedure Zed()
+    var
+        LocalVar: Integer;
+    begin
+        LocalVar := 1;
+        GlobalCounter += LocalVar;
+    end;
+
+    procedure Alpha()
+    var
+        Other: Text;
+    begin
+        Other := 'x';
+    end;
+}
+";
+        let out = sort_members(input).expect("should sort");
+        assert_eq!(
+            content_multiset(input),
+            content_multiset(&out),
+            "sorting dropped content:\n{out}"
+        );
+        assert!(out.contains("GlobalCounter: Integer;"), "{out}");
+
+        let alpha = out.find("procedure Alpha()").expect("Alpha present");
+        let zed = out.find("procedure Zed()").expect("Zed present");
+        assert!(alpha < zed, "Alpha must sort before Zed:\n{out}");
+        let alpha_body = &out[alpha..zed];
+        assert!(
+            alpha_body.contains("Other: Text;") && alpha_body.contains("Other := 'x';"),
+            "Alpha lost its local var / body:\n{out}"
+        );
+        let zed_body = &out[zed..];
+        assert!(
+            zed_body.contains("LocalVar: Integer;") && zed_body.contains("LocalVar := 1;"),
+            "Zed lost its local var / body:\n{out}"
+        );
+    }
+
+    #[test]
+    fn sorting_is_always_a_pure_reordering() {
+        let cases = [
+            "codeunit 50100 T\n{\n}\n",
+            "codeunit 50100 T\n{\n    /* procedure Fake()\n       var x: Integer;\n    */\n    procedure B() begin end;\n    procedure A() begin end;\n}\n",
+            "codeunit 50100 T\n{\n    procedure B()\n    begin\n        Message('var');\n    end;\n\n    procedure A() begin end;\n}\n",
+            "table 50100 T\n{\n    fields\n    {\n        field(1; A; Integer) { }\n    }\n\n    var\n        G: Integer;\n\n    procedure B()\n    var\n        L: Integer;\n    begin\n    end;\n\n    procedure A() begin end;\n}\n",
+            "interface IThing\n{\n    procedure Zed(): Text;\n    procedure Alpha();\n}\n",
+        ];
+        for input in cases {
+            let Some(out) = sort_members(input) else {
+                continue;
+            };
+            assert_eq!(
+                content_multiset(input),
+                content_multiset(&out),
+                "sorting dropped content for {input:?}:\n{out}"
+            );
+            let twice = sort_members(&out).expect("second pass must still sort");
+            assert_eq!(out, twice, "sorting is not idempotent for {input:?}");
+        }
     }
 
     #[test]

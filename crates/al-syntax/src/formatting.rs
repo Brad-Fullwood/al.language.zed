@@ -875,7 +875,7 @@ fn has_line_comment_outside_strings(s: &str) -> bool {
 ///
 /// A removed span collapses to a single space so `end;/*x*/` does not fuse
 /// its neighbours into one token; the result is trimmed.
-fn strip_comments(line: &str, in_block: bool) -> (String, bool) {
+pub(crate) fn strip_comments(line: &str, in_block: bool) -> (String, bool) {
     let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len());
     let mut i = 0;
