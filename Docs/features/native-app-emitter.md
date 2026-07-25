@@ -19,8 +19,16 @@ A BC `.app` is a 40-byte **NAVX** header followed by a Deflated **ZIP** containi
 `NavxManifest.xml`, the AL source files, a `SymbolReference.json` (the compiled symbol surface),
 OPC metadata (`[Content_Types].xml`, `DocComments.xml`, `MediaIdListing.xml`), an implicit
 entitlement under `entitlement/<app-id>.xml` when permissions exist, per-profile
-symbol-reference files, and an XLIFF localization file. The
-native emitter builds all of this from `app.json` + source + referenced package symbols.
+symbol-reference files, and—when currently supported translatable properties are
+present—an XLIFF localization file. The native emitter builds the verified subset
+from `app.json` + source + referenced package symbols.
+
+Current XLIFF extraction covers object captions and table-field captions, but not
+all page-control ToolTips or page-action captions. Real-world differential evidence
+also records report-layout, logo, `.res`, path-encoding, and symbol-shape gaps. Use
+`pack-native --validate` or official `alc` as the release gate for projects that
+depend on those resource shapes; see
+[`benchmarks/FINDINGS.md`](../../benchmarks/FINDINGS.md#real-world-project).
 
 ## Pipeline (`emit/`)
 

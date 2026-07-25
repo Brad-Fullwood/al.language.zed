@@ -321,6 +321,113 @@ pub struct SymbolEntry {
     pub variables: Vec<VariableSymbol>,
 }
 
+impl SymbolEntry {
+    /// Bytes owned by this symbol allocation, including the `SymbolEntry`
+    /// itself and every string/vector allocation reachable only through it.
+    /// Shared-index pointers and hash-table storage are reported separately by
+    /// `SymbolIndex::memory_stats`.
+    pub fn owned_bytes(&self) -> usize {
+        fn strings(strings: &[String]) -> usize {
+            strings.iter().map(String::capacity).sum()
+        }
+
+        fn properties(values: &[PropertyValue], capacity: usize) -> usize {
+            capacity * std::mem::size_of::<PropertyValue>()
+                + values
+                    .iter()
+                    .map(|value| value.name.capacity() + value.value.capacity())
+                    .sum::<usize>()
+        }
+
+        fn controls(values: &[ControlSymbol], capacity: usize) -> usize {
+            capacity * std::mem::size_of::<ControlSymbol>()
+                + values
+                    .iter()
+                    .map(|value| {
+                        value.name.capacity()
+                            + value.kind.capacity()
+                            + controls(&value.children, value.children.capacity())
+                    })
+                    .sum::<usize>()
+        }
+
+        let methods = self.methods.capacity() * std::mem::size_of::<MethodSymbol>()
+            + self
+                .methods
+                .iter()
+                .map(|method| {
+                    method.name.capacity()
+                        + method.return_type.as_ref().map_or(0, String::capacity)
+                        + method.parameters.capacity() * std::mem::size_of::<ParameterSymbol>()
+                        + method
+                            .parameters
+                            .iter()
+                            .map(|parameter| {
+                                parameter.name.capacity() + parameter.type_name.capacity()
+                            })
+                            .sum::<usize>()
+                        + method.attributes.capacity() * std::mem::size_of::<AttributeSymbol>()
+                        + method
+                            .attributes
+                            .iter()
+                            .map(|attribute| {
+                                attribute.name.capacity()
+                                    + attribute.arguments.capacity() * std::mem::size_of::<String>()
+                                    + strings(&attribute.arguments)
+                            })
+                            .sum::<usize>()
+                })
+                .sum::<usize>();
+
+        let fields = self.fields.capacity() * std::mem::size_of::<FieldSymbol>()
+            + self
+                .fields
+                .iter()
+                .map(|field| {
+                    field.name.capacity()
+                        + field.type_name.capacity()
+                        + properties(&field.properties, field.properties.capacity())
+                })
+                .sum::<usize>();
+        let keys = self.keys.capacity() * std::mem::size_of::<KeySymbol>()
+            + self
+                .keys
+                .iter()
+                .map(|key| {
+                    key.name.capacity()
+                        + key.field_names.capacity() * std::mem::size_of::<String>()
+                        + strings(&key.field_names)
+                        + properties(&key.properties, key.properties.capacity())
+                })
+                .sum::<usize>();
+
+        std::mem::size_of::<Self>()
+            + self.name.capacity()
+            + self.extends.as_ref().map_or(0, String::capacity)
+            + self.implements.capacity() * std::mem::size_of::<String>()
+            + strings(&self.implements)
+            + self.package.capacity()
+            + self.namespace.capacity()
+            + methods
+            + fields
+            + controls(&self.controls, self.controls.capacity())
+            + self.enum_values.capacity() * std::mem::size_of::<EnumValueSymbol>()
+            + self
+                .enum_values
+                .iter()
+                .map(|value| value.name.capacity())
+                .sum::<usize>()
+            + keys
+            + properties(&self.properties, self.properties.capacity())
+            + self.variables.capacity() * std::mem::size_of::<VariableSymbol>()
+            + self
+                .variables
+                .iter()
+                .map(|variable| variable.name.capacity() + variable.type_name.capacity())
+                .sum::<usize>()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SymbolPackage {
     pub app_id: String,

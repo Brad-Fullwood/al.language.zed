@@ -29,8 +29,9 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | `search <query>` | `--limit N` (20) | Fuzzy symbol search across packages + workspace |
 | `object <type> <name>` | — | Look up object by kind + name (with members) |
 | `by-id <type> <id>` | — | Look up object by kind + numeric id |
+| `source <name>` | `--kind <type>`, `--package <name>`, `--procedure <name>` or `--trigger <name>` | Return the strongest actual source representation; ambiguous names require kind/package selection |
 | `composed [<kind>] <name>` | — | Base object + all extensions merged |
-| `packages` | — | List loaded packages (version, publisher, object count) |
+| `packages` | — | List loaded packages with version, publisher, object count, and embedded/outline/metadata-only source counts |
 | `deps` | — | Explicit + transitive dependencies |
 | `deps-graph` | `--format json\|dot` | Dependency graph export |
 | `events <name>` | — | Event publishers matching name (+ subscriber counts) |

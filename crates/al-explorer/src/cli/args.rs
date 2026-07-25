@@ -67,6 +67,22 @@ Examples:
         kind: String,
         id: i32,
     },
+    /// Show the strongest available source representation for an object
+    Source {
+        name: String,
+        /// Narrow the lookup to one AL object kind
+        #[arg(long)]
+        kind: Option<String>,
+        /// Narrow the lookup to one symbol package (or "workspace")
+        #[arg(long)]
+        package: Option<String>,
+        /// Return one procedure declaration/body
+        #[arg(long, conflicts_with = "trigger")]
+        procedure: Option<String>,
+        /// Return one trigger declaration/body
+        #[arg(long, conflicts_with = "procedure")]
+        trigger: Option<String>,
+    },
     /// Find event publishers matching a name
     Events { name: String },
     /// Find event subscribers matching a name

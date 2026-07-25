@@ -217,7 +217,7 @@
 (type_keyword) @type.builtin
 (metadata_keyword) @keyword
 (property_keyword) @operator
-(keyword) @type.builtin
+(keyword) @keyword
 (control_keyword) @keyword.control
 
 ; Punctuation and operators

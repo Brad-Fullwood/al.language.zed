@@ -324,19 +324,7 @@ pub(super) fn dispatch_search(
     let results = workspace.symbols.search(query, limit);
     let mut value: Vec<serde_json::Value> = results
         .iter()
-        .map(|e| {
-            if summary {
-                serde_json::json!({
-                    "kind": e.kind,
-                    "id": e.id,
-                    "name": e.name,
-                    "package": e.package,
-                    "extends": e.extends,
-                })
-            } else {
-                serde_json::to_value(e.as_ref()).expect("symbol entries must be JSON serializable")
-            }
-        })
+        .map(|entry| symbol_entry_to_json(workspace, entry, summary))
         .collect();
     // Use the shared search implementation for workspace file objects.
     let remaining = limit.saturating_sub(value.len());
@@ -351,6 +339,32 @@ pub(super) fn dispatch_search(
         error: None,
         ..Default::default()
     }
+}
+
+fn symbol_entry_to_json(
+    workspace: &Workspace,
+    entry: &al_symbols::SymbolEntry,
+    summary: bool,
+) -> serde_json::Value {
+    let mut value = if summary {
+        serde_json::json!({
+            "kind": entry.kind,
+            "id": entry.id,
+            "name": entry.name,
+            "package": entry.package,
+            "extends": entry.extends,
+        })
+    } else {
+        serde_json::to_value(entry).expect("symbol entries must be JSON serializable")
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "source_availability".into(),
+            serde_json::to_value(workspace.symbols.source_availability(entry))
+                .expect("source availability must be JSON serializable"),
+        );
+    }
+    value
 }
 
 /// Resolve an object kind from a bare name: succeeds when exactly one
@@ -434,9 +448,7 @@ pub(super) fn dispatch_object(
     let mut matches: Vec<serde_json::Value> = candidates
         .iter()
         .filter(|e| e.kind == kind)
-        .map(|e| {
-            serde_json::to_value(e.as_ref()).expect("symbol entries must be JSON serializable")
-        })
+        .map(|entry| symbol_entry_to_json(workspace, entry, false))
         .collect();
     let name_lower = name.to_lowercase();
     let kind_lower = kind.to_string().to_lowercase();
@@ -511,6 +523,7 @@ fn workspace_object_to_json(info: &al_source::file_index::CachedObjectInfo) -> s
         "id": info.id.unwrap_or(0),
         "name": info.name,
         "package": WORKSPACE_PACKAGE,
+        "source_availability": al_symbols::SourceAvailability::WorkspaceSource,
     })
 }
 
@@ -535,9 +548,7 @@ pub(super) fn dispatch_by_id(
     let results = workspace.symbols.get_by_id(kind, obj_id);
     let mut value: Vec<serde_json::Value> = results
         .iter()
-        .map(|e| {
-            serde_json::to_value(e.as_ref()).expect("symbol entries must be JSON serializable")
-        })
+        .map(|entry| symbol_entry_to_json(workspace, entry, false))
         .collect();
     // Workspace file objects — same merge as dispatch_object.
     let kind_lower = kind.to_string().to_lowercase();
@@ -591,6 +602,7 @@ pub(super) fn dispatch_events(
                 "objectName": p.object.name,
                 "methodName": p.method.name,
                 "eventType": p.event_type.to_string(),
+                "source_availability": workspace.symbols.source_availability(&p.object),
                 "parameters": p.method.parameters.iter().map(|param| serde_json::json!({
                     "name": param.name,
                     "type_name": param.type_name,
@@ -629,6 +641,7 @@ pub(super) fn dispatch_subscribers(
                 "targetObjectType": s.target_object_type,
                 "targetObjectName": s.target_object_name,
                 "targetEventName": s.target_event_name,
+                "source_availability": workspace.symbols.source_availability(&s.object),
             })
         })
         .collect();
@@ -665,7 +678,32 @@ pub(super) fn dispatch_composed(
     let _ = workspace.get_or_build_call_graph();
     match workspace.symbols.get_composed_cached(kind, name) {
         Some(composed) => {
-            let value = serde_json::to_value(composed.as_ref()).unwrap_or(serde_json::Value::Null);
+            let mut value =
+                serde_json::to_value(composed.as_ref()).unwrap_or(serde_json::Value::Null);
+            if let Some(base) = value
+                .get_mut("base")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                base.insert(
+                    "source_availability".into(),
+                    serde_json::to_value(workspace.symbols.source_availability(&composed.base))
+                        .expect("source availability must be JSON serializable"),
+                );
+            }
+            if let Some(extensions) = value
+                .get_mut("extensions")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for (extension, entry) in extensions.iter_mut().zip(&composed.extensions) {
+                    if let Some(object) = extension.as_object_mut() {
+                        object.insert(
+                            "source_availability".into(),
+                            serde_json::to_value(workspace.symbols.source_availability(entry))
+                                .expect("source availability must be JSON serializable"),
+                        );
+                    }
+                }
+            }
             Response {
                 id,
                 result: Some(value),
@@ -695,11 +733,28 @@ pub(super) fn dispatch_packages(workspace: &Workspace, id: u64) -> Response {
     let pkgs = workspace
         .package_info
         .read()
-        .unwrap_or_else(|e| e.into_inner());
-    let value = serde_json::to_value(pkgs.as_slice()).unwrap_or(serde_json::json!([]));
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let value: Vec<_> = pkgs
+        .iter()
+        .map(|package| {
+            let mut value = serde_json::to_value(package)
+                .expect("package information must be JSON serializable");
+            if let Some(object) = value.as_object_mut() {
+                object.insert(
+                    "source_availability".into(),
+                    serde_json::to_value(
+                        workspace.symbols.package_source_availability(&package.name),
+                    )
+                    .expect("source availability summary must be JSON serializable"),
+                );
+            }
+            value
+        })
+        .collect();
     Response {
         id,
-        result: Some(value),
+        result: Some(serde_json::Value::Array(value)),
         error: None,
         ..Default::default()
     }
@@ -851,6 +906,7 @@ mod tests {
             },
         };
         let json = workspace_object_to_json(&info);
+        assert_eq!(json["source_availability"], "workspace_source");
         let entry: al_symbols::SymbolEntry =
             serde_json::from_value(json).expect("workspace object must deserialize as SymbolEntry");
         assert_eq!(entry.kind, al_symbols::ObjectKind::Table);
@@ -1230,6 +1286,28 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_search_reports_cached_source_availability() {
+        let ws = al_workspace::Workspace::new();
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: 18,
+            name: "Customer".to_string(),
+            package: "Base Application".to_string(),
+            fields: vec![al_symbols::FieldSymbol {
+                id: 1,
+                name: "No.".to_string(),
+                type_name: "Code[20]".to_string(),
+                properties: Vec::new(),
+            }],
+            ..Default::default()
+        }]);
+        let resp = dispatch_search(&ws, 13, &serde_json::json!({ "query": "Customer" }));
+        assert!(resp.error.is_none());
+        let result = resp.result.expect("search result");
+        assert_eq!(result[0]["source_availability"], "generated_outline");
+    }
+
+    #[test]
     fn dispatch_object_rejects_unknown_kind() {
         let ws = al_workspace::Workspace::new();
         let resp = dispatch_object(
@@ -1351,6 +1429,48 @@ mod tests {
         let resp = dispatch_packages(&ws, 24);
         assert!(resp.error.is_none());
         assert_eq!(resp.result, Some(serde_json::json!([])));
+    }
+
+    #[test]
+    fn dispatch_packages_summarizes_outline_and_metadata_only_objects() {
+        let ws = al_workspace::Workspace::new();
+        ws.symbols.add_entries(&[
+            al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Table,
+                id: 18,
+                name: "Customer".to_string(),
+                package: "Base Application".to_string(),
+                fields: vec![al_symbols::FieldSymbol {
+                    id: 1,
+                    name: "No.".to_string(),
+                    type_name: "Code[20]".to_string(),
+                    properties: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Page,
+                id: 21,
+                name: "Customer Card".to_string(),
+                package: "Base Application".to_string(),
+                ..Default::default()
+            },
+        ]);
+        ws.package_info
+            .write()
+            .unwrap()
+            .push(al_workspace::PackageInfo {
+                name: "Base Application".to_string(),
+                publisher: "Microsoft".to_string(),
+                version: "1.0.0.0".to_string(),
+                object_count: 2,
+            });
+
+        let resp = dispatch_packages(&ws, 25);
+        assert!(resp.error.is_none());
+        let result = resp.result.expect("package result");
+        assert_eq!(result[0]["source_availability"]["generated_outline"], 1);
+        assert_eq!(result[0]["source_availability"]["metadata_only"], 1);
     }
 
     #[test]

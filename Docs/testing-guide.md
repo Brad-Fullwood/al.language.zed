@@ -208,18 +208,20 @@ publishes:
 
 1. `scripts/check-repo-consistency.sh` — the binary-download repo slug is
    consistent across `src/lib.rs`, `extension.toml`, and the git remote.
-2. `scripts/check-release-hygiene.sh` — product-version alignment (root `zed-al`
-   = `extension.toml` = `al-lsp` = `Cargo.lock`), submodule/grammar-rev
+2. `scripts/check-doc-paths.sh` — stale `crates/<name>` references in Markdown
+   are rejected.
+3. `scripts/check-release-hygiene.sh` — product-version alignment (root `zed-al`
+   = `extension.toml` = `al-lsp` = `al-explorer` = their `Cargo.lock` entries), submodule/grammar-rev
    alignment, generated-asset presence, and `languages/al` currency.
-3. `make repro-artifacts` — the regenerate-and-diff guard above.
-4. `cargo build --workspace --exclude zed-al` plus the real
+4. `make repro-artifacts` — the regenerate-and-diff guard above.
+5. `cargo build --workspace --exclude zed-al` plus the real
    `cargo build -p al-lsp --bin al-lsp --features semantic` binary.
-5. `cargo test --workspace --exclude zed-al`.
-6. `cargo publish --dry-run --no-verify` for each **publishable** crate (the 17
+6. `cargo test --workspace --exclude zed-al`.
+7. `cargo publish --dry-run --no-verify` for each **publishable** crate (the 17
    library crates; `zed-al`/`al-lsp`/`al-explorer`/`al-protocol`/
    `al-test-harness` are `publish = false`).
 
-**Honest caveat on step 6:** until the workspace has had its first real publish,
+**Honest caveat on step 7:** until the workspace has had its first real publish,
 a crate whose path-deps are not yet on crates.io cannot be fully dry-run. Two
 forms show up, both treated as `blocked … (expected pre-first-publish)` and
 **not** failed:

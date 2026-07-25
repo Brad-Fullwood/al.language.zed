@@ -56,12 +56,13 @@ delegate by design)
 | Capability | This project | Microsoft |
 | --- | --- | --- |
 | Pure-logic tests **without a BC server** | ✅ native interpreter | ❌ (all tests need BC) |
+| Supported workspace-record tests **without a BC server** | ✅ isolated native record runtime | ❌ (all tests need BC) |
 | Test discovery (static, BC-free) | ✅ | needs toolchain |
 | Routing transparency (`test-classify`) | ✅ | ❌ |
 | JUnit output / coverage | ✅ (coverage static) | partial (needs BC) |
 | Mutation testing | ✅ interpreter-routed, optionally parallel | ❌ |
 | Snapshot files | format validation and file diff | partial (snapshot debugging) |
-| DB/HTTP/UI/report tests | 🔷 route to live BC | 🔷 live BC |
+| Base-app/package DB, unsupported record, HTTP/UI/report/platform tests | 🔷 route to live BC | 🔷 live BC |
 
 ## Debugging
 
@@ -78,7 +79,7 @@ delegate by design)
 
 | Capability | This project | Microsoft |
 | --- | --- | --- |
-| Scriptable CLI (`--json`) for every query/analysis | ✅ `al-explorer` | ❌ |
+| Scriptable CLI (`--json`) for exposed query/analysis commands; complete daemon catalog through MCP `al_call` | ✅ | ❌ |
 | Interactive terminal TUI | ✅ (5 views) | ❌ |
 | Shared daemon (JSON-RPC) | ✅ | ❌ |
 | MCP server | ✅ complete shared dispatcher via `al_call`, plus named aliases | ✅ AL agent tools |

@@ -6,8 +6,11 @@
 //! - `package`: source extracted from .app ZIP archive
 //! - `outline`: rendered from SymbolReference.json (full signatures, no bodies)
 
-use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry};
+use al_symbols::{MethodSymbol, ObjectKind, SourceAvailability, SymbolEntry};
 use serde::Serialize;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use al_workspace::Workspace;
 
@@ -28,6 +31,10 @@ pub struct SourceResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proc_name: Option<String>,
     pub src: SourceLevel,
+    /// Honest provenance for the returned representation. `src` is retained
+    /// for wire compatibility; this field distinguishes original package
+    /// source from reconstructed and identity-only metadata.
+    pub source_availability: SourceAvailability,
     /// Package name (for package/outline sources).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pkg: Option<String>,
@@ -54,50 +61,245 @@ pub struct SourceRange {
     pub end: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceMemberKind {
+    Procedure,
+    Trigger,
+}
+
+impl SourceMemberKind {
+    const fn declaration_kind(self) -> &'static str {
+        match self {
+            Self::Procedure => "procedure_declaration",
+            Self::Trigger => "trigger_declaration",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Procedure => "procedure",
+            Self::Trigger => "trigger",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SourceMember<'a> {
+    pub kind: SourceMemberKind,
+    pub name: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceLookupError {
+    ObjectNotFound {
+        name: String,
+    },
+    Ambiguous {
+        name: String,
+        matches: Vec<String>,
+    },
+    MemberNotFound {
+        object: String,
+        member: String,
+        kind: SourceMemberKind,
+    },
+    MemberUnavailable {
+        object: String,
+        member: String,
+        kind: SourceMemberKind,
+        reason: String,
+    },
+}
+
+impl fmt::Display for SourceLookupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ObjectNotFound { name } => {
+                write!(f, "Object '{name}' not found in workspace or symbol packages")
+            }
+            Self::Ambiguous { name, matches } => write!(
+                f,
+                "Source lookup for '{name}' is ambiguous; specify --kind and/or --package. Matches: {}",
+                matches.join(", ")
+            ),
+            Self::MemberNotFound {
+                object,
+                member,
+                kind,
+            } => write!(
+                f,
+                "{} '{}' was not found in object '{}'",
+                kind.label(),
+                member,
+                object
+            ),
+            Self::MemberUnavailable {
+                object,
+                member,
+                kind,
+                reason,
+            } => write!(
+                f,
+                "{} '{}' in object '{}' is unavailable: {}",
+                kind.label(),
+                member,
+                object,
+                reason
+            ),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum SourceCandidate {
+    Workspace { path: PathBuf, kind: ObjectKind },
+    Package(Arc<SymbolEntry>),
+}
+
 pub fn source(
     workspace: &Workspace,
     name: &str,
     kind_filter: Option<ObjectKind>,
-    proc_filter: Option<&str>,
-    trigger_filter: Option<&str>,
-) -> Option<SourceResult> {
-    if let Some(result) =
-        try_workspace_source(workspace, name, kind_filter, proc_filter, trigger_filter)
-    {
-        return Some(result);
+    package_filter: Option<&str>,
+    member: Option<SourceMember<'_>>,
+) -> Result<SourceResult, SourceLookupError> {
+    let candidates = source_candidates(workspace, name, kind_filter, package_filter);
+    let candidate = match candidates.as_slice() {
+        [] => {
+            return Err(SourceLookupError::ObjectNotFound {
+                name: name.to_string(),
+            });
+        }
+        [candidate] => candidate,
+        _ => {
+            let mut matches = candidates
+                .iter()
+                .map(|candidate| match candidate {
+                    SourceCandidate::Workspace { kind, .. } => {
+                        format!("{kind} (workspace)")
+                    }
+                    SourceCandidate::Package(entry) => {
+                        format!("{} ({})", entry.kind, entry.package)
+                    }
+                })
+                .collect::<Vec<_>>();
+            matches.sort();
+            matches.dedup();
+            return Err(SourceLookupError::Ambiguous {
+                name: name.to_string(),
+                matches,
+            });
+        }
+    };
+
+    match candidate {
+        SourceCandidate::Workspace { path, kind } => {
+            try_workspace_source(workspace, path, name, *kind, member)
+        }
+        SourceCandidate::Package(entry) => try_package_source(workspace, entry, member),
+    }
+}
+
+fn source_candidates(
+    workspace: &Workspace,
+    name: &str,
+    kind_filter: Option<ObjectKind>,
+    package_filter: Option<&str>,
+) -> Vec<SourceCandidate> {
+    let package_filter = package_filter
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let workspace_requested = package_filter.is_none_or(|package| {
+        package.eq_ignore_ascii_case("workspace") || package.eq_ignore_ascii_case("(workspace)")
+    });
+
+    let mut workspace_candidates = Vec::new();
+    if workspace_requested {
+        for path in workspace.file_index.object_paths(name) {
+            let Some(info) = workspace.file_index.object_info.get(&path) else {
+                continue;
+            };
+            let Ok(kind) = info.kind.parse::<ObjectKind>() else {
+                continue;
+            };
+            if kind_filter.is_none_or(|expected| expected == kind) {
+                workspace_candidates.push(SourceCandidate::Workspace { path, kind });
+            }
+        }
+    }
+    workspace_candidates.sort_by_key(candidate_sort_key);
+
+    // Workspace source shadows package symbols unless the caller explicitly
+    // chooses a package. This mirrors normal AL project resolution while still
+    // rejecting same-name objects of different workspace kinds.
+    if package_filter.is_none() && !workspace_candidates.is_empty() {
+        return workspace_candidates;
+    }
+    if package_filter.is_some() && workspace_requested {
+        return workspace_candidates;
     }
 
-    try_package_source(workspace, name, kind_filter, proc_filter, trigger_filter)
+    let mut package_candidates = workspace
+        .symbols
+        .get_by_name(name)
+        .into_iter()
+        .filter(|entry| !entry.synthetic)
+        .filter(|entry| {
+            !entry.package.eq_ignore_ascii_case("workspace")
+                && !entry.package.eq_ignore_ascii_case("(workspace)")
+        })
+        .filter(|entry| kind_filter.is_none_or(|expected| expected == entry.kind))
+        .filter(|entry| {
+            package_filter.is_none_or(|package| entry.package.eq_ignore_ascii_case(package))
+        })
+        .map(SourceCandidate::Package)
+        .collect::<Vec<_>>();
+    package_candidates.sort_by_key(candidate_sort_key);
+    package_candidates
+}
+
+fn candidate_sort_key(candidate: &SourceCandidate) -> (String, String, i32) {
+    match candidate {
+        SourceCandidate::Workspace { path, kind } => (
+            kind.to_string(),
+            path.to_string_lossy().to_ascii_lowercase(),
+            0,
+        ),
+        SourceCandidate::Package(entry) => (
+            entry.kind.to_string(),
+            entry.package.to_ascii_lowercase(),
+            entry.id,
+        ),
+    }
 }
 
 fn try_workspace_source(
     workspace: &Workspace,
+    file_path: &Path,
     name: &str,
-    kind_filter: Option<ObjectKind>,
-    proc_filter: Option<&str>,
-    trigger_filter: Option<&str>,
-) -> Option<SourceResult> {
-    let file_path = workspace.file_index.find_by_object_name(name)?;
+    kind: ObjectKind,
+    member: Option<SourceMember<'_>>,
+) -> Result<SourceResult, SourceLookupError> {
+    let parsed_open_document = url::Url::from_file_path(file_path)
+        .ok()
+        .and_then(|uri| al_source::parsing::get_or_parse(&workspace.documents, &uri))
+        .map(|(text, tree)| ((*text).clone(), tree));
+    let (text, tree) = parsed_open_document
+        .or_else(|| workspace.file_index.get_cached_parse(file_path))
+        .ok_or_else(|| SourceLookupError::ObjectNotFound {
+            name: name.to_string(),
+        })?;
 
-    // Only absolute paths can be converted to file URIs.
-    let uri = url::Url::from_file_path(&file_path).ok()?;
-    let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, &uri)?;
-
-    let obj_info = al_syntax::find_object_declaration(&tree, &text)?;
-    let kind: ObjectKind = obj_info.kind.parse().ok()?;
+    let obj_info = al_syntax::find_object_declaration(&tree, &text).ok_or_else(|| {
+        SourceLookupError::ObjectNotFound {
+            name: name.to_string(),
+        }
+    })?;
     let id = obj_info.id.unwrap_or(0) as i32;
 
-    if let Some(k) = kind_filter {
-        if k != kind {
-            return None;
-        }
-    }
-
-    let member_filter = proc_filter.or(trigger_filter);
-
-    if let Some(member_name) = member_filter {
+    if let Some(member) = member {
         let root = tree.root_node();
-        if let Some((node, sig)) = find_procedure_node(&root, &text, member_name) {
+        if let Some((node, sig)) = find_member_node(&root, &text, member) {
             let start_line = node.start_position().row;
             let end_line = node.end_position().row;
             let code = node.utf8_text(text.as_bytes()).unwrap_or("").to_string();
@@ -107,12 +309,13 @@ fn try_workspace_source(
                 .map(|f| f.to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            return Some(SourceResult {
+            return Ok(SourceResult {
                 k: kind,
                 id,
                 n: name.to_string(),
-                proc_name: Some(member_name.to_string()),
+                proc_name: Some(member.name.to_string()),
                 src: SourceLevel::Workspace,
+                source_availability: SourceAvailability::WorkspaceSource,
                 pkg: None,
                 sig: Some(sig),
                 range: Some(SourceRange {
@@ -124,53 +327,47 @@ fn try_workspace_source(
                 note: None,
             });
         }
-        return None;
+        return Err(SourceLookupError::MemberNotFound {
+            object: name.to_string(),
+            member: member.name.to_string(),
+            kind: member.kind,
+        });
     }
 
-    Some(SourceResult {
+    Ok(SourceResult {
         k: kind,
         id,
         n: name.to_string(),
         proc_name: None,
         src: SourceLevel::Workspace,
+        source_availability: SourceAvailability::WorkspaceSource,
         pkg: None,
         sig: None,
         range: None,
-        code: (*text).clone(),
+        code: text.clone(),
         note: None,
     })
 }
 
 fn try_package_source(
     workspace: &Workspace,
-    name: &str,
-    kind_filter: Option<ObjectKind>,
-    proc_filter: Option<&str>,
-    trigger_filter: Option<&str>,
-) -> Option<SourceResult> {
-    let entries = workspace.symbols.get_by_name(name);
-    let entry = if let Some(k) = kind_filter {
-        entries.iter().find(|e| e.kind == k)
-    } else {
-        entries.first()
-    }?;
-
+    entry: &SymbolEntry,
+    member: Option<SourceMember<'_>>,
+) -> Result<SourceResult, SourceLookupError> {
     let app_path = workspace.symbols.app_path(&entry.package);
 
     if let Some(ref path) = app_path {
         if let Ok(source_index) = al_symbols::source_index::get_or_build(path) {
             if let Some(full_source) = source_index.extract_source_for_entry(entry) {
-                let member_filter = proc_filter.or(trigger_filter);
-                if let Some(member_name) = member_filter {
-                    if let Some((code, sig)) =
-                        extract_procedure_from_text(&full_source, member_name)
-                    {
-                        return Some(SourceResult {
+                if let Some(member) = member {
+                    if let Some((code, sig)) = extract_member_from_text(&full_source, member) {
+                        return Ok(SourceResult {
                             k: entry.kind,
                             id: entry.id,
                             n: entry.name.clone(),
-                            proc_name: Some(member_name.to_string()),
+                            proc_name: Some(member.name.to_string()),
                             src: SourceLevel::Package,
+                            source_availability: SourceAvailability::EmbeddedSource,
                             pkg: Some(entry.package.clone()),
                             sig: Some(sig),
                             range: None,
@@ -178,15 +375,20 @@ fn try_package_source(
                             note: None,
                         });
                     }
-                    return None;
+                    return Err(SourceLookupError::MemberNotFound {
+                        object: entry.name.clone(),
+                        member: member.name.to_string(),
+                        kind: member.kind,
+                    });
                 }
 
-                return Some(SourceResult {
+                return Ok(SourceResult {
                     k: entry.kind,
                     id: entry.id,
                     n: entry.name.clone(),
                     proc_name: None,
                     src: SourceLevel::Package,
+                    source_availability: SourceAvailability::EmbeddedSource,
                     pkg: Some(entry.package.clone()),
                     sig: None,
                     range: None,
@@ -197,20 +399,39 @@ fn try_package_source(
         }
     }
 
-    // Render outline from SymbolReference.json (standard output for packages without source)
-    let member_filter = proc_filter.or(trigger_filter);
-    if let Some(member_name) = member_filter {
+    // Reaching this branch means original source could not be extracted even
+    // if the package index advertised a matching path. Report the
+    // representation we are actually about to return.
+    let source_availability = al_symbols::source_availability::classify_metadata(entry);
+    // Render an outline from SymbolReference.json when the package has no
+    // matching embedded source. Identity-only entries remain explicitly
+    // classified as metadata-only rather than overstating an empty shell.
+    if let Some(member) = member {
+        if member.kind == SourceMemberKind::Trigger {
+            return Err(SourceLookupError::MemberUnavailable {
+                object: entry.name.clone(),
+                member: member.name.to_string(),
+                kind: member.kind,
+                reason: "the package has no extractable AL source and SymbolReference.json does not distinguish trigger declarations".to_string(),
+            });
+        }
         let method = entry
             .methods
             .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(member_name))?;
+            .find(|method| method.name.eq_ignore_ascii_case(member.name))
+            .ok_or_else(|| SourceLookupError::MemberNotFound {
+                object: entry.name.clone(),
+                member: member.name.to_string(),
+                kind: member.kind,
+            })?;
         let sig = render_method_signature(method);
-        return Some(SourceResult {
+        return Ok(SourceResult {
             k: entry.kind,
             id: entry.id,
             n: entry.name.clone(),
-            proc_name: Some(member_name.to_string()),
+            proc_name: Some(member.name.to_string()),
             src: SourceLevel::Outline,
+            source_availability,
             pkg: Some(entry.package.clone()),
             sig: Some(sig.clone()),
             range: None,
@@ -223,39 +444,43 @@ fn try_package_source(
     }
 
     let code = render_outline(entry);
-    Some(SourceResult {
+    let note = match source_availability {
+        SourceAvailability::MetadataOnly => {
+            "Package metadata contains the object identity only — no embedded source or rich API outline"
+        }
+        _ => "Rendered from symbol metadata — full signatures and fields, no implementation bodies",
+    };
+    Ok(SourceResult {
         k: entry.kind,
         id: entry.id,
         n: entry.name.clone(),
         proc_name: None,
         src: SourceLevel::Outline,
+        source_availability,
         pkg: Some(entry.package.clone()),
         sig: None,
         range: None,
         code,
-        note: Some(
-            "Rendered from symbol metadata — full signatures and fields, no implementation bodies"
-                .to_string(),
-        ),
+        note: Some(note.to_string()),
     })
 }
 
-/// Find a procedure/trigger node in a tree-sitter tree and return (node, signature).
+/// Find a typed procedure/trigger node and return (node, signature).
 ///
 /// Iterative tree-sitter traversal avoids stack overflow on deeply nested AL.
-fn find_procedure_node<'a>(
+fn find_member_node<'a>(
     root: &'a tree_sitter::Node<'a>,
     source: &str,
-    name: &str,
+    member: SourceMember<'_>,
 ) -> Option<(tree_sitter::Node<'a>, String)> {
     let mut stack: Vec<tree_sitter::Node<'a>> = vec![*root];
     while let Some(node) = stack.pop() {
         let kind = node.kind();
-        if kind == "procedure_declaration" || kind == "trigger_declaration" {
+        if kind == member.kind.declaration_kind() {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let node_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                 let clean = node_name.trim_matches('"');
-                if clean.eq_ignore_ascii_case(name) {
+                if clean.eq_ignore_ascii_case(member.name) {
                     let text = node.utf8_text(source.as_bytes()).unwrap_or("");
                     let sig = extract_signature_from_text(text);
                     return Some((node, sig));
@@ -308,10 +533,10 @@ fn extract_signature_from_text(text: &str) -> String {
     }
 }
 
-fn extract_procedure_from_text(source: &str, name: &str) -> Option<(String, String)> {
+fn extract_member_from_text(source: &str, member: SourceMember<'_>) -> Option<(String, String)> {
     let result = al_syntax::AlParser::parse_quick(source);
     let root = result.tree.root_node();
-    let (node, sig) = find_procedure_node(&root, source, name)?;
+    let (node, sig) = find_member_node(&root, source, member)?;
     let code = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
     Some((code, sig))
 }
@@ -357,6 +582,8 @@ pub struct EventSourceResult {
     pub signature: Option<String>,
     /// True when `path` is a virtual file extracted from a `.app` package.
     pub from_package: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_availability: Option<SourceAvailability>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -458,6 +685,7 @@ pub fn event_source(
                     line: Some(decl_line),
                     signature: Some(sig),
                     from_package: false,
+                    source_availability: Some(SourceAvailability::WorkspaceSource),
                     note: None,
                 });
             }
@@ -482,8 +710,10 @@ pub fn event_source(
     });
     if let Some(entry) = candidates.first() {
         let app_path = workspace.symbols.app_path(&entry.package);
-        match al_symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
-            Ok(vpath) => {
+        match al_symbols::virtual_file::get_or_create_with_availability(entry, app_path.as_deref())
+        {
+            Ok(materialized) => {
+                let vpath = materialized.path;
                 let range = al_symbols::virtual_file::find_member_range(
                     &vpath,
                     &target_event,
@@ -503,6 +733,7 @@ pub fn event_source(
                     line,
                     signature,
                     from_package: true,
+                    source_availability: Some(materialized.availability),
                     note: None,
                 });
             }
@@ -515,6 +746,7 @@ pub fn event_source(
                     line: None,
                     signature: None,
                     from_package: true,
+                    source_availability: None,
                     note: Some(format!(
                         "Publisher '{}' found in package '{}' but its source could not \
                          be materialised: {}",
@@ -533,6 +765,7 @@ pub fn event_source(
         line: None,
         signature: None,
         from_package: false,
+        source_availability: None,
         note: Some(format!(
             "Publisher '{}' not found in the workspace or any loaded symbol package — \
              check that symbols are downloaded",
@@ -906,7 +1139,14 @@ mod tests {
 
         let parsed = al_syntax::AlParser::parse_quick(&src);
         let root = parsed.tree.root_node();
-        let result = find_procedure_node(&root, &src, "Target");
+        let result = find_member_node(
+            &root,
+            &src,
+            SourceMember {
+                kind: SourceMemberKind::Procedure,
+                name: "Target",
+            },
+        );
         assert!(
             result.is_some(),
             "Target procedure should be found in deeply nested source"
@@ -941,37 +1181,87 @@ mod tests {
     }
 
     #[test]
-    fn extract_procedure_from_text_finds_target() {
+    fn extract_member_from_text_finds_target() {
         let src = "codeunit 50100 \"Helper\"\n{\n    procedure Alpha()\n    begin\n    end;\n\n    procedure Beta(x: Integer): Boolean\n    begin\n        exit(true);\n    end;\n}\n";
-        let (code, sig) = extract_procedure_from_text(src, "Beta").expect("Beta found");
+        let (code, sig) = extract_member_from_text(
+            src,
+            SourceMember {
+                kind: SourceMemberKind::Procedure,
+                name: "Beta",
+            },
+        )
+        .expect("Beta found");
         assert!(code.contains("procedure Beta(x: Integer): Boolean"));
         assert!(code.contains("exit(true)"));
         assert_eq!(sig, "procedure Beta(x: Integer): Boolean");
     }
 
     #[test]
-    fn extract_procedure_from_text_missing_returns_none() {
+    fn extract_member_from_text_missing_returns_none() {
         let src = "codeunit 50100 \"Helper\"\n{\n    procedure Alpha()\n    begin\n    end;\n}\n";
-        assert!(extract_procedure_from_text(src, "DoesNotExist").is_none());
+        assert!(extract_member_from_text(
+            src,
+            SourceMember {
+                kind: SourceMemberKind::Procedure,
+                name: "DoesNotExist",
+            },
+        )
+        .is_none());
     }
 
     #[test]
-    fn find_procedure_node_matches_trigger_and_quoted_name_case_insensitive() {
+    fn find_member_node_enforces_kind_and_matches_quoted_name_case_insensitive() {
         let src = "table 50100 \"My Tab\"\n{\n    trigger OnInsert()\n    begin\n    end;\n\n    procedure \"Do Work\"()\n    begin\n    end;\n}\n";
         let parsed = al_syntax::AlParser::parse_quick(src);
         let root = parsed.tree.root_node();
 
-        assert!(find_procedure_node(&root, src, "oninsert").is_some());
-
-        assert!(find_procedure_node(&root, src, "Do Work").is_some());
-
-        assert!(find_procedure_node(&root, src, "Nope").is_none());
+        assert!(find_member_node(
+            &root,
+            src,
+            SourceMember {
+                kind: SourceMemberKind::Trigger,
+                name: "oninsert",
+            },
+        )
+        .is_some());
+        assert!(find_member_node(
+            &root,
+            src,
+            SourceMember {
+                kind: SourceMemberKind::Procedure,
+                name: "oninsert",
+            },
+        )
+        .is_none());
+        assert!(find_member_node(
+            &root,
+            src,
+            SourceMember {
+                kind: SourceMemberKind::Procedure,
+                name: "Do Work",
+            },
+        )
+        .is_some());
     }
 
     fn ws_with(entry: SymbolEntry) -> al_workspace::Workspace {
         let ws = al_workspace::Workspace::new();
         ws.symbols.add_entries_owned(vec![entry]);
         ws
+    }
+
+    fn procedure(name: &str) -> Option<SourceMember<'_>> {
+        Some(SourceMember {
+            kind: SourceMemberKind::Procedure,
+            name,
+        })
+    }
+
+    fn trigger(name: &str) -> Option<SourceMember<'_>> {
+        Some(SourceMember {
+            kind: SourceMemberKind::Trigger,
+            name,
+        })
     }
 
     #[test]
@@ -993,7 +1283,7 @@ mod tests {
     #[test]
     fn source_outline_procedure_filter_renders_signature_only() {
         let ws = ws_with(make_table_entry());
-        let result = source(&ws, "Customer", None, Some("GetBalance"), None).expect("found");
+        let result = source(&ws, "Customer", None, None, procedure("GetBalance")).expect("found");
 
         assert_eq!(result.src, SourceLevel::Outline);
         assert_eq!(result.proc_name.as_deref(), Some("GetBalance"));
@@ -1009,7 +1299,7 @@ mod tests {
     #[test]
     fn source_outline_procedure_filter_case_insensitive() {
         let ws = ws_with(make_table_entry());
-        let result = source(&ws, "Customer", None, Some("setfilter"), None).expect("found");
+        let result = source(&ws, "Customer", None, None, procedure("setfilter")).expect("found");
         assert_eq!(
             result.sig.as_deref(),
             Some("procedure SetFilter(FilterStr: Text)")
@@ -1017,24 +1307,29 @@ mod tests {
     }
 
     #[test]
-    fn source_outline_trigger_filter_used_when_no_proc_filter() {
+    fn source_outline_trigger_is_not_faked_from_procedure_metadata() {
         let ws = ws_with(make_table_entry());
-        // trigger_filter is the fallback member filter; GetBalance is a method here.
-        let result = source(&ws, "Customer", None, None, Some("GetBalance")).expect("found");
-        assert_eq!(result.proc_name.as_deref(), Some("GetBalance"));
-        assert_eq!(result.code, "procedure GetBalance(): Decimal");
+        let error = source(&ws, "Customer", None, None, trigger("GetBalance"))
+            .expect_err("symbol metadata cannot establish trigger identity");
+        assert!(matches!(error, SourceLookupError::MemberUnavailable { .. }));
     }
 
     #[test]
-    fn source_outline_unknown_procedure_returns_none() {
+    fn source_outline_unknown_procedure_returns_member_error() {
         let ws = ws_with(make_table_entry());
-        assert!(source(&ws, "Customer", None, Some("NoSuchMethod"), None).is_none());
+        assert!(matches!(
+            source(&ws, "Customer", None, None, procedure("NoSuchMethod")),
+            Err(SourceLookupError::MemberNotFound { .. })
+        ));
     }
 
     #[test]
-    fn source_kind_filter_mismatch_returns_none() {
+    fn source_kind_filter_mismatch_returns_not_found() {
         let ws = ws_with(make_table_entry());
-        assert!(source(&ws, "Customer", Some(ObjectKind::Codeunit), None, None).is_none());
+        assert!(matches!(
+            source(&ws, "Customer", Some(ObjectKind::Codeunit), None, None),
+            Err(SourceLookupError::ObjectNotFound { .. })
+        ));
     }
 
     #[test]
@@ -1074,9 +1369,99 @@ mod tests {
     }
 
     #[test]
-    fn source_unknown_name_returns_none() {
+    fn source_rejects_ambiguous_object_kinds() {
+        let ws = al_workspace::Workspace::new();
+        let mut table = make_table_entry();
+        table.name = "Shared Name".to_string();
+        let page = SymbolEntry {
+            kind: ObjectKind::Page,
+            id: 50_100,
+            name: "Shared Name".to_string(),
+            package: "Base Application".to_string(),
+            ..Default::default()
+        };
+        ws.symbols.add_entries_owned(vec![table, page]);
+
+        let error = source(&ws, "Shared Name", None, None, None)
+            .expect_err("same-name kinds require explicit selection");
+        let SourceLookupError::Ambiguous { matches, .. } = error else {
+            panic!("expected ambiguity error");
+        };
+        assert!(matches.iter().any(|value| value.contains("Table")));
+        assert!(matches.iter().any(|value| value.contains("Page")));
+    }
+
+    #[test]
+    fn source_package_filter_resolves_same_kind_across_packages() {
+        let ws = al_workspace::Workspace::new();
+        let mut first = make_table_entry();
+        first.name = "Shared Table".to_string();
+        first.package = "First App".to_string();
+        let mut second = first.clone();
+        second.id = 50_001;
+        second.package = "Second App".to_string();
+        ws.symbols.add_entries_owned(vec![first, second]);
+
+        assert!(matches!(
+            source(&ws, "Shared Table", Some(ObjectKind::Table), None, None),
+            Err(SourceLookupError::Ambiguous { .. })
+        ));
+        let selected = source(
+            &ws,
+            "Shared Table",
+            Some(ObjectKind::Table),
+            Some("Second App"),
+            None,
+        )
+        .expect("package selector must disambiguate");
+        assert_eq!(selected.id, 50_001);
+        assert_eq!(selected.pkg.as_deref(), Some("Second App"));
+    }
+
+    #[test]
+    fn source_reads_unopened_workspace_file_and_enforces_member_kind() {
+        let ws = al_workspace::Workspace::new();
+        let path = PathBuf::from("/project/WorkspaceSource.al");
+        ws.file_index.add_file(
+            path,
+            r#"table 50100 "Workspace Source"
+{
+    trigger OnInsert()
+    begin
+    end;
+
+    procedure DoWork()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let full = source(&ws, "Workspace Source", None, None, None)
+            .expect("indexed files do not need to be open in the editor");
+        assert_eq!(full.src, SourceLevel::Workspace);
+        assert_eq!(
+            full.source_availability,
+            SourceAvailability::WorkspaceSource
+        );
+
+        let trigger_result = source(&ws, "Workspace Source", None, None, trigger("OnInsert"))
+            .expect("typed trigger lookup");
+        assert!(trigger_result.code.contains("trigger OnInsert"));
+        assert!(matches!(
+            source(&ws, "Workspace Source", None, None, procedure("OnInsert")),
+            Err(SourceLookupError::MemberNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn source_unknown_name_returns_not_found() {
         let ws = ws_with(make_table_entry());
-        assert!(source(&ws, "DoesNotExist", None, None, None).is_none());
+        assert!(matches!(
+            source(&ws, "DoesNotExist", None, None, None),
+            Err(SourceLookupError::ObjectNotFound { .. })
+        ));
     }
 
     #[test]

@@ -112,7 +112,7 @@ fn assert_contains(args: &[&str], needle: &str) {
 #[test]
 fn cli_commands_use_the_real_project_daemon() {
     let cases: &[(&[&str], &str)] = &[
-        (&["version"], "al 0.2"),
+        (&["version"], "al 0.3"),
         (&["diag"], "symbolCount"),
         (&["parse", "src/HelloWorld.al"], "0 errors"),
         (&["symbols", "src/HelloWorld.al"], "Hello World"),
@@ -124,6 +124,22 @@ fn cli_commands_use_the_real_project_daemon() {
         ),
         (&["search", "Hello"], "Hello World"),
         (&["search", "Hello", "--json"], "\"id\": 50100"),
+        (
+            &["source", "Hello World", "--kind", "codeunit", "--json"],
+            "\"source_availability\": \"workspace_source\"",
+        ),
+        (
+            &[
+                "source",
+                "Hello World",
+                "--kind",
+                "codeunit",
+                "--procedure",
+                "DoSomething",
+                "--json",
+            ],
+            "\"proc_name\": \"DoSomething\"",
+        ),
         (&["tests"], "test codeunit"),
         (&["dead-code"], "DEAD CODE"),
         (&["sql-scan"], "anti-pattern"),
@@ -131,4 +147,14 @@ fn cli_commands_use_the_real_project_daemon() {
     for (args, needle) in cases {
         assert_contains(args, needle);
     }
+}
+
+#[test]
+fn cli_source_rejects_an_unknown_kind() {
+    let (ok, output) = al(&["source", "Hello World", "--kind", "codeunitt"]);
+    assert!(!ok, "invalid kind unexpectedly succeeded:\n{output}");
+    assert!(
+        output.contains("Unknown AL object kind 'codeunitt'"),
+        "invalid-kind error was not actionable:\n{output}"
+    );
 }

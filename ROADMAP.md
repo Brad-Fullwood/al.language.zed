@@ -45,7 +45,7 @@ The current architecture is powerful but still split across separate entrypoints
 
 ## Native App Emission
 
-The project now has a production-wired pure-Rust verifier and `.app` emitter. Syntax, project/dependency, declaration, declared-symbol binding, and package-integrity failures block atomic artifact handoff without Microsoft tooling. It still needs broader body-level semantic and real-world package coverage.
+The project now has a production-wired default path through the pure-Rust verifier and `.app` emitter. Syntax, project/dependency, declaration, declared-symbol binding, and package-integrity failures block atomic artifact handoff without Microsoft tooling. That does not yet make the emitter a general `alc`-equivalent: broader body-level semantics and real-world resource/package coverage remain. Use `pack-native --validate` or official `alc` as the release gate for projects using resource shapes outside the verified fixtures.
 
 - Extend native verification into procedure-body expression, overload, control-flow, event, permission, and analyzer semantics while keeping Microsoft compatibility checks explicit.
 - Expand fixture coverage beyond the current ALC-matching project to more object kinds, resource combinations, dependencies, profiles, permissions, reports, translations, control add-ins, and extension-heavy packages.
@@ -59,7 +59,7 @@ The project now has a production-wired pure-Rust verifier and `.app` emitter. Sy
 The native AL test runner now executes pure-logic and supported workspace-record tests locally. The remaining work improves classification and platform fidelity without weakening the live-BC correctness boundary.
 
 - Keep the executable `InterpRecord` backend and its enforced PureLogic/WithRecords capability boundary covered end to end.
-- Add support for test lifecycle procedures where appropriate, while keeping `[Test]` discovery semantics explicit.
+- Extend lifecycle and handler fidelity beyond the shipped local initialize/cleanup and Message/Confirm subset, while keeping `[Test]` discovery semantics explicit.
 - Replace pattern-based routing with deeper AST/call-graph classification where feasible.
 - Extend dynamic coverage beyond statements/two-way decisions where the additional signal is trustworthy.
 - Add live snapshot capture only when it can be implemented end to end; keep existing file validation
@@ -92,8 +92,8 @@ The symbol engine is a core strength; the next work should make it more complete
 
 - Add benchmark-grade comparison data for cold/warm package load, symbol lookup, completion, impact, event tracing, and memory usage.
 - Make the symbol performance audit deterministic enough to run in CI with fixture `.app` packages.
-- Add byte-level memory accounting for symbol/package/file indexes instead of count-only approximations.
-- Improve source-availability reporting: distinguish embedded source, generated outline, and package metadata-only navigation in user output.
+- Extend the shipped byte-level symbol-index accounting to package metadata, file indexes, document caches, and graph caches; keep process RSS as the allocator-level measurement.
+- Keep the shipped source-availability contract covered end to end: workspace source, extractable embedded source, generated outline, and metadata-only navigation must stay distinct in CLI/TUI/daemon output, including extraction-failure downgrade behavior.
 - Keep both download backends covered for bounded concurrency, same-package dedupe, retry/error behavior, streaming limits, and atomic validated publication.
 - Keep `packageCachePath` / `appLocalFolderPaths` startup and hot-reload behavior covered across LSP and daemon/CLI/TUI entry points.
 - Document and test the limitation that `.app` symbols expose public API metadata, not package call-site bodies.

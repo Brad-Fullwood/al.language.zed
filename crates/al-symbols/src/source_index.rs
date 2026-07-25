@@ -289,6 +289,18 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     Ok(built)
 }
 
+/// Return an already-built source index without touching the filesystem.
+///
+/// Package loading warms this cache before publishing symbols into the live
+/// index. User-facing search and package-summary requests use this lookup so a
+/// cold request can never trigger an archive scan on the daemon thread.
+pub fn get_cached(app_path: &Path) -> Option<Arc<AppSourceIndex>> {
+    SOURCE_INDEX_CACHE
+        .get()?
+        .get(app_path)
+        .map(|entry| Arc::clone(entry.value()))
+}
+
 pub fn clear_source_index_cache() {
     if let Some(cache) = SOURCE_INDEX_CACHE.get() {
         cache.clear();

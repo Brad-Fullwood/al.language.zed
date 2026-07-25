@@ -125,6 +125,19 @@ impl App {
                 ]),
             ));
 
+            if let Some(availability) = &entry.source_availability {
+                self.details_items.push((
+                    None,
+                    Line::from(vec![
+                        Span::styled(
+                            "Source: ".to_string(),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(availability.replace('_', " ")),
+                    ]),
+                ));
+            }
+
             if !entry.properties.is_empty() {
                 self.details_items.push((None, Line::from("".to_string())));
                 self.details_items.push((
@@ -350,6 +363,7 @@ impl App {
                         "name": entry.name,
                         "kind": format!("{:?}", entry.kind),
                         "id": entry.id,
+                        "package": entry.package,
                     })),
                 );
                 match loc_result {

@@ -16,7 +16,7 @@ work" from a project directory.
 A complete list lives in the [CLI command reference](../reference/cli-commands.md). By category:
 
 - **Setup/diagnostics:** `version`, `setup`, `doctor`, `diag`, `clear-cache`, `init-debug`.
-- **Symbols/objects:** `search`, `object`, `by-id`, `composed`, `packages`, `deps`, `deps-graph`,
+- **Symbols/objects:** `search`, `object`, `by-id`, `source`, `composed`, `packages`, `deps`, `deps-graph`,
   `events`, `subscribers`, `event-source`, `builtins`, `rules`, `error-codes`,
   `generate-completions`.
 - **LSP-style queries:** `hover`, `definition`, `references`, `signature`, `completions`, `symbols`,
@@ -68,8 +68,9 @@ with their underlying commands documented in the [CLI reference](../reference/cl
 ## Microsoft comparison
 
 There is no terminal companion in Microsoft's AL tooling — everything is VS Code UI. `al-explorer`
-makes the *entire* engine scriptable (a JSON-RPC CLI for every analysis and LSP query) and adds an
-interactive symbol/event/impact/profiler/test TUI that runs over SSH and in any terminal.
+makes its documented command surface scriptable, while MCP `al_call` exposes the complete shared
+daemon catalog. It also adds an interactive symbol/event/impact/profiler/test TUI that runs over SSH
+and in any terminal.
 
 ## Why this approach
 

@@ -12,6 +12,7 @@ pub mod index;
 pub mod language_data;
 pub mod manifest;
 pub mod model;
+pub mod source_availability;
 pub mod source_index;
 pub mod virtual_file;
 
@@ -22,12 +23,13 @@ pub mod nuget;
 #[cfg(feature = "nuget")]
 pub mod oauth;
 
-pub use index::SymbolIndex;
+pub use index::{SymbolIndex, SymbolIndexMemoryStats};
 pub use model::{
     AttributeSymbol, ComposedObject, ControlSymbol, EnumValueSymbol, FieldSymbol, KeySymbol,
     MethodSymbol, ObjectKind, ParameterSymbol, PropertyValue, SymbolEntry, SymbolPackage,
     VariableSymbol,
 };
+pub use source_availability::{SourceAvailability, SourceAvailabilitySummary};
 
 pub use app_reader::{read_app_bytes, read_app_file};
 pub use composition::get_composed;

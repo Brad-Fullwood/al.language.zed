@@ -1,11 +1,16 @@
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use sha2::{Digest, Sha256};
+
 use super::model::SymbolEntry;
+use super::source_availability::{classify_metadata, SourceAvailability};
 use super::source_index;
 use super::source_index::{is_ident_char, is_ident_start, parse_quoted_ident};
+
+const VIRTUAL_FILE_CACHE_VERSION: &[u8] = b"al-virtual-source-v2";
 
 pub fn cache_dir() -> PathBuf {
     dirs::cache_dir()
@@ -18,23 +23,41 @@ pub fn cache_dir() -> PathBuf {
 /// If no source is available, renders a complete outline from symbol metadata
 /// with full procedure signatures, fields, keys, enum values, and attributes.
 pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::Result<PathBuf> {
+    get_or_create_with_availability(entry, app_path).map(|materialized| materialized.path)
+}
+
+/// A virtual source file plus the representation that was actually written.
+#[derive(Debug, Clone)]
+pub struct MaterializedSource {
+    pub path: PathBuf,
+    pub availability: SourceAvailability,
+}
+
+/// Materialize package navigation and report the representation actually
+/// present in the returned file.
+///
+/// This differs from package-level availability hints: extraction can fail
+/// after indexing because a package changed, disappeared, is unreadable, or
+/// contains source that violates the extraction bounds. Every such failure is
+/// downgraded to an outline or identity-only declaration here.
+pub fn get_or_create_with_availability(
+    entry: &SymbolEntry,
+    app_path: Option<&Path>,
+) -> std::io::Result<MaterializedSource> {
     let cache_root = cache_dir();
     let pkg_dir = cache_root.join(sanitize_filename(&entry.package));
-    let filename = format!("{} {} {}.al", entry.kind, entry.id, entry.name);
-    let file_path = pkg_dir.join(sanitize_filename(&filename));
+    let file_path = pkg_dir.join(cache_filename(entry, app_path));
 
     ensure_readonly_settings(&cache_root);
 
     fs::create_dir_all(&pkg_dir)?;
 
-    // Regenerate when the package or running binary is newer. A binary update
-    // may change extraction or outline rendering without changing the package.
+    // Package identity and symbol metadata are part of the filename, so a
+    // package replacement cannot reuse a stale object's virtual file even when
+    // the replacement has an older timestamp. A binary update can still change
+    // extraction or rendering logic without changing either input.
     if let Ok(cache_mtime) = fs::metadata(&file_path).and_then(|m| m.modified()) {
-        let app_newer = app_path
-            .and_then(|app| fs::metadata(app).ok())
-            .and_then(|m| m.modified().ok())
-            .is_some_and(|t| t > cache_mtime);
-        if app_newer || self_exe_mtime().is_some_and(|t| t > cache_mtime) {
+        if self_exe_mtime().is_some_and(|t| t > cache_mtime) {
             let _ = clear_readonly(&file_path);
             let _ = fs::remove_file(&file_path);
         }
@@ -45,7 +68,16 @@ pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::R
         // path first allowed a concurrent navigation request to observe a
         // partially-written AL file.
         let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
-        let source = extracted.unwrap_or_else(|| render_outline_with_note(entry));
+        let source = match extracted {
+            Some(source) => source,
+            None => match classify_metadata(entry) {
+                SourceAvailability::GeneratedOutline => render_outline_with_note(entry),
+                SourceAvailability::MetadataOnly => render_metadata_only_with_note(entry),
+                SourceAvailability::WorkspaceSource | SourceAvailability::EmbeddedSource => {
+                    render_outline_with_note(entry)
+                }
+            },
+        };
         let tmp_path = virtual_file_temp_path(&file_path);
         let write_result = (|| -> std::io::Result<()> {
             let mut file = fs::OpenOptions::new()
@@ -74,7 +106,26 @@ pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::R
     }
 
     enforce_readonly(&file_path);
-    Ok(file_path)
+    let availability = materialized_availability(&file_path)?;
+    Ok(MaterializedSource {
+        path: file_path,
+        availability,
+    })
+}
+
+fn materialized_availability(path: &Path) -> std::io::Result<SourceAvailability> {
+    let mut file = fs::File::open(path)?;
+    let prefix_len = OUTLINE_NOTE.len().max(METADATA_ONLY_NOTE.len());
+    let mut prefix = vec![0; prefix_len];
+    let read = file.read(&mut prefix)?;
+    prefix.truncate(read);
+    if prefix.starts_with(METADATA_ONLY_NOTE.as_bytes()) {
+        Ok(SourceAvailability::MetadataOnly)
+    } else if prefix.starts_with(OUTLINE_NOTE.as_bytes()) {
+        Ok(SourceAvailability::GeneratedOutline)
+    } else {
+        Ok(SourceAvailability::EmbeddedSource)
+    }
 }
 
 fn virtual_file_temp_path(target: &Path) -> PathBuf {
@@ -236,6 +287,61 @@ fn sanitize_filename(s: &str) -> String {
         .collect()
 }
 
+/// Stable cache filename for one exact source representation input.
+///
+/// Including the canonical package path, size, timestamp, and serialized
+/// symbol metadata prevents a same-named package upgrade from serving an old
+/// embedded file or outline. The human-readable prefix is bounded so long AL
+/// identifiers cannot exceed common 255-byte filesystem component limits.
+fn cache_filename(entry: &SymbolEntry, app_path: Option<&Path>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(VIRTUAL_FILE_CACHE_VERSION);
+    if let Ok(metadata) = serde_json::to_vec(entry) {
+        hasher.update(metadata);
+    }
+    match app_path {
+        Some(path) => {
+            hasher.update(b"package:");
+            let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            hasher.update(canonical.to_string_lossy().as_bytes());
+            match fs::metadata(path) {
+                Ok(metadata) => {
+                    hasher.update(metadata.len().to_le_bytes());
+                    if let Ok(modified) = metadata.modified() {
+                        match modified.duration_since(std::time::UNIX_EPOCH) {
+                            Ok(duration) => {
+                                hasher.update(duration.as_secs().to_le_bytes());
+                                hasher.update(duration.subsec_nanos().to_le_bytes());
+                            }
+                            Err(error) => {
+                                hasher.update(b"pre-epoch:");
+                                hasher.update(error.duration().as_secs().to_le_bytes());
+                                hasher.update(error.duration().subsec_nanos().to_le_bytes());
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    hasher.update(b"unavailable:");
+                    hasher.update(error.kind().to_string().as_bytes());
+                }
+            }
+        }
+        None => hasher.update(b"metadata-only"),
+    }
+    let digest = format!("{:x}", hasher.finalize());
+
+    let readable = sanitize_filename(&format!("{} {} {}", entry.kind, entry.id, entry.name));
+    let mut bounded = String::new();
+    for character in readable.chars() {
+        if bounded.len() + character.len_utf8() > 180 {
+            break;
+        }
+        bounded.push(character);
+    }
+    format!("{bounded}-{}.al", &digest[..24])
+}
+
 /// Notice prefixed to outlines reconstructed from package metadata.
 ///
 /// The wording avoids AL member keywords because [`find_member_range`] scans
@@ -244,11 +350,25 @@ pub const OUTLINE_NOTE: &str = "\
 // Reconstructed public API from SymbolReference.json.\n\
 // Implementation bodies are not included in AL symbol packages.\n\n";
 
+/// Notice for an object whose package exposes identity metadata but no source
+/// or member declarations from which to reconstruct a useful API outline.
+pub const METADATA_ONLY_NOTE: &str = "\
+// Package metadata only: original AL source and API member metadata are unavailable.\n\
+// The declaration below exists solely to provide a stable navigation target.\n\n";
+
 /// Render a package outline with [`OUTLINE_NOTE`].
 pub fn render_outline_with_note(entry: &SymbolEntry) -> String {
     let body = render_outline(entry);
     let mut out = String::with_capacity(OUTLINE_NOTE.len() + body.len());
     out.push_str(OUTLINE_NOTE);
+    out.push_str(&body);
+    out
+}
+
+pub fn render_metadata_only_with_note(entry: &SymbolEntry) -> String {
+    let body = render_outline(entry);
+    let mut out = String::with_capacity(METADATA_ONLY_NOTE.len() + body.len());
+    out.push_str(METADATA_ONLY_NOTE);
     out.push_str(&body);
     out
 }
@@ -645,6 +765,31 @@ fn parse_name_token(line: &str, bytes: &[u8], mut i: usize) -> Option<(String, u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    fn write_app_with_raw_source(source: &[u8]) -> tempfile::NamedTempFile {
+        let mut zip_bytes = Vec::new();
+        {
+            let cursor = Cursor::new(&mut zip_bytes);
+            let mut zip = zip::ZipWriter::new(cursor);
+            zip.start_file(
+                "src/SalesPost.Codeunit.al",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(source).unwrap();
+            zip.finish().unwrap();
+        }
+
+        let mut app = tempfile::NamedTempFile::new().unwrap();
+        app.write_all(b"NAVX").unwrap();
+        app.write_all(&1u32.to_le_bytes()).unwrap();
+        app.write_all(&40u32.to_le_bytes()).unwrap();
+        app.write_all(&[0u8; 28]).unwrap();
+        app.write_all(&zip_bytes).unwrap();
+        app.flush().unwrap();
+        app
+    }
 
     #[test]
     fn find_member_range_ascii_field_columns() {
@@ -783,5 +928,116 @@ mod tests {
         );
         assert!(content.contains("codeunit 80 \"Sales-Post\""));
         assert!(!content.to_ascii_lowercase().contains("begin"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn materialization_downgrades_non_utf8_embedded_source_to_outline() {
+        let cache = tempfile::tempdir().unwrap();
+        let previous_cache = std::env::var_os("XDG_CACHE_HOME");
+        std::env::set_var("XDG_CACHE_HOME", cache.path());
+
+        let mut source = b"codeunit 80 \"Sales-Post\"\n{\n".to_vec();
+        source.extend_from_slice(&[0xff, b'\n', b'}']);
+        let app = write_app_with_raw_source(&source);
+        let entry = package_codeunit();
+        let materialized =
+            get_or_create_with_availability(&entry, Some(app.path())).expect("outline fallback");
+        let content = fs::read_to_string(&materialized.path).unwrap();
+
+        match previous_cache {
+            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+            None => std::env::remove_var("XDG_CACHE_HOME"),
+        }
+
+        assert_eq!(
+            materialized.availability,
+            SourceAvailability::GeneratedOutline
+        );
+        assert!(content.starts_with(OUTLINE_NOTE));
+        assert!(content.contains("procedure PostDocument"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn materialization_labels_identity_only_fallback() {
+        let cache = tempfile::tempdir().unwrap();
+        let previous_cache = std::env::var_os("XDG_CACHE_HOME");
+        std::env::set_var("XDG_CACHE_HOME", cache.path());
+
+        let entry = SymbolEntry {
+            kind: crate::ObjectKind::Page,
+            id: 50_100,
+            name: "Identity Only".to_string(),
+            package: "Metadata App".to_string(),
+            ..Default::default()
+        };
+        let materialized =
+            get_or_create_with_availability(&entry, None).expect("metadata fallback");
+        let content = fs::read_to_string(&materialized.path).unwrap();
+
+        match previous_cache {
+            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+            None => std::env::remove_var("XDG_CACHE_HOME"),
+        }
+
+        assert_eq!(materialized.availability, SourceAvailability::MetadataOnly);
+        assert!(content.starts_with(METADATA_ONLY_NOTE));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn virtual_cache_key_changes_with_symbol_metadata() {
+        let cache = tempfile::tempdir().unwrap();
+        let previous_cache = std::env::var_os("XDG_CACHE_HOME");
+        std::env::set_var("XDG_CACHE_HOME", cache.path());
+
+        let first = package_codeunit();
+        let mut second = first.clone();
+        second.methods[0].name = "PostReplacement".to_string();
+
+        let first_path = get_or_create(&first, None).expect("first outline");
+        let second_path = get_or_create(&second, None).expect("replacement outline");
+        let second_content = fs::read_to_string(&second_path).unwrap();
+
+        match previous_cache {
+            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+            None => std::env::remove_var("XDG_CACHE_HOME"),
+        }
+
+        assert_ne!(first_path, second_path);
+        assert!(second_content.contains("procedure PostReplacement"));
+        assert!(!second_content.contains("procedure PostDocument"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn virtual_cache_key_changes_with_package_path() {
+        let cache = tempfile::tempdir().unwrap();
+        let previous_cache = std::env::var_os("XDG_CACHE_HOME");
+        std::env::set_var("XDG_CACHE_HOME", cache.path());
+
+        let first_app = write_app_with_raw_source(
+            b"codeunit 80 \"Sales-Post\" { procedure First() begin end; }",
+        );
+        let second_app = write_app_with_raw_source(
+            b"codeunit 80 \"Sales-Post\" { procedure Second() begin end; }",
+        );
+        let entry = package_codeunit();
+
+        let first =
+            get_or_create_with_availability(&entry, Some(first_app.path())).expect("first source");
+        let second = get_or_create_with_availability(&entry, Some(second_app.path()))
+            .expect("replacement source");
+        let second_content = fs::read_to_string(&second.path).unwrap();
+
+        match previous_cache {
+            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+            None => std::env::remove_var("XDG_CACHE_HOME"),
+        }
+
+        assert_ne!(first.path, second.path);
+        assert!(second_content.contains("procedure Second"));
+        assert!(!second_content.contains("procedure First"));
     }
 }

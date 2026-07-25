@@ -156,6 +156,8 @@ pub struct SymbolEntry {
     pub extends: Option<String>,
     #[serde(default)]
     pub package: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_availability: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<MethodSymbol>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

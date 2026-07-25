@@ -20,13 +20,21 @@ pub fn cmd_search(query: &str, limit: usize, json: bool) -> ExitCode {
                     eprintln!("No results for '{query}'");
                     return ExitCode::SUCCESS;
                 }
-                println!("{:<18} {:>6}  {:<40} PACKAGE", "KIND", "ID", "NAME");
-                println!("{}", "-".repeat(80));
+                println!(
+                    "{:<18} {:>6}  {:<34} {:<24} SOURCE",
+                    "KIND", "ID", "NAME", "PACKAGE"
+                );
+                println!("{}", "-".repeat(105));
                 for e in entries {
                     let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
                     let id = e.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
                     let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                     let pkg = e.get("package").and_then(|v| v.as_str()).unwrap_or("?");
+                    let source = e
+                        .get("source_availability")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .replace('_', " ");
                     // Interfaces & co. have no developer-visible object ID —
                     // symbol packages put an internal compiler hash in the
                     // Id slot. Render blank instead of the hash or -1.
@@ -35,7 +43,10 @@ pub fn cmd_search(query: &str, limit: usize, json: bool) -> ExitCode {
                     } else {
                         String::new()
                     };
-                    println!("{:<18} {:>6}  {:<40} {}", kind, id_text, name, pkg);
+                    println!(
+                        "{:<18} {:>6}  {:<34} {:<24} {}",
+                        kind, id_text, name, pkg, source
+                    );
                 }
                 eprintln!("\n{} results", entries.len());
             }
@@ -57,6 +68,61 @@ pub fn cmd_by_id(kind: &str, id: i32, json: bool) -> ExitCode {
     run_command("byId", Some(params), json, None, |result| {
         print_symbol_entries(result);
     })
+}
+
+pub fn cmd_source(
+    name: &str,
+    kind: Option<&str>,
+    package: Option<&str>,
+    procedure: Option<&str>,
+    trigger: Option<&str>,
+    json: bool,
+) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(client) => client,
+        Err(error) => return report_error(&error, json),
+    };
+    let mut params = serde_json::Map::new();
+    params.insert("name".into(), name.into());
+    if let Some(kind) = kind {
+        params.insert("kind".into(), kind.into());
+    }
+    if let Some(package) = package {
+        params.insert("package".into(), package.into());
+    }
+    if let Some(procedure) = procedure {
+        params.insert("proc".into(), procedure.into());
+    }
+    if let Some(trigger) = trigger {
+        params.insert("trigger".into(), trigger.into());
+    }
+
+    match client.request("source", Some(serde_json::Value::Object(params))) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                let availability = result
+                    .get("source_availability")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown")
+                    .replace('_', " ");
+                let package = result.get("pkg").and_then(|value| value.as_str());
+                match package {
+                    Some(package) => println!("Source: {availability} ({package})"),
+                    None => println!("Source: {availability}"),
+                }
+                if let Some(note) = result.get("note").and_then(|value| value.as_str()) {
+                    eprintln!("Note: {note}");
+                }
+                if let Some(code) = result.get("code").and_then(|value| value.as_str()) {
+                    println!("\n{code}");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => report_error(&error, json),
+    }
 }
 
 pub fn cmd_events(name: &str, json: bool) -> ExitCode {
@@ -223,6 +289,12 @@ pub fn cmd_event_source(file: &str, line: u32, json: bool) -> ExitCode {
             if let Some(path) = result.get("path").and_then(|v| v.as_str()) {
                 let decl_line = result.get("line").and_then(|v| v.as_u64()).unwrap_or(1);
                 println!("  at {path}:{decl_line}");
+                if let Some(availability) = result
+                    .get("sourceAvailability")
+                    .and_then(|value| value.as_str())
+                {
+                    eprintln!("  ({})", availability.replace('_', " "));
+                }
                 if result
                     .get("fromPackage")
                     .and_then(|v| v.as_bool())
@@ -301,19 +373,32 @@ pub fn cmd_packages(json: bool) -> ExitCode {
                     return ExitCode::SUCCESS;
                 }
                 println!(
-                    "{:<40} {:<25} {:<15} {:>8}",
+                    "{:<34} {:<22} {:<15} {:>8}  SOURCE E/O/M",
                     "NAME", "PUBLISHER", "VERSION", "OBJECTS"
                 );
-                println!("{}", "-".repeat(90));
+                println!("{}", "-".repeat(105));
                 let mut total_objects = 0u64;
                 for p in pkgs {
                     let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                     let publisher = p.get("publisher").and_then(|v| v.as_str()).unwrap_or("?");
                     let version = p.get("version").and_then(|v| v.as_str()).unwrap_or("?");
                     let count = p.get("object_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let source = p.get("source_availability");
+                    let embedded = source
+                        .and_then(|value| value.get("embedded_source"))
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0);
+                    let outline = source
+                        .and_then(|value| value.get("generated_outline"))
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0);
+                    let metadata = source
+                        .and_then(|value| value.get("metadata_only"))
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0);
                     total_objects += count;
                     println!(
-                        "{:<40} {:<25} {:<15} {:>8}",
+                        "{:<34} {:<22} {:<15} {:>8}  {embedded}/{outline}/{metadata}",
                         name, publisher, version, count
                     );
                 }

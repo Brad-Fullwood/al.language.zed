@@ -110,4 +110,8 @@ fn tui_object_browser_lists_fixture_objects() {
         screen.contains("Package: workspace") || screen.contains("Package: (workspace)"),
         "TUI did not render a workspace object after selecting the workspace package.\n--- screen ---\n{screen}"
     );
+    assert!(
+        screen.contains("Source: workspace source"),
+        "TUI did not render the selected object's source provenance.\n--- screen ---\n{screen}"
+    );
 }

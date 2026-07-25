@@ -191,6 +191,13 @@ pub fn print_symbol_entries(result: &serde_json::Value) {
             println!("{kind} \"{name}\" (package: {pkg})");
         }
 
+        if let Some(availability) = e
+            .get("source_availability")
+            .and_then(|value| value.as_str())
+        {
+            println!("  source: {}", availability.replace('_', " "));
+        }
+
         if let Some(extends) = e.get("extends").and_then(|v| v.as_str()) {
             println!("  extends: {extends}");
         }

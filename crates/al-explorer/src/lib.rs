@@ -199,6 +199,7 @@ mod tests {
             name: name.to_string(),
             extends: None,
             package: package.to_string(),
+            source_availability: None,
             methods: Vec::new(),
             fields: Vec::new(),
             controls: Vec::new(),

@@ -60,5 +60,9 @@ calls.
 
 Common parameter shapes: position queries accept `uri` plus `{line, character}`; `breaking` and
 `upgrade` accept `baselineSymbols`; `tests.snapshot_validate` accepts `snapshotPath`; and
-`tests.snapshot_diff` accepts `pathA` and `pathB`. Other method shapes are defined beside
-their dispatcher and mirrored by `al-explorer`; MCP passes the same object through `al_call`.
+`tests.snapshot_diff` accepts `pathA` and `pathB`. `source` requires `name` and accepts the
+disambiguators `kind`, `package`, `proc`, or `trigger` (`proc` and `trigger` are mutually exclusive);
+it returns `source_availability` as `workspace_source`, `embedded_source`, `generated_outline`, or
+`metadata_only`. `location` accepts the same object identity selectors (`name`, `kind`, `package`,
+and `id`) and rejects ambiguous matches. Other method shapes are defined beside their dispatcher and
+mirrored by `al-explorer`; MCP passes the same object through `al_call`.

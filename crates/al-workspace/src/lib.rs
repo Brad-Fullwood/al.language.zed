@@ -401,6 +401,7 @@ impl Workspace {
         let error_code_count = self.error_codes.len();
         let builtin_count = self.builtins.read().map(|b| b.len()).unwrap_or(0);
         let package_count = self.package_info.read().map(|p| p.len()).unwrap_or(0);
+        let symbol_index_memory = self.symbols.memory_stats();
 
         WorkspaceMemoryStats {
             symbol_count,
@@ -410,6 +411,7 @@ impl Workspace {
             error_code_count,
             builtin_count,
             package_count,
+            symbol_index_memory,
         }
     }
 }
@@ -442,6 +444,7 @@ pub struct WorkspaceMemoryStats {
     pub error_code_count: usize,
     pub builtin_count: usize,
     pub package_count: usize,
+    pub symbol_index_memory: al_symbols::SymbolIndexMemoryStats,
 }
 
 /// Result of a successful core workspace initialization.
@@ -893,6 +896,23 @@ mod workspace_lifecycle_tests {
         let stats = workspace.memory_stats();
         assert_eq!(stats.package_count, 1, "one package must be counted");
         assert_eq!(stats.error_code_count, 1, "one error code must be counted");
+    }
+
+    #[test]
+    fn memory_stats_exposes_symbol_index_bytes() {
+        let workspace = make_workspace();
+        let empty = workspace.memory_stats().symbol_index_memory;
+        workspace.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: 50_100,
+            name: "Measured Workspace Table".to_string(),
+            package: "Test Package".to_string(),
+            ..Default::default()
+        }]);
+
+        let populated = workspace.memory_stats().symbol_index_memory;
+        assert!(populated.symbol_payload_bytes > 0);
+        assert!(populated.tracked_bytes > empty.tracked_bytes);
     }
 
     /// on_document_close with a real file URI invalidates the composed cache

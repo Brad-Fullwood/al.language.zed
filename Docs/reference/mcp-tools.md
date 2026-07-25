@@ -16,7 +16,7 @@ MCP without a way to invoke it.
 | `al_downloadsymbols` | `downloadSymbols` | _(none)_ | downloaded package list |
 | `al_symbolsearch` | `search` | `query: string`, `limit: number = 20` | matching symbols |
 | `al_getdiagnostics` | `lint` | `file: string` (required) | diagnostics for the file |
-| `al_runtests` | `tests.run_auto` | _(none)_ | test results (pure-logic local; rest need live BC) |
+| `al_runtests` | `tests.run_auto` | _(none)_ | test results (pure-logic and supported workspace-record local; unsupported/platform behavior needs live BC) |
 | `al_deadcode` | `deadCode` | _(none)_ | unused procedures/fields/orphaned subscribers |
 | `al_sqlscan` | `sqlPatterns` | _(none)_ | SQL anti-pattern findings |
 | `al_entrypoints` | `entrypoints` | _(none)_ | procedures with no incoming calls |

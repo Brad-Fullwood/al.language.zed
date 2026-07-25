@@ -11,8 +11,35 @@ use tracing::{debug, warn};
 
 use super::app_reader;
 use super::model::{ObjectKind, SymbolEntry, SymbolPackage};
+use super::source_availability::{self, SourceAvailability, SourceAvailabilitySummary};
 
 const DEFAULT_COMPLETIONS_CAP: usize = 30;
+
+fn prewarm_source_index(path: &Path) {
+    if let Err(error) = super::source_index::get_or_build(path) {
+        debug!(
+            path = %path.display(),
+            %error,
+            "Package has no usable embedded-source index"
+        );
+    }
+}
+
+/// Byte-level accounting for allocations owned by the symbol index.
+///
+/// `tracked_bytes` covers symbol payloads, duplicated lookup keys, vector
+/// capacities, cache payloads, and stored paths. Allocator bucket/slab
+/// bookkeeping is intentionally left to the process RSS metric exposed by the
+/// workspace diagnostics endpoint.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SymbolIndexMemoryStats {
+    pub symbol_payload_bytes: usize,
+    pub lookup_index_bytes: usize,
+    pub path_cache_bytes: usize,
+    pub composed_cache_bytes: usize,
+    pub tracked_bytes: usize,
+}
 
 /// Thread-safe symbol index over multiple AL packages.
 #[derive(Debug)]
@@ -59,6 +86,134 @@ impl SymbolIndex {
         }
     }
 
+    pub fn memory_stats(&self) -> SymbolIndexMemoryStats {
+        let arc_allocation_overhead = 2 * std::mem::size_of::<usize>();
+        let symbol_payload_bytes = self
+            .all
+            .iter()
+            .map(|entry| entry.value().0.owned_bytes() + arc_allocation_overhead)
+            .sum::<usize>();
+
+        let arc_bytes = std::mem::size_of::<Arc<SymbolEntry>>();
+        let mut lookup_index_bytes = std::mem::size_of::<Self>();
+        lookup_index_bytes += self
+            .by_name
+            .iter()
+            .map(|entry| {
+                std::mem::size_of::<String>()
+                    + entry.key().capacity()
+                    + std::mem::size_of::<Vec<Arc<SymbolEntry>>>()
+                    + entry.value().capacity() * arc_bytes
+            })
+            .sum::<usize>();
+        lookup_index_bytes += self
+            .by_kind_id
+            .iter()
+            .map(|entry| {
+                std::mem::size_of::<(ObjectKind, i32)>()
+                    + std::mem::size_of::<Vec<Arc<SymbolEntry>>>()
+                    + entry.value().capacity() * arc_bytes
+            })
+            .sum::<usize>();
+        lookup_index_bytes += self
+            .by_kind
+            .iter()
+            .map(|entry| {
+                std::mem::size_of::<ObjectKind>()
+                    + std::mem::size_of::<Vec<Arc<SymbolEntry>>>()
+                    + entry.value().capacity() * arc_bytes
+            })
+            .sum::<usize>();
+        lookup_index_bytes += self
+            .by_extends
+            .iter()
+            .map(|entry| {
+                std::mem::size_of::<String>()
+                    + entry.key().capacity()
+                    + std::mem::size_of::<Vec<Arc<SymbolEntry>>>()
+                    + entry.value().capacity() * arc_bytes
+            })
+            .sum::<usize>();
+        lookup_index_bytes += self
+            .all
+            .iter()
+            .map(|entry| {
+                std::mem::size_of::<usize>()
+                    + arc_bytes
+                    + std::mem::size_of::<String>()
+                    + entry.value().1.capacity()
+            })
+            .sum::<usize>();
+        if let Some(names) = self
+            .sorted_names
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            lookup_index_bytes += std::mem::size_of::<Vec<String>>()
+                + names.capacity() * std::mem::size_of::<String>()
+                + names.iter().map(String::capacity).sum::<usize>();
+        }
+        lookup_index_bytes += self
+            .default_completions
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .capacity()
+            * arc_bytes;
+
+        let path_cache_bytes = self
+            .app_paths
+            .iter()
+            .map(|entry| {
+                std::mem::size_of::<String>()
+                    + entry.key().capacity()
+                    + std::mem::size_of::<std::path::PathBuf>()
+                    + entry.value().as_os_str().len()
+            })
+            .sum::<usize>()
+            + self
+                .source_path_cache
+                .iter()
+                .map(|entry| {
+                    std::mem::size_of::<(String, ObjectKind, i32)>()
+                        + entry.key().0.capacity()
+                        + std::mem::size_of::<String>()
+                        + entry.value().capacity()
+                })
+                .sum::<usize>();
+
+        let composed_cache_bytes = self
+            .composed_cache
+            .iter()
+            .map(|entry| {
+                let value = entry.value();
+                std::mem::size_of::<(ObjectKind, String)>()
+                    + entry.key().1.capacity()
+                    + arc_allocation_overhead
+                    + std::mem::size_of::<super::model::ComposedObject>()
+                    + value.extensions.capacity() * arc_bytes
+                    + value.all_fields.capacity() * std::mem::size_of::<super::model::FieldSymbol>()
+                    + value.all_methods.capacity()
+                        * std::mem::size_of::<super::model::MethodSymbol>()
+                    + value.all_controls.capacity()
+                        * std::mem::size_of::<super::model::ControlSymbol>()
+                    + value.all_enum_values.capacity()
+                        * std::mem::size_of::<super::model::EnumValueSymbol>()
+            })
+            .sum::<usize>();
+
+        SymbolIndexMemoryStats {
+            symbol_payload_bytes,
+            lookup_index_bytes,
+            path_cache_bytes,
+            composed_cache_bytes,
+            tracked_bytes: symbol_payload_bytes
+                + lookup_index_bytes
+                + path_cache_bytes
+                + composed_cache_bytes,
+        }
+    }
+
     pub fn cache_source_path(&self, package: String, kind: ObjectKind, id: i32, path: String) {
         self.source_path_cache
             .insert((package.to_lowercase(), kind, id), path);
@@ -79,6 +234,26 @@ impl SymbolIndex {
         self.app_paths.contains_key(&package.to_lowercase())
     }
 
+    /// Report what kind of source navigation is genuinely available for an
+    /// indexed object. Source indexes are cached per package path, so repeated
+    /// calls do not rescan archives.
+    pub fn source_availability(&self, entry: &SymbolEntry) -> SourceAvailability {
+        let app_path = self.app_path(&entry.package);
+        source_availability::classify(entry, app_path.as_deref())
+    }
+
+    /// Count source representations for every object in one package.
+    pub fn package_source_availability(&self, package: &str) -> SourceAvailabilitySummary {
+        let mut summary = SourceAvailabilitySummary::default();
+        for entry in self.all.iter() {
+            let (symbol, _) = entry.value();
+            if symbol.package.eq_ignore_ascii_case(package) {
+                summary.record(self.source_availability(symbol));
+            }
+        }
+        summary
+    }
+
     /// Load and index all .app files from the given paths.
     ///
     /// Files that fail to parse are logged and skipped.
@@ -95,7 +270,10 @@ impl SymbolIndex {
             .filter_map(|path| {
                 let path = path.as_ref();
                 match app_reader::read_app_file(path) {
-                    Ok(pkg) => Some((path.to_path_buf(), pkg)),
+                    Ok(pkg) => {
+                        prewarm_source_index(path);
+                        Some((path.to_path_buf(), pkg))
+                    }
                     Err(e) => {
                         warn!(path = %path.display(), error = %e, "Failed to load .app file");
                         None
@@ -129,11 +307,13 @@ impl SymbolIndex {
                 let path = path.as_ref();
 
                 if let Some(pkg) = cache.load(path) {
+                    prewarm_source_index(path);
                     return Some((path.to_path_buf(), pkg, true));
                 }
 
                 match app_reader::read_app_file(path) {
                     Ok(pkg) => {
+                        prewarm_source_index(path);
                         debug!(
                             name = %pkg.name,
                             objects = pkg.objects.len(),
@@ -176,10 +356,12 @@ impl SymbolIndex {
             .filter_map(|path| {
                 let path = path.as_ref();
                 if let Some(pkg) = cache.load(path) {
+                    prewarm_source_index(path);
                     return Some((path.to_path_buf(), pkg, true));
                 }
                 match app_reader::read_app_file(path) {
                     Ok(pkg) => {
+                        prewarm_source_index(path);
                         if let Err(error) = cache.save(path, &pkg) {
                             warn!(path = %path.display(), %error, "Failed to save to cache");
                         }
@@ -219,8 +401,8 @@ impl SymbolIndex {
         // rather than duplicating every object in all secondary indexes.
         self.remove_package_entries(&pkg.name);
         if let Some(path) = path {
-            self.app_paths
-                .insert(pkg.name.to_lowercase(), path.to_path_buf());
+            let indexed_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            self.app_paths.insert(pkg.name.to_lowercase(), indexed_path);
         }
         debug!(
             name = %pkg.name,
@@ -1037,6 +1219,29 @@ mod tests {
         index.add_entries(&[make_entry(ObjectKind::Table, 1, "T")]);
         assert!(!index.is_empty());
         assert_eq!(index.len(), 1);
+    }
+
+    #[test]
+    fn memory_stats_measure_live_symbol_and_lookup_allocations() {
+        let index = SymbolIndex::new();
+        let empty = index.memory_stats();
+        index.add_entries(&[
+            make_entry(ObjectKind::Table, 1, "Measured Table"),
+            make_entry(ObjectKind::Page, 2, "Measured Page"),
+        ]);
+        // Build the lazy name catalogue so its allocation is included too.
+        assert_eq!(index.search("measured", 10).len(), 2);
+
+        let populated = index.memory_stats();
+        assert!(populated.symbol_payload_bytes > 0);
+        assert!(populated.lookup_index_bytes > empty.lookup_index_bytes);
+        assert_eq!(
+            populated.tracked_bytes,
+            populated.symbol_payload_bytes
+                + populated.lookup_index_bytes
+                + populated.path_cache_bytes
+                + populated.composed_cache_bytes
+        );
     }
 
     #[test]

@@ -25,8 +25,10 @@ not belong in either user-facing document.
   unopened file is not enabled by default.
 - References, dead-code analysis, and call graphs cannot inspect call sites inside
   dependency packages when source is unavailable.
-- Package navigation distinguishes embedded source from generated public-API
-  outlines; generated outlines are not original package source.
+- Package navigation distinguishes workspace source, extractable embedded source,
+  generated public-API outlines, and identity-only metadata. Generated outlines
+  are not original package source, and extraction failures are reported as the
+  fallback representation actually returned.
 
 ## Native test runtime
 
@@ -37,7 +39,9 @@ not belong in either user-facing document.
 - Routing remains conservative and partly pattern-based. The enforced runtime
   capability boundary prevents a missed record operation from silently running
   with the wrong permissions.
-- Test lifecycle and handler semantics are not executed locally.
+- Local tests execute the supported initialize/cleanup lifecycle and
+  Message/Confirm handler subset. Other handler classes and platform lifecycle
+  behavior still route to live Business Central.
 - Dynamic coverage records statements and two-way decisions; per-case-arm and
   condition coverage are not modelled.
 - `test-snapshot validate` validates an existing file and `diff` compares files.
@@ -52,6 +56,10 @@ not belong in either user-facing document.
 - Native `.app` output has compatibility and live-tenant validation coverage, but
   base-app-dependent and resource-heavy projects still need broader corpus
   coverage before Microsoft compatibility paths can be reduced.
+- Native XLIFF currently covers object captions and table-field captions, not all
+  page-control ToolTips or page-action captions; broader report/layout/logo/`.res`
+  resource parity is also incomplete. Use `pack-native --validate` or official
+  `alc` for release builds that depend on those shapes.
 
 ## Translation and generated assets
 

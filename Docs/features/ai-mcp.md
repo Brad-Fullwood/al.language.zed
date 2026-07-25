@@ -28,7 +28,7 @@ the alias's mapped method or `al_call`'s requested method, builds a daemon `Requ
 | `al_downloadsymbols` | `downloadSymbols` | — | Download dependency symbol packages into `.alpackages`. |
 | `al_symbolsearch` | `search` | `query` (string), `limit` (number, default 20) | Fuzzy-search symbols across workspace and packages. |
 | `al_getdiagnostics` | `lint` | `file` (path, required) | Run diagnostics for an AL file. |
-| `al_runtests` | `tests.run_auto` | — | Discover and run tests; pure-logic tests run on the built-in interpreter, the rest need a launch config + live BC. |
+| `al_runtests` | `tests.run_auto` | — | Discover and run tests; pure-logic and supported workspace-record tests run locally, while unsupported/platform-dependent tests need a launch config + live BC. |
 | `al_deadcode` | `deadCode` | — | Find unused procedures, fields, and orphaned subscribers. |
 | `al_sqlscan` | `sqlPatterns` | — | Detect SQL anti-patterns (FindFirst/Get/CalcFields in loops, unfiltered FindSet). |
 | `al_entrypoints` | `entrypoints` | — | List procedures with no incoming calls. |

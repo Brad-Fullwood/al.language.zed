@@ -113,9 +113,10 @@ implementation, no drift.
 
 ## How to use
 
-In Zed, these features work automatically once `al-lsp` is resolved. From the terminal, every query
-has a CLI equivalent: `al-explorer hover|definition|references|signature|completions|symbols|folding|
-tokens|rename|hints <file> [pos...]` — see [cli-and-tui](./cli-and-tui.md) and the
+In Zed, these features work automatically once `al-lsp` is resolved. The terminal exposes the listed
+CLI query subset through `al-explorer hover|definition|references|signature|completions|symbols|
+folding|tokens|rename|hints <file> [pos...]`; daemon-only operations such as `implementations` and
+`codeActions` remain reachable through MCP `al_call`. See [cli-and-tui](./cli-and-tui.md) and the
 [LSP command reference](../reference/lsp-commands.md).
 
 From MCP, `al_call` exposes the daemon equivalents (`hover`, `definition`, `references`,

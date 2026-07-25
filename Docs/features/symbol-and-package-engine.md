@@ -123,7 +123,7 @@ Freshly downloaded symbols are loaded into the workspace **without a daemon rest
 | Composition | explicit composed-object view (base + extensions) | resolved internally by the compiler |
 | Download | native NuGet **and** BC-server backends, concurrent, deduped, no restart | extension's download-symbols command |
 | Auth | native Entra PKCE + device code, token zeroization | extension/VS Code auth |
-| Source-only packages | renders a public-API outline for navigation | navigates compiler symbols |
+| Source-free/symbol-only packages | renders a public-API outline or identity-only target for navigation | navigates compiler symbols |
 
 ## Why this approach
 
@@ -136,6 +136,7 @@ definitions, event discovery, and impact analysis — so all of those are fast f
 ## How to use
 
 - **CLI:** `al-explorer search <q> [--limit N]`, `object <type> <name>`, `by-id <type> <id>`,
+  `source <name> [--kind <type>] [--package <name>] [--procedure <name>|--trigger <name>]`,
   `composed [<kind>] <name>`, `packages`, `deps`, `events <name>`, `subscribers <event>`.
 - **Download:** `al-explorer download-symbols --source server|nuget` (Zed tasks: *AL: Download
   Symbols (Server/NuGet)*); `al-explorer authenticate`; `al-explorer clear-cache`.
@@ -177,6 +178,8 @@ with the right filename but the wrong identity/version does not count as satisfi
     the public API only, with bodies unavailable, so the reader is never misled into thinking an empty
     body means an empty method.
   - The `source` query (`al-explorer source` / daemon `source`) returns the same outline with a
-    structured `note` — *"Rendered from symbol metadata … no implementation bodies"*.
+    structured availability value and note. It reports `embedded_source` only after extraction
+    succeeds; otherwise it returns `generated_outline` or `metadata_only`. Same-name ambiguities are
+    rejected until `--kind` and/or `--package` identifies one object.
   - Cross-package "who calls this" cannot be recovered from package symbols alone. Workspace source
     fills this in; affected-test selection treats `.app`-only declarations as having no call sites.
