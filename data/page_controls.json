@@ -1,0 +1,119 @@
+{
+  "page_controls": [
+    {
+      "keyword": "area",
+      "lsp_symbol_kind": "Struct",
+      "node_kind": "kw_area"
+    },
+    {
+      "keyword": "group",
+      "lsp_symbol_kind": "Struct",
+      "node_kind": "kw_group"
+    },
+    {
+      "keyword": "repeater",
+      "lsp_symbol_kind": "Struct",
+      "node_kind": "kw_repeater"
+    },
+    {
+      "keyword": "field",
+      "lsp_symbol_kind": "Field",
+      "node_kind": "kw_field"
+    },
+    {
+      "keyword": "part",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_part"
+    },
+    {
+      "keyword": "action",
+      "lsp_symbol_kind": "Event",
+      "node_kind": "kw_action"
+    },
+    {
+      "keyword": "separator",
+      "lsp_symbol_kind": "Event",
+      "node_kind": "kw_separator"
+    },
+    {
+      "keyword": "cuegroup",
+      "lsp_symbol_kind": "Struct",
+      "node_kind": "kw_cuegroup"
+    },
+    {
+      "keyword": "grid",
+      "lsp_symbol_kind": "Struct",
+      "node_kind": "kw_grid"
+    },
+    {
+      "keyword": "fixed",
+      "lsp_symbol_kind": "Struct",
+      "node_kind": "kw_fixed"
+    },
+    {
+      "keyword": "usercontrol",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_usercontrol"
+    },
+    {
+      "keyword": "label",
+      "lsp_symbol_kind": "Constant",
+      "node_kind": "kw_label"
+    },
+    {
+      "keyword": "dataitem",
+      "lsp_symbol_kind": "Struct",
+      "node_kind": "kw_dataitem"
+    },
+    {
+      "keyword": "column",
+      "lsp_symbol_kind": "Field",
+      "node_kind": "kw_column"
+    },
+    {
+      "keyword": "filter",
+      "lsp_symbol_kind": "Field",
+      "node_kind": "kw_filter"
+    },
+    {
+      "keyword": "addfirst",
+      "lsp_symbol_kind": "Namespace",
+      "node_kind": "kw_addfirst"
+    },
+    {
+      "keyword": "addlast",
+      "lsp_symbol_kind": "Namespace",
+      "node_kind": "kw_addlast"
+    },
+    {
+      "keyword": "addafter",
+      "lsp_symbol_kind": "Namespace",
+      "node_kind": "kw_addafter"
+    },
+    {
+      "keyword": "addbefore",
+      "lsp_symbol_kind": "Namespace",
+      "node_kind": "kw_addbefore"
+    },
+    {
+      "keyword": "modify",
+      "lsp_symbol_kind": "Namespace",
+      "node_kind": "kw_modify"
+    },
+    {
+      "keyword": "moveafter",
+      "lsp_symbol_kind": "Namespace",
+      "node_kind": "kw_moveafter"
+    },
+    {
+      "keyword": "movebefore",
+      "lsp_symbol_kind": "Namespace",
+      "node_kind": "kw_movebefore"
+    },
+    {
+      "keyword": "actionref",
+      "lsp_symbol_kind": "Event",
+      "node_kind": "kw_actionref"
+    }
+  ]
+}

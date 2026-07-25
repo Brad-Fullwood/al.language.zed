@@ -1,0 +1,68 @@
+[
+  {
+    "name": "CommitBehavior",
+    "values": [
+      "Ignore",
+      "Error"
+    ]
+  },
+  {
+    "name": "DataScope",
+    "values": [
+      "Module",
+      "Company",
+      "User",
+      "CompanyAndUser"
+    ]
+  },
+  {
+    "name": "ErrorBehavior",
+    "values": [
+      "Collect"
+    ]
+  },
+  {
+    "name": "InherentPermissionsScope",
+    "values": [
+      "Permissions",
+      "Entitlements",
+      "Both"
+    ]
+  },
+  {
+    "name": "SecurityFilter",
+    "values": [
+      "Validated",
+      "Filtered",
+      "Ignored",
+      "Disallowed"
+    ]
+  },
+  {
+    "name": "TestPermissions",
+    "values": [
+      "InheritFromTestCodeunit",
+      "Restrictive",
+      "NonRestrictive",
+      "Disabled"
+    ]
+  },
+  {
+    "name": "TransactionModel",
+    "values": [
+      "AutoCommit",
+      "AutoRollback",
+      "None"
+    ]
+  },
+  {
+    "name": "WebServiceActionResultCode",
+    "values": [
+      "None",
+      "Get",
+      "Created",
+      "Updated",
+      "Deleted"
+    ]
+  }
+]

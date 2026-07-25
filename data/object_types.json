@@ -1,0 +1,206 @@
+{
+  "object_types": [
+    {
+      "display_name": "Codeunit",
+      "extensions": [],
+      "keyword": "codeunit",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_codeunit",
+      "permission_type": "codeunit",
+      "permission_value": "X"
+    },
+    {
+      "display_name": "ControlAddIn",
+      "extensions": [],
+      "keyword": "controladdin",
+      "lsp_symbol_kind": "Module",
+      "node_kind": "kw_controladdin",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "DotNet",
+      "extensions": [],
+      "keyword": "dotnet",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_dotnet",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "Entitlement",
+      "extensions": [],
+      "keyword": "entitlement",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_entitlement",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "Enum",
+      "extensions": [
+        "enumextension"
+      ],
+      "keyword": "enum",
+      "lsp_symbol_kind": "Enum",
+      "node_kind": "kw_enum",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "EnumExtension",
+      "extensions": [],
+      "keyword": "enumextension",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_enumextension",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "Interface",
+      "extensions": [],
+      "keyword": "interface",
+      "lsp_symbol_kind": "Interface",
+      "node_kind": "kw_interface",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "Page",
+      "extensions": [
+        "pageextension",
+        "pagecustomization"
+      ],
+      "keyword": "page",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_page",
+      "permission_type": "page",
+      "permission_value": "X"
+    },
+    {
+      "display_name": "PageCustomization",
+      "extensions": [],
+      "keyword": "pagecustomization",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_pagecustomization",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "PageExtension",
+      "extensions": [],
+      "keyword": "pageextension",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_pageextension",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "PermissionSet",
+      "extensions": [
+        "permissionsetextension"
+      ],
+      "keyword": "permissionset",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_permissionset",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "PermissionSetExtension",
+      "extensions": [],
+      "keyword": "permissionsetextension",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_permissionsetextension",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "Profile",
+      "extensions": [
+        "profileextension"
+      ],
+      "keyword": "profile",
+      "lsp_symbol_kind": "File",
+      "node_kind": "kw_profile",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "ProfileExtension",
+      "extensions": [],
+      "keyword": "profileextension",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_profileextension",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "Query",
+      "extensions": [],
+      "keyword": "query",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_query",
+      "permission_type": "query",
+      "permission_value": "X"
+    },
+    {
+      "display_name": "Report",
+      "extensions": [
+        "reportextension"
+      ],
+      "keyword": "report",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_report",
+      "permission_type": "report",
+      "permission_value": "X"
+    },
+    {
+      "display_name": "ReportExtension",
+      "extensions": [],
+      "keyword": "reportextension",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_reportextension",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "Table",
+      "extensions": [
+        "tableextension"
+      ],
+      "keyword": "table",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_table",
+      "permission_type": "tabledata",
+      "permission_value": "RIMD"
+    },
+    {
+      "display_name": "TableExtension",
+      "extensions": [],
+      "keyword": "tableextension",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_tableextension",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "Value",
+      "extensions": [],
+      "keyword": "value",
+      "lsp_symbol_kind": "EnumMember",
+      "node_kind": "kw_value",
+      "permission_type": null,
+      "permission_value": null
+    },
+    {
+      "display_name": "XmlPort",
+      "extensions": [],
+      "keyword": "xmlport",
+      "lsp_symbol_kind": "Class",
+      "node_kind": "kw_xmlport",
+      "permission_type": "xmlport",
+      "permission_value": "X"
+    }
+  ]
+}

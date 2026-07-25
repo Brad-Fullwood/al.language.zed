@@ -1,0 +1,503 @@
+// AUTO-GENERATED - DO NOT EDIT
+
+#include <tree_sitter/parser.h>
+
+#ifdef __wasm__
+// Zed's WASI SDK does not provide tree_sitter/alloc.h.
+#include <stdlib.h>
+#endif
+
+static inline int al_tolower(int c) {
+  if (c >= 'A' && c <= 'Z') return c + ('a' - 'A');
+  return c;
+}
+
+static inline size_t al_strlen(const char *s) {
+  size_t n = 0;
+  while (s && s[n]) n++;
+  return n;
+}
+
+static inline void *al_memcpy(void *dst, const void *src, size_t n) {
+  char *d = (char *)dst;
+  const char *s = (const char *)src;
+  for (size_t i = 0; i < n; i++) d[i] = s[i];
+  return dst;
+}
+
+#ifndef __wasm__
+#include <ctype.h>
+#include <string.h>
+#include <stdlib.h>
+#endif
+
+typedef enum {
+{{TOKEN_ENUM}}
+} TokenType;
+
+// tree-sitter compiles scanner.c but not the generated lookup separately.
+#include "keywords.c"
+
+#define MAX_IF_DEPTH 64
+#define MAX_DEFINES 128
+
+typedef struct {
+  bool parent_active;
+  bool branch_taken;
+  bool this_active;
+} IfFrame;
+
+typedef struct {
+  uint8_t if_depth;
+  IfFrame if_stack[MAX_IF_DEPTH];
+
+  bool default_unknown_true;
+
+  char *defines_buf;
+  const char *defines[MAX_DEFINES];
+  uint16_t defines_len;
+} Scanner;
+
+static char *ts_strdup(const char *s) {
+  if (!s) return NULL;
+  size_t n = al_strlen(s);
+  char *out = (char *)malloc(n + 1);
+  if (!out) return NULL;
+  for (size_t i = 0; i <= n; i++) out[i] = s[i];
+  return out;
+}
+
+static bool parse_bool_env(const char *s, bool default_value) {
+  if (!s || !*s) return default_value;
+  char normalized[6] = {0};
+  size_t len = al_strlen(s);
+  if (len >= sizeof(normalized)) return default_value;
+  for (size_t i = 0; i < len; i++) normalized[i] = (char)al_tolower((unsigned char)s[i]);
+  if (strcmp(normalized, "1") == 0 || strcmp(normalized, "true") == 0 ||
+      strcmp(normalized, "yes") == 0 || strcmp(normalized, "on") == 0) return true;
+  if (strcmp(normalized, "0") == 0 || strcmp(normalized, "false") == 0 ||
+      strcmp(normalized, "no") == 0 || strcmp(normalized, "off") == 0) return false;
+  return default_value;
+}
+
+static void scanner_load_defines_from_env(Scanner *scanner) {
+#ifdef __wasm__
+  return;
+#else
+  const char *env = getenv("AL_TS_DEFINES");
+  if (!env || !*env) return;
+
+  scanner->defines_buf = ts_strdup(env);
+  if (!scanner->defines_buf) return;
+
+  char *p = scanner->defines_buf;
+  while (*p && scanner->defines_len < MAX_DEFINES) {
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',' || *p == ';') {
+      *p = '\0';
+      p++;
+    }
+    if (!*p) break;
+    scanner->defines[scanner->defines_len++] = p;
+    while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r' && *p != ',' && *p != ';') {
+      *p = (char)al_tolower((unsigned char)*p);
+      p++;
+    }
+  }
+#endif
+}
+
+static bool scanner_is_active(const Scanner *scanner) {
+  if (!scanner) return true;
+  if (scanner->if_depth == 0) return true;
+  return scanner->if_stack[scanner->if_depth - 1].this_active;
+}
+
+static bool scanner_is_defined(const Scanner *scanner, const char *ident, int len) {
+  if (!scanner || !ident || len <= 0) return false;
+  for (uint16_t i = 0; i < scanner->defines_len; i++) {
+    const char *d = scanner->defines[i];
+    if (!d) continue;
+    if ((int)al_strlen(d) == len && strncmp(d, ident, (size_t)len) == 0) return true;
+  }
+  return false;
+}
+
+static void expr_skip_ws(const char **p) {
+  while (**p == ' ' || **p == '\t') (*p)++;
+}
+
+static bool expr_match_word(const char **p, const char *word) {
+  const char *s = *p;
+  size_t n = al_strlen(word);
+  if (strncmp(s, word, n) != 0) return false;
+  char next = s[n];
+  if ((next >= 'a' && next <= 'z') || (next >= '0' && next <= '9') || next == '_') return false;
+  *p = s + n;
+  return true;
+}
+
+static bool expr_parse_identifier(const char **p, const char **out_start, int *out_len) {
+  const char *s = *p;
+  char c = *s;
+  if (!((c >= 'a' && c <= 'z') || c == '_')) return false;
+  const char *start = s;
+  s++;
+  while ((*s >= 'a' && *s <= 'z') || (*s >= '0' && *s <= '9') || *s == '_') s++;
+  *out_start = start;
+  *out_len = (int)(s - start);
+  *p = s;
+  return true;
+}
+
+static bool expr_parse_number(const char **p, bool *out_value) {
+  const char *s = *p;
+  if (!(*s >= '0' && *s <= '9')) return false;
+  unsigned long v = 0;
+  while (*s >= '0' && *s <= '9') {
+    v = v * 10 + (unsigned long)(*s - '0');
+    s++;
+  }
+  *out_value = (v != 0);
+  *p = s;
+  return true;
+}
+
+static bool expr_parse_or(Scanner *scanner, const char **p, bool *out_value);
+
+static bool expr_parse_primary(Scanner *scanner, const char **p, bool *out_value) {
+  expr_skip_ws(p);
+  if (**p == '(') {
+    (*p)++;
+    bool inner = false;
+    if (!expr_parse_or(scanner, p, &inner)) return false;
+    expr_skip_ws(p);
+    if (**p == ')') (*p)++;
+    *out_value = inner;
+    return true;
+  }
+
+  if (expr_match_word(p, "defined")) {
+    expr_skip_ws(p);
+    if (**p == '(') {
+      (*p)++;
+      expr_skip_ws(p);
+      const char *id = NULL;
+      int id_len = 0;
+      if (expr_parse_identifier(p, &id, &id_len)) {
+        expr_skip_ws(p);
+        if (**p == ')') (*p)++;
+        *out_value = scanner_is_defined(scanner, id, id_len);
+        return true;
+      }
+      return false;
+    } else {
+      const char *id = NULL;
+      int id_len = 0;
+      if (expr_parse_identifier(p, &id, &id_len)) {
+        *out_value = scanner_is_defined(scanner, id, id_len);
+        return true;
+      }
+      return false;
+    }
+  }
+
+  bool num_val = false;
+  if (expr_parse_number(p, &num_val)) {
+    *out_value = num_val;
+    return true;
+  }
+
+  const char *id = NULL;
+  int id_len = 0;
+  if (expr_parse_identifier(p, &id, &id_len)) {
+    if (id_len == 4 && strncmp(id, "true", 4) == 0) {
+      *out_value = true;
+      return true;
+    }
+    if (id_len == 5 && strncmp(id, "false", 5) == 0) {
+      *out_value = false;
+      return true;
+    }
+    if (scanner_is_defined(scanner, id, id_len)) {
+      *out_value = true;
+      return true;
+    }
+    *out_value = scanner ? scanner->default_unknown_true : true;
+    return true;
+  }
+
+  return false;
+}
+
+static bool expr_parse_unary(Scanner *scanner, const char **p, bool *out_value) {
+  expr_skip_ws(p);
+  if (**p == '!') {
+    (*p)++;
+    bool v = false;
+    if (!expr_parse_unary(scanner, p, &v)) return false;
+    *out_value = !v;
+    return true;
+  }
+  if (expr_match_word(p, "not")) {
+    bool v = false;
+    if (!expr_parse_unary(scanner, p, &v)) return false;
+    *out_value = !v;
+    return true;
+  }
+  return expr_parse_primary(scanner, p, out_value);
+}
+
+static bool expr_parse_and(Scanner *scanner, const char **p, bool *out_value) {
+  bool left = false;
+  if (!expr_parse_unary(scanner, p, &left)) return false;
+  for (;;) {
+    expr_skip_ws(p);
+    if ((**p == '&' && (*p)[1] == '&')) {
+      *p += 2;
+    } else if (expr_match_word(p, "and")) {
+    } else {
+      break;
+    }
+    bool right = false;
+    if (!expr_parse_unary(scanner, p, &right)) return false;
+    left = left && right;
+  }
+  *out_value = left;
+  return true;
+}
+
+static bool expr_parse_or(Scanner *scanner, const char **p, bool *out_value) {
+  bool left = false;
+  if (!expr_parse_and(scanner, p, &left)) return false;
+  for (;;) {
+    expr_skip_ws(p);
+    if ((**p == '|' && (*p)[1] == '|')) {
+      *p += 2;
+    } else if (expr_match_word(p, "or")) {
+    } else {
+      break;
+    }
+    bool right = false;
+    if (!expr_parse_and(scanner, p, &right)) return false;
+    left = left || right;
+  }
+  *out_value = left;
+  return true;
+}
+
+static bool eval_pp_expr(Scanner *scanner, const char *expr) {
+  if (!expr) return true;
+  const char *p = expr;
+  expr_skip_ws(&p);
+  if (!*p) return true;
+  bool v = false;
+  if (!expr_parse_or(scanner, &p, &v)) {
+    // Keep malformed branches visible for parser diagnostics.
+    return true;
+  }
+  return v;
+}
+
+static bool scanner_scan_directive(Scanner *scanner, TSLexer *lexer, const bool *valid_symbols) {
+  if (!valid_symbols[DIRECTIVE]) return false;
+
+  while (lexer->lookahead == ' ' || lexer->lookahead == '\t' || lexer->lookahead == '\r' || lexer->lookahead == '\n') {
+    lexer->advance(lexer, true);
+  }
+
+  if (lexer->lookahead != '#') return false;
+
+  lexer->advance(lexer, false);
+
+  while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+    lexer->advance(lexer, true);
+  }
+
+  char kw[32];
+  int kw_len = 0;
+  while (kw_len < (int)sizeof(kw) - 1) {
+    int32_t c = lexer->lookahead;
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_') {
+      kw[kw_len++] = (char)al_tolower((unsigned char)c);
+      lexer->advance(lexer, false);
+      continue;
+    }
+    break;
+  }
+  kw[kw_len] = '\0';
+
+  while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+    lexer->advance(lexer, true);
+  }
+
+  char expr[512];
+  int expr_len = 0;
+  while (lexer->lookahead != 0 && lexer->lookahead != '\n') {
+    if (expr_len < (int)sizeof(expr) - 1) {
+      expr[expr_len++] = (char)al_tolower((unsigned char)lexer->lookahead);
+    }
+    lexer->advance(lexer, false);
+  }
+  expr[expr_len] = '\0';
+
+  bool active_outer = scanner_is_active(scanner);
+
+  if (strcmp(kw, "if") == 0) {
+    if (scanner && scanner->if_depth < MAX_IF_DEPTH) {
+      bool cond = eval_pp_expr(scanner, expr);
+      IfFrame frame;
+      frame.parent_active = active_outer;
+      frame.this_active = active_outer && cond;
+      frame.branch_taken = frame.this_active;
+      scanner->if_stack[scanner->if_depth++] = frame;
+    }
+  } else if (strcmp(kw, "elif") == 0) {
+    if (scanner && scanner->if_depth > 0) {
+      IfFrame *frame = &scanner->if_stack[scanner->if_depth - 1];
+      if (!frame->parent_active || frame->branch_taken) {
+        frame->this_active = false;
+      } else {
+        bool cond = eval_pp_expr(scanner, expr);
+        frame->this_active = frame->parent_active && cond;
+        if (frame->this_active) frame->branch_taken = true;
+      }
+    }
+  } else if (strcmp(kw, "else") == 0) {
+    if (scanner && scanner->if_depth > 0) {
+      IfFrame *frame = &scanner->if_stack[scanner->if_depth - 1];
+      if (!frame->parent_active || frame->branch_taken) {
+        frame->this_active = false;
+      } else {
+        frame->this_active = true;
+        frame->branch_taken = true;
+      }
+    }
+  } else if (strcmp(kw, "endif") == 0) {
+    if (scanner && scanner->if_depth > 0) {
+      scanner->if_depth--;
+    }
+  }
+
+  lexer->mark_end(lexer);
+  lexer->result_symbol = DIRECTIVE;
+  return true;
+}
+
+static bool scanner_scan_inactive_code(Scanner *scanner, TSLexer *lexer, const bool *valid_symbols) {
+  if (!valid_symbols[INACTIVE_CODE]) return false;
+  if (scanner_is_active(scanner)) return false;
+
+  // Stop before the next directive line.
+  bool consumed = false;
+  while (lexer->lookahead != 0 && lexer->lookahead != '\n') {
+    lexer->advance(lexer, false);
+    consumed = true;
+  }
+  if (!consumed) return false;
+
+  lexer->mark_end(lexer);
+  lexer->result_symbol = INACTIVE_CODE;
+  return true;
+}
+
+void *tree_sitter_al_external_scanner_create() {
+  Scanner *scanner = (Scanner *)calloc(1, sizeof(Scanner));
+  if (!scanner) return NULL;
+#ifdef __wasm__
+  // Unknown symbols are false so `#if not CLEANxx` branches remain visible.
+  scanner->default_unknown_true = false;
+#else
+  scanner->default_unknown_true = parse_bool_env(getenv("AL_TS_UNKNOWN_TRUE"), false);
+#endif
+  scanner_load_defines_from_env(scanner);
+  return scanner;
+}
+
+void tree_sitter_al_external_scanner_destroy(void *payload) {
+  Scanner *scanner = (Scanner *)payload;
+  if (!scanner) return;
+  if (scanner->defines_buf) free(scanner->defines_buf);
+  free(scanner);
+}
+
+unsigned tree_sitter_al_external_scanner_serialize(void *payload, char *buffer) {
+  Scanner *scanner = (Scanner *)payload;
+  if (!scanner) return 0;
+
+  unsigned size = 0;
+  buffer[size++] = (char)scanner->if_depth;
+  for (uint8_t i = 0; i < scanner->if_depth && size < TREE_SITTER_SERIALIZATION_BUFFER_SIZE; i++) {
+    uint8_t bits = 0;
+    if (scanner->if_stack[i].parent_active) bits |= 0x01;
+    if (scanner->if_stack[i].branch_taken)  bits |= 0x02;
+    if (scanner->if_stack[i].this_active)   bits |= 0x04;
+    buffer[size++] = (char)bits;
+  }
+  return size;
+}
+
+void tree_sitter_al_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
+  Scanner *scanner = (Scanner *)payload;
+  if (!scanner) return;
+
+  scanner->if_depth = 0;
+  if (!buffer || length == 0) return;
+
+  uint8_t depth = (uint8_t)buffer[0];
+  if (depth > MAX_IF_DEPTH) depth = MAX_IF_DEPTH;
+  if ((unsigned)(1 + depth) > length) depth = (uint8_t)(length > 1 ? (length - 1) : 0);
+
+  scanner->if_depth = depth;
+  for (uint8_t i = 0; i < depth; i++) {
+    uint8_t bits = (uint8_t)buffer[1 + i];
+    scanner->if_stack[i].parent_active = (bits & 0x01) != 0;
+    scanner->if_stack[i].branch_taken  = (bits & 0x02) != 0;
+    scanner->if_stack[i].this_active   = (bits & 0x04) != 0;
+  }
+}
+
+static bool scan_word(TSLexer *lexer, char *out, int out_cap) {
+  while (lexer->lookahead == ' ' || lexer->lookahead == '\t' || lexer->lookahead == '\r' || lexer->lookahead == '\n') {
+    lexer->advance(lexer, true);
+  }
+
+  int32_t c = lexer->lookahead;
+  if (!(c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) {
+    return false;
+  }
+
+  int len = 0;
+  while (len < out_cap - 1) {
+    int32_t ch = lexer->lookahead;
+    if (ch == '_' ||
+        (ch >= 'A' && ch <= 'Z') ||
+        (ch >= 'a' && ch <= 'z') ||
+        (ch >= '0' && ch <= '9')) {
+      out[len++] = (char)al_tolower((unsigned char)ch);
+      lexer->advance(lexer, false);
+      continue;
+    }
+    break;
+  }
+  out[len] = '\0';
+  lexer->mark_end(lexer);
+  return true;
+}
+
+bool tree_sitter_al_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
+  Scanner *scanner = (Scanner *)payload;
+
+{{VALID_SYMBOLS_FASTPATH}}
+
+{{DIRECTIVE_HANDLING}}
+
+  char word[256];
+  if (!scan_word(lexer, word, (int)sizeof(word))) {
+    return false;
+  }
+
+  // Some words occur in multiple categories, so only return a valid category.
+{{KEYWORD_DISPATCH}}
+
+  return false;
+}

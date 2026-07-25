@@ -1,0 +1,108 @@
+==================
+break and continue statements inside a for loop
+==================
+
+codeunit 50100 T
+{
+    procedure P()
+    var i: Integer;
+    begin
+        for i := 1 to 10 do begin
+            if i = 5 then break;
+            if i = 2 then continue;
+        end;
+    end;
+}
+
+---
+
+(source_file
+  (object_declaration
+    (kw_codeunit)
+    (integer)
+    (identifier)
+    (object_body
+      (procedure_declaration
+        (kw_procedure)
+        (name
+          (identifier))
+        (parameter_list)
+        (var_section
+          (kw_var)
+          (variable_declaration
+            (regular_variable_declaration
+              (name_or_keyword
+                (name
+                  (identifier)))
+              (operator)
+              (type_reference
+                (kw_integer))
+              (semicolon))))
+        (begin_end_block
+          (kw_begin)
+          (statement_list
+            (statement
+              (for_statement
+                (kw_for)
+                (identifier)
+                (operator)
+                (expression
+                  (unary_expression
+                    (postfix_expression
+                      (primary_expression
+                        (integer)))))
+                (kw_to)
+                (expression
+                  (unary_expression
+                    (postfix_expression
+                      (primary_expression
+                        (integer)))))
+                (kw_do)
+                (statement
+                  (begin_end_block
+                    (kw_begin)
+                    (statement_list
+                      (statement
+                        (if_statement
+                          (kw_if)
+                          (expression
+                            (unary_expression
+                              (postfix_expression
+                                (primary_expression
+                                  (name
+                                    (identifier)))))
+                            (binary_operator
+                              (operator))
+                            (unary_expression
+                              (postfix_expression
+                                (primary_expression
+                                  (integer)))))
+                          (kw_then)
+                          (statement
+                            (break_statement
+                              (kw_break)))))
+                      (semicolon)
+                      (statement
+                        (if_statement
+                          (kw_if)
+                          (expression
+                            (unary_expression
+                              (postfix_expression
+                                (primary_expression
+                                  (name
+                                    (identifier)))))
+                            (binary_operator
+                              (operator))
+                            (unary_expression
+                              (postfix_expression
+                                (primary_expression
+                                  (integer)))))
+                          (kw_then)
+                          (statement
+                            (continue_statement
+                              (kw_continue)))))
+                      (semicolon))
+                    (kw_end)))))
+            (semicolon))
+          (kw_end))
+        (semicolon)))))

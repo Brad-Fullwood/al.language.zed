@@ -1,0 +1,1250 @@
+[
+  {
+    "name": "ArrayLen",
+    "signature": "ArrayLen(Array [; Dimension: Integer]): Integer",
+    "parameters": [
+      {
+        "name": "Array",
+        "type": "Any",
+        "required": true,
+        "description": "The array variable."
+      },
+      {
+        "name": "Dimension",
+        "type": "Integer",
+        "required": false,
+        "description": "The dimension to measure (default: 1)."
+      }
+    ],
+    "return_type": "Integer",
+    "description": "Returns the number of elements in an array dimension.",
+    "category": "system"
+  },
+  {
+    "name": "Clear",
+    "signature": "Clear(var Variable)",
+    "parameters": [
+      {
+        "name": "Variable",
+        "type": "Any",
+        "required": true,
+        "description": "The variable to clear (var parameter)."
+      }
+    ],
+    "return_type": null,
+    "description": "Resets a variable to its default value.",
+    "category": "system"
+  },
+  {
+    "name": "Confirm",
+    "signature": "Confirm(Text [, Boolean] [, Any, ...]): Boolean",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The confirmation question."
+      },
+      {
+        "name": "Default",
+        "type": "Boolean",
+        "required": false,
+        "description": "Default button selection."
+      },
+      {
+        "name": "Value",
+        "type": "Any",
+        "required": false,
+        "variadic": true,
+        "description": "Substitution values for placeholders."
+      }
+    ],
+    "return_type": "Boolean",
+    "description": "Displays a confirmation dialog (Yes/No). Returns true if the user chose Yes.",
+    "category": "dialog"
+  },
+  {
+    "name": "Download",
+    "signature": "Download(...)",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in AL function.",
+    "category": "file"
+  },
+  {
+    "name": "DownloadFromStream",
+    "signature": "DownloadFromStream(...)",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in AL function.",
+    "category": "file"
+  },
+  {
+    "name": "Error",
+    "signature": "Error(Text [, Any, ...])",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The error message format string."
+      },
+      {
+        "name": "Value",
+        "type": "Any",
+        "required": false,
+        "variadic": true,
+        "description": "Substitution values for placeholders."
+      }
+    ],
+    "return_type": null,
+    "description": "Raises a runtime error and displays the message. Stops the current transaction.",
+    "category": "dialog"
+  },
+  {
+    "name": "Evaluate",
+    "signature": "Evaluate(var Variable; Text [; Base: Integer]): Boolean",
+    "parameters": [
+      {
+        "name": "Variable",
+        "type": "Any",
+        "required": true,
+        "description": "The variable to receive the parsed value (var parameter)."
+      },
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The text to parse."
+      },
+      {
+        "name": "Base",
+        "type": "Integer",
+        "required": false,
+        "description": "Number base for integer parsing (9 or 16)."
+      }
+    ],
+    "return_type": "Boolean",
+    "description": "Parses Text into Variable. Returns true on success.",
+    "category": "system"
+  },
+  {
+    "name": "Format",
+    "signature": "Format(Value [, Length: Integer] [, FormatStr/Number: Text/Integer]): Text",
+    "parameters": [
+      {
+        "name": "Value",
+        "type": "Any",
+        "required": true,
+        "description": "The value to format."
+      },
+      {
+        "name": "Length",
+        "type": "Integer",
+        "required": false,
+        "description": "Maximum length of the result."
+      },
+      {
+        "name": "FormatStr",
+        "type": "Text",
+        "required": false,
+        "description": "Format string or format number."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Formats a value as text using optional length and format string.",
+    "category": "system"
+  },
+  {
+    "name": "FromInteger",
+    "signature": "FromInteger(...)",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in AL function.",
+    "category": "type"
+  },
+  {
+    "name": "GetDotNetType",
+    "signature": "GetDotNetType(...)",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in AL function.",
+    "category": "system"
+  },
+  {
+    "name": "Hyperlink",
+    "signature": "Hyperlink(URL: Text)",
+    "parameters": [
+      {
+        "name": "URL",
+        "type": "Text",
+        "required": true,
+        "description": "The URL to open."
+      }
+    ],
+    "return_type": null,
+    "description": "Opens a URL in the user\u0027s default browser.",
+    "category": "system"
+  },
+  {
+    "name": "IsNull",
+    "signature": "IsNull(Value: Any): Boolean",
+    "parameters": [
+      {
+        "name": "Value",
+        "type": "Any",
+        "required": true,
+        "description": "The value to check."
+      }
+    ],
+    "return_type": "Boolean",
+    "description": "Returns true if the value is null or uninitialized.",
+    "category": "system"
+  },
+  {
+    "name": "IsNullGuid",
+    "signature": "IsNullGuid(Guid): Boolean",
+    "parameters": [
+      {
+        "name": "Value",
+        "type": "Guid",
+        "required": true,
+        "description": "The GUID to check."
+      }
+    ],
+    "return_type": "Boolean",
+    "description": "Returns true if the GUID equals the null GUID {00000000-0000-0000-0000-000000000000}.",
+    "category": "system"
+  },
+  {
+    "name": "Message",
+    "signature": "Message(Text [, Any, ...])",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The message format string. Supports %1, %2, ... placeholders."
+      },
+      {
+        "name": "Value",
+        "type": "Any",
+        "required": false,
+        "variadic": true,
+        "description": "Substitution values for placeholders."
+      }
+    ],
+    "return_type": null,
+    "description": "Displays a message dialog to the user. Supports format placeholders: %1, %2, ...",
+    "category": "dialog"
+  },
+  {
+    "name": "Names",
+    "signature": "Names(...)",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in AL function.",
+    "category": "type"
+  },
+  {
+    "name": "Ordinals",
+    "signature": "Ordinals(...)",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in AL function.",
+    "category": "type"
+  },
+  {
+    "name": "Run",
+    "signature": "Run(...)",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in AL function.",
+    "category": "system"
+  },
+  {
+    "name": "RunModal",
+    "signature": "RunModal(...)",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in AL function.",
+    "category": "system"
+  },
+  {
+    "name": "StrMenu",
+    "signature": "StrMenu(StringList: Text [, DefaultButton: Integer] [, Instruction: Text]): Integer",
+    "parameters": [
+      {
+        "name": "StringList",
+        "type": "Text",
+        "required": true,
+        "description": "Comma-separated list of menu options."
+      },
+      {
+        "name": "DefaultButton",
+        "type": "Integer",
+        "required": false,
+        "description": "The default selected option number."
+      },
+      {
+        "name": "Instruction",
+        "type": "Text",
+        "required": false,
+        "description": "Instruction text displayed above the menu."
+      }
+    ],
+    "return_type": "Integer",
+    "description": "Displays a menu of options and returns the number of the chosen option.",
+    "category": "dialog"
+  },
+  {
+    "name": "StrSubstNo",
+    "signature": "StrSubstNo(Text [, Any, ...]): Text",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The format string with %1, %2, ... placeholders."
+      },
+      {
+        "name": "Value",
+        "type": "Any",
+        "required": false,
+        "variadic": true,
+        "description": "Substitution values."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Substitutes placeholders %1, %2, ... in the string with the given arguments.",
+    "category": "string"
+  },
+  {
+    "name": "Upload",
+    "signature": "Upload(...)",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in AL function.",
+    "category": "file"
+  },
+  {
+    "name": "UploadIntoStream",
+    "signature": "UploadIntoStream(...)",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in AL function.",
+    "category": "file"
+  },
+  {
+    "name": "View",
+    "signature": "View(...)",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in AL function.",
+    "category": "file"
+  },
+  {
+    "name": "ViewFromStream",
+    "signature": "ViewFromStream(...)",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in AL function.",
+    "category": "file"
+  },
+  {
+    "name": "Dialog",
+    "signature": "Dialog",
+    "parameters": [],
+    "return_type": null,
+    "description": "Built-in dialog type used for progress windows and user input.",
+    "category": "dialog"
+  },
+  {
+    "name": "StrPos",
+    "signature": "StrPos(Text; SubString: Text): Integer",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The string to search in."
+      },
+      {
+        "name": "SubString",
+        "type": "Text",
+        "required": true,
+        "description": "The substring to find."
+      }
+    ],
+    "return_type": "Integer",
+    "description": "Returns the position of SubString inside Text, or 0 if not found.",
+    "category": "string"
+  },
+  {
+    "name": "StrLen",
+    "signature": "StrLen(Text): Integer",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The string to measure."
+      }
+    ],
+    "return_type": "Integer",
+    "description": "Returns the length of a string.",
+    "category": "string"
+  },
+  {
+    "name": "CopyStr",
+    "signature": "CopyStr(Text; Position: Integer [; Length: Integer]): Text",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The source string."
+      },
+      {
+        "name": "Position",
+        "type": "Integer",
+        "required": true,
+        "description": "Starting position (1-based)."
+      },
+      {
+        "name": "Length",
+        "type": "Integer",
+        "required": false,
+        "description": "Number of characters to copy."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Returns a substring of the given string, starting at Position for Length characters.",
+    "category": "string"
+  },
+  {
+    "name": "SelectStr",
+    "signature": "SelectStr(Number: Integer; StringList: Text): Text",
+    "parameters": [
+      {
+        "name": "Number",
+        "type": "Integer",
+        "required": true,
+        "description": "The 1-based index of the string to select."
+      },
+      {
+        "name": "StringList",
+        "type": "Text",
+        "required": true,
+        "description": "Comma-separated list of strings."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Returns the Nth string from a comma-separated list.",
+    "category": "string"
+  },
+  {
+    "name": "InsStr",
+    "signature": "InsStr(Text; SubString: Text; Position: Integer): Text",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The original string."
+      },
+      {
+        "name": "SubString",
+        "type": "Text",
+        "required": true,
+        "description": "The string to insert."
+      },
+      {
+        "name": "Position",
+        "type": "Integer",
+        "required": true,
+        "description": "Position at which to insert."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Inserts a substring into a string at the specified position.",
+    "category": "string"
+  },
+  {
+    "name": "DelStr",
+    "signature": "DelStr(Text; Position: Integer; Length: Integer): Text",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The original string."
+      },
+      {
+        "name": "Position",
+        "type": "Integer",
+        "required": true,
+        "description": "Starting position of deletion."
+      },
+      {
+        "name": "Length",
+        "type": "Integer",
+        "required": true,
+        "description": "Number of characters to delete."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Deletes characters from a string starting at Position for Length characters.",
+    "category": "string"
+  },
+  {
+    "name": "DelChr",
+    "signature": "DelChr(Text [; Where: Text] [; Which: Text]): Text",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The string to process."
+      },
+      {
+        "name": "Where",
+        "type": "Text",
+        "required": false,
+        "description": "Where to delete: \u0027\u003C\u0027 (leading), \u0027\u003E\u0027 (trailing), \u0027=\u0027 (all)."
+      },
+      {
+        "name": "Which",
+        "type": "Text",
+        "required": false,
+        "description": "Characters to delete."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Removes specified characters from a string.",
+    "category": "string"
+  },
+  {
+    "name": "PadStr",
+    "signature": "PadStr(Text; Length: Integer [; PadChar: Text]): Text",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The string to pad."
+      },
+      {
+        "name": "Length",
+        "type": "Integer",
+        "required": true,
+        "description": "Target length."
+      },
+      {
+        "name": "PadChar",
+        "type": "Text",
+        "required": false,
+        "description": "Character to pad with (default: space)."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Pads a string to the specified length.",
+    "category": "string"
+  },
+  {
+    "name": "ConvertStr",
+    "signature": "ConvertStr(Text; FromChars: Text; ToChars: Text): Text",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The string to convert."
+      },
+      {
+        "name": "FromChars",
+        "type": "Text",
+        "required": true,
+        "description": "Characters to replace."
+      },
+      {
+        "name": "ToChars",
+        "type": "Text",
+        "required": true,
+        "description": "Replacement characters (positional)."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Replaces characters in a string based on a positional mapping.",
+    "category": "string"
+  },
+  {
+    "name": "UpperCase",
+    "signature": "UpperCase(Text): Text",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The string to convert."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Returns the string converted to upper case.",
+    "category": "string"
+  },
+  {
+    "name": "LowerCase",
+    "signature": "LowerCase(Text): Text",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The string to convert."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Returns the string converted to lower case.",
+    "category": "string"
+  },
+  {
+    "name": "IncStr",
+    "signature": "IncStr(Text): Text",
+    "parameters": [
+      {
+        "name": "String",
+        "type": "Text",
+        "required": true,
+        "description": "The string to increment."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Increments the trailing numeric portion of a string by 1.",
+    "category": "string"
+  },
+  {
+    "name": "Round",
+    "signature": "Round(Number: Decimal [; Precision: Decimal] [; Direction: Text]): Decimal",
+    "parameters": [
+      {
+        "name": "Number",
+        "type": "Decimal",
+        "required": true,
+        "description": "The number to round."
+      },
+      {
+        "name": "Precision",
+        "type": "Decimal",
+        "required": false,
+        "description": "Rounding precision (default: 0.01)."
+      },
+      {
+        "name": "Direction",
+        "type": "Text",
+        "required": false,
+        "description": "\u0027=\u0027 nearest, \u0027\u003E\u0027 up, \u0027\u003C\u0027 down."
+      }
+    ],
+    "return_type": "Decimal",
+    "description": "Rounds a decimal to the nearest multiple of Precision.",
+    "category": "math"
+  },
+  {
+    "name": "Abs",
+    "signature": "Abs(Number: Decimal): Decimal",
+    "parameters": [
+      {
+        "name": "Number",
+        "type": "Decimal",
+        "required": true,
+        "description": "The number."
+      }
+    ],
+    "return_type": "Decimal",
+    "description": "Returns the absolute value of a number.",
+    "category": "math"
+  },
+  {
+    "name": "Power",
+    "signature": "Power(Number: Decimal; Exponent: Decimal): Decimal",
+    "parameters": [
+      {
+        "name": "Number",
+        "type": "Decimal",
+        "required": true,
+        "description": "The base number."
+      },
+      {
+        "name": "Exponent",
+        "type": "Decimal",
+        "required": true,
+        "description": "The exponent."
+      }
+    ],
+    "return_type": "Decimal",
+    "description": "Raises Number to the power of Exponent.",
+    "category": "math"
+  },
+  {
+    "name": "Sqrt",
+    "signature": "Sqrt(Number: Decimal): Decimal",
+    "parameters": [
+      {
+        "name": "Number",
+        "type": "Decimal",
+        "required": true,
+        "description": "The number."
+      }
+    ],
+    "return_type": "Decimal",
+    "description": "Returns the square root of a number.",
+    "category": "math"
+  },
+  {
+    "name": "Random",
+    "signature": "Random(MaxValue: Integer): Integer",
+    "parameters": [
+      {
+        "name": "MaxValue",
+        "type": "Integer",
+        "required": true,
+        "description": "The upper bound (inclusive)."
+      }
+    ],
+    "return_type": "Integer",
+    "description": "Returns a random integer between 1 and MaxValue (inclusive).",
+    "category": "math"
+  },
+  {
+    "name": "Randomize",
+    "signature": "Randomize([Seed: Integer])",
+    "parameters": [
+      {
+        "name": "Seed",
+        "type": "Integer",
+        "required": false,
+        "description": "Optional seed value."
+      }
+    ],
+    "return_type": null,
+    "description": "Seeds the random number generator.",
+    "category": "math"
+  },
+  {
+    "name": "Maximum",
+    "signature": "Maximum(Value1: Any; Value2: Any): Any",
+    "parameters": [
+      {
+        "name": "Value1",
+        "type": "Any",
+        "required": true,
+        "description": "First value."
+      },
+      {
+        "name": "Value2",
+        "type": "Any",
+        "required": true,
+        "description": "Second value."
+      }
+    ],
+    "return_type": "Any",
+    "description": "Returns the larger of two values.",
+    "category": "math"
+  },
+  {
+    "name": "Minimum",
+    "signature": "Minimum(Value1: Any; Value2: Any): Any",
+    "parameters": [
+      {
+        "name": "Value1",
+        "type": "Any",
+        "required": true,
+        "description": "First value."
+      },
+      {
+        "name": "Value2",
+        "type": "Any",
+        "required": true,
+        "description": "Second value."
+      }
+    ],
+    "return_type": "Any",
+    "description": "Returns the smaller of two values.",
+    "category": "math"
+  },
+  {
+    "name": "Today",
+    "signature": "Today(): Date",
+    "parameters": [],
+    "return_type": "Date",
+    "description": "Returns the current system date.",
+    "category": "datetime"
+  },
+  {
+    "name": "Time",
+    "signature": "Time(): Time",
+    "parameters": [],
+    "return_type": "Time",
+    "description": "Returns the current system time.",
+    "category": "datetime"
+  },
+  {
+    "name": "CurrentDateTime",
+    "signature": "CurrentDateTime(): DateTime",
+    "parameters": [],
+    "return_type": "DateTime",
+    "description": "Returns the current date and time as a DateTime value.",
+    "category": "datetime"
+  },
+  {
+    "name": "CreateDateTime",
+    "signature": "CreateDateTime(Date; Time): DateTime",
+    "parameters": [
+      {
+        "name": "Date",
+        "type": "Date",
+        "required": true,
+        "description": "The date component."
+      },
+      {
+        "name": "Time",
+        "type": "Time",
+        "required": true,
+        "description": "The time component."
+      }
+    ],
+    "return_type": "DateTime",
+    "description": "Creates a DateTime value from separate date and time values.",
+    "category": "datetime"
+  },
+  {
+    "name": "DT2Date",
+    "signature": "DT2Date(DateTime): Date",
+    "parameters": [
+      {
+        "name": "Value",
+        "type": "DateTime",
+        "required": true,
+        "description": "The DateTime value."
+      }
+    ],
+    "return_type": "Date",
+    "description": "Extracts the date part from a DateTime value.",
+    "category": "datetime"
+  },
+  {
+    "name": "DT2Time",
+    "signature": "DT2Time(DateTime): Time",
+    "parameters": [
+      {
+        "name": "Value",
+        "type": "DateTime",
+        "required": true,
+        "description": "The DateTime value."
+      }
+    ],
+    "return_type": "Time",
+    "description": "Extracts the time part from a DateTime value.",
+    "category": "datetime"
+  },
+  {
+    "name": "CalcDate",
+    "signature": "CalcDate(DateFormula [; Date: Date]): Date",
+    "parameters": [
+      {
+        "name": "DateFormula",
+        "type": "DateFormula",
+        "required": true,
+        "description": "The date formula expression."
+      },
+      {
+        "name": "Date",
+        "type": "Date",
+        "required": false,
+        "description": "Base date (default: WorkDate)."
+      }
+    ],
+    "return_type": "Date",
+    "description": "Calculates a date from a date formula, optionally relative to Date.",
+    "category": "datetime"
+  },
+  {
+    "name": "Date2DMY",
+    "signature": "Date2DMY(Date; What: Integer): Integer",
+    "parameters": [
+      {
+        "name": "Date",
+        "type": "Date",
+        "required": true,
+        "description": "The date value."
+      },
+      {
+        "name": "What",
+        "type": "Integer",
+        "required": true,
+        "description": "1=Day, 2=Month, 3=Year."
+      }
+    ],
+    "return_type": "Integer",
+    "description": "Extracts day (1), month (2), or year (3) from a date.",
+    "category": "datetime"
+  },
+  {
+    "name": "DMY2Date",
+    "signature": "DMY2Date(Day: Integer; Month: Integer; Year: Integer): Date",
+    "parameters": [
+      {
+        "name": "Day",
+        "type": "Integer",
+        "required": true,
+        "description": "Day of the month."
+      },
+      {
+        "name": "Month",
+        "type": "Integer",
+        "required": true,
+        "description": "Month number."
+      },
+      {
+        "name": "Year",
+        "type": "Integer",
+        "required": true,
+        "description": "Year."
+      }
+    ],
+    "return_type": "Date",
+    "description": "Creates a date from day, month, and year components.",
+    "category": "datetime"
+  },
+  {
+    "name": "NormalDate",
+    "signature": "NormalDate(Date): Date",
+    "parameters": [
+      {
+        "name": "Date",
+        "type": "Date",
+        "required": true,
+        "description": "The date value."
+      }
+    ],
+    "return_type": "Date",
+    "description": "Returns the normal (non-closing) date for a given date.",
+    "category": "datetime"
+  },
+  {
+    "name": "WorkDate",
+    "signature": "WorkDate([Date: Date]): Date",
+    "parameters": [
+      {
+        "name": "Date",
+        "type": "Date",
+        "required": false,
+        "description": "New work date to set. Omit to get current."
+      }
+    ],
+    "return_type": "Date",
+    "description": "Gets or sets the work date for the current session.",
+    "category": "datetime"
+  },
+  {
+    "name": "CompressArray",
+    "signature": "CompressArray(var Array)",
+    "parameters": [
+      {
+        "name": "Array",
+        "type": "Any",
+        "required": true,
+        "description": "The array to compress (var parameter)."
+      }
+    ],
+    "return_type": null,
+    "description": "Removes empty strings from a text array, compacting the remaining elements.",
+    "category": "system"
+  },
+  {
+    "name": "CopyArray",
+    "signature": "CopyArray(var Destination; Source; StartIndex: Integer [; Count: Integer])",
+    "parameters": [
+      {
+        "name": "Destination",
+        "type": "Any",
+        "required": true,
+        "description": "The destination array (var parameter)."
+      },
+      {
+        "name": "Source",
+        "type": "Any",
+        "required": true,
+        "description": "The source array."
+      },
+      {
+        "name": "StartIndex",
+        "type": "Integer",
+        "required": true,
+        "description": "Index to start copying from."
+      },
+      {
+        "name": "Count",
+        "type": "Integer",
+        "required": false,
+        "description": "Number of elements to copy."
+      }
+    ],
+    "return_type": null,
+    "description": "Copies elements from one array to another.",
+    "category": "system"
+  },
+  {
+    "name": "SortArray",
+    "signature": "SortArray(var Array)",
+    "parameters": [
+      {
+        "name": "Array",
+        "type": "Any",
+        "required": true,
+        "description": "The array to sort (var parameter)."
+      }
+    ],
+    "return_type": null,
+    "description": "Sorts the elements of a text array in ascending order.",
+    "category": "system"
+  },
+  {
+    "name": "ClearAll",
+    "signature": "ClearAll()",
+    "parameters": [],
+    "return_type": null,
+    "description": "Resets all global variables and closes open cursors in the current codeunit.",
+    "category": "system"
+  },
+  {
+    "name": "Sleep",
+    "signature": "Sleep(Milliseconds: Integer)",
+    "parameters": [
+      {
+        "name": "Milliseconds",
+        "type": "Integer",
+        "required": true,
+        "description": "Duration to sleep."
+      }
+    ],
+    "return_type": null,
+    "description": "Suspends execution for the given number of milliseconds.",
+    "category": "system"
+  },
+  {
+    "name": "Commit",
+    "signature": "Commit()",
+    "parameters": [],
+    "return_type": null,
+    "description": "Commits the current database transaction.",
+    "category": "system"
+  },
+  {
+    "name": "Rollback",
+    "signature": "Rollback()",
+    "parameters": [],
+    "return_type": null,
+    "description": "Rolls back the current database transaction.",
+    "category": "system"
+  },
+  {
+    "name": "NullGuid",
+    "signature": "NullGuid(): Guid",
+    "parameters": [],
+    "return_type": "Guid",
+    "description": "Returns the null GUID {00000000-0000-0000-0000-000000000000}.",
+    "category": "type"
+  },
+  {
+    "name": "CreateGuid",
+    "signature": "CreateGuid(): Guid",
+    "parameters": [],
+    "return_type": "Guid",
+    "description": "Creates a new globally unique identifier (GUID).",
+    "category": "type"
+  },
+  {
+    "name": "TypeHelper",
+    "signature": "TypeHelper",
+    "parameters": [],
+    "return_type": null,
+    "description": "System type providing type conversion and inspection utilities.",
+    "category": "type"
+  },
+  {
+    "name": "ApplicationPath",
+    "signature": "ApplicationPath(): Text",
+    "parameters": [],
+    "return_type": "Text",
+    "description": "Returns the path to the application server installation.",
+    "category": "system"
+  },
+  {
+    "name": "GuiAllowed",
+    "signature": "GuiAllowed(): Boolean",
+    "parameters": [],
+    "return_type": "Boolean",
+    "description": "Returns true if the current session allows GUI interaction (not a background session).",
+    "category": "system"
+  },
+  {
+    "name": "UserId",
+    "signature": "UserId(): Text",
+    "parameters": [],
+    "return_type": "Text",
+    "description": "Returns the user ID of the current session.",
+    "category": "system"
+  },
+  {
+    "name": "CompanyName",
+    "signature": "CompanyName(): Text",
+    "parameters": [],
+    "return_type": "Text",
+    "description": "Returns the name of the current company.",
+    "category": "system"
+  },
+  {
+    "name": "TenantId",
+    "signature": "TenantId(): Text",
+    "parameters": [],
+    "return_type": "Text",
+    "description": "Returns the ID of the current tenant.",
+    "category": "system"
+  },
+  {
+    "name": "GlobalLanguage",
+    "signature": "GlobalLanguage([LanguageId: Integer]): Integer",
+    "parameters": [
+      {
+        "name": "LanguageId",
+        "type": "Integer",
+        "required": false,
+        "description": "Language ID to set. Omit to get current."
+      }
+    ],
+    "return_type": "Integer",
+    "description": "Gets or sets the global language for the current session.",
+    "category": "system"
+  },
+  {
+    "name": "WindowsLanguage",
+    "signature": "WindowsLanguage(): Integer",
+    "parameters": [],
+    "return_type": "Integer",
+    "description": "Returns the Windows language ID of the current session.",
+    "category": "system"
+  },
+  {
+    "name": "GetLastErrorText",
+    "signature": "GetLastErrorText(): Text",
+    "parameters": [],
+    "return_type": "Text",
+    "description": "Returns the text of the last error that occurred.",
+    "category": "system"
+  },
+  {
+    "name": "GetLastErrorCode",
+    "signature": "GetLastErrorCode(): Text",
+    "parameters": [],
+    "return_type": "Text",
+    "description": "Returns the error code of the last error that occurred.",
+    "category": "system"
+  },
+  {
+    "name": "ClearLastError",
+    "signature": "ClearLastError()",
+    "parameters": [],
+    "return_type": null,
+    "description": "Clears the last error so GetLastErrorText returns empty.",
+    "category": "system"
+  },
+  {
+    "name": "Variant2Date",
+    "signature": "Variant2Date(Variant): Date",
+    "parameters": [
+      {
+        "name": "Value",
+        "type": "Variant",
+        "required": true,
+        "description": "The variant value to convert."
+      }
+    ],
+    "return_type": "Date",
+    "description": "Converts a variant value to a Date.",
+    "category": "type"
+  },
+  {
+    "name": "Variant2Time",
+    "signature": "Variant2Time(Variant): Time",
+    "parameters": [
+      {
+        "name": "Value",
+        "type": "Variant",
+        "required": true,
+        "description": "The variant value to convert."
+      }
+    ],
+    "return_type": "Time",
+    "description": "Converts a variant value to a Time.",
+    "category": "type"
+  },
+  {
+    "name": "TableCaption",
+    "signature": "TableCaption(TableId: Integer): Text",
+    "parameters": [
+      {
+        "name": "TableId",
+        "type": "Integer",
+        "required": true,
+        "description": "The table ID."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Returns the caption of a table by its ID.",
+    "category": "type"
+  },
+  {
+    "name": "FieldCaption",
+    "signature": "FieldCaption(TableId: Integer; FieldId: Integer): Text",
+    "parameters": [
+      {
+        "name": "TableId",
+        "type": "Integer",
+        "required": true,
+        "description": "The table ID."
+      },
+      {
+        "name": "FieldId",
+        "type": "Integer",
+        "required": true,
+        "description": "The field ID."
+      }
+    ],
+    "return_type": "Text",
+    "description": "Returns the caption of a field by table and field ID.",
+    "category": "type"
+  },
+  {
+    "name": "FieldNo",
+    "signature": "FieldNo(TableId: Integer; FieldName: Text): Integer",
+    "parameters": [
+      {
+        "name": "TableId",
+        "type": "Integer",
+        "required": true,
+        "description": "The table ID."
+      },
+      {
+        "name": "FieldName",
+        "type": "Text",
+        "required": true,
+        "description": "The field name."
+      }
+    ],
+    "return_type": "Integer",
+    "description": "Returns the field number for a field by table ID and field name.",
+    "category": "type"
+  }
+]

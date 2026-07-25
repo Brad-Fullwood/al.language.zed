@@ -1,0 +1,13 @@
+[[repo]]
+name = "BCApps"
+url = "https://github.com/microsoft/BCApps"
+branch = "main"
+enabled = true
+description = "Microsoft Business Central System Application"
+
+[[repo]]
+name = "ALAppExtensions"
+url = "https://github.com/microsoft/ALAppExtensions"
+branch = "main"
+enabled = true
+description = "Microsoft Business Central Application Extensions"

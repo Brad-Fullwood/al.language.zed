@@ -1,0 +1,779 @@
+module.exports = grammar({
+  name: 'al',
+
+  externals: $ => [
+    {{ EXTERNALS_LIST }}
+  ],
+
+  extras: $ => [
+    /\s/,
+    $.comment,
+    $.directive,
+    $.inactive_code,
+  ],
+
+  conflicts: $ => [
+    [$.name, $._pre_object_body],
+    [$.name_or_keyword, $._pre_object_body],
+    [$.statement_list, $.case_branch],
+    [$.statement_list, $.case_statement],
+    [$.break_statement, $.expression_statement],
+    [$.continue_statement, $.expression_statement],
+    [$.break_statement, $.name],
+    [$.continue_statement, $.name],
+    [$.name_or_keyword, $._atom],
+    [$.name, $._atom],
+    [$.option_member, $.name_or_keyword],
+    [$.key_declaration, $._atom],
+    [$.type_reference, $.option_member],
+    [$.option_member, $.name],
+    [$.option_type],
+  ],
+
+  word: $ => $.identifier,
+
+  rules: {
+  // _atom provides error recovery for unsupported top-level constructs.
+  source_file: $ => repeat(choice(
+    $.namespace_or_using_declaration,
+    $.object_declaration,
+    $.directive,
+    $._atom,
+  )),
+
+  qualified_name: $ => seq(
+    $.name,
+    repeat1(seq('.', $.name)),
+  ),
+
+  // The TextMate grammar classifies namespace and using as metadata keywords.
+  namespace_or_using_declaration: $ => prec(1, seq(
+    field('keyword', $.metadata_keyword),
+    field('name', choice($.qualified_name, $.name)),
+    $.semicolon,
+  )),
+
+  object_declaration: $ => prec(2, seq(
+    field('kind', choice(
+      {{OBJECT_DECLARE_KIND}},
+      $.object_keyword
+    )),
+    field('id', optional($.integer)),
+    field('name', optional($.name_or_keyword)),
+    // Conditional compilation can split an object header across branches.
+    repeat($._pre_object_body),
+    field('body', $.object_body),
+  )),
+
+  object_modifier: $ => seq(
+    field('modifier', $.metadata_keyword),
+    field('target', $.name),
+  ),
+
+  implements_clause: $ => prec(2, seq(
+    $.metadata_keyword,
+    $.name,
+  )),
+
+  _pre_object_body: $ => choice(
+    $.object_modifier,
+    $.implements_clause,
+    $.parenthesized_block,
+    $.bracketed_block,
+    // A bare metadata keyword conflicts with object_modifier and is excluded.
+    $.string,
+    $.verbatim_string,
+    $.quoted_identifier,
+    $.integer,
+    $.identifier,
+    $.control_keyword,
+    $.operator_word,
+    $.object_keyword,
+    $.type_keyword,
+    $.property_keyword,
+    $.keyword,
+    $.operator,
+    $.semicolon,
+    $.comma,
+  ),
+
+  object_body: $ => prec.right(seq(
+    '{',
+    repeat($._object_body_item),
+    '}',
+  )),
+
+  _object_body_item: $ => choice(
+    $.enum_value_declaration,
+    $.key_declaration,
+    $.object_section,
+    $.property_assignment,
+    $.object_var_section,
+    $.empty_var_section,
+    $.variable_declaration,
+    $.event_declaration,
+    $.procedure_declaration,
+    $.trigger_declaration,
+    $.braced_block,
+    $.parenthesized_block,
+    $.bracketed_block,
+    $.semicolon,
+  ),
+
+  // Reusing object_body keeps nested declarations structurally parsed.
+  object_section: $ => prec(-1, seq(
+    field('keyword', choice($.metadata_keyword, $.keyword)),
+    repeat($._section_header_piece),
+    field('body', $.object_body),
+  )),
+
+  enum_value_declaration: $ => prec.right(seq(
+    field('keyword', $.object_keyword),
+    '(',
+    field('id', $.integer),
+    $.semicolon,
+    field('name', $.name),
+    ')',
+    optional($.object_body),
+    optional($.semicolon),
+  )),
+
+  key_declaration: $ => prec.right(seq(
+    field('keyword', $.keyword),
+    '(',
+    field('name', $.name_or_keyword),
+    $.semicolon,
+    field('fields', optional(seq(
+      choice($.name_or_keyword, $.string),
+      repeat(seq($.comma, choice($.name_or_keyword, $.string))),
+    ))),
+    ')',
+    field('body', $.braced_block),
+  )),
+
+  _section_header_piece: $ => choice(
+    $.name,
+    $.integer,
+    $.string,
+    $.verbatim_string,
+    $.operator,
+    $.operator_word,
+    $.semicolon,
+    $.comma,
+    $.parenthesized_block,
+    $.bracketed_block,
+  ),
+
+  property_assignment: $ => prec(1, seq(
+    field('name', choice($.name, $.property_keyword, $.metadata_keyword, $.keyword)),
+    field('op', '='),
+    field('value', repeat1(choice(
+      $.name,
+      $.qualified_name,
+      $.string,
+      $.verbatim_string,
+      $.date_literal,
+      $.time_literal,
+      $.datetime_literal,
+      $.integer,
+      $.operator,
+      $.operator_word,
+      $.control_keyword,
+      $.object_keyword,
+      $.type_keyword,
+      $.metadata_keyword,
+      $.property_keyword,
+      $.keyword,
+      $.comma,
+      $.parenthesized_block,
+      $.bracketed_block,
+    ))),
+    $.semicolon,
+  )),
+
+  object_var_section: $ => prec.right(3, seq(
+    repeat($.member_modifier),
+    {{KW:var}},
+    repeat1($.object_variable_declaration),
+  )),
+
+  object_variable_declaration: $ => prec(1, choice(
+    $.regular_variable_declaration,
+    $.label_declaration,
+  )),
+
+  var_section: $ => prec.right(3, seq(
+    {{KW:var}},
+    $.variable_declaration,
+    repeat($.variable_declaration),
+  )),
+
+  empty_var_section: $ => prec(1, seq(
+    repeat($.member_modifier),
+    {{KW:var}},
+  )),
+
+  variable_declaration: $ => prec(1, choice(
+    seq(repeat1($.attribute), $.regular_variable_declaration),
+    seq(repeat1($.attribute), $.label_declaration),
+    $.regular_variable_declaration,
+    $.label_declaration,
+  )),
+
+  label_declaration: $ => prec(2, seq(
+    field('name', $.name_or_keyword),
+    field('sep', $.operator),
+    field('type', choice($.type_keyword, $.identifier, $.metadata_keyword, $.keyword)),
+    field('value', $.string),
+    repeat($.label_property),
+    optional($.comma),
+    $.semicolon,
+  )),
+
+  label_property: $ => seq(
+    $.comma,
+    field('name', $.identifier),
+    $.operator,
+    field('value', choice($.string, $.identifier, $.integer)),
+  ),
+
+  regular_variable_declaration: $ => prec(1, seq(
+    field('name', $.name_or_keyword),
+    repeat(seq($.comma, field('name', $.name_or_keyword))),
+    field('sep', $.operator),
+    field('type', $.type_reference),
+    optional(seq(field('assign', $.operator), field('value', $.expression))),
+    $.semicolon,
+  )),
+
+  // AL type references may include object names, dimensions, and modifiers.
+  type_reference: $ => prec.right(1, choice(
+    prec(4, $.option_type),
+    seq(
+      choice(
+        {{TYPE_REFERENCE_KIND}},
+        $.type_keyword,
+        $.object_keyword
+      ),
+      repeat(choice(
+        $.qualified_name,
+        prec(2, $.name_or_keyword),
+        $.integer,
+        $.string,
+        $.parenthesized_block,
+        $.bracketed_block,
+        $.of_clause,
+        {{KW:temporary}},
+      )),
+    ),
+    $.qualified_name,
+    $.name_or_keyword,
+    $.bracketed_block,
+    $.parenthesized_block,
+  )),
+
+  option_type: $ => seq(
+    {{KW:option}},
+    repeat(prec(30, choice(
+       $.identifier,
+       $.quoted_identifier,
+       $.comma,
+       $.string
+    )))
+  ),
+
+  option_member: $ => choice(
+    $.quoted_identifier,
+    $.identifier,
+    $.string,
+    $.verbatim_string,
+    $.name_or_keyword,
+  ),
+
+  of_clause: $ => seq(
+    {{KW:of}},
+    choice(
+      $.type_keyword,
+      $.qualified_name,
+      $.name_or_keyword,
+      $.bracketed_block,
+      $.parenthesized_block,
+    ),
+  ),
+
+  member_modifier: $ => choice(
+    {{KW:local}},
+    {{KW:internal}},
+    {{KW:protected}},
+    {{KW:withevents}},
+    {{KW:runonclient}},
+    {{KW:securityfiltering}},
+    {{KW:suppressdispose}},
+  ),
+
+  event_procedure_declaration: $ => prec.right(3, seq(
+    repeat($.member_modifier),
+    {{KW:event}},
+    repeat($.member_modifier),
+    choice({{KW:procedure}}, {{KW:function}}),
+    field('name', $.name),
+    field('parameters', $.parameter_list),
+    optional(choice(
+      seq(field('return_var', $.return_var_name), field('returns', $.operator), field('return_type', $.type_reference)),
+      seq(field('returns', $.operator), field('return_type', $.type_reference)),
+    )),
+    $.semicolon,
+  )),
+
+  event_declaration: $ => prec.left(seq(
+    {{KW:event}},
+    optional(field('name', $.name_or_keyword)),
+    field('parameters', $.parameter_list),
+    optional(seq(field('returns', $.operator), field('return_type', $.type_reference))),
+    optional($.semicolon),
+    optional(choice(
+      seq($.var_section, $.begin_end_block),
+      seq($.empty_var_section, $.begin_end_block),
+      $.begin_end_block,
+      $.braced_block,
+    )),
+    optional($.semicolon),
+  )),
+
+  procedure_declaration: $ => choice(
+    $.event_procedure_declaration,
+    prec.right(2, seq(
+      repeat($.attribute),
+      repeat($.member_modifier),
+      choice({{KW:procedure}}, {{KW:function}}),
+      field('name', $.name),
+      field('parameters', $.parameter_list),
+      optional(choice(
+        seq(
+          field('return_var', $.name_or_keyword),
+          field('returns', $.operator),
+          field('return_type', $.type_reference),
+        ),
+        seq(
+          field('returns', $.operator),
+          field('return_type', $.type_reference),
+        ),
+      )),
+      choice(
+        prec(1, seq(
+          optional($.semicolon),
+          choice(
+            seq($.var_section, $.begin_end_block),
+            seq($.empty_var_section, $.begin_end_block),
+            $.begin_end_block,
+          ),
+          optional($.semicolon),
+        )),
+        // Interface procedure signatures may omit the terminator.
+        prec(-1, optional($.semicolon)),
+      ),
+    )),
+  ),
+
+  trigger_declaration: $ => prec.right(2, seq(
+    repeat($.attribute),
+    repeat($.member_modifier),
+    {{KW:trigger}},
+    field('name', choice($.name_or_keyword, $.scoped_name)),
+    field('parameters', $.parameter_list),
+    optional(choice(
+      seq(
+        field('return_var', $.return_var_name),
+        field('returns', $.operator),
+        field('return_type', $.type_reference),
+      ),
+      seq(
+        field('returns', $.operator),
+        field('return_type', $.type_reference),
+      ),
+    )),
+    optional($.semicolon),
+    choice(
+      seq($.var_section, $.begin_end_block),
+      seq($.empty_var_section, $.begin_end_block),
+      $.begin_end_block,
+    ),
+    optional($.semicolon),
+  )),
+
+  scoped_name: $ => seq(
+    $.name_or_keyword,
+    repeat1(seq('::', $.name_or_keyword)),
+  ),
+
+  parameter_list: $ => seq(
+    '(',
+    optional(seq(
+      $.parameter,
+      repeat(seq($.semicolon, $.parameter)),
+    )),
+    ')',
+  ),
+
+  parameter: $ => seq(
+    optional({{KW:var}}),
+    field('name', $.name_or_keyword),
+    field('sep', $.operator),
+    field('type', $.type_reference),
+    optional(seq(field('assign', $.operator), field('default', $.expression))),
+  ),
+
+  statement_list: $ => prec.right(seq(
+    choice(
+      $.statement,
+      seq($.semicolon, optional($.statement)),
+    ),
+    repeat(seq($.semicolon, optional($.statement))),
+  )),
+
+  begin_end_block: $ => prec.right(7, seq(
+    {{KW:begin}},
+    optional($.statement_list),
+    {{KW:end}},
+  )),
+
+  statement: $ => choice(
+    $.begin_end_block,
+    $.if_statement,
+    $.empty_if_statement,
+    $.case_statement,
+    $.for_statement,
+    $.foreach_statement,
+    $.while_statement,
+    $.repeat_statement,
+    $.with_statement,
+    $.asserterror_statement,
+    $.exit_statement,
+    $.break_statement,
+    $.continue_statement,
+    $.expression_statement,
+  ),
+
+  if_statement: $ => prec.right(2, seq(
+    {{KW:if}},
+    field('condition', $.expression),
+    {{KW:then}},
+    field('consequence', $.statement),
+    optional(seq({{KW:else}}, field('alternative', $.statement))),
+  )),
+
+  empty_if_statement: $ => prec.right(-1, seq(
+    {{KW:if}},
+    field('condition', $.expression),
+    {{KW:then}},
+  )),
+
+  case_statement: $ => seq(
+    {{KW:case}},
+    field('value', $.expression),
+    {{KW:of}},
+    repeat($.case_branch),
+    optional(seq(
+      {{KW:else}},
+      optional(field('else_body', choice($.statement, $.statement_list))),
+      optional($.semicolon),
+    )),
+    {{KW:end}},
+  ),
+
+  case_branch: $ => choice(
+    seq(
+      field('labels', $.case_label_list),
+      field('sep', ':'),
+      // An arm contains one statement; multiple statements require BEGIN/END.
+      // A statement_list greedily consumes the labels of following arms.
+      field('body', $.statement),
+      optional($.semicolon),
+    ),
+    seq(
+      field('labels', $.case_label_list),
+      field('sep', ':'),
+      $.semicolon,
+    ),
+  ),
+
+  case_label_list: $ => seq(
+    $.case_label_expression,
+    repeat(seq($.comma, $.case_label_expression)),
+  ),
+
+  case_label_expression: $ => prec.left(0, seq(
+    optional($.op_not),
+    $.postfix_expression,
+    repeat(seq($.binary_operator, $.unary_expression)),
+  )),
+
+  for_statement: $ => prec.right(seq(
+    {{KW:for}},
+    field('iterator', $.identifier),
+    field('assign', $.operator),
+    field('from', $.expression),
+    field('direction', choice({{KW:to}}, {{KW:downto}})),
+    field('to', $.expression),
+    {{KW:do}},
+    field('body', $.statement),
+  )),
+
+  foreach_statement: $ => prec.right(seq(
+    {{KW:foreach}},
+    field('iterator', $.name_or_keyword),
+    {{KW:in}},
+    field('collection', $.expression),
+    {{KW:do}},
+    field('body', $.statement),
+  )),
+
+  while_statement: $ => prec.right(seq(
+    {{KW:while}},
+    field('condition', $.expression),
+    {{KW:do}},
+    field('body', $.statement),
+  )),
+
+  repeat_statement: $ => prec.right(seq(
+    {{KW:repeat}},
+    optional($.statement_list),
+    {{KW:until}},
+    field('condition', $.expression),
+  )),
+
+  with_statement: $ => prec.right(seq(
+    {{KW:with}},
+    field('value', $.expression),
+    {{KW:do}},
+    field('body', $.statement),
+  )),
+
+  exit_statement: $ => prec.right(seq(
+    {{KW:exit}},
+    optional($.argument_list),
+  )),
+
+  break_statement: $ => prec.dynamic(1, {{KW:break}}),
+
+  continue_statement: $ => prec.dynamic(1, {{KW:continue}}),
+
+  asserterror_statement: $ => prec.right(seq(
+    {{KW:asserterror}},
+    field('body', $.statement),
+  )),
+
+  expression_statement: $ => $.expression,
+
+  expression_list: $ => seq(
+    $.expression,
+    repeat(seq($.comma, $.expression)),
+  ),
+
+  argument_list: $ => prec(4, seq(
+    '(',
+    optional($.expression_list),
+    ')',
+  )),
+
+  expression: $ => prec.left(0, seq(
+    $.unary_expression,
+    repeat(seq($.binary_operator, $.unary_expression)),
+  )),
+
+  unary_expression: $ => prec.right(2, choice(
+    seq($.unary_operator, $.unary_expression),
+    $.postfix_expression,
+  )),
+
+  unary_operator: $ => prec.right(choice(
+    $.op_not,
+    token(/[+\-!]/),
+  )),
+
+  binary_operator: $ => choice(
+    $.operator_word,
+    {{KW:in}},
+    $.operator,
+  ),
+
+  postfix_expression: $ => prec.right(4, seq(
+    $.primary_expression,
+    repeat(choice(
+      $.member_call_suffix,
+      $.scope_call_suffix,
+      prec(6, $.call_suffix),
+      $.member_suffix,
+      $.scope_suffix,
+      $.index_suffix,
+    )),
+  )),
+
+  call_suffix: $ => prec(5, field('call', $.argument_list)),
+
+  member_call_suffix: $ => prec(7, seq(
+    '.',
+    field('member', $.name),
+    field('call', $.argument_list),
+  )),
+
+  member_suffix: $ => seq(
+    '.',
+    field('member', $.name),
+  ),
+
+  scope_call_suffix: $ => prec(7, seq(
+    '::',
+    field('member', $.name),
+    field('call', $.argument_list),
+  )),
+
+  scope_suffix: $ => seq(
+    '::',
+    field('member', $.name),
+  ),
+
+  index_suffix: $ => field('index', $.bracketed_block),
+
+  primary_expression: $ => choice(
+    $.name,
+    $.type_keyword,
+    $.string,
+    $.verbatim_string,
+    $.date_literal,
+    $.time_literal,
+    $.datetime_literal,
+    $.decimal,
+    $.integer,
+    $.bracketed_block,
+    prec(-1, $.parenthesized_expression),
+  ),
+
+  parenthesized_expression: $ => prec(0, seq('(', $.expression, ')')),
+
+  attribute: $ => prec(3, seq(
+    '[',
+    field('name', $.identifier),
+    optional($.attribute_argument_list),
+    ']',
+  )),
+
+  attribute_argument_list: $ => seq(
+    '(',
+    optional($.attribute_argument),
+    repeat(seq($.comma, $.attribute_argument)),
+    ')',
+  ),
+
+  attribute_argument: $ => prec(1, choice(
+    seq(field('name', $.identifier), $.operator, field('value', $.expression)),
+    $.expression,
+  )),
+
+  braced_block: $ => prec.right(seq(
+    '{',
+    repeat(choice(
+      $.key_declaration,
+      $.braced_block,
+      $.parenthesized_block,
+      $.bracketed_block,
+      $._atom,
+    )),
+    '}',
+  )),
+
+  parenthesized_block: $ => prec.right(seq(
+    '(',
+    repeat(choice(
+      $.braced_block,
+      $.parenthesized_block,
+      $.bracketed_block,
+      $._atom,
+    )),
+    ')',
+  )),
+
+  bracketed_block: $ => prec.right(seq(
+    '[',
+    repeat(choice(
+      $.braced_block,
+      $.parenthesized_block,
+      $.bracketed_block,
+      $._atom,
+    )),
+    ']',
+  )),
+
+  name: $ => choice(
+    $.identifier,
+    $.quoted_identifier,
+    alias({{KW:break}}, $.identifier),
+    alias({{KW:continue}}, $.identifier),
+  ),
+
+  name_or_keyword: $ => choice(
+    $.name,
+    $.object_keyword,
+    $.metadata_keyword,
+    $.property_keyword,
+    {{KW:function}},
+    $.keyword,
+  ),
+
+  return_var_name: $ => $.name_or_keyword,
+
+  _atom: $ => choice(
+    $.string,
+    $.verbatim_string,
+    $.date_literal,
+    $.time_literal,
+    $.datetime_literal,
+    $.quoted_identifier,
+    $.decimal,
+    $.integer,
+    $.identifier,
+
+    $.control_keyword,
+    $.operator_word,
+    $.object_keyword,
+    $.type_keyword,
+    $.metadata_keyword,
+    $.property_keyword,
+    $.keyword,
+
+    $.operator,
+    $.semicolon,
+    $.comma,
+  ),
+
+  // The external scanner keeps keywords ASCII-only; AL identifiers may be Unicode.
+  identifier: _ => /[A-Za-z_\u0080-\uFFFF][A-Za-z0-9_\u0080-\uFFFF]*/,
+  decimal: _ => token(/[0-9]+\.[0-9]+/),
+  integer: _ => /[0-9]+[Ll]?/,
+  datetime_literal: _ => token(seq(/[0-9]{1,14}/, 'D', 'T')),
+  date_literal: _ => token(seq(/[0-9]{1,8}/, 'D')),
+  time_literal: _ => token(seq(/[0-9]{1,6}/, optional(seq('.', /[0-9]+/)), 'T')),
+
+  // AL escapes a single quote by doubling it.
+  string: _ => token(seq("'", repeat(choice(/[^']/, "''")), "'")),
+  verbatim_string: _ => token(seq("@'", repeat(choice(/[^']/, "''")), "'")),
+
+  // AL escapes a quote in a quoted identifier by doubling it.
+  quoted_identifier: _ => token(seq('"', repeat(choice(/[^"]/, '""')), '"')),
+
+  comment: _ => token(choice(
+    seq('//', /[^\n]*/),
+    seq('#', /[^\n]*/),
+    seq(
+      '/*',
+      /[^*]*\*+([^/*][^*]*\*+)*/,
+      '/'
+    ),
+  )),
+
+  operator: _ => token(/[!$%&*+\-./:<=>?@^|~]+/),
+
+  semicolon: _ => ';',
+  comma: _ => ',',
+}
+});

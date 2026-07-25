@@ -1,0 +1,126 @@
+[
+  {
+    "token_type": "directive",
+    "style": ["keyword.directive", "keyword"]
+  },
+  {
+    "token_type": "objectKeyword",
+    "style": ["keyword.type", "keyword"]
+  },
+  {
+    "token_type": "builtinType",
+    "style": ["type.builtin", "type"]
+  },
+  {
+    "token_type": "selfKeyword",
+    "style": ["variable.special", "variable.builtin", "variable"]
+  },
+  {
+    "token_type": "builtinFunction",
+    "style": ["function.builtin", "function"]
+  },
+  {
+    "token_type": "globalVariable",
+    "style": ["variable.other", "variable"]
+  },
+  {
+    "token_type": "localVariable",
+    "style": ["variable", "variable.other"]
+  },
+  {
+    "token_type": "tableField",
+    "style": ["property", "variable.other.member"]
+  },
+  {
+    "token_type": "pageControl",
+    "style": ["tag", "property"]
+  },
+  {
+    "token_type": "pageAction",
+    "style": ["tag.attribute", "tag"]
+  },
+  {
+    "token_type": "triggerName",
+    "style": ["function.method", "function"]
+  },
+  {
+    "token_type": "preprocessorKeyword",
+    "style": ["keyword.directive", "keyword"]
+  },
+  {
+    "token_type": "excludedCode",
+    "style": ["comment.unused", "comment"]
+  },
+  {
+    "token_type": "tableKey",
+    "style": ["type.parameter", "variable.other"]
+  },
+  {
+    "token_type": "tableFieldGroup",
+    "style": ["tag.attribute", "tag"]
+  },
+  {
+    "token_type": "reportLabel",
+    "style": ["string.special", "string"]
+  },
+  {
+    "token_type": "eventCreation",
+    "style": ["function.method", "function"]
+  },
+  {
+    "token_type": "eventSubscription",
+    "style": ["function.method", "function"]
+  },
+  {
+    "token_type": "returnParameter",
+    "style": ["variable.parameter", "variable"]
+  },
+  {
+    "token_type": "pageView",
+    "style": ["tag", "property"]
+  },
+  {
+    "token_type": "reportLayout",
+    "style": ["type.parameter", "type"]
+  },
+  {
+    "token_type": "queryDataItem",
+    "style": ["variable.other.member", "variable"]
+  },
+  {
+    "token_type": "queryColumn",
+    "style": ["property", "variable.other.member"]
+  },
+  {
+    "token_type": "queryFilter",
+    "style": ["variable.parameter", "variable"]
+  },
+  {
+    "token_type": "xmlportTableElement",
+    "style": ["variable.other.member", "variable"]
+  },
+  {
+    "token_type": "xmlportTextElement",
+    "style": ["tag", "property"]
+  },
+  {
+    "token_type": "xmlportFieldElement",
+    "style": ["property", "variable.other.member"]
+  },
+  {
+    "token_type": "xmlportFieldAttribute",
+    "style": ["tag.attribute", "tag"]
+  },
+  {
+    "token_type": "datetime",
+    "style": ["number.float", "number"]
+  },
+  {
+    "token_type": "namespaceName",
+    "style": ["namespace", "type"]
+  },
+  {
+    "token_type": "attribute",
+    "style": ["attribute", "function"]
+  }
+]

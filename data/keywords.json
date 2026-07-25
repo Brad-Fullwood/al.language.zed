@@ -1,0 +1,1662 @@
+{
+  "control": [
+    {
+      "keyword": "action",
+      "node_kind": "kw_action"
+    },
+    {
+      "keyword": "actionref",
+      "node_kind": "kw_actionref"
+    },
+    {
+      "keyword": "analysisview",
+      "node_kind": "kw_analysisview"
+    },
+    {
+      "keyword": "analysisviews",
+      "node_kind": "kw_analysisviews"
+    },
+    {
+      "keyword": "array",
+      "node_kind": "kw_array"
+    },
+    {
+      "keyword": "asserterror",
+      "node_kind": "kw_asserterror"
+    },
+    {
+      "keyword": "auditcategory",
+      "node_kind": "kw_auditcategory"
+    },
+    {
+      "keyword": "automation",
+      "node_kind": "kw_automation"
+    },
+    {
+      "keyword": "begin",
+      "node_kind": "kw_begin"
+    },
+    {
+      "keyword": "biginteger",
+      "node_kind": "kw_biginteger"
+    },
+    {
+      "keyword": "bigtext",
+      "node_kind": "kw_bigtext"
+    },
+    {
+      "keyword": "blob",
+      "node_kind": "kw_blob"
+    },
+    {
+      "keyword": "boolean",
+      "node_kind": "kw_boolean"
+    },
+    {
+      "keyword": "break",
+      "node_kind": "kw_break"
+    },
+    {
+      "keyword": "byte",
+      "node_kind": "kw_byte"
+    },
+    {
+      "keyword": "case",
+      "node_kind": "kw_case"
+    },
+    {
+      "keyword": "char",
+      "node_kind": "kw_char"
+    },
+    {
+      "keyword": "clienttype",
+      "node_kind": "kw_clienttype"
+    },
+    {
+      "keyword": "code",
+      "node_kind": "kw_code"
+    },
+    {
+      "keyword": "codeunit",
+      "node_kind": "kw_codeunit"
+    },
+    {
+      "keyword": "completiontriggererrorlevel",
+      "node_kind": "kw_completiontriggererrorlevel"
+    },
+    {
+      "keyword": "connectiontype",
+      "node_kind": "kw_connectiontype"
+    },
+    {
+      "keyword": "continue",
+      "node_kind": "kw_continue"
+    },
+    {
+      "keyword": "controladdin",
+      "node_kind": "kw_controladdin"
+    },
+    {
+      "keyword": "cookie",
+      "node_kind": "kw_cookie"
+    },
+    {
+      "keyword": "customaction",
+      "node_kind": "kw_customaction"
+    },
+    {
+      "keyword": "database",
+      "node_kind": "kw_database"
+    },
+    {
+      "keyword": "dataclassification",
+      "node_kind": "kw_dataclassification"
+    },
+    {
+      "keyword": "datascope",
+      "node_kind": "kw_datascope"
+    },
+    {
+      "keyword": "datatransfer",
+      "node_kind": "kw_datatransfer"
+    },
+    {
+      "keyword": "date",
+      "node_kind": "kw_date"
+    },
+    {
+      "keyword": "dateformula",
+      "node_kind": "kw_dateformula"
+    },
+    {
+      "keyword": "datetime",
+      "node_kind": "kw_datetime"
+    },
+    {
+      "keyword": "decimal",
+      "node_kind": "kw_decimal"
+    },
+    {
+      "keyword": "defaultlayout",
+      "node_kind": "kw_defaultlayout"
+    },
+    {
+      "keyword": "dialog",
+      "node_kind": "kw_dialog"
+    },
+    {
+      "keyword": "dictionary",
+      "node_kind": "kw_dictionary"
+    },
+    {
+      "keyword": "do",
+      "node_kind": "kw_do"
+    },
+    {
+      "keyword": "dotnet",
+      "node_kind": "kw_dotnet"
+    },
+    {
+      "keyword": "dotnetassembly",
+      "node_kind": "kw_dotnetassembly"
+    },
+    {
+      "keyword": "dotnettypedeclaration",
+      "node_kind": "kw_dotnettypedeclaration"
+    },
+    {
+      "keyword": "downto",
+      "node_kind": "kw_downto"
+    },
+    {
+      "keyword": "duration",
+      "node_kind": "kw_duration"
+    },
+    {
+      "keyword": "else",
+      "node_kind": "kw_else"
+    },
+    {
+      "keyword": "end",
+      "node_kind": "kw_end"
+    },
+    {
+      "keyword": "entitlement",
+      "node_kind": "kw_entitlement"
+    },
+    {
+      "keyword": "enum",
+      "node_kind": "kw_enum"
+    },
+    {
+      "keyword": "enumextension",
+      "node_kind": "kw_enumextension"
+    },
+    {
+      "keyword": "errorinfo",
+      "node_kind": "kw_errorinfo"
+    },
+    {
+      "keyword": "errortype",
+      "node_kind": "kw_errortype"
+    },
+    {
+      "keyword": "event",
+      "node_kind": "kw_event"
+    },
+    {
+      "keyword": "executioncontext",
+      "node_kind": "kw_executioncontext"
+    },
+    {
+      "keyword": "executionmode",
+      "node_kind": "kw_executionmode"
+    },
+    {
+      "keyword": "exit",
+      "node_kind": "kw_exit"
+    },
+    {
+      "keyword": "fieldclass",
+      "node_kind": "kw_fieldclass"
+    },
+    {
+      "keyword": "fieldref",
+      "node_kind": "kw_fieldref"
+    },
+    {
+      "keyword": "fieldtype",
+      "node_kind": "kw_fieldtype"
+    },
+    {
+      "keyword": "file",
+      "node_kind": "kw_file"
+    },
+    {
+      "keyword": "fileupload",
+      "node_kind": "kw_fileupload"
+    },
+    {
+      "keyword": "fileuploadaction",
+      "node_kind": "kw_fileuploadaction"
+    },
+    {
+      "keyword": "filterpagebuilder",
+      "node_kind": "kw_filterpagebuilder"
+    },
+    {
+      "keyword": "for",
+      "node_kind": "kw_for"
+    },
+    {
+      "keyword": "foreach",
+      "node_kind": "kw_foreach"
+    },
+    {
+      "keyword": "function",
+      "node_kind": "kw_function"
+    },
+    {
+      "keyword": "guid",
+      "node_kind": "kw_guid"
+    },
+    {
+      "keyword": "httpclient",
+      "node_kind": "kw_httpclient"
+    },
+    {
+      "keyword": "httpcontent",
+      "node_kind": "kw_httpcontent"
+    },
+    {
+      "keyword": "httpheaders",
+      "node_kind": "kw_httpheaders"
+    },
+    {
+      "keyword": "httprequestmessage",
+      "node_kind": "kw_httprequestmessage"
+    },
+    {
+      "keyword": "httprequesttype",
+      "node_kind": "kw_httprequesttype"
+    },
+    {
+      "keyword": "httpresponsemessage",
+      "node_kind": "kw_httpresponsemessage"
+    },
+    {
+      "keyword": "if",
+      "node_kind": "kw_if"
+    },
+    {
+      "keyword": "in",
+      "node_kind": "kw_in"
+    },
+    {
+      "keyword": "indataset",
+      "node_kind": "kw_indataset"
+    },
+    {
+      "keyword": "instream",
+      "node_kind": "kw_instream"
+    },
+    {
+      "keyword": "integer",
+      "node_kind": "kw_integer"
+    },
+    {
+      "keyword": "interface",
+      "node_kind": "kw_interface"
+    },
+    {
+      "keyword": "internal",
+      "node_kind": "kw_internal"
+    },
+    {
+      "keyword": "isolationlevel",
+      "node_kind": "kw_isolationlevel"
+    },
+    {
+      "keyword": "joker",
+      "node_kind": "kw_joker"
+    },
+    {
+      "keyword": "jsonarray",
+      "node_kind": "kw_jsonarray"
+    },
+    {
+      "keyword": "jsonobject",
+      "node_kind": "kw_jsonobject"
+    },
+    {
+      "keyword": "jsontoken",
+      "node_kind": "kw_jsontoken"
+    },
+    {
+      "keyword": "jsonvalue",
+      "node_kind": "kw_jsonvalue"
+    },
+    {
+      "keyword": "keyref",
+      "node_kind": "kw_keyref"
+    },
+    {
+      "keyword": "list",
+      "node_kind": "kw_list"
+    },
+    {
+      "keyword": "local",
+      "node_kind": "kw_local"
+    },
+    {
+      "keyword": "media",
+      "node_kind": "kw_media"
+    },
+    {
+      "keyword": "mediaset",
+      "node_kind": "kw_mediaset"
+    },
+    {
+      "keyword": "moduledependencyinfo",
+      "node_kind": "kw_moduledependencyinfo"
+    },
+    {
+      "keyword": "moduleinfo",
+      "node_kind": "kw_moduleinfo"
+    },
+    {
+      "keyword": "none",
+      "node_kind": "kw_none"
+    },
+    {
+      "keyword": "notification",
+      "node_kind": "kw_notification"
+    },
+    {
+      "keyword": "notificationscope",
+      "node_kind": "kw_notificationscope"
+    },
+    {
+      "keyword": "objecttype",
+      "node_kind": "kw_objecttype"
+    },
+    {
+      "keyword": "of",
+      "node_kind": "kw_of"
+    },
+    {
+      "keyword": "option",
+      "node_kind": "kw_option"
+    },
+    {
+      "keyword": "outstream",
+      "node_kind": "kw_outstream"
+    },
+    {
+      "keyword": "page",
+      "node_kind": "kw_page"
+    },
+    {
+      "keyword": "pagebackgroundtaskerrorlevel",
+      "node_kind": "kw_pagebackgroundtaskerrorlevel"
+    },
+    {
+      "keyword": "pagecustomization",
+      "node_kind": "kw_pagecustomization"
+    },
+    {
+      "keyword": "pageextension",
+      "node_kind": "kw_pageextension"
+    },
+    {
+      "keyword": "pageresult",
+      "node_kind": "kw_pageresult"
+    },
+    {
+      "keyword": "pagestyle",
+      "node_kind": "kw_pagestyle"
+    },
+    {
+      "keyword": "permissionset",
+      "node_kind": "kw_permissionset"
+    },
+    {
+      "keyword": "permissionsetextension",
+      "node_kind": "kw_permissionsetextension"
+    },
+    {
+      "keyword": "procedure",
+      "node_kind": "kw_procedure"
+    },
+    {
+      "keyword": "profile",
+      "node_kind": "kw_profile"
+    },
+    {
+      "keyword": "profileextension",
+      "node_kind": "kw_profileextension"
+    },
+    {
+      "keyword": "program",
+      "node_kind": "kw_program"
+    },
+    {
+      "keyword": "protected",
+      "node_kind": "kw_protected"
+    },
+    {
+      "keyword": "query",
+      "node_kind": "kw_query"
+    },
+    {
+      "keyword": "record",
+      "node_kind": "kw_record"
+    },
+    {
+      "keyword": "recordid",
+      "node_kind": "kw_recordid"
+    },
+    {
+      "keyword": "recordref",
+      "node_kind": "kw_recordref"
+    },
+    {
+      "keyword": "repeat",
+      "node_kind": "kw_repeat"
+    },
+    {
+      "keyword": "report",
+      "node_kind": "kw_report"
+    },
+    {
+      "keyword": "reportextension",
+      "node_kind": "kw_reportextension"
+    },
+    {
+      "keyword": "reportformat",
+      "node_kind": "kw_reportformat"
+    },
+    {
+      "keyword": "runonclient",
+      "node_kind": "kw_runonclient"
+    },
+    {
+      "keyword": "secrettext",
+      "node_kind": "kw_secrettext"
+    },
+    {
+      "keyword": "securityfilter",
+      "node_kind": "kw_securityfilter"
+    },
+    {
+      "keyword": "securityfiltering",
+      "node_kind": "kw_securityfiltering"
+    },
+    {
+      "keyword": "securityoperationresult",
+      "node_kind": "kw_securityoperationresult"
+    },
+    {
+      "keyword": "sessionsettings",
+      "node_kind": "kw_sessionsettings"
+    },
+    {
+      "keyword": "suppressdispose",
+      "node_kind": "kw_suppressdispose"
+    },
+    {
+      "keyword": "systemaction",
+      "node_kind": "kw_systemaction"
+    },
+    {
+      "keyword": "table",
+      "node_kind": "kw_table"
+    },
+    {
+      "keyword": "tableconnectiontype",
+      "node_kind": "kw_tableconnectiontype"
+    },
+    {
+      "keyword": "tableextension",
+      "node_kind": "kw_tableextension"
+    },
+    {
+      "keyword": "tablefilter",
+      "node_kind": "kw_tablefilter"
+    },
+    {
+      "keyword": "temporary",
+      "node_kind": "kw_temporary"
+    },
+    {
+      "keyword": "testaction",
+      "node_kind": "kw_testaction"
+    },
+    {
+      "keyword": "testfield",
+      "node_kind": "kw_testfield"
+    },
+    {
+      "keyword": "testfilterfield",
+      "node_kind": "kw_testfilterfield"
+    },
+    {
+      "keyword": "testhttprequestmessage",
+      "node_kind": "kw_testhttprequestmessage"
+    },
+    {
+      "keyword": "testhttpresponsemessage",
+      "node_kind": "kw_testhttpresponsemessage"
+    },
+    {
+      "keyword": "testpage",
+      "node_kind": "kw_testpage"
+    },
+    {
+      "keyword": "testpermissions",
+      "node_kind": "kw_testpermissions"
+    },
+    {
+      "keyword": "testrequestpage",
+      "node_kind": "kw_testrequestpage"
+    },
+    {
+      "keyword": "text",
+      "node_kind": "kw_text"
+    },
+    {
+      "keyword": "textbuilder",
+      "node_kind": "kw_textbuilder"
+    },
+    {
+      "keyword": "textconst",
+      "node_kind": "kw_textconst"
+    },
+    {
+      "keyword": "textencoding",
+      "node_kind": "kw_textencoding"
+    },
+    {
+      "keyword": "then",
+      "node_kind": "kw_then"
+    },
+    {
+      "keyword": "time",
+      "node_kind": "kw_time"
+    },
+    {
+      "keyword": "to",
+      "node_kind": "kw_to"
+    },
+    {
+      "keyword": "transactionmodel",
+      "node_kind": "kw_transactionmodel"
+    },
+    {
+      "keyword": "transactiontype",
+      "node_kind": "kw_transactiontype"
+    },
+    {
+      "keyword": "trigger",
+      "node_kind": "kw_trigger"
+    },
+    {
+      "keyword": "until",
+      "node_kind": "kw_until"
+    },
+    {
+      "keyword": "value",
+      "node_kind": "kw_value"
+    },
+    {
+      "keyword": "var",
+      "node_kind": "kw_var"
+    },
+    {
+      "keyword": "variant",
+      "node_kind": "kw_variant"
+    },
+    {
+      "keyword": "verbosity",
+      "node_kind": "kw_verbosity"
+    },
+    {
+      "keyword": "version",
+      "node_kind": "kw_version"
+    },
+    {
+      "keyword": "view",
+      "node_kind": "kw_view"
+    },
+    {
+      "keyword": "views",
+      "node_kind": "kw_views"
+    },
+    {
+      "keyword": "webserviceactioncontext",
+      "node_kind": "kw_webserviceactioncontext"
+    },
+    {
+      "keyword": "webserviceactionresultcode",
+      "node_kind": "kw_webserviceactionresultcode"
+    },
+    {
+      "keyword": "while",
+      "node_kind": "kw_while"
+    },
+    {
+      "keyword": "with",
+      "node_kind": "kw_with"
+    },
+    {
+      "keyword": "withevents",
+      "node_kind": "kw_withevents"
+    },
+    {
+      "keyword": "xmlattribute",
+      "node_kind": "kw_xmlattribute"
+    },
+    {
+      "keyword": "xmlattributecollection",
+      "node_kind": "kw_xmlattributecollection"
+    },
+    {
+      "keyword": "xmlcdata",
+      "node_kind": "kw_xmlcdata"
+    },
+    {
+      "keyword": "xmlcomment",
+      "node_kind": "kw_xmlcomment"
+    },
+    {
+      "keyword": "xmldeclaration",
+      "node_kind": "kw_xmldeclaration"
+    },
+    {
+      "keyword": "xmldocument",
+      "node_kind": "kw_xmldocument"
+    },
+    {
+      "keyword": "xmldocumenttype",
+      "node_kind": "kw_xmldocumenttype"
+    },
+    {
+      "keyword": "xmlelement",
+      "node_kind": "kw_xmlelement"
+    },
+    {
+      "keyword": "xmlnamespacemanager",
+      "node_kind": "kw_xmlnamespacemanager"
+    },
+    {
+      "keyword": "xmlnametable",
+      "node_kind": "kw_xmlnametable"
+    },
+    {
+      "keyword": "xmlnode",
+      "node_kind": "kw_xmlnode"
+    },
+    {
+      "keyword": "xmlnodelist",
+      "node_kind": "kw_xmlnodelist"
+    },
+    {
+      "keyword": "xmlport",
+      "node_kind": "kw_xmlport"
+    },
+    {
+      "keyword": "xmlprocessinginstruction",
+      "node_kind": "kw_xmlprocessinginstruction"
+    },
+    {
+      "keyword": "xmlreadoptions",
+      "node_kind": "kw_xmlreadoptions"
+    },
+    {
+      "keyword": "xmltext",
+      "node_kind": "kw_xmltext"
+    },
+    {
+      "keyword": "xmlwriteoptions",
+      "node_kind": "kw_xmlwriteoptions"
+    }
+  ],
+  "metadata": [
+    {
+      "keyword": "action",
+      "node_kind": "kw_action"
+    },
+    {
+      "keyword": "actions",
+      "node_kind": "kw_actions"
+    },
+    {
+      "keyword": "add",
+      "node_kind": "kw_add"
+    },
+    {
+      "keyword": "addafter",
+      "node_kind": "kw_addafter"
+    },
+    {
+      "keyword": "addbefore",
+      "node_kind": "kw_addbefore"
+    },
+    {
+      "keyword": "addfirst",
+      "node_kind": "kw_addfirst"
+    },
+    {
+      "keyword": "addlast",
+      "node_kind": "kw_addlast"
+    },
+    {
+      "keyword": "area",
+      "node_kind": "kw_area"
+    },
+    {
+      "keyword": "assembly",
+      "node_kind": "kw_assembly"
+    },
+    {
+      "keyword": "chartpart",
+      "node_kind": "kw_chartpart"
+    },
+    {
+      "keyword": "column",
+      "node_kind": "kw_column"
+    },
+    {
+      "keyword": "cuegroup",
+      "node_kind": "kw_cuegroup"
+    },
+    {
+      "keyword": "customizes",
+      "node_kind": "kw_customizes"
+    },
+    {
+      "keyword": "dataitem",
+      "node_kind": "kw_dataitem"
+    },
+    {
+      "keyword": "dataset",
+      "node_kind": "kw_dataset"
+    },
+    {
+      "keyword": "elements",
+      "node_kind": "kw_elements"
+    },
+    {
+      "keyword": "extends",
+      "node_kind": "kw_extends"
+    },
+    {
+      "keyword": "field",
+      "node_kind": "kw_field"
+    },
+    {
+      "keyword": "fieldattribute",
+      "node_kind": "kw_fieldattribute"
+    },
+    {
+      "keyword": "fieldelement",
+      "node_kind": "kw_fieldelement"
+    },
+    {
+      "keyword": "fieldgroup",
+      "node_kind": "kw_fieldgroup"
+    },
+    {
+      "keyword": "fieldgroups",
+      "node_kind": "kw_fieldgroups"
+    },
+    {
+      "keyword": "fields",
+      "node_kind": "kw_fields"
+    },
+    {
+      "keyword": "filter",
+      "node_kind": "kw_filter"
+    },
+    {
+      "keyword": "fixed",
+      "node_kind": "kw_fixed"
+    },
+    {
+      "keyword": "grid",
+      "node_kind": "kw_grid"
+    },
+    {
+      "keyword": "group",
+      "node_kind": "kw_group"
+    },
+    {
+      "keyword": "implements",
+      "node_kind": "kw_implements"
+    },
+    {
+      "keyword": "key",
+      "node_kind": "kw_key"
+    },
+    {
+      "keyword": "keys",
+      "node_kind": "kw_keys"
+    },
+    {
+      "keyword": "label",
+      "node_kind": "kw_label"
+    },
+    {
+      "keyword": "labels",
+      "node_kind": "kw_labels"
+    },
+    {
+      "keyword": "layout",
+      "node_kind": "kw_layout"
+    },
+    {
+      "keyword": "modify",
+      "node_kind": "kw_modify"
+    },
+    {
+      "keyword": "moveafter",
+      "node_kind": "kw_moveafter"
+    },
+    {
+      "keyword": "movebefore",
+      "node_kind": "kw_movebefore"
+    },
+    {
+      "keyword": "movefirst",
+      "node_kind": "kw_movefirst"
+    },
+    {
+      "keyword": "movelast",
+      "node_kind": "kw_movelast"
+    },
+    {
+      "keyword": "namespace",
+      "node_kind": "kw_namespace"
+    },
+    {
+      "keyword": "part",
+      "node_kind": "kw_part"
+    },
+    {
+      "keyword": "rendering",
+      "node_kind": "kw_rendering"
+    },
+    {
+      "keyword": "repeater",
+      "node_kind": "kw_repeater"
+    },
+    {
+      "keyword": "requestpage",
+      "node_kind": "kw_requestpage"
+    },
+    {
+      "keyword": "schema",
+      "node_kind": "kw_schema"
+    },
+    {
+      "keyword": "separator",
+      "node_kind": "kw_separator"
+    },
+    {
+      "keyword": "systempart",
+      "node_kind": "kw_systempart"
+    },
+    {
+      "keyword": "tableelement",
+      "node_kind": "kw_tableelement"
+    },
+    {
+      "keyword": "textattribute",
+      "node_kind": "kw_textattribute"
+    },
+    {
+      "keyword": "textelement",
+      "node_kind": "kw_textelement"
+    },
+    {
+      "keyword": "type",
+      "node_kind": "kw_type"
+    },
+    {
+      "keyword": "usercontrol",
+      "node_kind": "kw_usercontrol"
+    },
+    {
+      "keyword": "using",
+      "node_kind": "kw_using"
+    },
+    {
+      "keyword": "value",
+      "node_kind": "kw_value"
+    }
+  ],
+  "object": [
+    {
+      "keyword": "codeunit",
+      "node_kind": "kw_codeunit"
+    },
+    {
+      "keyword": "controladdin",
+      "node_kind": "kw_controladdin"
+    },
+    {
+      "keyword": "dotnet",
+      "node_kind": "kw_dotnet"
+    },
+    {
+      "keyword": "entitlement",
+      "node_kind": "kw_entitlement"
+    },
+    {
+      "keyword": "enum",
+      "node_kind": "kw_enum"
+    },
+    {
+      "keyword": "enumextension",
+      "node_kind": "kw_enumextension"
+    },
+    {
+      "keyword": "interface",
+      "node_kind": "kw_interface"
+    },
+    {
+      "keyword": "page",
+      "node_kind": "kw_page"
+    },
+    {
+      "keyword": "pagecustomization",
+      "node_kind": "kw_pagecustomization"
+    },
+    {
+      "keyword": "pageextension",
+      "node_kind": "kw_pageextension"
+    },
+    {
+      "keyword": "permissionset",
+      "node_kind": "kw_permissionset"
+    },
+    {
+      "keyword": "permissionsetextension",
+      "node_kind": "kw_permissionsetextension"
+    },
+    {
+      "keyword": "profile",
+      "node_kind": "kw_profile"
+    },
+    {
+      "keyword": "profileextension",
+      "node_kind": "kw_profileextension"
+    },
+    {
+      "keyword": "query",
+      "node_kind": "kw_query"
+    },
+    {
+      "keyword": "report",
+      "node_kind": "kw_report"
+    },
+    {
+      "keyword": "reportextension",
+      "node_kind": "kw_reportextension"
+    },
+    {
+      "keyword": "table",
+      "node_kind": "kw_table"
+    },
+    {
+      "keyword": "tableextension",
+      "node_kind": "kw_tableextension"
+    },
+    {
+      "keyword": "value",
+      "node_kind": "kw_value"
+    },
+    {
+      "keyword": "xmlport",
+      "node_kind": "kw_xmlport"
+    }
+  ],
+  "operator": [
+    {
+      "keyword": "and",
+      "node_kind": "op_and"
+    },
+    {
+      "keyword": "as",
+      "node_kind": "op_as"
+    },
+    {
+      "keyword": "div",
+      "node_kind": "op_div"
+    },
+    {
+      "keyword": "is",
+      "node_kind": "op_is"
+    },
+    {
+      "keyword": "mod",
+      "node_kind": "op_mod"
+    },
+    {
+      "keyword": "not",
+      "node_kind": "op_not"
+    },
+    {
+      "keyword": "or",
+      "node_kind": "op_or"
+    },
+    {
+      "keyword": "xor",
+      "node_kind": "op_xor"
+    }
+  ],
+  "property": [
+    {
+      "keyword": "ascending",
+      "node_kind": "kw_ascending"
+    },
+    {
+      "keyword": "average",
+      "node_kind": "kw_average"
+    },
+    {
+      "keyword": "const",
+      "node_kind": "kw_const"
+    },
+    {
+      "keyword": "count",
+      "node_kind": "kw_count"
+    },
+    {
+      "keyword": "descending",
+      "node_kind": "kw_descending"
+    },
+    {
+      "keyword": "exist",
+      "node_kind": "kw_exist"
+    },
+    {
+      "keyword": "field",
+      "node_kind": "kw_field"
+    },
+    {
+      "keyword": "filter",
+      "node_kind": "kw_filter"
+    },
+    {
+      "keyword": "lookup",
+      "node_kind": "kw_lookup"
+    },
+    {
+      "keyword": "max",
+      "node_kind": "kw_max"
+    },
+    {
+      "keyword": "min",
+      "node_kind": "kw_min"
+    },
+    {
+      "keyword": "order",
+      "node_kind": "kw_order"
+    },
+    {
+      "keyword": "sorting",
+      "node_kind": "kw_sorting"
+    },
+    {
+      "keyword": "sum",
+      "node_kind": "kw_sum"
+    },
+    {
+      "keyword": "tabledata",
+      "node_kind": "kw_tabledata"
+    },
+    {
+      "keyword": "upperlimit",
+      "node_kind": "kw_upperlimit"
+    },
+    {
+      "keyword": "where",
+      "node_kind": "kw_where"
+    }
+  ],
+  "type": [
+    {
+      "keyword": "action",
+      "node_kind": "kw_action"
+    },
+    {
+      "keyword": "actionref",
+      "node_kind": "kw_actionref"
+    },
+    {
+      "keyword": "analysisview",
+      "node_kind": "kw_analysisview"
+    },
+    {
+      "keyword": "analysisviews",
+      "node_kind": "kw_analysisviews"
+    },
+    {
+      "keyword": "array",
+      "node_kind": "kw_array"
+    },
+    {
+      "keyword": "auditcategory",
+      "node_kind": "kw_auditcategory"
+    },
+    {
+      "keyword": "automation",
+      "node_kind": "kw_automation"
+    },
+    {
+      "keyword": "biginteger",
+      "node_kind": "kw_biginteger"
+    },
+    {
+      "keyword": "bigtext",
+      "node_kind": "kw_bigtext"
+    },
+    {
+      "keyword": "blob",
+      "node_kind": "kw_blob"
+    },
+    {
+      "keyword": "boolean",
+      "node_kind": "kw_boolean"
+    },
+    {
+      "keyword": "byte",
+      "node_kind": "kw_byte"
+    },
+    {
+      "keyword": "char",
+      "node_kind": "kw_char"
+    },
+    {
+      "keyword": "clienttype",
+      "node_kind": "kw_clienttype"
+    },
+    {
+      "keyword": "code",
+      "node_kind": "kw_code"
+    },
+    {
+      "keyword": "codeunit",
+      "node_kind": "kw_codeunit"
+    },
+    {
+      "keyword": "completiontriggererrorlevel",
+      "node_kind": "kw_completiontriggererrorlevel"
+    },
+    {
+      "keyword": "connectiontype",
+      "node_kind": "kw_connectiontype"
+    },
+    {
+      "keyword": "cookie",
+      "node_kind": "kw_cookie"
+    },
+    {
+      "keyword": "customaction",
+      "node_kind": "kw_customaction"
+    },
+    {
+      "keyword": "database",
+      "node_kind": "kw_database"
+    },
+    {
+      "keyword": "dataclassification",
+      "node_kind": "kw_dataclassification"
+    },
+    {
+      "keyword": "datascope",
+      "node_kind": "kw_datascope"
+    },
+    {
+      "keyword": "datatransfer",
+      "node_kind": "kw_datatransfer"
+    },
+    {
+      "keyword": "date",
+      "node_kind": "kw_date"
+    },
+    {
+      "keyword": "dateformula",
+      "node_kind": "kw_dateformula"
+    },
+    {
+      "keyword": "datetime",
+      "node_kind": "kw_datetime"
+    },
+    {
+      "keyword": "decimal",
+      "node_kind": "kw_decimal"
+    },
+    {
+      "keyword": "defaultlayout",
+      "node_kind": "kw_defaultlayout"
+    },
+    {
+      "keyword": "dialog",
+      "node_kind": "kw_dialog"
+    },
+    {
+      "keyword": "dictionary",
+      "node_kind": "kw_dictionary"
+    },
+    {
+      "keyword": "dotnet",
+      "node_kind": "kw_dotnet"
+    },
+    {
+      "keyword": "dotnetassembly",
+      "node_kind": "kw_dotnetassembly"
+    },
+    {
+      "keyword": "dotnettypedeclaration",
+      "node_kind": "kw_dotnettypedeclaration"
+    },
+    {
+      "keyword": "duration",
+      "node_kind": "kw_duration"
+    },
+    {
+      "keyword": "enum",
+      "node_kind": "kw_enum"
+    },
+    {
+      "keyword": "errorinfo",
+      "node_kind": "kw_errorinfo"
+    },
+    {
+      "keyword": "errortype",
+      "node_kind": "kw_errortype"
+    },
+    {
+      "keyword": "executioncontext",
+      "node_kind": "kw_executioncontext"
+    },
+    {
+      "keyword": "executionmode",
+      "node_kind": "kw_executionmode"
+    },
+    {
+      "keyword": "fieldclass",
+      "node_kind": "kw_fieldclass"
+    },
+    {
+      "keyword": "fieldref",
+      "node_kind": "kw_fieldref"
+    },
+    {
+      "keyword": "fieldtype",
+      "node_kind": "kw_fieldtype"
+    },
+    {
+      "keyword": "file",
+      "node_kind": "kw_file"
+    },
+    {
+      "keyword": "fileupload",
+      "node_kind": "kw_fileupload"
+    },
+    {
+      "keyword": "fileuploadaction",
+      "node_kind": "kw_fileuploadaction"
+    },
+    {
+      "keyword": "filterpagebuilder",
+      "node_kind": "kw_filterpagebuilder"
+    },
+    {
+      "keyword": "guid",
+      "node_kind": "kw_guid"
+    },
+    {
+      "keyword": "httpclient",
+      "node_kind": "kw_httpclient"
+    },
+    {
+      "keyword": "httpcontent",
+      "node_kind": "kw_httpcontent"
+    },
+    {
+      "keyword": "httpheaders",
+      "node_kind": "kw_httpheaders"
+    },
+    {
+      "keyword": "httprequestmessage",
+      "node_kind": "kw_httprequestmessage"
+    },
+    {
+      "keyword": "httprequesttype",
+      "node_kind": "kw_httprequesttype"
+    },
+    {
+      "keyword": "httpresponsemessage",
+      "node_kind": "kw_httpresponsemessage"
+    },
+    {
+      "keyword": "instream",
+      "node_kind": "kw_instream"
+    },
+    {
+      "keyword": "integer",
+      "node_kind": "kw_integer"
+    },
+    {
+      "keyword": "interface",
+      "node_kind": "kw_interface"
+    },
+    {
+      "keyword": "isolationlevel",
+      "node_kind": "kw_isolationlevel"
+    },
+    {
+      "keyword": "joker",
+      "node_kind": "kw_joker"
+    },
+    {
+      "keyword": "jsonarray",
+      "node_kind": "kw_jsonarray"
+    },
+    {
+      "keyword": "jsonobject",
+      "node_kind": "kw_jsonobject"
+    },
+    {
+      "keyword": "jsontoken",
+      "node_kind": "kw_jsontoken"
+    },
+    {
+      "keyword": "jsonvalue",
+      "node_kind": "kw_jsonvalue"
+    },
+    {
+      "keyword": "keyref",
+      "node_kind": "kw_keyref"
+    },
+    {
+      "keyword": "list",
+      "node_kind": "kw_list"
+    },
+    {
+      "keyword": "media",
+      "node_kind": "kw_media"
+    },
+    {
+      "keyword": "mediaset",
+      "node_kind": "kw_mediaset"
+    },
+    {
+      "keyword": "moduledependencyinfo",
+      "node_kind": "kw_moduledependencyinfo"
+    },
+    {
+      "keyword": "moduleinfo",
+      "node_kind": "kw_moduleinfo"
+    },
+    {
+      "keyword": "none",
+      "node_kind": "kw_none"
+    },
+    {
+      "keyword": "notification",
+      "node_kind": "kw_notification"
+    },
+    {
+      "keyword": "notificationscope",
+      "node_kind": "kw_notificationscope"
+    },
+    {
+      "keyword": "objecttype",
+      "node_kind": "kw_objecttype"
+    },
+    {
+      "keyword": "option",
+      "node_kind": "kw_option"
+    },
+    {
+      "keyword": "outstream",
+      "node_kind": "kw_outstream"
+    },
+    {
+      "keyword": "page",
+      "node_kind": "kw_page"
+    },
+    {
+      "keyword": "pagebackgroundtaskerrorlevel",
+      "node_kind": "kw_pagebackgroundtaskerrorlevel"
+    },
+    {
+      "keyword": "pageresult",
+      "node_kind": "kw_pageresult"
+    },
+    {
+      "keyword": "pagestyle",
+      "node_kind": "kw_pagestyle"
+    },
+    {
+      "keyword": "query",
+      "node_kind": "kw_query"
+    },
+    {
+      "keyword": "record",
+      "node_kind": "kw_record"
+    },
+    {
+      "keyword": "recordid",
+      "node_kind": "kw_recordid"
+    },
+    {
+      "keyword": "recordref",
+      "node_kind": "kw_recordref"
+    },
+    {
+      "keyword": "report",
+      "node_kind": "kw_report"
+    },
+    {
+      "keyword": "reportformat",
+      "node_kind": "kw_reportformat"
+    },
+    {
+      "keyword": "secrettext",
+      "node_kind": "kw_secrettext"
+    },
+    {
+      "keyword": "securityfilter",
+      "node_kind": "kw_securityfilter"
+    },
+    {
+      "keyword": "securityfiltering",
+      "node_kind": "kw_securityfiltering"
+    },
+    {
+      "keyword": "securityoperationresult",
+      "node_kind": "kw_securityoperationresult"
+    },
+    {
+      "keyword": "sessionsettings",
+      "node_kind": "kw_sessionsettings"
+    },
+    {
+      "keyword": "systemaction",
+      "node_kind": "kw_systemaction"
+    },
+    {
+      "keyword": "table",
+      "node_kind": "kw_table"
+    },
+    {
+      "keyword": "tableconnectiontype",
+      "node_kind": "kw_tableconnectiontype"
+    },
+    {
+      "keyword": "tablefilter",
+      "node_kind": "kw_tablefilter"
+    },
+    {
+      "keyword": "testaction",
+      "node_kind": "kw_testaction"
+    },
+    {
+      "keyword": "testfield",
+      "node_kind": "kw_testfield"
+    },
+    {
+      "keyword": "testfilterfield",
+      "node_kind": "kw_testfilterfield"
+    },
+    {
+      "keyword": "testhttprequestmessage",
+      "node_kind": "kw_testhttprequestmessage"
+    },
+    {
+      "keyword": "testhttpresponsemessage",
+      "node_kind": "kw_testhttpresponsemessage"
+    },
+    {
+      "keyword": "testpage",
+      "node_kind": "kw_testpage"
+    },
+    {
+      "keyword": "testpermissions",
+      "node_kind": "kw_testpermissions"
+    },
+    {
+      "keyword": "testrequestpage",
+      "node_kind": "kw_testrequestpage"
+    },
+    {
+      "keyword": "text",
+      "node_kind": "kw_text"
+    },
+    {
+      "keyword": "textbuilder",
+      "node_kind": "kw_textbuilder"
+    },
+    {
+      "keyword": "textconst",
+      "node_kind": "kw_textconst"
+    },
+    {
+      "keyword": "textencoding",
+      "node_kind": "kw_textencoding"
+    },
+    {
+      "keyword": "time",
+      "node_kind": "kw_time"
+    },
+    {
+      "keyword": "transactionmodel",
+      "node_kind": "kw_transactionmodel"
+    },
+    {
+      "keyword": "transactiontype",
+      "node_kind": "kw_transactiontype"
+    },
+    {
+      "keyword": "variant",
+      "node_kind": "kw_variant"
+    },
+    {
+      "keyword": "verbosity",
+      "node_kind": "kw_verbosity"
+    },
+    {
+      "keyword": "version",
+      "node_kind": "kw_version"
+    },
+    {
+      "keyword": "view",
+      "node_kind": "kw_view"
+    },
+    {
+      "keyword": "views",
+      "node_kind": "kw_views"
+    },
+    {
+      "keyword": "webserviceactioncontext",
+      "node_kind": "kw_webserviceactioncontext"
+    },
+    {
+      "keyword": "webserviceactionresultcode",
+      "node_kind": "kw_webserviceactionresultcode"
+    },
+    {
+      "keyword": "xmlattribute",
+      "node_kind": "kw_xmlattribute"
+    },
+    {
+      "keyword": "xmlattributecollection",
+      "node_kind": "kw_xmlattributecollection"
+    },
+    {
+      "keyword": "xmlcdata",
+      "node_kind": "kw_xmlcdata"
+    },
+    {
+      "keyword": "xmlcomment",
+      "node_kind": "kw_xmlcomment"
+    },
+    {
+      "keyword": "xmldeclaration",
+      "node_kind": "kw_xmldeclaration"
+    },
+    {
+      "keyword": "xmldocument",
+      "node_kind": "kw_xmldocument"
+    },
+    {
+      "keyword": "xmldocumenttype",
+      "node_kind": "kw_xmldocumenttype"
+    },
+    {
+      "keyword": "xmlelement",
+      "node_kind": "kw_xmlelement"
+    },
+    {
+      "keyword": "xmlnamespacemanager",
+      "node_kind": "kw_xmlnamespacemanager"
+    },
+    {
+      "keyword": "xmlnametable",
+      "node_kind": "kw_xmlnametable"
+    },
+    {
+      "keyword": "xmlnode",
+      "node_kind": "kw_xmlnode"
+    },
+    {
+      "keyword": "xmlnodelist",
+      "node_kind": "kw_xmlnodelist"
+    },
+    {
+      "keyword": "xmlport",
+      "node_kind": "kw_xmlport"
+    },
+    {
+      "keyword": "xmlprocessinginstruction",
+      "node_kind": "kw_xmlprocessinginstruction"
+    },
+    {
+      "keyword": "xmlreadoptions",
+      "node_kind": "kw_xmlreadoptions"
+    },
+    {
+      "keyword": "xmltext",
+      "node_kind": "kw_xmltext"
+    },
+    {
+      "keyword": "xmlwriteoptions",
+      "node_kind": "kw_xmlwriteoptions"
+    }
+  ]
+}

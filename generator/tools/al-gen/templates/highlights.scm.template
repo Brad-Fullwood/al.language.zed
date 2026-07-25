@@ -1,0 +1,87 @@
+; AUTO-GENERATED - DO NOT EDIT
+
+; Literals
+(comment) {{COMMENT_CAPTURE}}
+(string) {{STRING_CAPTURE}}
+(verbatim_string) {{STRING_CAPTURE}}
+(integer) {{NUMBER_CAPTURE}}
+(decimal) {{NUMBER_CAPTURE}}
+(date_literal) {{NUMBER_CAPTURE}}
+
+; Generic captures precede structural overrides because query matches are last-wins.
+(identifier) {{VARIABLE_CAPTURE}}
+(quoted_identifier) {{QUOTED_IDENTIFIER_CAPTURE}}
+
+((identifier) {{CONSTANT_CAPTURE}}
+ (#match? {{CONSTANT_CAPTURE}} "^(true|false)$"))
+
+; Keywords
+{{CONTROL_KW_TOKEN_HIGHLIGHTS}}
+
+(operator_word) @keyword.operator
+(object_keyword) {{OBJECT_CAPTURE}}
+(type_keyword) {{TYPE_CAPTURE}}
+(metadata_keyword) {{METADATA_CAPTURE}}
+(property_keyword) {{PROPERTY_CAPTURE}}
+(keyword) {{KEYWORD_CAPTURE}}
+(control_keyword) @keyword.control
+
+; Punctuation and operators
+(operator) {{OPERATOR_CAPTURE}}
+(semicolon) {{PUNCTUATION_CAPTURE}}
+(comma) {{PUNCTUATION_CAPTURE}}
+["(" ")" "[" "]" "{" "}"] @punctuation.bracket
+
+; Object declarations
+(object_declaration name: (name_or_keyword (name (quoted_identifier) @title)))
+(object_declaration name: (name_or_keyword (name (identifier) @title)))
+(object_declaration (quoted_identifier) @type)
+
+; Properties
+(property_assignment name: (_) @property)
+
+(property_assignment
+  name: (_)
+  (name (identifier) {{CONSTANT_CAPTURE}}))
+(property_assignment
+  name: (_)
+  (name (quoted_identifier) {{TYPE_CAPTURE}}))
+
+; Attributes
+(attribute name: (identifier) @attribute)
+
+; Definitions
+(procedure_declaration name: (name (identifier) {{FUNCTION_CAPTURE}}))
+(procedure_declaration name: (name (quoted_identifier) {{FUNCTION_CAPTURE}}))
+(trigger_declaration name: (_) {{FUNCTION_CAPTURE}})
+(event_declaration name: (_) {{FUNCTION_CAPTURE}})
+
+; Variables
+(regular_variable_declaration name: (name_or_keyword (name (identifier) @variable.declaration)))
+(regular_variable_declaration name: (name_or_keyword (name (quoted_identifier) @variable.declaration)))
+(parameter name: (name_or_keyword (name (identifier) @variable.parameter)))
+(parameter name: (name_or_keyword (name (quoted_identifier) @variable.parameter)))
+
+; Types
+(type_reference (name_or_keyword (name (identifier) {{TYPE_CAPTURE}})))
+(type_reference (name_or_keyword (name (quoted_identifier) {{TYPE_CAPTURE}})))
+(type_reference (qualified_name) {{TYPE_CAPTURE}})
+(label_declaration type: (_) {{TYPE_CAPTURE}})
+
+; Calls
+(postfix_expression
+  (primary_expression (name (identifier) @function.call))
+  (call_suffix))
+(postfix_expression
+  (primary_expression (name (quoted_identifier) @function.call))
+  (call_suffix))
+
+(member_call_suffix member: (name (identifier) @function.method.call))
+(member_call_suffix member: (name (quoted_identifier) @function.method.call))
+
+(scope_call_suffix member: (name (identifier) @function.call))
+(scope_call_suffix member: (name (quoted_identifier) @function.call))
+
+; Scope references
+(scope_suffix member: (name (identifier) {{TYPE_CAPTURE}}))
+(scope_suffix member: (name (quoted_identifier) {{TYPE_CAPTURE}}))

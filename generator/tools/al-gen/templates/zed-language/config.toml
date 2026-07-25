@@ -1,0 +1,19 @@
+# AUTO-GENERATED - do not edit manually
+name = "AL"
+grammar = "al"
+path_suffixes = ["al"]
+line_comments = ["// "]
+autoclose_before = ";:.,=}])<>\" \n\t"
+brackets = [
+  { start = "{", end = "}", close = true, newline = true },
+  { start = "[", end = "]", close = true, newline = false },
+  { start = "(", end = ")", close = true, newline = false },
+  { start = "'", end = "'", close = true, newline = false, not_in = ["string"] },
+  { start = "\"", end = "\"", close = true, newline = false, not_in = ["string"] },
+  { start = "/*", end = " */", close = true, newline = true, not_in = ["string", "comment"] },
+]
+collapsed_placeholder = " /* ... */ "
+block_comment = { start = "/*", prefix = " * ", end = " */", tab_size = 1 }
+code_fence_block_name = "al"
+word_characters = ["_"]
+language_servers = ["al-lsp"]

@@ -1,0 +1,22 @@
+{
+  "grammars": [
+    {
+      "name": "al",
+      "camelcase": "AL",
+      "scope": "source.al",
+      "path": ".",
+      "file-types": ["al", "dal"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "AL grammar for tree-sitter"
+  },
+  "bindings": {
+    "c": true,
+    "node": false,
+    "rust": true
+  }
+}

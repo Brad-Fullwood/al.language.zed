@@ -1,0 +1,7 @@
+[
+  { "prefix": "if ", "suffix": " then" },
+  { "prefix": "for ", "suffix": " do" },
+  { "prefix": "while ", "suffix": " do" },
+  { "prefix": "with ", "suffix": " do" },
+  { "prefix": "foreach ", "suffix": " do" }
+]
