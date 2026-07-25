@@ -169,18 +169,31 @@ fn adversarial_ranges_do_not_panic() {
         (1, 6, 1, 7), // inside the surrogate pair of 🎉
     ];
     for (sl, sc, el, ec) in ranges {
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: Some(TextRange {
-                    start_line: sl,
-                    start_character: sc,
-                    end_line: el,
-                    end_character: ec,
-                }),
-                text: "X".into(),
-            }],
+        let before = store.get_text(&uri).expect("document present").to_string();
+        let change = TextChange {
+            range: Some(TextRange {
+                start_line: sl,
+                start_character: sc,
+                end_line: el,
+                end_character: ec,
+            }),
+            text: "X".into(),
+        };
+        store.apply_changes(&uri, std::slice::from_ref(&change));
+        let after = store.get_text(&uri).expect("document vanished").to_string();
+
+        // The contract is not merely "survives": an out-of-bounds or reversed
+        // range must be skipped with the buffer untouched, and an in-bounds one
+        // must splice exactly like the reference. `is_some()` alone would pass
+        // on an emptied or corrupted buffer.
+        let expected = ref_apply(&before, &change);
+        assert_eq!(
+            after, expected,
+            "range ({sl},{sc})..({el},{ec}) diverged\n  before:   {before:?}\n  expected: {expected:?}\n  got:      {after:?}"
         );
-        assert!(store.get_text(&uri).is_some(), "document vanished");
+        assert!(
+            std::str::from_utf8(after.as_bytes()).is_ok(),
+            "document is no longer valid UTF-8"
+        );
     }
 }

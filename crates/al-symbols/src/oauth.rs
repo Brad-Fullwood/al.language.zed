@@ -456,9 +456,12 @@ async fn device_code_flow(
     // panics on overflow, and an unclamped interval would park the sign-in for
     // as long as the server asks (up to ~584 billion years for `u64::MAX`).
     let lifetime = Duration::from_secs(dc.expires_in.min(MAX_DEVICE_CODE_LIFETIME.as_secs()));
+    // If even the clamped lifetime cannot be represented, fall back to an
+    // already-elapsed deadline. `SystemTime::now() + anything` would be a second
+    // unchecked add that can panic on exactly the boundary we are guarding.
     let deadline = SystemTime::now()
         .checked_add(lifetime)
-        .unwrap_or_else(|| SystemTime::now() + MIN_POLL_INTERVAL);
+        .unwrap_or_else(SystemTime::now);
     let mut interval = clamp_poll_interval(Duration::from_secs(dc.interval));
 
     loop {

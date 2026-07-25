@@ -82,6 +82,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
+          # This job runs workspace build scripts (al-semantic shells out to
+          # `dotnet build`). Nothing here needs git write access once the
+          # submodule is fetched, so don't leave the checkout token behind in
+          # .git/config where that build script could reach it.
+          persist-credentials: false
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

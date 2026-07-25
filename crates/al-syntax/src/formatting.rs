@@ -1750,15 +1750,6 @@ codeunit 50100 Test
         );
     }
 
-    /// Leading-whitespace width of the first line starting with `needle`.
-    fn indent_width(text: &str, needle: &str) -> usize {
-        let line = text
-            .lines()
-            .find(|l| l.trim_start().starts_with(needle))
-            .unwrap_or_else(|| panic!("{needle:?} not found in:\n{text}"));
-        line.len() - line.trim_start().len()
-    }
-
     fn upper_cased(input: &str) -> String {
         format_al(
             input,
@@ -1787,8 +1778,8 @@ codeunit 50100 T
 }
 ";
         let out = format_al(input, &FormatOptions::default());
-        assert_eq!(indent_width(&out, "procedure P"), 4, "got:\n{out}");
-        assert_eq!(indent_width(&out, "Foo()"), 8, "got:\n{out}");
+        assert_eq!(indent_of(&out, "procedure P"), 4, "got:\n{out}");
+        assert_eq!(indent_of(&out, "Foo()"), 8, "got:\n{out}");
         // The object's own closing brace must land back at column 0.
         let last = out.lines().rfind(|l| !l.trim().is_empty());
         assert_eq!(last, Some("}"), "got:\n{out}");
@@ -1808,8 +1799,8 @@ codeunit 50100 T
 }
 ";
         let out = format_al(input, &FormatOptions::default());
-        assert_eq!(indent_width(&out, "begin"), 4, "got:\n{out}");
-        assert_eq!(indent_width(&out, "Foo()"), 8, "got:\n{out}");
+        assert_eq!(indent_of(&out, "begin"), 4, "got:\n{out}");
+        assert_eq!(indent_of(&out, "Foo()"), 8, "got:\n{out}");
     }
 
     #[test]
@@ -1879,7 +1870,7 @@ table 50100 T
 }
 ";
         let out = format_al(input, &FormatOptions::default());
-        assert_eq!(indent_width(&out, "keys"), 4, "got:\n{out}");
+        assert_eq!(indent_of(&out, "keys"), 4, "got:\n{out}");
     }
 
     #[test]
@@ -1896,7 +1887,7 @@ codeunit 50100 T
 ";
         let out = format_al(input, &FormatOptions::default());
         assert!(out.contains("'a /* b */ c // d'"), "got:\n{out}");
-        assert_eq!(indent_width(&out, "Foo()"), 8, "got:\n{out}");
+        assert_eq!(indent_of(&out, "Foo()"), 8, "got:\n{out}");
     }
 
     #[test]
@@ -1916,7 +1907,7 @@ table 50100 T
 }
 ";
         let out = format_al(input, &FormatOptions::default());
-        assert_eq!(indent_width(&out, "field(2"), 8, "got:\n{out}");
+        assert_eq!(indent_of(&out, "field(2"), 8, "got:\n{out}");
     }
 
     #[test]

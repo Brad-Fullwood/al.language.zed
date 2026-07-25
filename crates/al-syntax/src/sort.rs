@@ -139,7 +139,53 @@ pub fn sort_members(text: &str) -> Option<String> {
     if text.ends_with('\n') {
         out.push('\n');
     }
+    // `str::lines` strips both LF and CRLF terminators, so rejoining with `\n`
+    // would silently rewrite a Windows checkout's line endings and turn a
+    // member sort into a whole-file diff. Mirror `format_al`'s `uses_crlf`
+    // handling so the two transformations agree.
+    if text.contains("\r\n") {
+        out = out.replace('\n', "\r\n");
+    }
     Some(out)
+}
+
+/// True if `code` contains `begin` as a standalone word outside any string
+/// literal. Word boundaries stop `Begins`/`MyBegin` from matching, and the
+/// literal skip stops `Message('begin')` from doing so.
+fn contains_begin_keyword(code: &str) -> bool {
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\'' || b == b'"' {
+            let quote = b;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == quote {
+                    if quote == b'\'' && i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if b.is_ascii_alphabetic() || b == b'_' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if code[start..i].eq_ignore_ascii_case("begin") {
+                return true;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// True when `after` is a permutation of `before` — same lines, same counts.
@@ -205,7 +251,12 @@ fn split_into_members<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
         if is_member_start && !is_var_keyword {
             current_has_body_member = true;
         }
-        if trimmed == "begin" || trimmed.ends_with(" begin") {
+        // Match `begin` as a word anywhere in the code, not just at the end of
+        // the line: a single-line body (`procedure A() begin end;`) opens and
+        // closes its block on one line, and would otherwise leave `seen_begin`
+        // false so a following object-level `var` was misread as that
+        // procedure's locals.
+        if contains_begin_keyword(&code) {
             seen_begin = true;
         }
 
@@ -362,6 +413,69 @@ codeunit 50104 \"T\"
             zed_body.contains("LocalVar: Integer;") && zed_body.contains("LocalVar := 1;"),
             "Zed lost its local var / body:\n{out}"
         );
+    }
+
+    #[test]
+    fn crlf_line_endings_are_preserved() {
+        // `str::lines` drops the `\r`; rejoining with `\n` would turn a member
+        // sort on a Windows checkout into a whole-file line-ending diff.
+        let input =
+            "codeunit 50100 T\r\n{\r\n    procedure Zed() begin end;\r\n\r\n    procedure Alpha() begin end;\r\n}\r\n";
+        let out = sort_members(input).expect("should sort");
+        assert!(out.contains("\r\n"), "CRLF must survive:\n{out:?}");
+        assert!(
+            !out.replace("\r\n", "").contains('\n'),
+            "no bare LF may remain in a CRLF document:\n{out:?}"
+        );
+        assert!(
+            out.find("Alpha").unwrap() < out.find("Zed").unwrap(),
+            "{out}"
+        );
+
+        // An LF document stays LF.
+        let lf = "codeunit 50100 T\n{\n    procedure Zed() begin end;\n\n    procedure Alpha() begin end;\n}\n";
+        let lf_out = sort_members(lf).expect("should sort");
+        assert!(
+            !lf_out.contains('\r'),
+            "LF document must not gain CR:\n{lf_out:?}"
+        );
+    }
+
+    #[test]
+    fn single_line_body_lets_a_later_var_block_hoist() {
+        // `procedure A() begin end;` opens and closes its body on one line, so
+        // the object-level `var` after it is not that procedure's locals.
+        let input = "\
+codeunit 50100 T
+{
+    procedure Zed() begin end;
+
+    var
+        G: Integer;
+}
+";
+        let out = sort_members(input).expect("should sort");
+        assert_eq!(
+            content_multiset(input),
+            content_multiset(&out),
+            "sorting dropped content:\n{out}"
+        );
+        assert!(
+            out.find("var").unwrap() < out.find("procedure Zed").unwrap(),
+            "the object-level var block must hoist above the procedures:\n{out}"
+        );
+    }
+
+    #[test]
+    fn begin_keyword_detection_respects_words_and_literals() {
+        assert!(contains_begin_keyword("begin"));
+        assert!(contains_begin_keyword("procedure A() begin end;"));
+        assert!(contains_begin_keyword("if x then begin"));
+        assert!(contains_begin_keyword("BEGIN"));
+        assert!(!contains_begin_keyword("Beginning := 1;"));
+        assert!(!contains_begin_keyword("MyBegin();"));
+        assert!(!contains_begin_keyword("Message('begin');"));
+        assert!(!contains_begin_keyword("x := \"begin\";"));
     }
 
     #[test]

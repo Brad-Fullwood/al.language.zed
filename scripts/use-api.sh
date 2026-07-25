@@ -33,8 +33,19 @@ STABLE_DEP="zed_extension_api = \"$STABLE_VER\""
 # everywhere.
 sed_inplace() { # $1 = sed expression, $2 = file
   local tmp
-  tmp="$(mktemp)"
-  sed "$1" "$2" > "$tmp"
+  tmp="$(mktemp)" || return 1
+  # Only touch the target once sed has succeeded — writing the target directly
+  # (or copying back unconditionally) would truncate a manifest to whatever
+  # partial output a failing sed produced.
+  if ! sed "$1" "$2" > "$tmp"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to rewrite $2 (sed expression: $1)" >&2
+    return 1
+  fi
+  # Copy back rather than `mv`: this keeps the target's existing mode and
+  # inode. `mktemp` creates 0600, and `mv` would leave a tracked manifest
+  # owner-only. `chmod --reference` is GNU-only, so it is not an option in a
+  # script whose whole point is BSD/macOS portability.
   cat "$tmp" > "$2"
   rm -f "$tmp"
 }
