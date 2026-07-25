@@ -136,6 +136,21 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     for line in text.lines() {
         let trimmed = line.trim();
 
+        // A line that *starts* inside a block comment is comment text through
+        // and through. Emit it byte-for-byte — the interior layout of a
+        // `/* … */` block (ASCII art, aligned tables, indented examples) is the
+        // author's, not the formatter's — and run no block-structure analysis
+        // on it. Only the line that *opens* the comment is re-indented, like
+        // any other statement.
+        if in_block_comment {
+            let (_, still_open) = strip_comments(trimmed, true);
+            in_block_comment = still_open;
+            result.push_str(line.trim_end());
+            result.push('\n');
+            prev_was_empty = false;
+            continue;
+        }
+
         if trimmed.is_empty() {
             if prev_was_empty {
                 continue;
@@ -152,11 +167,14 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         }
         prev_was_empty = false;
 
-        let trimmed_lower = trimmed.to_lowercase();
-        // Block-transition heuristics must look at the code only: a line
-        // like `x: Integer; // then begin` must not be treated as ending in
-        // `begin`. `code`/`code_lower` strip any trailing line comment.
-        let code = code_portion(trimmed);
+        // Block-transition heuristics must look at the code only: a line like
+        // `x: Integer; // then begin` must not be treated as ending in
+        // `begin`, and neither must `/* … begin … */`. `code`/`code_lower`
+        // have every comment span removed, so commented-out braces and
+        // keywords can't drive the indent state machine; an unterminated `/*`
+        // sets `in_block_comment` for the following lines.
+        let (code, opens_block_comment) = strip_comments(trimmed, false);
+        in_block_comment = opens_block_comment;
         let code_lower = code.to_lowercase();
 
         // `begin` closes a var section — dedent back to the procedure level
@@ -169,12 +187,12 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // ends at the next member declaration: an attribute line
         // (`[EventSubscriber(...)]`) or a procedure/trigger header.
         if in_var_section {
-            let is_member_start = trimmed.starts_with('[')
-                || trimmed_lower.starts_with("procedure ")
-                || trimmed_lower.starts_with("local ")
-                || trimmed_lower.starts_with("internal ")
-                || trimmed_lower.starts_with("protected ")
-                || trimmed_lower.starts_with("trigger ");
+            let is_member_start = code.starts_with('[')
+                || code_lower.starts_with("procedure ")
+                || code_lower.starts_with("local ")
+                || code_lower.starts_with("internal ")
+                || code_lower.starts_with("protected ")
+                || code_lower.starts_with("trigger ");
             if is_member_start {
                 indent_level = (indent_level - 1).max(0);
                 in_var_section = false;
@@ -197,7 +215,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // Use the code portion (comment stripped) and reject disqualifying
         // characters only when they occur OUTSIDE a string, so a quoted label
         // like `'a;b':` is still a label because its semicolon is quoted.
-        let label_code = code_portion(trimmed);
+        let label_code = code.as_str();
         let is_case_label = case_depth > 0
             && label_code.ends_with(':')
             && !label_code.ends_with("::")
@@ -217,11 +235,11 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             in_case_label_body = false;
         }
 
-        let is_close = trimmed_lower == "}"
-            || trimmed_lower == "end;"
-            || trimmed_lower == "end"
-            || trimmed_lower.starts_with("end;")
-            || trimmed_lower.starts_with("end ");
+        let is_close = code_lower == "}"
+            || code_lower == "end;"
+            || code_lower == "end"
+            || code_lower.starts_with("end;")
+            || code_lower.starts_with("end ");
 
         if is_close {
             if single_stmt_depth > 0 {
@@ -245,9 +263,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
                 if case_depth > 0 {
                     case_depth -= 1;
                 }
-            } else if case_depth > 0
-                && (trimmed_lower == "end;" || trimmed_lower.starts_with("end;"))
-            {
+            } else if case_depth > 0 && (code_lower == "end;" || code_lower.starts_with("end;")) {
                 // Case block close without label body
                 case_depth -= 1;
             }
@@ -256,14 +272,14 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
 
         // `else` after single-statement if-then: drain remaining single-stmt depth
         if !is_close
-            && (trimmed_lower == "else" || trimmed_lower.starts_with("else "))
+            && (code_lower == "else" || code_lower.starts_with("else "))
             && single_stmt_depth > 0
         {
             indent_level = (indent_level - single_stmt_depth).max(0);
             single_stmt_depth = 0;
         }
 
-        if trimmed_lower.starts_with("until ") || trimmed_lower == "until" {
+        if code_lower.starts_with("until ") || code_lower == "until" {
             indent_level = (indent_level - 1).max(0);
         }
 
@@ -273,17 +289,14 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // apply keyword casing transformation. Skips work entirely
         // for Preserve (no allocation). For Lower/Upper, walks the line and
         // case-folds only AL keyword tokens (matched via word boundaries +
-        // language_data lookup) — keeps identifiers and string literals
-        // untouched.
-        if !in_block_comment {
-            let transformed = apply_keyword_casing(trimmed, &options.keyword_casing);
-            result.push_str(&transformed);
-        } else {
-            result.push_str(trimmed);
-        }
+        // language_data lookup) — keeps identifiers, string literals and
+        // comment text untouched. Lines *inside* a block comment never reach
+        // here; they are emitted verbatim at the top of the loop.
+        let transformed = apply_keyword_casing(trimmed, &options.keyword_casing);
+        result.push_str(&transformed);
         result.push('\n');
 
-        let net_parens = count_net_parens(trimmed);
+        let net_parens = count_net_parens(&code);
         if net_parens > 0 && paren_depth == 0 {
             // Opening parens on this line — indent continuation lines
             indent_level += 1;
@@ -310,36 +323,21 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // the `;` terminator. Trailing commas outside parens are not valid
         // in executable AL, so this only fires on multi-line property
         // values (Permissions, TableRelation, CalcFormula, …).
-        let is_comment_line =
-            trimmed.starts_with("//") || trimmed.starts_with("/*") || in_block_comment;
-        if in_property_continuation && (trimmed.ends_with(';') || is_close) {
+        // A line whose code portion is empty is pure comment (`// …`,
+        // `/* … */`, or the opening line of a multi-line block comment).
+        let is_comment = code.is_empty();
+        if in_property_continuation && (code.ends_with(';') || is_close) {
             indent_level = (indent_level - 1).max(0);
             in_property_continuation = false;
-        } else if !in_property_continuation && !is_comment_line && trimmed.ends_with(',') {
+        } else if !in_property_continuation && !is_comment && code.ends_with(',') {
             indent_level += 1;
             in_property_continuation = true;
         }
 
         // Drain single-stmt stack: if we just wrote a "normal" statement (not a
-        // block opener, closer, comment, or another single-stmt opener), pop the stack.
-        //
-        // Treat block-comment lines (whether they start a comment with `/*`
-        // or sit inside an ongoing one) as comments here too — they're not
-        // executable statements and must not consume single-stmt-depth.
-        // After classifying THIS line, update `in_block_comment` based on
-        // whether the line opens and/or closes a block comment.
-        let starts_block_comment = trimmed.starts_with("/*");
-        let line_is_block_comment_body = in_block_comment || starts_block_comment;
-        // This text-based scanner does not distinguish delimiters in strings.
-        let closes_block_comment = trimmed.contains("*/");
-        if line_is_block_comment_body {
-            // Update the multi-line tracker for the NEXT iteration. If this
-            // line opens-and-closes a block comment on the same line, we
-            // stay outside afterwards; if it opens without closing, we're
-            // inside; if it was already inside and closes here, we leave.
-            in_block_comment = !closes_block_comment;
-        }
-        let is_comment = trimmed.starts_with("//") || line_is_block_comment_body;
+        // block opener, closer, comment, or another single-stmt opener), pop
+        // the stack. Comment-only lines are not executable statements and must
+        // not consume single-stmt-depth.
         let is_block_opener = code.ends_with('{')
             || code_lower == "begin"
             || code_lower.ends_with(" begin")
@@ -353,8 +351,8 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             && !is_comment
             && !is_single_stmt_opener
             && !is_case_label
-            && trimmed_lower != "else"
-            && !trimmed_lower.starts_with("else ")
+            && code_lower != "else"
+            && !code_lower.starts_with("else ")
         {
             // This line consumed one single-statement slot; drain all
             indent_level = (indent_level - single_stmt_depth).max(0);
@@ -598,6 +596,25 @@ fn apply_keyword_casing(line: &str, casing: &KeywordCasing) -> String {
             // advanced past ASCII bytes above).
             out.push_str(&line[i..]);
             break;
+        }
+        // Block comment — copy verbatim through the closing `*/`, or to the end
+        // of the line when the comment continues onto the next one. Comment
+        // prose is not code: re-casing words that happen to be AL keywords
+        // (`/* call begin here */`) rewrites the author's text.
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            let start = i;
+            i += 2;
+            while i < bytes.len() {
+                if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+            // `*` and `/` are ASCII, so `i` lands on a char boundary and this
+            // slice preserves any non-ASCII comment text intact.
+            out.push_str(&line[start..i]);
+            continue;
         }
         // Identifier-shaped word (letters + digits + underscore, starting
         // with letter or underscore). AL is ASCII-only so byte-level scan
@@ -844,13 +861,74 @@ fn has_line_comment_outside_strings(s: &str) -> bool {
     line_comment_start(s).is_some()
 }
 
-/// The code portion of a line with any trailing `//` comment removed (and
-/// trailing whitespace trimmed). Used before block-transition heuristics so a
-/// comment tail like `x: Integer; // then begin` can't trip the `ends_with
-/// `"begin"` / case-label detection.
-fn code_portion(s: &str) -> &str {
-    let end = line_comment_start(s).unwrap_or(s.len());
-    s[..end].trim_end()
+/// Strip every comment span from `line`, returning the code-only text plus
+/// whether the line ends inside an unterminated block comment.
+///
+/// `in_block` is the block-comment state on entry. Both `//` tails and
+/// `/* … */` spans are removed — including a block comment opened part-way
+/// through a line and one spanning several lines — while string literals are
+/// honoured, so a `//` or `/*` inside `'…'` / `"…"` stays as content.
+///
+/// This is what keeps commented-out text out of the block-structure state
+/// machine: `/* … { … */` must not open a brace level, and `} // done` must
+/// still read as a closing brace.
+///
+/// A removed span collapses to a single space so `end;/*x*/` does not fuse
+/// its neighbours into one token; the result is trimmed.
+fn strip_comments(line: &str, in_block: bool) -> (String, bool) {
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    let mut in_block = in_block;
+    while i < bytes.len() {
+        if in_block {
+            if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                in_block = false;
+                out.push(' ');
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        let b = bytes[i];
+        match b {
+            // String literal / quoted identifier — copy verbatim. AL doubles a
+            // single quote (`''`) to escape it inside a single-quoted literal.
+            b'\'' | b'"' => {
+                let quote = b;
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == quote {
+                        if quote == b'\'' && i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+                // Both ends are char boundaries (quotes are ASCII), so this
+                // slice never splits a multi-byte character.
+                out.push_str(&line[start..i]);
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => break,
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                in_block = true;
+                out.push(' ');
+                i += 2;
+            }
+            _ => {
+                let ch = line[i..].chars().next().unwrap_or(b as char);
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+    (out.trim().to_string(), in_block)
 }
 
 /// True if any of `needles` appears in `s` **outside** a string literal.
@@ -1662,6 +1740,188 @@ codeunit 50100 Test
             pass1, pass2,
             "second-pass formatting with block comments should be a no-op"
         );
+    }
+
+    /// Leading-whitespace width of the first line starting with `needle`.
+    fn indent_width(text: &str, needle: &str) -> usize {
+        let line = text
+            .lines()
+            .find(|l| l.trim_start().starts_with(needle))
+            .unwrap_or_else(|| panic!("{needle:?} not found in:\n{text}"));
+        line.len() - line.trim_start().len()
+    }
+
+    fn upper_cased(input: &str) -> String {
+        format_al(
+            input,
+            &FormatOptions {
+                keyword_casing: KeywordCasing::Upper,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn braces_inside_a_block_comment_do_not_change_indentation() {
+        // A `{` in commented-out text used to open a real brace level, shifting
+        // every following line — and the object's own closing `}` — one level
+        // deeper, permanently.
+        let input = "\
+codeunit 50100 T
+{
+    /* example: obj {
+       nested }
+    */
+    procedure P()
+    begin
+        Foo();
+    end;
+}
+";
+        let out = format_al(input, &FormatOptions::default());
+        assert_eq!(indent_width(&out, "procedure P"), 4, "got:\n{out}");
+        assert_eq!(indent_width(&out, "Foo()"), 8, "got:\n{out}");
+        // The object's own closing brace must land back at column 0.
+        let last = out.lines().rfind(|l| !l.trim().is_empty());
+        assert_eq!(last, Some("}"), "got:\n{out}");
+    }
+
+    #[test]
+    fn block_comment_opened_mid_line_is_tracked() {
+        // `/*` after code on the same line was never detected, so the comment
+        // body was analysed (and re-indented) as if it were executable AL.
+        let input = "\
+codeunit 50100 T
+{
+    procedure P() /* returns { nothing */
+    begin
+        Foo();
+    end;
+}
+";
+        let out = format_al(input, &FormatOptions::default());
+        assert_eq!(indent_width(&out, "begin"), 4, "got:\n{out}");
+        assert_eq!(indent_width(&out, "Foo()"), 8, "got:\n{out}");
+    }
+
+    #[test]
+    fn block_comment_interior_layout_is_preserved() {
+        // The interior of a `/* … */` block belongs to the author: aligned
+        // tables, ASCII art and indented examples must survive a format.
+        let input = "\
+codeunit 50100 T
+{
+    /* layout:
+         +-----+-----+
+         |  a  |  b  |
+    */
+}
+";
+        let out = format_al(input, &FormatOptions::default());
+        assert!(out.contains("         +-----+-----+"), "got:\n{out}");
+        assert!(out.contains("         |  a  |  b  |"), "got:\n{out}");
+    }
+
+    #[test]
+    fn keyword_casing_leaves_block_comment_prose_alone() {
+        let input = "\
+codeunit 50100 T
+{
+    /* begin end
+       var if then */
+}
+";
+        let out = upper_cased(input);
+        assert!(out.contains("/* begin end"), "got:\n{out}");
+        assert!(out.contains("var if then */"), "got:\n{out}");
+    }
+
+    #[test]
+    fn keyword_casing_leaves_mid_line_block_comments_alone() {
+        let input = "\
+codeunit 50100 T
+{
+    procedure P()
+    begin
+        Foo(); /* begin end
+        var */
+    end;
+}
+";
+        let out = upper_cased(input);
+        assert!(out.contains("/* begin end"), "got:\n{out}");
+        assert!(out.contains("var */"), "got:\n{out}");
+    }
+
+    #[test]
+    fn closing_brace_with_a_trailing_line_comment_still_dedents() {
+        // `is_close` matched the raw trimmed line, so `}` was recognised but
+        // `} // note` was not — every following line drifted one level deeper.
+        let input = "\
+table 50100 T
+{
+    fields
+    {
+        field(1; A; Integer) { }
+    } // end fields
+    keys
+    {
+        key(PK; A) { }
+    }
+}
+";
+        let out = format_al(input, &FormatOptions::default());
+        assert_eq!(indent_width(&out, "keys"), 4, "got:\n{out}");
+    }
+
+    #[test]
+    fn comment_markers_inside_string_literals_are_content() {
+        let input = "\
+codeunit 50100 T
+{
+    procedure P()
+    begin
+        Message('a /* b */ c // d');
+        Foo();
+    end;
+}
+";
+        let out = format_al(input, &FormatOptions::default());
+        assert!(out.contains("'a /* b */ c // d'"), "got:\n{out}");
+        assert_eq!(indent_width(&out, "Foo()"), 8, "got:\n{out}");
+    }
+
+    #[test]
+    fn strip_comments_removes_every_comment_shape() {
+        assert_eq!(
+            strip_comments("end; // note", false),
+            ("end;".into(), false)
+        );
+        assert_eq!(strip_comments("} // note", false), ("}".into(), false));
+        // A removed span collapses to a space so neighbours never fuse into
+        // one token; the exact run of blanks does not matter to any caller.
+        assert_eq!(
+            strip_comments("a /* x */ b", false),
+            ("a    b".into(), false)
+        );
+        assert_eq!(strip_comments("end;/*x*/", false), ("end;".into(), false));
+        assert_eq!(strip_comments("code /* open", false), ("code".into(), true));
+        assert_eq!(strip_comments("still inside", true), (String::new(), true));
+        assert_eq!(
+            strip_comments("closing */ tail", true),
+            ("tail".into(), false)
+        );
+        // Comment markers inside literals are content, not comments.
+        assert_eq!(
+            strip_comments("Message('// not a comment')", false),
+            ("Message('// not a comment')".into(), false)
+        );
+        assert_eq!(
+            strip_comments("Message('/* not a comment */')", false),
+            ("Message('/* not a comment */')".into(), false)
+        );
+        // An unterminated `/*` swallows the rest of the line, not the universe.
+        assert_eq!(strip_comments("/*", false), (String::new(), true));
     }
 
     /// Leading whitespace of the first line whose trimmed content starts with

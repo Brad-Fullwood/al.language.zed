@@ -27,18 +27,30 @@ STABLE_VER="0.7.0"
 DEV_DEP='zed_extension_api = { git = "https://github.com/zed-industries/zed", branch = "main" }'
 STABLE_DEP="zed_extension_api = \"$STABLE_VER\""
 
+# `sed -i` is not portable: GNU takes an optional suffix, BSD/macOS *requires*
+# one, so a bare `-i` fails on macOS (a supported dev platform — CI builds on
+# macos-latest). Edit through a temp file instead, which behaves the same
+# everywhere.
+sed_inplace() { # $1 = sed expression, $2 = file
+  local tmp
+  tmp="$(mktemp)"
+  sed "$1" "$2" > "$tmp"
+  cat "$tmp" > "$2"
+  rm -f "$tmp"
+}
+
 set_lib_version() { # $1 = version
   # Replace `version = "..."` only inside the [lib] table of extension.toml.
-  sed -i "/^\[lib\]/,/^\[/ s/^version = .*/version = \"$1\"/" extension.toml
+  sed_inplace "/^\[lib\]/,/^\[/ s/^version = .*/version = \"$1\"/" extension.toml
 }
 
 case "${1:-}" in
   dev)
-    sed -i "s#^zed_extension_api = .*#${DEV_DEP//#/\\#}#" Cargo.toml
+    sed_inplace "s#^zed_extension_api = .*#${DEV_DEP//#/\\#}#" Cargo.toml
     set_lib_version "$DEV_VER"
     echo "DEV API (git main, $DEV_VER). Loads on Zed dev/nightly only." ;;
   stable)
-    sed -i "s#^zed_extension_api = .*#${STABLE_DEP}#" Cargo.toml
+    sed_inplace "s#^zed_extension_api = .*#${STABLE_DEP}#" Cargo.toml
     set_lib_version "$STABLE_VER"
     echo "STABLE API ($STABLE_VER). Loads on stable Zed + public registry." ;;
   show)

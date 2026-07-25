@@ -29,12 +29,28 @@ const BC_SCOPE: &str = "https://api.businesscentral.dynamics.com/.default offlin
 /// while keeping the worst-case poll cadence bounded.
 const MAX_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Lower bound on the device-code polling interval. A server reporting
+/// `interval: 0` would otherwise spin the token endpoint as fast as the network
+/// allows.
+const MIN_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Upper bound on the device-code lifetime. Entra ID issues 15 minutes; the cap
+/// keeps a bogus `expires_in` from overflowing `SystemTime + Duration` (which
+/// panics) and from pinning a daemon task open indefinitely.
+const MAX_DEVICE_CODE_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Clamp a polling interval into `[MIN_POLL_INTERVAL, MAX_POLL_INTERVAL]`.
+/// Applied to every interval the server can influence — the initial `interval`,
+/// `slow_down` bumps, and `Retry-After` — so the worst-case poll cadence is
+/// bounded no matter what the token endpoint returns.
+fn clamp_poll_interval(interval: Duration) -> Duration {
+    interval.clamp(MIN_POLL_INTERVAL, MAX_POLL_INTERVAL)
+}
+
 /// Compute the next polling interval after a `slow_down` response: bump by 5s,
 /// saturating, and clamp to [`MAX_POLL_INTERVAL`].
 fn next_slow_down_interval(current: Duration) -> Duration {
-    current
-        .saturating_add(Duration::from_secs(5))
-        .min(MAX_POLL_INTERVAL)
+    clamp_poll_interval(current.saturating_add(Duration::from_secs(5)))
 }
 
 #[derive(Debug, Error)]
@@ -435,8 +451,15 @@ async fn device_code_flow(
         ));
     }
 
-    let deadline = SystemTime::now() + Duration::from_secs(dc.expires_in);
-    let mut interval = Duration::from_secs(dc.interval);
+    // `expires_in` / `interval` are server-controlled. Clamp both before they
+    // reach `SystemTime::add` / `tokio::time::sleep`: `SystemTime + Duration`
+    // panics on overflow, and an unclamped interval would park the sign-in for
+    // as long as the server asks (up to ~584 billion years for `u64::MAX`).
+    let lifetime = Duration::from_secs(dc.expires_in.min(MAX_DEVICE_CODE_LIFETIME.as_secs()));
+    let deadline = SystemTime::now()
+        .checked_add(lifetime)
+        .unwrap_or_else(|| SystemTime::now() + MIN_POLL_INTERVAL);
+    let mut interval = clamp_poll_interval(Duration::from_secs(dc.interval));
 
     loop {
         tokio::time::sleep(interval).await;
@@ -466,8 +489,11 @@ async fn device_code_flow(
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
                 .map(Duration::from_secs)
-                .unwrap_or_else(|| interval * 2);
-            interval = retry_after;
+                // `interval * 2` panics on overflow; saturate instead. Both
+                // branches go through the same clamp as `slow_down`, so a
+                // hostile `Retry-After` can't stall sign-in past the cap.
+                .unwrap_or_else(|| interval.saturating_mul(2));
+            interval = clamp_poll_interval(retry_after);
             continue;
         }
 
@@ -1177,6 +1203,19 @@ fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedToken> {
             return None;
         }
     };
+    // `token_cache_path` folds every non-alphanumeric character to `_`, so two
+    // distinct tenants can land on one cache file (`a.b` and `a_b` both become
+    // `a_b.json`). The bundle records the tenant it was issued for — reject a
+    // mismatch rather than hand one tenant's bearer token to another.
+    if tok.tenant != tenant {
+        tracing::warn!(
+            path = %path.display(),
+            cached_tenant = %tok.tenant,
+            requested_tenant = tenant,
+            "OAuth token cache: tenant mismatch — ignoring cached token"
+        );
+        return None;
+    }
     // Migrate-on-read: move the secret into the OS keyring and delete the
     // plaintext file, so a token cached by an earlier version stops lingering on
     // disk after the first load. Best-effort — if the keyring is unavailable the
@@ -1212,7 +1251,11 @@ fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
     let cached = CachedToken {
         access_token: tok.access_token.clone(),
         refresh_token: tok.refresh_token.clone(),
-        expires_at: now_unix() + tok.expires_in,
+        // `expires_in` comes off the wire: saturate rather than wrap (release)
+        // or panic (debug) on a bogus value. A saturated `expires_at` reads as
+        // "far future", which the refresh path handles the same as any other
+        // still-valid token.
+        expires_at: now_unix().saturating_add(tok.expires_in),
         tenant: tenant.to_string(),
     };
     let json = match serde_json::to_string_pretty(&cached) {
@@ -1621,7 +1664,7 @@ mod tests {
             expires_in: 3600,
         };
         save_cached_token(&path, "common", &tok);
-        let loaded = load_cached_token(&path, "test-tenant").expect("must load");
+        let loaded = load_cached_token(&path, "common").expect("must load");
         assert_eq!(loaded.access_token, "AAA");
         assert_eq!(loaded.refresh_token.as_deref(), Some("RRR"));
         assert_eq!(loaded.tenant, "common");
@@ -1629,6 +1672,83 @@ mod tests {
             loaded.expires_at > now_unix(),
             "expiry must be in the future"
         );
+    }
+
+    #[test]
+    fn load_cached_token_rejects_a_different_tenant() {
+        // `token_cache_path` folds `.`/`-` to `_`, so distinct tenants can share
+        // one cache file. The bundle's recorded tenant must gate the load —
+        // otherwise one tenant is handed another tenant's bearer token.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.json");
+        let tok = TokenResponse {
+            access_token: "AAA".into(),
+            refresh_token: Some("RRR".into()),
+            expires_in: 3600,
+        };
+        save_cached_token(&path, "contoso.onmicrosoft.com", &tok);
+        assert!(
+            load_cached_token(&path, "contoso_onmicrosoft.com").is_none(),
+            "a token issued for another tenant must not be reused"
+        );
+        assert!(
+            load_cached_token(&path, "contoso.onmicrosoft.com").is_some(),
+            "the issuing tenant must still load its own token"
+        );
+    }
+
+    #[test]
+    fn save_cached_token_saturates_absurd_expires_in() {
+        // `expires_in` is server-controlled: `now + u64::MAX` would panic in
+        // debug and wrap to a past instant in release (making every token look
+        // expired). Saturating keeps it in the future.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.json");
+        let tok = TokenResponse {
+            access_token: "AAA".into(),
+            refresh_token: None,
+            expires_in: u64::MAX,
+        };
+        save_cached_token(&path, "common", &tok);
+        let loaded = load_cached_token(&path, "common").expect("must load");
+        assert_eq!(loaded.expires_at, u64::MAX);
+    }
+
+    #[test]
+    fn poll_interval_is_clamped_from_every_server_controlled_path() {
+        // Initial `interval`, `slow_down` bumps and `Retry-After` all funnel
+        // through the same clamp, so no server value can stall or spin sign-in.
+        assert_eq!(clamp_poll_interval(Duration::ZERO), MIN_POLL_INTERVAL);
+        assert_eq!(clamp_poll_interval(Duration::MAX), MAX_POLL_INTERVAL);
+        assert_eq!(
+            clamp_poll_interval(Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
+        // saturating_mul is what keeps the Retry-After fallback from panicking.
+        assert_eq!(
+            clamp_poll_interval(Duration::MAX.saturating_mul(2)),
+            MAX_POLL_INTERVAL
+        );
+        assert_eq!(next_slow_down_interval(Duration::MAX), MAX_POLL_INTERVAL);
+        assert_eq!(
+            next_slow_down_interval(Duration::from_secs(5)),
+            Duration::from_secs(10)
+        );
+    }
+
+    #[test]
+    fn device_code_lifetime_cannot_overflow_systemtime() {
+        // `SystemTime + Duration` panics on overflow; the lifetime clamp is what
+        // stops a bogus `expires_in` from taking the process down. Mirror the
+        // clamp `device_code_flow` applies, for each shape a server can send.
+        for expires_in in [u64::MAX, u64::MAX / 2, 900, 0] {
+            let lifetime = Duration::from_secs(expires_in.min(MAX_DEVICE_CODE_LIFETIME.as_secs()));
+            assert!(lifetime <= MAX_DEVICE_CODE_LIFETIME);
+            assert!(
+                SystemTime::now().checked_add(lifetime).is_some(),
+                "expires_in={expires_in} must not overflow SystemTime"
+            );
+        }
     }
 
     #[test]
