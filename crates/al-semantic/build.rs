@@ -76,7 +76,18 @@ fn build_semantic_bridge() {
                 output_dir.display()
             );
         }
-        Ok(s) => panic!("dotnet build exited with {s}"),
+        Ok(s) => panic!(
+            "dotnet build exited with {s} while compiling {}",
+            csproj.display()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => panic!(
+            "the `semantic` feature needs the .NET 8 SDK to build the AL bridge, \
+             but `dotnet` was not found on PATH.\n\
+             Install it from https://dotnet.microsoft.com/download/dotnet/8.0, or \
+             point AL_BRIDGE_PREBUILT at a directory containing a prebuilt \
+             AlBridge.dll + AlBridge.runtimeconfig.json.\n\
+             Building without `--features semantic` links the no-op stub host instead."
+        ),
         Err(e) => panic!("failed to run dotnet build: {e}"),
     }
 

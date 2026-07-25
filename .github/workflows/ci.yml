@@ -69,6 +69,51 @@ jobs:
       - name: Formatting check
         run: cargo fmt --all -- --check
 
+  semantic:
+    # The `semantic` feature gates al-semantic's in-process CLR host — every
+    # `unsafe` FFI block in the workspace lives behind it. The main CI job builds
+    # default features only, so until this job existed that code was compiled for
+    # the first time by the release workflow, on a tag. A break there fails the
+    # release instead of the PR.
+    name: Semantic bridge (.NET FFI)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # al-semantic's build script shells out to `dotnet build` for AlBridge.dll.
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: semantic-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            semantic-cargo-
+
+      - name: Build al-lsp with the semantic bridge
+        run: cargo build -p al-lsp --bin al-lsp --features semantic
+
+      - name: Test al-semantic with the semantic bridge
+        run: cargo test -p al-semantic --features semantic
+
+      - name: Clippy (semantic feature)
+        run: cargo clippy -p al-semantic -p al-lsp --features semantic --all-targets -- -D warnings
+
   cargo-deny:
     # Enforces the deny.toml license, advisory, source, and banned-crate policy.
     name: Dependency policy (cargo-deny)
