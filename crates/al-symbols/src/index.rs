@@ -401,6 +401,9 @@ impl SymbolIndex {
         // rather than duplicating every object in all secondary indexes.
         self.remove_package_entries(&pkg.name);
         if let Some(path) = path {
+            // The source-index cache canonicalizes package paths before
+            // warming them. Publish the same identity so cache-only user
+            // queries work through symlinks and macOS `/var` aliases.
             let indexed_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
             self.app_paths.insert(pkg.name.to_lowercase(), indexed_path);
         }
@@ -1478,11 +1481,51 @@ mod tests {
         assert_eq!(hits[0].id, 50123);
         assert_eq!(hits[0].kind, ObjectKind::Table);
 
-        // ...and the index records the exact local folder the symbols came from
-        // (the resolution path that `appLocalFolderPaths` would drive).
+        // ...and the index records the resolved local package file that
+        // `appLocalFolderPaths` discovered.
+        let resolved_app_path = std::fs::canonicalize(&app_path).unwrap();
         assert_eq!(
             index.app_path("Local Lib").as_deref(),
-            Some(app_path.as_path())
+            Some(resolved_app_path.as_path())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn package_path_alias_keeps_prewarmed_source_index_reachable() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_folder = dir.path().join("real-packages");
+        let alias_folder = dir.path().join("package-alias");
+        std::fs::create_dir_all(&real_folder).unwrap();
+        symlink(&real_folder, &alias_folder).unwrap();
+
+        let real_app_path = real_folder.join("Contoso_Aliased.app");
+        let alias_app_path = alias_folder.join("Contoso_Aliased.app");
+        std::fs::write(
+            &real_app_path,
+            build_app("Aliased", 50_125, "Aliased Widget"),
+        )
+        .unwrap();
+
+        let index = SymbolIndex::new();
+        assert_eq!(
+            index
+                .load_packages(std::slice::from_ref(&alias_app_path))
+                .len(),
+            1
+        );
+
+        let indexed_path = index.app_path("Aliased").unwrap();
+        assert_eq!(
+            indexed_path,
+            std::fs::canonicalize(&alias_app_path).unwrap()
+        );
+        assert!(
+            crate::source_index::get_cached(&indexed_path).is_some(),
+            "the path published by SymbolIndex must address the prewarmed source index"
         );
     }
 
@@ -1524,7 +1567,11 @@ mod tests {
         assert!(index.get_by_name("First Table").is_empty());
         assert_eq!(index.get_by_name("Second Table").len(), 1);
         assert!(index.app_path("First").is_none());
-        assert_eq!(index.app_path("Second").as_deref(), Some(second.as_path()));
+        let resolved_second = std::fs::canonicalize(&second).unwrap();
+        assert_eq!(
+            index.app_path("Second").as_deref(),
+            Some(resolved_second.as_path())
+        );
     }
 
     #[test]
@@ -1547,6 +1594,10 @@ mod tests {
 
         assert!(loaded.is_empty());
         assert!(index.find_by_name("Keep Table").is_some());
-        assert_eq!(index.app_path("Keep").as_deref(), Some(valid.as_path()));
+        let resolved_valid = std::fs::canonicalize(&valid).unwrap();
+        assert_eq!(
+            index.app_path("Keep").as_deref(),
+            Some(resolved_valid.as_path())
+        );
     }
 }
