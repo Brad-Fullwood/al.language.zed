@@ -1147,6 +1147,9 @@ mod tests {
         std::os::unix::fs::symlink(external.path(), project.path().join("linked")).unwrap();
 
         let files = collect_al_files(project.path()).unwrap();
-        assert_eq!(files, vec![project.path().join("Inside.al")]);
+        let expected = project.path().canonicalize().unwrap().join("Inside.al");
+        let outside = external.path().canonicalize().unwrap().join("Outside.al");
+        assert_eq!(files, vec![expected]);
+        assert!(!files.contains(&outside));
     }
 }
