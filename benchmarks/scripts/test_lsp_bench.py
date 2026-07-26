@@ -207,6 +207,30 @@ class ClientContractTests(unittest.TestCase):
             self.assertTrue(result.parent.is_dir())
             self.assertTrue(stderr.parent.is_dir())
 
+    def test_readiness_evidence_can_be_observed_before_server_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            stderr = Path(root) / "server.stderr.log"
+            stderr.write_text("semantic analysis complete\n")
+            started = time.perf_counter()
+            found, observed = lsp_bench.wait_file_pattern(
+                stderr,
+                "semantic analysis complete",
+                0.1,
+            )
+            self.assertTrue(found)
+            self.assertGreaterEqual(observed, started)
+
+    def test_missing_readiness_evidence_times_out(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            stderr = Path(root) / "server.stderr.log"
+            found, observed = lsp_bench.wait_file_pattern(
+                stderr,
+                "missing",
+                0.001,
+            )
+            self.assertFalse(found)
+            self.assertIsNone(observed)
+
     def test_server_artifacts_are_explicit_and_deduplicated(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             command = Path(root) / "server"

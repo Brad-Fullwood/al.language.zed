@@ -67,6 +67,7 @@ python3 -u "$BENCH/scripts/lsp_bench.py" \
   --iterations "$ITERS" \
   --server-artifact "$BRIDGE_DIR/AlBridge.dll" \
   --server-artifact "$BRIDGE_DIR/AlBridge.runtimeconfig.json" \
+  --readiness-stderr-pattern "semantic analysis complete" \
   --require-stderr-pattern "Semantic bridge initialized" \
   --require-stderr-pattern "semantic analysis complete" \
   --forbid-stderr-pattern "Failed to initialize semantic bridge" \

@@ -153,6 +153,22 @@ def prepare_output_paths(result_path, stderr_path):
         path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def wait_file_pattern(path, pattern, timeout):
+    """Wait until a live server log contains the declared readiness evidence."""
+    deadline = time.perf_counter() + timeout
+    while True:
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            text = ""
+        if pattern in text:
+            return True, time.perf_counter()
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            return False, None
+        time.sleep(min(remaining, 0.02))
+
+
 def check_stderr_contract(text, required=(), forbidden=(), terminal=None):
     """Evaluate literal stderr evidence after the server has fully exited."""
     checks = {
@@ -533,6 +549,10 @@ def main():
                     help="additional server artifact to hash (repeatable)")
     ap.add_argument("--require-stderr-pattern", action="append", default=[],
                     help="literal evidence required in the complete server stderr log")
+    ap.add_argument("--readiness-stderr-pattern", default=None,
+                    help="literal server stderr evidence that must appear before probes and counts toward cold-ready time")
+    ap.add_argument("--readiness-timeout", type=float, default=None,
+                    help="seconds to wait for readiness stderr evidence (defaults to --diag-timeout)")
     ap.add_argument("--forbid-stderr-pattern", action="append", default=[],
                     help="literal evidence that invalidates the complete server stderr log")
     ap.add_argument("--terminal-stderr-pattern", default=None,
@@ -748,11 +768,46 @@ def main():
         )
         out["first_diagnostic_phase"] = diagnostic_phase
 
+    readiness_evidence_ts = None
+    if args.readiness_stderr_pattern:
+        readiness_timeout = (
+            args.readiness_timeout
+            if args.readiness_timeout is not None
+            else args.diag_timeout
+        )
+        found, readiness_evidence_ts = wait_file_pattern(
+            args.stderr_log,
+            args.readiness_stderr_pattern,
+            readiness_timeout,
+        )
+        out["readinessEvidence"] = {
+            "source": "stderr",
+            "pattern": args.readiness_stderr_pattern,
+            "found": found,
+            "ms": (
+                round(
+                    (readiness_evidence_ts - lifecycle_start) * 1000.0,
+                    4,
+                )
+                if found
+                else None
+            ),
+        }
+
     if out.get("first_diagnostic_ms") is not None:
         lifecycle_ready_ms = (lifecycle_ready - lifecycle_start) * 1000.0
+        readiness_evidence_ms = (
+            (readiness_evidence_ts - lifecycle_start) * 1000.0
+            if readiness_evidence_ts is not None
+            else 0.0
+        )
         out["cold_ready_ms"] = round(
             out["initialize_ms"]
-            + max(lifecycle_ready_ms, out["first_diagnostic_ms"]),
+            + max(
+                lifecycle_ready_ms,
+                out["first_diagnostic_ms"],
+                readiness_evidence_ms,
+            ),
             4,
         )
     else:
@@ -846,6 +901,14 @@ def main():
             invalid_reasons.append(f"one or more server-specific {phase}s failed")
     if out.get("first_diagnostic_ms") is None:
         invalid_reasons.append("no publishDiagnostics notification was observed")
+    if (
+        args.readiness_stderr_pattern
+        and not out.get("readinessEvidence", {}).get("found", False)
+    ):
+        invalid_reasons.append(
+            "server did not reach required pre-probe readiness evidence: "
+            f"{args.readiness_stderr_pattern}"
+        )
     expected_samples = args.iterations - 1
     for name, entry in out["requests"].items():
         if entry.get("errors") != 0:
