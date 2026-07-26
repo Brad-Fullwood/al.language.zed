@@ -79,7 +79,7 @@ jobs:
 
       - name: Benchmark harness contract tests
         if: matrix.os == 'ubuntu-latest'
-        run: python3 -m unittest benchmarks/scripts/test_emit_bench.py
+        run: python3 -m unittest discover -s benchmarks/scripts -p 'test_*_bench.py'
 
       # Native-only, fixed-fixture Criterion run. This prints measured cold/warm
       # package/index/query timings and owned-cache byte totals, but deliberately

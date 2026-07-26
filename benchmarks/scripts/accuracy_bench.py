@@ -348,7 +348,13 @@ def write_result(manifest, out):
     RESULT_PATH.write_text(json.dumps({"manifest": published_manifest(manifest), **out}, indent=2) + "\n")
 
 
+def prepare_result_directory():
+    """Create every output parent needed before the first benchmark process starts."""
+    RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
 def main():
+    prepare_result_directory()
     with open(os.path.join(ROOT, "manifest.json"), encoding="utf-8") as handle:
         manifest = json.load(handle)
     out = {

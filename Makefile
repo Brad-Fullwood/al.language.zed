@@ -271,7 +271,7 @@ release-dryrun:
 	@echo "--- 9/13 formatting + clippy + benchmark harness contracts ---"
 	cargo fmt --all -- --check
 	cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
-	python3 -m unittest benchmarks/scripts/test_emit_bench.py
+	python3 -m unittest discover -s benchmarks/scripts -p 'test_*_bench.py'
 	@echo "--- 10/13 build workspace (excl zed-al) + real semantic al-lsp ---"
 	cargo build --workspace --exclude zed-al
 	cargo build -p al-lsp --bin al-lsp --features semantic
