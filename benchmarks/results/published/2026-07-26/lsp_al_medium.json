@@ -1,0 +1,184 @@
+{
+  "schemaVersion": 3,
+  "generatedAtUtc": "2026-07-26T23:22:20.614100+00:00",
+  "repository": {
+    "commit": "50d3bcc85614ee8fdd87ca2171e834181ad89d3b",
+    "dirty": false,
+    "trackedDiffSha256": null
+  },
+  "machine": {
+    "os": "Linux-7.1.4-1-cachyos-bore-lto-x86_64-with-glibc2.43",
+    "kernel": "7.1.4-1-cachyos-bore-lto",
+    "architecture": "x86_64",
+    "cpu": "13th Gen Intel(R) Core(TM) i5-1345U",
+    "logicalCpus": 12
+  },
+  "label": "al-lsp (medium)",
+  "serverCommand": [
+    "al-lsp"
+  ],
+  "serverArtifacts": [
+    {
+      "name": "al-lsp",
+      "bytes": 36903360,
+      "sha256": "29213c8529c7d289fa420694a13485ec1ed278fe2824bc41b266888db0459bb3"
+    },
+    {
+      "name": "AlBridge.dll",
+      "bytes": 57344,
+      "sha256": "307ea647845aee4a5937a26448b21e59ebc56bdb47eb74564cf244aab67be76c"
+    },
+    {
+      "name": "AlBridge.runtimeconfig.json",
+      "bytes": 356,
+      "sha256": "f50d026163a7f892de90c429457bd41131f1c0fa5c98d7b8b7464139507f0cb4"
+    }
+  ],
+  "root": "benchmarks/projects/medium",
+  "openFile": "src/Page_60000.al",
+  "iterations": 11,
+  "discardedIterations": [
+    0
+  ],
+  "pre_requests": [],
+  "post_open_requests": [],
+  "requests": {
+    "completion": {
+      "n": 10,
+      "min_ms": 0.4276,
+      "median_ms": 0.5673,
+      "mean_ms": 0.5644,
+      "max_ms": 0.7067,
+      "method": "textDocument/completion",
+      "result_size": 94,
+      "errors": 0
+    },
+    "hover": {
+      "n": 10,
+      "min_ms": 0.0679,
+      "median_ms": 0.1373,
+      "mean_ms": 0.1261,
+      "max_ms": 0.1715,
+      "method": "textDocument/hover",
+      "result_size": 1,
+      "errors": 0
+    },
+    "definition": {
+      "n": 10,
+      "min_ms": 0.0619,
+      "median_ms": 0.0697,
+      "mean_ms": 0.0851,
+      "max_ms": 0.1519,
+      "method": "textDocument/definition",
+      "result_size": 1,
+      "errors": 0
+    },
+    "documentSymbol": {
+      "n": 10,
+      "min_ms": 0.217,
+      "median_ms": 0.2353,
+      "mean_ms": 0.2736,
+      "max_ms": 0.4955,
+      "method": "textDocument/documentSymbol",
+      "result_size": 1,
+      "errors": 0
+    },
+    "workspaceSymbol": {
+      "n": 10,
+      "min_ms": 0.4346,
+      "median_ms": 0.4732,
+      "mean_ms": 0.4731,
+      "max_ms": 0.5294,
+      "method": "workspace/symbol",
+      "result_size": 40,
+      "errors": 0
+    }
+  },
+  "notes": [],
+  "load_start": 3.72,
+  "spawn_to_init_ms": 12.0815,
+  "initialize_ms": 3.2431,
+  "server_capabilities": [
+    "codeActionProvider",
+    "codeLensProvider",
+    "completionProvider",
+    "definitionProvider",
+    "diagnosticProvider",
+    "documentFormattingProvider",
+    "documentRangeFormattingProvider",
+    "documentSymbolProvider",
+    "executeCommandProvider",
+    "foldingRangeProvider",
+    "hoverProvider",
+    "implementationProvider",
+    "inlayHintProvider",
+    "referencesProvider",
+    "renameProvider",
+    "semanticTokensProvider",
+    "signatureHelpProvider",
+    "textDocumentSync",
+    "workspaceSymbolProvider"
+  ],
+  "pre_requests_total_ms": 0.0,
+  "post_open_requests_total_ms": 0.0,
+  "first_diagnostic_ms": 1.2901,
+  "first_diagnostic_count": 1,
+  "first_diagnostic_file": "Page_60000.al",
+  "first_diagnostic_phase": "post_open",
+  "readinessEvidence": {
+    "source": "stderr",
+    "pattern": "semantic analysis complete",
+    "found": true,
+    "ms": 2017.6844
+  },
+  "cold_ready_ms": 2020.9275,
+  "shutdown": {
+    "requestOk": true,
+    "requestError": null,
+    "exitSent": true,
+    "stdinClosed": true,
+    "forcedKill": false,
+    "processExitCode": 0,
+    "elapsedMs": 63.5957,
+    "forcedKillAllowed": false
+  },
+  "stderrContract": {
+    "required": [
+      {
+        "pattern": "Semantic bridge initialized",
+        "found": true
+      },
+      {
+        "pattern": "semantic analysis complete",
+        "found": true
+      }
+    ],
+    "forbidden": [
+      {
+        "pattern": "Failed to initialize semantic bridge",
+        "found": false
+      },
+      {
+        "pattern": "failed to send notification",
+        "found": false
+      },
+      {
+        "pattern": " ERROR ",
+        "found": false
+      },
+      {
+        "pattern": " WARN ",
+        "found": false
+      }
+    ],
+    "terminal": {
+      "pattern": "exit notification received, stopping",
+      "matched": true,
+      "lastLine": "2026-07-26T23:22:22.705266Z  INFO exit notification received, stopping"
+    }
+  },
+  "load_end": 3.58,
+  "load_mean_during_probes": 3.72,
+  "valid": true,
+  "invalidReasons": []
+}

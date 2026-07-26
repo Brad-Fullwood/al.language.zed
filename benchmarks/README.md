@@ -102,7 +102,21 @@ path, with the same cursor positions and iteration count. Comparing two
 different harnesses would measure the harnesses. Servers needing extra
 handshake steps declare them via `--pre-requests` (Microsoft's host will not
 load a project until it receives `al/setActiveWorkspace`), and that time is
-counted toward cold-ready rather than hidden.
+counted toward cold-ready rather than hidden. The native leg builds the exact
+`--release --features semantic` server and bridge, hashes all three artifacts,
+enables the semantic diagnostic trace, and waits for a successful
+`semantic analysis complete` event before probes. Its earlier phase-one
+diagnostic is recorded separately and cannot masquerade as semantic readiness.
+
+**Non-empty probes and honest teardown.** Every request family discards one
+warmup and must produce the requested number of error-free samples with a
+non-empty warmup result. Both legs must complete the standard `shutdown`
+request; the client must then send `exit` and close stdin. Native must log the
+exit notification and exit 0 with no forced kill, warning, error, post-exit
+work, or missing semantic evidence. The Microsoft host currently completes the
+shutdown request but remains alive after the client sends `exit` and EOF; only
+its explicitly declared leg may apply a three-second forced termination, and
+the JSON records that as a note and process exit `-9`.
 
 ## Customer data
 
@@ -113,4 +127,5 @@ customer source appears in `results/` or in `BENCHMARKS.md`.
 
 `work/` and `projects/` are generated. Scratch results are ignored; explicitly
 published, dated raw result directories are versioned so every quantitative
-claim remains reproducible.
+claim remains reproducible. The current evidence is in
+[`results/published/2026-07-26/`](results/published/2026-07-26/).

@@ -1,0 +1,19 @@
+2026-07-26T22:04:53.817544Z  INFO al-lsp starting version="0.3.0" log_dir=/home/bradf/.local/share/al-lsp/logs pid=2774668 ppid=2762799
+2026-07-26T22:04:53.818213Z  INFO initialize: storing root URI root_uri=Some(Url { scheme: "file", cannot_be_a_base: false, username: "", password: None, host: None, port: None, path: "/home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/benchmarks/projects/accuracy/case_ok_clean", query: None, fragment: None })
+2026-07-26T22:04:53.818287Z  INFO Parsed initialization options into config
+2026-07-26T22:04:53.818661Z  INFO initialized: spawning workspace init in background root_uri=Some(Url { scheme: "file", cannot_be_a_base: false, username: "", password: None, host: None, port: None, path: "/home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/benchmarks/projects/accuracy/case_ok_clean", query: None, fragment: None })
+2026-07-26T22:04:53.818766Z  INFO did_open uri=file:///home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/benchmarks/projects/accuracy/case_ok_clean/src/Case.al len=345
+2026-07-26T22:04:53.818970Z  INFO Found AL toolchain version=17.0.34.45391
+2026-07-26T22:04:53.819283Z  INFO dependency AL source index ready packages=0 source_files=0
+2026-07-26T22:04:53.819326Z  INFO insight_graph.build{entries=0}: insight_graph.build complete entries=0 nodes=0 edges=0 elapsed_ms=0
+2026-07-26T22:04:53.819824Z  WARN Failed to initialize semantic bridge error=Failed to initialize .NET host: Could not find AlBridge.dll. Set AL_BRIDGE_DIR or ensure bridge/ is compiled.
+2026-07-26T22:04:53.819857Z  INFO shutdown request received, shutting down
+2026-07-26T22:04:53.819942Z  INFO exit notification received, stopping
+2026-07-26T22:04:53.820185Z  INFO Loaded built-in types from disk cache count=250
+2026-07-26T22:04:53.821333Z  INFO Loaded error codes from disk cache count=899
+2026-07-26T22:04:53.821620Z  INFO Found AL project name=AL Bench Accuracy ok_clean packages=6
+2026-07-26T22:04:53.822016Z  INFO Scanned workspace .al files count=1
+2026-07-26T22:04:54.335472Z  INFO Staged symbol packages (pre-ready) loaded=6 total_symbols=11278
+2026-07-26T22:04:54.435086Z  INFO Packages without embedded source — outlines will be rendered from symbol metadata packages=["Microsoft_Application_28.1.49838.50065", "System"]
+2026-07-26T22:04:54.468591Z ERROR failed to send notification
+2026-07-26T22:04:55.301376Z  INFO Published project-scoped diagnostics generation

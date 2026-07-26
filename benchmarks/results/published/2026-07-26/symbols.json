@@ -1,0 +1,325 @@
+{
+  "schemaVersion": 2,
+  "generatedAtUtc": "2026-07-26T22:12:05.238866+00:00",
+  "repository": {
+    "commit": "d21d0475651bff5597d14ec5974e2f9610ab76aa",
+    "dirty": false,
+    "trackedDiffSha256": null
+  },
+  "machine": {
+    "os": "Linux-7.1.4-1-cachyos-bore-lto-x86_64-with-glibc2.43",
+    "kernel": "7.1.4-1-cachyos-bore-lto",
+    "architecture": "x86_64",
+    "cpu": "13th Gen Intel(R) Core(TM) i5-1345U",
+    "logicalCpus": 12
+  },
+  "binaries": {
+    "alExplorerSha256": "f8c91df519994c21c5495fb773dda0cdda3408e076a6a3c89a3b1324d708ae88",
+    "alLspSha256": "73837dab9cde2e677da580e887847e4d3c947e2d19ac776d146bde514491075f",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2"
+  },
+  "packageSet": [
+    {
+      "name": "System.app",
+      "bytes": 55853,
+      "sha256": "cd538ca09c43a3fe78296ee4bc6a8c337c39b61ef873bca32577ede894b9cb04"
+    },
+    {
+      "name": "Microsoft_System_28.0.51202.0.app",
+      "bytes": 4540037,
+      "sha256": "7c6d82f64dafc151d6fced69fd99e1d4cb25c1a7e5c767ba106d4f808e942d24"
+    },
+    {
+      "name": "Microsoft_System Application_28.1.49838.50794.app",
+      "bytes": 15999869,
+      "sha256": "ba00842d4b90a7e57e3275fbbe2723fcafc003545d87d1bda236abb503316c03"
+    },
+    {
+      "name": "Microsoft_Business Foundation_28.1.49838.50065.app",
+      "bytes": 476841,
+      "sha256": "d83d7d619b3c65708840a926b8818712e8008c0ad2d962d846fa02820afcfda4"
+    },
+    {
+      "name": "Microsoft_Base Application_28.1.49838.51422.app",
+      "bytes": 45240692,
+      "sha256": "57177b3278f7bb8f5a03c51eb18dd18826dd82ddf20d9bde7e0b5314ec34b31c"
+    },
+    {
+      "name": "Microsoft_Application_28.1.49838.50065.app",
+      "bytes": 18672,
+      "sha256": "fca4696ef4f05881b23da44138b2aa73cc118f68eed24bb943356aa229f26eee"
+    }
+  ],
+  "project": {
+    "path": "benchmarks/projects/medium",
+    "sourceFiles": 40,
+    "sourceLines": 2460,
+    "sourceSha256": "f736f1f447f589cbecf32a4782cd2b36978dd579fc36f6968f2a8b235e103a8c",
+    "packages": [
+      {
+        "name": "Microsoft_Application_28.1.49838.50065.app",
+        "bytes": 18672,
+        "sha256": "fca4696ef4f05881b23da44138b2aa73cc118f68eed24bb943356aa229f26eee"
+      },
+      {
+        "name": "Microsoft_Base Application_28.1.49838.51422.app",
+        "bytes": 45240692,
+        "sha256": "57177b3278f7bb8f5a03c51eb18dd18826dd82ddf20d9bde7e0b5314ec34b31c"
+      },
+      {
+        "name": "Microsoft_Business Foundation_28.1.49838.50065.app",
+        "bytes": 476841,
+        "sha256": "d83d7d619b3c65708840a926b8818712e8008c0ad2d962d846fa02820afcfda4"
+      },
+      {
+        "name": "Microsoft_System Application_28.1.49838.50794.app",
+        "bytes": 15999869,
+        "sha256": "ba00842d4b90a7e57e3275fbbe2723fcafc003545d87d1bda236abb503316c03"
+      },
+      {
+        "name": "Microsoft_System_28.0.51202.0.app",
+        "bytes": 4540037,
+        "sha256": "7c6d82f64dafc151d6fced69fd99e1d4cb25c1a7e5c767ba106d4f808e942d24"
+      },
+      {
+        "name": "System.app",
+        "bytes": 55853,
+        "sha256": "cd538ca09c43a3fe78296ee4bc6a8c337c39b61ef873bca32577ede894b9cb04"
+      }
+    ]
+  },
+  "methodology": {
+    "cache": "isolated XDG cache; only al-lsp/index is cleared",
+    "daemon": "fresh daemon for cold and every warm-ingest sample",
+    "warmRuns": 7,
+    "queryRuns": 7,
+    "discardedQueryRuns": [
+      0
+    ],
+    "microsoftComparable": false
+  },
+  "cold": {
+    "elapsedMs": 692.546,
+    "loadAverage1m": 3.9951171875,
+    "stats": {
+      "packages": 6,
+      "symbols": 11799
+    }
+  },
+  "warm": {
+    "n": 7,
+    "minMs": 462.373,
+    "medianMs": 483.382,
+    "meanMs": 483.576,
+    "maxMs": 499.995,
+    "stdevMs": 13.744,
+    "samples": [
+      {
+        "elapsedMs": 462.373,
+        "loadAverage1m": 3.9951171875
+      },
+      {
+        "elapsedMs": 481.272,
+        "loadAverage1m": 3.7548828125
+      },
+      {
+        "elapsedMs": 499.995,
+        "loadAverage1m": 3.7548828125
+      },
+      {
+        "elapsedMs": 490.324,
+        "loadAverage1m": 3.7548828125
+      },
+      {
+        "elapsedMs": 483.382,
+        "loadAverage1m": 3.7548828125
+      },
+      {
+        "elapsedMs": 497.32,
+        "loadAverage1m": 3.7548828125
+      },
+      {
+        "elapsedMs": 470.369,
+        "loadAverage1m": 3.7548828125
+      }
+    ]
+  },
+  "coldToWarmMedianRatio": 1.433,
+  "search": {
+    "Customer": {
+      "n": 6,
+      "minMs": 6.961,
+      "medianMs": 7.387,
+      "meanMs": 7.69,
+      "maxMs": 8.879,
+      "stdevMs": 0.838,
+      "samples": [
+        {
+          "elapsedMs": 8.541,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 6.983,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 6.961,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 8.879,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 7.672,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 7.103,
+          "loadAverage1m": 3.7548828125
+        }
+      ],
+      "resultCount": 20
+    },
+    "Sales Post": {
+      "n": 6,
+      "minMs": 4.261,
+      "medianMs": 4.977,
+      "meanMs": 5.078,
+      "maxMs": 6.152,
+      "stdevMs": 0.663,
+      "samples": [
+        {
+          "elapsedMs": 4.261,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 5.079,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 5.459,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 4.64,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 4.875,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 6.152,
+          "loadAverage1m": 3.7548828125
+        }
+      ],
+      "resultCount": 4
+    },
+    "Item Ledger": {
+      "n": 6,
+      "minMs": 4.631,
+      "medianMs": 6.114,
+      "meanMs": 5.789,
+      "maxMs": 6.552,
+      "stdevMs": 0.77,
+      "samples": [
+        {
+          "elapsedMs": 6.104,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 4.631,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 5.032,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 6.552,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 6.292,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 6.125,
+          "loadAverage1m": 3.7548828125
+        }
+      ],
+      "resultCount": 17
+    },
+    "Bench": {
+      "n": 6,
+      "minMs": 2.637,
+      "medianMs": 2.924,
+      "meanMs": 2.946,
+      "maxMs": 3.411,
+      "stdevMs": 0.288,
+      "samples": [
+        {
+          "elapsedMs": 2.637,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 2.678,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 2.977,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 3.411,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 3.101,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 2.871,
+          "loadAverage1m": 3.7548828125
+        }
+      ],
+      "resultCount": 20
+    },
+    "Gen. Journal": {
+      "n": 6,
+      "minMs": 10.689,
+      "medianMs": 11.488,
+      "meanMs": 12.009,
+      "maxMs": 13.704,
+      "stdevMs": 1.248,
+      "samples": [
+        {
+          "elapsedMs": 13.42,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 11.69,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 11.265,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 11.286,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 10.689,
+          "loadAverage1m": 3.7548828125
+        },
+        {
+          "elapsedMs": 13.704,
+          "loadAverage1m": 3.7548828125
+        }
+      ],
+      "resultCount": 20
+    }
+  }
+}

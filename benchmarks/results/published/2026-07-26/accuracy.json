@@ -1,0 +1,1946 @@
+{
+  "manifest": [
+    {
+      "id": "syn_missing_semicolon",
+      "class": "syntax",
+      "expect": "missing ';'",
+      "project": "benchmarks/projects/accuracy/case_syn_missing_semicolon",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 7
+    },
+    {
+      "id": "syn_unclosed_brace",
+      "class": "syntax",
+      "expect": "unbalanced braces / unexpected EOF",
+      "project": "benchmarks/projects/accuracy/case_syn_unclosed_brace",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 6
+    },
+    {
+      "id": "syn_bad_property",
+      "class": "syntax",
+      "expect": "invalid property name",
+      "project": "benchmarks/projects/accuracy/case_syn_bad_property",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 7
+    },
+    {
+      "id": "sem_undeclared_var",
+      "class": "binding",
+      "expect": "undeclared identifier",
+      "project": "benchmarks/projects/accuracy/case_sem_undeclared_var",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 8
+    },
+    {
+      "id": "sem_unknown_object",
+      "class": "binding",
+      "expect": "unknown object reference",
+      "project": "benchmarks/projects/accuracy/case_sem_unknown_object",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 5
+    },
+    {
+      "id": "sem_unknown_field",
+      "class": "binding",
+      "expect": "unknown field on a known record",
+      "project": "benchmarks/projects/accuracy/case_sem_unknown_field",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 8
+    },
+    {
+      "id": "sem_unknown_method",
+      "class": "binding",
+      "expect": "unknown method on a known record",
+      "project": "benchmarks/projects/accuracy/case_sem_unknown_method",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 7
+    },
+    {
+      "id": "sem_unknown_procedure",
+      "class": "binding",
+      "expect": "call to undefined procedure",
+      "project": "benchmarks/projects/accuracy/case_sem_unknown_procedure",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 5
+    },
+    {
+      "id": "typ_assign_mismatch",
+      "class": "typecheck",
+      "expect": "type mismatch in assignment",
+      "project": "benchmarks/projects/accuracy/case_typ_assign_mismatch",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 8
+    },
+    {
+      "id": "typ_arg_count",
+      "class": "typecheck",
+      "expect": "wrong argument count",
+      "project": "benchmarks/projects/accuracy/case_typ_arg_count",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 5
+    },
+    {
+      "id": "typ_arg_type",
+      "class": "typecheck",
+      "expect": "wrong argument type",
+      "project": "benchmarks/projects/accuracy/case_typ_arg_type",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 7
+    },
+    {
+      "id": "typ_missing_return",
+      "class": "typecheck",
+      "expect": "not all code paths return a value",
+      "project": "benchmarks/projects/accuracy/case_typ_missing_return",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 3
+    },
+    {
+      "id": "prj_id_out_of_range",
+      "class": "project",
+      "expect": "object ID outside app.json idRanges",
+      "project": "benchmarks/projects/accuracy/case_prj_id_out_of_range",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": 1
+    },
+    {
+      "id": "prj_duplicate_id",
+      "class": "project",
+      "expect": "duplicate object ID across files",
+      "project": "benchmarks/projects/accuracy/case_prj_duplicate_id",
+      "files": [
+        "First.al",
+        "Second.al"
+      ],
+      "defect_file": "Second.al",
+      "defect_line": 1
+    },
+    {
+      "id": "ok_clean",
+      "class": "control",
+      "expect": "NOTHING \u2014 must report zero errors",
+      "project": "benchmarks/projects/accuracy/case_ok_clean",
+      "files": [
+        "Case.al"
+      ],
+      "defect_file": "Case.al",
+      "defect_line": null
+    }
+  ],
+  "schemaVersion": 2,
+  "generatedAtUtc": "2026-07-26T22:02:52.427630+00:00",
+  "repository": {
+    "commit": "d21d0475651bff5597d14ec5974e2f9610ab76aa",
+    "dirty": false,
+    "trackedDiffSha256": null
+  },
+  "machine": {
+    "os": "Linux-7.1.4-1-cachyos-bore-lto-x86_64-with-glibc2.43",
+    "kernel": "7.1.4-1-cachyos-bore-lto",
+    "architecture": "x86_64",
+    "cpu": "13th Gen Intel(R) Core(TM) i5-1345U",
+    "logicalCpus": 12
+  },
+  "compiler": {
+    "version": "Microsoft (R) AL Compiler version 17.0.34.45391",
+    "binaries": {
+      "alc": {
+        "sha256": "2bc0ffaf0a7ff92ce227301f71cfa9f2ac5b0fa6316347892ae22372f60bea45"
+      },
+      "alExplorer": {
+        "sha256": "f8c91df519994c21c5495fb773dda0cdda3408e076a6a3c89a3b1324d708ae88"
+      },
+      "alLsp": {
+        "sha256": "73837dab9cde2e677da580e887847e4d3c947e2d19ac776d146bde514491075f"
+      }
+    }
+  },
+  "packageSet": [
+    {
+      "name": "Microsoft_Application_28.1.49838.50065.app",
+      "bytes": 18672,
+      "sha256": "fca4696ef4f05881b23da44138b2aa73cc118f68eed24bb943356aa229f26eee"
+    },
+    {
+      "name": "Microsoft_Base Application_28.1.49838.51422.app",
+      "bytes": 45240692,
+      "sha256": "57177b3278f7bb8f5a03c51eb18dd18826dd82ddf20d9bde7e0b5314ec34b31c"
+    },
+    {
+      "name": "Microsoft_Business Foundation_28.1.49838.50065.app",
+      "bytes": 476841,
+      "sha256": "d83d7d619b3c65708840a926b8818712e8008c0ad2d962d846fa02820afcfda4"
+    },
+    {
+      "name": "Microsoft_System Application_28.1.49838.50794.app",
+      "bytes": 15999869,
+      "sha256": "ba00842d4b90a7e57e3275fbbe2723fcafc003545d87d1bda236abb503316c03"
+    },
+    {
+      "name": "Microsoft_System_28.0.51202.0.app",
+      "bytes": 4540037,
+      "sha256": "7c6d82f64dafc151d6fced69fd99e1d4cb25c1a7e5c767ba106d4f808e942d24"
+    },
+    {
+      "name": "System.app",
+      "bytes": 55853,
+      "sha256": "cd538ca09c43a3fe78296ee4bc6a8c337c39b61ef873bca32577ede894b9cb04"
+    }
+  ],
+  "line_tolerance": 2,
+  "cases": {
+    "syn_missing_semicolon": {
+      "class": "syntax",
+      "expect": "missing ';'",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 3963.2,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 8,
+                "severity": "error",
+                "code": "AL0111",
+                "message": "Semicolon expected. Add a semicolon (;) to terminate the statement."
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy syn_missing_semicolon' containing '1' files at '23:02:52.761'.\n\nbenchmarks/projects/accuracy/case_syn_missing_semicolon/src/Case.al(8,9): error AL0111: Semicolon expected. Add a semicolon (;) to terminate the statement.\n\nCompilation ended at '23:02:56.584'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0111"
+            ],
+            "messages": [
+              "L8 error AL0111: Semicolon expected. Add a semicolon (;) to terminate the statement."
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 7,
+                "severity": "error",
+                "code": "syntax",
+                "message": "Syntax error"
+              },
+              {
+                "file": "Case.al",
+                "line": 1,
+                "severity": "error",
+                "code": "AL-NC000",
+                "message": "Native semantic checks refused incomplete workspace input: workspace source '<repo>/benchmarks/projects/accuracy/case_syn_missing_semicolon/src/Case.al' contains AL syntax errors: Syntax error at 7:9"
+              },
+              {
+                "file": "Case.al",
+                "line": 1,
+                "severity": "error",
+                "code": "AL-NL000",
+                "message": "Obsolete-usage analysis incomplete: whole-workspace query refused an incomplete source snapshot: workspace source '<repo>/benchmarks/projects/accuracy/case_syn_missing_semicolon/src/Case.al' contains AL syntax errors: Syntax error at 7:9"
+              },
+              {
+                "file": "Case.al",
+                "line": 1,
+                "severity": "error",
+                "code": "AL-NL009",
+                "message": "Architecture analysis incomplete: whole-workspace query refused an incomplete source snapshot: workspace source '<repo>/benchmarks/projects/accuracy/case_syn_missing_semicolon/src/Case.al' contains AL syntax errors: Syntax error at 7:9"
+              }
+            ],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 3,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "syntax"
+            ],
+            "messages": [
+              "L7 error syntax: Syntax error"
+            ]
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 398.0,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 7,
+                "severity": "error",
+                "code": "ALN0001",
+                "message": "Syntax error"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 7,\n      \"column\": 9,\n      \"endLine\": 7,\n      \"endColumn\": 15,\n      \"severity\": \"error\",\n      \"code\": \"ALN0001\",\n      \"message\": \"Syntax error\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 266897,\n    \"dependencyIndexNs\": 384136884,\n    \"semanticVerificationNs\": 5880040,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 390285197\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN0001"
+            ],
+            "messages": [
+              "L7 error ALN0001: Syntax error"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 499.7,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 0,
+                "severity": "error",
+                "code": "AL-NC000",
+                "message": "Native semantic checks refused incomplete workspace input: workspace source '<repo>/benchmarks/projects/accuracy/case_syn_missing_semicolon/src/Case.al' contains AL syntax errors: Syntax error at 7:9"
+              }
+            ],
+            "raw_tail": "[\n  {\n    \"code\": \"AL-NC000\",\n    \"severity\": \"error\",\n    \"objectType\": \"workspace\",\n    \"objectName\": \"source snapshot\",\n    \"file\": \"<repo>/benchmarks/projects/accuracy/case_syn_missing_semicolon/src/Case.al\",\n    \"message\": \"Native semantic checks refused incomplete workspace input: workspace source '<repo>/benchmarks/projects/accuracy/case_syn_missing_semicolon/src/Case.al' contains AL syntax errors: Syntax error at 7:9\"\n  }\n]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 1,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    },
+    "syn_unclosed_brace": {
+      "class": "syntax",
+      "expect": "unbalanced braces / unexpected EOF",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 4134.9,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 7,
+                "severity": "error",
+                "code": "AL0104",
+                "message": "Syntax error, '}' expected"
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy syn_unclosed_brace' containing '1' files at '23:03:00.646'.\n\nbenchmarks/projects/accuracy/case_syn_unclosed_brace/src/Case.al(7,1): error AL0104: Syntax error, '}' expected\n\nCompilation ended at '23:03:04.657'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0104"
+            ],
+            "messages": [
+              "L7 error AL0104: Syntax error, '}' expected"
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 6,
+                "severity": "error",
+                "code": "syntax",
+                "message": "Missing }"
+              },
+              {
+                "file": "Case.al",
+                "line": 1,
+                "severity": "error",
+                "code": "AL-NC000",
+                "message": "Native semantic checks refused incomplete workspace input: workspace source '<repo>/benchmarks/projects/accuracy/case_syn_unclosed_brace/src/Case.al' contains AL syntax errors: Missing } at 6:9"
+              },
+              {
+                "file": "Case.al",
+                "line": 1,
+                "severity": "error",
+                "code": "AL-NL000",
+                "message": "Obsolete-usage analysis incomplete: whole-workspace query refused an incomplete source snapshot: workspace source '<repo>/benchmarks/projects/accuracy/case_syn_unclosed_brace/src/Case.al' contains AL syntax errors: Missing } at 6:9"
+              },
+              {
+                "file": "Case.al",
+                "line": 1,
+                "severity": "error",
+                "code": "AL-NL009",
+                "message": "Architecture analysis incomplete: whole-workspace query refused an incomplete source snapshot: workspace source '<repo>/benchmarks/projects/accuracy/case_syn_unclosed_brace/src/Case.al' contains AL syntax errors: Missing } at 6:9"
+              }
+            ],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 3,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "syntax"
+            ],
+            "messages": [
+              "L6 error syntax: Missing }"
+            ]
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 444.7,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 6,
+                "severity": "error",
+                "code": "ALN0001",
+                "message": "Missing }"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 6,\n      \"column\": 9,\n      \"endLine\": 6,\n      \"endColumn\": 9,\n      \"severity\": \"error\",\n      \"code\": \"ALN0001\",\n      \"message\": \"Missing }\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 224290,\n    \"dependencyIndexNs\": 431268999,\n    \"semanticVerificationNs\": 6417793,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 437916277\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN0001"
+            ],
+            "messages": [
+              "L6 error ALN0001: Missing }"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 467.0,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 0,
+                "severity": "error",
+                "code": "AL-NC000",
+                "message": "Native semantic checks refused incomplete workspace input: workspace source '<repo>/benchmarks/projects/accuracy/case_syn_unclosed_brace/src/Case.al' contains AL syntax errors: Missing } at 6:9"
+              }
+            ],
+            "raw_tail": "[\n  {\n    \"code\": \"AL-NC000\",\n    \"severity\": \"error\",\n    \"objectType\": \"workspace\",\n    \"objectName\": \"source snapshot\",\n    \"file\": \"<repo>/benchmarks/projects/accuracy/case_syn_unclosed_brace/src/Case.al\",\n    \"message\": \"Native semantic checks refused incomplete workspace input: workspace source '<repo>/benchmarks/projects/accuracy/case_syn_unclosed_brace/src/Case.al' contains AL syntax errors: Missing } at 6:9\"\n  }\n]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 1,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    },
+    "syn_bad_property": {
+      "class": "syntax",
+      "expect": "invalid property name",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 3795.8,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 7,
+                "severity": "error",
+                "code": "AL0124",
+                "message": "The property 'DataClassificationX' cannot be used in this context. Verify the property is available for the current object type."
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy syn_bad_property' containing '1' files at '23:03:08.716'.\n\nbenchmarks/projects/accuracy/case_syn_bad_property/src/Case.al(7,13): error AL0124: The property 'DataClassificationX' cannot be used in this context. Verify the property is available for the current object type.\n\nCompilation ended at '23:03:12.390'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0124"
+            ],
+            "messages": [
+              "L7 error AL0124: The property 'DataClassificationX' cannot be used in this context. Verify the property is "
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 5,
+                "severity": "warning",
+                "code": "AL-NL002",
+                "message": "Table field has no DataClassification property."
+              }
+            ],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "warning"
+            ],
+            "codes": [
+              "AL-NL002"
+            ],
+            "messages": [
+              "L5 warning AL-NL002: Table field has no DataClassification property."
+            ]
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 412.4,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 7,
+                "severity": "error",
+                "code": "ALN2405",
+                "message": "field 'Entry No.' uses unknown property 'DataClassificationX'"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 7,\n      \"column\": 13,\n      \"endLine\": 7,\n      \"endColumn\": 14,\n      \"severity\": \"error\",\n      \"code\": \"ALN2405\",\n      \"message\": \"field 'Entry No.' uses unknown property 'DataClassificationX'\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 222301,\n    \"dependencyIndexNs\": 399165544,\n    \"semanticVerificationNs\": 6831213,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 406220251\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN2405"
+            ],
+            "messages": [
+              "L7 error ALN2405: field 'Entry No.' uses unknown property 'DataClassificationX'"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 488.1,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "[]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    },
+    "sem_undeclared_var": {
+      "class": "binding",
+      "expect": "undeclared identifier",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 4680.9,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 8,
+                "severity": "error",
+                "code": "AL0118",
+                "message": "The name 'Unknown' does not exist in the current context."
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy sem_undeclared_var' containing '1' files at '23:03:16.434'.\n\nbenchmarks/projects/accuracy/case_sem_undeclared_var/src/Case.al(8,9): error AL0118: The name 'Unknown' does not exist in the current context.\n\nCompilation ended at '23:03:20.985'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0118"
+            ],
+            "messages": [
+              "L8 error AL0118: The name 'Unknown' does not exist in the current context."
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 414.5,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 8,
+                "severity": "error",
+                "code": "ALN2402",
+                "message": "undeclared identifier 'Unknown'"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 8,\n      \"column\": 1,\n      \"endLine\": 8,\n      \"endColumn\": 2,\n      \"severity\": \"error\",\n      \"code\": \"ALN2402\",\n      \"message\": \"undeclared identifier 'Unknown'\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 216647,\n    \"dependencyIndexNs\": 396830857,\n    \"semanticVerificationNs\": 8767174,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 405818892\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN2402"
+            ],
+            "messages": [
+              "L8 error ALN2402: undeclared identifier 'Unknown'"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 512.8,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "[]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    },
+    "sem_unknown_object": {
+      "class": "binding",
+      "expect": "unknown object reference",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 4556.0,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 5,
+                "severity": "error",
+                "code": "AL0185",
+                "message": "Table 'This Table Does Not Exist At All' is missing"
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy sem_unknown_object' containing '1' files at '23:03:25.079'.\n\nbenchmarks/projects/accuracy/case_sem_unknown_object/src/Case.al(5,14): error AL0185: Table 'This Table Does Not Exist At All' is missing\n\nCompilation ended at '23:03:29.499'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0185"
+            ],
+            "messages": [
+              "L5 error AL0185: Table 'This Table Does Not Exist At All' is missing"
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 411.2,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 5,
+                "severity": "error",
+                "code": "ALN2401",
+                "message": "unknown Record subtype 'this table does not exist at all'"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 5,\n      \"column\": 9,\n      \"endLine\": 5,\n      \"endColumn\": 10,\n      \"severity\": \"error\",\n      \"code\": \"ALN2401\",\n      \"message\": \"unknown Record subtype 'this table does not exist at all'\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 259444,\n    \"dependencyIndexNs\": 399250738,\n    \"semanticVerificationNs\": 6308479,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 405820326\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN2401"
+            ],
+            "messages": [
+              "L5 error ALN2401: unknown Record subtype 'this table does not exist at all'"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 485.2,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "[]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    },
+    "sem_unknown_field": {
+      "class": "binding",
+      "expect": "unknown field on a known record",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 4804.4,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 8,
+                "severity": "error",
+                "code": "AL0132",
+                "message": "'Record Customer' does not contain a definition for 'Totally Bogus Field'"
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy sem_unknown_field' containing '1' files at '23:03:33.549'.\n\nbenchmarks/projects/accuracy/case_sem_unknown_field/src/Case.al(8,14): error AL0132: 'Record Customer' does not contain a definition for 'Totally Bogus Field'\n\nCompilation ended at '23:03:38.222'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0132"
+            ],
+            "messages": [
+              "L8 error AL0132: 'Record Customer' does not contain a definition for 'Totally Bogus Field'"
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 425.1,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 8,
+                "severity": "error",
+                "code": "ALN2404",
+                "message": "Record 'customer' has no field 'Totally Bogus Field'"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 8,\n      \"column\": 1,\n      \"endLine\": 8,\n      \"endColumn\": 2,\n      \"severity\": \"error\",\n      \"code\": \"ALN2404\",\n      \"message\": \"Record 'customer' has no field 'Totally Bogus Field'\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 191620,\n    \"dependencyIndexNs\": 410646350,\n    \"semanticVerificationNs\": 8131023,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 418970169\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN2404"
+            ],
+            "messages": [
+              "L8 error ALN2404: Record 'customer' has no field 'Totally Bogus Field'"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 475.9,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "[]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    },
+    "sem_unknown_method": {
+      "class": "binding",
+      "expect": "unknown method on a known record",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 3945.0,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 7,
+                "severity": "error",
+                "code": "AL0132",
+                "message": "'Record Customer' does not contain a definition for 'NoSuchMethodHere'"
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy sem_unknown_method' containing '1' files at '23:03:42.279'.\n\nbenchmarks/projects/accuracy/case_sem_unknown_method/src/Case.al(7,14): error AL0132: 'Record Customer' does not contain a definition for 'NoSuchMethodHere'\n\nCompilation ended at '23:03:46.109'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0132"
+            ],
+            "messages": [
+              "L7 error AL0132: 'Record Customer' does not contain a definition for 'NoSuchMethodHere'"
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 403.1,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 7,
+                "severity": "error",
+                "code": "ALN2209",
+                "message": "procedure 'Execute' calls unknown method 'NoSuchMethodHere' on Record 'Cust'"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 7,\n      \"column\": 14,\n      \"endLine\": 7,\n      \"endColumn\": 15,\n      \"severity\": \"error\",\n      \"code\": \"ALN2209\",\n      \"message\": \"procedure 'Execute' calls unknown method 'NoSuchMethodHere' on Record 'Cust'\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 183985,\n    \"dependencyIndexNs\": 389769499,\n    \"semanticVerificationNs\": 6287203,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 396244966\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN2209"
+            ],
+            "messages": [
+              "L7 error ALN2209: procedure 'Execute' calls unknown method 'NoSuchMethodHere' on Record 'Cust'"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 447.8,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "[]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    },
+    "sem_unknown_procedure": {
+      "class": "binding",
+      "expect": "call to undefined procedure",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 4285.5,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 5,
+                "severity": "error",
+                "code": "AL0118",
+                "message": "The name 'ThisProcedureWasNeverDefined' does not exist in the current context."
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy sem_unknown_procedure' containing '1' files at '23:03:50.113'.\n\nbenchmarks/projects/accuracy/case_sem_unknown_procedure/src/Case.al(5,9): error AL0118: The name 'ThisProcedureWasNeverDefined' does not exist in the current context.\n\nCompilation ended at '23:03:54.275'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0118"
+            ],
+            "messages": [
+              "L5 error AL0118: The name 'ThisProcedureWasNeverDefined' does not exist in the current context."
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 401.0,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 5,
+                "severity": "error",
+                "code": "ALN2209",
+                "message": "procedure 'Execute' calls unknown local or record method 'ThisProcedureWasNeverDefined'"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 5,\n      \"column\": 9,\n      \"endLine\": 5,\n      \"endColumn\": 10,\n      \"severity\": \"error\",\n      \"code\": \"ALN2209\",\n      \"message\": \"procedure 'Execute' calls unknown local or record method 'ThisProcedureWasNeverDefined'\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 172153,\n    \"dependencyIndexNs\": 387277608,\n    \"semanticVerificationNs\": 7204659,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 394655432\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN2209"
+            ],
+            "messages": [
+              "L5 error ALN2209: procedure 'Execute' calls unknown local or record method 'ThisProcedureWasNeverDefined'"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 464.8,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "[]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    },
+    "typ_assign_mismatch": {
+      "class": "typecheck",
+      "expect": "type mismatch in assignment",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 4069.3,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 8,
+                "severity": "error",
+                "code": "AL0122",
+                "message": "Cannot implicitly convert type 'Record Customer' to 'Integer'. Use an explicit conversion or change the type."
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy typ_assign_mismatch' containing '1' files at '23:03:58.307'.\n\nbenchmarks/projects/accuracy/case_typ_assign_mismatch/src/Case.al(8,14): error AL0122: Cannot implicitly convert type 'Record Customer' to 'Integer'. Use an explicit conversion or change the type.\n\nCompilation ended at '23:04:02.244'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0122"
+            ],
+            "messages": [
+              "L8 error AL0122: Cannot implicitly convert type 'Record Customer' to 'Integer'. Use an explicit conversion "
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 403.1,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 8,
+                "severity": "error",
+                "code": "ALN2403",
+                "message": "cannot assign 'Record Customer' to 'Integer'"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 8,\n      \"column\": 1,\n      \"endLine\": 8,\n      \"endColumn\": 2,\n      \"severity\": \"error\",\n      \"code\": \"ALN2403\",\n      \"message\": \"cannot assign 'Record Customer' to 'Integer'\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 191899,\n    \"dependencyIndexNs\": 389557721,\n    \"semanticVerificationNs\": 6903700,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 396654647\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN2403"
+            ],
+            "messages": [
+              "L8 error ALN2403: cannot assign 'Record Customer' to 'Integer'"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 465.7,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "[]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    },
+    "typ_arg_count": {
+      "class": "typecheck",
+      "expect": "wrong argument count",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 4422.9,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 5,
+                "severity": "error",
+                "code": "AL0126",
+                "message": "No overload for method 'Helper' takes 3 arguments. Candidates: 'Helper(Integer)' defined in Codeunit 'Typ Arg Count' by the extension AL Bench Accuracy typ_arg_count by Bench (1.0.0.0)"
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy typ_arg_count' containing '1' files at '23:04:06.281'.\n\nbenchmarks/projects/accuracy/case_typ_arg_count/src/Case.al(5,9): error AL0126: No overload for method 'Helper' takes 3 arguments. Candidates: 'Helper(Integer)' defined in Codeunit 'Typ Arg Count' by the extension AL Bench Accuracy typ_arg_count by Bench (1.0.0.0)\n\nCompilation ended at '23:04:10.566'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0126"
+            ],
+            "messages": [
+              "L5 error AL0126: No overload for method 'Helper' takes 3 arguments. Candidates: 'Helper(Integer)' defined i"
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 397.9,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 5,
+                "severity": "error",
+                "code": "ALN2201",
+                "message": "procedure 'Execute' calls local procedure 'Helper' with 3 argument(s), but no local overload accepts that arity"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 5,\n      \"column\": 9,\n      \"endLine\": 5,\n      \"endColumn\": 10,\n      \"severity\": \"error\",\n      \"code\": \"ALN2201\",\n      \"message\": \"procedure 'Execute' calls local procedure 'Helper' with 3 argument(s), but no local overload accepts that arity\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 299192,\n    \"dependencyIndexNs\": 381242498,\n    \"semanticVerificationNs\": 9157350,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 390700578\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN2201"
+            ],
+            "messages": [
+              "L5 error ALN2201: procedure 'Execute' calls local procedure 'Helper' with 3 argument(s), but no local overlo"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 483.9,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "[]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    },
+    "typ_arg_type": {
+      "class": "typecheck",
+      "expect": "wrong argument type",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 4344.9,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 7,
+                "severity": "error",
+                "code": "AL0133",
+                "message": "Argument 1: cannot convert from 'Record Customer' to 'Integer'"
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy typ_arg_type' containing '1' files at '23:04:14.612'.\n\nbenchmarks/projects/accuracy/case_typ_arg_type/src/Case.al(7,16): error AL0133: Argument 1: cannot convert from 'Record Customer' to 'Integer'\n\nCompilation ended at '23:04:18.823'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0133"
+            ],
+            "messages": [
+              "L7 error AL0133: Argument 1: cannot convert from 'Record Customer' to 'Integer'"
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 415.6,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 7,
+                "severity": "error",
+                "code": "ALN2211",
+                "message": "procedure 'Execute' passes Record 'R' to Integer parameter 'A' of local procedure 'Helper'"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 7,\n      \"column\": 9,\n      \"endLine\": 7,\n      \"endColumn\": 10,\n      \"severity\": \"error\",\n      \"code\": \"ALN2211\",\n      \"message\": \"procedure 'Execute' passes Record 'R' to Integer parameter 'A' of local procedure 'Helper'\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 234063,\n    \"dependencyIndexNs\": 399144893,\n    \"semanticVerificationNs\": 8296961,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 407677021\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN2211"
+            ],
+            "messages": [
+              "L7 error ALN2211: procedure 'Execute' passes Record 'R' to Integer parameter 'A' of local procedure 'Helper'"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 431.9,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "[]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    },
+    "typ_missing_return": {
+      "class": "typecheck",
+      "expect": "not all code paths return a value",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 4969.6,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy typ_missing_return' containing '1' files at '23:04:22.830'.\n\n\nCompilation ended at '23:04:27.670'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 419.1,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 1,
+                "severity": "error",
+                "code": "ALN2210",
+                "message": "procedure 'Compute' has a conditional Exit(value) but no unconditional return"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 1,\n      \"column\": 1,\n      \"endLine\": 8,\n      \"endColumn\": 2,\n      \"severity\": \"error\",\n      \"code\": \"ALN2210\",\n      \"message\": \"procedure 'Compute' has a conditional Exit(value) but no unconditional return\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 173548,\n    \"dependencyIndexNs\": 404511732,\n    \"semanticVerificationNs\": 8537981,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 413224397\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN2210"
+            ],
+            "messages": [
+              "L1 error ALN2210: procedure 'Compute' has a conditional Exit(value) but no unconditional return"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 471.1,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "[]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    },
+    "prj_id_out_of_range": {
+      "class": "project",
+      "expect": "object ID outside app.json idRanges",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 4841.1,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 1,
+                "severity": "error",
+                "code": "AL0297",
+                "message": "The application object identifier '90000' is not valid. It must be within the allowed ranges '[50000..69999]'."
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy prj_id_out_of_range' containing '1' files at '23:04:31.729'.\n\nbenchmarks/projects/accuracy/case_prj_id_out_of_range/src/Case.al(1,10): error AL0297: The application object identifier '90000' is not valid. It must be within the allowed ranges '[50000..69999]'.\n\nCompilation ended at '23:04:36.446'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0297"
+            ],
+            "messages": [
+              "L1 error AL0297: The application object identifier '90000' is not valid. It must be within the allowed rang"
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": false,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 382.5,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 1,
+                "severity": "error",
+                "code": "ALN1003",
+                "message": "Codeunit 'Prj Out Of Range' uses id 90000, which is outside app.json idRanges"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/Case.al\",\n      \"line\": 1,\n      \"column\": 1,\n      \"endLine\": 7,\n      \"endColumn\": 2,\n      \"severity\": \"error\",\n      \"code\": \"ALN1003\",\n      \"message\": \"Codeunit 'Prj Out Of Range' uses id 90000, which is outside app.json idRanges\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 181583,\n    \"dependencyIndexNs\": 368483624,\n    \"semanticVerificationNs\": 6944359,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 375610697\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN1003"
+            ],
+            "messages": [
+              "L1 error ALN1003: Codeunit 'Prj Out Of Range' uses id 90000, which is outside app.json idRanges"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 504.9,
+            "rc": 0,
+            "diagnostics": [
+              {
+                "file": "Case.al",
+                "line": 0,
+                "severity": "warning",
+                "code": "AL-NC002",
+                "message": "Object id 90000 is outside the declared app.json idRanges (50000..69999)"
+              }
+            ],
+            "raw_tail": "[\n  {\n    \"code\": \"AL-NC002\",\n    \"severity\": \"warning\",\n    \"objectType\": \"codeunit\",\n    \"objectId\": 90000,\n    \"objectName\": \"Prj Out Of Range\",\n    \"file\": \"<repo>/benchmarks/projects/accuracy/case_prj_id_out_of_range/src/Case.al\",\n    \"message\": \"Object id 90000 is outside the declared app.json idRanges (50000..69999)\"\n  }\n]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "warning"
+            ],
+            "codes": [
+              "AL-NC002"
+            ],
+            "messages": [
+              "L0 warning AL-NC002: Object id 90000 is outside the declared app.json idRanges (50000..69999)"
+            ]
+          }
+        }
+      }
+    },
+    "prj_duplicate_id": {
+      "class": "project",
+      "expect": "duplicate object ID across files",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 4688.5,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "Second.al",
+                "line": 1,
+                "severity": "error",
+                "code": "AL0264",
+                "message": "An application object of type 'Codeunit' with ID '50140' is already declared by the extension 'AL Bench Accuracy prj_duplicate_id by Bench (1.0.0.0)'"
+              },
+              {
+                "file": "First.al",
+                "line": 1,
+                "severity": "error",
+                "code": "AL0264",
+                "message": "An application object of type 'Codeunit' with ID '50140' is already declared by the extension 'AL Bench Accuracy prj_duplicate_id by Bench (1.0.0.0)'"
+              }
+            ],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy prj_duplicate_id' containing '2' files at '23:04:40.494'.\n\nbenchmarks/projects/accuracy/case_prj_duplicate_id/src/Second.al(1,10): error AL0264: An application object of type 'Codeunit' with ID '50140' is already declared by the extension 'AL Bench Accuracy prj_duplicate_id by Bench (1.0.0.0)'\nbenchmarks/projects/accuracy/case_prj_duplicate_id/src/First.al(1,10): error AL0264: An application object of type 'Codeunit' with ID '50140' is already declared by the extension 'AL Bench Accuracy prj_duplicate_id by Bench (1.0.0.0)'\n\nCompilation ended at '23:04:45.063'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL0264"
+            ],
+            "messages": [
+              "L1 error AL0264: An application object of type 'Codeunit' with ID '50140' is already declared by the extens"
+            ]
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [
+              {
+                "file": "Second.al",
+                "line": 1,
+                "severity": "error",
+                "code": "AL-NC001",
+                "message": "Duplicate codeunit id 50140: also declared by 'Prj Dup First'"
+              }
+            ],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL-NC001"
+            ],
+            "messages": [
+              "L1 error AL-NC001: Duplicate codeunit id 50140: also declared by 'Prj Dup First'"
+            ]
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 439.2,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "First.al",
+                "line": 1,
+                "severity": "error",
+                "code": "ALN1001",
+                "message": "Duplicate Codeunit id 50140 for 'Prj Dup First' (also declared in 'Prj Dup Second' in src/Second.al)"
+              },
+              {
+                "file": "Second.al",
+                "line": 1,
+                "severity": "error",
+                "code": "ALN1001",
+                "message": "Duplicate Codeunit id 50140 for 'Prj Dup Second' (also declared in 'Prj Dup First' in src/First.al)"
+              }
+            ],
+            "raw_tail": "{\n  \"success\": false,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"diagnostics\": [\n    {\n      \"file\": \"src/First.al\",\n      \"line\": 1,\n      \"column\": 1,\n      \"endLine\": 7,\n      \"endColumn\": 2,\n      \"severity\": \"error\",\n      \"code\": \"ALN1001\",\n      \"message\": \"Duplicate Codeunit id 50140 for 'Prj Dup First' (also declared in 'Prj Dup Second' in src/Second.al)\"\n    },\n    {\n      \"file\": \"src/Second.al\",\n      \"line\": 1,\n      \"column\": 1,\n      \"endLine\": 7,\n      \"endColumn\": 2,\n      \"severity\": \"error\",\n      \"code\": \"ALN1001\",\n      \"message\": \"Duplicate Codeunit id 50140 for 'Prj Dup Second' (also declared in 'Prj Dup First' in src/First.al)\"\n    }\n  ],\n  \"timings\": {\n    \"inputParseNs\": 257804,\n    \"dependencyIndexNs\": 423267403,\n    \"semanticVerificationNs\": 8529149,\n    \"packageEmissionNs\": 0,\n    \"artifactVerificationNs\": 0,\n    \"outputWriteNs\": 0,\n    \"totalNs\": 432055756\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "ALN1001"
+            ],
+            "messages": [
+              "L1 error ALN1001: Duplicate Codeunit id 50140 for 'Prj Dup Second' (also declared in 'Prj Dup First' in src/"
+            ]
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 521.6,
+            "rc": 1,
+            "diagnostics": [
+              {
+                "file": "First.al",
+                "line": 0,
+                "severity": "error",
+                "code": "AL-NC001",
+                "message": "Duplicate codeunit id 50140: also declared by 'Prj Dup Second'"
+              },
+              {
+                "file": "Second.al",
+                "line": 0,
+                "severity": "error",
+                "code": "AL-NC001",
+                "message": "Duplicate codeunit id 50140: also declared by 'Prj Dup First'"
+              }
+            ],
+            "raw_tail": "[\n  {\n    \"code\": \"AL-NC001\",\n    \"severity\": \"error\",\n    \"objectType\": \"codeunit\",\n    \"objectId\": 50140,\n    \"objectName\": \"Prj Dup First\",\n    \"file\": \"<repo>/benchmarks/projects/accuracy/case_prj_duplicate_id/src/First.al\",\n    \"message\": \"Duplicate codeunit id 50140: also declared by 'Prj Dup Second'\"\n  },\n  {\n    \"code\": \"AL-NC001\",\n    \"severity\": \"error\",\n    \"objectType\": \"codeunit\",\n    \"objectId\": 50140,\n    \"objectName\": \"Prj Dup Second\",\n    \"file\": \"<repo>/benchmarks/projects/accuracy/case_prj_duplicate_id/src/Second.al\",\n    \"message\": \"Duplicate codeunit id 50140: also declared by 'Prj Dup First'\"\n  }\n]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 1,
+            "off_target": 0,
+            "severities": [
+              "error"
+            ],
+            "codes": [
+              "AL-NC001"
+            ],
+            "messages": [
+              "L0 error AL-NC001: Duplicate codeunit id 50140: also declared by 'Prj Dup First'"
+            ]
+          }
+        }
+      }
+    },
+    "ok_clean": {
+      "class": "control",
+      "expect": "NOTHING \u2014 must report zero errors",
+      "tools": {
+        "alc": {
+          "raw": {
+            "ms": 4732.4,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "Microsoft (R) AL Compiler version 17.0.34.45391\nCopyright (C) Microsoft Corporation. All rights reserved\n\nCompilation started for project 'AL Bench Accuracy ok_clean' containing '1' files at '23:04:49.186'.\n\n\nCompilation ended at '23:04:53.798'.\n\n\n",
+            "timed_out": false
+          },
+          "score": {
+            "caught": true,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "al_lsp": {
+          "raw": {
+            "diagnostics": [],
+            "error": null,
+            "missing_files": []
+          },
+          "score": {
+            "caught": true,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "native_build": {
+          "raw": {
+            "ms": 421.9,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "{\n  \"success\": true,\n  \"appPath\": \"<repo>/benchmarks/projects/accuracy/case_ok_clean/native-bench.app\",\n  \"bytes\": 2507,\n  \"backend\": \"native\",\n  \"validated\": true,\n  \"verificationLevel\": \"native-syntax-project-binding\",\n  \"microsoftCompatibilityValidated\": false,\n  \"diagnostics\": [],\n  \"timings\": {\n    \"inputParseNs\": 247476,\n    \"dependencyIndexNs\": 394696101,\n    \"semanticVerificationNs\": 5644423,\n    \"packageEmissionNs\": 5880566,\n    \"artifactVerificationNs\": 151048,\n    \"outputWriteNs\": 8663124,\n    \"totalNs\": 415285832\n  }\n}\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        },
+        "native_check": {
+          "raw": {
+            "ms": 468.4,
+            "rc": 0,
+            "diagnostics": [],
+            "raw_tail": "[]\n",
+            "timed_out": false,
+            "parse_error": null
+          },
+          "score": {
+            "caught": true,
+            "on_target": 0,
+            "off_target": 0,
+            "severities": [],
+            "codes": [],
+            "messages": []
+          }
+        }
+      }
+    }
+  },
+  "totals": {
+    "alc": {
+      "caught": 13,
+      "total": 14,
+      "false_positive": false
+    },
+    "al_lsp": {
+      "caught": 4,
+      "total": 14,
+      "false_positive": false
+    },
+    "native_build": {
+      "caught": 14,
+      "total": 14,
+      "false_positive": false
+    },
+    "native_check": {
+      "caught": 2,
+      "total": 14,
+      "false_positive": false
+    },
+    "ours_combined": {
+      "caught": 14,
+      "total": 14
+    }
+  },
+  "by_class": {
+    "syntax": {
+      "alc": 3,
+      "al_lsp": 3,
+      "native_build": 3,
+      "native_check": 0,
+      "n": 3,
+      "ours": 3
+    },
+    "binding": {
+      "alc": 5,
+      "al_lsp": 0,
+      "native_build": 5,
+      "native_check": 0,
+      "n": 5,
+      "ours": 5
+    },
+    "typecheck": {
+      "alc": 3,
+      "al_lsp": 0,
+      "native_build": 4,
+      "native_check": 0,
+      "n": 4,
+      "ours": 4
+    },
+    "project": {
+      "alc": 2,
+      "al_lsp": 1,
+      "native_build": 2,
+      "native_check": 2,
+      "n": 2,
+      "ours": 2
+    }
+  },
+  "valid": true,
+  "executionErrors": []
+}
