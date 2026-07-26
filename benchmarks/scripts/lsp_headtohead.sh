@@ -58,6 +58,9 @@ python3 -u "$BENCH/scripts/lsp_bench.py" \
   --pre-requests "$BENCH/ms/ms_active_ws.json" \
   --post-open-requests "$BENCH/ms/ms_active_document.json" \
   --probe-profile "$BENCH/ms/ms_probe_profile.json" \
+  --server-artifact "$AL_MS_EXT/bin/linux/Microsoft.Dynamics.Nav.EditorServices.Host" \
+  --server-artifact "$AL_MS_EXT/bin/linux/Microsoft.Dynamics.Nav.EditorServices.Host.dll" \
+  --server-artifact "$AL_MS_EXT/bin/linux/alc.dll" \
   --diag-timeout 180 --req-timeout 90 --pre-timeout 300 \
   --out "$BENCH/results/lsp_ms_$TAG.json" \
   --stderr-log "$BENCH/results/lsp_ms_$TAG.stderr.log"

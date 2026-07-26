@@ -110,10 +110,17 @@ def machine_metadata():
     }
 
 
-def server_artifacts(command):
+def server_artifacts(command, extra_paths=()):
     artifacts = []
-    executable = Path(command[0])
-    if executable.is_file():
+    seen = set()
+    for candidate in (command[0], *extra_paths):
+        executable = Path(candidate)
+        if not executable.is_file():
+            continue
+        resolved = executable.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
         artifacts.append(
             {
                 "name": executable.name,
@@ -121,23 +128,6 @@ def server_artifacts(command):
                 "sha256": sha256_file(executable),
             }
         )
-    extension = os.environ.get("AL_MS_EXT")
-    if extension:
-        tool_dir = Path(extension) / "bin" / "linux"
-        for name in (
-            "Microsoft.Dynamics.Nav.EditorServices.Host",
-            "Microsoft.Dynamics.Nav.EditorServices.Host.dll",
-            "alc.dll",
-        ):
-            path = tool_dir / name
-            if path.is_file():
-                artifacts.append(
-                    {
-                        "name": name,
-                        "bytes": path.stat().st_size,
-                        "sha256": sha256_file(path),
-                    }
-                )
     return artifacts
 
 
@@ -445,6 +435,8 @@ def main():
                     help="JSON lifecycle steps run immediately after didOpen")
     ap.add_argument("--probe-profile", default=None,
                     help="JSON adaptations from logical probes to a server's real protocol")
+    ap.add_argument("--server-artifact", action="append", default=[],
+                    help="additional server artifact to hash (repeatable)")
     ap.add_argument("--init-params", default=None, help="JSON file merged into initialize params")
     ap.add_argument("--out", required=True)
     ap.add_argument("--stderr-log", required=True)
@@ -470,7 +462,7 @@ def main():
         "machine": machine_metadata(),
         "label": args.label,
         "serverCommand": [Path(cmd[0]).name, *cmd[1:]],
-        "serverArtifacts": server_artifacts(cmd),
+        "serverArtifacts": server_artifacts(cmd, args.server_artifact),
         "root": display_project_path(root),
         "openFile": Path(open_path).resolve().relative_to(Path(root).resolve()).as_posix(),
         "iterations": args.iterations,

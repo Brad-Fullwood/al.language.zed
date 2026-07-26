@@ -126,6 +126,21 @@ class ClientContractTests(unittest.TestCase):
             self.assertTrue(result.parent.is_dir())
             self.assertTrue(stderr.parent.is_dir())
 
+    def test_server_artifacts_are_explicit_and_deduplicated(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            command = Path(root) / "server"
+            extra = Path(root) / "runtime.dll"
+            command.write_bytes(b"server")
+            extra.write_bytes(b"runtime")
+            artifacts = lsp_bench.server_artifacts(
+                [str(command)],
+                [str(extra), str(extra)],
+            )
+            self.assertEqual(
+                [artifact["name"] for artifact in artifacts],
+                ["server", "runtime.dll"],
+            )
+
     def test_microsoft_activation_fixture_matches_extension_contract(self) -> None:
         root = "/tmp/AL Project"
         requests = lsp_bench.load_lifecycle_steps(
