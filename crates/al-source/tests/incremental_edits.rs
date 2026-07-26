@@ -11,8 +11,15 @@
 //! agree exactly. The generated alphabet deliberately includes multi-byte
 //! characters (`é`), a 3-byte CJK character (`日`), an astral character whose
 //! UTF-16 form is a surrogate pair (`🎉`), and `\r\n`.
-use al_source::documents::{DocumentStore, TextChange, TextRange};
+use al_source::documents::{DocumentMutationError, DocumentStore, TextChange, TextRange};
 use url::Url;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefRangeOutcome {
+    Valid,
+    OutOfBounds,
+    Backward,
+}
 
 /// Reference implementation: convert an LSP (line, utf16-char) position to a
 /// byte offset in `s`, using the spec's clamping rules.
@@ -72,6 +79,35 @@ fn ref_apply(s: &str, c: &TextChange) -> String {
     }
 }
 
+fn ref_range_outcome(s: &str, c: &TextChange) -> RefRangeOutcome {
+    let Some(range) = c.range else {
+        return RefRangeOutcome::Valid;
+    };
+    match (
+        ref_offset(s, range.start_line, range.start_character),
+        ref_offset(s, range.end_line, range.end_character),
+    ) {
+        (Some(start), Some(end)) if start <= end => RefRangeOutcome::Valid,
+        (Some(_), Some(_)) => RefRangeOutcome::Backward,
+        _ => RefRangeOutcome::OutOfBounds,
+    }
+}
+
+fn assert_apply_outcome(
+    outcome: RefRangeOutcome,
+    result: Result<(), DocumentMutationError>,
+    context: &str,
+) {
+    match (outcome, result) {
+        (RefRangeOutcome::Valid, Ok(()))
+        | (RefRangeOutcome::OutOfBounds, Err(DocumentMutationError::RangeOutOfBounds { .. }))
+        | (RefRangeOutcome::Backward, Err(DocumentMutationError::BackwardRange { .. })) => {}
+        (expected, actual) => {
+            panic!("{context}: expected {expected:?}, got {actual:?}");
+        }
+    }
+}
+
 /// Deterministic xorshift so failures reproduce.
 struct Rng(u64);
 impl Rng {
@@ -106,7 +142,9 @@ fn incremental_edits_match_reference_implementation() {
         for _ in 0..rng.below(40) {
             text.push_str(ALPHABET[rng.below(ALPHABET.len() as u64) as usize]);
         }
-        store.open(uri.clone(), text.clone());
+        store
+            .open(uri.clone(), text.clone())
+            .expect("random starting document should fit in the store");
         let mut expected = text.clone();
 
         for _step in 0..12 {
@@ -131,8 +169,27 @@ fn incremental_edits_match_reference_implementation() {
             };
 
             let before = expected.clone();
+            let expected_outcome = ref_range_outcome(&before, &change);
             expected = ref_apply(&expected, &change);
-            store.apply_changes(&uri, std::slice::from_ref(&change));
+            let before_version = store.get_version(&uri).expect("document version present");
+            let result = store.apply_changes(&uri, std::slice::from_ref(&change));
+            assert_apply_outcome(
+                expected_outcome,
+                result,
+                &format!("case {case} range {:?}", change.range),
+            );
+            let after_version = store.get_version(&uri).expect("document version present");
+            match expected_outcome {
+                RefRangeOutcome::Valid => assert_eq!(
+                    after_version,
+                    before_version + 1,
+                    "case {case}: a successful edit must advance the document version"
+                ),
+                RefRangeOutcome::OutOfBounds | RefRangeOutcome::Backward => assert_eq!(
+                    after_version, before_version,
+                    "case {case}: a rejected edit must preserve the document version"
+                ),
+            }
             let got = store.get_text(&uri).unwrap();
 
             if got != expected {
@@ -157,7 +214,9 @@ fn incremental_edits_match_reference_implementation() {
 fn adversarial_ranges_do_not_panic() {
     let store = DocumentStore::new();
     let uri = Url::parse("file:///t/adv.al").unwrap();
-    store.open(uri.clone(), "héllo\nwörld🎉\n".to_string());
+    store
+        .open(uri.clone(), "héllo\nwörld🎉\n".to_string())
+        .expect("adversarial fixture should fit in the store");
     let ranges = [
         (0, 0, 0, 0),
         (0, 0, u32::MAX, u32::MAX),
@@ -179,7 +238,26 @@ fn adversarial_ranges_do_not_panic() {
             }),
             text: "X".into(),
         };
-        store.apply_changes(&uri, std::slice::from_ref(&change));
+        let expected_outcome = ref_range_outcome(&before, &change);
+        let before_version = store.get_version(&uri).expect("document version present");
+        let result = store.apply_changes(&uri, std::slice::from_ref(&change));
+        assert_apply_outcome(
+            expected_outcome,
+            result,
+            &format!("range ({sl},{sc})..({el},{ec})"),
+        );
+        let after_version = store.get_version(&uri).expect("document version present");
+        match expected_outcome {
+            RefRangeOutcome::Valid => assert_eq!(
+                after_version,
+                before_version + 1,
+                "successful adversarial edit must advance the document version"
+            ),
+            RefRangeOutcome::OutOfBounds | RefRangeOutcome::Backward => assert_eq!(
+                after_version, before_version,
+                "rejected adversarial edit must preserve the document version"
+            ),
+        }
         let after = store.get_text(&uri).expect("document vanished").to_string();
 
         // The contract is not merely "survives": an out-of-bounds or reversed
