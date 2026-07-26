@@ -50,7 +50,7 @@ environment has not supplied its contract evidence.
 | LSP correctness | Document mutation/version/generation handling, diagnostics, navigation, edits, commands, shutdown, malformed input, stale state, and long-runtime daemon transport regressions pass; previously aspirational hover/definition cases now assert concrete results | Verified |
 | Repository honesty | README, feature pages, settings, schemas, CLI/daemon/MCP catalogs, benchmarks, and limitations have been swept against current registrations and runtime wiring; benchmark claims now link clean raw evidence and distinguish phase-one diagnostics, semantic readiness, and forced Microsoft teardown | Verified |
 | Dependency and automation policy | `cargo-deny` advisories/bans/licenses/sources pass; all repository shell scripts pass ShellCheck; root and grammar workflows pass Actionlint/YAML parsing | Verified |
-| Clean release hygiene | Clean-checkout `make release-dryrun`, full generated-assets profile, product/submodule/revision alignment, package manifests, final formatting/tests/Clippy/WASM component, and CI must pass on the publishable commits | Audit |
+| Clean release hygiene | Clean commit `955efe53` passed `make release-dryrun`, full Microsoft-extension regeneration with zero drift, product/submodule/revision alignment, package manifests, formatting, workspace and extension tests, Clippy, semantic/default/WASM builds, component validation, Microsoft contracts, policy checks, deterministic performance audit, and isolated editor comparison | Verified |
 | Publication | Grammar commit must be pushed first; the superproject gitlink and `extension.toml` revision must then point to it; both repositories must be clean, pushed, remotely reachable, and green on the final commit | Open |
 
 ## External service contract
@@ -102,10 +102,14 @@ package manifest.
   fallback.
 - Root workspace tests, root Clippy with `-D warnings`, 42 Zed extension host
   tests, release WASM build/component validation, CLI/TUI/MCP/archive smoke, and
-  the isolated Zed/VS Code comparison passed on the current worktree.
+  the isolated Zed/VS Code comparison passed on clean commit `955efe53`.
+- `make release-dryrun` passed all 13 stages on `955efe53`; the full regeneration
+  profile was byte-stable, and ShellCheck, root/grammar Actionlint and YAML
+  parsing, cargo-deny advisories/bans/licenses/sources, the Criterion
+  archive/index/query graph audit, and `make microsoft-contracts` also passed.
 - The strict live-BC target was invoked without credentials and returned exit 2
   as designed. No live tenant check is recorded as passed.
 
-The two remaining repository-controlled gates are the clean release run and
-publication. The service-controlled live-BC gate remains unavailable until its
-explicit inputs are supplied.
+The remaining repository-controlled gate is publication. The
+service-controlled live-BC gate remains unavailable until its explicit inputs
+are supplied.
