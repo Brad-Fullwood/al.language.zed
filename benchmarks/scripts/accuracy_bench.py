@@ -343,9 +343,21 @@ def published_manifest(manifest):
     return sanitized
 
 
+def sanitize_published_value(value):
+    """Remove checkout-specific absolute paths from a machine-readable report."""
+    if isinstance(value, dict):
+        return {key: sanitize_published_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_published_value(item) for item in value]
+    if isinstance(value, str):
+        return value.replace(str(Path(REPO).resolve()), "<repo>")
+    return value
+
+
 def write_result(manifest, out):
     RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    RESULT_PATH.write_text(json.dumps({"manifest": published_manifest(manifest), **out}, indent=2) + "\n")
+    payload = sanitize_published_value({"manifest": published_manifest(manifest), **out})
+    RESULT_PATH.write_text(json.dumps(payload, indent=2) + "\n")
 
 
 def prepare_result_directory():

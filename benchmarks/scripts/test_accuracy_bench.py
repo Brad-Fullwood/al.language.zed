@@ -27,6 +27,20 @@ class ResultInitializationTests(unittest.TestCase):
                 accuracy_bench.RESULT_PATH = original_result
             self.assertTrue(result.parent.is_dir())
 
+    def test_published_results_replace_checkout_specific_paths(self) -> None:
+        repo = str(Path(accuracy_bench.REPO).resolve())
+        value = {
+            "diagnostics": [
+                {
+                    "file": f"{repo}/benchmarks/projects/accuracy/case/src/Case.al",
+                    "message": f"workspace source '{repo}/benchmarks/projects/accuracy/case/src/Case.al'",
+                }
+            ]
+        }
+        sanitized = accuracy_bench.sanitize_published_value(value)
+        self.assertNotIn(repo, str(sanitized))
+        self.assertIn("<repo>/benchmarks/projects/accuracy", str(sanitized))
+
 
 if __name__ == "__main__":
     unittest.main()

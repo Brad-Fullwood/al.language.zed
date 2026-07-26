@@ -90,8 +90,11 @@ one native phase.
 `.alpackages` is rebuilt to one coherent BC 28.1 set. The customer folder ships
 a mix of 27.0 and 28.1 packages, which roughly doubles symbol-load cost for
 both tools and adds variance. The real-world tier deliberately keeps each
-project's own packages, because production projects depend on third-party
-symbols the Microsoft-only set does not contain.
+project’s own packages, because production projects depend on third-party
+symbols the Microsoft-only set does not contain. Both the emitter and symbol
+benchmarks stage the exact package set themselves from `AL_BENCH_PACKAGES`;
+they reject an absent, incomplete, or generated-project-local source before
+replacing any staged directory.
 
 **One client, both servers.** `lsp_bench.py` is server-agnostic and drives
 al-lsp and Microsoft's EditorServices host over the same stdio JSON-RPC code

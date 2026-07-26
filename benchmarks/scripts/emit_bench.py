@@ -33,6 +33,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from package_staging import stage_package_set
+
 HERE = Path(__file__).resolve().parent
 BENCH = HERE.parent
 REPO = BENCH.parent
@@ -44,14 +46,6 @@ PACKAGE_SOURCE = Path(PACKAGE_SOURCE_VALUE) if PACKAGE_SOURCE_VALUE else None
 CPUSET = os.environ.get("AL_BENCH_CPUSET", "")
 ROUNDS = int(os.environ.get("AL_BENCH_ROUNDS", "6"))
 
-PACKAGE_NAMES = [
-    "System.app",
-    "Microsoft_System_28.0.51202.0.app",
-    "Microsoft_System Application_28.1.49838.50794.app",
-    "Microsoft_Business Foundation_28.1.49838.50065.app",
-    "Microsoft_Base Application_28.1.49838.51422.app",
-    "Microsoft_Application_28.1.49838.50065.app",
-]
 SCENARIOS = ("processCold", "warmUnchanged", "oneFileEdit")
 BACKENDS = ("native", "alc")
 KNOWN_TARGETS = {"small", "medium", "large", "xl"}
@@ -104,35 +98,7 @@ def source_fingerprint(project: Path) -> dict[str, Any]:
 
 
 def standardize_packages(project: Path) -> list[dict[str, Any]]:
-    if PACKAGE_SOURCE is None or not PACKAGE_SOURCE.is_dir():
-        raise RuntimeError("AL_BENCH_PACKAGES must name a directory containing the pinned package set")
-    destination = project / ".alpackages"
-    if PACKAGE_SOURCE.resolve() == destination.resolve():
-        raise RuntimeError(
-            "AL_BENCH_PACKAGES must be an immutable source outside the generated "
-            f"benchmark project; it aliases the staging destination {destination}"
-        )
-    missing = [name for name in PACKAGE_NAMES if not (PACKAGE_SOURCE / name).is_file()]
-    if missing:
-        raise RuntimeError("missing benchmark packages: " + ", ".join(missing))
-
-    if destination.exists() or destination.is_symlink():
-        if destination.is_symlink() or destination.is_file():
-            destination.unlink()
-        else:
-            shutil.rmtree(destination)
-    destination.mkdir(parents=True)
-    metadata = []
-    for name in PACKAGE_NAMES:
-        source = PACKAGE_SOURCE / name
-        target = destination / name
-        shutil.copy2(source, target)
-        metadata.append({
-            "name": name,
-            "bytes": target.stat().st_size,
-            "sha256": sha256_file(target),
-        })
-    return metadata
+    return stage_package_set(project, PACKAGE_SOURCE)
 
 
 def read_app(path: Path) -> dict[str, bytes]:

@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from package_staging import stage_package_set
+
 HERE = Path(__file__).resolve().parent
 BENCH = HERE.parent
 REPO = BENCH.parent
@@ -38,6 +40,8 @@ CACHE_HOME = Path(
 ).resolve()
 RUNTIME_HOME = CACHE_HOME / "runtime"
 INDEX_CACHE = CACHE_HOME / "al-lsp" / "index"
+PACKAGE_SOURCE_VALUE = os.environ.get("AL_BENCH_PACKAGES", "")
+PACKAGE_SOURCE = Path(PACKAGE_SOURCE_VALUE) if PACKAGE_SOURCE_VALUE else None
 
 QUERIES = ["Customer", "Sales Post", "Item Ledger", "Bench", "Gen. Journal"]
 N_WARM = int(os.environ.get("AL_BENCH_SYMBOL_WARM_RUNS", "7"))
@@ -255,6 +259,7 @@ def main() -> int:
             raise RuntimeError(f"required release binary is missing: {binary}")
     if not (PROJECT / "app.json").is_file():
         raise RuntimeError(f"symbol benchmark project has no app.json: {PROJECT}")
+    package_set = stage_package_set(PROJECT, PACKAGE_SOURCE)
 
     CACHE_HOME.mkdir(parents=True, exist_ok=True)
     RUNTIME_HOME.mkdir(parents=True, exist_ok=True)
@@ -272,6 +277,7 @@ def main() -> int:
             "alLspSha256": sha256_file(LSP),
             "rustc": command_output(["rustc", "-Vv"]),
         },
+        "packageSet": package_set,
         "project": project_metadata(),
         "methodology": {
             "cache": "isolated XDG cache; only al-lsp/index is cleared",

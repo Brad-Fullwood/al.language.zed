@@ -24,17 +24,11 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from package_staging import PACKAGE_NAMES
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 BENCH = os.path.dirname(HERE)
 SRC_PKGS = os.environ.get("AL_BENCH_PACKAGES", "")
-PKG_SET = [
-    "System.app",
-    "Microsoft_System_28.0.51202.0.app",
-    "Microsoft_System Application_28.1.49838.50794.app",
-    "Microsoft_Business Foundation_28.1.49838.50065.app",
-    "Microsoft_Base Application_28.1.49838.51422.app",
-    "Microsoft_Application_28.1.49838.50065.app",
-]
 
 CASES = [
     # ---- syntactic: any parser should catch these ----
@@ -263,7 +257,7 @@ def main():
         raise RuntimeError(f"refusing unsafe accuracy corpus path: {root}")
 
     package_root = Path(SRC_PKGS).expanduser()
-    missing = [name for name in PKG_SET if not (package_root / name).is_file()]
+    missing = [name for name in PACKAGE_NAMES if not (package_root / name).is_file()]
     if missing:
         formatted = "\n  ".join(missing)
         raise RuntimeError(
@@ -278,7 +272,7 @@ def main():
     # /packagecachepath rather than duplicated 15 times.
     shared = staging / "_packages"
     shared.mkdir()
-    for n in PKG_SET:
+    for n in PACKAGE_NAMES:
         shutil.copy2(package_root / n, shared / n)
 
     manifest = []
