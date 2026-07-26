@@ -153,6 +153,64 @@ def prepare_output_paths(result_path, stderr_path):
         path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def check_stderr_contract(text, required=(), forbidden=(), terminal=None):
+    """Evaluate literal stderr evidence after the server has fully exited."""
+    checks = {
+        "required": [
+            {"pattern": pattern, "found": pattern in text}
+            for pattern in required
+        ],
+        "forbidden": [
+            {"pattern": pattern, "found": pattern in text}
+            for pattern in forbidden
+        ],
+        "terminal": None,
+    }
+    reasons = []
+    for check in checks["required"]:
+        if not check["found"]:
+            reasons.append(
+                f"server stderr did not contain required evidence: {check['pattern']}"
+            )
+    for check in checks["forbidden"]:
+        if check["found"]:
+            reasons.append(
+                f"server stderr contained forbidden evidence: {check['pattern']}"
+            )
+    if terminal:
+        lines = [line for line in text.splitlines() if line.strip()]
+        last_line = lines[-1] if lines else ""
+        matched = terminal in last_line
+        checks["terminal"] = {
+            "pattern": terminal,
+            "matched": matched,
+            "lastLine": last_line,
+        }
+        if not matched:
+            reasons.append(
+                "server emitted work after its expected terminal stderr marker "
+                f"or never emitted it: {terminal}"
+            )
+    return checks, reasons
+
+
+def shutdown_contract_reasons(result, allow_forced_kill=False):
+    reasons = []
+    if not result["requestOk"]:
+        reasons.append("server did not complete the LSP shutdown request")
+    if not result["exitSent"]:
+        reasons.append("benchmark client did not send the LSP exit notification")
+    if not result["stdinClosed"]:
+        reasons.append("benchmark client did not close the stdio LSP transport")
+    if result["forcedKill"] and not allow_forced_kill:
+        reasons.append("server required a forced kill after LSP shutdown")
+    if result["processExitCode"] != 0 and not (
+        allow_forced_kill and result["forcedKill"]
+    ):
+        reasons.append(f"server exited with code {result['processExitCode']}")
+    return reasons
+
+
 def failed_required_steps(entries):
     return [
         entry
@@ -344,14 +402,22 @@ class LspClient:
                 pass
 
     def notify(self, method, params):
-        self._send({"jsonrpc": "2.0", "method": method, "params": params})
+        message = {"jsonrpc": "2.0", "method": method}
+        # JSON-RPC permits an omitted params member, while tower-lsp rejects
+        # `params: null` for parameterless LSP methods such as shutdown/exit.
+        if params is not None:
+            message["params"] = params
+        self._send(message)
 
     def request(self, method, params, timeout=30.0):
         with self._event:
             self._id += 1
             rid = self._id
         t0 = time.perf_counter()
-        self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+        message = {"jsonrpc": "2.0", "id": rid, "method": method}
+        if params is not None:
+            message["params"] = params
+        self._send(message)
         deadline = time.time() + timeout
         with self._event:
             while rid not in self._responses:
@@ -387,21 +453,49 @@ class LspClient:
                 self._event.wait(min(remaining, 0.05))
 
     def close(self, grace=3.0):
+        started = time.perf_counter()
+        result = {
+            "requestOk": False,
+            "requestError": None,
+            "exitSent": False,
+            "stdinClosed": False,
+            "forcedKill": False,
+            "processExitCode": None,
+            "elapsedMs": None,
+        }
         try:
-            self.request("shutdown", None, timeout=grace)
+            response, _ = self.request("shutdown", None, timeout=grace)
+            result["requestOk"] = (
+                response is not None and "error" not in response
+            )
+            result["requestError"] = (response or {}).get("error")
             self.notify("exit", None)
-        except Exception:
-            pass
-        self._alive = False
+            result["exitSent"] = True
+            # stdio is the LSP transport. tower-lsp records `exit` in service
+            # state, then finishes Server::serve when its framed stdin reaches
+            # EOF. Keeping the parent pipe open while waiting for the child is
+            # therefore a client/server deadlock, not a slow server shutdown.
+            self.proc.stdin.close()
+            result["stdinClosed"] = True
+        except Exception as error:
+            result["requestError"] = str(error)
         try:
             self.proc.wait(timeout=grace)
         except subprocess.TimeoutExpired:
+            result["forcedKill"] = True
             self.proc.kill()
             self.proc.wait(timeout=grace)
+        result["processExitCode"] = self.proc.returncode
+        self._alive = False
         try:
             self.stderr_file.close()
         except Exception:
             pass
+        result["elapsedMs"] = round(
+            (time.perf_counter() - started) * 1000.0,
+            4,
+        )
+        return result
 
 
 def summarize(samples):
@@ -437,6 +531,14 @@ def main():
                     help="JSON adaptations from logical probes to a server's real protocol")
     ap.add_argument("--server-artifact", action="append", default=[],
                     help="additional server artifact to hash (repeatable)")
+    ap.add_argument("--require-stderr-pattern", action="append", default=[],
+                    help="literal evidence required in the complete server stderr log")
+    ap.add_argument("--forbid-stderr-pattern", action="append", default=[],
+                    help="literal evidence that invalidates the complete server stderr log")
+    ap.add_argument("--terminal-stderr-pattern", default=None,
+                    help="literal text required in the last non-empty server stderr line")
+    ap.add_argument("--allow-forced-kill", action="store_true",
+                    help="record, but do not invalidate, a server known to require client termination after clean LSP shutdown")
     ap.add_argument("--init-params", default=None, help="JSON file merged into initialize params")
     ap.add_argument("--out", required=True)
     ap.add_argument("--stderr-log", required=True)
@@ -708,12 +810,32 @@ def main():
         entry["errors"] = errors
         out["requests"][name] = entry
 
-    cli.close()
+    out["shutdown"] = cli.close()
+    out["shutdown"]["forcedKillAllowed"] = args.allow_forced_kill
+    stderr_text = Path(args.stderr_log).read_text(
+        encoding="utf-8",
+        errors="replace",
+    )
+    out["stderrContract"], stderr_reasons = check_stderr_contract(
+        stderr_text,
+        args.require_stderr_pattern,
+        args.forbid_stderr_pattern,
+        args.terminal_stderr_pattern,
+    )
     seen = [l for l in loads if l is not None]
     out["load_end"] = loadavg()
     out["load_mean_during_probes"] = round(statistics.mean(seen), 2) if seen else None
 
     invalid_reasons = []
+    invalid_reasons.extend(
+        shutdown_contract_reasons(out["shutdown"], args.allow_forced_kill)
+    )
+    if args.allow_forced_kill and out["shutdown"]["forcedKill"]:
+        out["notes"].append(
+            "server completed standard LSP shutdown/exit but did not terminate; "
+            "the client applied the explicitly allowed forced-termination fallback"
+        )
+    invalid_reasons.extend(stderr_reasons)
     if not out["serverArtifacts"]:
         invalid_reasons.append("no benchmark server binary artifact was identified")
     for phase, entries in (

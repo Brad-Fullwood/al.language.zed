@@ -97,9 +97,63 @@ pub(crate) enum WorkspaceInitState {
     Failed(String),
 }
 
+/// Shared cancellation state for every task owned by one LSP session.
+///
+/// tower-lsp closes its client transport as soon as it receives `exit`, but
+/// workspace initialization and debounced diagnostics run in tasks outside the
+/// request that spawned them. A JoinHandle abort is still useful for prompt
+/// shutdown, but it is not a sufficient transport-safety contract: a task can
+/// be between handle publication and cancellation, or already executing a
+/// ready future. Every background path therefore observes this state before it
+/// sends anything to the client.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LspSessionState {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl LspSessionState {
+    pub(crate) fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
+mod session_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_is_shared_by_every_session_clone() {
+        let session = LspSessionState::default();
+        let background_task = session.clone();
+
+        assert!(!background_task.is_cancelled());
+        session.cancel();
+        assert!(background_task.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn language_server_shutdown_cancels_background_transport_access() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+
+        assert!(!server.session.is_cancelled());
+        LanguageServer::shutdown(server)
+            .await
+            .expect("shutdown should cancel an idle server");
+        assert!(server.session.is_cancelled());
+    }
+}
+
 pub struct AlServer {
     pub(crate) client: Client,
     pub(crate) workspace: Arc<Workspace>,
+    /// Explicit lifetime shared by request handlers and detached/background
+    /// tasks. Once cancelled, no task may write to the LSP client transport.
+    pub(crate) session: LspSessionState,
     /// Root URI from initialize params, used in initialized().
     pub(crate) root_uri: RwLock<Option<Url>>,
     /// Handle to the currently-pending debounced diagnostics task.
@@ -351,23 +405,32 @@ impl AlServer {
         let workspace = Arc::new(Workspace::new());
         let (workspace_init_state, _initial_receiver) =
             watch::channel(WorkspaceInitState::Initializing);
+        let session = LspSessionState::default();
 
         // Register a notify sink so bridge failures reach the user.
         let sink_client = client.clone();
+        let sink_session = session.clone();
         let _ = workspace
             .notify_sink
             .set(std::sync::Arc::new(move |msg: &str| {
+                if sink_session.is_cancelled() {
+                    return;
+                }
                 let c = sink_client.clone();
+                let session = sink_session.clone();
                 let m = msg.to_owned();
                 tokio::spawn(async move {
-                    c.show_message(tower_lsp::lsp_types::MessageType::WARNING, m)
-                        .await;
+                    if !session.is_cancelled() {
+                        c.show_message(tower_lsp::lsp_types::MessageType::WARNING, m)
+                            .await;
+                    }
                 });
             }));
 
         Self {
             client,
             workspace,
+            session,
             root_uri: RwLock::new(None),
             diag_task: Mutex::new(None),
             init_task: Mutex::new(None),
@@ -398,6 +461,7 @@ impl AlServer {
         diagnostics::DiagnosticPublicationState {
             semantic_cache: Arc::clone(&self.semantic_diagnostic_cache),
             published_uris: Arc::clone(&self.workspace_diagnostic_uris),
+            session: self.session.clone(),
         }
     }
 
@@ -436,6 +500,22 @@ impl AlServer {
             }
         }
         Ok(self.workspace.generation_lock.read().await)
+    }
+
+    /// Wait until workspace initialization has published the toolchain/project
+    /// generation needed by semantic phase two.
+    ///
+    /// `didOpen` intentionally publishes native phase-one diagnostics before
+    /// this wait. Without the wait, a fast open can call `get_or_init_bridge`
+    /// before toolchain discovery stores its result, observe `None`, and never
+    /// retry semantic analysis for that document.
+    pub(crate) async fn await_semantic_workspace(&self) -> std::result::Result<(), String> {
+        let generation = self
+            .await_ready()
+            .await
+            .map_err(|error| error.message.into_owned())?;
+        drop(generation);
+        Ok(())
     }
 
     pub(crate) async fn ensure_builtins_loaded(&self) -> Result<()> {
@@ -630,8 +710,12 @@ impl AlServer {
         let client = self.client.clone();
         let semantic_diagnostic_cache = Arc::clone(&self.semantic_diagnostic_cache);
         let workspace_diagnostic_uris = Arc::clone(&self.workspace_diagnostic_uris);
+        let session = self.session.clone();
         let handle = tokio::spawn(async move {
             tokio::time::sleep(DIAGNOSTICS_DEBOUNCE).await;
+            if session.is_cancelled() {
+                return;
+            }
             // Emit syntax-only diagnostics from the debounced task.
             // Bridge diagnostics (semantic) are emitted on did_open and lintFile command.
             //
@@ -659,6 +743,7 @@ impl AlServer {
                     semantic_diagnostic_cache,
                     workspace_diagnostic_uris,
                     Some(uri),
+                    &session,
                 )
                 .await;
                 return;
@@ -691,6 +776,9 @@ impl AlServer {
             {
                 Ok(diags) => diags,
                 Err(e) => {
+                    if session.is_cancelled() {
+                        return;
+                    }
                     tracing::error!("debounced diagnostics worker failed: {e}");
                     client
                         .show_message(
@@ -714,6 +802,9 @@ impl AlServer {
                     document_version,
                     "debounced diagnostics: document changed during analysis, skipping stale publish"
                 );
+                return;
+            }
+            if session.is_cancelled() {
                 return;
             }
             client
@@ -923,6 +1014,15 @@ impl LanguageServer for AlServer {
     }
 
     async fn shutdown(&self) -> Result<()> {
+        // Close the logical session before aborting task handles. This is the
+        // fail-closed guard for a task that is already running or whose handle
+        // races with shutdown: it may finish local computation, but it cannot
+        // write to tower-lsp's transport after `exit` closes that transport.
+        self.session.cancel();
+        self.workspace_init_state
+            .send_replace(WorkspaceInitState::Failed(
+                "language server is shutting down".to_string(),
+            ));
         if let Some(task) = self.diag_task.lock().await.take() {
             task.abort();
             if let Err(error) = task.await {
@@ -2199,6 +2299,22 @@ mod workspace_init_state_tests {
         assert!(error
             .message
             .contains("configured package directory is unreadable"));
+    }
+
+    #[tokio::test]
+    async fn semantic_phase_waits_for_the_initialized_workspace_generation() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let state = service.inner().workspace_init_state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            state.send_replace(WorkspaceInitState::Ready);
+        });
+
+        service
+            .inner()
+            .await_semantic_workspace()
+            .await
+            .expect("semantic phase should resume after workspace readiness");
     }
 }
 

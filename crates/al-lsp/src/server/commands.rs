@@ -12,7 +12,7 @@ use tower_lsp::lsp_types::{
     Position, Range, Url, WorkspaceEdit,
 };
 
-use super::lsp::AlServer;
+use super::lsp::{AlServer, LspSessionState};
 use super::{diagnostics, formatting, workspace};
 
 /// `al.clearSymbolCache` — remove the on-disk virtual-file cache.
@@ -189,6 +189,7 @@ pub(super) async fn reindex(server: &AlServer) {
         let client = server.client.clone();
         let uri_cloned = uri.clone();
         let diagnostic_state = server.diagnostic_publication_state();
+        let session = diagnostic_state.session.clone();
         let handle = tokio::spawn(async move {
             match workspace::initialize_workspace(
                 ws,
@@ -200,17 +201,21 @@ pub(super) async fn reindex(server: &AlServer) {
             .await
             {
                 Ok(()) => {
-                    client
-                        .show_message(MessageType::INFO, "Workspace reindex complete")
-                        .await;
+                    if !session.is_cancelled() {
+                        client
+                            .show_message(MessageType::INFO, "Workspace reindex complete")
+                            .await;
+                    }
                 }
                 Err(error) => {
-                    client
-                        .show_message(
-                            MessageType::ERROR,
-                            format!("Workspace reindex failed: {error}"),
-                        )
-                        .await;
+                    if !session.is_cancelled() {
+                        client
+                            .show_message(
+                                MessageType::ERROR,
+                                format!("Workspace reindex failed: {error}"),
+                            )
+                            .await;
+                    }
                 }
             }
         });
@@ -647,9 +652,10 @@ pub(super) async fn run_test(
     // Run off the request path: the BC round-trip can take several seconds.
     let workspace = Arc::clone(&server.workspace);
     let client = server.client.clone();
+    let session = server.session.clone();
     let target_for_task = target.clone();
     tokio::spawn(async move {
-        run_test_background(workspace, client, config, target_for_task).await;
+        run_test_background(workspace, client, session, config, target_for_task).await;
     });
 
     serde_json::json!({ "status": "started", "target": target })
@@ -661,19 +667,25 @@ pub(super) async fn run_test(
 async fn run_test_background(
     workspace: Arc<al_workspace::Workspace>,
     client: tower_lsp::Client,
+    session: LspSessionState,
     config: al_bc::launch::BcServerConfig,
     target: al_analysis::queries::code_lens::TestTarget,
 ) {
+    if session.is_cancelled() {
+        return;
+    }
     let codeunit_name = format!("Codeunit {}", target.codeunit_id);
     let runner = match al_test::test_runner::TestRunnerClient::new(&config) {
         Ok(runner) => runner,
         Err(error) => {
-            client
-                .show_message(
-                    MessageType::ERROR,
-                    format!("Could not construct the Business Central test client: {error}"),
-                )
-                .await;
+            if !session.is_cancelled() {
+                client
+                    .show_message(
+                        MessageType::ERROR,
+                        format!("Could not construct the Business Central test client: {error}"),
+                    )
+                    .await;
+            }
             return;
         }
     };
@@ -684,16 +696,21 @@ async fn run_test_background(
             Some(&target.method_name),
         )
         .await;
+    if session.is_cancelled() {
+        return;
+    }
 
     let result = match result {
         Ok(r) => r,
         Err(e) => {
-            client
-                .show_message(
-                    MessageType::ERROR,
-                    format!("Test '{}' failed to run: {e}", target.method_name),
-                )
-                .await;
+            if !session.is_cancelled() {
+                client
+                    .show_message(
+                        MessageType::ERROR,
+                        format!("Test '{}' failed to run: {e}", target.method_name),
+                    )
+                    .await;
+            }
             return;
         }
     };
@@ -704,12 +721,14 @@ async fn run_test_background(
         let timestamp = match al_test::persistence::now_secs() {
             Ok(timestamp) => timestamp,
             Err(error) => {
-                client
-                    .show_message(
-                        MessageType::ERROR,
-                        format!("Could not timestamp test results: {error}"),
-                    )
-                    .await;
+                if !session.is_cancelled() {
+                    client
+                        .show_message(
+                            MessageType::ERROR,
+                            format!("Could not timestamp test results: {error}"),
+                        )
+                        .await;
+                }
                 return;
             }
         };
@@ -729,6 +748,9 @@ async fn run_test_background(
         }
     }
 
+    if session.is_cancelled() {
+        return;
+    }
     let level = if result.failed > 0 {
         MessageType::ERROR
     } else {

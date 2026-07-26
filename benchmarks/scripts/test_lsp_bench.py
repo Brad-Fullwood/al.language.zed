@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import tempfile
 import threading
@@ -30,6 +31,86 @@ class ClientContractTests(unittest.TestCase):
         self.assertEqual(
             sent,
             [{"jsonrpc": "2.0", "method": "initialized", "params": {}}],
+        )
+
+    def test_parameterless_request_and_notification_omit_null_params(self) -> None:
+        sent = []
+        client = object.__new__(lsp_bench.LspClient)
+        client._id = 0
+        client._event = threading.Condition()
+        client._responses = {
+            1: ({"jsonrpc": "2.0", "id": 1, "result": None}, time.perf_counter())
+        }
+        client._alive = True
+        client._send = sent.append
+
+        response, _ = client.request("shutdown", None, timeout=0)
+        client.notify("exit", None)
+
+        self.assertEqual(response["result"], None)
+        self.assertEqual(
+            sent,
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "shutdown"},
+                {"jsonrpc": "2.0", "method": "exit"},
+            ],
+        )
+
+    def test_close_sends_exit_and_closes_stdio_before_waiting(self) -> None:
+        events = []
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdin = io.BytesIO()
+                self.returncode = 0
+
+            def wait(self, timeout) -> int:
+                events.append(("wait", timeout, self.stdin.closed))
+                return 0
+
+            def kill(self) -> None:
+                self.returncode = -9
+
+        client = object.__new__(lsp_bench.LspClient)
+        client.proc = FakeProcess()
+        client.stderr_file = io.BytesIO()
+        client._alive = True
+        client.request = lambda method, params, timeout: (
+            {"jsonrpc": "2.0", "id": 1, "result": None},
+            0.0,
+        )
+        client.notify = lambda method, params: events.append((method, params))
+
+        result = client.close(grace=0.25)
+
+        self.assertTrue(result["requestOk"])
+        self.assertTrue(result["exitSent"])
+        self.assertTrue(result["stdinClosed"])
+        self.assertFalse(result["forcedKill"])
+        self.assertEqual(events[0], ("exit", None))
+        self.assertEqual(events[1], ("wait", 0.25, True))
+
+    def test_forced_kill_is_invalid_unless_server_policy_explicitly_allows_it(self) -> None:
+        shutdown = {
+            "requestOk": True,
+            "exitSent": True,
+            "stdinClosed": True,
+            "forcedKill": True,
+            "processExitCode": -9,
+        }
+        self.assertEqual(
+            lsp_bench.shutdown_contract_reasons(shutdown),
+            [
+                "server required a forced kill after LSP shutdown",
+                "server exited with code -9",
+            ],
+        )
+        self.assertEqual(
+            lsp_bench.shutdown_contract_reasons(
+                shutdown,
+                allow_forced_kill=True,
+            ),
+            [],
         )
 
     def test_timed_out_request_is_cancelled(self) -> None:
@@ -140,6 +221,28 @@ class ClientContractTests(unittest.TestCase):
                 [artifact["name"] for artifact in artifacts],
                 ["server", "runtime.dll"],
             )
+
+    def test_stderr_contract_requires_forbids_and_checks_terminal_line(self) -> None:
+        checks, reasons = lsp_bench.check_stderr_contract(
+            "INFO Semantic bridge initialized\n"
+            "INFO exit notification received, stopping\n",
+            required=["Semantic bridge initialized"],
+            forbidden=["Failed to initialize semantic bridge", " ERROR "],
+            terminal="exit notification received, stopping",
+        )
+        self.assertEqual(reasons, [])
+        self.assertTrue(checks["required"][0]["found"])
+        self.assertFalse(checks["forbidden"][0]["found"])
+        self.assertTrue(checks["terminal"]["matched"])
+
+        _, reasons = lsp_bench.check_stderr_contract(
+            "INFO exit notification received, stopping\n"
+            "ERROR failed to send notification\n",
+            required=["Semantic bridge initialized"],
+            forbidden=["failed to send notification"],
+            terminal="exit notification received, stopping",
+        )
+        self.assertEqual(len(reasons), 3)
 
     def test_microsoft_activation_fixture_matches_extension_contract(self) -> None:
         root = "/tmp/AL Project"

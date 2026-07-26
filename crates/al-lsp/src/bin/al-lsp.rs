@@ -92,10 +92,25 @@ fn spawn_signal_handlers() {
     });
 }
 
+/// A thread that has hosted the in-process CLR can remain attached after the
+/// last semantic call and prevent Tokio's default, unbounded Runtime::drop
+/// from returning. The LSP shutdown handler has already cancelled/joined its
+/// owned work and dropped the bridge before `run` returns, so this timeout is
+/// solely a final process-teardown bound for runtime/CLR implementation
+/// threads, not a deadline on user work.
+const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 #[cfg(not(windows))]
-#[tokio::main]
-async fn main() {
-    run().await;
+fn main() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap_or_else(|error| {
+            eprintln!("al-lsp: failed to create async runtime: {error}");
+            std::process::exit(1);
+        });
+    runtime.block_on(run());
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
 }
 
 #[cfg(windows)]
@@ -123,6 +138,7 @@ fn main() {
                     std::process::exit(1);
                 });
             runtime.block_on(run());
+            runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
         }) {
         Ok(handle) => handle,
         Err(error) => {

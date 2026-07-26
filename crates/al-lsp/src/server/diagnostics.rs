@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use tower_lsp::lsp_types::*;
 
+use super::lsp::LspSessionState;
 use super::AlServer;
 
 pub(crate) struct CachedSemanticDiagnostics {
@@ -24,6 +25,7 @@ pub(crate) struct DiagnosticPublicationState {
         tokio::sync::Mutex<std::collections::HashMap<Url, CachedSemanticDiagnostics>>,
     >,
     pub(crate) published_uris: std::sync::Arc<tokio::sync::Mutex<std::collections::HashSet<Url>>>,
+    pub(crate) session: LspSessionState,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -239,6 +241,7 @@ pub(crate) async fn publish_workspace_diagnostics(server: &AlServer) {
         std::sync::Arc::clone(&server.semantic_diagnostic_cache),
         std::sync::Arc::clone(&server.workspace_diagnostic_uris),
         None,
+        &server.session,
     )
     .await;
 }
@@ -251,7 +254,8 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
     >,
     published_uris: std::sync::Arc<tokio::sync::Mutex<std::collections::HashSet<Url>>>,
     force_clear_uri: Option<Url>,
-) {
+    session: &LspSessionState,
+) -> bool {
     // Compute from one immutable workspace generation. didOpen/didChange/
     // didClose and reindex all take the generation write lock while mutating
     // the document store, file index, and parse caches. Dropping this read lock
@@ -264,6 +268,9 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
     // publication. This keeps the snapshot atomic without holding edits behind
     // potentially slow client I/O.
     loop {
+        if session.is_cancelled() {
+            return false;
+        }
         let generation = workspace.generation_lock.read().await;
         let revision = workspace.generation_revision();
 
@@ -275,6 +282,9 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         {
             Ok(reports) => reports,
             Err(error) => {
+                if session.is_cancelled() {
+                    return false;
+                }
                 tracing::error!(%error, "project diagnostics generation failed");
                 client
                     .show_message(
@@ -282,11 +292,14 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
                         format!("AL project diagnostics failed: {error}"),
                     )
                     .await;
-                return;
+                return false;
             }
         };
         drop(generation);
 
+        if session.is_cancelled() {
+            return false;
+        }
         let generation = workspace.generation_lock.read().await;
         if workspace.generation_revision() != revision {
             drop(generation);
@@ -311,10 +324,16 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         stale.sort();
 
         for uri in stale {
+            if session.is_cancelled() {
+                return false;
+            }
             let version = workspace.documents.get_client_version(&uri);
             client.publish_diagnostics(uri, Vec::new(), version).await;
         }
         for (uri, (version, diagnostics)) in &current {
+            if session.is_cancelled() {
+                return false;
+            }
             client
                 .publish_diagnostics(uri.clone(), diagnostics.clone(), *version)
                 .await;
@@ -322,7 +341,7 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         *published = current.into_keys().collect();
         drop(published);
         drop(generation);
-        return;
+        return true;
     }
 }
 
@@ -332,6 +351,9 @@ pub(crate) async fn publish_diagnostics(
     text: Arc<String>,
     expected_client_version: i32,
 ) {
+    if server.session.is_cancelled() {
+        return;
+    }
     // skip diagnostics for virtual symbol cache files — they are not
     // workspace files and Zed logs a warning for every publishDiagnostics on them.
     if is_cache_path(uri) {
@@ -386,12 +408,18 @@ pub(crate) async fn publish_diagnostics(
     }
     let document_version = Some(expected_client_version);
     tracing::debug!(uri = %uri, phase1_count, "publish_diagnostics: publishing phase 1");
+    if server.session.is_cancelled() {
+        return;
+    }
     server
         .client
         .publish_diagnostics(uri.clone(), diagnostics.clone(), document_version)
         .await;
 
     let semantic_diags = run_semantic_analysis(server, uri, &text).await;
+    if server.session.is_cancelled() {
+        return;
+    }
     if !document_snapshot_is_current(server, uri, &text, expected_client_version) {
         tracing::debug!(
             uri = %uri,
@@ -457,6 +485,14 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
     if !enable_analysis || !bg_analysis {
         tracing::debug!(uri = %uri, enable_analysis, bg_analysis, "semantic analysis disabled by config");
         return vec![];
+    }
+    if let Err(error) = server.await_semantic_workspace().await {
+        if server.session.is_cancelled() {
+            return vec![];
+        }
+        return vec![semantic_pipeline_diagnostic(format!(
+            "Microsoft semantic analysis could not start because workspace initialization failed: {error}"
+        ))];
     }
 
     let file_path = match uri.to_file_path() {
@@ -533,6 +569,9 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
                 .collect()
         }
         Err(error) => {
+            if server.session.is_cancelled() {
+                return vec![];
+            }
             let semantic_elapsed = semantic_start.elapsed();
             tracing::warn!(uri = %uri, %error, elapsed_us = semantic_elapsed.as_micros() as u64, "semantic analysis failed");
 
@@ -1304,5 +1343,26 @@ mod tests {
             semantic_to_diagnostic(&make("Hidden")).severity,
             Some(DiagnosticSeverity::HINT)
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_session_never_publishes_a_workspace_generation() {
+        let (service, _socket) = tower_lsp::LspService::new(super::super::AlServer::new);
+        let server = service.inner();
+        let session = server.session.clone();
+        session.cancel();
+
+        let published = publish_workspace_diagnostics_parts(
+            std::sync::Arc::clone(&server.workspace),
+            server.client.clone(),
+            std::sync::Arc::clone(&server.semantic_diagnostic_cache),
+            std::sync::Arc::clone(&server.workspace_diagnostic_uris),
+            None,
+            &session,
+        )
+        .await;
+
+        assert!(!published);
+        assert!(server.workspace_diagnostic_uris.lock().await.is_empty());
     }
 }

@@ -12,6 +12,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
 use tracing::{info, warn};
 
+use super::lsp::LspSessionState;
 use super::{diagnostics, AlServer, WorkspaceInitState};
 
 /// Where to download symbol packages from.
@@ -49,6 +50,10 @@ fn publish_ready(state: &Option<tokio::sync::watch::Sender<WorkspaceInitState>>)
     }
 }
 
+fn session_cancelled(session: &Option<LspSessionState>) -> bool {
+    session.as_ref().is_some_and(LspSessionState::is_cancelled)
+}
+
 /// Initialize the workspace: discover toolchain, load packages, scan files.
 ///
 /// Called from the background task spawned by the `initialized` notification
@@ -65,6 +70,10 @@ pub(crate) async fn initialize_workspace(
     init_state: Option<tokio::sync::watch::Sender<WorkspaceInitState>>,
     diagnostic_state: Option<diagnostics::DiagnosticPublicationState>,
 ) -> Result<(), WorkspaceInitError> {
+    let session = diagnostic_state.as_ref().map(|state| state.session.clone());
+    if session_cancelled(&session) {
+        return Ok(());
+    }
     client
         .log_message(MessageType::INFO, "AL workspace: initializing...")
         .await;
@@ -79,6 +88,9 @@ pub(crate) async fn initialize_workspace(
                 std::io::Error::other(format!("find_toolchain task panicked: {join_err}")),
             ))
         });
+    if session_cancelled(&session) {
+        return Ok(());
+    }
     match toolchain_result {
         Ok(tc) => {
             info!(version = %tc.version, "Found AL toolchain");
@@ -166,6 +178,9 @@ pub(crate) async fn initialize_workspace(
                     return Err(WorkspaceInitError(message));
                 }
             };
+            if session_cancelled(&session) {
+                return Ok(());
+            }
             if count > 0 {
                 info!(count, "Scanned workspace .al files");
             }
@@ -206,6 +221,9 @@ pub(crate) async fn initialize_workspace(
                     return Err(WorkspaceInitError(message));
                 }
             };
+            if session_cancelled(&session) {
+                return Ok(());
+            }
             if !project.packages.is_empty() {
                 info!(
                     loaded = loaded_packages.len(),
@@ -232,12 +250,16 @@ pub(crate) async fn initialize_workspace(
 
             let deps = missing_dependencies(&project.all_dependencies(), &loaded_packages);
             if !deps.is_empty() {
+                if session_cancelled(&session) {
+                    return Ok(());
+                }
                 let has_server = !project.server_configs.is_empty();
                 if let Some(source) = prompt_download_symbols(&client, deps.len(), has_server).await
                 {
                     let batch = match source {
                         DownloadSource::Server => {
-                            download_symbols_from_server(&project, &deps, &client).await
+                            download_symbols_from_server(&project, &deps, &client, session.clone())
+                                .await
                         }
                         DownloadSource::NuGet => {
                             download_packages_nuget(&workspace, &deps, &project.packages_dir).await
@@ -256,6 +278,9 @@ pub(crate) async fn initialize_workspace(
                             .await;
                     }
                     let downloaded = batch.paths;
+                    if session_cancelled(&session) {
+                        return Ok(());
+                    }
                     if !downloaded.is_empty() {
                         match refresh_current_symbol_generation(&workspace).await {
                             Ok((loaded, total_symbols)) => {
@@ -319,6 +344,9 @@ pub(crate) async fn initialize_workspace(
                     return Err(WorkspaceInitError(message));
                 }
             };
+            if session_cancelled(&session) {
+                return Ok(());
+            }
             if count > 0 {
                 info!(count, "Scanned workspace .al files");
             }
@@ -341,6 +369,9 @@ pub(crate) async fn initialize_workspace(
         }
     }
 
+    if session_cancelled(&session) {
+        return Ok(());
+    }
     client
         .log_message(MessageType::INFO, "AL workspace: ready")
         .await;
@@ -355,6 +386,9 @@ pub(crate) async fn initialize_workspace(
                 tracing::warn!("settings prompt check panicked: {e}");
                 false
             });
+    if session_cancelled(&session) {
+        return Ok(());
+    }
     if should_prompt {
         if let Ok(Some(action)) = client
             .show_message_request(
@@ -415,19 +449,26 @@ pub(crate) async fn initialize_workspace(
     }
 
     if let Some(diagnostic_state) = diagnostic_state {
+        if diagnostic_state.session.is_cancelled() {
+            return Ok(());
+        }
         diagnostic_state.semantic_cache.lock().await.clear();
         if workspace.config.read().await.diagnostics_scope
             == al_project::config::DiagnosticsScope::Project
         {
-            diagnostics::publish_workspace_diagnostics_parts(
+            let session = diagnostic_state.session.clone();
+            let published = diagnostics::publish_workspace_diagnostics_parts(
                 Arc::clone(&workspace),
                 client.clone(),
                 diagnostic_state.semantic_cache,
                 diagnostic_state.published_uris,
                 None,
+                &session,
             )
             .await;
-            info!("Published project-scoped diagnostics generation");
+            if published {
+                info!("Published project-scoped diagnostics generation");
+            }
         }
     }
     Ok(())
@@ -720,6 +761,7 @@ async fn download_symbols_from_server(
     project: &al_project::project::AlProject,
     deps: &[al_project::project::AppDependency],
     lsp_client: &tower_lsp::Client,
+    session: Option<LspSessionState>,
 ) -> DownloadBatch {
     let configs = &project.server_configs;
     if configs.is_empty() {
@@ -743,11 +785,17 @@ async fn download_symbols_from_server(
     // Wire auth messages to LSP showMessage so the user sees device code prompts
     let lsp = lsp_client.clone();
     let message_sink: al_symbols::bc_server::MessageSink = std::sync::Arc::new(move |msg| {
+        if session_cancelled(&session) {
+            return;
+        }
         let c = lsp.clone();
+        let session = session.clone();
         let m = msg.to_string();
         tokio::spawn(async move {
-            c.show_message(tower_lsp::lsp_types::MessageType::INFO, m)
-                .await;
+            if !session_cancelled(&session) {
+                c.show_message(tower_lsp::lsp_types::MessageType::INFO, m)
+                    .await;
+            }
         });
     });
     let auth = match config.authentication {
@@ -994,12 +1042,21 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
 
     let batch = match source {
         DownloadSource::Server => {
-            download_symbols_from_server(&project, &deps, &server.client).await
+            download_symbols_from_server(
+                &project,
+                &deps,
+                &server.client,
+                Some(server.session.clone()),
+            )
+            .await
         }
         DownloadSource::NuGet => {
             download_packages_nuget(&server.workspace, &deps, &project.packages_dir).await
         }
     };
+    if server.session.is_cancelled() {
+        return;
+    }
     if !batch.failures.is_empty() {
         server
             .client

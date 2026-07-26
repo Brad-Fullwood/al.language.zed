@@ -29,12 +29,48 @@ echo "project=$PROJ open=$OPENF iters=$ITERS comp=$COMP hov=$HOV def=$DEF"
 
 echo
 echo "########## al-lsp ##########"
-python3 -u "$BENCH/scripts/lsp_bench.py" \
-  --server "$REPO/target/release/al-lsp" \
+echo "building the exact release+semantic native server under test..."
+cargo build -p al-lsp --bin al-lsp --release --features semantic
+
+TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target}"
+if [[ "$TARGET_DIR" != /* ]]; then
+  TARGET_DIR="$REPO/$TARGET_DIR"
+fi
+BRIDGE_ROOT="$TARGET_DIR/release/build"
+if [[ ! -d "$BRIDGE_ROOT" ]]; then
+  echo "ERROR: semantic build did not create $BRIDGE_ROOT" >&2
+  exit 1
+fi
+BRIDGE_DIR=""
+while IFS= read -r candidate; do
+  candidate_dir="$(dirname "$candidate")"
+  if [[ ! -f "$candidate_dir/AlBridge.runtimeconfig.json" ]]; then
+    continue
+  fi
+  if [[ -z "$BRIDGE_DIR" || "$candidate" -nt "$BRIDGE_DIR/AlBridge.dll" ]]; then
+    BRIDGE_DIR="$candidate_dir"
+  fi
+done < <(find "$BRIDGE_ROOT" -type f -path '*/out/bridge/AlBridge.dll' -print)
+if [[ -z "$BRIDGE_DIR" ]]; then
+  echo "ERROR: semantic build produced no complete AlBridge.dll/runtimeconfig pair" >&2
+  exit 1
+fi
+echo "semantic bridge=$BRIDGE_DIR"
+
+AL_BRIDGE_DIR="$BRIDGE_DIR" python3 -u "$BENCH/scripts/lsp_bench.py" \
+  --server "$TARGET_DIR/release/al-lsp" \
   --label "al-lsp ($TAG)" \
   --root "$PROJ" --open-file "$OPENF" \
   --completion-pos "$COMP" --hover-pos "$HOV" --definition-pos "$DEF" \
   --iterations "$ITERS" \
+  --server-artifact "$BRIDGE_DIR/AlBridge.dll" \
+  --server-artifact "$BRIDGE_DIR/AlBridge.runtimeconfig.json" \
+  --require-stderr-pattern "Semantic bridge initialized" \
+  --forbid-stderr-pattern "Failed to initialize semantic bridge" \
+  --forbid-stderr-pattern "failed to send notification" \
+  --forbid-stderr-pattern " ERROR " \
+  --forbid-stderr-pattern " WARN " \
+  --terminal-stderr-pattern "exit notification received, stopping" \
   --diag-timeout 60 --req-timeout 30 \
   --out "$BENCH/results/lsp_al_$TAG.json" \
   --stderr-log "$BENCH/results/lsp_al_$TAG.stderr.log"
@@ -61,6 +97,7 @@ python3 -u "$BENCH/scripts/lsp_bench.py" \
   --server-artifact "$AL_MS_EXT/bin/linux/Microsoft.Dynamics.Nav.EditorServices.Host" \
   --server-artifact "$AL_MS_EXT/bin/linux/Microsoft.Dynamics.Nav.EditorServices.Host.dll" \
   --server-artifact "$AL_MS_EXT/bin/linux/alc.dll" \
+  --allow-forced-kill \
   --diag-timeout 180 --req-timeout 90 --pre-timeout 300 \
   --out "$BENCH/results/lsp_ms_$TAG.json" \
   --stderr-log "$BENCH/results/lsp_ms_$TAG.stderr.log"
