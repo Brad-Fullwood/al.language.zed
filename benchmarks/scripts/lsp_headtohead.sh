@@ -57,7 +57,9 @@ if [[ -z "$BRIDGE_DIR" ]]; then
 fi
 echo "semantic bridge=$BRIDGE_DIR"
 
-AL_BRIDGE_DIR="$BRIDGE_DIR" python3 -u "$BENCH/scripts/lsp_bench.py" \
+AL_BRIDGE_DIR="$BRIDGE_DIR" \
+RUST_LOG="info,al_lsp::server::diagnostics=debug" \
+python3 -u "$BENCH/scripts/lsp_bench.py" \
   --server "$TARGET_DIR/release/al-lsp" \
   --label "al-lsp ($TAG)" \
   --root "$PROJ" --open-file "$OPENF" \
@@ -66,6 +68,7 @@ AL_BRIDGE_DIR="$BRIDGE_DIR" python3 -u "$BENCH/scripts/lsp_bench.py" \
   --server-artifact "$BRIDGE_DIR/AlBridge.dll" \
   --server-artifact "$BRIDGE_DIR/AlBridge.runtimeconfig.json" \
   --require-stderr-pattern "Semantic bridge initialized" \
+  --require-stderr-pattern "semantic analysis complete" \
   --forbid-stderr-pattern "Failed to initialize semantic bridge" \
   --forbid-stderr-pattern "failed to send notification" \
   --forbid-stderr-pattern " ERROR " \
