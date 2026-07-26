@@ -19,9 +19,9 @@
 //!
 //! Determinism: the fixture is a *synthetic in-bench* AL workspace built from a
 //! fixed seed of object names/ids (no randomness, no clock, no filesystem), so
-//! the same work is measured on every run and the memory metric is stable.
+//! the same work is measured on every run and the owned-allocation metric is stable.
 //! See `Docs/benchmarks.md` for how to read the output, including the one-shot
-//! `[MEMORY]` line (indexed symbol count / serialized bytes / graph size).
+//! `[MEMORY]` line (owned index/cache bytes and graph size).
 //!
 //! Each benchmark sets up state OUTSIDE the measurement loop so Criterion only
 //! times the hot path (the one exception, `symbols/cold_load_parse_index`,
@@ -41,7 +41,7 @@ use al_symbols::{
     AttributeSymbol, EnumValueSymbol, FieldSymbol, KeySymbol, MethodSymbol, ObjectKind,
     ParameterSymbol, PropertyValue, SymbolEntry, SymbolIndex, VariableSymbol,
 };
-use al_workspace::Workspace;
+use al_workspace::{PackageInfo, Workspace};
 use url::Url;
 
 // ---------------------------------------------------------------------------
@@ -288,8 +288,8 @@ fn build_graph(symbols: &SymbolIndex) -> InsightGraph {
 
 // ---------------------------------------------------------------------------
 // Memory metric — printed exactly once per process, regardless of which group
-// runs (so it shows even under a `-- <filter>`). Reports the approximate memory
-// footprint of the index alongside the timing benches.
+// runs (so it shows even under a `-- <filter>`). It counts allocations directly
+// owned by index/workspace caches; RSS remains a separate allocator-level view.
 
 fn report_stats_once() {
     static DONE: AtomicBool = AtomicBool::new(false);
@@ -298,21 +298,47 @@ fn report_stats_once() {
     }
     let entries = make_entries();
     let count = entries.len();
-    // Serialized-JSON length is an *approximate* memory metric: it is the
-    // on-disk SymbolReference footprint, a stable proxy for in-memory size
-    // (the live index also holds Arc/DashMap overhead not counted here).
-    let bytes = serde_json::to_string(&entries)
-        .map(|s| s.len())
-        .unwrap_or(0);
-    let idx = SymbolIndex::new();
-    idx.add_entries_owned(entries);
-    let graph = build_graph(&idx);
+    let ws = Workspace::new();
+    ws.symbols.add_entries_owned(entries);
+    let uri = Url::parse("file:///bench/MemoryFixture.al").expect("fixture URI");
+    let source = "codeunit 50123 MemoryFixture { procedure Run() begin end; }";
+    ws.documents.open(uri, source.to_string()).unwrap();
+    ws.file_index.add_file(
+        std::path::PathBuf::from("/bench/MemoryFixture.al"),
+        source.to_string(),
+    );
+    ws.package_info
+        .write()
+        .expect("package lock")
+        .push(PackageInfo {
+            name: "BenchPkg".to_string(),
+            publisher: "Benchmark".to_string(),
+            version: "1.0.0.0".to_string(),
+            object_count: count,
+        });
+    let (_, call_graph_guard) = ws.get_or_build_call_graph().unwrap();
+    let call_graph = call_graph_guard.as_ref().expect("cached call graph");
+    let call_nodes = call_graph.node_count();
+    let call_edges = call_graph.edge_count();
+    drop(call_graph_guard);
+    let stats = ws.memory_stats().unwrap();
+    let insight = stats.insight_graph_memory.expect("cached insight graph");
+    let call = stats.call_graph_memory.expect("cached call graph");
     eprintln!(
-        "\n[MEMORY] indexed_symbols={count} serialized_bytes={bytes} \
-         bytes_per_symbol={} insight_nodes={} insight_edges={}\n",
-        bytes / count.max(1),
-        graph.node_count(),
-        graph.edge_count(),
+        "\n[MEMORY] indexed_symbols={count} symbol_bytes={} lookup_bytes={} \
+         package_metadata_bytes={} document_bytes={} file_text_bytes={} file_index_bytes={} \
+         insight_bytes={} call_graph_bytes={} insight_nodes={} insight_edges={} \
+         call_nodes={call_nodes} call_edges={call_edges} rss=external\n",
+        stats.symbol_index_memory.symbol_payload_bytes,
+        stats.symbol_index_memory.lookup_index_bytes,
+        stats.package_metadata_bytes,
+        stats.document_store_memory.tracked_bytes,
+        stats.file_index_memory.source_text_bytes,
+        stats.file_index_memory.index_bytes,
+        insight.tracked_bytes,
+        call.tracked_bytes,
+        ws.get_or_build_insight_graph().unwrap().node_count(),
+        ws.get_or_build_insight_graph().unwrap().edge_count(),
     );
 }
 
@@ -323,9 +349,8 @@ fn report_stats_once() {
 fn bench_symbols(c: &mut Criterion) {
     report_stats_once();
 
-    // Cold load: serde parse of the symbol JSON + concurrent index insert.
-    // This is the real workspace-open hot path (production parses
-    // SymbolReference.json and feeds it into the same `add_entries_owned`).
+    // Cold synthetic load: serde parse of the symbol JSON + concurrent index
+    // insert. This isolates the JSON/index cost with a scalable fixed fixture.
     let entries = make_entries();
     let json = serde_json::to_string(&entries).expect("serialize fixture");
     c.bench_function("symbols/cold_load_parse_index", |b| {
@@ -334,6 +359,27 @@ fn bench_symbols(c: &mut Criterion) {
                 serde_json::from_str(black_box(&json)).expect("parse fixture");
             let idx = SymbolIndex::new();
             idx.add_entries_owned(parsed);
+            black_box(idx.len())
+        });
+    });
+
+    // Cold real-package load: file I/O, NAVX/ZIP validation, manifest and
+    // SymbolReference parsing, then owned index insertion. The committed
+    // fixture is generated by this repository's verified emitter and keeps CI
+    // independent of proprietary package downloads.
+    let representative_app = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("benches/fixtures/representative.app");
+    assert!(
+        representative_app.is_file(),
+        "missing committed representative package fixture: {}",
+        representative_app.display()
+    );
+    c.bench_function("symbols/cold_load_app_archive", |b| {
+        b.iter(|| {
+            let mut package = al_symbols::read_app_file(black_box(&representative_app))
+                .expect("read app fixture");
+            let idx = SymbolIndex::new();
+            idx.add_entries_owned(std::mem::take(&mut package.objects));
             black_box(idx.len())
         });
     });
@@ -406,8 +452,7 @@ fn bench_completion(c: &mut Criterion) {
         "}",                              // 8
     ];
     let text = lines.join("\n");
-    ws.documents.open(uri.clone(), text);
-
+    ws.documents.open(uri.clone(), text).unwrap();
     let type_pos = Position {
         line: 4,
         character: lines[4].chars().count() as u32,

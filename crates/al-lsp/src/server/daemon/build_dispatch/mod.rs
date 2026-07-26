@@ -15,70 +15,51 @@ pub(super) use symbols_auth::*;
 pub(super) use tests_dispatch::*;
 pub(super) use xliff::*;
 
-use al_protocol::jsonrpc::Response;
+use super::rpc_error;
+use al_protocol::jsonrpc::{error_codes, Response};
 use al_workspace::Workspace;
 
 pub(super) const ERR_INITIALIZING: &str = "Workspace is initializing, try again";
 pub(super) const ERR_NO_PROJECT: &str = "No project loaded";
 
-/// Largest realistic AL procedure body is ~5k tokens; cap the
-/// `minTokens` duplicate-detection threshold at 10k so a hostile or
-/// fat-fingered client can't (a) push the threshold above any real
-/// procedure (effectively disabling detection) or (b) drive the
-/// scan loop into pathological territory.
-const MAX_DUPLICATES_MIN_TOKENS: u64 = 10_000;
-
-fn clamp_min_tokens(t: Option<u64>) -> usize {
-    t.unwrap_or(20).min(MAX_DUPLICATES_MIN_TOKENS) as usize
-}
-
-/// Clamp the duplicate-detection `minSimilarity` ratio to `[0.0, 1.0]`.
-/// NaN / ±inf fall back to the default (0.8) so a hostile or garbage
-/// value can't disable the filter or cause downstream comparison
-/// surprises.
-fn clamp_min_similarity(s: Option<f64>) -> f32 {
-    let raw = s.unwrap_or(0.8);
-    if raw.is_finite() {
-        raw.clamp(0.0, 1.0) as f32
-    } else {
-        0.8
+fn serialized_response<T: serde::Serialize>(id: u64, label: &str, value: &T) -> Response {
+    match serde_json::to_value(value) {
+        Ok(value) => Response {
+            id,
+            result: Some(value),
+            error: None,
+            ..Default::default()
+        },
+        Err(error) => rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("serialize {label} failed: {error}"),
+        ),
     }
 }
 
 pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
-    let entries = al_analysis::queries::obsolescence::obsolescence_timeline(workspace);
-    let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
+    match al_analysis::queries::obsolescence::obsolescence_timeline(workspace) {
+        Ok(entries) => serialized_response(id, "obsolescence timeline", &entries),
+        Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
 }
 
 pub(super) fn dispatch_audit_data_classification(workspace: &Workspace, id: u64) -> Response {
-    let entries = al_analysis::queries::audit::data_classification_audit(workspace);
-    let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
+    match al_analysis::queries::audit::data_classification_audit(workspace) {
+        Ok(entries) => serialized_response(id, "data-classification audit", &entries),
+        Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
 }
 
 pub(super) fn dispatch_permission_set_audit(workspace: &Workspace, id: u64) -> Response {
-    let entries = al_analysis::queries::audit::permission_set_audit(workspace);
-    let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
+    match al_analysis::queries::audit::permission_set_audit(workspace) {
+        Ok(entries) => serialized_response(id, "permission-set audit", &entries),
+        Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
 }
 
-pub(super) fn dispatch_deps_graph(
+pub(super) async fn dispatch_deps_graph(
     workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
@@ -87,25 +68,82 @@ pub(super) fn dispatch_deps_graph(
         .get("format")
         .and_then(|v| v.as_str())
         .unwrap_or("json");
+    if !matches!(format, "json" | "dot") {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "'format' must be 'json' or 'dot'",
+        );
+    }
 
-    let app_json = workspace
-        .project
-        .try_read()
-        .ok()
-        .and_then(|p| p.as_ref().map(|p| p.root.join("app.json")))
-        .and_then(|path| {
-            tokio::task::block_in_place(|| std::fs::read_to_string(&path))
-                .map_err(|e| {
-                    tracing::warn!(path = %path.display(), error = %e, "failed to read app.json — proceeding with empty manifest");
-                    e
-                })
-                .ok()
-        })
-        .unwrap_or_default();
+    let mut project = match workspace.project.read().await.as_ref().cloned() {
+        Some(project) => project,
+        None => return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT),
+    };
+    let app_json_path = project.root.join("app.json");
+    let app_json = match tokio::fs::read_to_string(&app_json_path).await {
+        Ok(app_json) => app_json,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::CODE_ANALYSIS_ERROR,
+                &format!("read {} failed: {error}", app_json_path.display()),
+            );
+        }
+    };
+    project.app_json = match serde_json::from_str(&app_json) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::CODE_ANALYSIS_ERROR,
+                &format!("parse {} failed: {error}", app_json_path.display()),
+            );
+        }
+    };
+    let root_dependencies = project.all_dependencies();
+    let project_root = project.root.clone();
+    let package_paths = project.packages.clone();
+    let packages = match tokio::task::spawn_blocking(move || {
+        package_paths
+            .into_iter()
+            .map(|path| {
+                let manifest =
+                    al_symbols::app_reader::read_app_manifest_file(&path).map_err(|error| {
+                        format!("read package manifest {} failed: {error}", path.display())
+                    })?;
+                let display_path = path
+                    .strip_prefix(&project_root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                Ok(al_analysis::queries::deps::PackageEntry::from_manifest(
+                    manifest,
+                    display_path,
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()
+    })
+    .await
+    {
+        Ok(Ok(packages)) => packages,
+        Ok(Err(message)) => {
+            return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &message);
+        }
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("package manifest worker failed: {error}"),
+            );
+        }
+    };
 
-    let packages: Vec<al_analysis::queries::deps::PackageEntry> = Vec::new();
-
-    let graph = al_analysis::queries::deps::build_dependency_graph(&app_json, &packages);
+    let graph = al_analysis::queries::deps::build_dependency_graph(
+        &project.app_json,
+        &root_dependencies,
+        &packages,
+    );
 
     if format == "dot" {
         let dot = graph.to_dot();
@@ -116,64 +154,137 @@ pub(super) fn dispatch_deps_graph(
             ..Default::default()
         }
     } else {
-        let value = serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null);
-        Response {
-            id,
-            result: Some(value),
-            error: None,
-            ..Default::default()
+        match serde_json::to_value(&graph) {
+            Ok(value) => Response {
+                id,
+                result: Some(value),
+                error: None,
+                ..Default::default()
+            },
+            Err(error) => rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("serialize dependency graph failed: {error}"),
+            ),
         }
     }
 }
 
-/// Extract a baseline symbol set from a JSON-RPC `params.baselineSymbols`
-/// array. Each element is deserialized as a [`SymbolEntry`]; malformed entries
-/// are skipped (logged at WARN) rather than failing the whole request, and an
-/// absent/non-array field yields an empty baseline so the call stays backward-
-/// compatible. The expected shape matches the wire form produced by
-/// the `symbols` daemon method (and by `analyze_breaking_changes` callers).
-fn baseline_symbols_from_params(params: &serde_json::Value) -> Vec<al_symbols::SymbolEntry> {
-    let Some(arr) = params.get("baselineSymbols").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
+/// Extract the required packaged baseline surface. A partial baseline can turn
+/// removals into false negatives, so malformed or missing entries fail closed.
+fn baseline_symbols_from_params(
+    params: &serde_json::Value,
+) -> Result<Vec<al_symbols::SymbolEntry>, String> {
+    let value = params
+        .get("baselineSymbols")
+        .ok_or_else(|| "Missing required 'baselineSymbols' array".to_string())?;
+    let arr = value
+        .as_array()
+        .ok_or_else(|| "'baselineSymbols' must be an array".to_string())?;
     let mut baseline = Vec::with_capacity(arr.len());
     for (i, value) in arr.iter().enumerate() {
-        match serde_json::from_value::<al_symbols::SymbolEntry>(value.clone()) {
-            Ok(entry) => baseline.push(entry),
-            Err(e) => {
-                tracing::warn!(
-                    index = i,
-                    error = %e,
-                    "baselineSymbols[{i}] could not be deserialized as a SymbolEntry — skipping"
-                );
-            }
-        }
+        let entry = serde_json::from_value::<al_symbols::SymbolEntry>(value.clone())
+            .map_err(|error| format!("baselineSymbols[{i}] is invalid: {error}"))?;
+        baseline.push(entry);
     }
-    baseline
+    Ok(baseline)
 }
 
-pub(super) fn dispatch_breaking_changes(
+fn current_workspace_symbols(
+    workspace: &Workspace,
+) -> Result<Vec<al_symbols::SymbolEntry>, String> {
+    let project = workspace
+        .project
+        .try_read()
+        .map_err(|_| "Project state is busy; retry the request".to_string())?
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ERR_NO_PROJECT.to_string())?;
+    let paths = al_analysis::queries::bulk_fix::collect_al_files(&project.root)?;
+    let mut objects = Vec::new();
+    for path in paths {
+        let uri = url::Url::from_file_path(&path)
+            .map_err(|()| format!("Cannot convert project source to URI: {}", path.display()))?;
+        let source = workspace
+            .documents
+            .get_text(&uri)
+            .or_else(|| workspace.file_index.get_content(&path))
+            .map(Ok)
+            .unwrap_or_else(|| {
+                std::fs::read_to_string(&path)
+                    .map_err(|error| format!("read {} failed: {error}", path.display()))
+            })?;
+        let parsed = al_syntax::AlParser::parse_quick(&source);
+        if !parsed.errors.is_empty() {
+            let details = parsed
+                .errors
+                .iter()
+                .take(8)
+                .map(|error| {
+                    format!(
+                        "{}:{}:{} {}",
+                        path.display(),
+                        error.range.start_point.row + 1,
+                        error.range.start_point.column + 1,
+                        error.message
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(format!(
+                "Current workspace contains syntax errors; comparison is not evaluated: {details}"
+            ));
+        }
+        let relative = path
+            .strip_prefix(&project.root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        objects.extend(al_emit::extract_objects_from_tree(
+            &source,
+            &relative,
+            &parsed.tree,
+        ));
+    }
+
+    let external = al_emit::load_external_symbols_from_paths(&project.packages)
+        .map_err(|error| format!("load current dependency symbols failed: {error}"))?;
+    let metadata = al_emit::SymbolRefMeta {
+        runtime_version: project.app_json.runtime.clone().unwrap_or_default(),
+        app_id: project.app_json.id.clone(),
+        name: project.app_json.name.clone(),
+        publisher: project.app_json.publisher.clone(),
+        version: project.app_json.version.clone(),
+    };
+    let reference = al_emit::build_symbol_reference(&objects, &metadata, external.as_ref());
+    let bytes = serde_json::to_vec(&reference)
+        .map_err(|error| format!("serialize current public surface failed: {error}"))?;
+    let mut symbols = al_symbols::read_symbol_reference_bytes(&bytes, &project.app_json.name)
+        .map_err(|error| format!("validate current public surface failed: {error}"))?;
+    symbols.retain(|entry| !entry.synthetic);
+    Ok(symbols)
+}
+
+pub(super) async fn dispatch_breaking_changes(
     workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    // `baselineSymbols` represents the previous published version.
-    let current: Vec<al_symbols::SymbolEntry> = workspace
-        .symbols
-        .all_entries()
-        .into_iter()
-        .map(|a| (*a).clone())
-        .collect();
-    let baseline = baseline_symbols_from_params(params);
-    let changes =
-        al_analysis::queries::breaking_changes::analyze_breaking_changes(&baseline, &current);
-    let value = serde_json::to_value(&changes).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
-    }
+    let baseline = match baseline_symbols_from_params(params) {
+        Ok(baseline) => baseline,
+        Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
+    };
+    let current = match tokio::task::block_in_place(|| current_workspace_symbols(workspace)) {
+        Ok(current) => current,
+        Err(error) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &error),
+    };
+    let changes = match al_analysis::queries::breaking_changes::analyze_breaking_changes_checked(
+        &baseline, &current,
+    ) {
+        Ok(changes) => changes,
+        Err(error) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &error),
+    };
+    serialized_response(id, "breaking-change report", &changes)
 }
 
 pub(super) fn dispatch_find_duplicates(
@@ -181,44 +292,72 @@ pub(super) fn dispatch_find_duplicates(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    // bound user-supplied numeric params at the daemon boundary.
-    let min_tokens = clamp_min_tokens(params.get("minTokens").and_then(|v| v.as_u64()));
-    let min_similarity = clamp_min_similarity(params.get("minSimilarity").and_then(|v| v.as_f64()));
-    let duplicates =
-        al_analysis::queries::duplicates::find_duplicates(workspace, min_tokens, min_similarity);
-    let value = serde_json::to_value(&duplicates).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
+    let min_tokens = match params.get("minTokens") {
+        None => 20,
+        Some(value) => match value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value <= al_analysis::queries::duplicates::MAX_MIN_TOKENS)
+        {
+            Some(value) => value,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    &format!(
+                        "'minTokens' must be an integer from 0 to {}",
+                        al_analysis::queries::duplicates::MAX_MIN_TOKENS
+                    ),
+                );
+            }
+        },
+    };
+    let min_similarity = match params.get("minSimilarity") {
+        None => 0.8,
+        Some(value) => match value
+            .as_f64()
+            .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+        {
+            Some(value) => value as f32,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'minSimilarity' must be a finite number from 0.0 to 1.0",
+                );
+            }
+        },
+    };
+    match al_analysis::queries::duplicates::find_duplicates(workspace, min_tokens, min_similarity) {
+        Ok(duplicates) => serialized_response(id, "duplicate report", &duplicates),
+        Err(
+            error @ (al_analysis::queries::duplicates::DuplicateError::InvalidMinTokens { .. }
+            | al_analysis::queries::duplicates::DuplicateError::InvalidMinSimilarity {
+                ..
+            }),
+        ) => rpc_error(id, error_codes::INVALID_PARAMS, &error.to_string()),
+        Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
 }
 
-pub(super) fn dispatch_upgrade_report(
+pub(super) async fn dispatch_upgrade_report(
     workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    // Callers supply the previous version's symbols in
-    // `params.baselineSymbols` (e.g. extracted from a previous `.app`). An
-    // absent baseline finds all current symbols as new/changed; populating it
-    // produces a real upgrade-impact report against the previous version.
-    let current: Vec<al_symbols::SymbolEntry> = workspace
-        .symbols
-        .all_entries()
-        .into_iter()
-        .map(|a| (*a).clone())
-        .collect();
-    let baseline = baseline_symbols_from_params(params);
-    let issues = al_analysis::queries::upgrade::upgrade_report(&baseline, &current);
-    let value = serde_json::to_value(&issues).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
-    }
+    let baseline = match baseline_symbols_from_params(params) {
+        Ok(baseline) => baseline,
+        Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
+    };
+    let current = match tokio::task::block_in_place(|| current_workspace_symbols(workspace)) {
+        Ok(current) => current,
+        Err(error) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &error),
+    };
+    let issues = match al_analysis::queries::upgrade::upgrade_report_checked(&baseline, &current) {
+        Ok(issues) => issues,
+        Err(error) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &error),
+    };
+    serialized_response(id, "upgrade report", &issues)
 }
 
 pub(super) fn dispatch_sql_patterns(
@@ -226,13 +365,9 @@ pub(super) fn dispatch_sql_patterns(
     id: u64,
     _params: &serde_json::Value,
 ) -> Response {
-    let findings = al_analysis::queries::sql_patterns::detect_sql_patterns(workspace);
-    let value = serde_json::to_value(&findings).unwrap_or(serde_json::Value::Null);
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-        ..Default::default()
+    match al_analysis::queries::sql_patterns::detect_sql_patterns(workspace) {
+        Ok(findings) => serialized_response(id, "SQL-pattern report", &findings),
+        Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
 }
 
@@ -250,77 +385,207 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clamp_min_tokens_defaults_when_absent() {
-        assert_eq!(clamp_min_tokens(None), 20);
+    fn audit_dispatchers_reject_malformed_workspace_source() {
+        let workspace = empty_ws();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/project/Broken.al"),
+            "codeunit 50100 Broken { procedure Incomplete(".to_string(),
+        );
+
+        for response in [
+            dispatch_audit_data_classification(&workspace, 1),
+            dispatch_permission_set_audit(&workspace, 2),
+        ] {
+            assert!(response.result.is_none());
+            let error = response.error.expect("incomplete audit input must fail");
+            assert_eq!(error.code, error_codes::INTERNAL_ERROR);
+            assert!(error.message.contains("incomplete workspace snapshot"));
+        }
     }
 
     #[test]
-    fn clamp_min_tokens_passes_through_sensible_values() {
-        assert_eq!(clamp_min_tokens(Some(0)), 0);
-        assert_eq!(clamp_min_tokens(Some(50)), 50);
+    fn duplicate_report_rejects_out_of_range_thresholds() {
+        let workspace = empty_ws();
+        for params in [
+            serde_json::json!({
+                "minTokens": al_analysis::queries::duplicates::MAX_MIN_TOKENS + 1
+            }),
+            serde_json::json!({ "minTokens": "20" }),
+            serde_json::json!({ "minSimilarity": -0.1 }),
+            serde_json::json!({ "minSimilarity": 1.1 }),
+            serde_json::json!({ "minSimilarity": "0.8" }),
+        ] {
+            let response = dispatch_find_duplicates(&workspace, 9, &params);
+            assert!(response.result.is_none());
+            assert_eq!(
+                response.error.expect("invalid threshold must fail").code,
+                error_codes::INVALID_PARAMS
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_report_rejects_malformed_workspace() {
+        let workspace = empty_ws();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/project/Broken.al"),
+            "codeunit 50100 Broken { procedure Incomplete(".to_string(),
+        );
+        let response = dispatch_find_duplicates(&workspace, 10, &serde_json::json!({}));
+        assert!(response.result.is_none());
         assert_eq!(
-            clamp_min_tokens(Some(MAX_DUPLICATES_MIN_TOKENS)),
-            MAX_DUPLICATES_MIN_TOKENS as usize
+            response.error.expect("partial report must fail").code,
+            error_codes::INTERNAL_ERROR
         );
     }
 
-    #[test]
-    fn clamp_min_tokens_caps_oversized_input() {
-        assert_eq!(
-            clamp_min_tokens(Some(u64::MAX)),
-            MAX_DUPLICATES_MIN_TOKENS as usize
+    async fn install_dependency_project(
+        workspace: &Workspace,
+        root: &std::path::Path,
+        dependencies: Vec<al_types::AppDependency>,
+        packages: Vec<std::path::PathBuf>,
+    ) {
+        let manifest = al_project::project::AppManifest {
+            id: "root-id".to_string(),
+            name: "Root App".to_string(),
+            publisher: "Tests".to_string(),
+            version: "1.0.0.0".to_string(),
+            dependencies,
+            application: None,
+            platform: None,
+            runtime: None,
+        };
+        std::fs::write(
+            root.join("app.json"),
+            serde_json::to_vec_pretty(&manifest).expect("serialize test app.json"),
+        )
+        .expect("write test app.json");
+        *workspace.project.write().await = Some(al_project::project::AlProject {
+            root: root.to_path_buf(),
+            app_json: manifest,
+            packages_dir: root.join(".alpackages"),
+            packages,
+            server_configs: Vec::new(),
+        });
+    }
+
+    fn write_manifest_package(
+        path: &std::path::Path,
+        id: &str,
+        name: &str,
+        dependencies: &[al_types::AppDependency],
+    ) {
+        use std::io::Write;
+        let mut xml = format!(
+            "<Package><App Id=\"{id}\" Name=\"{name}\" Publisher=\"Tests\" Version=\"1.0.0.0\" /><Dependencies>"
         );
-        assert_eq!(
-            clamp_min_tokens(Some(MAX_DUPLICATES_MIN_TOKENS + 1)),
-            MAX_DUPLICATES_MIN_TOKENS as usize
-        );
+        for dependency in dependencies {
+            xml.push_str(&format!(
+                "<Dependency Id=\"{}\" Name=\"{}\" Publisher=\"{}\" MinVersion=\"{}\" />",
+                dependency.id, dependency.name, dependency.publisher, dependency.version
+            ));
+        }
+        xml.push_str("</Dependencies></Package>");
+
+        let mut zip_bytes = Vec::new();
+        {
+            let mut archive = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
+            archive
+                .start_file("NavxManifest.xml", zip::write::SimpleFileOptions::default())
+                .expect("manifest entry");
+            archive
+                .write_all(xml.as_bytes())
+                .expect("manifest contents");
+            archive.finish().expect("finish package archive");
+        }
+        let mut bytes = b"NAVX".to_vec();
+        bytes.extend_from_slice(&[0; 36]);
+        bytes.extend_from_slice(&zip_bytes);
+        std::fs::write(path, bytes).expect("write test package");
     }
 
-    #[test]
-    fn clamp_min_similarity_defaults_when_absent() {
-        assert!((clamp_min_similarity(None) - 0.8).abs() < 1e-6);
-    }
-
-    #[test]
-    fn clamp_min_similarity_clamps_in_range() {
-        assert!((clamp_min_similarity(Some(0.0)) - 0.0).abs() < 1e-6);
-        assert!((clamp_min_similarity(Some(0.5)) - 0.5).abs() < 1e-6);
-        assert!((clamp_min_similarity(Some(1.0)) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn clamp_min_similarity_rejects_out_of_range() {
-        assert!((clamp_min_similarity(Some(-1.0)) - 0.0).abs() < 1e-6);
-        assert!((clamp_min_similarity(Some(2.5)) - 1.0).abs() < 1e-6);
-        assert!((clamp_min_similarity(Some(1e308)) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn clamp_min_similarity_rejects_non_finite() {
-        assert!((clamp_min_similarity(Some(f64::NAN)) - 0.8).abs() < 1e-6);
-        assert!((clamp_min_similarity(Some(f64::INFINITY)) - 0.8).abs() < 1e-6);
-        assert!((clamp_min_similarity(Some(f64::NEG_INFINITY)) - 0.8).abs() < 1e-6);
-    }
-
-    #[test]
-    fn deps_graph_dot_format_returns_dot_content() {
+    #[tokio::test]
+    async fn deps_graph_dot_format_returns_dot_content() {
         let ws = empty_ws();
-        let resp = dispatch_deps_graph(&ws, 1, &serde_json::json!({ "format": "dot" }));
+        let tmp = tempfile::TempDir::new().unwrap();
+        install_dependency_project(&ws, tmp.path(), Vec::new(), Vec::new()).await;
+        let resp = dispatch_deps_graph(&ws, 1, &serde_json::json!({ "format": "dot" })).await;
         assert!(resp.error.is_none());
         let r = resp.result.expect("result");
         assert_eq!(r["format"], serde_json::json!("dot"));
         assert!(r.get("content").and_then(|v| v.as_str()).is_some());
     }
 
-    #[test]
-    fn deps_graph_default_format_is_json_object() {
+    #[tokio::test]
+    async fn deps_graph_default_format_is_json_object() {
         let ws = empty_ws();
-        let resp = dispatch_deps_graph(&ws, 2, &serde_json::json!({}));
+        let tmp = tempfile::TempDir::new().unwrap();
+        install_dependency_project(&ws, tmp.path(), Vec::new(), Vec::new()).await;
+        let resp = dispatch_deps_graph(&ws, 2, &serde_json::json!({})).await;
         assert!(resp.error.is_none());
         let r = resp.result.expect("result");
         assert!(
             r.get("content").is_none(),
             "json branch must not carry the dot `content` field"
+        );
+    }
+
+    #[tokio::test]
+    async fn deps_graph_reads_transitive_dependencies_from_package_manifests() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let package_dir = tmp.path().join(".alpackages");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        let direct = al_types::AppDependency {
+            id: "direct-id".to_string(),
+            name: "Direct".to_string(),
+            publisher: "Tests".to_string(),
+            version: "1.0.0.0".to_string(),
+        };
+        let transitive = al_types::AppDependency {
+            id: "transitive-id".to_string(),
+            name: "Transitive".to_string(),
+            publisher: "Tests".to_string(),
+            version: "1.0.0.0".to_string(),
+        };
+        let direct_path = package_dir.join("Direct_1.0.0.0.app");
+        let transitive_path = package_dir.join("Transitive_1.0.0.0.app");
+        write_manifest_package(
+            &direct_path,
+            "direct-id",
+            "Direct",
+            std::slice::from_ref(&transitive),
+        );
+        write_manifest_package(&transitive_path, "transitive-id", "Transitive", &[]);
+        install_dependency_project(
+            &ws,
+            tmp.path(),
+            vec![direct],
+            vec![direct_path, transitive_path],
+        )
+        .await;
+
+        let response = dispatch_deps_graph(&ws, 3, &serde_json::json!({})).await;
+        assert!(response.error.is_none(), "{:?}", response.error);
+        let graph = response.result.expect("graph");
+        assert_eq!(graph["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(graph["transitive"].as_array().unwrap().len(), 1);
+        assert_eq!(graph["transitive"][0]["appId"], "transitive-id");
+        assert!(graph["missing"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deps_graph_rejects_invalid_format_and_missing_project() {
+        let ws = empty_ws();
+        let invalid = dispatch_deps_graph(&ws, 4, &serde_json::json!({ "format": "yaml" })).await;
+        assert_eq!(
+            invalid.error.expect("invalid format must fail").code,
+            error_codes::INVALID_PARAMS
+        );
+        let missing = dispatch_deps_graph(&ws, 5, &serde_json::json!({})).await;
+        assert_eq!(
+            missing.error.expect("missing project must fail").code,
+            error_codes::INTERNAL_ERROR
         );
     }
 
@@ -361,56 +626,68 @@ mod tests {
         serde_json::json!({ "baselineSymbols": baseline })
     }
 
+    async fn install_current_sources(
+        workspace: &Workspace,
+        root: &std::path::Path,
+        sources: &[(&str, &str)],
+    ) {
+        install_dependency_project(workspace, root, Vec::new(), Vec::new()).await;
+        for (name, source) in sources {
+            let path = root.join(name);
+            std::fs::write(&path, source).unwrap();
+            workspace.file_index.add_file(path, (*source).to_string());
+        }
+    }
+
     #[test]
-    fn baseline_symbols_absent_yields_empty() {
-        // No baselineSymbols field -> empty baseline (backward compatible).
-        assert!(baseline_symbols_from_params(&serde_json::json!({})).is_empty());
-        // Non-array value is ignored rather than erroring.
+    fn baseline_symbols_are_required_and_must_be_an_array() {
+        assert!(baseline_symbols_from_params(&serde_json::json!({})).is_err());
         assert!(
-            baseline_symbols_from_params(&serde_json::json!({ "baselineSymbols": 7 })).is_empty()
+            baseline_symbols_from_params(&serde_json::json!({ "baselineSymbols": 7 })).is_err()
         );
     }
 
     #[test]
-    fn baseline_symbols_round_trip_and_skips_malformed() {
-        // Valid entries deserialize; a malformed entry is skipped, not fatal.
+    fn baseline_symbols_round_trip_and_reject_malformed_entries() {
         let valid = codeunit("My CU", vec![public_method("DoWork")]);
-        let params = serde_json::json!({
+        let valid_params = serde_json::json!({
+            "baselineSymbols": [serde_json::to_value(&valid).unwrap()]
+        });
+        let parsed = baseline_symbols_from_params(&valid_params).unwrap();
+        assert_eq!(parsed[0].name, "My CU");
+
+        let malformed = serde_json::json!({
             "baselineSymbols": [
                 serde_json::to_value(&valid).unwrap(),
                 serde_json::json!({ "kind": 123, "totally": "wrong" }),
             ]
         });
-        let parsed = baseline_symbols_from_params(&params);
-        assert_eq!(
-            parsed.len(),
-            1,
-            "malformed entry must be skipped: {parsed:?}"
-        );
-        assert_eq!(parsed[0].name, "My CU");
+        assert!(baseline_symbols_from_params(&malformed)
+            .expect_err("partial baseline must fail")
+            .contains("baselineSymbols[1]"));
     }
 
-    #[test]
-    fn breaking_changes_absent_baseline_reports_nothing() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn breaking_changes_absent_baseline_fails_closed() {
         let ws = empty_ws();
-        ws.symbols
-            .add_entries_owned(vec![codeunit("New CU", vec![public_method("DoWork")])]);
-        let resp = dispatch_breaking_changes(&ws, 1, &serde_json::json!({}));
-        assert!(resp.error.is_none());
-        let arr = resp.result.expect("result");
         assert_eq!(
-            arr.as_array().map(|a| a.len()),
-            Some(0),
-            "absent baseline must report no breaking changes: {arr:?}"
+            dispatch_breaking_changes(&ws, 1, &serde_json::json!({}))
+                .await
+                .error
+                .expect("missing baseline must fail")
+                .code,
+            error_codes::INVALID_PARAMS
         );
     }
 
-    #[test]
-    fn breaking_changes_detects_removed_object_from_baseline() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn breaking_changes_detects_removed_object_from_baseline() {
         // The baseline has an object the current workspace no longer contains.
-        let ws = empty_ws(); // current symbol set is empty
+        let ws = empty_ws();
+        let temp = tempfile::TempDir::new().unwrap();
+        install_current_sources(&ws, temp.path(), &[]).await;
         let baseline = vec![codeunit("Old CU", vec![])];
-        let resp = dispatch_breaking_changes(&ws, 2, &params_with_baseline(&baseline));
+        let resp = dispatch_breaking_changes(&ws, 2, &params_with_baseline(&baseline)).await;
         assert!(resp.error.is_none());
         let arr = resp.result.expect("result");
         let changes = arr.as_array().expect("array");
@@ -422,14 +699,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn breaking_changes_detects_removed_procedure_from_baseline() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn breaking_changes_detects_removed_procedure_from_baseline() {
         // The object survives but a public procedure was removed.
         let ws = empty_ws();
-        ws.symbols
-            .add_entries_owned(vec![codeunit("My CU", vec![])]);
+        let temp = tempfile::TempDir::new().unwrap();
+        install_current_sources(
+            &ws,
+            temp.path(),
+            &[("Current.al", "codeunit 50100 \"My CU\"\n{\n}\n")],
+        )
+        .await;
         let baseline = vec![codeunit("My CU", vec![public_method("DoWork")])];
-        let resp = dispatch_breaking_changes(&ws, 3, &params_with_baseline(&baseline));
+        let resp = dispatch_breaking_changes(&ws, 3, &params_with_baseline(&baseline)).await;
         let arr = resp.result.expect("result");
         let changes = arr.as_array().expect("array");
         assert!(
@@ -440,14 +722,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn breaking_changes_identical_baseline_reports_nothing() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn breaking_changes_identical_baseline_reports_nothing() {
         // An identical baseline produces no breaking changes.
         let entry = codeunit("Stable CU", vec![public_method("DoWork")]);
         let ws = empty_ws();
-        ws.symbols.add_entries_owned(vec![entry.clone()]);
+        let temp = tempfile::TempDir::new().unwrap();
+        install_current_sources(
+            &ws,
+            temp.path(),
+            &[(
+                "Current.al",
+                "codeunit 50100 \"Stable CU\"\n{\n    procedure DoWork()\n    begin\n    end;\n}\n",
+            )],
+        )
+        .await;
         let resp =
-            dispatch_breaking_changes(&ws, 4, &params_with_baseline(std::slice::from_ref(&entry)));
+            dispatch_breaking_changes(&ws, 4, &params_with_baseline(std::slice::from_ref(&entry)))
+                .await;
         let arr = resp.result.expect("result");
         assert_eq!(
             arr.as_array().map(|a| a.len()),
@@ -456,12 +748,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn upgrade_report_detects_removed_object_from_baseline() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn upgrade_report_detects_removed_object_from_baseline() {
         // A removed object surfaces as a BreakingChange upgrade issue.
-        let ws = empty_ws(); // current empty
+        let ws = empty_ws();
+        let temp = tempfile::TempDir::new().unwrap();
+        install_current_sources(&ws, temp.path(), &[]).await;
         let baseline = vec![codeunit("Legacy CU", vec![])];
-        let resp = dispatch_upgrade_report(&ws, 5, &params_with_baseline(&baseline));
+        let resp = dispatch_upgrade_report(&ws, 5, &params_with_baseline(&baseline)).await;
         let arr = resp.result.expect("result");
         let issues = arr.as_array().expect("array");
         assert!(
@@ -472,14 +766,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn upgrade_report_identical_baseline_reports_nothing() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn upgrade_report_identical_baseline_reports_nothing() {
         // An identical baseline produces no upgrade issues.
         let entry = codeunit("Stable CU", vec![public_method("DoWork")]);
         let ws = empty_ws();
-        ws.symbols.add_entries_owned(vec![entry.clone()]);
+        let temp = tempfile::TempDir::new().unwrap();
+        install_current_sources(
+            &ws,
+            temp.path(),
+            &[(
+                "Current.al",
+                "codeunit 50100 \"Stable CU\"\n{\n    procedure DoWork()\n    begin\n    end;\n}\n",
+            )],
+        )
+        .await;
         let resp =
-            dispatch_upgrade_report(&ws, 6, &params_with_baseline(std::slice::from_ref(&entry)));
+            dispatch_upgrade_report(&ws, 6, &params_with_baseline(std::slice::from_ref(&entry)))
+                .await;
         let arr = resp.result.expect("result");
         assert_eq!(
             arr.as_array().map(|a| a.len()),

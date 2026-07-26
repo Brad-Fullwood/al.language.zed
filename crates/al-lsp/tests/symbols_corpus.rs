@@ -574,7 +574,9 @@ fn test_index_load_packages_from_files() {
     .unwrap();
 
     let index = SymbolIndex::new();
-    let packages = index.load_packages(&[&base_path, &ext_path]);
+    let packages = index
+        .load_packages(&[&base_path, &ext_path])
+        .expect("valid package corpus");
 
     assert_eq!(packages.len(), 2);
     assert_eq!(index.len(), 18);
@@ -952,7 +954,9 @@ fn test_full_pipeline() {
     std::fs::write(&ext_path, &ext_data).unwrap();
 
     let index = SymbolIndex::new();
-    let packages = index.load_packages(&[&base_path, &ext_path]);
+    let packages = index
+        .load_packages(&[&base_path, &ext_path])
+        .expect("valid package corpus");
     assert_eq!(packages.len(), 2);
 
     let customer_results = index.search("Customer", 10);

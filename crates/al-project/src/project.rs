@@ -18,6 +18,19 @@ pub struct AlProject {
     pub server_configs: Vec<al_bc::launch::BcServerConfig>,
 }
 
+/// Fully resolved package-cache directory and deterministic `.app` selection
+/// for one project's effective settings.
+///
+/// Package discovery does not require a valid `app.json`. Native verification
+/// uses this before manifest validation so malformed manifests can still be
+/// reported as structured compiler diagnostics instead of being short-circuited
+/// by workspace discovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolPackageSelection {
+    pub packages_dir: PathBuf,
+    pub packages: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppManifest {
@@ -53,12 +66,36 @@ const BUSINESS_FOUNDATION_APP_ID: &str = "f3552374-a1f2-4356-848e-196002525837";
 const SYSTEM_APPLICATION_APP_ID: &str = "63ca2fa4-4f03-4f2b-a480-172fef340d3f";
 const SYSTEM_APP_ID: &str = "8874ed3a-0643-4247-9ced-7a7002f7135d";
 
-/// Fallback major version for implicit System package when an `app.json` has
-/// `platform` set but no `application` to extract the major from. Tracks the
-/// "current shipping" major BC release — bump on each major BC milestone.
-/// Used only as a last resort; the typical happy path derives the major from
-/// `app.json.application` (e.g. "26.0.0.0" → "26").
-const CURRENT_BC_MAJOR_FALLBACK: &str = "26.0.0.0";
+/// Derive the implicit System package's minimum version from project-owned
+/// manifest data. `application` is the normal source because projects often
+/// keep `platform = "1.0.0.0"` while targeting a current application release;
+/// a platform-only/System-only project falls back to its own `platform`.
+///
+/// Never substitute a hard-coded "current BC" release here. That silently
+/// changes the dependency graph as time passes and made older platform-only
+/// projects request unrelated symbol packages.
+fn implicit_system_version(manifest: &AppManifest) -> Option<String> {
+    for version in [
+        manifest.application.as_deref(),
+        manifest.platform.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let major = version.split('.').next().unwrap_or_default();
+        if !major.is_empty() && major.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Some(format!("{major}.0.0.0"));
+        }
+    }
+
+    // Preserve malformed project input for the downstream validator/error
+    // rather than inventing a dependency version unrelated to the manifest.
+    manifest
+        .platform
+        .as_ref()
+        .filter(|version| !version.trim().is_empty())
+        .cloned()
+}
 
 impl AlProject {
     /// Compute the full dependency list including implicit BC dependencies.
@@ -88,19 +125,14 @@ impl AlProject {
                 .iter()
                 .any(|d| d.id.eq_ignore_ascii_case(SYSTEM_APP_ID))
         {
-            let platform_version = self
-                .app_json
-                .application
-                .as_ref()
-                .and_then(|v| v.split('.').next())
-                .map(|major| format!("{}.0.0.0", major))
-                .unwrap_or_else(|| CURRENT_BC_MAJOR_FALLBACK.to_string());
-            deps.push(AppDependency {
-                id: SYSTEM_APP_ID.to_string(),
-                name: "System".to_string(),
-                publisher: "Microsoft".to_string(),
-                version: platform_version,
-            });
+            if let Some(platform_version) = implicit_system_version(&self.app_json) {
+                deps.push(AppDependency {
+                    id: SYSTEM_APP_ID.to_string(),
+                    name: "System".to_string(),
+                    publisher: "Microsoft".to_string(),
+                    version: platform_version,
+                });
+            }
         }
 
         deps
@@ -112,22 +144,14 @@ impl AlProject {
     /// matching how AL project settings are normally interpreted. The package
     /// cache is searched first, followed by `appLocalFolderPaths`; when the same
     /// package version appears in more than one folder, the earlier folder wins.
-    pub fn apply_symbol_settings(&mut self, config: &crate::config::AlConfig) {
-        self.packages_dir = config
-            .package_cache_path
-            .as_deref()
-            .map(|path| resolve_project_path(&self.root, path))
-            .unwrap_or_else(|| self.root.join(".alpackages"));
-
-        let mut folders = Vec::with_capacity(1 + config.app_local_folder_paths.len());
-        folders.push(self.packages_dir.clone());
-        folders.extend(
-            config
-                .app_local_folder_paths
-                .iter()
-                .map(|path| resolve_project_path(&self.root, path)),
-        );
-        self.packages = scan_package_folders(&folders);
+    pub fn apply_symbol_settings(
+        &mut self,
+        config: &crate::config::AlConfig,
+    ) -> Result<(), DiscoveryError> {
+        let selection = configured_symbol_packages(&self.root, config)?;
+        self.packages_dir = selection.packages_dir;
+        self.packages = selection.packages;
+        Ok(())
     }
 }
 
@@ -137,6 +161,37 @@ fn resolve_project_path(project_root: &Path, path: &Path) -> PathBuf {
     } else {
         project_root.join(path)
     }
+}
+
+/// Resolve and scan every symbol-package folder configured for a project.
+///
+/// The primary cache wins exact filename collisions, followed by
+/// `appLocalFolderPaths` in settings order. The scan itself is strict:
+/// unreadable paths and non-directories are returned as errors, while missing
+/// optional folders are treated as empty.
+pub fn configured_symbol_packages(
+    project_root: &Path,
+    config: &crate::config::AlConfig,
+) -> Result<SymbolPackageSelection, DiscoveryError> {
+    let packages_dir = config
+        .package_cache_path
+        .as_deref()
+        .map(|path| resolve_project_path(project_root, path))
+        .unwrap_or_else(|| project_root.join(".alpackages"));
+
+    let mut folders = Vec::with_capacity(1 + config.app_local_folder_paths.len());
+    folders.push(packages_dir.clone());
+    folders.extend(
+        config
+            .app_local_folder_paths
+            .iter()
+            .map(|path| resolve_project_path(project_root, path)),
+    );
+    let packages = scan_package_folders(&folders)?;
+    Ok(SymbolPackageSelection {
+        packages_dir,
+        packages,
+    })
 }
 
 pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
@@ -157,21 +212,34 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
         current = dir.parent();
     }
 
-    if let Ok(entries) = std::fs::read_dir(&start) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let dir_name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if dir_name.starts_with('.') || dir_name == "node_modules" {
-                    continue;
-                }
-                searched.push(path.clone());
-                if let Some(project) = try_load_project(&path)? {
-                    return Ok(project);
-                }
+    let entries =
+        std::fs::read_dir(&start).map_err(|source| DiscoveryError::WorkspaceDirectory {
+            path: start.clone(),
+            source,
+        })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| DiscoveryError::WorkspaceDirectory {
+            path: start.clone(),
+            source,
+        })?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|source| DiscoveryError::WorkspaceDirectory {
+                path: path.clone(),
+                source,
+            })?;
+        if file_type.is_dir() {
+            let dir_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if dir_name.starts_with('.') || dir_name.eq_ignore_ascii_case("node_modules") {
+                continue;
+            }
+            searched.push(path.clone());
+            if let Some(project) = try_load_project(&path)? {
+                return Ok(project);
             }
         }
     }
@@ -195,13 +263,16 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
 /// pathological inputs that would OOM the daemon on `read_to_string`.
 const MAX_APP_JSON_BYTES: u64 = 1_048_576;
 
-fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
-    let app_json_path = dir.join("app.json");
-    if !app_json_path.is_file() {
-        return Ok(None);
-    }
-
-    let size = std::fs::metadata(&app_json_path)?.len();
+/// Load the exact `app.json` in `project_root` with the same size and schema
+/// validation used by workspace discovery.
+pub fn load_app_manifest(project_root: &Path) -> Result<AppManifest, DiscoveryError> {
+    let app_json_path = project_root.join("app.json");
+    let size = std::fs::metadata(&app_json_path)
+        .map_err(|error| DiscoveryError::InvalidAppJson {
+            path: app_json_path.clone(),
+            error: format!("cannot inspect file: {error}"),
+        })?
+        .len();
     if size > MAX_APP_JSON_BYTES {
         return Err(DiscoveryError::InvalidAppJson {
             path: app_json_path.clone(),
@@ -212,16 +283,29 @@ fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
         });
     }
 
-    let content = std::fs::read_to_string(&app_json_path)?;
-    let manifest: AppManifest =
-        serde_json::from_str(&content).map_err(|e| DiscoveryError::InvalidAppJson {
+    let content = std::fs::read_to_string(&app_json_path).map_err(|error| {
+        DiscoveryError::InvalidAppJson {
             path: app_json_path.clone(),
-            error: e.to_string(),
-        })?;
+            error: format!("cannot read file: {error}"),
+        }
+    })?;
+    serde_json::from_str(&content).map_err(|error| DiscoveryError::InvalidAppJson {
+        path: app_json_path,
+        error: error.to_string(),
+    })
+}
+
+fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
+    let app_json_path = dir.join("app.json");
+    if !app_json_path.is_file() {
+        return Ok(None);
+    }
+
+    let manifest = load_app_manifest(dir)?;
 
     let packages_dir = dir.join(".alpackages");
-    let packages = scan_packages(&packages_dir);
-    let server_configs = al_bc::launch::find_launch_config(dir)
+    let packages = scan_packages(&packages_dir)?;
+    let server_configs = al_bc::launch::find_launch_config(dir)?
         .map(|lf| lf.configs)
         .unwrap_or_default();
 
@@ -234,7 +318,7 @@ fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
     }))
 }
 
-fn scan_packages(packages_dir: &Path) -> Vec<PathBuf> {
+fn scan_packages(packages_dir: &Path) -> Result<Vec<PathBuf>, DiscoveryError> {
     scan_package_folders(&[packages_dir.to_path_buf()])
 }
 
@@ -243,28 +327,60 @@ fn scan_packages(packages_dir: &Path) -> Vec<PathBuf> {
 /// Directory iteration is sorted within each folder for deterministic startup.
 /// Exact duplicate filenames are kept from the first (highest-priority) folder,
 /// then versioned package filenames are collapsed to their newest version.
-fn scan_package_folders(folders: &[PathBuf]) -> Vec<PathBuf> {
+fn scan_package_folders(folders: &[PathBuf]) -> Result<Vec<PathBuf>, DiscoveryError> {
     let mut packages = Vec::new();
     let mut seen_filenames = std::collections::HashSet::new();
 
     for folder in folders {
-        if !folder.is_dir() {
-            tracing::debug!(path = %folder.display(), "symbol package folder does not exist; skipping");
-            continue;
+        match std::fs::metadata(folder) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(DiscoveryError::PackageFolder {
+                    path: folder.clone(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::NotADirectory,
+                        "configured symbol package path is not a directory",
+                    ),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!(path = %folder.display(), "symbol package folder does not exist; skipping");
+                continue;
+            }
+            Err(source) => {
+                return Err(DiscoveryError::PackageFolder {
+                    path: folder.clone(),
+                    source,
+                });
+            }
         }
 
-        let mut folder_packages: Vec<PathBuf> = std::fs::read_dir(folder)
-            .into_iter()
-            .flat_map(|entries| entries.into_iter())
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.is_file()
-                    && path
-                        .extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
-            })
-            .collect();
+        let entries =
+            std::fs::read_dir(folder).map_err(|source| DiscoveryError::PackageFolder {
+                path: folder.clone(),
+                source,
+            })?;
+        let mut folder_packages = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| DiscoveryError::PackageFolder {
+                path: folder.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|source| DiscoveryError::PackageFolder {
+                    path: path.clone(),
+                    source,
+                })?;
+            if (file_type.is_file() || file_type.is_symlink())
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+            {
+                folder_packages.push(path);
+            }
+        }
         folder_packages.sort();
 
         for path in folder_packages {
@@ -278,7 +394,7 @@ fn scan_package_folders(folders: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
 
-    dedup_package_versions(packages)
+    Ok(dedup_package_versions(packages))
 }
 
 /// Keep only the highest version when `.alpackages` holds several versions
@@ -519,6 +635,63 @@ mod tests {
     }
 
     #[test]
+    fn implicit_system_version_uses_application_release_not_platform_floor() {
+        let manifest = AppManifest {
+            id: String::new(),
+            name: "Test".into(),
+            publisher: "Test".into(),
+            version: "1.0.0.0".into(),
+            dependencies: vec![],
+            application: Some("28.1.49838.0".into()),
+            platform: Some("1.0.0.0".into()),
+            runtime: None,
+        };
+
+        assert_eq!(
+            implicit_system_version(&manifest).as_deref(),
+            Some("28.0.0.0")
+        );
+    }
+
+    #[test]
+    fn implicit_system_version_uses_platform_for_system_only_project() {
+        let manifest = AppManifest {
+            id: String::new(),
+            name: "Test".into(),
+            publisher: "Test".into(),
+            version: "1.0.0.0".into(),
+            dependencies: vec![],
+            application: None,
+            platform: Some("24.3.0.0".into()),
+            runtime: None,
+        };
+
+        assert_eq!(
+            implicit_system_version(&manifest).as_deref(),
+            Some("24.0.0.0")
+        );
+    }
+
+    #[test]
+    fn implicit_system_version_does_not_invent_current_release_for_bad_input() {
+        let manifest = AppManifest {
+            id: String::new(),
+            name: "Test".into(),
+            publisher: "Test".into(),
+            version: "1.0.0.0".into(),
+            dependencies: vec![],
+            application: Some("not-a-version".into()),
+            platform: Some("also-invalid".into()),
+            runtime: None,
+        };
+
+        assert_eq!(
+            implicit_system_version(&manifest).as_deref(),
+            Some("also-invalid")
+        );
+    }
+
+    #[test]
     fn symbol_settings_resolve_relative_paths_and_scan_all_folders() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("project");
@@ -551,11 +724,29 @@ mod tests {
             ..AlConfig::default()
         };
 
-        project.apply_symbol_settings(&config);
+        project
+            .apply_symbol_settings(&config)
+            .expect("configured package folders");
 
         assert_eq!(project.packages_dir, cache);
         assert_eq!(project.packages.len(), 2);
         assert!(project.packages.iter().any(|path| path.starts_with(&local)));
+    }
+
+    #[test]
+    fn configured_symbol_packages_do_not_require_a_parseable_manifest() {
+        let root = tempdir();
+        let cache = root.join(".alpackages");
+        std::fs::create_dir_all(&cache).unwrap();
+        let package = cache.join("Vendor_Library_1.0.0.0.app");
+        std::fs::write(&package, b"package").unwrap();
+        std::fs::write(root.join("app.json"), "{ definitely not json").unwrap();
+
+        let selection = configured_symbol_packages(&root, &AlConfig::default())
+            .expect("package discovery is independent of manifest validation");
+
+        assert_eq!(selection.packages_dir, cache);
+        assert_eq!(selection.packages, vec![package]);
     }
 
     #[test]
@@ -586,10 +777,12 @@ mod tests {
             packages: vec![],
             server_configs: vec![],
         };
-        project.apply_symbol_settings(&AlConfig {
-            app_local_folder_paths: vec![local],
-            ..AlConfig::default()
-        });
+        project
+            .apply_symbol_settings(&AlConfig {
+                app_local_folder_paths: vec![local],
+                ..AlConfig::default()
+            })
+            .expect("configured package folders");
 
         assert_eq!(project.packages, vec![newest]);
     }
@@ -606,8 +799,66 @@ mod tests {
         std::fs::write(&primary_app, b"primary").unwrap();
         std::fs::write(local.join("Vendor_App_1.0.0.0.app"), b"duplicate").unwrap();
 
-        let result = scan_package_folders(&[primary, local]);
+        let result = scan_package_folders(&[primary, local]).unwrap();
         assert_eq!(result, vec![primary_app]);
+    }
+
+    #[test]
+    fn malformed_launch_config_blocks_project_loading() {
+        let root = tempdir();
+        std::fs::write(
+            root.join("app.json"),
+            r#"{
+                "id":"00000000-0000-0000-0000-000000000000",
+                "name":"Test",
+                "publisher":"Test",
+                "version":"1.0.0.0"
+            }"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".zed")).unwrap();
+        std::fs::write(root.join(".zed/debug.json"), "{not json").unwrap();
+
+        let error = try_load_project(&root).expect_err("invalid launch file must fail");
+        assert!(matches!(error, DiscoveryError::LaunchConfiguration(_)));
+    }
+
+    #[test]
+    fn failed_symbol_settings_update_retains_previous_generation() {
+        let root = tempdir();
+        let previous_dir = root.join(".alpackages");
+        std::fs::create_dir_all(&previous_dir).unwrap();
+        let previous_package = previous_dir.join("Previous_App_1.0.0.0.app");
+        std::fs::write(&previous_package, b"previous").unwrap();
+        let invalid_dir = root.join("not-a-directory");
+        std::fs::write(&invalid_dir, b"file").unwrap();
+
+        let mut project = AlProject {
+            root: root.clone(),
+            app_json: AppManifest {
+                id: String::new(),
+                name: "Test".into(),
+                publisher: "Test".into(),
+                version: "1.0.0.0".into(),
+                dependencies: vec![],
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: previous_dir.clone(),
+            packages: vec![previous_package.clone()],
+            server_configs: vec![],
+        };
+
+        let error = project
+            .apply_symbol_settings(&AlConfig {
+                package_cache_path: Some(invalid_dir),
+                ..AlConfig::default()
+            })
+            .expect_err("non-directory package path must fail");
+        assert!(matches!(error, DiscoveryError::PackageFolder { .. }));
+        assert_eq!(project.packages_dir, previous_dir);
+        assert_eq!(project.packages, vec![previous_package]);
     }
 
     fn tempdir() -> PathBuf {

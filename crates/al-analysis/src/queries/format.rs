@@ -127,6 +127,67 @@ impl AlFormatConfig {
             _ => FormatOptions::default(),
         }
     }
+
+    /// Load formatter options without hiding an unreadable or invalid
+    /// `.alformat.json`.
+    pub fn load_options_strict(workspace_root: &Path) -> Result<FormatOptions, String> {
+        let Some(config) = Self::load(workspace_root) else {
+            return Ok(FormatOptions::default());
+        };
+        let config = config.map_err(|error| {
+            format!(
+                "failed to load {}: {error}",
+                workspace_root.join(".alformat.json").display()
+            )
+        })?;
+        config.validate()?;
+        Ok(config.to_format_options())
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if let Some(tab_size) = self.tab_size {
+            if !(1..=16).contains(&tab_size) {
+                return Err("tabSize must be between 1 and 16".to_string());
+            }
+        }
+        if let Some(keyword_casing) = &self.keyword_casing {
+            if !matches!(
+                keyword_casing.to_ascii_lowercase().as_str(),
+                "preserve" | "lower" | "upper"
+            ) {
+                return Err(format!(
+                    "keywordCasing must be 'preserve', 'lower', or 'upper'; got '{keyword_casing}'"
+                ));
+            }
+        }
+        if let Some(blank_lines) = &self.blank_lines_between_procedures {
+            if !matches!(
+                blank_lines.to_ascii_lowercase().as_str(),
+                "preserve" | "one" | "two"
+            ) {
+                return Err(format!(
+                    "blankLinesBetweenProcedures must be 'preserve', 'one', or 'two'; got '{blank_lines}'"
+                ));
+            }
+        }
+        if self
+            .max_line_length
+            .is_some_and(|length| length > 1_000_000)
+        {
+            return Err("maxLineLength must be no greater than 1000000".to_string());
+        }
+        if let Some(brace_style) = &self.brace_style {
+            if !matches!(
+                brace_style.to_ascii_lowercase().as_str(),
+                "sameline" | "same_line" | "nextline" | "next_line"
+            ) {
+                return Err(format!(
+                    "braceStyle must be 'sameLine' or 'nextLine'; got '{brace_style}'"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -249,6 +310,23 @@ mod tests {
         let opts = AlFormatConfig::load_options(dir.path());
         assert_eq!(opts.tab_size, 2);
         assert!(matches!(opts.keyword_casing, KeywordCasing::Lower));
+    }
+
+    #[test]
+    fn strict_load_rejects_malformed_or_invalid_configuration() {
+        for config in [
+            "not json",
+            r#"{"tabSize": 0}"#,
+            r#"{"keywordCasing": "camelCase"}"#,
+            r#"{"braceStyle": "sometimes"}"#,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(".alformat.json"), config).unwrap();
+            assert!(
+                AlFormatConfig::load_options_strict(dir.path()).is_err(),
+                "strict load must reject {config}"
+            );
+        }
     }
 
     #[test]

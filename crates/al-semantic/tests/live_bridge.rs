@@ -1,9 +1,10 @@
 //! Live contract test for the in-process Microsoft CodeAnalysis bridge.
 //!
-//! The test skips when `AL_TOOL_PATH` is not configured. Point it at the
-//! platform-specific AL extension directory containing
-//! `Microsoft.Dynamics.Nav.CodeAnalysis.dll` to exercise the real CLR/FFI
-//! boundary rather than only the Rust data types.
+//! The self-contained suite reports this external-contract test as ignored.
+//! Point `AL_TOOL_PATH` at the platform-specific AL extension directory
+//! containing `Microsoft.Dynamics.Nav.CodeAnalysis.dll` and run explicitly
+//! with `--ignored`; missing prerequisites then fail instead of being counted
+//! as a successful skipped test.
 
 #![cfg(feature = "semantic")]
 
@@ -18,11 +19,11 @@ fn code_analysis_dll() -> Option<PathBuf> {
 }
 
 #[tokio::test]
+#[ignore = "requires AL_TOOL_PATH and the Microsoft AL toolchain; run with --ignored"]
 async fn live_bridge_satisfies_its_public_contracts() {
-    let Some(dll) = code_analysis_dll() else {
-        eprintln!("SKIP: set AL_TOOL_PATH to run the live semantic bridge contract test");
-        return;
-    };
+    let dll = code_analysis_dll().expect(
+        "AL_TOOL_PATH must point to a directory containing Microsoft.Dynamics.Nav.CodeAnalysis.dll",
+    );
 
     let metadata = dll.metadata().expect("read CodeAnalysis metadata");
     let modified = metadata

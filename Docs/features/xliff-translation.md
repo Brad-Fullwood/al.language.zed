@@ -61,13 +61,12 @@ al-explorer xlf untranslated <lang.xlf>
 al-explorer xlf suggest <lang.xlf>              # translation-memory and symbol suggestions
 ```
 
-These are shared daemon workflows. The CLI exposes dedicated `xlf` subcommands, Zed currently exposes
-XLIFF **generation** as a task, and MCP can invoke every XLIFF method through `al_call` (for example,
-`method: "xlf.refresh"`).
+These are shared daemon workflows. The CLI exposes dedicated `xlf` subcommands, Zed exposes
+generation, refresh, untranslated, and suggestion tasks, and MCP can invoke every XLIFF method
+through `al_call` (for example, `method: "xlf.refresh"`).
 
 ## Limitations
 
 - `suggest` reuses translations already present in the supplied language file and workspace symbol
   names. It does not call a machine-translation service or an external translation-memory database.
-- Zed exposes generation only; refresh/untranslated/suggest are available through the CLI and MCP's
-  complete dispatcher bridge.
+- Suggestions are reported for review; this command does not rewrite the language file.

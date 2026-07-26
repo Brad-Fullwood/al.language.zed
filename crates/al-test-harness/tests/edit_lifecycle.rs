@@ -238,10 +238,10 @@ async fn test_edit_b01_diagnostics_appear_after_introducing_error() {
 
 #[tokio::test]
 async fn test_edit_b02_diagnostics_clear_after_fixing_error() {
-    // Native lint rules have been removed — AL-L001 is no longer emitted.
+    // AL-L001 belongs to the retired legacy native-lint catalog.
     // This test verifies that:
     //   1. The server processes the file with empty begin..end without crashing, and
-    //   2. AL-L001 does NOT appear (rules are inactive, not just silent).
+    //   2. AL-L001 does NOT reappear now that native rules use AL-NL IDs.
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     client.open_file("src/edit_test.al", EMPTY_BEGIN_END).await;
@@ -257,7 +257,7 @@ async fn test_edit_b02_diagnostics_clear_after_fixing_error() {
         .unwrap_or_default();
     assert!(
         !initial_codes.contains(&"AL-L001"),
-        "AL-L001 must not appear with native lint rules removed: got {initial_codes:?}"
+        "retired legacy code AL-L001 must not appear: got {initial_codes:?}"
     );
 
     client
@@ -282,9 +282,9 @@ async fn test_edit_b02_diagnostics_clear_after_fixing_error() {
 
 #[tokio::test]
 async fn test_edit_b03_lint_diagnostics_update_on_edit() {
-    // Native lint rules have been removed — AL-L007 is no longer emitted.
+    // AL-L007 belongs to the retired legacy native-lint catalog.
     // This test verifies that:
-    //   1. AL-L007 does NOT appear even with a TODO comment present, and
+    //   1. AL-L007 does NOT reappear even with a TODO comment present, and
     //   2. The server processes edits without crashing.
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
@@ -308,7 +308,7 @@ async fn test_edit_b03_lint_diagnostics_update_on_edit() {
         .unwrap_or_default();
     assert!(
         !codes.contains(&"AL-L007"),
-        "AL-L007 must not appear with native lint rules removed: got {codes:?}"
+        "retired legacy code AL-L007 must not appear: got {codes:?}"
     );
 
     client

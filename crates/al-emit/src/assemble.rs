@@ -82,12 +82,17 @@ pub fn doc_comments_xml(id: &str, name: &str, publisher: &str, version: &str) ->
 }
 
 /// The `MediaIdListing.xml` part (no media). Static, with alc's UTF-8 BOM.
-pub fn media_id_listing_xml() -> Vec<u8> {
+pub fn media_id_listing_xml(logo_file: Option<&str>) -> Vec<u8> {
+    let logo_file = logo_file.unwrap_or("");
     let mut out = vec![0xEF, 0xBB, 0xBF];
     out.extend_from_slice(
-        b"<MediaIdListing LogoFileName=\"\" LogoId=\"\" \
-          xmlns=\"http://schemas.microsoft.com/navx/2016/mediaidlisting\">\n  \
-          <MediaSetIds />\n</MediaIdListing>",
+        format!(
+            "<MediaIdListing LogoFileName=\"{}\" LogoId=\"\" \
+             xmlns=\"http://schemas.microsoft.com/navx/2016/mediaidlisting\">\n  \
+             <MediaSetIds />\n</MediaIdListing>",
+            super::manifest::xml_escape_attr(logo_file)
+        )
+        .as_bytes(),
     );
     out
 }
@@ -152,6 +157,16 @@ fn caption_value(props: &[al_symbols::model::PropertyValue]) -> Option<&str> {
         .map(|p| p.value.as_str())
 }
 
+fn property_value<'a>(
+    props: &'a [al_symbols::model::PropertyValue],
+    name: &str,
+) -> Option<&'a str> {
+    props
+        .iter()
+        .find(|property| property.name.eq_ignore_ascii_case(name))
+        .map(|property| property.value.as_str())
+}
+
 fn trans_unit(id: &str, source: &str, note: &str, object_target: Option<&str>) -> String {
     let src = super::manifest::xml_escape_text(source);
     let target_attr = match object_target {
@@ -196,11 +211,89 @@ struct XliffItem {
     object_target: Option<String>,
 }
 
+struct XliffObjectContext<'a> {
+    root_kind: &'a str,
+    root_name: &'a str,
+    declaration_kind: &'a str,
+    declaration_name: &'a str,
+    object_target: &'a Option<String>,
+}
+
+fn push_page_control_xliff_items(
+    items: &mut Vec<XliffItem>,
+    controls: &[super::symbol_extract::PageControl],
+    member_kind: &str,
+    context: &XliffObjectContext<'_>,
+) {
+    for control in controls {
+        // A control name is the stable handle used in SymbolReference and the
+        // translation id. Anonymous grammar-recovery nodes have no compatible
+        // address, so do not manufacture an unstable XLIFF unit for them.
+        if !control.name.is_empty() {
+            let control_hash = name_hash(&control.name);
+            for property in ["Caption", "ToolTip"] {
+                let Some(value) = property_value(&control.properties, property) else {
+                    continue;
+                };
+                items.push(XliffItem {
+                    id: format!(
+                        "{} {} - {member_kind} {control_hash} - Property {}",
+                        context.root_kind,
+                        name_hash(context.root_name),
+                        name_hash(property)
+                    ),
+                    source: value.to_string(),
+                    note: format!(
+                        "{} {} - {member_kind} {} - Property {property}",
+                        context.declaration_kind, context.declaration_name, control.name
+                    ),
+                    object_target: context.object_target.clone(),
+                });
+            }
+        }
+        push_page_control_xliff_items(items, &control.children, member_kind, context);
+    }
+}
+
+fn push_page_change_xliff_items(
+    items: &mut Vec<XliffItem>,
+    changes: &[super::symbol_extract::ControlChange],
+    context: &XliffObjectContext<'_>,
+) {
+    for change in changes {
+        // alc emits a modified control's ToolTip, but not its Caption, into the
+        // extension's translation source.
+        if change.kind.eq_ignore_ascii_case("modify") {
+            if let Some(value) = property_value(&change.properties, "ToolTip") {
+                items.push(XliffItem {
+                    id: format!(
+                        "{} {} - Change {} - Property {}",
+                        context.root_kind,
+                        name_hash(context.root_name),
+                        name_hash(&change.anchor),
+                        name_hash("ToolTip")
+                    ),
+                    source: value.to_string(),
+                    note: format!(
+                        "{} {} - Change {} - Property ToolTip",
+                        context.declaration_kind, context.declaration_name, change.anchor
+                    ),
+                    object_target: context.object_target.clone(),
+                });
+            }
+        }
+        push_page_control_xliff_items(items, &change.controls, "Control", context);
+    }
+}
+
 /// The `TextData/*.xliff` translation source, reproducing alc's `TextDataVisitor`
 /// (runtime Fall2024 / 14.x). Items are emitted for:
 /// - Table/TableExtension object captions and their *field* captions,
-/// - Page/PageExtension object captions (runtime ≥ 14.0),
-/// - Report/RequestPage captions (runtime ≥ 15.0).
+/// - Page/PageExtension object captions, named control/action captions and
+///   tooltips, plus page-extension added-control captions/ToolTips and modified
+///   control ToolTips (runtime ≥ 14.0),
+/// - Report/RequestPage captions and named request-page control captions and
+///   tooltips (runtime ≥ 15.0).
 ///
 /// Enum/Query/PermissionSet/Profile/Codeunit/Interface/XmlPort captions are never
 /// emitted. Extension members fold their id-root onto the base object and carry an
@@ -229,6 +322,13 @@ pub fn xliff_xml(objects: &[EmitObject], runtime_major: u32) -> Option<Vec<u8>> 
         let object_target = match (base_kind, &base_name) {
             (Some(bk), Some(bn)) => Some(format!("{bk} {}", name_hash(bn))),
             _ => None,
+        };
+        let context = XliffObjectContext {
+            root_kind,
+            root_name: &root_name,
+            declaration_kind: &decl_kind,
+            declaration_name: &o.entry.name,
+            object_target: &object_target,
         };
 
         let emit_object_caption = matches!(kind, ObjectKind::Table | ObjectKind::TableExtension)
@@ -267,6 +367,16 @@ pub fn xliff_xml(objects: &[EmitObject], runtime_major: u32) -> Option<Vec<u8>> 
                     });
                 }
             }
+        }
+        if matches!(kind, ObjectKind::Page | ObjectKind::PageExtension) && runtime_major >= 14 {
+            push_page_control_xliff_items(&mut items, &o.page_controls, "Control", &context);
+            push_page_control_xliff_items(&mut items, &o.page_actions, "Action", &context);
+            if kind == ObjectKind::PageExtension {
+                push_page_change_xliff_items(&mut items, &o.control_changes, &context);
+            }
+        }
+        if matches!(kind, ObjectKind::Report | ObjectKind::ReportExtension) && runtime_major >= 15 {
+            push_page_control_xliff_items(&mut items, &o.page_controls, "Control", &context);
         }
     }
     if items.is_empty() {
@@ -371,9 +481,12 @@ pub fn navigation_xml(
             super::package::random_guid_braced()?,
             e(&o.entry.name),
         );
-        if let Some(cap) = caption_value(&o.entry.properties) {
-            attrs.push_str(&format!(" CaptionML=\"ENU={}\"", e(cap)));
-        }
+        // alc materializes the object's name as both defaults when the AL
+        // source omits Caption/AdditionalSearchTerms. Omitting the XML
+        // attributes changes navigation search and translation behavior even
+        // though the source-level properties appear optional.
+        let caption = caption_value(&o.entry.properties).unwrap_or(&o.entry.name);
+        attrs.push_str(&format!(" CaptionML=\"ENU={}\"", e(caption)));
         if let Some(area) = o
             .entry
             .properties
@@ -387,22 +500,16 @@ pub fn navigation_xml(
             .properties
             .iter()
             .find(|p| p.name.eq_ignore_ascii_case("AdditionalSearchTerms"))
-            .map(|p| p.value.clone());
-        if let Some(t) = &terms {
-            attrs.push_str(&format!(" AdditionalSearchTermsML=\"ENU={}\"", e(t)));
-        }
-        if caption_value(&o.entry.properties).is_some() {
-            attrs.push_str(&format!(
-                " CaptionTranslationKey=\"{kind} {} - Property {cap_hash}\"",
-                name_hash(&o.entry.name)
-            ));
-        }
-        if terms.is_some() {
-            attrs.push_str(&format!(
-                " AdditionalSearchTermsTranslationKey=\"{kind} {} - Property {terms_hash}\"",
-                name_hash(&o.entry.name)
-            ));
-        }
+            .map_or_else(|| o.entry.name.clone(), |p| p.value.clone());
+        attrs.push_str(&format!(" AdditionalSearchTermsML=\"ENU={}\"", e(&terms)));
+        attrs.push_str(&format!(
+            " CaptionTranslationKey=\"{kind} {} - Property {cap_hash}\"",
+            name_hash(&o.entry.name)
+        ));
+        attrs.push_str(&format!(
+            " AdditionalSearchTermsTranslationKey=\"{kind} {} - Property {terms_hash}\"",
+            name_hash(&o.entry.name)
+        ));
         new_entries.push_str(&format!("      <Actions{attrs} />\n"));
     }
 
@@ -684,6 +791,21 @@ fn control_addin_bundle(
             format!("addin/{meta_name}.zip"),
             super::package::write_zip(&inner_entries)?,
         ));
+        // alc also places each local add-in asset in the outer package beneath
+        // `addin/src/`, in addition to bundling it in the add-in ZIP.  The
+        // duplicated outer copy is part of the package layout consumers see.
+        for rel in res
+            .local_scripts
+            .iter()
+            .chain(&res.local_stylesheets)
+            .chain(&res.images)
+        {
+            let content = match project_root {
+                Some(root) => std::fs::read(root.join(rel))?,
+                None => Vec::new(),
+            };
+            out.push((format!("addin/src/{rel}"), content));
+        }
 
         let e = super::manifest::xml_escape_attr;
         docket.push_str(&format!(
@@ -701,6 +823,84 @@ fn control_addin_bundle(
 }
 
 /// Read report layout files relative to the project root.
+fn project_relative_resource_path(
+    value: &str,
+    kind: &str,
+) -> Result<std::path::PathBuf, EmitError> {
+    let normalized = value.replace('\\', "/");
+    let path = std::path::Path::new(&normalized);
+    if normalized.trim().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(EmitError::Project(format!(
+            "{kind} path must be a non-empty project-relative path: {value:?}"
+        )));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn read_project_resource(
+    root: &std::path::Path,
+    value: &str,
+    kind: &str,
+) -> Result<(String, Vec<u8>), EmitError> {
+    let relative = project_relative_resource_path(value, kind)?;
+    let root = root.canonicalize().map_err(|error| {
+        EmitError::Project(format!(
+            "resolving project root {}: {error}",
+            root.display()
+        ))
+    })?;
+    let candidate = root.join(&relative);
+    let resolved = candidate.canonicalize().map_err(|error| {
+        EmitError::Project(format!("reading {kind} {}: {error}", candidate.display()))
+    })?;
+    if !resolved.starts_with(&root) || !resolved.is_file() {
+        return Err(EmitError::Project(format!(
+            "{kind} must resolve to a regular file inside the project: {value:?}"
+        )));
+    }
+    let archive_relative = relative.to_string_lossy().replace('\\', "/");
+    let content = std::fs::read(&resolved).map_err(|error| {
+        EmitError::Project(format!("reading {kind} {}: {error}", resolved.display()))
+    })?;
+    Ok((archive_relative, content))
+}
+
+fn validate_logo_resource(
+    manifest: &AppManifest,
+    project_root: Option<&std::path::Path>,
+) -> Result<Option<String>, EmitError> {
+    if manifest.logo.trim().is_empty() {
+        return Ok(None);
+    }
+    let root = project_root.ok_or_else(|| {
+        EmitError::Project("cannot resolve app.json logo without a project root".to_string())
+    })?;
+    let (relative, _) = read_project_resource(root, &manifest.logo, "app.json logo")?;
+    if !relative.eq_ignore_ascii_case("res") && !relative.to_ascii_lowercase().starts_with("res/") {
+        return Err(EmitError::Project(format!(
+            "app.json logo must live under res/: {:?}",
+            manifest.logo
+        )));
+    }
+    let file_name = std::path::Path::new(&relative)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            EmitError::Project(format!("invalid app.json logo path: {:?}", manifest.logo))
+        })?;
+    Ok(Some(format!("logo/{file_name}")))
+}
+
 fn report_layout_files(
     objects: &[EmitObject],
     project_root: Option<&std::path::Path>,
@@ -725,12 +925,12 @@ fn report_layout_files(
                         file.value
                     ))
                 })?;
-                let rel = file.value.replace('\\', "/");
-                let content = std::fs::read(root.join(&rel))?;
+                let (rel, content) = read_project_resource(root, &file.value, "report layout")?;
                 out.push((format!("layout/{rel}"), content));
             }
         }
     }
+    out.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(out)
 }
 
@@ -773,10 +973,18 @@ pub fn assemble_app(
             })?
     };
 
+    // `app.json` names the source file under `res/`, but alc records and
+    // packages application logos as `/logo/<file-name>`.
+    let logo_file = validate_logo_resource(manifest, project_root)?;
+    let mut package_manifest = manifest.clone();
+    if let Some(archive_path) = &logo_file {
+        package_manifest.logo = format!("/{archive_path}");
+    }
+
     let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(sources.len() + 8);
     entries.push((
         "NavxManifest.xml".to_string(),
-        manifest.to_navx_xml().into_bytes(),
+        package_manifest.to_navx_xml().into_bytes(),
     ));
     for s in sources {
         entries.push((s.archive_path.clone(), s.content.clone().into_bytes()));
@@ -815,7 +1023,17 @@ pub fn assemble_app(
     {
         entries.push((path, bytes));
     }
-    entries.push(("MediaIdListing.xml".to_string(), media_id_listing_xml()));
+    entries.push((
+        "MediaIdListing.xml".to_string(),
+        media_id_listing_xml(logo_file.as_deref()),
+    ));
+    if let Some(archive_path) = logo_file {
+        let root = project_root.expect("validated app.json logo has a project root");
+        let (_, content) = read_project_resource(root, &manifest.logo, "app.json logo")?;
+        // alc stores the app icon under `logo/<file-name>` rather than under
+        // the source `res/` path and records that archive path in MediaIdListing.
+        entries.push((archive_path, content));
+    }
     for entry in control_addin_bundle(objects, &manifest.name, project_root)? {
         entries.push(entry);
     }
@@ -831,6 +1049,12 @@ pub fn assemble_app(
             encode_path_component(&manifest.name)
         );
         entries.push((file, xliff));
+    }
+    let mut seen = std::collections::HashSet::new();
+    if let Some((duplicate, _)) = entries.iter().find(|(path, _)| !seen.insert(path)) {
+        return Err(EmitError::Project(format!(
+            "multiple package parts resolve to the same archive path: {duplicate}"
+        )));
     }
     // `[Content_Types].xml` is last and lists every distinct extension present.
     let extensions = distinct_extensions(&entries);
@@ -971,6 +1195,30 @@ mod tests {
     }
 
     #[test]
+    fn navigation_xml_materializes_alc_name_defaults() {
+        let src = "table 50100 \"Rec\" { fields { field(1; F; Integer) { } } }\n\
+                   page 50100 \"Default Caption\" { PageType = List; SourceTable = \"Rec\"; \
+                   UsageCategory = Lists; ApplicationArea = All; }";
+        let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
+        let nav = navigation_xml(&objects, "Nav App")
+            .unwrap()
+            .expect("navigation.xml");
+        let text = String::from_utf8_lossy(&nav);
+        assert!(text.contains("CaptionML=\"ENU=Default Caption\""));
+        assert!(text.contains("AdditionalSearchTermsML=\"ENU=Default Caption\""));
+        assert!(text.contains(&format!(
+            "CaptionTranslationKey=\"Page {} - Property {}\"",
+            name_hash("Default Caption"),
+            name_hash("Caption")
+        )));
+        assert!(text.contains(&format!(
+            "AdditionalSearchTermsTranslationKey=\"Page {} - Property {}\"",
+            name_hash("Default Caption"),
+            name_hash("AdditionalSearchTerms")
+        )));
+    }
+
+    #[test]
     fn xliff_includes_page_and_field_captions_excludes_report_at_runtime_14() {
         let src =
             "table 50100 \"T\" { fields { field(1; F; Integer) { Caption = 'Field Cap'; } } }\n\
@@ -1005,6 +1253,140 @@ mod tests {
         );
         // The developer note keeps the declaring TableExtension.
         assert!(s.contains("TableExtension Ext T - Field B - Property Caption"));
+    }
+
+    #[test]
+    fn xliff_includes_page_control_tooltips_and_action_captions() {
+        let src = r#"page 50100 "Customer Card"
+{
+    layout
+    {
+        area(Content)
+        {
+            group(General)
+            {
+                Caption = 'General details';
+                field(Name; Rec.Name)
+                {
+                    ToolTip = 'Specifies the customer name.';
+                }
+            }
+        }
+    }
+    actions
+    {
+        area(Processing)
+        {
+            action(RefreshCustomer)
+            {
+                Caption = 'Refresh customer';
+                ToolTip = 'Refreshes the current customer.';
+            }
+        }
+    }
+}"#;
+        let objects = super::super::symbol_extract::extract_objects(src, "src/Page.al");
+        let xml = String::from_utf8(xliff_xml(&objects, 14).expect("page XLIFF")).unwrap();
+
+        for value in [
+            "General details",
+            "Specifies the customer name.",
+            "Refresh customer",
+            "Refreshes the current customer.",
+        ] {
+            assert!(
+                xml.contains(value),
+                "missing page-control XLIFF value {value}:\n{xml}"
+            );
+        }
+        assert!(xml.contains("Control"));
+        assert!(xml.contains("Property ToolTip"));
+        assert!(xml.contains("Property Caption"));
+    }
+
+    #[test]
+    fn xliff_page_extension_includes_added_controls_and_modified_tooltip_only() {
+        let src = r#"page 50100 "Customer Card"
+{
+    layout { area(Content) { group(General) { field(Name; Rec.Name) { } } } }
+}
+pageextension 50101 "Customer Card Ext" extends "Customer Card"
+{
+    layout
+    {
+        modify(Name)
+        {
+            Caption = 'Changed caption';
+            ToolTip = 'Changed tooltip';
+        }
+        addlast(General)
+        {
+            field(Note; Rec.Note)
+            {
+                Caption = 'Added caption';
+                ToolTip = 'Added tooltip';
+            }
+        }
+    }
+}"#;
+        let objects = super::super::symbol_extract::extract_objects(src, "src/Page.al");
+        let xml = String::from_utf8(xliff_xml(&objects, 14).expect("page XLIFF")).unwrap();
+
+        for value in ["Changed tooltip", "Added caption", "Added tooltip"] {
+            assert!(
+                xml.contains(value),
+                "missing page-extension XLIFF value {value}:\n{xml}"
+            );
+        }
+        assert!(
+            !xml.contains("Changed caption"),
+            "alc does not extract modify-control captions"
+        );
+    }
+
+    #[test]
+    fn xliff_includes_request_page_but_not_rendering_layout_captions_at_runtime_15() {
+        let src = r#"report 50100 "Customer List"
+{
+    requestpage
+    {
+        layout
+        {
+            area(Content)
+            {
+                field(ShowBlocked; ShowBlocked)
+                {
+                    Caption = 'Include blocked customers';
+                    ToolTip = 'Includes blocked customers in the report.';
+                }
+            }
+        }
+    }
+    rendering
+    {
+        layout(CustomerLayout)
+        {
+            Type = RDLC;
+            LayoutFile = 'layout/Customer.rdl';
+            Caption = 'Customer printable layout';
+        }
+    }
+}"#;
+        let objects = super::super::symbol_extract::extract_objects(src, "src/Report.al");
+        let xml = String::from_utf8(xliff_xml(&objects, 15).expect("report XLIFF")).unwrap();
+        for value in [
+            "Include blocked customers",
+            "Includes blocked customers in the report.",
+        ] {
+            assert!(
+                xml.contains(value),
+                "missing report XLIFF value {value}:\n{xml}"
+            );
+        }
+        assert!(
+            !xml.contains("Customer printable layout"),
+            "alc does not extract report-layout captions into XLIFF"
+        );
     }
 
     #[test]
@@ -1051,6 +1433,11 @@ mod tests {
         assert!(m.contains("<Resources>\n    <Script>src/main.js</Script>\n  </Resources>"));
         assert!(m.contains("<Script><![CDATA[init();\n]]></Script>"));
         assert!(m.contains("<ScriptUrl>https://cdn/x.js</ScriptUrl>"));
+
+        let bundle = control_addin_bundle(&objects, "App", Some(dir.path())).unwrap();
+        assert!(bundle
+            .iter()
+            .any(|(path, bytes)| { path == "addin/src/src/main.js" && bytes == b"init();\n" }));
     }
 
     #[test]

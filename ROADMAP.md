@@ -1,161 +1,143 @@
-# Roadmap And Work Queue
+# Completion Roadmap And Release Evidence
 
-This roadmap is for humans and agents continuing the project. It is deliberately blunt about gaps, partial implementations, and places where the current state is not yet in the spirit of the project.
+The project is not currently declared production- or release-ready. The
+blocking work and evidence states are maintained in
+[Completion Evidence Ledger](./Docs/gaps-and-future-work.md).
+Confirmed external-service and compatibility boundaries are listed separately
+in [Current Limitations](./Docs/current-limitations.md); that boundary document
+must never be used to hide actionable implementation or verification work.
 
-## North Star
+## Candidate Implemented Scope Requiring Final Gates
 
-The project should become the best AL development stack outside Microsoft's VS Code extension:
+### Parser and language data
 
-- Native first where practical: parsing, indexing, navigation, analysis, tests, AI tools, CLI workflows, and Zed UX should be owned here.
-- Microsoft-compatible where necessary: keep `alc`, CodeAnalysis, Business Central services, and official LSP fallback where exact compiler/runtime behavior matters.
-- One implementation where possible: Zed, CLI, MCP, daemon, and LSP should share lower-level command logic instead of drifting into subtly different behaviors.
-- Honest docs: every README/settings/schema claim must match current code. Aspirations belong here, not in user-facing feature claims.
-- Generated-file discipline: generated and synchronized artifacts should have a documented source of truth and automated drift checks.
+- The generated `tree-sitter-al` grammar is the one parser used by Zed and the
+  Rust syntax layer.
+- The pinned BCApps/ALAppExtensions corpus contains 46,389 AL files and parses
+  at 46,389/46,389. Focused valid and invalid fixtures remain mandatory because
+  a corpus parse rate alone cannot prove node-shape correctness.
+- Grammar, queries, language metadata, themes, and the complete Zed language
+  package have generator-owned sources and drift checks. Schemas and snippets
+  are canonical hand-maintained contracts: repository tests validate their JSON
+  shape and cross-check settings, debug-snippet fields, and runtime consumers.
 
-## Release Hygiene
+### Build, verification, and package emission
 
-Automated in `scripts/check-release-hygiene.sh` and `.github/workflows/release.yml`:
+- Daemon `compile`/`package`, LSP `al.compile`, CLI, publish, and native DAP
+  launch use `al_compile::build` and one `BuildRequest` contract.
+- The request owns backend selection, compiler-setting conversion, exact
+  configured dependency packages, analyzer selection, timeout/cancellation,
+  normalized diagnostics, manifest-selected artifacts, and atomic handoff.
+- Native verification fails closed on syntax, project/dependency integrity,
+  declarations, declared bindings, permissions, local procedure/event/interface
+  contracts, conservative body semantics, and final package integrity.
+- The isolated accuracy corpus measures native build at 14/14 planted defects
+  with zero clean-control false positives. Microsoft `alc` 17 measures 13/14
+  under the same source-line scoring method.
+- Current self-contained, dependency, small-through-XL Base Application, and focused
+  Base Application resource fixtures match the measured `alc` archive entries,
+  normalized manifest, semantic `SymbolReference.json`, and applicable XLIFF.
+- `pack-native --validate` and `al.useOfficialCompiler=true` retain an explicit
+  Microsoft compatibility path for semantics or package shapes outside measured
+  native fixtures.
 
-- `extension.toml` `[grammars.al].rev` must equal the superproject gitlink for `tree-sitter-al`.
-- `git submodule status --recursive` must be clean; leading `+`, missing submodules, and conflicts are release blockers.
-- Product versions in `extension.toml`, root `Cargo.toml`, `al-lsp`, `Cargo.lock`, and the release tag
-  must align. Library crates retain independent semantic versions.
-- Required generated grammar/query/data/theme artifacts must exist, and generator-input changes across a release diff require generated-output changes.
-- `languages/al` is regenerated from `al-gen --zed-language-only` and compared in CI/release hygiene.
-- The tag workflow waits for green `CI` on the exact commit being released before building artifacts.
-- `scripts/check-repo-consistency.sh` remains narrowly scoped to repository-slug drift; release-wide checks live in `scripts/check-release-hygiene.sh`.
+### Symbols, analysis, and editor surfaces
 
-Remaining release hygiene improvements:
+- Package folders (`packageCachePath` and `appLocalFolderPaths`) use one
+  prioritized selection for indexing and native/official builds, including
+  daemon, CLI, publish, and DAP processes.
+- Source availability distinguishes workspace source, embedded source, generated
+  public-API outlines, and identity-only metadata.
+- Native diagnostics, navigation, refactors, call/event graphs, impact analysis,
+  profiler views, and symbol operations share lower-level implementations across
+  LSP, daemon, CLI/TUI, and MCP.
+- The generic MCP `al_call` exposes the complete daemon catalog; named aliases
+  add discoverability without forming an allow-list.
+- Gallery-installed LSP, DAP, and MCP processes resolve the release sidecars
+  from the extension archive. Installed static tasks/runnables are intentionally
+  absent because stable Zed cannot address an extension-private sidecar path;
+  checkout-local contributor tasks are contract-tested instead.
 
-- Add a fully reproducible generated-artifact regeneration job once the Microsoft AL extension and `tree-sitter` inputs are installable in CI without brittle marketplace assumptions.
-- Make full grammar regeneration and the external repository corpus reproducible in CI when the
-  Microsoft AL extension inputs can be installed reliably.
+### Debugging and test execution
 
-## Architecture Unification
+- Native DAP owns launch/attach, publish/deploy, breakpoints, stack, scopes,
+  variables, evaluate, stepping, continue, and disconnect over the current BC
+  REST/SignalR protocol family.
+- The native test router follows transitive workspace calls/events and fails
+  closed to live BC for unsupported platform behavior.
+- Local execution covers pure logic and the supported workspace-record subset,
+  deterministic lifecycle/handlers, statement/path/MC/DC coverage, scoped
+  mutation testing, and live snapshot capture orchestration.
+- File snapshot validation/diff remain BC-free; platform-object behavior stays
+  authoritative on live Business Central.
 
-The current architecture is powerful but still split across separate entrypoints.
+## Compatibility Boundaries
 
-- Unify compile behavior across daemon `compile`, daemon `package`, LSP `al.compile`, publish, and DAP launch.
-  - Current state: daemon `compile`, LSP `al.compile`, publish, and native DAP launch default to the pure-Rust verified `.app` pipeline with structured diagnostics; `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc`.
-  - Current gap: daemon `package` is still the analyzer-backed Microsoft compiler surface, and compile-capable paths do not yet share one service abstraction for artifact selection, diagnostics shape, cancellation, timeout, and final handoff.
-- Bring analyzer-backed Microsoft compiler results and native emitter results into one deterministic artifact and diagnostics pipeline where that makes sense.
-- Wire ruleset, assembly probing, analyzer statistics, and external ruleset settings through the build and semantic paths or mark them clearly as parsed-only.
-- Decide whether LSP execute commands should call the daemon dispatcher, a shared service layer, or remain direct LSP handlers. Document and test the boundary.
-- Consider exposing the existing `AL_DOTNET_PATH` environment override as an `al.*` editor setting.
+Boundaries are explicit product contracts, not silent partial implementations:
 
-## Native App Emission
+- Microsoft-wide compiler type inference, analyzer policy, and unmeasured
+  package formats use the explicit `alc` validation/backend.
+- Runtime behavior requiring the BC platform routes to live BC.
+- Dependency packages without source expose declarations, not executable
+  call-site bodies.
+- Stable Zed extension API 0.7 does not expose settings-schema registration.
+  The schema and gated implementation are in-tree for an API line that does.
+- Full grammar/data/theme regeneration consumes a pinned Microsoft AL extension
+  archive; ordinary generation remains self-contained.
 
-The project now has a production-wired default path through the pure-Rust verifier and `.app` emitter. Syntax, project/dependency, declaration, declared-symbol binding, and package-integrity failures block atomic artifact handoff without Microsoft tooling. That does not yet make the emitter a general `alc`-equivalent: broader body-level semantics and real-world resource/package coverage remain. Use `pack-native --validate` or official `alc` as the release gate for projects using resource shapes outside the verified fixtures.
+See [Current Limitations](./Docs/current-limitations.md) for the exact user-facing
+effects and fallback behavior.
 
-- Extend native verification into procedure-body expression, overload, control-flow, event, permission, and analyzer semantics while keeping Microsoft compatibility checks explicit.
-- Expand fixture coverage beyond the current ALC-matching project to more object kinds, resource combinations, dependencies, profiles, permissions, reports, translations, control add-ins, and extension-heavy packages.
-- Differential-test emitted packages against local `alc` output for every supported fixture and keep the intentional deltas documented.
-- Expand live-tenant validation across dependency-heavy and resource-heavy `.app` projects before
-  reducing compatibility paths.
-- Keep `al.useOfficialCompiler` explicit and tested so Microsoft `alc` remains available for semantic validation, analyzer behavior, and compatibility triage.
+## Maintenance Invariants
 
-## Native Test Runtime
+- User-facing docs, schemas, settings, command catalogs, and advertised
+  capabilities must match runtime wiring.
+- Invalid state and unsupported requests return explicit diagnostics; they do
+  not silently select a different backend or stale artifact.
+- `languages/al` and other generated outputs are changed through their
+  generators and checked for reproducibility.
+- `extension.toml` grammar revision equals the committed `tree-sitter-al`
+  gitlink. The grammar repository is committed and pushed before the
+  superproject pointer.
+- The owned grammar crate publishes as `tree-sitter-al-bc`; parent code consumes
+  it through the `tree-sitter-al` Rust dependency alias.
+- Product versions in the extension, binaries, lockfile, and release tag stay
+  synchronized. Library crates retain independent semantic versions.
+- External inputs are pinned or explicitly supplied. Tests never turn a missing
+  credential, unpublished dependency, or skipped live environment into a
+  successful validation claim.
 
-The native AL test runner now executes pure-logic and supported workspace-record tests locally. The remaining work improves classification and platform fidelity without weakening the live-BC correctness boundary.
+## Release Gates
 
-- Keep the executable `InterpRecord` backend and its enforced PureLogic/WithRecords capability boundary covered end to end.
-- Extend lifecycle and handler fidelity beyond the shipped local initialize/cleanup and Message/Confirm subset, while keeping `[Test]` discovery semantics explicit.
-- Replace pattern-based routing with deeper AST/call-graph classification where feasible.
-- Extend dynamic coverage beyond statements/two-way decisions where the additional signal is trustworthy.
-- Add live snapshot capture only when it can be implemented end to end; keep existing file validation
-  and diff commands distinct from that future surface.
-- Expand mutation testing beyond the current starter mutators and make survival causes explicit when no interpreter-runnable tests cover a mutant.
-- Keep live BC fallback for platform behavior that should not be guessed locally.
+The release evidence is produced by the testing guide, not by prose in this
+file. A release candidate runs, at minimum:
 
-## Native Lint And Diagnostics
+```bash
+# Grammar repository
+cd tree-sitter-al
+cargo test --all-targets
+cargo test --manifest-path generator/Cargo.toml --all-targets
+tests/run_repo_tests.sh
+cargo package --list
 
-Native diagnostics now combine file-local `AL-NL001`/`AL-NL002`, project and symbol checks
-`AL-NC001` through `AL-NC006`, and resolved transaction-stack rules: `AL-NL003` warns when
-`Commit()` can finalize an earlier database change, while `AL-NL004` highlights writes reached
-from `[TryFunction]`. The transaction pass follows ordinary calls, interface dispatch,
-`Codeunit.Run`, table triggers, events/subscribers, and complete Microsoft/third-party source
-bodies embedded in loaded `.app` packages. Those bodies are parsed once into a cached dependency
-source index; source-free packages fall back to declarations and known event boundaries. Remaining
-catalogue work:
+# Superproject
+cd ..
+cargo fmt --all -- --check
+cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
+cargo test --workspace --exclude zed-al
+cargo test -p zed-al
+cargo build -p zed-al --target wasm32-wasip2 --release
+make release-dryrun
+```
 
-- Add the remaining high-value rules: missing `SetLoadFields`, missing `ApplicationArea`, missing tooltips,
-  obsolete usage, and architecture-layer violations.
-- Keep semantic compiler diagnostics separate from native lint diagnostics in output so users know the source
-  (already true today — they carry distinct `AL-NL*`/`AL-NC*` codes vs. the bridge's own codes).
-- Keep the existing master/per-rule disable regressions (`al.enableNativeLint` and
-  `al.nativeLintRules`) covered as the catalogue grows.
-- Keep `schemas/settings.json`, `docs/settings.md`, and README wording in lockstep with actual diagnostics behavior.
+The full generated-assets profile sets `AL_EXTENSION_PATH` to a pinned
+Microsoft extension and runs
+`scripts/check-release-hygiene.sh --full-regenerate`. The Microsoft differential
+profile sets `AL_TOOL_PATH`/package-cache inputs and runs the emitter, verifier,
+and semantic bridge comparisons. Live BC credentials enable publish, DAP, test,
+and snapshot-capture integration profiles. Each profile reports unavailable
+external inputs as unavailable, never passed.
 
-## Symbol And Package Engine
-
-The symbol engine is a core strength; the next work should make it more complete and measurable.
-
-- Add benchmark-grade comparison data for cold/warm package load, symbol lookup, completion, impact, event tracing, and memory usage.
-- Make the symbol performance audit deterministic enough to run in CI with fixture `.app` packages.
-- Extend the shipped byte-level symbol-index accounting to package metadata, file indexes, document caches, and graph caches; keep process RSS as the allocator-level measurement.
-- Keep the shipped source-availability contract covered end to end: workspace source, extractable embedded source, generated outline, and metadata-only navigation must stay distinct in CLI/TUI/daemon output, including extraction-failure downgrade behavior.
-- Keep both download backends covered for bounded concurrency, same-package dedupe, retry/error behavior, streaming limits, and atomic validated publication.
-- Keep `packageCachePath` / `appLocalFolderPaths` startup and hot-reload behavior covered across LSP and daemon/CLI/TUI entry points.
-- Document and test the limitation that `.app` symbols expose public API metadata, not package call-site bodies.
-
-## AI And MCP
-
-MCP is a strategic first-class entry point to the same tools as CLI and Zed, not a curated secondary
-surface.
-
-- Keep the complete shared daemon catalog available through the generic `al_call` bridge. Named
-  aliases such as `al_suggestevent`, `al_testclassify`, `al_testcoverage`, `al_depgraph`, and
-  `al_debug` exist for richer discovery; they must never become an availability allow-list.
-- Add output-schema coverage and optional rich aliases where a dedicated per-operation schema
-  materially improves agent use. Input-schema shape and required-field checks already cover the
-  named registry and `al_call`.
-- Include routing details in `al_runtests` output so agents know which tests ran locally and which required live BC.
-- Add agent-oriented diagnostics that explain missing symbols, missing BC config, missing semantic bridge, and source-unavailable package navigation.
-- Keep tool names compatible with Microsoft's AL agent surface where useful, but expose project-specific strengths unapologetically.
-
-## Zed UX
-
-Zed should feel first-class, not merely compatible.
-
-- Keep generated Zed tasks synchronized with real CLI commands and add new tasks only where editor
-  variables can supply every required argument.
-- Keep the wired `al.findReferences`, `al.showProfiler`, and `al.runTest` CodeLens command contracts
-  covered by integration tests.
-- Restore settings schema registration when the required Zed extension API is released on the stable registry.
-- Keep snippets, debug schemas, and settings docs aligned with fields actually consumed by the native adapter/server.
-- Add practical Zed smoke tests for binary download, LSP startup, DAP startup, MCP context server startup, and task execution.
-
-## Debugging And Business Central Runtime
-
-The DAP path is promising but still narrower than the schemas/snippets imply.
-
-- Keep unsupported Microsoft launch fields out of the DAP schema. Agent control is a separate,
-  shipped surface through stateful MCP `al_debug`; do not reintroduce `useMcpServerForDebugging` as
-  a misleading launch toggle.
-- Verify and harden stack trace, scopes, variables, and evaluate behavior against current BC SignalR/REST contracts.
-- Add explicit tests for launch compile, `.app` selection, publish/deploy, attach, breakpoints, step, continue, evaluate, and disconnect.
-- Bring DAP compile/deploy artifact handling into the shared build service.
-- Document unsupported DAP capabilities directly in schema descriptions and user docs.
-
-## Generated Assets And Language Data
-
-The Zed language package now has a single generator-owned source of truth.
-
-- Keep all `languages/al` files generated. Canonical query files are copied from `tree-sitter-al/queries`; Zed-specific language metadata is generated from `tree-sitter-al/generator/tools/al-gen/templates/zed-language`.
-- Use `make language` after changing Zed language templates or canonical query outputs. Release hygiene runs the same lightweight generation path and fails on drift.
-- Do not add hand-maintained files under `languages/al`. The generator rejects unknown files in that directory.
-- Keep `al-gen` versus `al-extract` ownership for `tree-sitter-al/data/*.json` documented in
-  `CONTRIBUTING.md` and the grammar repository.
-- Keep theme generation reproducible and validated through full grammar regeneration.
-- Keep `extension.toml` grammar rev, submodule gitlink, and generated query compatibility tied together by CI.
-
-## Documentation Debt
-
-The README should stay high-signal and factual. Detailed operating docs should live in dedicated files.
-
-- Keep README focused on project identity, architecture, feature surfaces, install, and development.
-- Keep `ROADMAP.md` for incomplete work and future goals.
-- Keep settings details in `Docs/reference/settings.md` and examples in
-  `examples/zed-settings.jsonc`.
-- Keep the architecture and testing guides synchronized with real Cargo dependencies, command
-  registrations, and CI behavior.
+`make crates-publish-dryrun` is the separate strict crates.io-resolution gate.
+It is not part of publishing the Zed extension and fails while any independent
+library dependency is unpublished.

@@ -30,6 +30,24 @@ const MAX_TOTAL_EXTRACTED_SOURCE_BYTES: u64 = 1_073_741_824; // 1 GiB
 static SOURCE_INDEX_CACHE: OnceLock<DashMap<PathBuf, Arc<AppSourceIndex>>> = OnceLock::new();
 static SOURCE_BUILD_LOCKS: OnceLock<DashMap<PathBuf, Arc<Mutex<()>>>> = OnceLock::new();
 
+/// Acquire a payload-free source-index build lock.
+///
+/// The protected value is only `()`. The actual index is published atomically
+/// in `SOURCE_INDEX_CACHE` and is revalidated after this guard is acquired, so
+/// a panicked predecessor cannot leave partially trusted state behind.
+fn lock_source_build(lock: &Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
+    loop {
+        match lock.lock() {
+            Ok(guard) => return guard,
+            Err(poisoned) => {
+                drop(poisoned);
+                lock.clear_poison();
+                tracing::warn!("discarded poisoned payload-free source-index build lock");
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct AppSourceIndex {
     modified: SystemTime,
@@ -37,9 +55,12 @@ pub struct AppSourceIndex {
     app_path: PathBuf,
     by_kind_id: HashMap<(ObjectKind, i32), String>,
     by_kind_name: HashMap<(ObjectKind, String), String>,
-    /// Every archive path containing a parsed AL object, in stable order.
-    /// Retaining this list lets graph consumers extract a package in one ZIP
-    /// pass instead of reopening the archive once per symbol entry.
+    /// Every `.al` archive path, in stable order.
+    ///
+    /// Retaining even paths whose lightweight header scan cannot identify an
+    /// object is deliberate: full dependency-source consumers must parse and
+    /// reject malformed or declaration-free AL rather than silently treating a
+    /// partially indexed package as complete.
     source_paths: Vec<String>,
 }
 
@@ -56,7 +77,7 @@ impl AppSourceIndex {
                 ),
             ));
         }
-        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let modified = metadata.modified()?;
         let mut file = file;
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)?;
@@ -92,15 +113,47 @@ impl AppSourceIndex {
         let mut total_decompressed: u64 = 0;
 
         for i in 0..archive.len() {
-            let file = archive.by_index(i)?;
+            let mut file = archive.by_index(i)?;
             let name = file.name().to_string();
             if !name.to_lowercase().ends_with(".al") {
                 continue;
             }
+            source_paths.push(name.clone());
 
             let mut buf = Vec::new();
-            let mut limited = file.take(MAX_HEADER_BYTES as u64);
-            limited.read_to_end(&mut buf)?;
+            (&mut file)
+                .take(MAX_HEADER_BYTES as u64)
+                .read_to_end(&mut buf)?;
+
+            // A long licence/preprocessor prefix may legitimately place the
+            // object declaration beyond the fast header window. Only pay the
+            // full read cost for entries where the first pass found no object;
+            // otherwise name-based navigation would quietly lose valid
+            // ID-less or late-header sources.
+            let mut header = parse_object_header(&buf);
+            if header.is_none() && file.size() > buf.len() as u64 {
+                if file.size() > MAX_EXTRACTED_SOURCE_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "embedded AL source '{name}' is {} bytes, exceeding the indexing limit of {MAX_EXTRACTED_SOURCE_BYTES} bytes",
+                            file.size()
+                        ),
+                    ));
+                }
+                (&mut file)
+                    .take(MAX_EXTRACTED_SOURCE_BYTES + 1 - buf.len() as u64)
+                    .read_to_end(&mut buf)?;
+                if buf.len() as u64 > MAX_EXTRACTED_SOURCE_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "embedded AL source '{name}' expanded beyond the indexing limit of {MAX_EXTRACTED_SOURCE_BYTES} bytes"
+                        ),
+                    ));
+                }
+                header = parse_object_header(&buf);
+            }
             total_decompressed = total_decompressed.saturating_add(buf.len() as u64);
             if total_decompressed > MAX_TOTAL_EXTRACTED_SOURCE_BYTES {
                 return Err(io::Error::new(
@@ -109,8 +162,7 @@ impl AppSourceIndex {
                 ));
             }
 
-            if let Some((kind, id, obj_name)) = parse_object_header(&buf) {
-                source_paths.push(name.clone());
+            if let Some((kind, id, obj_name)) = header {
                 by_kind_id.entry((kind, id)).or_insert_with(|| name.clone());
                 by_kind_name
                     .entry((kind, obj_name.to_lowercase()))
@@ -142,38 +194,60 @@ impl AppSourceIndex {
             .map(|s| s.as_str())
     }
 
-    pub fn extract_source_by_path(&self, zip_path: &str) -> Option<String> {
-        let file = File::open(&self.app_path).ok()?;
-        let metadata = file.metadata().ok()?;
-        if metadata.len() != self.file_size
-            || metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH) != self.modified
-        {
-            return None;
+    pub fn extract_source_by_path(&self, zip_path: &str) -> io::Result<Option<String>> {
+        let file = File::open(&self.app_path)?;
+        let metadata = file.metadata()?;
+        if metadata.len() != self.file_size || metadata.modified()? != self.modified {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "package changed after its source index was built",
+            ));
         }
-        let mut archive = ZipArchive::new(file).ok()?;
-        let file = archive.by_name(zip_path).ok()?;
+        let mut archive = ZipArchive::new(file)?;
+        let file = match archive.by_name(zip_path) {
+            Ok(file) => file,
+            Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
         if file.size() > MAX_EXTRACTED_SOURCE_BYTES {
-            tracing::warn!(
-                path = zip_path,
-                size = file.size(),
-                limit = MAX_EXTRACTED_SOURCE_BYTES,
-                "embedded AL source exceeds extraction limit"
-            );
-            return None;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "embedded AL source '{zip_path}' is {} bytes, exceeding the extraction limit of {MAX_EXTRACTED_SOURCE_BYTES} bytes",
+                    file.size()
+                ),
+            ));
         }
         let mut bytes = Vec::new();
         file.take(MAX_EXTRACTED_SOURCE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .ok()?;
+            .read_to_end(&mut bytes)?;
         if bytes.len() as u64 > MAX_EXTRACTED_SOURCE_BYTES {
-            return None;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "embedded AL source '{zip_path}' expanded beyond the extraction limit of {MAX_EXTRACTED_SOURCE_BYTES} bytes"
+                ),
+            ));
         }
-        String::from_utf8(bytes).ok()
+        String::from_utf8(bytes).map(Some).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("embedded AL source '{zip_path}' is not UTF-8: {error}"),
+            )
+        })
     }
 
-    pub fn extract_source_for_entry(&self, entry: &SymbolEntry) -> Option<String> {
-        let path = self.source_path_for_entry(entry)?;
-        self.extract_source_by_path(path)
+    pub fn extract_source_for_entry(&self, entry: &SymbolEntry) -> io::Result<Option<String>> {
+        let Some(path) = self.source_path_for_entry(entry) else {
+            return Ok(None);
+        };
+        match self.extract_source_by_path(path)? {
+            Some(source) => Ok(Some(source)),
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("indexed AL source '{path}' disappeared from the package"),
+            )),
+        }
     }
 
     /// Extract every indexed AL object source from this package in one archive
@@ -186,9 +260,7 @@ impl AppSourceIndex {
     pub fn extract_all_sources(&self) -> io::Result<Vec<(String, String)>> {
         let file = File::open(&self.app_path)?;
         let metadata = file.metadata()?;
-        if metadata.len() != self.file_size
-            || metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH) != self.modified
-        {
+        if metadata.len() != self.file_size || metadata.modified()? != self.modified {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "package changed after its source index was built",
@@ -203,21 +275,20 @@ impl AppSourceIndex {
             if !seen.insert(path) {
                 continue;
             }
-            let mut entry = match archive.by_name(path) {
-                Ok(entry) => entry,
-                Err(error) => {
-                    tracing::warn!(path, %error, "indexed AL source disappeared from package");
-                    continue;
-                }
-            };
+            let mut entry = archive.by_name(path).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("indexed AL source '{path}' disappeared from package: {error}"),
+                )
+            })?;
             if entry.size() > MAX_EXTRACTED_SOURCE_BYTES {
-                tracing::warn!(
-                    path,
-                    size = entry.size(),
-                    limit = MAX_EXTRACTED_SOURCE_BYTES,
-                    "embedded AL source exceeds extraction limit"
-                );
-                continue;
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "embedded AL source '{path}' is {} bytes, exceeding the extraction limit of {MAX_EXTRACTED_SOURCE_BYTES} bytes",
+                        entry.size()
+                    ),
+                ));
             }
             extracted_total = extracted_total.saturating_add(entry.size());
             if extracted_total > MAX_TOTAL_EXTRACTED_SOURCE_BYTES {
@@ -233,14 +304,20 @@ impl AppSourceIndex {
                 .take(MAX_EXTRACTED_SOURCE_BYTES + 1)
                 .read_to_end(&mut bytes)?;
             if bytes.len() as u64 > MAX_EXTRACTED_SOURCE_BYTES {
-                continue;
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "embedded AL source '{path}' expanded beyond the extraction limit of {MAX_EXTRACTED_SOURCE_BYTES} bytes"
+                    ),
+                ));
             }
-            match String::from_utf8(bytes) {
-                Ok(source) => sources.push((path.clone(), source)),
-                Err(error) => {
-                    tracing::warn!(path, %error, "embedded AL source is not UTF-8");
-                }
-            }
+            let source = String::from_utf8(bytes).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("embedded AL source '{path}' is not UTF-8: {error}"),
+                )
+            })?;
+            sources.push((path.clone(), source));
         }
         Ok(sources)
     }
@@ -257,15 +334,19 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     let app_path = canonical_path.as_path();
     let cache = SOURCE_INDEX_CACHE.get_or_init(DashMap::new);
 
-    let fresh = || {
-        let existing = cache.get(app_path)?;
-        let meta = std::fs::metadata(app_path).ok()?;
-        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        (existing.modified == modified && existing.file_size == meta.len())
-            .then(|| existing.value().clone())
+    let fresh = || -> io::Result<Option<Arc<AppSourceIndex>>> {
+        let Some(existing) = cache.get(app_path) else {
+            return Ok(None);
+        };
+        let meta = std::fs::metadata(app_path)?;
+        let modified = meta.modified()?;
+        Ok(
+            (existing.modified == modified && existing.file_size == meta.len())
+                .then(|| existing.value().clone()),
+        )
     };
 
-    if let Some(index) = fresh() {
+    if let Some(index) = fresh()? {
         return Ok(index);
     }
 
@@ -278,9 +359,9 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
             .value()
             .clone()
     };
-    let _guard = lock_arc.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock_source_build(&lock_arc);
 
-    if let Some(index) = fresh() {
+    if let Some(index) = fresh()? {
         return Ok(index);
     }
 
@@ -363,12 +444,16 @@ fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {
                 skip_ws_and_comments(b, &mut j);
                 let (id, next) = match parse_int(b, j) {
                     Some(v) => v,
-                    None => continue,
+                    None if kind.requires_numeric_id() => continue,
+                    None => (0, j),
                 };
                 let mut k = next;
                 skip_ws_and_comments(b, &mut k);
                 if let Some((name, _)) = parse_name(s, b, k) {
                     return Some((kind, id, name));
+                }
+                if kind == ObjectKind::DotNet {
+                    return Some((kind, id, String::new()));
                 }
             }
         } else {
@@ -553,9 +638,49 @@ mod tests {
     }
 
     #[test]
-    fn parse_object_header_returns_none_on_kind_without_id() {
-        // "codeunit" with no integer id following must not match.
+    fn parse_object_header_rejects_numbered_kind_without_id() {
         assert!(parse_object_header(b"codeunit MyCodeunit\n{").is_none());
+    }
+
+    #[test]
+    fn parse_object_header_accepts_every_idless_kind() {
+        let cases = [
+            (
+                "interface \"I Processor\" {",
+                ObjectKind::Interface,
+                "I Processor",
+            ),
+            ("profile Operator {", ObjectKind::Profile, "Operator"),
+            (
+                "pagecustomization MyView customizes \"Customer List\" {",
+                ObjectKind::PageCustomization,
+                "MyView",
+            ),
+            (
+                "controladdin BrowserHost {",
+                ObjectKind::ControlAddIn,
+                "BrowserHost",
+            ),
+            (
+                "entitlement \"Licensed User\" {",
+                ObjectKind::Entitlement,
+                "Licensed User",
+            ),
+            (
+                "profileextension MyProfileExt extends Operator {",
+                ObjectKind::ProfileExtension,
+                "MyProfileExt",
+            ),
+            ("dotnet {", ObjectKind::DotNet, ""),
+        ];
+
+        for (source, expected_kind, expected_name) in cases {
+            let (kind, id, name) =
+                parse_object_header(source.as_bytes()).expect("valid ID-less object header");
+            assert_eq!(kind, expected_kind, "{source}");
+            assert_eq!(id, 0, "{source}");
+            assert_eq!(name, expected_name, "{source}");
+        }
     }
 
     #[test]
@@ -755,9 +880,12 @@ mod tests {
     fn from_app_path_indexes_and_extracts_source() {
         let tab_src = "table 18 Customer\n{\n    fields { field(1; No; Code[20]) { } }\n}";
         let cod_src = "codeunit 50100 \"My Helper\"\n{\n    procedure Foo() begin end;\n}";
+        let interface_src =
+            "interface \"My Contract\"\n{\n    procedure Execute(Value: Integer);\n}";
         let path = write_app(&[
             ("src/Tab18.Customer.al", tab_src),
             ("src/Cod50100.MyHelper.al", cod_src),
+            ("src/MyContract.Interface.al", interface_src),
             ("NavxManifest.xml", "<Package/>"), // non-.al, must be ignored
         ]);
 
@@ -769,14 +897,20 @@ mod tests {
             Some("src/Tab18.Customer.al")
         );
         assert_eq!(
-            idx.extract_source_for_entry(&cust).as_deref(),
+            idx.extract_source_for_entry(&cust).unwrap().as_deref(),
             Some(tab_src)
         );
 
         let helper = entry(ObjectKind::Codeunit, 50100, "My Helper");
         assert_eq!(
-            idx.extract_source_for_entry(&helper).as_deref(),
+            idx.extract_source_for_entry(&helper).unwrap().as_deref(),
             Some(cod_src)
+        );
+
+        let contract = entry(ObjectKind::Interface, 0, "My Contract");
+        assert_eq!(
+            idx.extract_source_for_entry(&contract).unwrap().as_deref(),
+            Some(interface_src)
         );
 
         // Lookup by name (id 0) is case-insensitive.
@@ -787,13 +921,16 @@ mod tests {
         );
 
         let all_sources = idx.extract_all_sources().unwrap();
-        assert_eq!(all_sources.len(), 2);
+        assert_eq!(all_sources.len(), 3);
         assert!(all_sources
             .iter()
             .any(|(path, source)| { path == "src/Tab18.Customer.al" && source == tab_src }));
         assert!(all_sources
             .iter()
             .any(|(path, source)| { path == "src/Cod50100.MyHelper.al" && source == cod_src }));
+        assert!(all_sources.iter().any(|(path, source)| {
+            path == "src/MyContract.Interface.al" && source == interface_src
+        }));
     }
 
     #[test]
@@ -817,7 +954,10 @@ mod tests {
     fn extract_source_by_path_none_for_unknown_path() {
         let path = write_app(&[("src/Tab18.Customer.al", "table 18 Customer { }")]);
         let idx = AppSourceIndex::from_app_path(&path).unwrap();
-        assert!(idx.extract_source_by_path("does/not/exist.al").is_none());
+        assert!(idx
+            .extract_source_by_path("does/not/exist.al")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -825,7 +965,7 @@ mod tests {
         let path = write_app(&[("src/Tab18.Customer.al", "table 18 Customer { }")]);
         let idx = AppSourceIndex::from_app_path(&path).unwrap();
         let ghost = entry(ObjectKind::Report, 12345, "Ghost");
-        assert!(idx.extract_source_for_entry(&ghost).is_none());
+        assert!(idx.extract_source_for_entry(&ghost).unwrap().is_none());
     }
 
     #[test]
@@ -842,7 +982,7 @@ mod tests {
 
         let x = entry(ObjectKind::Codeunit, 1, "X");
         assert_eq!(
-            a.extract_source_for_entry(&x).as_deref(),
+            a.extract_source_for_entry(&x).unwrap().as_deref(),
             Some("codeunit 1 X { }")
         );
 
@@ -921,31 +1061,75 @@ mod tests {
         );
 
         // Extraction is NOT capped by MAX_HEADER_BYTES — full content comes back.
-        let extracted = idx.extract_source_for_entry(&e).unwrap();
+        let extracted = idx.extract_source_for_entry(&e).unwrap().unwrap();
         assert_eq!(extracted.len(), src.len());
         assert_eq!(extracted, src);
     }
 
     #[test]
-    fn header_truncation_misses_object_declared_after_window() {
-        // If the object header only appears AFTER the 256 KiB window, the
-        // .take(MAX_HEADER_BYTES) cut means it is never seen during indexing.
-        // (This pins the documented behaviour of the header cap.)
+    fn extraction_rejects_indexed_non_utf8_source() {
+        let mut source = b"codeunit 50101 InvalidUtf8\n{\n".to_vec();
+        source.extend_from_slice(&[0xff, b'\n', b'}']);
+        let files = vec![("src/Cod50101.InvalidUtf8.al".to_string(), source)];
+        let path = write_app_owned(&files);
+        let idx = AppSourceIndex::from_app_path(&path).unwrap();
+        let entry = entry(ObjectKind::Codeunit, 50101, "InvalidUtf8");
+
+        let error = idx.extract_source_for_entry(&entry).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("not UTF-8"));
+    }
+
+    #[test]
+    fn extraction_rejects_indexed_source_over_per_file_limit() {
+        let mut source = b"codeunit 50102 TooLarge\n{\n".to_vec();
+        source.resize(MAX_EXTRACTED_SOURCE_BYTES as usize + 1, b' ');
+        source.push(b'}');
+        let files = vec![("src/Cod50102.TooLarge.al".to_string(), source)];
+        let path = write_app_owned(&files);
+        let idx = AppSourceIndex::from_app_path(&path).unwrap();
+        let entry = entry(ObjectKind::Codeunit, 50102, "TooLarge");
+        let error = idx.extract_source_for_entry(&entry).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("extraction limit"));
+    }
+
+    #[test]
+    fn header_scan_falls_back_when_object_is_declared_after_fast_window() {
         let mut src = String::new();
-        // Leading filler that is NOT a valid object header, exceeding the window.
         src.push_str(&"// noise noise noise noise noise noise\n".repeat(8_000));
         assert!(src.len() > MAX_HEADER_BYTES);
         src.push_str("codeunit 50111 HiddenAfterCap\n{\n}\n");
 
-        let files = vec![("src/late.al".to_string(), src.into_bytes())];
+        let files = vec![("src/late.al".to_string(), src.clone().into_bytes())];
         let path = write_app_owned(&files);
         let idx = AppSourceIndex::from_app_path(&path).unwrap();
 
         let e = entry(ObjectKind::Codeunit, 50111, "HiddenAfterCap");
         assert_eq!(
             idx.source_path_for_entry(&e),
-            None,
-            "header past the 256 KiB cap must not be indexed"
+            Some("src/late.al"),
+            "a valid late object declaration must not disappear"
+        );
+        assert_eq!(
+            idx.extract_source_for_entry(&e).unwrap().as_deref(),
+            Some(src.as_str())
+        );
+    }
+
+    #[test]
+    fn extract_all_sources_keeps_declaration_free_al_for_strict_consumers() {
+        let path = write_app(&[("src/NamespaceOnly.al", "namespace Contoso.Tools;")]);
+        let idx = AppSourceIndex::from_app_path(&path).unwrap();
+
+        assert_eq!(
+            idx.extract_all_sources().unwrap(),
+            vec![(
+                "src/NamespaceOnly.al".to_string(),
+                "namespace Contoso.Tools;".to_string()
+            )]
         );
     }
 

@@ -37,23 +37,6 @@ pub fn test_project_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")
 }
 
-/// Return the path to an external AL test project from the environment, if set
-/// and valid.
-///
-/// Checks `AL_TEST_PROJECT_PATH` and confirms it contains `app.json`.
-/// Returns `None` if the variable is absent or the project root cannot be
-/// found. Used by `zed_simulation`, `data_driven`, and
-/// `performance` test files.
-pub fn test_project_from_env() -> Option<PathBuf> {
-    let path = std::env::var("AL_TEST_PROJECT_PATH")
-        .ok()
-        .map(PathBuf::from)?;
-    if path.join("app.json").exists() {
-        Some(path)
-    } else {
-        None
-    }
-}
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -309,9 +292,11 @@ impl LspClient {
                         "id": req_id,
                         "result": serde_json::Value::Null
                     });
-                    if let Some(writer) = self.writer.as_mut() {
-                        let _ = send_message(writer, &response).await;
-                    }
+                    let writer = self
+                        .writer
+                        .as_mut()
+                        .ok_or("writer closed while replying to server initialization request")?;
+                    send_message(writer, &response).await?;
                 } else {
                     self.buffered_notifications.push((method, params));
                 }
@@ -356,9 +341,10 @@ impl LspClient {
     /// Waits for `textDocument/publishDiagnostics` for the opened URI, which
     /// signals that parsing + linting are complete. Falls back to a 5-second
     /// timeout (configurable via `AL_TEST_DIAG_TIMEOUT_MS`) so tests don't
-    /// hang if the server never publishes. On timeout an ERROR-level log is
-    /// emitted so flaky CI runs surface the missed signal even when test
-    /// stdout is captured.
+    /// hang if the server never publishes. A missing acknowledgement fails the
+    /// caller: allowing the test to continue would make every later assertion
+    /// capable of observing the pre-open workspace snapshot and passing
+    /// without exercising the requested document.
     pub async fn open_file(&mut self, relative_path: &str, content: &str) {
         let uri = self.file_uri(relative_path);
         let version = 1;
@@ -373,11 +359,16 @@ impl LspClient {
             }
         });
 
-        if let Err(e) = self.notify("textDocument/didOpen", params).await {
-            tracing::warn!("textDocument/didOpen notify failed: {e}");
-        }
-        self.wait_for_diagnostics(&uri, version, diag_wait_timeout())
-            .await;
+        self.notify("textDocument/didOpen", params)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("textDocument/didOpen notify failed for {uri}: {error}")
+            });
+        assert!(
+            self.wait_for_diagnostics(&uri, version, diag_wait_timeout())
+                .await,
+            "server did not acknowledge textDocument/didOpen for {uri} version {version}"
+        );
     }
 
     /// Send a text change to an already-open file (simulates Zed keystroke).
@@ -400,11 +391,16 @@ impl LspClient {
             }]
         });
 
-        if let Err(e) = self.notify("textDocument/didChange", params).await {
-            tracing::warn!("textDocument/didChange notify failed: {e}");
-        }
-        self.wait_for_diagnostics(&uri, version, diag_wait_timeout())
-            .await;
+        self.notify("textDocument/didChange", params)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("textDocument/didChange notify failed for {uri}: {error}")
+            });
+        assert!(
+            self.wait_for_diagnostics(&uri, version, diag_wait_timeout())
+                .await,
+            "server did not acknowledge textDocument/didChange for {uri} version {version}"
+        );
     }
 
     /// Wait for `textDocument/publishDiagnostics` for `uri` and `version`, up to
@@ -412,12 +408,8 @@ impl LspClient {
     ///
     /// Returns `true` if the diagnostic arrived, `false` on timeout or channel
     /// close. Notifications consumed while waiting are buffered so tests can
-    /// still inspect them via `drain_notifications`.
-    ///
-    /// On timeout we log at ERROR (not WARN) so flaky CI runs surface the
-    /// missed signal even when test stdout is captured — silent timeouts here
-    /// can produce passing tests that never actually exercised the diagnostic
-    /// path.
+    /// still inspect them via `drain_notifications`. Callers treat `false` as
+    /// an assertion failure; it is never a successful test acknowledgement.
     async fn wait_for_diagnostics(
         &mut self,
         uri: &str,
@@ -471,9 +463,11 @@ impl LspClient {
             }]
         });
 
-        if let Err(e) = self.notify("textDocument/didChange", params).await {
-            tracing::warn!("textDocument/didChange (no_wait) notify failed: {e}");
-        }
+        self.notify("textDocument/didChange", params)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("textDocument/didChange (no_wait) notify failed for {uri}: {error}")
+            });
     }
 
     pub async fn close_file(&mut self, relative_path: &str) {
@@ -484,9 +478,11 @@ impl LspClient {
             "textDocument": { "uri": uri }
         });
 
-        if let Err(e) = self.notify("textDocument/didClose", params).await {
-            tracing::warn!("textDocument/didClose notify failed: {e}");
-        }
+        self.notify("textDocument/didClose", params)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("textDocument/didClose notify failed for {uri}: {error}")
+            });
     }
 
     pub async fn change_configuration(&mut self, settings: Value) {
@@ -494,12 +490,11 @@ impl LspClient {
             "settings": settings
         });
 
-        if let Err(e) = self
-            .notify("workspace/didChangeConfiguration", params)
+        self.notify("workspace/didChangeConfiguration", params)
             .await
-        {
-            tracing::warn!("workspace/didChangeConfiguration notify failed: {e}");
-        }
+            .unwrap_or_else(|error| {
+                panic!("workspace/didChangeConfiguration notify failed: {error}")
+            });
     }
 
     pub async fn prepare_rename(
@@ -816,15 +811,40 @@ impl LspClient {
     }
 
     pub async fn shutdown(mut self) {
-        let _ = self.request("shutdown", serde_json::json!(null)).await;
-        let _ = self.notify("exit", serde_json::json!(null)).await;
+        let result = self
+            .request_without_params("shutdown")
+            .await
+            .expect("LSP shutdown request failed");
+        assert!(
+            result.is_null(),
+            "LSP shutdown response must be null, got {result}"
+        );
+        self.notify("exit", serde_json::json!(null))
+            .await
+            .expect("LSP exit notification failed");
         // Drop writer to signal EOF
         self.writer.take();
 
         let Lifecycle::Stdio(child) = &mut self.lifecycle;
-        // Wait with timeout to avoid hanging if the server doesn't exit.
-        let _ = tokio::time::timeout(tokio::time::Duration::from_secs(3), child.wait()).await;
-        let _ = child.kill().await;
+        // A timeout is a failed lifecycle contract, not successful cleanup.
+        let status =
+            match tokio::time::timeout(tokio::time::Duration::from_secs(3), child.wait()).await {
+                Ok(Ok(status)) => status,
+                Ok(Err(error)) => panic!("failed to wait for al-lsp shutdown: {error}"),
+                Err(_) => {
+                    let kill_error = child.kill().await.err();
+                    panic!(
+                        "al-lsp did not exit within 3 seconds after shutdown/exit{}",
+                        kill_error
+                            .map(|error| format!("; forced kill also failed: {error}"))
+                            .unwrap_or_default()
+                    );
+                }
+            };
+        assert!(
+            status.success(),
+            "al-lsp exited unsuccessfully after shutdown: {status}"
+        );
     }
 }
 
@@ -872,14 +892,37 @@ impl LspClient {
         method: &str,
         params: Value,
     ) -> Result<Value, Box<dyn std::error::Error>> {
+        self.request_with_optional_params(method, Some(params))
+            .await
+    }
+
+    /// Send a JSON-RPC request whose contract has no `params` member.
+    ///
+    /// JSON-RPC distinguishes an omitted member from `"params": null`, and
+    /// tower-lsp rejects the latter for parameterless LSP methods such as
+    /// `shutdown`.
+    async fn request_without_params(
+        &mut self,
+        method: &str,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
+        self.request_with_optional_params(method, None).await
+    }
+
+    async fn request_with_optional_params(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
-        let msg = serde_json::json!({
+        let mut msg = serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
-            "method": method,
-            "params": params
+            "method": method
         });
+        if let Some(params) = params {
+            msg["params"] = params;
+        }
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.lock().await.insert(id, tx);

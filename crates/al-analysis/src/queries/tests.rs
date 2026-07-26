@@ -4,6 +4,7 @@
 //! in AL source files. No runtime connection to BC required.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use serde::Serialize;
 
@@ -11,6 +12,30 @@ use al_insight::graph::NodeKey;
 use al_insight::index::{CallGraph, NodeId};
 use al_symbols::ObjectKind;
 use al_workspace::Workspace;
+
+#[derive(Debug, thiserror::Error)]
+pub enum TestQueryError {
+    #[error(transparent)]
+    Workspace(#[from] super::WorkspaceQueryError),
+    #[error(transparent)]
+    CallGraph(#[from] al_workspace::CallGraphBuildError),
+    #[error(transparent)]
+    SourceGraph(#[from] al_insight::calls::SourceGraphError),
+    #[error("indexed AL file '{}' has no coherent cached source/tree pair", path.display())]
+    MissingCachedParse { path: PathBuf },
+    #[error("indexed AL file '{}' has no object declaration", path.display())]
+    MissingObjectDeclaration { path: PathBuf },
+    #[error("test object '{}' has no numeric object ID", path.display())]
+    MissingObjectId { path: PathBuf },
+    #[error("test object '{}' has ID {id}, outside the supported i32 range", path.display())]
+    ObjectIdOutOfRange { path: PathBuf, id: i64 },
+    #[error("indexed AL object '{}' has unsupported kind '{kind}'", path.display())]
+    InvalidObjectKind { path: PathBuf, kind: String },
+    #[error("test procedure {object}.{procedure} is absent from the complete call graph")]
+    MissingTestGraphNode { object: String, procedure: String },
+    #[error("reachable call-graph node {node} has no graph metadata")]
+    MissingGraphMetadata { node: usize },
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,26 +61,21 @@ pub struct TestCodeunit {
 }
 
 /// Discover all [Test] codeunits and procedures in workspace .al files.
-pub fn discover_tests(workspace: &Workspace) -> Vec<TestCodeunit> {
+pub fn discover_tests(workspace: &Workspace) -> Result<Vec<TestCodeunit>, TestQueryError> {
     let mut results = Vec::new();
 
-    for entry in workspace.file_index.files.iter() {
-        let entry_path = entry.key();
-        let path = entry_path.to_string_lossy().to_string();
-        let Some((text, tree)) = workspace.file_index.get_cached_parse(entry_path) else {
-            continue;
-        };
-        let source = text.as_bytes();
+    let sources =
+        crate::workspace_sources::snapshot(workspace).map_err(super::WorkspaceQueryError::from)?;
+    for source_file in sources {
+        let path = source_file.path.to_string_lossy().to_string();
+        let source = source_file.text.as_bytes();
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
-            continue;
-        };
-        if !al_syntax::language_data::is_test_container_kind(&obj_info.kind) {
+        if !al_syntax::language_data::is_test_container_kind(&source_file.object.info.kind) {
             continue;
         }
 
-        let obj_id = obj_info.id.unwrap_or(0) as i32;
-        let root = tree.root_node();
+        let obj_id = source_file.object.normalized_id;
+        let root = source_file.tree.root_node();
         let is_test_subtype = has_test_subtype(root, source);
         let test_procs = collect_test_procedures(root, source);
         let test_initializers = collect_procedures_with_attribute(root, source, "TestInitialize");
@@ -63,7 +83,7 @@ pub fn discover_tests(workspace: &Workspace) -> Vec<TestCodeunit> {
 
         if is_test_subtype || !test_procs.is_empty() {
             results.push(TestCodeunit {
-                name: obj_info.name.clone(),
+                name: source_file.object.info.name.clone(),
                 id: obj_id,
                 file: path,
                 tests: test_procs,
@@ -74,7 +94,7 @@ pub fn discover_tests(workspace: &Workspace) -> Vec<TestCodeunit> {
     }
 
     results.sort_by(|a, b| a.name.cmp(&b.name));
-    results
+    Ok(results)
 }
 
 /// One discovered test affected by a set of changed files.
@@ -124,33 +144,135 @@ pub struct AffectedTestsResult {
 /// Falls back to the legacy file-name match when no changed path resolves to a
 /// graph node (so the result is never worse than before). Use
 /// [`affected_tests_detailed`] when you need to know which mode ran.
-pub fn affected_tests(workspace: &Workspace, changed_paths: &[String]) -> Vec<AffectedTest> {
-    affected_tests_detailed(workspace, changed_paths).tests
+pub fn affected_tests(
+    workspace: &Workspace,
+    changed_paths: &[String],
+) -> Result<Vec<AffectedTest>, TestQueryError> {
+    Ok(affected_tests_detailed(workspace, changed_paths)?.tests)
 }
 
 /// Like [`affected_tests`] but also reports the [`AffectedMode`] used.
 pub fn affected_tests_detailed(
     workspace: &Workspace,
     changed_paths: &[String],
-) -> AffectedTestsResult {
+) -> Result<AffectedTestsResult, TestQueryError> {
     if changed_paths.is_empty() {
-        return AffectedTestsResult {
+        return Ok(AffectedTestsResult {
             tests: Vec::new(),
             mode: AffectedMode::CallGraph,
-        };
+        });
     }
 
-    if let Some(tests) = affected_via_call_graph(workspace, changed_paths) {
-        return AffectedTestsResult {
+    if let Some(tests) = affected_via_call_graph(workspace, changed_paths)? {
+        return Ok(AffectedTestsResult {
             tests,
             mode: AffectedMode::CallGraph,
-        };
+        });
     }
 
-    AffectedTestsResult {
-        tests: affected_tests_file_based(workspace, changed_paths),
+    Ok(AffectedTestsResult {
+        tests: affected_tests_file_based(workspace, changed_paths)?,
         mode: AffectedMode::FileBased,
+    })
+}
+
+/// Files containing executable procedures transitively reachable from any
+/// discovered `[Test]` method.
+///
+/// This is the production-code mutation boundary: it follows the same fully
+/// resolved direct, interface, `Codeunit.Run`, event/subscriber, and trigger
+/// edges as affected-test analysis, but in the forward direction. Test files
+/// themselves are always included even if a malformed or incomplete graph
+/// cannot resolve their procedure node.
+pub fn files_reachable_from_tests(
+    workspace: &Workspace,
+) -> Result<HashSet<PathBuf>, TestQueryError> {
+    let discovered = discover_tests(workspace)?;
+    let mut files: HashSet<PathBuf> = discovered
+        .iter()
+        .map(|codeunit| PathBuf::from(&codeunit.file))
+        .collect();
+    if discovered.is_empty() {
+        return Ok(files);
     }
+
+    let insight = {
+        let (insight, _cg_guard) = workspace.get_or_build_call_graph()?;
+        insight
+    };
+    let mut graph = CallGraph::build_from_insight(&insight);
+    al_insight::calls::resolve_all_workspace_call_edges(
+        &workspace.file_index,
+        &workspace.symbols,
+        &insight,
+        &mut graph,
+    )?;
+
+    let mut seen: HashSet<NodeId> = HashSet::new();
+    let mut queue = std::collections::VecDeque::new();
+    for codeunit in &discovered {
+        let kind = object_identity_for_path(workspace, &codeunit.file)?
+            .map(|(kind, _)| kind)
+            .ok_or_else(|| TestQueryError::MissingObjectDeclaration {
+                path: PathBuf::from(&codeunit.file),
+            })?;
+        let object = codeunit.name.to_lowercase();
+        for procedure in &codeunit.tests {
+            let key = NodeKey::Procedure(kind, object.clone(), procedure.name.to_lowercase());
+            let node = CallGraph::node_id_for(&insight, &key).ok_or_else(|| {
+                TestQueryError::MissingTestGraphNode {
+                    object: codeunit.name.clone(),
+                    procedure: procedure.name.clone(),
+                }
+            })?;
+            if seen.insert(node) {
+                queue.push_back(node);
+            }
+        }
+    }
+
+    while let Some(node) = queue.pop_front() {
+        for edge in graph.callees_of(node) {
+            if seen.insert(edge.to) {
+                queue.push_back(edge.to);
+            }
+        }
+    }
+
+    for node in seen {
+        let Some(graph_node) = insight
+            .graph
+            .node_weight(petgraph::graph::NodeIndex::new(node.0))
+        else {
+            return Err(TestQueryError::MissingGraphMetadata { node: node.0 });
+        };
+        let (kind, object_name) = match graph_node {
+            al_insight::graph::InsightNode::Object { kind, name, .. } => (*kind, name),
+            al_insight::graph::InsightNode::Procedure {
+                object_kind,
+                object_name,
+                ..
+            }
+            | al_insight::graph::InsightNode::Event {
+                object_kind,
+                object_name,
+                ..
+            }
+            | al_insight::graph::InsightNode::Subscriber {
+                object_kind,
+                object_name,
+                ..
+            } => (*object_kind, object_name),
+        };
+        if let Some(path) = workspace
+            .file_index
+            .object_path_of_kind(object_name, &[kind.al_keyword()])
+        {
+            files.insert(path);
+        }
+    }
+
+    Ok(files)
 }
 
 /// Call-graph affected-test detection.
@@ -162,14 +284,16 @@ pub fn affected_tests_detailed(
 fn affected_via_call_graph(
     workspace: &Workspace,
     changed_paths: &[String],
-) -> Option<Vec<AffectedTest>> {
+) -> Result<Option<Vec<AffectedTest>>, TestQueryError> {
     // Map every changed file to the (kind, name) of the AL object it declares.
-    let want: HashSet<(ObjectKind, String)> = changed_paths
-        .iter()
-        .filter_map(|p| object_identity_for_path(workspace, p))
-        .collect();
+    let mut want = HashSet::new();
+    for path in changed_paths {
+        if let Some(identity) = object_identity_for_path(workspace, path)? {
+            want.insert(identity);
+        }
+    }
     if want.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     // The cached workspace call graph only resolves high-fanout "Tier 1" files
@@ -178,7 +302,7 @@ fn affected_via_call_graph(
     // the node-complete cached insight graph. `get_or_build_call_graph` has
     // already registered every workspace node and enriched the symbol index.
     let insight = {
-        let (insight, _cg_guard) = workspace.get_or_build_call_graph();
+        let (insight, _cg_guard) = workspace.get_or_build_call_graph()?;
         insight
     };
     let mut cg = CallGraph::build_from_insight(&insight);
@@ -187,7 +311,7 @@ fn affected_via_call_graph(
         &workspace.symbols,
         &insight,
         &mut cg,
-    );
+    )?;
 
     // Seeds: every procedure / event / subscriber node of a changed object.
     let mut seeds: Vec<NodeId> = Vec::new();
@@ -206,22 +330,27 @@ fn affected_via_call_graph(
         // Changed object(s) exist but contribute no graph members (e.g. an
         // empty table). Don't claim a precise empty answer — let the caller
         // fall back to file matching.
-        return None;
+        return Ok(None);
     }
 
     let reachable = cg.reachable_callers(seeds);
 
     let mut affected = Vec::new();
-    for cu in discover_tests(workspace) {
-        let kind = object_identity_for_path(workspace, &cu.file)
-            .map(|(k, _)| k)
-            .unwrap_or(ObjectKind::Codeunit);
+    for cu in discover_tests(workspace)? {
+        let kind = object_identity_for_path(workspace, &cu.file)?
+            .map(|(kind, _)| kind)
+            .ok_or_else(|| TestQueryError::MissingObjectDeclaration {
+                path: PathBuf::from(&cu.file),
+            })?;
         let obj_lower = cu.name.to_lowercase();
         for proc in &cu.tests {
             let key = NodeKey::Procedure(kind, obj_lower.clone(), proc.name.to_lowercase());
-            let Some(node_id) = CallGraph::node_id_for(&insight, &key) else {
-                continue;
-            };
+            let node_id = CallGraph::node_id_for(&insight, &key).ok_or_else(|| {
+                TestQueryError::MissingTestGraphNode {
+                    object: cu.name.clone(),
+                    procedure: proc.name.clone(),
+                }
+            })?;
             if reachable.contains(&node_id) {
                 affected.push(AffectedTest {
                     codeunit_id: cu.id,
@@ -233,39 +362,47 @@ fn affected_via_call_graph(
             }
         }
     }
-    Some(affected)
+    Ok(Some(affected))
 }
 
 /// Resolve the `(ObjectKind, lowercased name)` of the AL object declared in
 /// `path`, using the file index's cached object info. Tries the path as given,
 /// then its canonical form (the daemon and the index may disagree on absolute
 /// vs symlinked paths).
-fn object_identity_for_path(workspace: &Workspace, path: &str) -> Option<(ObjectKind, String)> {
-    let from_info = |info: &al_source::file_index::CachedObjectInfo| {
-        info.kind
-            .parse::<ObjectKind>()
-            .ok()
-            .map(|k| (k, info.name.to_lowercase()))
+fn object_identity_for_path(
+    workspace: &Workspace,
+    path: &str,
+) -> Result<Option<(ObjectKind, String)>, TestQueryError> {
+    let from_info = |path: &std::path::Path,
+                     info: &al_source::file_index::CachedObjectInfo|
+     -> Result<(ObjectKind, String), TestQueryError> {
+        let kind =
+            info.kind
+                .parse::<ObjectKind>()
+                .map_err(|_| TestQueryError::InvalidObjectKind {
+                    path: path.to_path_buf(),
+                    kind: info.kind.clone(),
+                })?;
+        Ok((kind, info.name.to_lowercase()))
     };
 
     let p = std::path::Path::new(path);
     if let Some(info) = workspace.file_index.object_info.get(p) {
-        if let Some(id) = from_info(&info) {
-            return Some(id);
-        }
+        return from_info(p, &info).map(Some);
     }
     if let Ok(canon) = p.canonicalize() {
         if let Some(info) = workspace.file_index.object_info.get(&canon) {
-            if let Some(id) = from_info(&info) {
-                return Some(id);
-            }
+            return from_info(&canon, &info).map(Some);
         }
     }
-    None
+    Ok(None)
 }
 
 /// Legacy fallback: a test is affected iff its own file is in `changed_paths`.
-fn affected_tests_file_based(workspace: &Workspace, changed_paths: &[String]) -> Vec<AffectedTest> {
+fn affected_tests_file_based(
+    workspace: &Workspace,
+    changed_paths: &[String],
+) -> Result<Vec<AffectedTest>, TestQueryError> {
     // Normalise both sides to absolute path strings for comparison.
     let normalised_changed: HashSet<String> = changed_paths
         .iter()
@@ -279,7 +416,7 @@ fn affected_tests_file_based(workspace: &Workspace, changed_paths: &[String]) ->
         .collect();
 
     let mut affected = Vec::new();
-    for cu in discover_tests(workspace) {
+    for cu in discover_tests(workspace)? {
         let cu_canonical = std::path::Path::new(&cu.file)
             .canonicalize()
             .ok()
@@ -297,7 +434,7 @@ fn affected_tests_file_based(workspace: &Workspace, changed_paths: &[String]) ->
             }
         }
     }
-    affected
+    Ok(affected)
 }
 
 /// Return whether the codeunit has a `Subtype = Test` property.
@@ -644,7 +781,7 @@ mod test_discovery {
     #[test]
     fn discover_tests_empty_workspace() {
         let workspace = al_workspace::Workspace::new();
-        let results = discover_tests(&workspace);
+        let results = discover_tests(&workspace).unwrap();
         assert!(results.is_empty());
     }
 }
@@ -788,12 +925,16 @@ mod affected_call_graph {
             .add_file(PathBuf::from("/ws/midcu.al"), MIDCU.to_string());
         ws.file_index
             .add_file(PathBuf::from("/ws/tests.al"), TESTS.to_string());
+        ws.file_index.add_file(
+            PathBuf::from("/ws/unused.al"),
+            "codeunit 50104 Unused { procedure NeverCalled() begin end; }".to_string(),
+        );
         ws
     }
 
     fn affected_names(ws: &Workspace, changed: &[&str]) -> (AffectedMode, Vec<String>) {
         let changed: Vec<String> = changed.iter().map(|s| s.to_string()).collect();
-        let result = affected_tests_detailed(ws, &changed);
+        let result = affected_tests_detailed(ws, &changed).unwrap();
         let mut names: Vec<String> = result.tests.iter().map(|t| t.method_name.clone()).collect();
         names.sort();
         (result.mode, names)
@@ -873,7 +1014,28 @@ mod affected_call_graph {
     #[test]
     fn empty_changed_set_is_empty() {
         let ws = build_ws();
-        let result = affected_tests_detailed(&ws, &[]);
+        let result = affected_tests_detailed(&ws, &[]).unwrap();
         assert!(result.tests.is_empty());
+    }
+
+    #[test]
+    fn forward_test_reachability_includes_production_files_not_only_test_files() {
+        let ws = build_ws();
+        let files = files_reachable_from_tests(&ws).unwrap();
+        for expected in [
+            "/ws/tests.al",
+            "/ws/helper.al",
+            "/ws/midcu.al",
+            "/ws/unrelated.al",
+        ] {
+            assert!(
+                files.contains(&PathBuf::from(expected)),
+                "reachable set must include {expected}: {files:?}"
+            );
+        }
+        assert!(
+            !files.contains(&PathBuf::from("/ws/unused.al")),
+            "uncalled production code must stay outside affected-only mutation scope"
+        );
     }
 }

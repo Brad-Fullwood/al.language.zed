@@ -23,14 +23,29 @@ pub fn cmd_metrics(
     });
 
     if let Some(f) = file {
-        let Some(uri) = file_to_uri(f) else {
-            return report_error(&format!("Cannot resolve path: {f}"), json);
+        let uri = match file_to_uri(f) {
+            Ok(uri) => uri,
+            Err(error) => return report_error(&error, json),
         };
         params["uri"] = serde_json::json!(uri);
     }
 
-    match client.request("metrics", Some(params)) {
+    match request_checked(&mut client, "metrics", Some(params)) {
         Ok(result) => {
+            let has_hotspots = if all {
+                result.as_array().is_some_and(|files| {
+                    files.iter().any(|file| {
+                        file.get("hotspots")
+                            .and_then(|value| value.as_array())
+                            .is_some_and(|hotspots| !hotspots.is_empty())
+                    })
+                })
+            } else {
+                result
+                    .get("hotspots")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|hotspots| !hotspots.is_empty())
+            };
             if json {
                 print_json(&result);
             } else if all {
@@ -69,7 +84,11 @@ pub fn cmd_metrics(
                     }
                 }
             }
-            ExitCode::SUCCESS
+            if has_hotspots {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(e) => report_error(&e, json),
     }
@@ -92,7 +111,7 @@ fn print_complexity_entry(file: Option<&str>, entry: &serde_json::Value) {
 }
 
 pub fn cmd_sql_scan(json: bool) -> ExitCode {
-    run_command(
+    run_command_with_exit(
         "sqlPatterns",
         Some(serde_json::json!({})),
         json,
@@ -118,6 +137,16 @@ pub fn cmd_sql_scan(json: bool) -> ExitCode {
                 eprintln!("\n{} SQL anti-pattern(s) found", violations.len());
             }
         },
+        |result| {
+            if result
+                .as_array()
+                .is_some_and(|violations| !violations.is_empty())
+            {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        },
     )
 }
 
@@ -126,22 +155,19 @@ pub fn cmd_add_application_area(value: &str, dry_run: bool, json: bool) -> ExitC
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    match client.request(
+    match request_checked(
+        &mut client,
         "fix.applicationArea",
         Some(serde_json::json!({ "value": value, "dryRun": dry_run })),
     ) {
         Ok(result) => {
+            let (files, changes) = match bulk_fix_counts(&result, dry_run) {
+                Ok(summary) => summary,
+                Err(error) => return report_error(&error, json),
+            };
             if json {
                 print_json(&result);
             } else {
-                let files = result
-                    .get("filesModified")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let changes = result
-                    .get("totalChanges")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
                 if dry_run {
                     println!("Dry run: would modify {files} file(s) with {changes} change(s)");
                 } else {
@@ -156,28 +182,21 @@ pub fn cmd_add_application_area(value: &str, dry_run: bool, json: bool) -> ExitC
     }
 }
 
-pub fn cmd_add_tooltips(from_table: Option<&str>, dry_run: bool, json: bool) -> ExitCode {
+pub fn cmd_add_tooltips(from_table: &str, dry_run: bool, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let mut params = serde_json::json!({ "dryRun": dry_run });
-    if let Some(t) = from_table {
-        params["fromTable"] = serde_json::Value::String(t.to_string());
-    }
-    match client.request("fix.tooltips", Some(params)) {
+    let params = serde_json::json!({ "dryRun": dry_run, "fromTable": from_table });
+    match request_checked(&mut client, "fix.tooltips", Some(params)) {
         Ok(result) => {
+            let (files, changes) = match bulk_fix_counts(&result, dry_run) {
+                Ok(summary) => summary,
+                Err(error) => return report_error(&error, json),
+            };
             if json {
                 print_json(&result);
             } else {
-                let files = result
-                    .get("filesModified")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let changes = result
-                    .get("totalChanges")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
                 if dry_run {
                     println!("Dry run: would modify {files} file(s) with {changes} tooltip(s)");
                 } else {
@@ -195,22 +214,19 @@ pub fn cmd_add_data_classification(value: &str, dry_run: bool, json: bool) -> Ex
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    match client.request(
+    match request_checked(
+        &mut client,
         "fix.dataClassification",
         Some(serde_json::json!({ "value": value, "dryRun": dry_run })),
     ) {
         Ok(result) => {
+            let (files, changes) = match bulk_fix_counts(&result, dry_run) {
+                Ok(summary) => summary,
+                Err(error) => return report_error(&error, json),
+            };
             if json {
                 print_json(&result);
             } else {
-                let files = result
-                    .get("filesModified")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let changes = result
-                    .get("totalChanges")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
                 if dry_run {
                     println!("Dry run: would modify {files} file(s) with {changes} field(s)");
                 } else {
@@ -222,5 +238,81 @@ pub fn cmd_add_data_classification(value: &str, dry_run: bool, json: bool) -> Ex
             ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
+    }
+}
+
+fn bulk_fix_counts(
+    result: &serde_json::Value,
+    expected_dry_run: bool,
+) -> Result<(usize, u64), String> {
+    let object = result.as_object().ok_or_else(|| {
+        "daemon returned an invalid bulk-fix response: expected object".to_string()
+    })?;
+    let files = object
+        .get("modifiedFiles")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            "daemon returned an invalid bulk-fix response: 'modifiedFiles' must be an array"
+                .to_string()
+        })?;
+    if files.iter().any(|file| !file.is_string()) {
+        return Err(
+            "daemon returned an invalid bulk-fix response: every modified file must be a string"
+                .to_string(),
+        );
+    }
+    let changes = object
+        .get("changesCount")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            "daemon returned an invalid bulk-fix response: 'changesCount' must be an integer"
+                .to_string()
+        })?;
+    let dry_run = object
+        .get("dryRun")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            "daemon returned an invalid bulk-fix response: 'dryRun' must be a boolean".to_string()
+        })?;
+    if dry_run != expected_dry_run {
+        return Err(format!(
+            "daemon returned an inconsistent bulk-fix response: requested dryRun={expected_dry_run}, got {dry_run}"
+        ));
+    }
+    Ok((files.len(), changes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bulk_fix_counts;
+
+    #[test]
+    fn bulk_fix_response_contract_rejects_old_or_inconsistent_shapes() {
+        assert!(
+            bulk_fix_counts(
+                &serde_json::json!({
+                    "modifiedFiles": ["A.al"],
+                    "changesCount": 2,
+                    "dryRun": true
+                }),
+                true
+            )
+            .is_ok()
+        );
+        for value in [
+            serde_json::json!({"filesModified": 1, "totalChanges": 2}),
+            serde_json::json!({
+                "modifiedFiles": ["A.al"],
+                "changesCount": 2,
+                "dryRun": false
+            }),
+            serde_json::json!({
+                "modifiedFiles": [7],
+                "changesCount": 2,
+                "dryRun": true
+            }),
+        ] {
+            assert!(bulk_fix_counts(&value, true).is_err());
+        }
     }
 }

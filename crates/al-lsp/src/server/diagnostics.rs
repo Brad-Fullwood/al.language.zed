@@ -5,11 +5,36 @@
 //!                     diagnostics.
 //! Phase 2 (async):   send to .NET SemanticBridge for CodeAnalysis diagnostics.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tower_lsp::lsp_types::*;
 
 use super::AlServer;
+
+pub(crate) struct CachedSemanticDiagnostics {
+    pub(crate) text: Arc<String>,
+    pub(crate) client_version: i32,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Clone)]
+pub(crate) struct DiagnosticPublicationState {
+    pub(crate) semantic_cache: std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<Url, CachedSemanticDiagnostics>>,
+    >,
+    pub(crate) published_uris: std::sync::Arc<tokio::sync::Mutex<std::collections::HashSet<Url>>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum WorkspaceDiagnosticError {
+    #[error("workspace diagnostic path cannot be represented as a file URI: {}", .0.display())]
+    InvalidFilePath(PathBuf),
+    #[error("workspace diagnostic analysis failed: {0}")]
+    Analysis(String),
+    #[error("workspace diagnostic worker failed: {0}")]
+    Worker(String),
+}
 
 pub(crate) fn full_diagnostic_report(items: Vec<Diagnostic>) -> DocumentDiagnosticReportResult {
     DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
@@ -94,7 +119,7 @@ pub(crate) async fn compute_diagnostics(
 /// only for open documents.
 pub(crate) async fn compute_workspace_diagnostics(
     server: &AlServer,
-) -> Vec<(Url, Option<i64>, Vec<Diagnostic>)> {
+) -> Result<Vec<(Url, Option<i64>, Vec<Diagnostic>)>, WorkspaceDiagnosticError> {
     let mut reports: Vec<(Url, Option<i64>, Vec<Diagnostic>)> = Vec::new();
     let mut covered: std::collections::HashSet<Url> = std::collections::HashSet::new();
 
@@ -110,7 +135,7 @@ pub(crate) async fn compute_workspace_diagnostics(
         let version = server
             .workspace
             .documents
-            .get_version(&uri)
+            .get_client_version(&uri)
             .map(|v| v as i64);
         covered.insert(uri.clone());
         if !diags.is_empty() {
@@ -127,17 +152,18 @@ pub(crate) async fn compute_workspace_diagnostics(
         .await
         .as_ref()
         .map(|project| project.root.clone());
-    for (path, diags) in al_analysis::queries::diagnostics::workspace_syntax_diagnostics_at_root(
+    let native = al_analysis::queries::diagnostics::workspace_syntax_diagnostics_at_root(
         &server.workspace,
         &config,
         project_root.as_deref(),
-    ) {
+    )
+    .map_err(|error| WorkspaceDiagnosticError::Analysis(error.to_string()))?;
+    for (path, diags) in native {
         if diags.is_empty() {
             continue;
         }
-        let Ok(uri) = Url::from_file_path(&path) else {
-            continue;
-        };
+        let uri = Url::from_file_path(&path)
+            .map_err(|()| WorkspaceDiagnosticError::InvalidFilePath(path.clone()))?;
         if covered.contains(&uri) || is_cache_path(&uri) {
             continue;
         }
@@ -145,14 +171,179 @@ pub(crate) async fn compute_workspace_diagnostics(
         reports.push((uri, None, lsp));
     }
 
-    reports
+    Ok(reports)
 }
 
-pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str) {
+/// Compute the bridge-free project diagnostic generation used by push
+/// diagnostics. Cached semantic diagnostics are merged only when they belong
+/// to the exact current open-document `Arc` and client version.
+async fn compute_workspace_push_diagnostics(
+    workspace: std::sync::Arc<al_workspace::Workspace>,
+    semantic_cache: &tokio::sync::Mutex<std::collections::HashMap<Url, CachedSemanticDiagnostics>>,
+) -> Result<Vec<(Url, Option<i32>, Vec<Diagnostic>)>, WorkspaceDiagnosticError> {
+    let config = workspace.config.read().await.clone();
+    let project_root = workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone());
+    let worker_workspace = std::sync::Arc::clone(&workspace);
+    let native = tokio::task::spawn_blocking(move || {
+        al_analysis::queries::diagnostics::workspace_syntax_diagnostics_at_root(
+            &worker_workspace,
+            &config,
+            project_root.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| WorkspaceDiagnosticError::Worker(error.to_string()))?
+    .map_err(|error| WorkspaceDiagnosticError::Analysis(error.to_string()))?;
+
+    let semantic_cache = semantic_cache.lock().await;
+    let mut reports = Vec::new();
+    for (path, diagnostics) in native {
+        let uri = Url::from_file_path(&path)
+            .map_err(|()| WorkspaceDiagnosticError::InvalidFilePath(path))?;
+        if is_cache_path(&uri) {
+            continue;
+        }
+        let mut diagnostics: Vec<Diagnostic> = diagnostics.iter().map(syntax_diag_to_lsp).collect();
+        let snapshot = workspace.documents.get_text_and_client_version(&uri);
+        let version = snapshot.as_ref().map(|(_, version)| *version);
+        if let (Some((text, version)), Some(cached)) = (snapshot.as_ref(), semantic_cache.get(&uri))
+        {
+            if *version == cached.client_version && Arc::ptr_eq(text, &cached.text) {
+                diagnostics.extend(cached.diagnostics.clone());
+            }
+        }
+        if !diagnostics.is_empty() {
+            reports.push((uri, version, diagnostics));
+        }
+    }
+    Ok(reports)
+}
+
+/// Re-publish the complete workspace diagnostic generation, including empty
+/// arrays for files that became clean.
+///
+/// Cross-file native rules (duplicate identities, dependency and architecture
+/// checks) can change on an open, close, save, or reindex of a *different*
+/// document. Publishing only non-empty results leaves stale diagnostics in the
+/// client indefinitely, so this helper explicitly covers every indexed/open
+/// URI and overlays the computed non-empty reports.
+pub(crate) async fn publish_workspace_diagnostics(server: &AlServer) {
+    publish_workspace_diagnostics_parts(
+        std::sync::Arc::clone(&server.workspace),
+        server.client.clone(),
+        std::sync::Arc::clone(&server.semantic_diagnostic_cache),
+        std::sync::Arc::clone(&server.workspace_diagnostic_uris),
+        None,
+    )
+    .await;
+}
+
+pub(crate) async fn publish_workspace_diagnostics_parts(
+    workspace: std::sync::Arc<al_workspace::Workspace>,
+    client: tower_lsp::Client,
+    semantic_cache: std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<Url, CachedSemanticDiagnostics>>,
+    >,
+    published_uris: std::sync::Arc<tokio::sync::Mutex<std::collections::HashSet<Url>>>,
+    force_clear_uri: Option<Url>,
+) {
+    // Compute from one immutable workspace generation. didOpen/didChange/
+    // didClose and reindex all take the generation write lock while mutating
+    // the document store, file index, and parse caches. Dropping this read lock
+    // before `compute_workspace_push_diagnostics` used to let those mutations
+    // interleave with `coherent_snapshot`, producing MissingCachedParse or
+    // GenerationChanged errors during ordinary editor traffic.
+    //
+    // We release the lock before publishing over the client transport, then
+    // retry if a newer generation won the race between computation and
+    // publication. This keeps the snapshot atomic without holding edits behind
+    // potentially slow client I/O.
+    loop {
+        let generation = workspace.generation_lock.read().await;
+        let revision = workspace.generation_revision();
+
+        let reports = match compute_workspace_push_diagnostics(
+            std::sync::Arc::clone(&workspace),
+            &semantic_cache,
+        )
+        .await
+        {
+            Ok(reports) => reports,
+            Err(error) => {
+                tracing::error!(%error, "project diagnostics generation failed");
+                client
+                    .show_message(
+                        MessageType::ERROR,
+                        format!("AL project diagnostics failed: {error}"),
+                    )
+                    .await;
+                return;
+            }
+        };
+        drop(generation);
+
+        let generation = workspace.generation_lock.read().await;
+        if workspace.generation_revision() != revision {
+            drop(generation);
+            tokio::task::yield_now().await;
+            continue;
+        }
+
+        let mut current = std::collections::BTreeMap::new();
+        for (uri, version, diagnostics) in reports {
+            current.insert(uri, (version, diagnostics));
+        }
+        let mut published = published_uris.lock().await;
+        let mut stale: Vec<Url> = published
+            .difference(&current.keys().cloned().collect())
+            .cloned()
+            .collect();
+        if let Some(uri) = force_clear_uri {
+            if !current.contains_key(&uri) && !stale.contains(&uri) {
+                stale.push(uri);
+            }
+        }
+        stale.sort();
+
+        for uri in stale {
+            let version = workspace.documents.get_client_version(&uri);
+            client.publish_diagnostics(uri, Vec::new(), version).await;
+        }
+        for (uri, (version, diagnostics)) in &current {
+            client
+                .publish_diagnostics(uri.clone(), diagnostics.clone(), *version)
+                .await;
+        }
+        *published = current.into_keys().collect();
+        drop(published);
+        drop(generation);
+        return;
+    }
+}
+
+pub(crate) async fn publish_diagnostics(
+    server: &AlServer,
+    uri: &Url,
+    text: Arc<String>,
+    expected_client_version: i32,
+) {
     // skip diagnostics for virtual symbol cache files — they are not
     // workspace files and Zed logs a warning for every publishDiagnostics on them.
     if is_cache_path(uri) {
         tracing::debug!(uri = %uri, "publish_diagnostics: skipping cache file");
+        return;
+    }
+    if !document_snapshot_is_current(server, uri, &text, expected_client_version) {
+        tracing::debug!(
+            uri = %uri,
+            expected_client_version,
+            "publish_diagnostics: document version changed before analysis; skipping stale generation"
+        );
         return;
     }
 
@@ -185,14 +376,38 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
     }
 
     let phase1_count = diagnostics.len();
-    let document_version = server.workspace.documents.get_client_version(uri);
+    if !document_snapshot_is_current(server, uri, &text, expected_client_version) {
+        tracing::debug!(
+            uri = %uri,
+            expected_client_version,
+            "publish_diagnostics: document version changed during phase 1; skipping stale generation"
+        );
+        return;
+    }
+    let document_version = Some(expected_client_version);
     tracing::debug!(uri = %uri, phase1_count, "publish_diagnostics: publishing phase 1");
     server
         .client
         .publish_diagnostics(uri.clone(), diagnostics.clone(), document_version)
         .await;
 
-    let semantic_diags = run_semantic_analysis(server, uri, text).await;
+    let semantic_diags = run_semantic_analysis(server, uri, &text).await;
+    if !document_snapshot_is_current(server, uri, &text, expected_client_version) {
+        tracing::debug!(
+            uri = %uri,
+            expected_client_version,
+            "publish_diagnostics: document version changed during semantic analysis; skipping stale phase 2"
+        );
+        return;
+    }
+    server.semantic_diagnostic_cache.lock().await.insert(
+        uri.clone(),
+        CachedSemanticDiagnostics {
+            text: Arc::clone(&text),
+            client_version: expected_client_version,
+            diagnostics: semantic_diags.clone(),
+        },
+    );
     if !semantic_diags.is_empty() {
         diagnostics.extend(semantic_diags);
         let total_count = diagnostics.len();
@@ -204,18 +419,81 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
     }
 }
 
+fn document_snapshot_is_current(
+    server: &AlServer,
+    uri: &Url,
+    expected_text: &Arc<String>,
+    expected_client_version: i32,
+) -> bool {
+    server
+        .workspace
+        .documents
+        .get_text_and_client_version(uri)
+        .is_some_and(|(current_text, current_version)| {
+            current_version == expected_client_version && Arc::ptr_eq(&current_text, expected_text)
+        })
+}
+
 /// Run semantic analysis via .NET bridge if enabled. Returns diagnostics or empty vec.
 ///
 /// Shared between `compute_diagnostics` (pull) and `publish_diagnostics` (push Phase 2).
 async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<Diagnostic> {
-    let (enable_analysis, bg_analysis) = {
+    let (
+        enable_analysis,
+        bg_analysis,
+        configured_analyzers,
+        assembly_probing_paths,
+        configured_package_cache,
+    ) = {
         let cfg = server.workspace.config.read().await;
-        (cfg.enable_code_analysis, cfg.background_code_analysis)
+        (
+            cfg.enable_code_analysis,
+            cfg.background_code_analysis,
+            cfg.code_analyzers.clone(),
+            cfg.assembly_probing_paths.clone(),
+            cfg.package_cache_path.clone(),
+        )
     };
     if !enable_analysis || !bg_analysis {
         tracing::debug!(uri = %uri, enable_analysis, bg_analysis, "semantic analysis disabled by config");
         return vec![];
     }
+
+    let file_path = match uri.to_file_path() {
+        Ok(path) => path,
+        Err(()) => {
+            return vec![semantic_pipeline_diagnostic(format!(
+                "Microsoft semantic analysis requires a local file URI, got {uri}"
+            ))];
+        }
+    };
+    let project = server.workspace.project.read().await.clone();
+    let project_root = project
+        .as_ref()
+        .map(|project| project.root.clone())
+        .or_else(|| file_path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let package_cache = configured_package_cache
+        .or_else(|| project.as_ref().map(|project| project.packages_dir.clone()))
+        .unwrap_or_else(|| project_root.join(".alpackages"));
+
+    let analyzers = match tokio::task::spawn_blocking(move || {
+        resolve_semantic_analyzer_entries(
+            &configured_analyzers,
+            &project_root,
+            &assembly_probing_paths,
+        )
+    })
+    .await
+    {
+        Ok(Ok(analyzers)) => analyzers,
+        Ok(Err(error)) => return vec![semantic_pipeline_diagnostic(error)],
+        Err(error) => {
+            return vec![semantic_pipeline_diagnostic(format!(
+                "analyzer discovery worker failed: {error}"
+            ))];
+        }
+    };
 
     let guard = match server.get_or_init_bridge().await {
         Some(g) => g,
@@ -226,26 +504,6 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
         None => return vec![],
     };
     let bridge_generation = bridge.generation();
-
-    let file_path = uri
-        .to_file_path()
-        .unwrap_or_else(|_| PathBuf::from(uri.path()));
-
-    let config_guard = server.workspace.config.read().await;
-    let analyzers = config_guard.code_analyzers.clone();
-    let configured_package_cache = config_guard.package_cache_path.clone();
-    drop(config_guard);
-    let package_cache = match configured_package_cache {
-        Some(path) => path,
-        None => server
-            .workspace
-            .project
-            .read()
-            .await
-            .as_ref()
-            .map(|project| project.packages_dir.clone())
-            .unwrap_or_else(|| PathBuf::from(".alpackages")),
-    };
 
     let req = crate::semantic::AnalyzeRequest {
         file: file_path,
@@ -308,8 +566,57 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
                     ));
                 }
             }
-            vec![]
+            vec![semantic_pipeline_diagnostic(format!(
+                "Microsoft semantic analysis failed: {error}"
+            ))]
         }
+    }
+}
+
+fn resolve_semantic_analyzer_entries(
+    configured: &[String],
+    project_root: &Path,
+    assembly_probing_paths: &[PathBuf],
+) -> Result<Vec<String>, String> {
+    configured
+        .iter()
+        .map(|entry| {
+            if al_project::analyzers::is_builtin_analyzer(entry) {
+                return Ok(entry.clone());
+            }
+            al_project::analyzers::discover_custom_analyzer(
+                entry,
+                project_root,
+                assembly_probing_paths,
+            )
+            .map_err(|error| error.to_string())?
+            .map(|path| path.display().to_string())
+            .ok_or_else(|| {
+                format!(
+                    "Requested analyzer '{entry}' could not be found in the project, probing paths, NuGet cache, or common editor extension locations"
+                )
+            })
+        })
+        .collect()
+}
+
+fn semantic_pipeline_diagnostic(message: String) -> Diagnostic {
+    Diagnostic {
+        range: Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 0,
+            },
+        },
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("AL-SEMANTIC".to_string())),
+        source: Some("al-analyzer".to_string()),
+        message,
+        ..Default::default()
     }
 }
 
@@ -478,6 +785,51 @@ pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semantic_analyzer_resolution_preserves_builtins_and_discovers_custom_names() {
+        let project = tempfile::tempdir().unwrap();
+        let dll = project
+            .path()
+            .join(".netpackages/businesscentral.lintercop/1.0.0/BusinessCentral.LinterCop.dll");
+        std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        std::fs::write(&dll, b"analyzer").unwrap();
+
+        let resolved = resolve_semantic_analyzer_entries(
+            &[
+                "CodeCop".to_string(),
+                "BusinessCentral.LinterCop".to_string(),
+            ],
+            project.path(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(resolved[0], "CodeCop");
+        assert_eq!(
+            resolved[1],
+            dll.canonicalize().unwrap().display().to_string()
+        );
+    }
+
+    #[test]
+    fn missing_requested_semantic_analyzer_is_explicit() {
+        let project = tempfile::tempdir().unwrap();
+        let error = resolve_semantic_analyzer_entries(
+            &["Missing.Custom.Analyzer".to_string()],
+            project.path(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(error.contains("could not be found"));
+
+        let diagnostic = semantic_pipeline_diagnostic(error);
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(
+            diagnostic.code,
+            Some(NumberOrString::String("AL-SEMANTIC".to_string()))
+        );
+        assert_eq!(diagnostic.source.as_deref(), Some("al-analyzer"));
+    }
 
     #[test]
     fn test_syntax_error_to_diagnostic() {

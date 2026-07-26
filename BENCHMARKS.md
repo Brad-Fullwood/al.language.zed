@@ -1,47 +1,53 @@
 # Comparative benchmark status
 
-The repository does not currently publish a native-versus-Microsoft performance ratio.
+The repository does not publish a native-versus-Microsoft performance ratio.
+No current timing result is presented as a release benchmark.
 
-Earlier measurements were taken before the current native verification pipeline and no longer
-describe the work performed by `al-explorer compile` or `pack-native`. They also predate several
-correctness changes, including XLIFF package emission and expanded native declaration/binding checks.
-Those results must not be used as current speed, accuracy, or output-fidelity claims.
+## Fresh correctness evidence
 
-Raw historical results under `benchmarks/results/`, when present, are retained as engineering data.
-They are not release benchmarks.
+The current release-binary planted-defect run is recorded in
+[`benchmarks/FINDINGS.md`](benchmarks/FINDINGS.md). It uses `alc` 17.0.34.45391
+from `ms-dynamics-smb.al` 17.0.2273547 and scores exact-file, ±2-line findings
+across 14 isolated defect projects plus a clean control.
 
-## Current evidence
+The harness reports separate results for:
 
-- Deterministic native micro-benchmarks cover parsing, formatting, interpreter operations, symbol
-  indexing, graph construction, completion, impact, and event tracing. See
-  [`Docs/benchmarks.md`](Docs/benchmarks.md).
-- The emitter differential test compares parsed `SymbolReference.json` values across a
-  self-contained AL object corpus. Focused golden tests additionally cover selected serialized
-  symbol shapes and method identifiers. A separate 206-file project comparison found differences
-  in symbols, path encoding, and bundled resources; the fixture result is not general package
-  parity.
-- The native emitter writes `TextData/*.xliff` and registers the XLIFF content type when the project
-  contains translatable text.
-- The latest correctness and package-fidelity observations are recorded separately in
-  [`benchmarks/FINDINGS.md`](benchmarks/FINDINGS.md); they do not make performance claims.
-- The Microsoft compiler remains the compatibility authority for expression/type semantics and the
-  complete analyzer catalogue. Use `pack-native --validate` or `al.useOfficialCompiler=true` when
-  that validation is required.
+- Microsoft `alc`;
+- LSP `publishDiagnostics`;
+- the production native verifier via `al-explorer pack-native --json`; and
+- the advisory `nativeCheck` query.
 
-## Requirements for a publishable comparison
+In the current planted corpus, the native build verifier catches all 14
+defects with no clean-control diagnostic. This is a bounded corpus result, not
+a claim of general Microsoft compiler, analyzer, or path-sensitive control-flow
+equivalence. The clean control is required to stay diagnostic-free in every
+local arm.
+
+Focused env-gated emitter differentials cover supported package fixtures. They
+exercise archive structure, `SymbolReference.json`, manifest normalization,
+and the currently covered XLIFF/navigation/resource shapes. They do not
+establish general package or Business Central runtime parity; see the emitter
+documentation for the remaining compatibility boundary.
+
+The current provisional six-round emitter matrix also passed semantic
+comparison for all 60 measured native/`alc` pairs across small, medium, large,
+and XL generated projects. Its repository metadata records a dirty worktree, so
+the timing samples and speed ratios are deliberately not published. See
+[`benchmarks/FINDINGS.md`](benchmarks/FINDINGS.md) for the correctness evidence
+and normalization contract.
+
+## Requirements for a publishable performance comparison
 
 A new comparative report must:
 
-1. identify the exact repository commit, Microsoft AL extension/compiler version, hardware, OS, and
-   symbol package set;
+1. identify the exact repository commit, Microsoft AL extension/compiler version, hardware, OS, and symbol package set;
 2. use release builds and identical project inputs for both implementations;
-3. measure cold, warm-unchanged, and one-file-edit builds, separating verification from emission;
+3. measure process/package-index-cold, warm-unchanged, and one-file-edit builds, state the OS
+   page-cache policy, publish native phase telemetry separately, and treat Microsoft `alc` as an
+   opaque total because it exposes no phase-equivalent timings;
 4. interleave comparable runs or otherwise control machine load;
 5. run the current planted-defect corpus and report false positives as well as detections;
-6. compare package contents semantically and identify intentional nondeterminism rather than
-   claiming whole-package byte identity; and
+6. compare package contents semantically and identify intentional nondeterminism rather than claiming whole-package byte identity; and
 7. commit the harness configuration and raw results needed to reproduce the report.
 
 The head-to-head harness and setup notes live in [`benchmarks/README.md`](benchmarks/README.md).
-Do not add summary ratios to the README or feature comparison pages until the current pipeline has
-been measured under these conditions.

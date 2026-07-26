@@ -8,6 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
+use crate::cli::commands::request_checked;
 use crate::{
     App, MAX_INPUT_LEN, advance_list_selection, ensure_daemon_client, input_focused_style,
 };
@@ -61,87 +62,22 @@ impl CallGraphView {
             return;
         };
         let params = serde_json::json!({ "symbol": self.query.trim() });
-        match client.request("impact", Some(params)) {
+        self.rows.clear();
+        self.list_state.select(None);
+        match request_checked(client, "impact", Some(params)) {
             Ok(val) => {
-                self.rows.clear();
-                let symbol = val
-                    .get("symbol")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(self.query.trim());
-                self.rows.push(CallRow {
-                    label: format!("Impact analysis for: {symbol}"),
-                    kind: CallRowKind::Header,
-                });
-                if let Some(impacted) = val.get("impacted").and_then(|v| v.as_array()) {
-                    if impacted.is_empty() {
-                        self.rows.push(CallRow {
-                            label: "  (no impacted symbols found)".to_string(),
-                            kind: CallRowKind::Entry,
-                        });
-                    } else {
-                        // group by reference type and render each
-                        // entry as readable text — kind, ID, name, and the
-                        // field/procedure that creates the reference. The
-                        // previous code dumped raw JSON for non-string
-                        // entries.
-                        let mut by_type: std::collections::BTreeMap<String, Vec<String>> =
-                            std::collections::BTreeMap::new();
-                        for entry in impacted {
-                            if let Some(s) = entry.as_str() {
-                                by_type
-                                    .entry("other".to_string())
-                                    .or_default()
-                                    .push(s.to_string());
-                                continue;
-                            }
-                            let kind = entry.get("k").and_then(|v| v.as_str()).unwrap_or("?");
-                            let name = entry.get("n").and_then(|v| v.as_str()).unwrap_or("?");
-                            let id = entry.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                            let ref_type = entry
-                                .get("type")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("reference")
-                                .to_string();
-                            let pkg = entry.get("package").and_then(|v| v.as_str()).unwrap_or("");
-                            let mut label = if id > 0 {
-                                format!("{kind} {id} \"{name}\"")
-                            } else {
-                                format!("{kind} \"{name}\"")
-                            };
-                            if let Some(field) = entry.get("field").and_then(|v| v.as_str()) {
-                                label.push_str(&format!(" — field \"{field}\""));
-                            }
-                            if let Some(proc) = entry.get("proc").and_then(|v| v.as_str()) {
-                                label.push_str(&format!(" — {proc}"));
-                            }
-                            if !pkg.is_empty() {
-                                label.push_str(&format!("  [{pkg}]"));
-                            }
-                            by_type.entry(ref_type).or_default().push(label);
-                        }
-                        let total: usize = by_type.values().map(Vec::len).sum();
-                        self.rows.push(CallRow {
-                            label: format!("  {total} impacted symbols:"),
-                            kind: CallRowKind::Header,
-                        });
-                        for (ref_type, labels) in by_type {
-                            self.rows.push(CallRow {
-                                label: format!("  {} ({}):", ref_type, labels.len()),
-                                kind: CallRowKind::Header,
-                            });
-                            for label in labels {
-                                self.rows.push(CallRow {
-                                    label: format!("    {label}"),
-                                    kind: CallRowKind::Entry,
-                                });
-                            }
-                        }
+                let (symbol, rows) = match parse_impact_rows(&val) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        self.client = None;
+                        self.status = format!("Invalid daemon impact response: {error}");
+                        return;
                     }
-                }
+                };
+                self.rows = rows;
                 self.status = format!(
-                    "Impact query complete for '{}' — tip: use Object.Member \
+                    "Impact query complete for '{symbol}' — tip: use Object.Member \
                      (e.g. Customer.OnBeforePost) to narrow",
-                    self.query.trim()
                 );
                 if !self.rows.is_empty() {
                     self.list_state.select(Some(0));
@@ -161,6 +97,92 @@ impl CallGraphView {
     fn prev_row(&mut self) {
         advance_list_selection(&mut self.list_state, self.rows.len(), false);
     }
+}
+
+fn parse_impact_rows(value: &serde_json::Value) -> Result<(String, Vec<CallRow>), String> {
+    let symbol = value
+        .get("symbol")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "impact.symbol is not a string".to_string())?
+        .to_string();
+    let impacted = value
+        .get("impacted")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "impact.impacted is not an array".to_string())?;
+    let mut rows = vec![CallRow {
+        label: format!("Impact analysis for: {symbol}"),
+        kind: CallRowKind::Header,
+    }];
+    if impacted.is_empty() {
+        rows.push(CallRow {
+            label: "  (no impacted symbols found)".to_string(),
+            kind: CallRowKind::Entry,
+        });
+        return Ok((symbol, rows));
+    }
+
+    let mut by_type: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (index, entry) in impacted.iter().enumerate() {
+        let required_string = |field: &str| {
+            entry
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("impact.impacted[{index}].{field} is not a string"))
+        };
+        let kind = required_string("k")?;
+        let name = required_string("n")?;
+        let id = entry
+            .get("id")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| format!("impact.impacted[{index}].id is not an integer"))?;
+        let reference_type = required_string("type")?.to_string();
+        let optional_string = |field: &str| -> Result<Option<&str>, String> {
+            match entry.get(field) {
+                None => Ok(None),
+                Some(value) => value
+                    .as_str()
+                    .map(Some)
+                    .ok_or_else(|| format!("impact.impacted[{index}].{field} is not a string")),
+            }
+        };
+        let mut label = if id > 0 {
+            format!("{kind} {id} \"{name}\"")
+        } else {
+            format!("{kind} \"{name}\"")
+        };
+        if let Some(field) = optional_string("field")? {
+            label.push_str(&format!(" — field \"{field}\""));
+        }
+        if let Some(procedure) = optional_string("proc")? {
+            label.push_str(&format!(" — {procedure}"));
+        }
+        if let Some(package) = optional_string("package")?
+            && !package.is_empty()
+        {
+            label.push_str(&format!("  [{package}]"));
+        }
+        by_type.entry(reference_type).or_default().push(label);
+    }
+
+    let total: usize = by_type.values().map(Vec::len).sum();
+    rows.push(CallRow {
+        label: format!("  {total} impacted symbols:"),
+        kind: CallRowKind::Header,
+    });
+    for (reference_type, labels) in by_type {
+        rows.push(CallRow {
+            label: format!("  {} ({}):", reference_type, labels.len()),
+            kind: CallRowKind::Header,
+        });
+        for label in labels {
+            rows.push(CallRow {
+                label: format!("    {label}"),
+                kind: CallRowKind::Entry,
+            });
+        }
+    }
+    Ok((symbol, rows))
 }
 
 pub(crate) fn handle_call_graph_key(app: &mut App, key: crossterm::event::KeyEvent) {

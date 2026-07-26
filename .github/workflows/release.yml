@@ -198,10 +198,10 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Rust stable + wasm32-wasip1
+      - name: Install Rust stable + wasm32-wasip2
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip1
+          targets: wasm32-wasip2
 
       - name: Cache cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -215,12 +215,14 @@ jobs:
             wasm-release-cargo-
 
       - name: Build zed-al WASM extension
-        run: cargo build -p zed-al --target wasm32-wasip1 --release
+        run: |
+          cargo build -p zed-al --target wasm32-wasip2 --release
+          scripts/check-zed-wasm-component.sh target/wasm32-wasip2/release/zed_al.wasm
 
       - name: Collect WASM artifact
         run: |
           mkdir -p extension-wasm
-          cp target/wasm32-wasip1/release/zed_al.wasm extension-wasm/extension.wasm
+          cp target/wasm32-wasip2/release/zed_al.wasm extension-wasm/extension.wasm
           cp extension.toml extension-wasm/
 
       - name: Upload WASM artifact

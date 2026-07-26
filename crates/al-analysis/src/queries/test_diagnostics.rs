@@ -69,9 +69,9 @@ pub fn results_to_diagnostics_with_codeunits(
 pub fn results_to_diagnostics(
     results: &[TestCodeunitResult],
     workspace: &Workspace,
-) -> Vec<TestDiagnostic> {
-    let discovered = crate::queries::tests::discover_tests(workspace);
-    results_to_diagnostics_with_codeunits(results, &discovered)
+) -> Result<Vec<TestDiagnostic>, crate::queries::tests::TestQueryError> {
+    let discovered = crate::queries::tests::discover_tests(workspace)?;
+    Ok(results_to_diagnostics_with_codeunits(results, &discovered))
 }
 
 fn results_to_diagnostics_inner(
@@ -140,8 +140,10 @@ pub fn clear_diagnostics() -> Vec<TestDiagnostic> {
 /// Build "not run" informational diagnostics for all discovered test
 /// procedures in a workspace. Useful for showing which tests exist but
 /// have no run results yet.
-pub fn unrun_test_hints(workspace: &Workspace) -> Vec<TestDiagnostic> {
-    let discovered = crate::queries::tests::discover_tests(workspace);
+pub fn unrun_test_hints(
+    workspace: &Workspace,
+) -> Result<Vec<TestDiagnostic>, crate::queries::tests::TestQueryError> {
+    let discovered = crate::queries::tests::discover_tests(workspace)?;
     let mut hints = Vec::new();
 
     for cu in &discovered {
@@ -157,7 +159,7 @@ pub fn unrun_test_hints(workspace: &Workspace) -> Vec<TestDiagnostic> {
         }
     }
 
-    hints
+    Ok(hints)
 }
 
 pub fn group_by_file(
@@ -240,7 +242,7 @@ mod tests {
             ],
         )];
         let workspace = al_workspace::Workspace::new();
-        let diags = results_to_diagnostics(&results, &workspace);
+        let diags = results_to_diagnostics(&results, &workspace).unwrap();
         assert!(diags.is_empty(), "No diagnostics for all-passing tests");
     }
 
@@ -255,7 +257,7 @@ mod tests {
             ],
         )];
         let workspace = al_workspace::Workspace::new();
-        let diags = results_to_diagnostics(&results, &workspace);
+        let diags = results_to_diagnostics(&results, &workspace).unwrap();
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].test_name, "TestFail");
         assert_eq!(diags[0].severity, DiagnosticSeverity::Error);
@@ -270,7 +272,7 @@ mod tests {
             vec![("TestSkip", TestStatus::Skip, None)],
         )];
         let workspace = al_workspace::Workspace::new();
-        let diags = results_to_diagnostics(&results, &workspace);
+        let diags = results_to_diagnostics(&results, &workspace).unwrap();
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
         assert_eq!(diags[0].test_name, "TestSkip");
@@ -284,7 +286,7 @@ mod tests {
             vec![("TestFail", TestStatus::Fail, None)],
         )];
         let workspace = al_workspace::Workspace::new();
-        let diags = results_to_diagnostics(&results, &workspace);
+        let diags = results_to_diagnostics(&results, &workspace).unwrap();
         assert_eq!(diags[0].message, "Test failed");
     }
 
@@ -330,7 +332,7 @@ mod tests {
     #[test]
     fn unrun_test_hints_returns_hints_for_empty_workspace() {
         let workspace = al_workspace::Workspace::new();
-        let hints = unrun_test_hints(&workspace);
+        let hints = unrun_test_hints(&workspace).unwrap();
         assert!(hints.is_empty());
     }
 

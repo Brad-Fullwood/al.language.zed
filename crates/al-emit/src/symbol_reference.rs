@@ -60,6 +60,64 @@ pub struct ExternalSymbols {
     pub package_ids: std::collections::HashSet<String>,
 }
 
+const OBJECT_GROUPS: &[(&str, Option<ObjectKind>, bool)] = &[
+    ("Tables", Some(ObjectKind::Table), false),
+    ("Codeunits", Some(ObjectKind::Codeunit), true),
+    ("Pages", Some(ObjectKind::Page), false),
+    ("PageExtensions", Some(ObjectKind::PageExtension), false),
+    (
+        "PageCustomizations",
+        Some(ObjectKind::PageCustomization),
+        false,
+    ),
+    ("TableExtensions", Some(ObjectKind::TableExtension), false),
+    ("Reports", Some(ObjectKind::Report), true),
+    ("XmlPorts", Some(ObjectKind::XmlPort), true),
+    ("Queries", Some(ObjectKind::Query), true),
+    ("Profiles", Some(ObjectKind::Profile), false),
+    (
+        "ProfileExtensions",
+        Some(ObjectKind::ProfileExtension),
+        false,
+    ),
+    ("ControlAddIns", Some(ObjectKind::ControlAddIn), true),
+    ("EnumTypes", Some(ObjectKind::Enum), true),
+    ("EnumExtensionTypes", Some(ObjectKind::EnumExtension), false),
+    ("DotNetPackages", None, true),
+    ("Interfaces", Some(ObjectKind::Interface), true),
+    ("PermissionSets", Some(ObjectKind::PermissionSet), true),
+    (
+        "PermissionSetExtensions",
+        Some(ObjectKind::PermissionSetExtension),
+        true,
+    ),
+    ("ReportExtensions", Some(ObjectKind::ReportExtension), true),
+];
+
+#[derive(Default)]
+struct NamespaceNode<'a> {
+    objects: Vec<&'a EmitObject>,
+    children: std::collections::BTreeMap<String, NamespaceNode<'a>>,
+}
+
+fn namespace_tree(objects: &[EmitObject]) -> NamespaceNode<'_> {
+    let mut root = NamespaceNode::default();
+    for object in objects {
+        let mut node = &mut root;
+        for segment in object
+            .entry
+            .namespace
+            .split('.')
+            .map(str::trim)
+            .filter(|segment| !segment.is_empty())
+        {
+            node = node.children.entry(segment.to_string()).or_default();
+        }
+        node.objects.push(object);
+    }
+    root
+}
+
 /// Build the project resolver merged over `external` (referenced-app objects);
 /// project objects shadow referenced ones of the same name.
 fn merged_resolver(objects: &[EmitObject], external: &Resolver) -> Resolver {
@@ -98,9 +156,14 @@ pub fn build_symbol_reference(
         std::collections::HashMap::new();
     for o in objects {
         if matches!(o.entry.kind, ObjectKind::Table | ObjectKind::TableExtension) {
+            let table_name = if o.entry.kind == ObjectKind::TableExtension {
+                o.entry.extends.as_deref().unwrap_or(&o.entry.name)
+            } else {
+                &o.entry.name
+            };
             for f in &o.entry.fields {
                 field_types.insert(
-                    (o.entry.name.to_lowercase(), f.name.to_lowercase()),
+                    (table_name.to_lowercase(), f.name.to_lowercase()),
                     f.type_name.clone(),
                 );
             }
@@ -127,80 +190,40 @@ pub fn build_symbol_reference(
         }
     }
 
-    // Before runtime 16.0, alc forces page-customization-added field controls to
-    // be non-editable (records `Editable=False`); 16.0+ allows marking editable.
-    let runtime_major: u32 = meta
-        .runtime_version
-        .split('.')
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let force_noneditable_customizations = runtime_major < 16;
-
     let mut root = Map::new();
     root.insert("RuntimeVersion".into(), json!(meta.runtime_version));
 
-    // Object groups in alc's exact emission order. The `always` flag marks the
-    // core groups alc emits even when empty; the rest appear only when non-empty.
-    // `DotNetPackages` (kind `None`) is an always-empty group with no source
-    // objects (DotNet is OnPrem-only). Verified against alc 17.x output.
-    let groups: &[(&str, Option<ObjectKind>, bool)] = &[
-        ("Tables", Some(ObjectKind::Table), false),
-        ("Codeunits", Some(ObjectKind::Codeunit), true),
-        ("Pages", Some(ObjectKind::Page), false),
-        ("PageExtensions", Some(ObjectKind::PageExtension), false),
-        (
-            "PageCustomizations",
-            Some(ObjectKind::PageCustomization),
-            false,
-        ),
-        ("TableExtensions", Some(ObjectKind::TableExtension), false),
-        ("Reports", Some(ObjectKind::Report), true),
-        ("XmlPorts", Some(ObjectKind::XmlPort), true),
-        ("Queries", Some(ObjectKind::Query), true),
-        ("Profiles", Some(ObjectKind::Profile), false),
-        (
-            "ProfileExtensions",
-            Some(ObjectKind::ProfileExtension),
-            false,
-        ),
-        ("ControlAddIns", Some(ObjectKind::ControlAddIn), true),
-        ("EnumTypes", Some(ObjectKind::Enum), true),
-        ("EnumExtensionTypes", Some(ObjectKind::EnumExtension), false),
-        ("DotNetPackages", None, true),
-        ("Interfaces", Some(ObjectKind::Interface), true),
-        ("PermissionSets", Some(ObjectKind::PermissionSet), true),
-        (
-            "PermissionSetExtensions",
-            Some(ObjectKind::PermissionSetExtension),
-            true,
-        ),
-        ("ReportExtensions", Some(ObjectKind::ReportExtension), true),
-    ];
-
-    for (key, kind, always) in groups {
-        let arr: Vec<Value> = match kind {
-            Some(k) => objects
-                .iter()
-                .filter(|o| o.entry.kind == *k)
-                .map(|o| {
-                    object_json(
-                        o,
-                        &resolver,
-                        &meta.app_id,
-                        &meta.name,
-                        &field_types,
-                        &page_source_tables,
-                        &report_dataitem_tables,
-                        force_noneditable_customizations,
-                    )
-                })
-                .collect(),
-            None => Vec::new(),
-        };
-        if !arr.is_empty() || *always {
-            root.insert((*key).to_string(), Value::Array(arr));
-        }
+    let namespaces = namespace_tree(objects);
+    insert_object_groups(
+        &mut root,
+        &namespaces.objects,
+        &resolver,
+        meta,
+        &field_types,
+        &page_source_tables,
+        &report_dataitem_tables,
+    );
+    if !namespaces.children.is_empty() {
+        root.insert(
+            "Namespaces".into(),
+            Value::Array(
+                namespaces
+                    .children
+                    .iter()
+                    .map(|(name, node)| {
+                        namespace_json(
+                            name,
+                            node,
+                            &resolver,
+                            meta,
+                            &field_types,
+                            &page_source_tables,
+                            &report_dataitem_tables,
+                        )
+                    })
+                    .collect(),
+            ),
+        );
     }
 
     root.insert("InternalsVisibleToModules".into(), json!([]));
@@ -211,25 +234,101 @@ pub fn build_symbol_reference(
     Value::Object(root)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn insert_object_groups(
+    target: &mut Map<String, Value>,
+    objects: &[&EmitObject],
+    resolver: &Resolver,
+    meta: &SymbolRefMeta,
+    field_types: &FieldTypes,
+    page_source_tables: &std::collections::HashMap<String, String>,
+    report_dataitem_tables: &std::collections::HashMap<(String, String), String>,
+) {
+    // `always` groups are present at every namespace level in alc output.
+    // DotNetPackages has no source kind and therefore stays an empty array.
+    for (key, kind, always) in OBJECT_GROUPS {
+        let values: Vec<Value> = match kind {
+            Some(kind) => objects
+                .iter()
+                .filter(|object| object.entry.kind == *kind)
+                .map(|object| {
+                    object_json(
+                        object,
+                        resolver,
+                        &meta.app_id,
+                        &meta.name,
+                        field_types,
+                        page_source_tables,
+                        report_dataitem_tables,
+                    )
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        if !values.is_empty() || *always {
+            target.insert((*key).to_string(), Value::Array(values));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn namespace_json(
+    name: &str,
+    namespace: &NamespaceNode<'_>,
+    resolver: &Resolver,
+    meta: &SymbolRefMeta,
+    field_types: &FieldTypes,
+    page_source_tables: &std::collections::HashMap<String, String>,
+    report_dataitem_tables: &std::collections::HashMap<(String, String), String>,
+) -> Value {
+    let mut value = Map::new();
+    insert_object_groups(
+        &mut value,
+        &namespace.objects,
+        resolver,
+        meta,
+        field_types,
+        page_source_tables,
+        report_dataitem_tables,
+    );
+    if !namespace.children.is_empty() {
+        value.insert(
+            "Namespaces".into(),
+            Value::Array(
+                namespace
+                    .children
+                    .iter()
+                    .map(|(child_name, child)| {
+                        namespace_json(
+                            child_name,
+                            child,
+                            resolver,
+                            meta,
+                            field_types,
+                            page_source_tables,
+                            report_dataitem_tables,
+                        )
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    value.insert("Name".into(), json!(name));
+    Value::Object(value)
+}
+
 /// Per-profile `ProfileSymbolReferences/<MetadataName>.json` files — one per
 /// profile and profile extension. alc emits these alongside the main
 /// `SymbolReference.json`, each wrapping the profile's object JSON as
-/// `{ "PageCustomizations": [...], "Profiles"|"ProfileExtensions": [obj] }`. The
-/// `PageCustomizations` array holds the customizations a profile *binds*; our
-/// fixtures bind none, so it is empty. Each file carries alc's UTF-8 BOM.
+/// `{ "Profiles"|"ProfileExtensions": [obj] }`, plus a `PageCustomizations`
+/// member only when a profile actually binds customizations. Each file carries
+/// alc's UTF-8 BOM.
 pub fn build_profile_symbol_references(
     objects: &[EmitObject],
     meta: &SymbolRefMeta,
     external: &ExternalSymbols,
 ) -> Vec<(String, Vec<u8>)> {
     let resolver = merged_resolver(objects, &external.resolver);
-    let runtime_major: u32 = meta
-        .runtime_version
-        .split('.')
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let force_noneditable = runtime_major < 16;
     let empty_ft: FieldTypes = std::collections::HashMap::new();
     let empty_pst: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let empty_rdt: std::collections::HashMap<(String, String), String> =
@@ -250,10 +349,8 @@ pub fn build_profile_symbol_references(
             &empty_ft,
             &empty_pst,
             &empty_rdt,
-            force_noneditable,
         );
         let mut doc = Map::new();
-        doc.insert("PageCustomizations".into(), json!([]));
         doc.insert(group.into(), json!([obj]));
         let mut bytes = vec![0xEF, 0xBB, 0xBF];
         bytes.extend_from_slice(
@@ -303,7 +400,6 @@ fn object_json(
     field_types: &FieldTypes,
     page_source_tables: &std::collections::HashMap<String, String>,
     report_dataitem_tables: &std::collections::HashMap<(String, String), String>,
-    force_noneditable_customizations: bool,
 ) -> Value {
     let e = &obj.entry;
     let mut m = Map::new();
@@ -317,13 +413,7 @@ fn object_json(
         } else {
             "TargetObject"
         };
-        let value = match resolver
-            .get(&target.to_lowercase())
-            .and_then(|r| r.module_id.as_deref())
-        {
-            Some(module_id) => format!("#{}#{}", module_id.replace('-', ""), target),
-            None => target.clone(),
-        };
+        let value = qualified_object_name(target, resolver);
         m.insert(key.into(), json!(value));
     }
 
@@ -387,8 +477,9 @@ fn object_json(
             .and_then(|t| page_source_tables.get(&t.trim_matches('"').to_lowercase()))
             .cloned()
             .unwrap_or_default();
-        let inject_editable_false =
-            e.kind == ObjectKind::PageCustomization && force_noneditable_customizations;
+        // alc forces every field added by a page customization non-editable in
+        // the published symbol surface. This remains true for runtime 17.0.
+        let inject_editable_false = e.kind == ObjectKind::PageCustomization;
         m.insert(
             "ControlChanges".into(),
             Value::Array(
@@ -448,8 +539,14 @@ fn object_json(
         if !e.variables.is_empty() {
             m.insert("Variables".into(), variables_json(&e.variables, resolver));
         }
-        // Request page layout changes become a RequestPageExtension object.
-        if !obj.control_changes.is_empty() {
+        // alc always writes a RequestPageExtension marker for a report
+        // extension. Layout changes add its controls and source provenance.
+        if obj.control_changes.is_empty() {
+            m.insert(
+                "RequestPage".into(),
+                json!({ "Name": "RequestPageExtension" }),
+            );
+        } else {
             let control_changes: Vec<Value> = obj
                 .control_changes
                 .iter()
@@ -588,7 +685,12 @@ fn object_json(
             .map(|p| p.value.clone())
             .unwrap_or_else(|| control_addin_public_key_token(app_name));
         m.insert("PublicKeyToken".into(), json!(token));
-        m.insert("MetadataName".into(), json!(metadata_name(&e.name)));
+        let metadata_name = metadata_name(&e.name);
+        // alc only writes this redundant field when sanitising the AL name
+        // changes it (for example, `My Addin` → `My_Addin`).
+        if metadata_name != e.name {
+            m.insert("MetadataName".into(), json!(metadata_name));
+        }
     }
     m.insert("ReferenceSourceFileName".into(), json!(obj.source_file));
     if !e.properties.is_empty() && e.kind != ObjectKind::ControlAddIn {
@@ -1033,6 +1135,17 @@ fn control_property_json(p: &PropertyValue) -> Value {
     json!({ "Name": p.name, "Value": value })
 }
 
+/// Properties on a `modify(...)` change keep boolean literals as written
+/// (`true`/`false`), unlike ordinary object/control properties (`1`/`0`).
+fn control_change_property_json(p: &PropertyValue) -> Value {
+    let value = if p.name.eq_ignore_ascii_case("ApplicationArea") {
+        format!("#{}", p.value)
+    } else {
+        p.value.clone()
+    };
+    json!({ "Name": p.name, "Value": value })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn control_json(
     c: &PageControl,
@@ -1145,11 +1258,26 @@ fn control_change_json(
             )
         })
         .collect();
-    json!({
-        "Anchor": ch.anchor,
-        "ChangeKind": change_kind(&ch.kind),
-        "Controls": controls,
-    })
+    let mut m = Map::new();
+    m.insert("Anchor".into(), json!(ch.anchor));
+    m.insert("ChangeKind".into(), json!(change_kind(&ch.kind)));
+    if !ch.properties.is_empty() {
+        m.insert(
+            "Properties".into(),
+            Value::Array(
+                ch.properties
+                    .iter()
+                    .map(control_change_property_json)
+                    .collect(),
+            ),
+        );
+    }
+    // A modify operation publishes its direct properties and has no Controls
+    // member. Add/move operations retain the Controls collection.
+    if !ch.kind.eq_ignore_ascii_case("modify") {
+        m.insert("Controls".into(), Value::Array(controls));
+    }
+    Value::Object(m)
 }
 
 fn action_json(a: &PageControl, object_id: i32) -> Value {
@@ -1283,7 +1411,10 @@ fn report_dataitem_json(
 ) -> Value {
     let mut m = Map::new();
     if let Some(rt) = &el.related_table {
-        m.insert("RelatedTable".into(), json!(rt));
+        m.insert(
+            "RelatedTable".into(),
+            json!(qualified_object_name(rt, resolver)),
+        );
     }
     // GetFilterControlId: member_id(Name + "Report" + objectId).
     m.insert(
@@ -1323,6 +1454,18 @@ fn report_dataitem_json(
     m.insert("Id".into(), json!(member_id(&el.name)));
     m.insert("Name".into(), json!(el.name));
     Value::Object(m)
+}
+
+/// Names bound to objects in referenced apps use alc's
+/// `#<module-id-without-dashes>#<object-name>` archive representation.
+fn qualified_object_name(name: &str, resolver: &Resolver) -> String {
+    match resolver
+        .get(&name.trim_matches('"').to_lowercase())
+        .and_then(|reference| reference.module_id.as_deref())
+    {
+        Some(module_id) => format!("#{}#{}", module_id.replace('-', ""), name),
+        None => name.to_string(),
+    }
 }
 
 fn query_element_json(el: &QueryElement) -> Value {

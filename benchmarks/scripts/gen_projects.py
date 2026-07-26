@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import sys
+from pathlib import Path
 
 SIZES = {"small": 2, "medium": 40, "large": 200, "xl": 800}
 
@@ -153,10 +154,31 @@ PAGE_TMPL = '''page {id} "Bench Card {n}"
 '''
 
 
+def remove_generated_project(root: str, project: str) -> None:
+    """Remove only a fixed-size project directly below the requested root."""
+    root_path = Path(root).expanduser().resolve()
+    project_path = Path(project).expanduser()
+    if project_path.is_symlink():
+        resolved_parent = project_path.parent.resolve()
+        if resolved_parent != root_path:
+            raise RuntimeError(f"refusing to unlink project outside benchmark root: {project_path}")
+        project_path.unlink()
+        return
+
+    resolved_project = project_path.resolve()
+    if resolved_project.parent != root_path:
+        raise RuntimeError(f"refusing to remove project outside benchmark root: {resolved_project}")
+    if resolved_project == Path(resolved_project.anchor) or resolved_project == Path.home().resolve():
+        raise RuntimeError(f"refusing unsafe benchmark project path: {resolved_project}")
+    if resolved_project.is_dir():
+        shutil.rmtree(resolved_project)
+    elif resolved_project.exists():
+        raise RuntimeError(f"expected a directory at benchmark project path: {resolved_project}")
+
+
 def gen(root: str, size: str, count: int) -> None:
     proj = os.path.join(root, size)
-    if os.path.isdir(proj):
-        shutil.rmtree(proj)
+    remove_generated_project(root, proj)
     src = os.path.join(proj, "src")
     os.makedirs(src)
     os.makedirs(os.path.join(proj, ".alpackages"))
@@ -182,6 +204,10 @@ def gen(root: str, size: str, count: int) -> None:
 if __name__ == "__main__":
     root = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "projects")
+    resolved_root = Path(root).expanduser().resolve()
+    if resolved_root == Path(resolved_root.anchor) or resolved_root == Path.home().resolve():
+        raise SystemExit(f"refusing unsafe benchmark root: {resolved_root}")
+    root = str(resolved_root)
     os.makedirs(root, exist_ok=True)
     for size, count in SIZES.items():
         gen(root, size, count)

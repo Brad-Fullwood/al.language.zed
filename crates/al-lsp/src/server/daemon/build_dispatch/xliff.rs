@@ -1,6 +1,7 @@
 //! XLIFF translation-file dispatchers.
 
 use super::super::{require_project_root, rpc_error};
+use super::serialized_response;
 use al_protocol::jsonrpc::Response;
 use al_workspace::Workspace;
 
@@ -170,12 +171,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
     }
 
     let _ = workspace;
-    Response {
-        id,
-        result: Some(serde_json::to_value(&refresh_result).unwrap_or_default()),
-        error: None,
-        ..Default::default()
-    }
+    serialized_response(id, "XLIFF refresh result", &refresh_result)
 }
 pub(in crate::server::daemon) fn dispatch_xlf_untranslated(
     id: u64,
@@ -305,15 +301,20 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
     let suggestions =
         al_analysis::xliff::suggest_translations_with_memory(&untranslated, &memory, workspace);
 
-    Response {
-        id,
-        result: Some(serde_json::json!({
-            "suggestions": serde_json::to_value(&suggestions).unwrap_or_default(),
-            "count": suggestions.len(),
-        })),
-        error: None,
-        ..Default::default()
+    #[derive(serde::Serialize)]
+    struct SuggestionResponse<'a> {
+        suggestions: &'a [al_analysis::xliff::TranslationSuggestion],
+        count: usize,
     }
+
+    serialized_response(
+        id,
+        "XLIFF suggestions",
+        &SuggestionResponse {
+            suggestions: &suggestions,
+            count: suggestions.len(),
+        },
+    )
 }
 
 #[cfg(test)]

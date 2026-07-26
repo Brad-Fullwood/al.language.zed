@@ -3,9 +3,24 @@
 //! into [`al_explorer::run`], which selects the TUI or the CLI based on
 //! whether any subcommand arguments were given.
 
+fn run_application() -> std::process::ExitCode {
+    // Rust ignores SIGPIPE by default, which turns a normal Unix pipeline such
+    // as `al-explorer ... | head` into a panic when `head` closes the pipe.
+    // CLI tools conventionally restore the default disposition so a closed
+    // downstream reader terminates the producer quietly.
+    #[cfg(unix)]
+    unsafe {
+        // SAFETY: this runs once, on the initial main thread, before the
+        // application creates worker threads or installs signal handlers.
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
+    al_explorer::run()
+}
+
 #[cfg(not(windows))]
 fn main() -> std::process::ExitCode {
-    al_explorer::run()
+    run_application()
 }
 
 #[cfg(windows)]
@@ -18,7 +33,7 @@ fn main() -> std::process::ExitCode {
     let handle = match std::thread::Builder::new()
         .name("al-explorer-main".to_string())
         .stack_size(8 * 1024 * 1024)
-        .spawn(al_explorer::run)
+        .spawn(run_application)
     {
         Ok(handle) => handle,
         Err(error) => {

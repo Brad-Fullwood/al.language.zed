@@ -39,7 +39,7 @@ pub fn cmd_permissions(format: &str, name: &str, id: i64, role_id: &str, json: b
         "id": id,
         "roleId": role_id,
     });
-    match client.request("permissions", Some(params)) {
+    match request_checked(&mut client, "permissions", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -99,16 +99,25 @@ pub fn cmd_parse(file: &str, json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let Some(uri) = file_to_uri(file) else {
-        return report_error(&format!("Cannot resolve path: {file}"), json);
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
     };
     let params = serde_json::json!({ "uri": uri });
-    match client.request("parse", Some(params)) {
+    match request_checked(&mut client, "parse", Some(params)) {
         Ok(result) => {
+            let errors = match parse_error_count(&result) {
+                Some(errors) => errors,
+                None => {
+                    return report_error(
+                        "validated parse response has no non-negative integer error count",
+                        json,
+                    );
+                }
+            };
             if json {
                 print_json(&result);
             } else {
-                let errors = result.get("errors").and_then(|v| v.as_u64()).unwrap_or(0);
                 let nodes = result
                     .get("nodeCount")
                     .and_then(|v| v.as_u64())
@@ -127,10 +136,18 @@ pub fn cmd_parse(file: &str, json: bool) -> ExitCode {
                     }
                 }
             }
-            ExitCode::SUCCESS
+            if errors > 0 {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+fn parse_error_count(result: &serde_json::Value) -> Option<u64> {
+    result.get("errors").and_then(|value| value.as_u64())
 }
 
 pub fn cmd_hints(
@@ -143,8 +160,9 @@ pub fn cmd_hints(
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let Some(uri) = file_to_uri(file) else {
-        return report_error(&format!("Cannot resolve path: {file}"), json);
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
     };
     let mut params = serde_json::json!({ "uri": uri });
     if let Some(s) = start_line {
@@ -153,7 +171,7 @@ pub fn cmd_hints(
     if let Some(e) = end_line {
         params["endLine"] = serde_json::json!(e.saturating_sub(1));
     }
-    match client.request("inlayHints", Some(params)) {
+    match request_checked(&mut client, "inlayHints", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -181,15 +199,16 @@ pub fn cmd_fix(file: Option<&str>, dry_run: bool, rule: Option<&str>, json: bool
     };
     let mut params = serde_json::json!({ "dryRun": dry_run });
     if let Some(f) = file {
-        let Some(uri) = file_to_uri(f) else {
-            return report_error(&format!("Cannot resolve path: {f}"), json);
+        let uri = match file_to_uri(f) {
+            Ok(uri) => uri,
+            Err(error) => return report_error(&error, json),
         };
         params["uri"] = serde_json::json!(uri);
     }
     if let Some(r) = rule {
         params["rule"] = serde_json::json!(r);
     }
-    match client.request("fix", Some(params)) {
+    match request_checked(&mut client, "fix", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -230,7 +249,7 @@ pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode
         params["tenant"] = serde_json::json!(t);
     }
 
-    match client.request("authenticate", Some(params)) {
+    match request_checked(&mut client, "authenticate", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -314,7 +333,7 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
             "environmentType": "OnPrem",
             "server": "http://bcserver",
             "serverInstance": "BC",
-            "authentication": "UserPassword",
+            "authentication": "MicrosoftEntraID",
             "startupObjectId": 22,
             "breakOnError": "All",
             "breakOnRecordWrite": "None",
@@ -323,10 +342,7 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
             "enableLongRunningSqlStatements": true,
             "longRunningSqlStatementsThreshold": 500,
             "numberOfSqlStatements": 10,
-            "tenant": "default",
-            "usePublicURLFromServer": true,
-            "useMcpServerForDebugging": true,
-            "build": {"command": "al-explorer", "args": ["compile"]}
+            "tenant": "default"
         },
         {
             "adapter": "al",
@@ -341,9 +357,7 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
             "enableSqlInformationDebugger": true,
             "enableLongRunningSqlStatements": true,
             "longRunningSqlStatementsThreshold": 500,
-            "numberOfSqlStatements": 10,
-            "useMcpServerForDebugging": true,
-            "build": {"command": "al-explorer", "args": ["compile"]}
+            "numberOfSqlStatements": 10
         },
         {
             "adapter": "al",
@@ -352,7 +366,7 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
             "environmentType": "OnPrem",
             "server": "http://bcserver",
             "serverInstance": "BC",
-            "authentication": "UserPassword",
+            "authentication": "MicrosoftEntraID",
             "breakOnError": "All",
             "breakOnRecordWrite": "None",
             "enableSqlInformationDebugger": true,
@@ -360,8 +374,7 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
             "longRunningSqlStatementsThreshold": 500,
             "numberOfSqlStatements": 10,
             "breakOnNext": "WebServiceClient",
-            "tenant": "default",
-            "useMcpServerForDebugging": true
+            "tenant": "default"
         },
         {
             "adapter": "al",
@@ -375,8 +388,7 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
             "enableLongRunningSqlStatements": true,
             "longRunningSqlStatementsThreshold": 500,
             "numberOfSqlStatements": 10,
-            "breakOnNext": "WebServiceClient",
-            "useMcpServerForDebugging": true
+            "breakOnNext": "WebServiceClient"
         }
     ]);
 
@@ -415,20 +427,32 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
     }
 }
 
-pub fn cmd_new(dir: &str, name: &str, publisher: &str, template: &str, json: bool) -> ExitCode {
+pub fn cmd_new(
+    dir: &str,
+    name: &str,
+    publisher: &str,
+    template: &str,
+    runtime: &str,
+    json: bool,
+) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
 
+    let directory = match absolutize_path(dir) {
+        Ok(directory) => directory,
+        Err(error) => return report_error(&error, json),
+    };
     let params = serde_json::json!({
-        "dir": absolutize_path(dir),
+        "dir": directory,
         "name": name,
         "publisher": publisher,
         "template": template,
+        "runtime": runtime,
     });
 
-    match client.request("newProject", Some(params)) {
+    match request_checked(&mut client, "newProject", Some(params)) {
         Ok(result) => {
             if json {
                 println!(
@@ -452,5 +476,51 @@ pub fn cmd_new(dir: &str, name: &str, publisher: &str, template: &str, json: boo
             ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_error_count_preserves_failure_information_for_json_mode() {
+        assert_eq!(
+            parse_error_count(&serde_json::json!({"errors": 0})),
+            Some(0)
+        );
+        assert_eq!(
+            parse_error_count(&serde_json::json!({"errors": 3})),
+            Some(3)
+        );
+        assert_eq!(
+            parse_error_count(&serde_json::json!({"errors": null})),
+            None
+        );
+    }
+
+    #[test]
+    fn init_debug_emits_only_native_supported_configuration() {
+        let project = tempfile::tempdir().expect("temporary project");
+        assert_eq!(cmd_init_debug(project.path(), false), ExitCode::SUCCESS);
+
+        let content =
+            std::fs::read_to_string(project.path().join(".zed/debug.json")).expect("debug.json");
+        let configs: Vec<serde_json::Value> =
+            serde_json::from_str(&content).expect("valid debug configuration");
+        assert_eq!(configs.len(), 4);
+        for config in &configs {
+            assert!(config.get("build").is_none());
+            assert!(config.get("usePublicURLFromServer").is_none());
+            assert!(config.get("useMcpServerForDebugging").is_none());
+        }
+        for config in configs.iter().filter(|config| {
+            config.get("environmentType").and_then(|v| v.as_str()) == Some("OnPrem")
+        }) {
+            assert_eq!(
+                config.get("authentication").and_then(|v| v.as_str()),
+                Some("MicrosoftEntraID")
+            );
+        }
     }
 }

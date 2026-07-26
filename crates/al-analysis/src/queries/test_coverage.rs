@@ -1,28 +1,24 @@
 //! Test-to-code coverage mapping — `al test-coverage`.
 //!
-//! Static analysis that maps test procedures to the production procedures they
-//! call. The direct pass walks procedure bodies looking for identifier
-//! references that match known procedure names.
+//! Static analysis that maps test procedures to reachable production
+//! procedures. A conservative direct pass handles uniquely named bare calls;
+//! the resolved workspace call graph supplies qualified member, transitive,
+//! event, trigger, `Codeunit.Run`, and interface-dispatch edges.
 //!
-//! An indirect pass also consults the workspace call graph and credits coverage
-//! for polymorphic/indirect dispatch
-//! that name matching cannot see:
+//! The graph pass also credits polymorphic/indirect dispatch:
 //! - **interface dispatch** — `IFoo`-typed `.Bar()` covers `Bar` in every
 //!   implementor;
 //! - **`Codeunit.Run(Codeunit::"X")`** covers `X.OnRun`;
 //! - **event publish sites** cover the bound `[EventSubscriber]` handlers.
 //!
-//! The indirect edges are an over-approximation (sound for reachability): they
-//! can only *add* covered procedures, eliminating false negatives at the cost
-//! of possible false positives. The direct, name-based behaviour is unchanged.
-//!
-//! Remaining limitation: call resolution is name-based (not fully type-resolved);
-//! overloaded names may still produce false positives.
+//! Overloaded/otherwise ambiguous calls are never silently credited. They are
+//! returned in `unresolvedCalls`, so the report remains conservative rather
+//! than turning an unresolved target into a false coverage claim.
 //!
 //! Output: per-test-procedure list of called production procedures, plus a
 //! reverse map of untested public production procedures.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::Serialize;
 
@@ -30,6 +26,14 @@ use crate::queries::tests::{collect_test_procedures, has_test_subtype};
 use al_insight::graph::NodeKey;
 use al_insight::index::{CallGraph, EdgeKind, NodeId};
 use al_workspace::Workspace;
+
+#[derive(Debug, thiserror::Error)]
+pub enum TestCoverageError {
+    #[error(transparent)]
+    Workspace(#[from] super::WorkspaceQueryError),
+    #[error(transparent)]
+    Graph(#[from] al_workspace::CallGraphBuildError),
+}
 
 /// A production procedure identified as being covered by tests.
 #[derive(Debug, Clone, Serialize)]
@@ -58,8 +62,18 @@ pub struct UntestedProcedure {
 pub struct TestCoverageEntry {
     pub codeunit: String,
     pub test_procedure: String,
-    /// Production procedures called (directly) by this test.
+    /// Production procedures reachable from this test.
     pub covers: Vec<CoveredProcedure>,
+    /// Calls that could not be resolved to one qualified production procedure.
+    pub unresolved_calls: Vec<UnresolvedCoverageCall>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnresolvedCoverageCall {
+    pub name: String,
+    pub candidates: Vec<String>,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,36 +94,50 @@ struct ProcDef {
     is_test: bool,
 }
 
-pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
-    let all_procs = collect_all_procedures(workspace);
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ProcKey {
+    object: String,
+    name: String,
+}
 
-    let mut proc_lookup: HashMap<String, Vec<&ProcDef>> = HashMap::new();
+impl ProcKey {
+    fn new(object: &str, name: &str) -> Self {
+        Self {
+            object: object.to_lowercase(),
+            name: name.to_lowercase(),
+        }
+    }
+}
+
+pub fn test_coverage(workspace: &Workspace) -> Result<CoverageReport, TestCoverageError> {
+    let sources =
+        crate::workspace_sources::snapshot(workspace).map_err(super::WorkspaceQueryError::from)?;
+    let all_procs = collect_all_procedures(&sources);
+
+    let mut proc_by_name: HashMap<String, Vec<&ProcDef>> = HashMap::new();
+    let mut proc_by_key: HashMap<ProcKey, Vec<&ProcDef>> = HashMap::new();
     for p in &all_procs {
-        proc_lookup
+        proc_by_name
             .entry(p.name.to_lowercase())
+            .or_default()
+            .push(p);
+        proc_by_key
+            .entry(ProcKey::new(&p.object, &p.name))
             .or_default()
             .push(p);
     }
 
     let mut coverage: Vec<TestCoverageEntry> = Vec::new();
-    let mut covered_proc_names: HashSet<String> = HashSet::new();
+    let mut covered_proc_keys: HashSet<ProcKey> = HashSet::new();
 
-    for entry in workspace.file_index.files.iter() {
-        let entry_path = entry.key();
-        let path = entry_path.to_string_lossy().to_string();
-        let Some((text, tree)) = workspace.file_index.get_cached_parse(entry_path) else {
-            continue;
-        };
-
-        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
-            continue;
-        };
-        if !al_syntax::language_data::is_test_container_kind(&obj_info.kind) {
+    for source_file in &sources {
+        let path = source_file.path.to_string_lossy().to_string();
+        if !al_syntax::language_data::is_test_container_kind(&source_file.object.info.kind) {
             continue;
         }
 
-        let root = tree.root_node();
-        let source = text.as_bytes();
+        let root = source_file.tree.root_node();
+        let source = source_file.text.as_bytes();
         if !has_test_subtype(root, source) {
             continue;
         }
@@ -119,7 +147,7 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
             continue;
         }
 
-        let codeunit_name = obj_info.name.clone();
+        let codeunit_name = source_file.object.info.name.clone();
 
         let mut cursor = root.walk();
         collect_coverage_from_tree(
@@ -128,28 +156,29 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
             &codeunit_name,
             &path,
             &test_procs,
-            &proc_lookup,
+            &proc_by_name,
             &mut coverage,
-            &mut covered_proc_names,
+            &mut covered_proc_keys,
             &mut cursor,
         );
     }
 
-    // supplement the direct, name-based coverage with indirect-dispatch
-    // edges from the workspace call graph (interface dispatch, Codeunit.Run,
-    // event publish→subscriber). Runs before `untested` is computed so an
-    // indirectly-covered procedure is not reported as a false-negative.
-    augment_coverage_with_indirect_calls(
+    // Supplement uniquely resolved bare calls with the qualified, transitive
+    // workspace call graph. Runs before `untested` is computed so a reachable
+    // procedure is not reported as a false-negative.
+    augment_coverage_with_call_graph(
         workspace,
-        &proc_lookup,
+        &proc_by_key,
         &mut coverage,
-        &mut covered_proc_names,
-    );
+        &mut covered_proc_keys,
+    )?;
 
     let untested: Vec<UntestedProcedure> = all_procs
         .iter()
         .filter(|p| {
-            !p.is_local && !p.is_test && !covered_proc_names.contains(&p.name.to_lowercase())
+            !p.is_local
+                && !p.is_test
+                && !covered_proc_keys.contains(&ProcKey::new(&p.object, &p.name))
         })
         .map(|p| UntestedProcedure {
             name: p.name.clone(),
@@ -159,40 +188,38 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
         })
         .collect();
 
-    CoverageReport { coverage, untested }
+    Ok(CoverageReport { coverage, untested })
 }
 
-/// Credit indirect-dispatch coverage on top of the direct pass.
+/// Credit qualified transitive reachability on top of the conservative bare
+/// call pass.
 ///
-/// For each test procedure already in `coverage`, look up its node in the
-/// workspace call graph and follow one hop of [`EdgeKind::IndirectCall`] edges
-/// — the over-approximated interface / `Codeunit.Run` / event-subscriber
-/// targets resolved by `al_insight`. Each newly-reached production procedure is
-/// appended to the entry's `covers` list (deduplicated by name) and recorded in
-/// `covered_names` so it is excluded from the untested report.
-///
-/// Purely additive: direct, name-based coverage is left untouched.
-fn augment_coverage_with_indirect_calls(
+/// The shared call graph resolves receiver types, same-object calls, event and
+/// trigger flow, `Codeunit.Run`, and interface dispatch. We walk all executable
+/// forward edge kinds, but never turn a graph node representing multiple AL
+/// overload declarations into a coverage claim: that ambiguity is returned to
+/// the caller instead.
+fn augment_coverage_with_call_graph(
     workspace: &Workspace,
-    proc_lookup: &HashMap<String, Vec<&ProcDef>>,
+    proc_by_key: &HashMap<ProcKey, Vec<&ProcDef>>,
     coverage: &mut [TestCoverageEntry],
-    covered_names: &mut HashSet<String>,
-) {
+    covered_keys: &mut HashSet<ProcKey>,
+) -> Result<(), al_workspace::CallGraphBuildError> {
     if coverage.is_empty() {
-        return;
+        return Ok(());
     }
 
     // Build a fully-resolved call graph (same as the affected-test path). This
     // resolves every workspace procedure's edges, including the indirect
     // ones, so a low-fanout test file is not silently skipped.
-    let (insight, _cg_guard) = workspace.get_or_build_call_graph();
+    let (insight, _cg_guard) = workspace.get_or_build_call_graph()?;
     let mut cg = CallGraph::build_from_insight(&insight);
     al_insight::calls::resolve_all_workspace_call_edges(
         &workspace.file_index,
         &workspace.symbols,
         &insight,
         &mut cg,
-    );
+    )?;
 
     for entry in coverage.iter_mut() {
         let Some(test_node) = find_procedure_node(&insight, &entry.codeunit, &entry.test_procedure)
@@ -200,36 +227,106 @@ fn augment_coverage_with_indirect_calls(
             continue;
         };
 
-        let mut seen: HashSet<String> =
-            entry.covers.iter().map(|c| c.name.to_lowercase()).collect();
-
+        let mut seen_nodes = HashSet::from([test_node]);
+        let mut queue = VecDeque::new();
         for edge in cg.callees_of(test_node) {
-            if edge.kind != EdgeKind::IndirectCall {
-                continue;
+            if is_executable_forward_edge(&edge.kind) && seen_nodes.insert(edge.to) {
+                queue.push_back(edge.to);
             }
-            let Some(info) = cg.node_info(edge.to) else {
+        }
+        let mut seen_covered: HashSet<ProcKey> = entry
+            .covers
+            .iter()
+            .map(|covered| ProcKey::new(&covered.object, &covered.name))
+            .collect();
+        let mut seen_unresolved: HashSet<String> = entry
+            .unresolved_calls
+            .iter()
+            .map(|unresolved| unresolved.name.to_lowercase())
+            .collect();
+
+        while let Some(node) = queue.pop_front() {
+            let Some(info) = cg.node_info(node) else {
                 continue;
             };
-            let name_lower = info.name.to_lowercase();
-            covered_names.insert(name_lower.clone());
-            if !seen.insert(name_lower.clone()) {
-                continue;
-            }
-            // Prefer file/line from the production proc table; fall back to the
-            // call-graph node (e.g. `OnRun` triggers are not in `proc_lookup`).
-            let (file, line) = proc_lookup
-                .get(&name_lower)
-                .and_then(|defs| defs.iter().find(|d| !d.is_test))
-                .map(|d| (d.file.clone(), d.line))
+            let key = ProcKey::new(&info.object, &info.name);
+            let definitions = proc_by_key
+                .get(&key)
+                .map(|defs| {
+                    defs.iter()
+                        .copied()
+                        .filter(|definition| !definition.is_test)
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
-            entry.covers.push(CoveredProcedure {
-                name: info.name.clone(),
-                object: info.object.clone(),
-                file,
-                line,
-            });
+
+            match definitions.as_slice() {
+                [definition] => {
+                    covered_keys.insert(key.clone());
+                    if seen_covered.insert(key.clone()) {
+                        entry.covers.push(CoveredProcedure {
+                            name: definition.name.clone(),
+                            object: definition.object.clone(),
+                            file: definition.file.clone(),
+                            line: definition.line,
+                        });
+                    }
+                }
+                [] if info.name.eq_ignore_ascii_case("OnRun") => {
+                    // Triggers are executable graph nodes but are not
+                    // `procedure_declaration`s in the source procedure table.
+                    covered_keys.insert(key.clone());
+                    if seen_covered.insert(key.clone()) {
+                        entry.covers.push(CoveredProcedure {
+                            name: info.name.clone(),
+                            object: info.object.clone(),
+                            file: String::new(),
+                            line: 0,
+                        });
+                    }
+                }
+                [] => {}
+                many => {
+                    if seen_unresolved.insert(info.name.to_lowercase()) {
+                        entry.unresolved_calls.push(UnresolvedCoverageCall {
+                            name: info.name.clone(),
+                            candidates: many
+                                .iter()
+                                .map(|definition| {
+                                    format!("{}:{}:{}", definition.object, definition.file, definition.line)
+                                })
+                                .collect(),
+                            reason: "multiple overload declarations share this graph target; no overload was credited"
+                                .to_string(),
+                        });
+                    }
+                }
+            }
+
+            for edge in cg.callees_of(node) {
+                if is_executable_forward_edge(&edge.kind) && seen_nodes.insert(edge.to) {
+                    queue.push_back(edge.to);
+                }
+            }
         }
+        entry.covers.sort_by(|left, right| {
+            (&left.object, &left.name, left.line).cmp(&(&right.object, &right.name, right.line))
+        });
+        entry.unresolved_calls.sort_by(|left, right| {
+            (&left.name, &left.candidates).cmp(&(&right.name, &right.candidates))
+        });
     }
+    Ok(())
+}
+
+fn is_executable_forward_edge(kind: &EdgeKind) -> bool {
+    matches!(
+        kind,
+        EdgeKind::DirectCall
+            | EdgeKind::IndirectCall
+            | EdgeKind::TriggerInvocation
+            | EdgeKind::RecordTrigger
+    )
 }
 
 /// Resolve a `(codeunit, procedure)` name pair to its call-graph node,
@@ -251,25 +348,18 @@ fn find_procedure_node(
     None
 }
 
-fn collect_all_procedures(workspace: &Workspace) -> Vec<ProcDef> {
+fn collect_all_procedures(sources: &[crate::workspace_sources::WorkspaceSource]) -> Vec<ProcDef> {
     let mut result = Vec::new();
 
-    for entry in workspace.file_index.files.iter() {
-        let entry_path = entry.key();
-        let path = entry_path.to_string_lossy().to_string();
-        let Some((text, tree)) = workspace.file_index.get_cached_parse(entry_path) else {
-            continue;
-        };
+    for source_file in sources {
+        let path = source_file.path.to_string_lossy().to_string();
+        let object_name = source_file.object.info.name.clone();
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
-            continue;
-        };
-        let object_name = obj_info.name.clone();
-
-        let root = tree.root_node();
-        let source = text.as_bytes();
-        let is_test_cu = al_syntax::language_data::is_test_container_kind(&obj_info.kind)
-            && has_test_subtype(root, source);
+        let root = source_file.tree.root_node();
+        let source = source_file.text.as_bytes();
+        let is_test_cu =
+            al_syntax::language_data::is_test_container_kind(&source_file.object.info.kind)
+                && has_test_subtype(root, source);
 
         collect_procs_recursive(root, source, &object_name, &path, is_test_cu, &mut result);
     }
@@ -368,7 +458,7 @@ fn collect_coverage_from_tree(
     test_procs: &[crate::queries::tests::TestProcedure],
     proc_lookup: &HashMap<String, Vec<&ProcDef>>,
     coverage: &mut Vec<TestCoverageEntry>,
-    covered_names: &mut HashSet<String>,
+    covered_keys: &mut HashSet<ProcKey>,
     _cursor: &mut tree_sitter::TreeCursor,
 ) {
     let test_names: HashSet<String> = test_procs.iter().map(|p| p.name.to_lowercase()).collect();
@@ -383,14 +473,20 @@ fn collect_coverage_from_tree(
                     if let Ok(raw_name) = name_node.utf8_text(source) {
                         let proc_name = raw_name.trim_matches('"');
                         if test_names.contains(&proc_name.to_lowercase()) {
-                            let called = collect_called_identifiers(node, source, proc_lookup);
-                            for c in &called {
-                                covered_names.insert(c.name.to_lowercase());
+                            let (called, unresolved_calls) = collect_called_identifiers(
+                                node,
+                                source,
+                                codeunit_name,
+                                proc_lookup,
+                            );
+                            for covered in &called {
+                                covered_keys.insert(ProcKey::new(&covered.object, &covered.name));
                             }
                             coverage.push(TestCoverageEntry {
                                 codeunit: codeunit_name.to_string(),
                                 test_procedure: proc_name.to_string(),
                                 covers: called,
+                                unresolved_calls,
                             });
                         }
                     }
@@ -416,20 +512,32 @@ fn collect_coverage_from_tree(
 fn collect_called_identifiers(
     node: tree_sitter::Node,
     source: &[u8],
+    caller_object: &str,
     proc_lookup: &HashMap<String, Vec<&ProcDef>>,
-) -> Vec<CoveredProcedure> {
+) -> (Vec<CoveredProcedure>, Vec<UnresolvedCoverageCall>) {
     let mut seen: HashSet<String> = HashSet::new();
     let mut result = Vec::new();
-    collect_identifiers_recursive(node, source, proc_lookup, &mut seen, &mut result);
-    result
+    let mut unresolved = Vec::new();
+    collect_identifiers_recursive(
+        node,
+        source,
+        caller_object,
+        proc_lookup,
+        &mut seen,
+        &mut result,
+        &mut unresolved,
+    );
+    (result, unresolved)
 }
 
 fn collect_identifiers_recursive(
     root: tree_sitter::Node,
     source: &[u8],
+    caller_object: &str,
     proc_lookup: &HashMap<String, Vec<&ProcDef>>,
     seen: &mut HashSet<String>,
     result: &mut Vec<CoveredProcedure>,
+    unresolved: &mut Vec<UnresolvedCoverageCall>,
 ) {
     let mut cursor = root.walk();
     let mut did_visit = false;
@@ -444,19 +552,49 @@ fn collect_identifiers_recursive(
             {
                 if let Some(callee) = find_callee_name(node, source) {
                     let key = callee.to_lowercase();
-                    if !seen.contains(&key) {
+                    if seen.insert(key.clone()) {
                         if let Some(defs) = proc_lookup.get(&key) {
-                            for def in defs {
-                                if !def.is_test {
-                                    seen.insert(key.clone());
-                                    result.push(CoveredProcedure {
-                                        name: def.name.clone(),
-                                        object: def.object.clone(),
-                                        file: def.file.clone(),
-                                        line: def.line,
-                                    });
-                                    break;
-                                }
+                            let production = defs
+                                .iter()
+                                .copied()
+                                .filter(|definition| !definition.is_test)
+                                .collect::<Vec<_>>();
+                            let same_object = production
+                                .iter()
+                                .copied()
+                                .filter(|definition| {
+                                    definition.object.eq_ignore_ascii_case(caller_object)
+                                })
+                                .collect::<Vec<_>>();
+                            let candidates = if same_object.is_empty() {
+                                production
+                            } else {
+                                same_object
+                            };
+                            match candidates.as_slice() {
+                                [definition] => result.push(CoveredProcedure {
+                                    name: definition.name.clone(),
+                                    object: definition.object.clone(),
+                                    file: definition.file.clone(),
+                                    line: definition.line,
+                                }),
+                                [] => {}
+                                many => unresolved.push(UnresolvedCoverageCall {
+                                    name: callee.to_string(),
+                                    candidates: many
+                                        .iter()
+                                        .map(|definition| {
+                                            format!(
+                                                "{}:{}:{}",
+                                                definition.object,
+                                                definition.file,
+                                                definition.line
+                                            )
+                                        })
+                                        .collect(),
+                                    reason: "bare call matches multiple declarations; no candidate was credited"
+                                        .to_string(),
+                                }),
                             }
                         }
                     }
@@ -501,7 +639,7 @@ mod tests {
     #[test]
     fn empty_workspace_returns_empty_report() {
         let workspace = al_workspace::Workspace::new();
-        let report = test_coverage(&workspace);
+        let report = test_coverage(&workspace).unwrap();
         assert!(report.coverage.is_empty());
         assert!(report.untested.is_empty());
     }
@@ -517,6 +655,7 @@ mod tests {
                 file: "MyCodeunit.al".to_string(),
                 line: 10,
             }],
+            unresolved_calls: Vec::new(),
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("testProcedure"));
@@ -587,7 +726,7 @@ mod tests {
     #[test]
     fn test_codeunit_yields_coverage_entry_and_excludes_test_procs_from_untested() {
         let ws = workspace_with(&[("/src/Test.al", TEST_CU)]);
-        let report = test_coverage(&ws);
+        let report = test_coverage(&ws).unwrap();
 
         assert_eq!(report.coverage.len(), 1, "one [Test] proc => one entry");
         let entry = &report.coverage[0];
@@ -614,7 +753,7 @@ mod tests {
     #[test]
     fn untested_lists_public_excludes_local() {
         let ws = workspace_with(&[("/src/Prod.al", PROD_CU)]);
-        let report = test_coverage(&ws);
+        let report = test_coverage(&ws).unwrap();
 
         assert!(
             report.coverage.is_empty(),
@@ -656,7 +795,7 @@ mod tests {
     end;
 }"#;
         let ws = workspace_with(&[("/src/MyTable.al", table)]);
-        let report = test_coverage(&ws);
+        let report = test_coverage(&ws).unwrap();
 
         assert!(report.coverage.is_empty(), "tables produce no coverage");
         assert!(
@@ -678,7 +817,7 @@ mod tests {
     end;
 }"#;
         let ws = workspace_with(&[("/src/Normal.al", normal)]);
-        let report = test_coverage(&ws);
+        let report = test_coverage(&ws).unwrap();
 
         assert!(
             report.coverage.is_empty(),
@@ -703,7 +842,7 @@ mod tests {
     end;
 }"#;
         let ws = workspace_with(&[("/src/EmptyTest.al", cu)]);
-        let report = test_coverage(&ws);
+        let report = test_coverage(&ws).unwrap();
         assert!(
             report.coverage.is_empty(),
             "test codeunit with zero [Test] procs => no coverage entries"
@@ -733,7 +872,7 @@ mod tests {
     end;
 }"#;
         let ws = workspace_with(&[("/src/A.al", cu_a), ("/src/B.al", cu_b)]);
-        let report = test_coverage(&ws);
+        let report = test_coverage(&ws).unwrap();
 
         assert_eq!(report.coverage.len(), 3, "1 + 2 [Test] procedures");
         let from_b = report
@@ -850,7 +989,7 @@ mod tests {
             ("/ws/ImplA.Codeunit.al", impl_a),
             ("/ws/DispatchTest.Codeunit.al", test_cu),
         ]);
-        let report = test_coverage(&ws);
+        let report = test_coverage(&ws).unwrap();
 
         let entry = report
             .coverage
@@ -876,6 +1015,140 @@ mod tests {
     }
 
     #[test]
+    fn qualified_same_named_calls_credit_only_the_resolved_object_and_transitive_callee() {
+        let target = r#"codeunit 50101 "Target A"
+{
+    procedure Shared()
+    begin
+        Helper();
+    end;
+
+    procedure Helper()
+    begin
+    end;
+}"#;
+        let other = r#"codeunit 50102 "Target B"
+{
+    procedure Shared()
+    begin
+    end;
+}"#;
+        let test_cu = r#"codeunit 50100 "Qualified Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestQualified()
+    var
+        Target: Codeunit "Target A";
+    begin
+        Target.Shared();
+    end;
+}"#;
+        let ws = workspace_with(&[
+            ("/ws/TargetA.Codeunit.al", target),
+            ("/ws/TargetB.Codeunit.al", other),
+            ("/ws/QualifiedTest.Codeunit.al", test_cu),
+        ]);
+        let report = test_coverage(&ws).unwrap();
+        let entry = report
+            .coverage
+            .iter()
+            .find(|entry| entry.test_procedure == "TestQualified")
+            .expect("TestQualified coverage entry");
+
+        assert!(
+            entry.unresolved_calls.is_empty(),
+            "{:?}",
+            entry.unresolved_calls
+        );
+        assert!(entry
+            .covers
+            .iter()
+            .any(|covered| covered.object == "Target A" && covered.name == "Shared"));
+        assert!(
+            entry
+                .covers
+                .iter()
+                .any(|covered| covered.object == "Target A" && covered.name == "Helper"),
+            "transitive same-object call must be reachable: {:?}",
+            entry.covers
+        );
+        assert!(
+            !entry
+                .covers
+                .iter()
+                .any(|covered| covered.object == "Target B"),
+            "same-named method in another object must not receive false coverage"
+        );
+        assert!(report
+            .untested
+            .iter()
+            .any(|procedure| procedure.object == "Target B" && procedure.name == "Shared"));
+    }
+
+    #[test]
+    fn overloaded_graph_target_is_reported_unresolved_and_not_credited() {
+        let target = r#"codeunit 50101 "Overloaded Target"
+{
+    procedure Shared(Value: Integer)
+    begin
+    end;
+
+    procedure Shared(Value: Text)
+    begin
+    end;
+}"#;
+        let test_cu = r#"codeunit 50100 "Overload Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestOverload()
+    var
+        Target: Codeunit "Overloaded Target";
+    begin
+        Target.Shared(1);
+    end;
+}"#;
+        let ws = workspace_with(&[
+            ("/ws/Overloaded.Codeunit.al", target),
+            ("/ws/OverloadTest.Codeunit.al", test_cu),
+        ]);
+        let report = test_coverage(&ws).unwrap();
+        let entry = report
+            .coverage
+            .iter()
+            .find(|entry| entry.test_procedure == "TestOverload")
+            .expect("TestOverload coverage entry");
+
+        assert!(
+            !entry
+                .covers
+                .iter()
+                .any(|covered| covered.object == "Overloaded Target" && covered.name == "Shared"),
+            "an unresolved overload must not be falsely credited"
+        );
+        let unresolved = entry
+            .unresolved_calls
+            .iter()
+            .find(|call| call.name == "Shared")
+            .expect("overload ambiguity must be explicit");
+        assert_eq!(unresolved.candidates.len(), 2);
+        assert_eq!(
+            report
+                .untested
+                .iter()
+                .filter(|procedure| {
+                    procedure.object == "Overloaded Target" && procedure.name == "Shared"
+                })
+                .count(),
+            2,
+            "both overload declarations remain uncredited"
+        );
+    }
+
+    #[test]
     fn coverage_credits_codeunit_run_to_onrun() {
         let worker = r#"codeunit 50201 "Worker CU"
 {
@@ -897,7 +1170,7 @@ mod tests {
             ("/ws/Worker.Codeunit.al", worker),
             ("/ws/RunTest.Codeunit.al", test_cu),
         ]);
-        let report = test_coverage(&ws);
+        let report = test_coverage(&ws).unwrap();
 
         let entry = report
             .coverage

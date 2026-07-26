@@ -4,7 +4,7 @@ use url::Url;
 
 use super::{Position, Range};
 use crate::resolution::{self, ResolvedMemberKind};
-use al_workspace::Workspace;
+use al_workspace::{Workspace, WorkspaceStateError};
 
 /// Hover result: markdown content and optional highlight range.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -13,18 +13,25 @@ pub struct HoverResult {
     pub range: Option<Range>,
 }
 
-#[must_use]
-pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<HoverResult> {
-    let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, uri)?;
+pub fn hover(
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+) -> Result<Option<HoverResult>, WorkspaceStateError> {
+    let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
+        return Ok(None);
+    };
 
-    let node = al_syntax::find_node_at_position(&tree, &text, position.into())?;
+    let Some(node) = al_syntax::find_node_at_position(&tree, &text, position.into()) else {
+        return Ok(None);
+    };
     let source = text.as_bytes();
     let node_text = node.utf8_text(source).unwrap_or("");
     let clean_name = node_text.trim_matches('"');
 
     if clean_name.is_empty() {
         tracing::debug!("hover: empty clean_name, returning None");
-        return None;
+        return Ok(None);
     }
 
     tracing::debug!(
@@ -43,13 +50,15 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             &tree,
             &access.receiver,
             position,
-        ) {
+        )? {
             if let Some(member) =
-                resolution::resolve_member(workspace, uri, &receiver, &access.member)
+                resolution::resolve_member(workspace, uri, &receiver, &access.member)?
             {
                 let value = match member.kind {
                     ResolvedMemberKind::Variable { scope, .. } => {
-                        let type_info = member.type_info.as_ref()?;
+                        let Some(type_info) = member.type_info.as_ref() else {
+                            return Ok(None);
+                        };
                         format!(
                             "```al\n{}: {}\n```\n*({})*",
                             member.name,
@@ -81,7 +90,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                             workspace,
                             &receiver,
                             &access.member,
-                        );
+                        )?;
                         if overloads.len() > 1 {
                             let mut content = String::new();
                             for (i, overload) in overloads.iter().enumerate() {
@@ -117,7 +126,9 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                         }
                     }
                     ResolvedMemberKind::Field { .. } => {
-                        let type_info = member.type_info.as_ref()?;
+                        let Some(type_info) = member.type_info.as_ref() else {
+                            return Ok(None);
+                        };
                         format!(
                             "```al\n{}: {}\n```\n*(field)*",
                             member.name,
@@ -128,7 +139,9 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                         )
                     }
                     ResolvedMemberKind::EnumValue { .. } => {
-                        let type_info = member.type_info.as_ref()?;
+                        let Some(type_info) = member.type_info.as_ref() else {
+                            return Ok(None);
+                        };
                         format!(
                             "```al\n{}\n```\n*(enum value of {})*",
                             member.name,
@@ -136,10 +149,10 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                         )
                     }
                 };
-                return Some(HoverResult {
+                return Ok(Some(HoverResult {
                     contents: value,
                     range: Some(node_range),
-                });
+                }));
             }
         }
     }
@@ -153,19 +166,19 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                 content.push_str("\n\n");
                 content.push_str(&resolution::format_xml_doc(&doc));
             }
-            return Some(HoverResult {
+            return Ok(Some(HoverResult {
                 contents: content,
                 range: Some(node_range),
-            });
+            }));
         }
 
         for param in &proc_info.parameters {
             if param.name.eq_ignore_ascii_case(clean_name) {
                 let content = format!("```al\n{}\n```\n*(parameter)*", param);
-                return Some(HoverResult {
+                return Ok(Some(HoverResult {
                     contents: content,
                     range: Some(node_range),
-                });
+                }));
             }
         }
 
@@ -181,10 +194,10 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                         for param in &proc_info.parameters {
                             if param.name.eq_ignore_ascii_case(pname) {
                                 let content = format!("```al\n{}\n```\n*(parameter)*", param);
-                                return Some(HoverResult {
+                                return Ok(Some(HoverResult {
                                     contents: content,
                                     range: Some(node_range),
-                                });
+                                }));
                             }
                         }
                     }
@@ -209,19 +222,19 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                 "```al\n{}{}: {}{}\n```\n*({})*",
                 var_prefix, decl.name, decl.type_name, subtype, label
             );
-            return Some(HoverResult {
+            return Ok(Some(HoverResult {
                 contents: content,
                 range: Some(node_range),
-            });
+            }));
         }
     }
 
     if let Some(entry) = workspace.symbols.find_by_name(clean_name) {
         let content = format_symbol_hover(&entry);
-        return Some(HoverResult {
+        return Ok(Some(HoverResult {
             contents: content,
             range: Some(node_range),
-        });
+        }));
     }
 
     if let Some(builtin) = al_syntax::language_data::builtin_function_by_name(clean_name) {
@@ -244,18 +257,23 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             content.push_str(&format!("\n\n**Returns:** `{}`", ret));
         }
         content.push_str(&format!("\n\n*(built-in — {})*", builtin.category));
-        return Some(HoverResult {
+        return Ok(Some(HoverResult {
             contents: content,
             range: Some(node_range),
-        });
+        }));
     }
 
     {
         let cache = workspace
             .semantic_cache
             .read()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(bt) = cache.get_type(clean_name) {
+            .map_err(|_| WorkspaceStateError::Poisoned {
+                component: "semantic_cache",
+            })?;
+        if let Some(bt) = cache
+            .get_type(clean_name)
+            .or_else(|| cache.get_type(&format!("{clean_name}Class")))
+        {
             let methods_list: Vec<String> = bt
                 .methods
                 .iter()
@@ -268,66 +286,10 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                 format!("\n\n**Methods:**\n{}", methods_list.join("\n"))
             };
             let content = format!("```al\n{}\n```\n*(built-in type)*{}", bt.name, methods_str);
-            return Some(HoverResult {
+            return Ok(Some(HoverResult {
                 contents: content,
                 range: Some(node_range),
-            });
-        }
-
-        // Search all types for a method with this name via SemanticCache.
-        // SemanticCache::find_methods_by_name uses the pre-built `method_index`
-        // (lowercased method name → list of (type_key, method_idx)) so the
-        // lookup is O(1) plus O(k) for the k overloads. This replaces the
-        // earlier O(n*m) double-loop over workspace.builtins.
-        let method_hits = cache.find_methods_by_name(clean_name);
-        if !method_hits.is_empty() {
-            let mut by_type: std::collections::HashMap<&str, Vec<&al_semantic::BuiltinMethod>> =
-                std::collections::HashMap::new();
-            for (type_name, method) in &method_hits {
-                by_type.entry(type_name).or_default().push(method);
-            }
-            // Sort by type name for deterministic results — HashMap iteration
-            // order is randomised per process, so without sorting hover would
-            // jump between types for the same identifier across LSP restarts.
-            let mut sorted_types: Vec<(&str, &Vec<&al_semantic::BuiltinMethod>)> =
-                by_type.iter().map(|(k, v)| (*k, v)).collect();
-            sorted_types.sort_by_key(|(k, _)| *k);
-            if sorted_types.len() > 1 {
-                let candidates: Vec<&str> = sorted_types.iter().map(|(t, _)| *t).collect();
-                tracing::debug!(
-                    method = clean_name,
-                    selected = ?sorted_types.first().map(|(t, _)| *t),
-                    candidates = ?candidates,
-                    "hover: multiple types own this method, picking lexicographically first"
-                );
-            }
-            if let Some((type_name, overloads)) = sorted_types.into_iter().next() {
-                let mut content = String::new();
-                for (i, method) in overloads.iter().enumerate() {
-                    if i > 0 {
-                        content.push_str("\n\n---\n\n");
-                    }
-                    let sig = format_builtin_method(method);
-                    content.push_str(&format!("```al\n{}\n```", sig));
-                    if !method.documentation.is_empty() {
-                        content.push_str("\n\n");
-                        content.push_str(&resolution::format_xml_doc(&method.documentation));
-                    }
-                }
-                if overloads.len() > 1 {
-                    content.push_str(&format!(
-                        "\n\n*({} overloads on {})*",
-                        overloads.len(),
-                        type_name
-                    ));
-                } else {
-                    content.push_str(&format!("\n\n*({}.{})*", type_name, clean_name));
-                }
-                return Some(HoverResult {
-                    contents: content,
-                    range: Some(node_range),
-                });
-            }
+            }));
         }
     }
 
@@ -344,14 +306,14 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                 info.id.map_or(String::new(), |id| id.to_string()),
                 info.name
             );
-            return Some(HoverResult {
+            return Ok(Some(HoverResult {
                 contents: content,
                 range: Some(node_range),
-            });
+            }));
         }
     }
 
-    None
+    Ok(None)
 }
 
 /// This is the single code path for all entry points (LSP and daemon).
@@ -360,15 +322,21 @@ pub async fn hover_full(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
-) -> Option<HoverResult> {
-    if let Some(result) = hover(workspace, uri, position) {
-        return Some(result);
+) -> Result<Option<HoverResult>, String> {
+    if let Some(result) = hover(workspace, uri, position).map_err(|error| error.to_string())? {
+        return Ok(Some(result));
     }
 
-    let guard = al_workspace::get_or_init_bridge(workspace).await?;
-    let bridge = guard.as_ref()?;
+    let Some(guard) = al_workspace::get_or_init_bridge(workspace).await else {
+        return Ok(None);
+    };
+    let Some(bridge) = guard.as_ref() else {
+        return Ok(None);
+    };
     let bridge_generation = bridge.generation();
-    let path = uri.to_file_path().ok()?;
+    let Ok(path) = uri.to_file_path() else {
+        return Ok(None);
+    };
     // The bridge uses the same zero-based coordinates as LSP.
     let pos = (position.line, position.character);
     // Open-document text takes precedence over on-disk content.
@@ -392,7 +360,8 @@ pub async fn hover_full(
         )
         .await
     {
-        Ok(v) => v?,
+        Ok(Some(value)) => value,
+        Ok(None) => return Ok(None),
         Err(e) => {
             tracing::debug!(error = %e, "hover_full: bridge error");
             let restart = matches!(
@@ -409,7 +378,7 @@ pub async fn hover_full(
                     tracing::warn!(error = %restart_error, "hover_full: bridge restart failed");
                 }
             }
-            return None;
+            return Err(format!("semantic hover bridge failed: {e}"));
         }
     };
     let mut contents = format!(
@@ -420,10 +389,10 @@ pub async fn hover_full(
         contents.push_str("\n\n");
         contents.push_str(&resolution::format_xml_doc(doc));
     }
-    Some(HoverResult {
+    Ok(Some(HoverResult {
         contents,
         range: None,
-    })
+    }))
 }
 
 fn format_procedure_hover(proc: &al_syntax::ProcedureInfo) -> String {
@@ -493,9 +462,21 @@ mod tests {
     use al_workspace::Workspace;
     use url::Url;
 
+    fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<HoverResult> {
+        super::hover(workspace, uri, position).unwrap()
+    }
+
+    async fn hover_full(
+        workspace: &Workspace,
+        uri: &Url,
+        position: Position,
+    ) -> Option<HoverResult> {
+        super::hover_full(workspace, uri, position).await.unwrap()
+    }
+
     fn open_doc(ws: &Workspace, src: &str) -> Url {
         let uri = Url::parse("file:///tmp/hover-test.al").unwrap();
-        ws.documents.open(uri.clone(), src.to_string());
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
         uri
     }
 
@@ -634,6 +615,7 @@ mod tests {
             enum_values: vec![],
             keys: vec![],
             properties: vec![],
+            permissions: vec![],
             variables: vec![],
         };
         let result = format_symbol_hover(&entry);
@@ -699,6 +681,7 @@ mod tests {
             enum_values: vec![],
             keys: vec![],
             properties: vec![],
+            permissions: vec![],
             variables: vec![],
         }
     }
@@ -743,6 +726,7 @@ mod tests {
             ],
             keys: vec![],
             properties: vec![],
+            permissions: vec![],
             variables: vec![],
         };
         let result = format_symbol_hover(&entry);

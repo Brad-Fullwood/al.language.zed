@@ -15,9 +15,15 @@ tracing = { workspace = true }
 toml = "0.8"
 
 [dev-dependencies]
+al-bc = { path = "../al-bc", version = "0.1.0" }
+al-project = { path = "../al-project", version = "0.1.0" }
+al-publish = { path = "../al-publish", version = "0.1.0" }
+al-test = { path = "../al-test", version = "0.1.0" }
+al-workspace = { path = "../al-workspace", version = "0.1.0" }
 # TUI smoke test: drive al-explorer in a PTY and render the screen with a
 # vt100 parser for the TUI smoke test.
 portable-pty = "0.9"
+tempfile = "3"
 vt100 = "0.15"
 # emit-differential test: read .app (NAVX header + zip) entries to compare the
 # native emitter's output against Microsoft's alc byte-for-byte.

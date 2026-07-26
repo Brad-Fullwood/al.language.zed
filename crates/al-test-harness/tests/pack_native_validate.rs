@@ -3,8 +3,9 @@
 //! always-on native syntax/project/binding verifier, and refuses to emit a .app
 //! when either gate reports errors.
 //!
-//! Gated on `AL_TOOL_PATH` pointing at a dir with `alc.dll` + `dotnet` on PATH;
-//! skips cleanly otherwise (the common CI case).
+//! This external-contract suite is ignored by default. Run it explicitly with
+//! `--ignored` and `AL_TOOL_PATH` set; missing prerequisites are then failures,
+//! not passing skips.
 
 use std::path::Path;
 use std::process::Command;
@@ -48,11 +49,12 @@ fn pack_validate(dir: &Path, out: &Path) -> std::process::Output {
 }
 
 #[test]
+#[ignore = "requires AL_TOOL_PATH/alc.dll and dotnet; run with --ignored"]
 fn validate_passes_valid_project_and_emits() {
-    if !alc_available() {
-        eprintln!("SKIP: AL_TOOL_PATH/alc.dll + dotnet not available");
-        return;
-    }
+    assert!(
+        alc_available(),
+        "AL_TOOL_PATH/alc.dll and a working dotnet host are required"
+    );
     let dir = std::env::temp_dir().join(format!("al-b1-ok-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     make_project(
@@ -71,11 +73,12 @@ fn validate_passes_valid_project_and_emits() {
 }
 
 #[test]
+#[ignore = "requires AL_TOOL_PATH/alc.dll and dotnet; run with --ignored"]
 fn validate_refuses_parseable_but_invalid_project() {
-    if !alc_available() {
-        eprintln!("SKIP: AL_TOOL_PATH/alc.dll + dotnet not available");
-        return;
-    }
+    assert!(
+        alc_available(),
+        "AL_TOOL_PATH/alc.dll and a working dotnet host are required"
+    );
     let dir = std::env::temp_dir().join(format!("al-b1-bad-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     // Parses fine, but `Undeclared` does not exist → alc AL0118.

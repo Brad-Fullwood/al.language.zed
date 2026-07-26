@@ -11,12 +11,14 @@
 //!      (e.g. an installed `ms-dynamics-smb.al` extension's `bin/linux`), and
 //!   2. an `al-lsp` built with `--features semantic` on disk at `target/debug`.
 //!
-//! When `AL_TOOL_PATH` is unset the test is skipped (the common CI case).
+//! The self-contained suite reports this test as ignored. The Microsoft
+//! contract profile runs it explicitly with `--ignored`; absent prerequisites
+//! then fail instead of being counted as a passing test.
 //!
 //! Run it with:
 //!   AL_TOOL_PATH=<ext>/bin/linux \
 //!     cargo build -p al-lsp --bin al-lsp --features semantic && \
-//!     AL_TOOL_PATH=<ext>/bin/linux cargo test -p al-test-harness --test semantic_bridge
+//!     AL_TOOL_PATH=<ext>/bin/linux cargo test -p al-test-harness --test semantic_bridge -- --ignored
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -43,14 +45,11 @@ fn al(args: &[&str]) -> (bool, String) {
 }
 
 #[test]
+#[ignore = "requires AL_TOOL_PATH and a semantic-feature al-lsp; run with --ignored"]
 fn error_codes_and_builtins_reflect_live_toolchain() {
-    let Some(dll) = code_analysis_dll() else {
-        eprintln!(
-            "SKIP: AL_TOOL_PATH not set to a dir containing \
-             Microsoft.Dynamics.Nav.CodeAnalysis.dll — live bridge test skipped"
-        );
-        return;
-    };
+    let dll = code_analysis_dll().expect(
+        "AL_TOOL_PATH must point to a directory containing Microsoft.Dynamics.Nav.CodeAnalysis.dll",
+    );
     eprintln!("live bridge against {}", dll.display());
 
     let empty_hint = "got an empty catalog with a toolchain present — is `al-lsp` built with \

@@ -3,8 +3,9 @@
 use al_workspace::Workspace;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
+use tower_lsp::lsp_types::request::{GotoImplementationParams, GotoImplementationResponse};
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -16,6 +17,23 @@ use super::formatting;
 use super::handlers;
 use super::hover;
 use super::workspace;
+
+fn internal_error(message: impl Into<std::borrow::Cow<'static, str>>) -> tower_lsp::jsonrpc::Error {
+    tower_lsp::jsonrpc::Error {
+        code: tower_lsp::jsonrpc::ErrorCode::InternalError,
+        message: message.into(),
+        data: None,
+    }
+}
+
+fn content_modified_error() -> tower_lsp::jsonrpc::Error {
+    tower_lsp::jsonrpc::Error {
+        // LSP ContentModified: the client may retry against its current text.
+        code: tower_lsp::jsonrpc::ErrorCode::ServerError(-32801),
+        message: "workspace changed while diagnostics were being computed".into(),
+        data: None,
+    }
+}
 
 /// Debounce delay for diagnostics: wait this long after the last keystroke before running.
 /// prevents bridge calls (up to 5s) from blocking hover/completion.
@@ -45,6 +63,40 @@ pub(crate) const SUPPORTED_COMMANDS: &[&str] = &[
     "al.runTest",
 ];
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunnablesParams {
+    text_document: TextDocumentIdentifier,
+    #[serde(default)]
+    position: Option<Position>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Runnable {
+    label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location: Option<LocationLink>,
+    kind: &'static str,
+    args: ShellRunnableArgs,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShellRunnableArgs {
+    environment: std::collections::HashMap<String, String>,
+    cwd: std::path::PathBuf,
+    program: String,
+    args: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WorkspaceInitState {
+    Initializing,
+    Ready,
+    Failed(String),
+}
+
 pub struct AlServer {
     pub(crate) client: Client,
     pub(crate) workspace: Arc<Workspace>,
@@ -64,11 +116,11 @@ pub struct AlServer {
     /// Zed may send `initialized` twice when opening multiple worktrees.
     /// CAS ensures workspace init runs only once per server instance.
     pub(crate) init_done: AtomicBool,
-    /// Set to `true` inside the spawned task, after `initialize_workspace` completes.
-    /// `await_ready` checks this flag, NOT `init_done`, so it only returns once the
-    /// background work has actually finished (not just been scheduled).
-    pub(crate) workspace_ready: Arc<AtomicBool>,
-    pub(crate) init_notify: Arc<Notify>,
+    /// Observable workspace-initialization state. A watch channel provides an
+    /// atomic snapshot plus race-free change notification, and preserves the
+    /// actual failure reason instead of collapsing failed initialization into
+    /// the same boolean as success.
+    pub(crate) workspace_init_state: watch::Sender<WorkspaceInitState>,
     /// Set the first time we report a persistent semantic-bridge failure
     /// (`Timeout` / `Poisoned`) to the user, so subsequent file opens with
     /// the same broken bridge don't spam `window/showMessage(WARNING)`.
@@ -84,11 +136,221 @@ pub struct AlServer {
     /// otherwise the server must return a flat `SymbolInformation[]`. Captured
     /// from the `initialize` capabilities.
     pub(crate) document_symbol_hierarchical: AtomicBool,
+    /// URIs that received non-empty project-scope diagnostics in the previous
+    /// complete publication. The next generation clears only entries that
+    /// became clean instead of sending empty arrays for every indexed file.
+    pub(crate) workspace_diagnostic_uris: Arc<Mutex<std::collections::HashSet<Url>>>,
+    /// Latest semantic-bridge diagnostics keyed by the exact open-document
+    /// snapshot they were computed from. Project-scope native refreshes merge
+    /// these without repeating multi-second bridge calls.
+    pub(crate) semantic_diagnostic_cache:
+        Arc<Mutex<std::collections::HashMap<Url, diagnostics::CachedSemanticDiagnostics>>>,
+}
+
+#[cfg(test)]
+mod symbol_package_configuration_tests {
+    use super::*;
+
+    fn project(root: std::path::PathBuf) -> al_project::project::AlProject {
+        al_project::project::AlProject {
+            root: root.clone(),
+            app_json: al_project::project::AppManifest {
+                id: "00000000-0000-0000-0000-000000000001".to_string(),
+                name: "Configuration test".to_string(),
+                publisher: "Tests".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: Vec::new(),
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: root.join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn configuration_reload_replaces_package_cache_and_local_folder_paths() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("symbols-cache");
+        let local = root.path().join("shared-symbols");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        *server.workspace.project.write().await = Some(project(root.path().to_path_buf()));
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+
+        server
+            .did_change_configuration(DidChangeConfigurationParams {
+                settings: serde_json::json!({
+                    "al": {
+                        "packageCachePath": "symbols-cache",
+                        "appLocalFolderPaths": ["shared-symbols"]
+                    }
+                }),
+            })
+            .await;
+
+        let stored = server.workspace.project.read().await;
+        let project = stored.as_ref().expect("project remains loaded");
+        assert_eq!(project.packages_dir, cache);
+        assert!(project.packages.is_empty());
+        let config = server.workspace.config.read().await;
+        assert_eq!(
+            config.package_cache_path.as_deref(),
+            Some(std::path::Path::new("symbols-cache"))
+        );
+        assert_eq!(
+            config.app_local_folder_paths,
+            [std::path::PathBuf::from("shared-symbols")]
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_package_reload_retains_previous_config_project_and_symbols() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("symbols-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("Broken.app"), b"not an app").unwrap();
+        let original_project = project(root.path().to_path_buf());
+        let original_packages_dir = original_project.packages_dir.clone();
+        *server.workspace.project.write().await = Some(original_project);
+        server
+            .workspace
+            .symbols
+            .add_entries(&[al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Codeunit,
+                id: 50_100,
+                name: "Stable".to_string(),
+                package: "Previous".to_string(),
+                ..Default::default()
+            }]);
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+
+        server
+            .did_change_configuration(DidChangeConfigurationParams {
+                settings: serde_json::json!({
+                    "al": {
+                        "packageCachePath": "symbols-cache"
+                    }
+                }),
+            })
+            .await;
+
+        let project = server.workspace.project.read().await;
+        assert_eq!(
+            project.as_ref().unwrap().packages_dir,
+            original_packages_dir
+        );
+        assert!(server
+            .workspace
+            .config
+            .read()
+            .await
+            .package_cache_path
+            .is_none());
+        assert!(server.workspace.symbols.find_by_name("Stable").is_some());
+    }
+}
+
+#[cfg(test)]
+mod document_close_generation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn close_restores_saved_source_instead_of_leaving_unsaved_overlay() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server.workspace.config.write().await.diagnostics_scope =
+            al_project::config::DiagnosticsScope::OpenFiles;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("Saved.al");
+        let saved = r#"codeunit 50100 "Saved" { }"#;
+        let unsaved = r#"codeunit 50100 "Unsaved" { }"#;
+        std::fs::write(&path, saved).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        server
+            .workspace
+            .documents
+            .open(uri.clone(), unsaved.to_string())
+            .unwrap();
+        server
+            .workspace
+            .file_index
+            .add_file(path.clone(), unsaved.to_string());
+
+        server
+            .did_close(DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier { uri },
+            })
+            .await;
+
+        assert_eq!(
+            server.workspace.file_index.get_content(&path).as_deref(),
+            Some(saved)
+        );
+        assert!(server
+            .workspace
+            .file_index
+            .find_by_object_name("Saved")
+            .is_some());
+        assert!(server
+            .workspace
+            .file_index
+            .find_by_object_name("Unsaved")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn close_removes_a_never_saved_transient_document() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server.workspace.config.write().await.diagnostics_scope =
+            al_project::config::DiagnosticsScope::OpenFiles;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("Transient.al");
+        let uri = Url::from_file_path(&path).unwrap();
+        let text = r#"codeunit 50100 "Transient" { }"#;
+        server
+            .workspace
+            .documents
+            .open(uri.clone(), text.to_string())
+            .unwrap();
+        server
+            .workspace
+            .file_index
+            .add_file(path.clone(), text.to_string());
+
+        server
+            .did_close(DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier { uri },
+            })
+            .await;
+
+        assert!(server.workspace.file_index.get_content(&path).is_none());
+        assert!(server
+            .workspace
+            .file_index
+            .find_by_object_name("Transient")
+            .is_none());
+    }
 }
 
 impl AlServer {
     pub(crate) fn new(client: Client) -> Self {
         let workspace = Arc::new(Workspace::new());
+        let (workspace_init_state, _initial_receiver) =
+            watch::channel(WorkspaceInitState::Initializing);
 
         // Register a notify sink so bridge failures reach the user.
         let sink_client = client.clone();
@@ -111,11 +373,12 @@ impl AlServer {
             init_task: Mutex::new(None),
             reindex_task: Mutex::new(None),
             init_done: AtomicBool::new(false),
-            workspace_ready: Arc::new(AtomicBool::new(false)),
-            init_notify: Arc::new(Notify::new()),
+            workspace_init_state,
             semantic_failure_reported: AtomicBool::new(false),
             definition_link_support: AtomicBool::new(false),
             document_symbol_hierarchical: AtomicBool::new(false),
+            workspace_diagnostic_uris: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            semantic_diagnostic_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -131,38 +394,56 @@ impl AlServer {
             .swap(true, std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// If initialization has already completed (`workspace_ready` is true) this returns
-    /// immediately. Otherwise it waits for the `init_notify` signal with a 30s
-    /// timeout so that handlers opened immediately after server startup receive
-    /// full workspace data rather than empty results.
-    ///
-    /// IMPORTANT: we subscribe to the Notify *before* checking the flag to avoid the
-    /// lost-wakeup race where the background task completes and fires `notify_waiters()`
-    /// between the flag check and the `.await`. By calling `notified()` first we pin
-    /// a permit that survives that window.
-    async fn await_ready(&self) {
-        let notified = self.init_notify.notified();
-        if self.workspace_ready.load(Ordering::Acquire) {
-            return;
-        }
-        if tokio::time::timeout(std::time::Duration::from_secs(30), notified)
-            .await
-            .is_err()
-        {
-            tracing::warn!("await_ready: timed out after 30s waiting for workspace initialization");
+    pub(crate) fn diagnostic_publication_state(&self) -> diagnostics::DiagnosticPublicationState {
+        diagnostics::DiagnosticPublicationState {
+            semantic_cache: Arc::clone(&self.semantic_diagnostic_cache),
+            published_uris: Arc::clone(&self.workspace_diagnostic_uris),
         }
     }
 
-    pub(crate) async fn ensure_builtins_loaded(&self) {
-        if !self
-            .workspace
-            .builtins
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
-        {
-            return;
+    /// Wait for a usable workspace generation. Initialization failures and
+    /// timeouts are request errors: serving an empty/partial answer would make
+    /// a broken startup indistinguishable from a valid "no result".
+    async fn await_ready(&self) -> Result<tokio::sync::RwLockReadGuard<'_, ()>> {
+        let mut receiver = self.workspace_init_state.subscribe();
+        let wait = async {
+            loop {
+                let state = receiver.borrow().clone();
+                match state {
+                    WorkspaceInitState::Ready => return Ok(()),
+                    WorkspaceInitState::Failed(error) => {
+                        return Err(internal_error(format!(
+                            "AL workspace initialization failed: {error}"
+                        )));
+                    }
+                    WorkspaceInitState::Initializing => {}
+                }
+                receiver.changed().await.map_err(|_| {
+                    internal_error("AL workspace initialization state channel closed")
+                })?;
+            }
+        };
+
+        match tokio::time::timeout(std::time::Duration::from_secs(30), wait).await {
+            Ok(result) => result?,
+            Err(_) => {
+                tracing::error!(
+                    "await_ready: timed out after 30s waiting for workspace initialization"
+                );
+                return Err(internal_error(
+                    "AL workspace initialization timed out after 30 seconds",
+                ));
+            }
         }
+        Ok(self.workspace.generation_lock.read().await)
+    }
+
+    pub(crate) async fn ensure_builtins_loaded(&self) -> Result<()> {
+        let poisoned = match self.workspace.builtins.read() {
+            Ok(builtins) if !builtins.is_empty() => return Ok(()),
+            Ok(_) => false,
+            Err(_) => true,
+        };
 
         if let Some(guard) = self.get_or_init_bridge().await {
             if let Some(bridge) = guard.as_ref() {
@@ -171,6 +452,7 @@ impl AlServer {
                         tracing::info!(count = types.len(), "Loaded built-in types via bridge");
                         let version = bridge.version().to_string();
                         crate::semantic::set_builtins(&self.workspace, types, &version);
+                        return Ok(());
                     }
                     Err(error) => {
                         tracing::warn!(%error, "Failed to load built-in types via bridge");
@@ -184,6 +466,12 @@ impl AlServer {
                 }
             }
         }
+        if poisoned {
+            return Err(internal_error(
+                "built-in type catalog is poisoned and no fresh semantic payload was available",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) async fn ensure_error_codes_loaded(&self) {
@@ -224,10 +512,92 @@ impl AlServer {
             .map(|v| v.value().clone())
     }
 
+    async fn runnables(&self, params: RunnablesParams) -> Result<Vec<Runnable>> {
+        let _generation = self.await_ready().await?;
+        let file_path = params.text_document.uri.to_file_path().map_err(|()| {
+            tower_lsp::jsonrpc::Error::invalid_params("runnables require a file URI")
+        })?;
+        if !file_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("al"))
+        {
+            return Ok(Vec::new());
+        }
+
+        let project_root = self
+            .workspace
+            .project
+            .read()
+            .await
+            .as_ref()
+            .map(|project| project.root.clone());
+        let cwd = project_root
+            .clone()
+            .or_else(|| file_path.parent().map(std::path::Path::to_path_buf))
+            .ok_or_else(|| {
+                tower_lsp::jsonrpc::Error::invalid_params("AL file has no parent directory")
+            })?;
+        let explorer = resolve_explorer_binary().map_err(internal_error)?;
+        let discovered = al_analysis::queries::tests::discover_tests(&self.workspace)
+            .map_err(|error| internal_error(error.to_string()))?;
+
+        Ok(build_runnables(
+            &params.text_document.uri,
+            &file_path,
+            &cwd,
+            &explorer,
+            project_root.is_some(),
+            &discovered,
+            params.position,
+        ))
+    }
+
     pub(crate) async fn get_or_init_bridge(
         &self,
     ) -> Option<tokio::sync::RwLockReadGuard<'_, Option<crate::semantic::SemanticBridge>>> {
         crate::semantic::get_or_init_bridge(&self.workspace).await
+    }
+
+    /// Recompute visible diagnostics after an atomic configuration change.
+    ///
+    /// Previous project publications are cleared under a short generation read
+    /// lock, then open-file semantic work runs against versioned snapshots
+    /// without blocking edits. Project scope finishes with a bridge-free native
+    /// generation that merges only still-current semantic cache entries.
+    async fn refresh_diagnostics_after_configuration(&self) {
+        let generation = self.workspace.generation_lock.read().await;
+        let stale: Vec<Url> = {
+            let mut published = self.workspace_diagnostic_uris.lock().await;
+            published.drain().collect()
+        };
+        for uri in stale {
+            let version = self.workspace.documents.get_client_version(&uri);
+            self.client
+                .publish_diagnostics(uri, Vec::new(), version)
+                .await;
+        }
+        let open_snapshots: Vec<(Url, Arc<String>, i32)> = self
+            .workspace
+            .documents
+            .open_uris()
+            .into_iter()
+            .filter_map(|uri| {
+                self.workspace
+                    .documents
+                    .get_text_and_client_version(&uri)
+                    .map(|(text, version)| (uri, text, version))
+            })
+            .collect();
+        let scope = self.workspace.config.read().await.diagnostics_scope;
+        drop(generation);
+
+        for (uri, text, version) in open_snapshots {
+            diagnostics::publish_diagnostics(self, &uri, text, version).await;
+        }
+        if scope == al_project::config::DiagnosticsScope::Project {
+            diagnostics::publish_workspace_diagnostics(self).await;
+        }
     }
 
     /// Schedule debounced diagnostics for `uri` with the given document text.
@@ -258,6 +628,8 @@ impl AlServer {
 
         let workspace = Arc::clone(&self.workspace);
         let client = self.client.clone();
+        let semantic_diagnostic_cache = Arc::clone(&self.semantic_diagnostic_cache);
+        let workspace_diagnostic_uris = Arc::clone(&self.workspace_diagnostic_uris);
         let handle = tokio::spawn(async move {
             tokio::time::sleep(DIAGNOSTICS_DEBOUNCE).await;
             // Emit syntax-only diagnostics from the debounced task.
@@ -272,11 +644,25 @@ impl AlServer {
             // (did_close already cleared diagnostics with an empty publish). If we
             // computed and published now we'd resurrect ghost squiggles on a
             // closed document.
-            if !workspace.documents.contains(&uri) {
+            let Some((document_text, document_version)) =
+                workspace.documents.get_text_and_client_version(&uri)
+            else {
                 tracing::debug!(uri = %uri, "debounced diagnostics: document no longer open, skipping publish");
                 return;
+            };
+            if workspace.config.read().await.diagnostics_scope
+                == al_project::config::DiagnosticsScope::Project
+            {
+                crate::server::diagnostics::publish_workspace_diagnostics_parts(
+                    workspace,
+                    client,
+                    semantic_diagnostic_cache,
+                    workspace_diagnostic_uris,
+                    Some(uri),
+                )
+                .await;
+                return;
             }
-            let document_version = workspace.documents.get_client_version(&uri);
             // Read config here (not at schedule time) so only the task that
             // survives the debounce pays the clone — keystrokes that abort the
             // previous task before its sleep elapses never clone AlConfig. The
@@ -289,9 +675,10 @@ impl AlServer {
                 .as_ref()
                 .map(|project| project.root.clone());
             let diag_uri = uri.clone();
+            let worker_workspace = Arc::clone(&workspace);
             let lsp_diags: Vec<Diagnostic> = match tokio::task::spawn_blocking(move || {
                 al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-                    &workspace,
+                    &worker_workspace,
                     &diag_uri,
                     &config,
                     project_root.as_deref(),
@@ -304,12 +691,33 @@ impl AlServer {
             {
                 Ok(diags) => diags,
                 Err(e) => {
-                    tracing::warn!("debounced diagnostics task panicked: {e}");
+                    tracing::error!("debounced diagnostics worker failed: {e}");
+                    client
+                        .show_message(
+                            MessageType::ERROR,
+                            format!("AL diagnostics worker failed: {e}"),
+                        )
+                        .await;
                     return;
                 }
             };
+            let still_current = workspace
+                .documents
+                .get_text_and_client_version(&uri)
+                .is_some_and(|(current_text, current_version)| {
+                    current_version == document_version
+                        && Arc::ptr_eq(&current_text, &document_text)
+                });
+            if !still_current {
+                tracing::debug!(
+                    uri = %uri,
+                    document_version,
+                    "debounced diagnostics: document changed during analysis, skipping stale publish"
+                );
+                return;
+            }
             client
-                .publish_diagnostics(uri, lsp_diags, document_version)
+                .publish_diagnostics(uri, lsp_diags, Some(document_version))
                 .await;
         });
 
@@ -405,6 +813,7 @@ impl LanguageServer for AlServer {
                     ..Default::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
+                implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
                 references_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
@@ -492,13 +901,23 @@ impl LanguageServer for AlServer {
         // NuGet downloads, package loading, or bridge initialization.
         let ws = Arc::clone(&self.workspace);
         let client = self.client.clone();
-        let notify = Arc::clone(&self.init_notify);
-        let ready_flag = Arc::clone(&self.workspace_ready);
+        let init_state = self.workspace_init_state.clone();
+        let diagnostic_state = self.diagnostic_publication_state();
         let handle = tokio::spawn(async move {
-            // initialize_workspace signals ready_flag + init_notify internally
-            // as soon as the file scan is done — before any blocking
-            // package-download prompt — so workspace queries don't deadlock.
-            workspace::initialize_workspace(ws, client, root_uri, ready_flag, notify).await;
+            // Publish Ready as soon as a complete pre-download generation
+            // exists. A fatal pre-ready error is retained for every request.
+            if let Err(error) = workspace::initialize_workspace(
+                ws,
+                client,
+                root_uri,
+                Some(init_state.clone()),
+                Some(diagnostic_state),
+            )
+            .await
+            {
+                tracing::error!(%error, "workspace initialization failed");
+                init_state.send_replace(WorkspaceInitState::Failed(error.to_string()));
+            }
         });
         *self.init_task.lock().await = Some(handle);
     }
@@ -506,57 +925,91 @@ impl LanguageServer for AlServer {
     async fn shutdown(&self) -> Result<()> {
         if let Some(task) = self.diag_task.lock().await.take() {
             task.abort();
+            if let Err(error) = task.await {
+                if !error.is_cancelled() {
+                    return Err(internal_error(format!(
+                        "diagnostics task failed during shutdown: {error}"
+                    )));
+                }
+            }
         }
         if let Some(task) = self.init_task.lock().await.take() {
             task.abort();
+            if let Err(error) = task.await {
+                if !error.is_cancelled() {
+                    return Err(internal_error(format!(
+                        "workspace initialization task failed during shutdown: {error}"
+                    )));
+                }
+            }
         }
         if let Some(task) = self.reindex_task.lock().await.take() {
             task.abort();
+            if let Err(error) = task.await {
+                if !error.is_cancelled() {
+                    return Err(internal_error(format!(
+                        "workspace reindex task failed during shutdown: {error}"
+                    )));
+                }
+            }
         }
         crate::semantic::shutdown_bridge(&self.workspace).await;
         Ok(())
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        let generation = self.workspace.generation_lock.write().await;
         let uri = params.text_document.uri.clone();
         let text = params.text_document.text.clone();
+        let client_version = params.text_document.version;
         tracing::info!(uri = %uri, len = text.len(), "did_open");
 
-        self.workspace
-            .documents
-            .open(uri.clone(), params.text_document.text);
-        // Record the client's opening version so the did_change guard can
-        // compare like-for-like.
-        self.workspace
-            .documents
-            .set_client_version(&uri, params.text_document.version);
+        if let Err(error) = self.workspace.documents.open_with_client_version(
+            uri.clone(),
+            params.text_document.text,
+            client_version,
+        ) {
+            drop(generation);
+            tracing::error!(uri = %uri, %error, "did_open rejected document");
+            self.client
+                .show_message(
+                    MessageType::ERROR,
+                    format!("AL language server could not open {uri}: {error}"),
+                )
+                .await;
+            self.client
+                .publish_diagnostics(uri, Vec::new(), Some(client_version))
+                .await;
+            return;
+        }
+        self.semantic_diagnostic_cache.lock().await.remove(&uri);
         al_workspace::on_document_change(&self.workspace, &uri, &text);
+        let snapshot = self.workspace.documents.get_text_and_client_version(&uri);
+        drop(generation);
 
-        diagnostics::publish_diagnostics(self, &uri, &text).await;
+        // Diagnostics carry and revalidate the client version. A didChange can
+        // therefore proceed while semantic analysis runs; stale results are
+        // discarded instead of holding the generation lock for several seconds.
+        if let Some((text, version)) = snapshot {
+            diagnostics::publish_diagnostics(self, &uri, text, version).await;
+        } else {
+            tracing::error!(uri = %uri, "did_open document disappeared before diagnostics snapshot");
+            self.client
+                .show_message(
+                    MessageType::ERROR,
+                    format!(
+                        "AL language server opened {uri}, but its document state disappeared before analysis"
+                    ),
+                )
+                .await;
+        }
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let generation = self.workspace.generation_lock.write().await;
         let uri = params.text_document.uri.clone();
         let client_version = params.text_document.version;
         tracing::debug!(uri = %uri, version = client_version, change_count = params.content_changes.len(), "did_change");
-
-        // LSP requires client `version` to be monotonically
-        // increasing for a given document. tower-lsp can in theory interleave
-        // notifications under load; an out-of-order delivery would otherwise
-        // silently corrupt the rope. Compare against our stored version and
-        // warn (not error) on a stale delivery — the editor will likely
-        // re-sync on the next keystroke, and rejecting would create a
-        // visible divergence between client and server text.
-        if let Some(prev_client_version) = self.workspace.documents.get_client_version(&uri) {
-            if client_version < prev_client_version {
-                tracing::warn!(
-                    uri = %uri,
-                    client_version,
-                    prev_client_version,
-                    "did_change: client version went backwards — applying anyway; editor should resync"
-                );
-            }
-        }
 
         let changes: Vec<al_source::documents::TextChange> = params
             .content_changes
@@ -577,27 +1030,46 @@ impl LanguageServer for AlServer {
         // interleave handlers under load) applies a later keystroke between the
         // mutation and the read, feeding a version-skewed snapshot into the
         // debounced diagnostics task.
-        if let Some((text_arc, _version)) = self
-            .workspace
-            .documents
-            .apply_changes_and_get(&uri, &changes)
-        {
-            // Record the applied client version so a later out-of-order
-            // delivery can be detected.
-            self.workspace
-                .documents
-                .set_client_version(&uri, client_version);
-            al_workspace::on_document_change(&self.workspace, &uri, &text_arc);
-            // Only schedule per-keystroke diagnostics when trigger is Continuous.
-            // In OnSave mode, diagnostics are deferred to did_save to avoid per-keystroke work.
-            let trigger = self.workspace.config.read().await.diagnostics_trigger;
-            if trigger == al_project::config::DiagnosticsTrigger::Continuous {
-                self.schedule_diagnostics(uri).await;
-            } else {
-                // Cancel any lingering debounced task from a previous Continuous session.
-                if let Some(old) = self.diag_task.lock().await.take() {
-                    old.abort();
+        match self.workspace.documents.apply_versioned_changes_and_get(
+            &uri,
+            client_version,
+            &changes,
+        ) {
+            Ok((text_arc, _version)) => {
+                self.semantic_diagnostic_cache.lock().await.remove(&uri);
+                al_workspace::on_document_change(&self.workspace, &uri, &text_arc);
+                // Only schedule per-keystroke diagnostics when trigger is Continuous.
+                // In OnSave mode, diagnostics are deferred to did_save to avoid per-keystroke work.
+                let trigger = self.workspace.config.read().await.diagnostics_trigger;
+                drop(generation);
+                if trigger == al_project::config::DiagnosticsTrigger::Continuous {
+                    self.schedule_diagnostics(uri).await;
+                } else {
+                    // Cancel any lingering debounced task from a previous Continuous session.
+                    if let Some(old) = self.diag_task.lock().await.take() {
+                        old.abort();
+                    }
                 }
+            }
+            Err(error) => {
+                drop(generation);
+                tracing::error!(uri = %uri, client_version, %error, "did_change rejected batch");
+                let message_type = if matches!(
+                    error,
+                    al_source::documents::DocumentMutationError::StaleClientVersion { .. }
+                ) {
+                    MessageType::WARNING
+                } else {
+                    MessageType::ERROR
+                };
+                self.client
+                    .show_message(
+                        message_type,
+                        format!(
+                            "AL language server rejected an edit for {uri}: {error}. Reopen the file if editor and server content are no longer synchronized."
+                        ),
+                    )
+                    .await;
             }
         }
     }
@@ -605,7 +1077,21 @@ impl LanguageServer for AlServer {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         tracing::info!(uri = %uri, "did_close");
-        self.workspace.documents.close(&uri);
+        let generation = self.workspace.generation_lock.write().await;
+        if !self.workspace.documents.close(&uri) {
+            drop(generation);
+            tracing::warn!(uri = %uri, "did_close received for a document that is not open");
+            self.client
+                .show_message(
+                    MessageType::WARNING,
+                    format!(
+                        "AL language server received a close for a document that is not open: {uri}"
+                    ),
+                )
+                .await;
+            return;
+        }
+        self.semantic_diagnostic_cache.lock().await.remove(&uri);
 
         // Cancel any pending debounced diagnostics task. Without this, a task
         // armed by the last keystroke can wake after the close and publish
@@ -619,13 +1105,74 @@ impl LanguageServer for AlServer {
         al_workspace::on_document_close(&self.workspace, &uri);
 
         if let Ok(path) = uri.to_file_path() {
-            // Don't remove from file_index if project-scoped diagnostics — the file still exists
             let scope = self.workspace.config.read().await.diagnostics_scope;
-            if scope != al_project::config::DiagnosticsScope::Project {
-                self.workspace.file_index.remove_file(&path);
-                self.client.publish_diagnostics(uri, vec![], None).await;
+            // Disk I/O can be slow or blocked by an external filesystem. Do
+            // not freeze didOpen/didChange while restoring the saved source.
+            drop(generation);
+            let read_path = path.clone();
+            let disk_source = tokio::task::spawn_blocking(move || {
+                al_source::file_index::read_source_file(&read_path)
+            })
+            .await;
+
+            let generation = self.workspace.generation_lock.write().await;
+            if self.workspace.documents.contains(&uri) {
+                // The editor reopened this URI while the saved source was being
+                // read. Its new overlay is authoritative; applying the stale
+                // close generation would overwrite it and clear fresh diagnostics.
+                drop(generation);
+                tracing::debug!(uri = %uri, "did_close restore superseded by a later did_open");
+                return;
+            }
+
+            let error_message = match disk_source {
+                Ok(Ok(Some(source))) => {
+                    // didClose discards the editor overlay. Restore the saved
+                    // project generation instead of leaving unsaved text in
+                    // workspace symbols, references, and diagnostics.
+                    self.workspace.file_index.add_file(path, source);
+                    // Invalidate the restored object's composed generation too;
+                    // its identity can differ from the discarded overlay.
+                    al_workspace::on_document_close(&self.workspace, &uri);
+                    None
+                }
+                Ok(Ok(None)) => {
+                    self.workspace.file_index.remove_file(&path);
+                    al_workspace::on_document_close(&self.workspace, &uri);
+                    None
+                }
+                Ok(Err(error)) => {
+                    self.workspace.file_index.remove_file(&path);
+                    al_workspace::on_document_close(&self.workspace, &uri);
+                    tracing::error!(%error, "closed AL document could not be restored from disk");
+                    Some(format!(
+                        "Closed AL document was removed from the index because its saved source could not be read: {error}"
+                    ))
+                }
+                Err(error) => {
+                    self.workspace.file_index.remove_file(&path);
+                    al_workspace::on_document_close(&self.workspace, &uri);
+                    tracing::error!(%error, "closed-document restore worker failed");
+                    Some(format!(
+                        "Closed AL document was removed from the index because its restore worker failed: {error}"
+                    ))
+                }
+            };
+
+            // A transient URI is no longer part of the workspace, and even a
+            // saved file may have become clean after discarding its overlay.
+            self.client
+                .publish_diagnostics(uri.clone(), vec![], None)
+                .await;
+            drop(generation);
+            if let Some(message) = error_message {
+                self.client.show_message(MessageType::ERROR, message).await;
+            }
+            if scope == al_project::config::DiagnosticsScope::Project {
+                diagnostics::publish_workspace_diagnostics(self).await;
             }
         } else {
+            drop(generation);
             self.client.publish_diagnostics(uri, vec![], None).await;
         }
     }
@@ -637,8 +1184,8 @@ impl LanguageServer for AlServer {
         // Always publish diagnostics on save — both Continuous and OnSave modes benefit
         // from a save-time refresh. In OnSave mode this is the *only* time diagnostics run
         // (did_change is gated by the trigger check above).
-        if let Some(text) = self.workspace.documents.get_text(&uri) {
-            diagnostics::publish_diagnostics(self, &uri, &text).await;
+        if let Some((text, version)) = self.workspace.documents.get_text_and_client_version(&uri) {
+            diagnostics::publish_diagnostics(self, &uri, text, version).await;
         } else {
             tracing::warn!(uri = %uri, "did_save: document not in store, skipping diagnostics");
         }
@@ -646,123 +1193,209 @@ impl LanguageServer for AlServer {
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         tracing::info!("did_change_configuration");
+        match self.await_ready().await {
+            Ok(generation) => drop(generation),
+            Err(error) => {
+                self.client
+                    .show_message(
+                        MessageType::ERROR,
+                        format!("AL configuration was not applied: {}", error.message),
+                    )
+                    .await;
+                return;
+            }
+        }
+
         let al_settings = extract_al_settings(params.settings);
-        let (unknown, cap, symbol_paths_changed, symbol_config) = {
-            let mut config = self.workspace.config.write().await;
-            let old_cache_path = config.package_cache_path.clone();
-            let old_local_paths = config.app_local_folder_paths.clone();
-            let unknown = config.merge(&al_settings);
-            let changed = old_cache_path != config.package_cache_path
-                || old_local_paths != config.app_local_folder_paths;
-            (
-                unknown,
-                config.max_document_size_bytes,
-                changed,
-                config.clone(),
-            )
-        };
+        let mut staged_config = self.workspace.config.read().await.clone();
+        let old_cache_path = staged_config.package_cache_path.clone();
+        let old_local_paths = staged_config.app_local_folder_paths.clone();
+        let unknown = staged_config.merge(&al_settings);
+        let symbol_paths_changed = old_cache_path != staged_config.package_cache_path
+            || old_local_paths != staged_config.app_local_folder_paths;
         if !unknown.is_empty() {
             let msg = format!("Unknown AL settings: {}", unknown.join(", "));
             self.client.show_message(MessageType::WARNING, &msg).await;
         }
-        // re-apply the per-document size cap after a config change.
-        self.workspace.documents.set_max_doc_bytes(cap);
-
-        if symbol_paths_changed {
-            let package_paths = {
-                let mut project = self.workspace.project.write().await;
-                project.as_mut().map(|project| {
-                    project.apply_symbol_settings(&symbol_config);
-                    project.packages.clone()
-                })
-            };
-            if let Some(package_paths) = package_paths {
-                let attempted = package_paths.len();
-                let workspace = Arc::clone(&self.workspace);
-                match tokio::task::spawn_blocking(move || {
-                    let cache = al_symbols::cache::SymbolCache::default_location();
-                    let loaded = workspace
-                        .symbols
-                        .replace_packages_cached(&package_paths, &cache);
-                    workspace.symbols.load_runtime_enums();
-                    workspace.invalidate_insight_graph();
-                    loaded
-                })
-                .await
-                {
-                    Ok(loaded) => {
-                        // An all-invalid non-empty replacement deliberately
-                        // preserves the previous symbol generation. Preserve
-                        // its package metadata too; an explicitly empty path
-                        // list still clears both.
-                        if attempted == 0 || !loaded.is_empty() {
-                            let package_info = loaded
-                                .iter()
-                                .map(|package| al_workspace::PackageInfo {
-                                    name: package.name.clone(),
-                                    publisher: package.publisher.clone(),
-                                    version: package.version.clone(),
-                                    object_count: package.object_count,
-                                })
-                                .collect();
-                            *self
-                                .workspace
-                                .package_info
-                                .write()
-                                .unwrap_or_else(|error| error.into_inner()) = package_info;
-                        }
-                        tracing::info!(
-                            attempted,
-                            loaded = loaded.len(),
-                            symbols = self.workspace.symbols.len(),
-                            "reloaded symbol packages after configuration change"
-                        );
-                        if loaded.len() < attempted {
-                            self.client
-                                .show_message(
-                                    MessageType::WARNING,
-                                    format!(
-                                        "Loaded {}/{} configured symbol packages; see the AL language-server log for rejected files.",
-                                        loaded.len(), attempted
-                                    ),
-                                )
-                                .await;
-                        }
-                    }
-                    Err(error) => {
-                        tracing::error!(%error, "symbol package reload task failed");
-                        self.client
-                            .show_message(
-                                MessageType::ERROR,
-                                format!("Failed to reload symbol packages: {error}"),
-                            )
-                            .await;
-                    }
-                }
-            }
+        if let Err(error) = self
+            .workspace
+            .documents
+            .validate_max_doc_bytes(staged_config.max_document_size_bytes)
+        {
+            tracing::error!(%error, "configuration would invalidate an open document");
+            self.client
+                .show_message(
+                    MessageType::ERROR,
+                    format!(
+                        "AL configuration was not applied because maxDocumentSizeBytes would invalidate an open document: {error}"
+                    ),
+                )
+                .await;
+            return;
         }
-        tracing::info!("Configuration updated");
+
+        if !symbol_paths_changed {
+            let publication = self.workspace.generation_lock.write().await;
+            *self.workspace.config.write().await = staged_config.clone();
+            self.workspace
+                .documents
+                .set_max_doc_bytes(staged_config.max_document_size_bytes);
+            self.semantic_diagnostic_cache.lock().await.clear();
+            self.workspace.mark_generation_changed();
+            drop(publication);
+            tracing::info!("Configuration updated");
+            self.refresh_diagnostics_after_configuration().await;
+            return;
+        }
+
+        loop {
+            let generation = self.workspace.generation_lock.read().await;
+            let revision = self
+                .workspace
+                .generation_revision
+                .load(std::sync::atomic::Ordering::Acquire);
+            let project = self.workspace.project.read().await.clone();
+
+            let Some(mut project) = project else {
+                drop(generation);
+                let publication = self.workspace.generation_lock.write().await;
+                if self
+                    .workspace
+                    .generation_revision
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != revision
+                {
+                    drop(publication);
+                    continue;
+                }
+                *self.workspace.config.write().await = staged_config.clone();
+                self.workspace.mark_generation_changed();
+                self.semantic_diagnostic_cache.lock().await.clear();
+                drop(publication);
+                self.workspace
+                    .documents
+                    .set_max_doc_bytes(staged_config.max_document_size_bytes);
+                tracing::info!("Configuration updated (no active AL project)");
+                self.refresh_diagnostics_after_configuration().await;
+                return;
+            };
+
+            let worker_config = staged_config.clone();
+            // Package parsing is staged optimistically. Release the live
+            // generation before blocking work, then publish only if its
+            // revision is still current.
+            drop(generation);
+            let staged = tokio::task::spawn_blocking(move || {
+                project
+                    .apply_symbol_settings(&worker_config)
+                    .map_err(|error| error.to_string())?;
+                let attempted = project.packages.len();
+                let symbols = al_symbols::SymbolIndex::new();
+                let cache = al_symbols::cache::SymbolCache::default_location();
+                let loaded = symbols
+                    .load_packages_cached(&project.packages, &cache)
+                    .map_err(|error| error.to_string())?;
+                symbols.load_runtime_enums();
+                Ok::<_, String>((project, symbols, loaded, attempted))
+            })
+            .await;
+
+            let (project, symbols, loaded, attempted) = match staged {
+                Ok(Ok(staged)) => staged,
+                Ok(Err(error)) => {
+                    tracing::error!(%error, "configured symbol package generation rejected");
+                    self.client
+                        .show_message(
+                            MessageType::ERROR,
+                            format!(
+                                "Failed to apply AL symbol package settings; the previous configuration and complete generation remain active: {error}"
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+                Err(error) => {
+                    tracing::error!(%error, "symbol package reload worker failed");
+                    self.client
+                        .show_message(
+                            MessageType::ERROR,
+                            format!(
+                                "Failed to apply AL symbol package settings because the reload worker failed: {error}"
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+            };
+
+            let publication = self.workspace.generation_lock.write().await;
+            if self
+                .workspace
+                .generation_revision
+                .load(std::sync::atomic::Ordering::Acquire)
+                != revision
+            {
+                drop(publication);
+                continue;
+            }
+
+            self.workspace.symbols.replace_with(&symbols);
+            *self.workspace.project.write().await = Some(project);
+            *self.workspace.config.write().await = staged_config.clone();
+            self.workspace.replace_package_info(
+                loaded
+                    .iter()
+                    .map(|package| al_workspace::PackageInfo {
+                        name: package.name.clone(),
+                        publisher: package.publisher.clone(),
+                        version: package.version.clone(),
+                        object_count: package.object_count,
+                    })
+                    .collect(),
+            );
+            self.workspace.invalidate_insight_graph();
+            self.workspace.mark_generation_changed();
+            self.semantic_diagnostic_cache.lock().await.clear();
+            let symbol_count = self.workspace.symbols.len();
+            drop(publication);
+
+            self.workspace
+                .documents
+                .set_max_doc_bytes(staged_config.max_document_size_bytes);
+            tracing::info!(
+                attempted,
+                loaded = loaded.len(),
+                symbols = symbol_count,
+                "Configuration and symbol generation updated"
+            );
+            self.refresh_diagnostics_after_configuration().await;
+            return;
+        }
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        self.ensure_builtins_loaded().await;
+        self.ensure_builtins_loaded().await?;
         let start = std::time::Instant::now();
-        let result = hover::handle_hover(self, uri, position).await;
+        let result = hover::handle_hover(self, uri, position)
+            .await
+            .map_err(internal_error)?;
         let elapsed = start.elapsed();
         tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "hover");
         Ok(result)
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        self.ensure_builtins_loaded().await;
+        self.ensure_builtins_loaded().await?;
         let start = std::time::Instant::now();
-        let result = completions::handle_completion(self, uri, position).await;
+        let result = completions::handle_completion(self, uri, position)
+            .await
+            .map_err(internal_error)?;
         let elapsed = start.elapsed();
         let count = result
             .as_ref()
@@ -779,18 +1412,50 @@ impl LanguageServer for AlServer {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let start = std::time::Instant::now();
-        let result = definition::handle_definition(self, uri, position);
+        let result = definition::handle_definition(self, uri, position).map_err(internal_error)?;
         let elapsed = start.elapsed();
         tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "goto_definition");
         Ok(result)
     }
 
+    async fn goto_implementation(
+        &self,
+        params: GotoImplementationParams,
+    ) -> Result<Option<GotoImplementationResponse>> {
+        let _generation = self.await_ready().await?;
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .clone();
+        let position = params.text_document_position_params.position;
+        let workspace = Arc::clone(&self.workspace);
+        let locations = tokio::task::spawn_blocking(move || {
+            al_analysis::queries::implementation::find_implementations(
+                &workspace,
+                &uri,
+                position.into(),
+            )
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<Location>>()
+        })
+        .await
+        .map_err(|error| internal_error(format!("go-to-implementation worker failed: {error}")))?;
+
+        if locations.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(GotoImplementationResponse::Array(locations)))
+        }
+    }
+
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = params.text_document_position.text_document.uri.clone();
         let position = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
@@ -811,23 +1476,22 @@ impl LanguageServer for AlServer {
                 &uri,
                 core_pos,
                 include_declaration,
-            );
+            )
+            .map_err(|error| error.to_string())?;
             if locations.is_empty() {
-                None
+                Ok::<Option<Vec<Location>>, String>(None)
             } else {
-                Some(
+                Ok::<Option<Vec<Location>>, String>(Some(
                     locations
                         .into_iter()
                         .map(Into::into)
                         .collect::<Vec<Location>>(),
-                )
+                ))
             }
         })
         .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "references spawn_blocking join failed");
-            None
-        });
+        .map_err(|error| internal_error(format!("references worker failed: {error}")))?
+        .map_err(internal_error)?;
 
         let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
@@ -839,7 +1503,7 @@ impl LanguageServer for AlServer {
         &self,
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = params.text_document.uri.clone();
         let start = std::time::Instant::now();
         // spawn_blocking for cancel-friendliness on large files.
@@ -858,20 +1522,23 @@ impl LanguageServer for AlServer {
             })
         })
         .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "document_symbol spawn_blocking join failed");
-            None
-        });
+        .map_err(|error| internal_error(format!("document-symbol worker failed: {error}")))?;
         let elapsed = start.elapsed();
         tracing::debug!(uri = %uri_for_log, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "document_symbol");
         Ok(result)
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = &params.text_document.uri;
         let start = std::time::Instant::now();
-        let result = formatting::handle_formatting(self, uri, &params.options);
+        let formatting_config = self.workspace.config.read().await.formatting.clone();
+        let result = formatting::handle_formatting_with_config(
+            self,
+            uri,
+            &params.options,
+            &formatting_config,
+        );
         let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
         tracing::debug!(uri = %uri, edits = count, elapsed_us = elapsed.as_micros() as u64, "formatting");
@@ -882,10 +1549,17 @@ impl LanguageServer for AlServer {
         &self,
         params: DocumentRangeFormattingParams,
     ) -> Result<Option<Vec<TextEdit>>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = &params.text_document.uri;
         let start = std::time::Instant::now();
-        let result = formatting::handle_range_formatting(self, uri, params.range, &params.options);
+        let formatting_config = self.workspace.config.read().await.formatting.clone();
+        let result = formatting::handle_range_formatting_with_config(
+            self,
+            uri,
+            params.range,
+            &params.options,
+            &formatting_config,
+        );
         let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
         tracing::debug!(uri = %uri, edits = count, elapsed_us = elapsed.as_micros() as u64, "range_formatting");
@@ -893,7 +1567,7 @@ impl LanguageServer for AlServer {
     }
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = &params.text_document.uri;
         let start = std::time::Instant::now();
         let result = handlers::handle_folding_range(self, uri);
@@ -907,7 +1581,7 @@ impl LanguageServer for AlServer {
         &self,
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = params.text_document.uri.clone();
         let start = std::time::Instant::now();
         // spawn_blocking — semantic_tokens_full traverses the entire
@@ -936,10 +1610,7 @@ impl LanguageServer for AlServer {
             }))
         })
         .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "semantic_tokens_full spawn_blocking join failed");
-            None
-        });
+        .map_err(|error| internal_error(format!("semantic-tokens worker failed: {error}")))?;
         let count = result
             .as_ref()
             .map(|r| match r {
@@ -953,18 +1624,19 @@ impl LanguageServer for AlServer {
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let start = std::time::Instant::now();
-        let result = handlers::handle_signature_help(self, uri, position);
+        let result =
+            handlers::handle_signature_help(self, uri, position).map_err(internal_error)?;
         let elapsed = start.elapsed();
         tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "signature_help");
         Ok(result)
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = &params.text_document.uri;
         let range = params.range;
         let diagnostics = &params.context.diagnostics;
@@ -980,7 +1652,8 @@ impl LanguageServer for AlServer {
         &self,
         params: DocumentDiagnosticParams,
     ) -> Result<DocumentDiagnosticReportResult> {
-        self.await_ready().await;
+        let generation = self.await_ready().await?;
+        let revision = self.workspace.generation_revision();
         let uri = &params.text_document.uri;
 
         // skip diagnostics for virtual symbol cache files.
@@ -989,17 +1662,32 @@ impl LanguageServer for AlServer {
             return Ok(diagnostics::full_diagnostic_report(vec![]));
         }
 
-        let text = match self.workspace.documents.get_text_arc(uri) {
-            Some(t) => t,
+        let (text, client_version) = match self.workspace.documents.get_text_and_client_version(uri)
+        {
+            Some(snapshot) => snapshot,
             None => {
                 tracing::debug!(uri = %uri, "diagnostic (pull): document not open, returning empty");
                 return Ok(diagnostics::full_diagnostic_report(vec![]));
             }
         };
+        drop(generation);
 
         let start = std::time::Instant::now();
         let diags = diagnostics::compute_diagnostics(self, uri, &text).await;
         let elapsed = start.elapsed();
+        let generation = self.workspace.generation_lock.read().await;
+        let snapshot_current = self
+            .workspace
+            .documents
+            .get_text_and_client_version(uri)
+            .is_some_and(|(current_text, current_version)| {
+                current_version == client_version && Arc::ptr_eq(&current_text, &text)
+            });
+        if self.workspace.generation_revision() != revision || !snapshot_current {
+            drop(generation);
+            return Err(content_modified_error());
+        }
+        drop(generation);
         tracing::debug!(uri = %uri, count = diags.len(), elapsed_us = elapsed.as_micros() as u64, "diagnostic (pull)");
 
         Ok(diagnostics::full_diagnostic_report(diags))
@@ -1011,9 +1699,19 @@ impl LanguageServer for AlServer {
     ) -> Result<WorkspaceDiagnosticReportResult> {
         // Project-scope pull diagnostics aggregate parse and syntax errors
         // across every indexed file plus bridge diagnostics for open documents.
-        self.await_ready().await;
+        let generation = self.await_ready().await?;
+        let revision = self.workspace.generation_revision();
+        drop(generation);
         let start = std::time::Instant::now();
-        let reports = diagnostics::compute_workspace_diagnostics(self).await;
+        let reports = diagnostics::compute_workspace_diagnostics(self)
+            .await
+            .map_err(|error| internal_error(error.to_string()))?;
+        let generation = self.workspace.generation_lock.read().await;
+        if self.workspace.generation_revision() != revision {
+            drop(generation);
+            return Err(content_modified_error());
+        }
+        drop(generation);
         let file_count = reports.len();
         let items = reports
             .into_iter()
@@ -1040,12 +1738,13 @@ impl LanguageServer for AlServer {
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let new_name = params.new_name.clone();
         let start = std::time::Instant::now();
-        let result = definition::handle_rename(self, uri, position, params.new_name);
+        let result = definition::handle_rename(self, uri, position, params.new_name)
+            .map_err(internal_error)?;
         let elapsed = start.elapsed();
         tracing::debug!(uri = %uri, new_name = %new_name, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "rename");
         Ok(result)
@@ -1055,7 +1754,7 @@ impl LanguageServer for AlServer {
         &self,
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = &params.text_document.uri;
         let position = params.position;
         let start = std::time::Instant::now();
@@ -1069,7 +1768,7 @@ impl LanguageServer for AlServer {
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let start = std::time::Instant::now();
         let result = workspace::handle_workspace_symbol(self, &params.query);
         let elapsed = start.elapsed();
@@ -1079,12 +1778,12 @@ impl LanguageServer for AlServer {
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = &params.text_document.uri;
         let range = params.range;
-        self.ensure_builtins_loaded().await;
+        self.ensure_builtins_loaded().await?;
         let start = std::time::Instant::now();
-        let result = handlers::handle_inlay_hint(self, uri, range);
+        let result = handlers::handle_inlay_hint(self, uri, range).map_err(internal_error)?;
         let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
         tracing::debug!(uri = %uri, hints = count, elapsed_us = elapsed.as_micros() as u64, "inlay_hint");
@@ -1092,10 +1791,11 @@ impl LanguageServer for AlServer {
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
-        self.await_ready().await;
+        let _generation = self.await_ready().await?;
         let uri = &params.text_document.uri;
         let start = std::time::Instant::now();
-        let entries = al_analysis::queries::code_lens::code_lens(&self.workspace, uri);
+        let entries = al_analysis::queries::code_lens::code_lens(&self.workspace, uri)
+            .map_err(internal_error)?;
         let elapsed = start.elapsed();
         let count = entries.len();
         tracing::debug!(uri = %uri, lenses = count, elapsed_us = elapsed.as_micros() as u64, "code_lens");
@@ -1151,6 +1851,18 @@ impl LanguageServer for AlServer {
         params: ExecuteCommandParams,
     ) -> Result<Option<serde_json::Value>> {
         tracing::info!(command = %params.command, "execute_command");
+        let mut generation = Some(self.await_ready().await?);
+        if matches!(
+            params.command.as_str(),
+            "al.downloadSymbols"
+                | "al.downloadSymbolsNuget"
+                | "al.downloadSymbolsServer"
+                | "al.reindex"
+        ) {
+            // These commands acquire their own read/write guards while staging
+            // and publishing a replacement generation.
+            drop(generation.take());
+        }
 
         let start = std::time::Instant::now();
         let result = match params.command.as_str() {
@@ -1174,7 +1886,9 @@ impl LanguageServer for AlServer {
                 commands::lint_file(self, &params.arguments).await;
                 Ok(None)
             }
-            "al.getStatus" => Ok(Some(commands::get_status(self).await)),
+            "al.getStatus" => Ok(Some(
+                commands::get_status(self).await.map_err(internal_error)?,
+            )),
             "al.reindex" => {
                 commands::reindex(self).await;
                 Ok(None)
@@ -1189,8 +1903,12 @@ impl LanguageServer for AlServer {
             }
             // Each CodeLens-backed command returns `Some(..)` so a click
             // performs the action instead of silently hitting the catch-all.
-            "al.findReferences" => Ok(Some(commands::find_references(self, &params.arguments))),
-            "al.showProfiler" => Ok(Some(commands::show_profiler(self, &params.arguments))),
+            "al.findReferences" => Ok(Some(
+                commands::find_references(self, &params.arguments).map_err(internal_error)?,
+            )),
+            "al.showProfiler" => Ok(Some(
+                commands::show_profiler(self, &params.arguments).map_err(internal_error)?,
+            )),
             "al.runTest" => Ok(Some(commands::run_test(self, &params.arguments).await)),
             _ => {
                 tracing::warn!(command = %params.command, "Unknown command");
@@ -1207,8 +1925,345 @@ pub async fn run_lsp() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::new(AlServer::new);
+    let (service, socket) = LspService::build(AlServer::new)
+        .custom_method("experimental/runnables", AlServer::runnables)
+        .finish();
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+fn resolve_explorer_binary() -> std::result::Result<std::path::PathBuf, String> {
+    if let Some(explicit) = std::env::var_os("AL_EXPLORER_PATH") {
+        let path = std::path::PathBuf::from(explicit);
+        if path.as_os_str().is_empty() {
+            return Err("AL_EXPLORER_PATH is empty".to_string());
+        }
+        if std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
+            return Ok(path);
+        }
+        return Err(format!(
+            "AL_EXPLORER_PATH does not identify a file: {}",
+            path.display()
+        ));
+    }
+
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("cannot locate the running al-lsp executable: {error}"))?;
+    let binary_name = if cfg!(windows) {
+        "al-explorer.exe"
+    } else {
+        "al-explorer"
+    };
+    let parent = executable
+        .parent()
+        .ok_or_else(|| format!("al-lsp executable has no parent: {}", executable.display()))?;
+    let candidates = [
+        parent.join(binary_name),
+        parent
+            .parent()
+            .map(|directory| directory.join(binary_name))
+            .unwrap_or_default(),
+    ];
+    candidates
+        .into_iter()
+        .find(|path| std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()))
+        .ok_or_else(|| {
+            format!(
+                "the al-explorer sidecar was not found beside {} (set AL_EXPLORER_PATH explicitly)",
+                executable.display()
+            )
+        })
+}
+
+fn build_runnables(
+    uri: &Url,
+    file_path: &std::path::Path,
+    cwd: &std::path::Path,
+    explorer: &std::path::Path,
+    has_project: bool,
+    test_codeunits: &[al_analysis::queries::tests::TestCodeunit],
+    _position: Option<Position>,
+) -> Vec<Runnable> {
+    let program = explorer.to_string_lossy().into_owned();
+    let shell = |label: String, args: Vec<String>, location: Option<LocationLink>| Runnable {
+        label,
+        location,
+        kind: "shell",
+        args: ShellRunnableArgs {
+            environment: std::collections::HashMap::new(),
+            cwd: cwd.to_path_buf(),
+            program: program.clone(),
+            args,
+        },
+    };
+
+    let mut runnables = Vec::new();
+    if has_project {
+        runnables.push(shell(
+            "AL: Compile project".to_string(),
+            vec![
+                "compile".to_string(),
+                "--project".to_string(),
+                cwd.display().to_string(),
+            ],
+            None,
+        ));
+    }
+    runnables.push(shell(
+        "AL: Lint current file".to_string(),
+        vec!["lint".to_string(), file_path.display().to_string()],
+        None,
+    ));
+
+    for codeunit in test_codeunits
+        .iter()
+        .filter(|codeunit| paths_equivalent(std::path::Path::new(&codeunit.file), file_path))
+    {
+        for test in &codeunit.tests {
+            // Test discovery reports human-readable 1-based lines. LSP ranges
+            // are zero-based, including the custom Zed runnable location.
+            let line = test.line.saturating_sub(1);
+            let range = Range {
+                start: Position { line, character: 0 },
+                end: Position { line, character: 0 },
+            };
+            runnables.push(shell(
+                format!("AL: Test {}.{}", codeunit.name, test.name),
+                vec![
+                    "test-run".to_string(),
+                    codeunit.id.to_string(),
+                    "--name".to_string(),
+                    codeunit.name.clone(),
+                    "--method".to_string(),
+                    test.name.clone(),
+                ],
+                Some(LocationLink {
+                    origin_selection_range: None,
+                    target_uri: uri.clone(),
+                    target_range: range,
+                    target_selection_range: range,
+                }),
+            ));
+        }
+    }
+    runnables
+}
+
+fn paths_equivalent(left: &std::path::Path, right: &std::path::Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod runnables_tests {
+    use super::*;
+    use al_analysis::queries::tests::{TestCodeunit, TestProcedure};
+
+    #[test]
+    fn emits_zed_shell_runnables_for_project_file_and_discovered_tests() {
+        let root = tempfile::tempdir().expect("temporary project");
+        let file = root.path().join("CustomerTests.Codeunit.AL");
+        std::fs::write(&file, "codeunit 50100 CustomerTests {}").expect("test file");
+        let explorer = root.path().join(if cfg!(windows) {
+            "al-explorer.exe"
+        } else {
+            "al-explorer"
+        });
+        let uri = Url::from_file_path(&file).expect("file URI");
+        let tests = vec![
+            TestCodeunit {
+                name: "Customer Tests".to_string(),
+                id: 50100,
+                file: file.to_string_lossy().into_owned(),
+                tests: vec![TestProcedure {
+                    name: "CreatesCustomer".to_string(),
+                    line: 7,
+                    handler_functions: Vec::new(),
+                }],
+                test_initializers: Vec::new(),
+                test_cleanups: Vec::new(),
+            },
+            TestCodeunit {
+                name: "Other Tests".to_string(),
+                id: 50101,
+                file: root
+                    .path()
+                    .join("OtherTests.Codeunit.al")
+                    .to_string_lossy()
+                    .into_owned(),
+                tests: vec![TestProcedure {
+                    name: "DoesNotBelongToThisFile".to_string(),
+                    line: 3,
+                    handler_functions: Vec::new(),
+                }],
+                test_initializers: Vec::new(),
+                test_cleanups: Vec::new(),
+            },
+        ];
+
+        let runnables = build_runnables(&uri, &file, root.path(), &explorer, true, &tests, None);
+        assert_eq!(runnables.len(), 3);
+        assert_eq!(runnables[0].label, "AL: Compile project");
+        assert_eq!(
+            runnables[0].args.args,
+            [
+                "compile",
+                "--project",
+                root.path().to_string_lossy().as_ref()
+            ]
+        );
+        assert_eq!(runnables[1].label, "AL: Lint current file");
+        assert_eq!(
+            runnables[1].args.args,
+            ["lint", file.to_string_lossy().as_ref()]
+        );
+        assert_eq!(
+            runnables[2].label,
+            "AL: Test Customer Tests.CreatesCustomer"
+        );
+        assert_eq!(
+            runnables[2].args.args,
+            [
+                "test-run",
+                "50100",
+                "--name",
+                "Customer Tests",
+                "--method",
+                "CreatesCustomer"
+            ]
+        );
+        let location = runnables[2].location.as_ref().expect("test location");
+        assert_eq!(location.target_selection_range.start.line, 6);
+
+        let json = serde_json::to_value(&runnables[2]).expect("runnable JSON");
+        assert_eq!(json["kind"], "shell");
+        assert_eq!(json["args"]["environment"], serde_json::json!({}));
+        assert_eq!(json["args"]["program"], explorer.to_string_lossy().as_ref());
+        assert_eq!(json["args"]["cwd"], root.path().to_string_lossy().as_ref());
+    }
+
+    #[test]
+    fn omits_project_compile_runnable_without_a_project() {
+        let runnables = build_runnables(
+            &Url::parse("file:///tmp/Standalone.al").unwrap(),
+            std::path::Path::new("/tmp/Standalone.al"),
+            std::path::Path::new("/tmp"),
+            std::path::Path::new("/tools/al-explorer"),
+            false,
+            &[],
+            None,
+        );
+        assert_eq!(runnables.len(), 1);
+        assert_eq!(runnables[0].label, "AL: Lint current file");
+    }
+}
+
+#[cfg(test)]
+mod workspace_init_state_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ready_state_releases_requests() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        service
+            .inner()
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+        let _generation = service
+            .inner()
+            .await_ready()
+            .await
+            .expect("ready workspace");
+    }
+
+    #[tokio::test]
+    async fn failed_state_returns_the_retained_initialization_error() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        service
+            .inner()
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Failed(
+                "configured package directory is unreadable".to_string(),
+            ));
+
+        let error = service
+            .inner()
+            .await_ready()
+            .await
+            .expect_err("failed initialization must fail requests");
+        assert_eq!(error.code, tower_lsp::jsonrpc::ErrorCode::InternalError);
+        assert!(error
+            .message
+            .contains("configured package directory is unreadable"));
+    }
+}
+
+#[cfg(test)]
+mod implementation_capability_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn native_lsp_advertises_and_serves_go_to_implementation() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+
+        let interface_uri = Url::parse("file:///proj/IFoo.Interface.al").unwrap();
+        server
+            .workspace
+            .documents
+            .open(
+                interface_uri.clone(),
+                "interface 50100 IFoo\n{\n    procedure Run();\n}\n".to_string(),
+            )
+            .unwrap();
+        server.workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/FooImpl.Codeunit.al"),
+            "codeunit 50101 FooImpl implements IFoo\n{\n    procedure Run()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+
+        let initialized = server
+            .initialize(InitializeParams::default())
+            .await
+            .expect("initialize succeeds");
+        assert_eq!(
+            initialized.capabilities.implementation_provider,
+            Some(ImplementationProviderCapability::Simple(true))
+        );
+
+        let response = server
+            .goto_implementation(GotoImplementationParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: interface_uri },
+                    position: Position {
+                        line: 0,
+                        character: "interface 50100 ".len() as u32,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .expect("go-to-implementation succeeds")
+            .expect("implementation exists");
+
+        let locations = match response {
+            GotoImplementationResponse::Scalar(location) => vec![location],
+            GotoImplementationResponse::Array(locations) => locations,
+            GotoImplementationResponse::Link(_) => {
+                panic!("the native handler returns locations, not location links")
+            }
+        };
+        assert_eq!(locations.len(), 1);
+        assert!(locations[0].uri.path().ends_with("/FooImpl.Codeunit.al"));
+    }
 }
 
 #[cfg(test)]
@@ -1229,15 +2284,16 @@ mod document_symbol_capability_tests {
     async fn server_after_initialize(caps: ClientCapabilities) -> (LspService<AlServer>, Url) {
         let (service, _socket) = LspService::new(AlServer::new);
         let server = service.inner();
-        // Skip the 30s workspace-init wait in `await_ready`. `Release` matches
-        // the production store and the flag's documented happens-before contract
-        // (paired with the `Acquire` load in `await_ready`).
-        server.workspace_ready.store(true, Ordering::Release);
+        // Skip the 30s workspace-init wait in `await_ready`.
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
         let uri = Url::parse("file:///proj/Outline.al").expect("valid uri");
         server
             .workspace
             .documents
-            .open(uri.clone(), SRC.to_string());
+            .open(uri.clone(), SRC.to_string())
+            .unwrap();
         server
             .initialize(InitializeParams {
                 capabilities: caps,
@@ -1333,14 +2389,15 @@ mod definition_link_support_tests {
     async fn server_after_initialize(caps: ClientCapabilities) -> (LspService<AlServer>, Url) {
         let (service, _socket) = LspService::new(AlServer::new);
         let server = service.inner();
-        // `Release` pairs with the `Acquire` load in `await_ready`, matching the
-        // production store and the flag's documented happens-before contract.
-        server.workspace_ready.store(true, Ordering::Release);
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
         let uri = Url::parse("file:///proj/Def.al").expect("valid uri");
         server
             .workspace
             .documents
-            .open(uri.clone(), SRC.to_string());
+            .open(uri.clone(), SRC.to_string())
+            .unwrap();
         server
             .initialize(InitializeParams {
                 capabilities: caps,
@@ -1432,12 +2489,15 @@ mod code_lens_command_wiring_tests {
         let (service, _socket) = LspService::new(AlServer::new);
         let server = service.inner();
         // Skip the workspace-init wait in `await_ready`.
-        server.workspace_ready.store(true, Ordering::Release);
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
         let uri = Url::parse("file:///proj/MyTests.al").expect("valid uri");
         server
             .workspace
             .documents
-            .open(uri.clone(), SRC.to_string());
+            .open(uri.clone(), SRC.to_string())
+            .unwrap();
         (service, uri)
     }
 
@@ -1663,8 +2723,8 @@ mod workspace_diagnostic_tests {
         // Skip the 30s workspace-init wait in `await_ready`.
         service
             .inner()
-            .workspace_ready
-            .store(true, Ordering::Release);
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
         service
     }
 
@@ -1736,7 +2796,8 @@ mod workspace_diagnostic_tests {
         server
             .workspace
             .documents
-            .open(uri.clone(), BAD_SRC.to_string());
+            .open(uri.clone(), BAD_SRC.to_string())
+            .unwrap();
         al_workspace::on_document_change(&server.workspace, &uri, BAD_SRC);
 
         let result = server
@@ -1767,7 +2828,8 @@ mod workspace_diagnostic_tests {
         server
             .workspace
             .documents
-            .open(open_uri.clone(), GOOD_SRC.to_string());
+            .open(open_uri.clone(), GOOD_SRC.to_string())
+            .unwrap();
         al_workspace::on_document_change(&server.workspace, &open_uri, GOOD_SRC);
         // A second clean file that is only indexed, never opened.
         let bg_uri = Url::parse("file:///proj/BgGood.al").expect("valid uri");

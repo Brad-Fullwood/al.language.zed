@@ -26,8 +26,9 @@ pub use manifest::{AppManifest, Dependency, ResourceExposurePolicy};
 pub use method_id::{method_id, ParamSig};
 pub use package::{random_package_guid, write_app_package, EmitError};
 pub use project::{
-    build_app_from_project, build_verified_app_from_project, load_external_symbols, now_timestamp,
-    BuiltApp, VerifiedBuild,
+    build_app_from_project, build_verified_app_from_project,
+    build_verified_app_from_project_with_packages, load_external_symbols,
+    load_external_symbols_from_paths, now_timestamp, BuildTimings, BuiltApp, VerifiedBuild,
 };
 pub use symbol_extract::{extract_objects, extract_objects_from_tree, EmitObject};
 pub use symbol_reference::{

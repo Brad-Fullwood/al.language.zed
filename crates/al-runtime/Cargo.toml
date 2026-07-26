@@ -7,9 +7,12 @@ description = "Pure-Rust AL test runtime: tree-walking interpreter, mock BC runt
 repository.workspace = true
 [dependencies]
 al-types = { path = "../al-types", version = "0.1.0" }
+al-syntax = { path = "../al-syntax", version = "0.1.0" }
 thiserror = { workspace = true }
-# Production parsing walks pre-parsed tree_sitter trees handed in via
-# ProcedureSource; only the tree_sitter types are needed (no grammar binding).
+# Production execution normally walks pre-parsed trees handed in through
+# ProcedureSource. `in [...]` set members are reparsed as ordinary expressions
+# because the compatibility grammar intentionally preserves bracket bodies as
+# lossless generic blocks.
 tree-sitter = "0.25"
 # stubs/any.rs GuidValue() pulls OS entropy via getrandom (prod).
 getrandom = { workspace = true }
@@ -17,7 +20,5 @@ getrandom = { workspace = true }
 rust_decimal = { workspace = true }
 
 [dev-dependencies]
-# al-syntax is used ONLY in #[cfg(test)] (parsing fixtures + the test_support mock).
-al-syntax = { path = "../al-syntax", version = "0.1.0" }
 proptest = "1"
 rust_decimal_macros = { workspace = true }

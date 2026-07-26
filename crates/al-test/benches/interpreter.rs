@@ -452,7 +452,7 @@ codeunit 50100 "BenchmarkTests"
     ws.file_index.add_file(path, codeunit_src.to_string());
 
     c.bench_function("callgraph_walk/classify_all_medium_codeunit", |b| {
-        b.iter(|| black_box(classify_all(&ws)));
+        b.iter(|| black_box(classify_all(&ws).expect("benchmark workspace must be valid")));
     });
 }
 

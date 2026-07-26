@@ -22,9 +22,13 @@ use al_analysis::queries::impact::impact;
 use al_analysis::queries::obsolescence::obsolescence_timeline;
 use al_analysis::queries::profiler_hints::parse_profile;
 use al_analysis::queries::sql_patterns::detect_sql_patterns;
-use al_analysis::queries::suggest_event::{suggest_event, EventQuery, QuerySource};
+use al_analysis::queries::suggest_event::{
+    suggest_event, EventQuery, QuerySource, SuggestEventError,
+};
 use al_analysis::queries::upgrade::upgrade_report;
+use al_project::project::AppManifest;
 use al_symbols::model::{ObjectKind, SymbolEntry};
+use al_types::AppDependency;
 use al_workspace::Workspace;
 use std::path::PathBuf;
 
@@ -33,7 +37,7 @@ fn dead_code_empty_workspace_returns_empty() {
     // Negative: a workspace with no files must not panic and must
     // produce no findings.
     let ws = Workspace::new();
-    let result = dead_code(&ws);
+    let result = dead_code(&ws).unwrap();
     assert!(
         result.is_empty(),
         "empty workspace should yield no findings"
@@ -41,16 +45,16 @@ fn dead_code_empty_workspace_returns_empty() {
 }
 
 #[test]
-fn dead_code_workspace_with_parse_error_does_not_panic() {
-    // Negative: a file that fails to parse via tree-sitter must not
-    // bring down the dead-code query (it should silently skip the file).
+fn dead_code_workspace_with_parse_error_is_explicit() {
+    // Negative: a file that fails to parse must reject the whole-project
+    // report, not disappear from a plausible partial result.
     let ws = Workspace::new();
     ws.file_index.add_file(
         PathBuf::from("/src/broken.al"),
         // Missing closing paren — known parse-error trigger.
         "codeunit 50100 Broken\n{\n    procedure X(\n    begin\n    end;\n}\n".to_string(),
     );
-    let _ = dead_code(&ws);
+    assert!(dead_code(&ws).is_err());
 }
 
 #[test]
@@ -58,7 +62,7 @@ fn impact_unknown_symbol_returns_empty() {
     // Negative: asking for impact of a symbol that doesn't exist in the
     // workspace must return an empty vec, not panic.
     let ws = Workspace::new();
-    let result = impact(&ws, "SymbolThatDoesNotExist");
+    let result = impact(&ws, "SymbolThatDoesNotExist").unwrap();
     assert!(
         result.is_empty(),
         "impact() of an unknown symbol must be empty"
@@ -70,21 +74,21 @@ fn impact_empty_query_returns_empty() {
     // Negative: empty string is a legitimate degenerate input — must not
     // panic and must not match every symbol.
     let ws = Workspace::new();
-    let result = impact(&ws, "");
+    let result = impact(&ws, "").unwrap();
     assert!(result.is_empty(), "impact(\"\") must be empty");
 }
 
 #[test]
 fn obsolescence_empty_workspace_returns_empty() {
     let ws = Workspace::new();
-    let result = obsolescence_timeline(&ws);
+    let result = obsolescence_timeline(&ws).unwrap();
     assert!(result.is_empty());
 }
 
 #[test]
 fn sql_patterns_empty_workspace_returns_empty() {
     let ws = Workspace::new();
-    let result = detect_sql_patterns(&ws);
+    let result = detect_sql_patterns(&ws).unwrap();
     assert!(result.is_empty());
 }
 
@@ -105,7 +109,7 @@ fn sql_patterns_file_without_procedures_returns_empty() {
 "#
         .to_string(),
     );
-    let result = detect_sql_patterns(&ws);
+    let result = detect_sql_patterns(&ws).unwrap();
     assert!(
         result.is_empty(),
         "table-only file should produce no SQL pattern findings, got {result:?}"
@@ -113,19 +117,23 @@ fn sql_patterns_file_without_procedures_returns_empty() {
 }
 
 #[test]
-fn suggest_event_for_nonexistent_procedure_does_not_panic() {
-    // Negative: querying for an event source that doesn't exist must
-    // produce a structured empty result, not panic.
+fn suggest_event_for_nonexistent_object_is_explicit() {
+    // Negative: querying for an event source that doesn't exist must produce
+    // a structured query error, not a plausible empty result or panic.
     let ws = Workspace::new();
     let q = EventQuery {
         source: QuerySource::Procedure {
             object: "Nope Codeunit".to_string(),
             procedure: Some("DoesNotExist".to_string()),
         },
+        object_kind: None,
         filter_table: None,
         filter_field: None,
     };
-    let _ = suggest_event(&ws, &q);
+    assert!(matches!(
+        suggest_event(&ws, &q),
+        Err(SuggestEventError::ObjectNotFound { .. })
+    ));
 }
 
 #[test]
@@ -179,34 +187,40 @@ fn upgrade_report_empty_inputs_returns_empty() {
     assert!(result.is_empty());
 }
 
-#[test]
-fn build_dependency_graph_malformed_app_json_does_not_panic() {
-    // Negative: an app.json with invalid JSON must not panic — the
-    // function falls back to a minimal/empty graph.
-    let graph = build_dependency_graph("{ not valid json", &[]);
-    assert!(graph.nodes.is_empty() || graph.root_app.name.is_empty());
+fn dependency_manifest(dependencies: Vec<AppDependency>) -> AppManifest {
+    AppManifest {
+        id: "root-id".to_string(),
+        name: "TestApp".to_string(),
+        publisher: "Test".to_string(),
+        version: "1.0.0.0".to_string(),
+        dependencies,
+        application: None,
+        platform: None,
+        runtime: None,
+    }
 }
 
 #[test]
-fn build_dependency_graph_empty_app_json_does_not_panic() {
-    let graph = build_dependency_graph("", &[]);
-    let _ = graph; // any well-typed return is fine
+fn build_dependency_graph_empty_inputs_return_a_typed_root() {
+    let manifest = dependency_manifest(Vec::new());
+    let graph = build_dependency_graph(&manifest, &[], &[]);
+    assert_eq!(graph.root_app.app_id, "root-id");
+    assert!(graph.nodes.is_empty());
+    assert!(graph.edges.is_empty());
 }
 
 #[test]
 fn build_dependency_graph_missing_dependency_is_reported() {
     // Positive: an app.json that declares a dependency on a package that
     // isn't in the package list must appear in `missing`.
-    let app_json = r#"{
-        "id": "0000",
-        "name": "TestApp",
-        "version": "1.0.0.0",
-        "publisher": "Test",
-        "dependencies": [
-            { "id": "deadbeef", "name": "Ghost", "publisher": "Microsoft", "version": "1.0.0.0" }
-        ]
-    }"#;
-    let graph = build_dependency_graph(app_json, &[]);
+    let dependencies = vec![AppDependency {
+        id: "deadbeef".to_string(),
+        name: "Ghost".to_string(),
+        publisher: "Microsoft".to_string(),
+        version: "1.0.0.0".to_string(),
+    }];
+    let manifest = dependency_manifest(dependencies.clone());
+    let graph = build_dependency_graph(&manifest, &dependencies, &[]);
     assert!(
         !graph.missing.is_empty(),
         "declared dependency with no matching package must be reported as missing, got {:?}",

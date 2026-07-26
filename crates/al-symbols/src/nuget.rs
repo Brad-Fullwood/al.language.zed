@@ -46,6 +46,8 @@ pub enum NuGetError {
     },
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("NuGet client state lock '{0}' is poisoned")]
+    StatePoisoned(&'static str),
 }
 
 #[derive(Debug, Clone)]
@@ -202,19 +204,18 @@ pub struct NuGetClient {
 }
 
 impl NuGetClient {
-    pub fn new(feeds: Vec<NuGetFeed>) -> Self {
+    pub fn new(feeds: Vec<NuGetFeed>) -> Result<Self, NuGetError> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        Self {
+            .build()?;
+        Ok(Self {
             client,
             feeds,
             base_address_cache: Mutex::new(HashMap::new()),
             package_locks: Mutex::new(HashMap::new()),
             completed_downloads: Mutex::new(HashMap::new()),
             country: None,
-        }
+        })
     }
 
     /// Select the symbols country/region (`al.symbolsCountryRegion` parity).
@@ -223,15 +224,18 @@ impl NuGetClient {
         self
     }
 
-    fn lock_for(&self, pkg_id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    fn lock_for(&self, pkg_id: &str) -> Result<std::sync::Arc<tokio::sync::Mutex<()>>, NuGetError> {
         let key = pkg_id.to_lowercase();
-        let mut map = self.package_locks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .package_locks
+            .lock()
+            .map_err(|_| NuGetError::StatePoisoned("package locks"))?;
         if let Some(existing) = map.get(&key) {
-            return existing.clone();
+            return Ok(existing.clone());
         }
         let new_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
         map.insert(key, new_lock.clone());
-        new_lock
+        Ok(new_lock)
     }
 
     /// Download a single package, trying each feed in order until one succeeds.
@@ -242,7 +246,7 @@ impl NuGetClient {
         // callers race on `Foo.symbols.<guid>`, only the first hits the
         // network; the second observes the on-disk artefact written by
         // the tempfile+rename below and short-circuits.
-        let lock = self.lock_for(&pkg.id);
+        let lock = self.lock_for(&pkg.id)?;
         let _serial = lock.lock().await;
 
         let completion_key = (
@@ -253,7 +257,7 @@ impl NuGetClient {
         let completed = self
             .completed_downloads
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .map_err(|_| NuGetError::StatePoisoned("completed downloads"))?
             .get(&completion_key)
             .cloned();
         if let Some(path) = completed {
@@ -263,7 +267,7 @@ impl NuGetClient {
             }
             self.completed_downloads
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .map_err(|_| NuGetError::StatePoisoned("completed downloads"))?
                 .remove(&completion_key);
         }
 
@@ -273,7 +277,7 @@ impl NuGetClient {
                 Ok(path) => {
                     self.completed_downloads
                         .lock()
-                        .unwrap_or_else(|error| error.into_inner())
+                        .map_err(|_| NuGetError::StatePoisoned("completed downloads"))?
                         .insert(completion_key, path.clone());
                     return Ok(path);
                 }
@@ -325,7 +329,9 @@ async fn download(
     dest: &Path,
 ) -> Result<PathBuf, NuGetError> {
     let cached = {
-        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = cache
+            .lock()
+            .map_err(|_| NuGetError::StatePoisoned("base address cache"))?;
         guard.get(&feed.index_url).cloned()
     };
     let base_url = if let Some(url) = cached {
@@ -335,7 +341,7 @@ async fn download(
         let url = get_package_base_address(client, &feed.index_url).await?;
         cache
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .map_err(|_| NuGetError::StatePoisoned("base address cache"))?
             .insert(feed.index_url.clone(), url.clone());
         url
     };
@@ -1296,9 +1302,13 @@ mod tests {
     fn lock_for_same_id_returns_same_arc() {
         // Positive: two calls with the same (case-insensitive) id share one
         // mutex, so concurrent downloads will serialise.
-        let client = NuGetClient::new(vec![]);
-        let a = client.lock_for("Microsoft.Foo.symbols.abc-123");
-        let b = client.lock_for("microsoft.foo.symbols.abc-123");
+        let client = NuGetClient::new(vec![]).expect("NuGet client");
+        let a = client
+            .lock_for("Microsoft.Foo.symbols.abc-123")
+            .expect("package lock");
+        let b = client
+            .lock_for("microsoft.foo.symbols.abc-123")
+            .expect("package lock");
         assert!(
             std::sync::Arc::ptr_eq(&a, &b),
             "case-insensitive same id should yield same mutex"
@@ -1309,13 +1319,54 @@ mod tests {
     fn lock_for_different_ids_returns_different_arcs() {
         // Negative: different package ids must NOT share a mutex, or
         // unrelated downloads would block each other for no reason.
-        let client = NuGetClient::new(vec![]);
-        let a = client.lock_for("Microsoft.Foo");
-        let b = client.lock_for("Microsoft.Bar");
+        let client = NuGetClient::new(vec![]).expect("NuGet client");
+        let a = client.lock_for("Microsoft.Foo").expect("package lock");
+        let b = client.lock_for("Microsoft.Bar").expect("package lock");
         assert!(
             !std::sync::Arc::ptr_eq(&a, &b),
             "different ids must yield independent mutexes"
         );
+    }
+
+    #[test]
+    fn lock_for_reports_poisoned_package_lock_registry() {
+        let client = NuGetClient::new(vec![]).expect("NuGet client");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = client.package_locks.lock().expect("package lock registry");
+            panic!("poison package lock registry for test");
+        }));
+
+        let error = client
+            .lock_for("Microsoft.Foo")
+            .expect_err("poisoned package lock registry must fail");
+        assert!(matches!(error, NuGetError::StatePoisoned("package locks")));
+    }
+
+    #[tokio::test]
+    async fn download_reports_poisoned_completed_download_cache() {
+        let client = NuGetClient::new(vec![]).expect("NuGet client");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = client
+                .completed_downloads
+                .lock()
+                .expect("completed download cache");
+            panic!("poison completed download cache for test");
+        }));
+        let package = PackageRef {
+            id: "Microsoft.Foo".into(),
+            version: Some("1.0.0.0".into()),
+            display_name: "Foo".into(),
+            app_id: "00000000-0000-0000-0000-000000000000".into(),
+        };
+
+        let error = client
+            .download(&package, Path::new("/tmp"))
+            .await
+            .expect_err("poisoned completed-download cache must fail");
+        assert!(matches!(
+            error,
+            NuGetError::StatePoisoned("completed downloads")
+        ));
     }
 
     #[tokio::test]
@@ -1323,13 +1374,13 @@ mod tests {
         // Hammer: spawn 10 tasks that all hold the lock for the same id
         // for 5ms each. If the per-package mutex works, they run strictly
         // sequentially (total >= 50ms) instead of in parallel.
-        let client = std::sync::Arc::new(NuGetClient::new(vec![]));
+        let client = std::sync::Arc::new(NuGetClient::new(vec![]).expect("NuGet client"));
         let start = std::time::Instant::now();
         let mut handles = Vec::new();
         for _ in 0..10 {
             let c = client.clone();
             handles.push(tokio::spawn(async move {
-                let lock = c.lock_for("Pkg.X");
+                let lock = c.lock_for("Pkg.X").expect("package lock");
                 let _g = lock.lock().await;
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }));
@@ -1350,7 +1401,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let artifact = tmp.path().join("Cached.app");
         std::fs::write(&artifact, valid_app_bytes()).unwrap();
-        let client = NuGetClient::new(vec![]);
+        let client = NuGetClient::new(vec![]).expect("NuGet client");
         let package = PackageRef {
             id: "Microsoft.Cached.symbols".into(),
             version: Some("1.0.0.0".into()),

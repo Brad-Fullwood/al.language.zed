@@ -36,8 +36,8 @@ Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
 
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
-| `al.enableNativeLint` | boolean | `true` | ✅ wired (file, project-semantic, and transaction-stack rules) |
-| `al.nativeLintRules` | object | `{}` | ✅ wired (per-rule override) |
+| `al.enableNativeLint` | boolean | `true` | ✅ wired (file, project-semantic, transaction, obsolete, and architecture rules) |
+| `al.nativeLintRules` | object | `{}` | ✅ wired (per-rule override, e.g. `{ "AL-NL005": false }`) |
 
 ## Symbols & packages
 
@@ -56,6 +56,7 @@ Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
 | `al.compilationOptions` | string[] | `[]` | ✅ official `alc` backend only |
 | `al.incrementalBuild` | boolean | `false` | ✅ official `alc` backend only |
 | `al.useOfficialCompiler` | boolean | `false` | ✅ escape hatch → `dotnet alc` |
+| `al.dotnetPath` | string\|null | `null` | ✅ extension-side executable override for all spawned .NET/`alc` processes; replaces environment-only `AL_DOTNET_PATH` configuration |
 
 ## Resource limits & escape hatches
 
@@ -74,11 +75,13 @@ For CI, custom templates, and troubleshooting: `AL_TOOL_PATH`, `AL_DOTNET_PATH`,
 `AL_TEMPLATES_DIR`,
 `AL_COMPILE_TIMEOUT_SECS`, `AL_LOG_FILE_LEVEL`, `AL_LSP_ALLOW_HTTP_FEED`, `AL_EDITOR_SERVICES_PATH`,
 `AL_BRIDGE_DIR`, `AL_ERROR_CODES_LIVE`, `AL_DAP_CAPTURE`, `AL_OAUTH_DISABLE_KEYRING`. BC credentials
-(secrets, prefer OAuth/keyring): `BC_CLIENT_ID`, `BC_TOKEN`/`BC_ACCESS_TOKEN`,
-`BC_USERNAME`/`BC_PASSWORD`, `BC_TENANT`.
+(secrets, prefer OAuth/keyring): `BC_CLIENT_ID`, canonical `BC_ACCESS_TOKEN`
+(`BC_TOKEN` is a compatibility alias), `BC_USERNAME`/`BC_PASSWORD`, and
+`BC_TENANT`. When both bearer-token variables are set they must match; a blank,
+non-UTF-8, or conflicting override is rejected before network access.
 
 ## Project-file schemas
 
-Associate `schemas/{app,ruleset,appsourcecop,migration}.json` with Zed's bundled JSON LS via
+Associate `schemas/{app,ruleset,alarch,appsourcecop,migration}.json` with Zed's bundled JSON LS via
 `json.schemas` for autocomplete/validation on every channel today; see
 [language-assets](../features/language-assets.md).

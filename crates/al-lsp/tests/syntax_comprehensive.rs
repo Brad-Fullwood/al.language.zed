@@ -680,22 +680,23 @@ end;
 }
 
 #[test]
-fn lint_returns_empty_for_any_code() {
-    // Native lint rules have been removed — all diagnostics come from the .NET bridge.
-    // Verify lint() returns empty regardless of input.
+fn lint_reports_missing_set_load_fields_for_fixture_record_read() {
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_CODE);
     let diagnostics = lint(&result.tree, CODEUNIT_CODE);
     assert!(
-        diagnostics.is_empty(),
-        "lint() must return empty Vec (rules removed): {:?}",
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "AL-NL005" && diagnostic.message.contains("SetLoadFields")
+        }),
+        "record iteration without SetLoadFields must produce AL-NL005: {:?}",
         diagnostics
     );
 }
 
 #[test]
 fn lint_returns_empty_for_table() {
-    // Native lint rules have been removed — all diagnostics come from the .NET bridge.
+    // This table contains no record-read or UI-control constructs covered by
+    // the native performance and metadata rules.
     let mut parser = make_parser();
     let result = parser.parse(TABLE_CODE);
     let diagnostics = lint(&result.tree, TABLE_CODE);
@@ -708,7 +709,8 @@ fn lint_returns_empty_for_table() {
 
 #[test]
 fn lint_returns_empty_for_naming_violations() {
-    // Native lint rules have been removed — procedure naming is checked by the .NET bridge.
+    // Procedure naming remains the responsibility of the official analyzer;
+    // the native rules intentionally do not duplicate it.
     let code = r#"codeunit 50100 Test
 {
     procedure goodName()
@@ -725,14 +727,15 @@ fn lint_returns_empty_for_naming_violations() {
     let diagnostics = lint(&result.tree, code);
     assert!(
         diagnostics.is_empty(),
-        "lint() must return empty Vec (naming rules removed): {:?}",
+        "native lint must not duplicate the official naming analyzer: {:?}",
         diagnostics
     );
 }
 
 #[test]
 fn lint_returns_empty_for_empty_begin_end() {
-    // Native lint rules have been removed — empty begin..end is caught by the .NET bridge.
+    // Empty-block style diagnostics remain the responsibility of the official
+    // analyzer; the native catalog does not duplicate that rule.
     let code = r#"codeunit 50100 Test
 {
     procedure EmptyProc()
@@ -749,14 +752,15 @@ fn lint_returns_empty_for_empty_begin_end() {
     let diagnostics = lint(&result.tree, code);
     assert!(
         diagnostics.is_empty(),
-        "lint() must return empty Vec (empty-block rule removed): {:?}",
+        "native lint must not duplicate the official empty-block rule: {:?}",
         diagnostics
     );
 }
 
 #[test]
 fn lint_returns_empty_for_deep_nesting() {
-    // Native lint rules have been removed — deep nesting is caught by the .NET bridge.
+    // Deep-nesting style diagnostics remain in the official analyzer/formatter
+    // boundary; the native catalog does not duplicate that rule.
     let code = r#"codeunit 50100 Test
 {
     procedure DeepNest()
@@ -775,7 +779,7 @@ fn lint_returns_empty_for_deep_nesting() {
     let diagnostics = lint(&result.tree, code);
     assert!(
         diagnostics.is_empty(),
-        "lint() must return empty Vec (nesting rule removed): {:?}",
+        "native lint must not duplicate the official nesting rule: {:?}",
         diagnostics
     );
 }

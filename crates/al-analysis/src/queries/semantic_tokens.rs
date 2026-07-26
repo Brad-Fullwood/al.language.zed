@@ -65,8 +65,9 @@ mod tests {
     fn semantic_tokens_full_returns_tokens_for_open_document() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/tokens.al").expect("test");
-        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
-
+        ws.documents
+            .open(uri.clone(), SAMPLE_AL.to_string())
+            .unwrap();
         let tokens = semantic_tokens_full(&ws, &uri);
         assert!(
             !tokens.is_empty(),
@@ -81,8 +82,9 @@ mod tests {
         // token's absolute line/column. The wrapper must preserve this.
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/first.al").expect("test");
-        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
-
+        ws.documents
+            .open(uri.clone(), SAMPLE_AL.to_string())
+            .unwrap();
         let tokens = semantic_tokens_full(&ws, &uri);
         let first = tokens.first().expect("expected at least one token");
         // First meaningful token in the sample is the `codeunit` keyword on
@@ -96,8 +98,9 @@ mod tests {
     fn semantic_tokens_full_preserves_underlying_fields() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/preserve.al").expect("test");
-        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
-
+        ws.documents
+            .open(uri.clone(), SAMPLE_AL.to_string())
+            .unwrap();
         let (text, tree) =
             al_source::parsing::get_or_parse(&ws.documents, &uri).expect("document should parse");
         let syntax_tokens = al_syntax::extract_semantic_tokens(&tree, &text);
@@ -123,8 +126,9 @@ mod tests {
     fn semantic_tokens_full_delta_encoding_is_monotonic_per_line() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/delta.al").expect("test");
-        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
-
+        ws.documents
+            .open(uri.clone(), SAMPLE_AL.to_string())
+            .unwrap();
         // The LSP semantic-tokens contract: every token after the first is
         // delta-encoded relative to its predecessor. On the *same* line,
         // delta_line is 0 and delta_start is the column gap (> 0, since two
@@ -151,8 +155,9 @@ mod tests {
     fn semantic_tokens_full_is_deterministic_across_calls() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/repeat.al").expect("test");
-        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
-
+        ws.documents
+            .open(uri.clone(), SAMPLE_AL.to_string())
+            .unwrap();
         let first = semantic_tokens_full(&ws, &uri);
         // The second call hits the cached parse tree inside get_or_parse rather
         // than re-parsing. The cache path must yield byte-identical tokens.
@@ -182,14 +187,16 @@ mod tests {
         let small_uri = Url::parse("file:///test/small.al").expect("test");
         let big_uri = Url::parse("file:///test/big.al").expect("test");
 
-        ws.documents.open(small_uri.clone(), SAMPLE_AL.to_string());
+        ws.documents
+            .open(small_uri.clone(), SAMPLE_AL.to_string())
+            .unwrap();
         let small = semantic_tokens_full(&ws, &small_uri);
         assert!(!small.is_empty());
 
         let bigger = format!(
             "{SAMPLE_AL}\n\ncodeunit 50101 \"Other\"\n{{\n    procedure More()\n    begin\n    end;\n}}"
         );
-        ws.documents.open(big_uri.clone(), bigger);
+        ws.documents.open(big_uri.clone(), bigger).unwrap();
         let big = semantic_tokens_full(&ws, &big_uri);
 
         assert!(
@@ -215,7 +222,7 @@ mod tests {
     fn semantic_tokens_full_empty_document_returns_empty() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/empty.al").expect("test");
-        ws.documents.open(uri.clone(), String::new());
+        ws.documents.open(uri.clone(), String::new()).unwrap();
         let tokens = semantic_tokens_full(&ws, &uri);
         assert!(
             tokens.is_empty(),
@@ -227,8 +234,9 @@ mod tests {
     fn semantic_tokens_full_emits_keyword_token_type_for_object_keyword() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/kind.al").expect("test");
-        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
-
+        ws.documents
+            .open(uri.clone(), SAMPLE_AL.to_string())
+            .unwrap();
         let (text, tree) =
             al_source::parsing::get_or_parse(&ws.documents, &uri).expect("document should parse");
         let syntax_tokens = al_syntax::extract_semantic_tokens(&tree, &text);
@@ -268,8 +276,9 @@ mod tests {
     fn semantic_tokens_full_surfaces_more_than_one_token_type() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/types.al").expect("test");
-        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
-
+        ws.documents
+            .open(uri.clone(), SAMPLE_AL.to_string())
+            .unwrap();
         // The wrapper must carry the *distinct* token-type classifications the
         // syntax layer assigns, not collapse everything to a single type (e.g.
         // accidentally returning a constant or always 0). The sample mixes an
@@ -294,8 +303,9 @@ mod tests {
     fn semantic_tokens_full_delta_stream_reconstructs_syntax_positions() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/reconstruct.al").expect("test");
-        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
-
+        ws.documents
+            .open(uri.clone(), SAMPLE_AL.to_string())
+            .unwrap();
         // The wrapper's delta_line/delta_start values are only meaningful if a
         // consumer can rebuild absolute positions from them. Walk the delta
         // stream back into absolute (line, col) coordinates and confirm the
@@ -340,8 +350,9 @@ mod tests {
         let multi_line = "codeunit 50100 \"Multi\"\n{\n    procedure A()\n    begin\n    end;\n\n    procedure B()\n    begin\n    end;\n}";
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/multiline.al").expect("test");
-        ws.documents.open(uri.clone(), multi_line.to_string());
-
+        ws.documents
+            .open(uri.clone(), multi_line.to_string())
+            .unwrap();
         // A multi-line construct forces at least one token whose absolute line
         // differs from its predecessor's, exercising the non-zero `delta_line`
         // branch of the delta encoding end-to-end through the wrapper. We use a

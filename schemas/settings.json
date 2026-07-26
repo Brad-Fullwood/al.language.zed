@@ -68,6 +68,29 @@
       "default": true,
       "description": "Enable code actions (quick fixes, refactorings, source actions)."
     },
+    "al.formatting.blankLinesBetweenProcedures": {
+      "type": "string",
+      "enum": ["preserve", "one", "two"],
+      "default": "preserve",
+      "description": "Blank lines the native formatter keeps between procedures. 'preserve' leaves existing spacing unchanged."
+    },
+    "al.formatting.maxLineLength": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Maximum line length for supported single-line object properties. 0 disables wrapping."
+    },
+    "al.formatting.braceStyle": {
+      "type": "string",
+      "enum": ["sameLine", "nextLine"],
+      "default": "nextLine",
+      "description": "Brace placement used by the native formatter."
+    },
+    "al.formatting.sortProperties": {
+      "type": "boolean",
+      "default": false,
+      "description": "Sort contiguous object-level property runs alphabetically when formatting."
+    },
     "al.inlayHints.parameterNames": {
       "type": "boolean",
       "default": true,
@@ -81,7 +104,7 @@
     "al.enableNativeLint": {
       "type": "boolean",
       "default": true,
-      "description": "Enable native AL lint and semantic rules: file-local AL-NL001/2, resolved transaction-stack AL-NL003/4, and project/symbol AL-NC001-006 diagnostics. The optional Microsoft CodeAnalysis bridge remains additive for exact analyzer compatibility."
+      "description": "Enable native AL lint and semantic rules: file-local AL-NL001/2 and AL-NL005-007, resolved transaction/obsolete/architecture AL-NL003/4 and AL-NL008/9, plus project/symbol AL-NC001-006 diagnostics. The optional Microsoft CodeAnalysis bridge remains additive for exact analyzer compatibility."
     },
     "al.nativeLintRules": {
       "type": "object",
@@ -89,8 +112,8 @@
         "type": "boolean"
       },
       "default": {},
-      "description": "Per-rule enable/disable overrides for native lint rules. Key is a rule code (for example AL-NL003 or AL-NC005). Only takes effect when al.enableNativeLint is true.",
-      "examples": [{ "AL-NL003": false }]
+      "description": "Per-rule enable/disable overrides for native lint rules. Key is a stable AL-NL or AL-NC code (for example AL-NL005, AL-NL008, AL-NL009, or AL-NC005). Only takes effect when al.enableNativeLint is true.",
+      "examples": [{ "AL-NL005": false, "AL-NL009": false }]
     },
     "al.packageCachePath": {
       "type": ["string", "null"],
@@ -158,6 +181,12 @@
       "type": "boolean",
       "default": false,
       "description": "Escape hatch: compile via Microsoft's `dotnet alc` subprocess instead of the pure-Rust verified `.app` pipeline. The native default runs syntax, project/dependency, declaration, declared-symbol binding, and package-integrity checks with structured diagnostics and no `alc` or C# bridge. Set this to `true` when exact Microsoft expression/type semantics, analyzers, or compatibility behaviour are required."
+    },
+    "al.dotnetPath": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Optional path to the dotnet host used for Microsoft ALTool, alc, the semantic bridge, and the official LSP/DAP escape hatches. The extension exports this as AL_DOTNET_PATH for all sidecar processes.",
+      "examples": ["/usr/local/share/dotnet/dotnet", "C:\\Program Files\\dotnet\\dotnet.exe"]
     },
     "al.maxDocumentSizeBytes": {
       "type": ["integer", "null"],

@@ -32,7 +32,7 @@
 
 use tree_sitter::Node;
 
-use crate::interpreter::dispatch::{dispatch_call, DispatchCtx, MAX_AST_DEPTH};
+use crate::interpreter::dispatch::{dispatch_call_scoped, DispatchCtx, MAX_AST_DEPTH};
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::records;
 use crate::interpreter::scope::{Eval, ScopeStack};
@@ -135,6 +135,26 @@ fn eval_block(
     last
 }
 
+/// Evaluate one source Boolean decision while capturing its atomic-condition
+/// vector for MC/DC. The trace is taken from the same evaluation that drives
+/// control flow; coverage never re-runs an expression (and therefore cannot
+/// duplicate calls or other side effects).
+fn eval_decision_condition(
+    condition: Node<'_>,
+    decision: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    ctx.cov_begin_condition_trace();
+    let result = eval_expr(condition, source, stack, ctx);
+    let trace = ctx.cov_finish_condition_trace(condition);
+    if let Eval::Normal(Value::Boolean(outcome)) = &result {
+        ctx.cov_record_condition_observation(decision, trace, *outcome);
+    }
+    result
+}
+
 fn eval_if(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Eval {
     // Tree-sitter AL grammar fields: `condition`, `consequence`, `alternative`
     // (the ELSE branch). If the grammar doesn't use field names, we fall back to
@@ -147,7 +167,7 @@ fn eval_if(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Disp
         },
     };
 
-    let cond = match eval_expr(condition_node, source, stack, ctx) {
+    let cond = match eval_decision_condition(condition_node, node, source, stack, ctx) {
         Eval::Normal(v) => v,
         other => return other,
     };
@@ -206,10 +226,11 @@ fn eval_while(
         if ctx.deadline_exceeded() {
             return Eval::Error(simple_error("interpreter deadline exceeded in while loop"));
         }
-        let cond = match eval_expr(cond_node, source, stack, ctx) {
+        let cond = match eval_decision_condition(cond_node, node, source, stack, ctx) {
             Eval::Normal(v) => v,
             other => return other,
         };
+        ctx.cov_record_decision(node, cond.is_truthy());
         if !cond.is_truthy() {
             break;
         }
@@ -318,11 +339,9 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
         if ctx.deadline_exceeded() {
             return Eval::Error(simple_error("interpreter deadline exceeded in for loop"));
         }
-        if is_downto {
-            if i < end_i {
-                break;
-            }
-        } else if i > end_i {
+        let in_range = if is_downto { i >= end_i } else { i <= end_i };
+        ctx.cov_record_decision(node, in_range);
+        if !in_range {
             break;
         }
 
@@ -398,7 +417,9 @@ fn eval_foreach(
         }
     };
 
+    let mut broke = false;
     for item in items {
+        ctx.cov_record_decision(node, true);
         if ctx.is_cancelled() {
             return Eval::Error(simple_error("interpreter cancelled in foreach loop"));
         }
@@ -416,10 +437,16 @@ fn eval_foreach(
         if let Some(body) = body_node {
             match eval_stmt(body, source, stack, ctx) {
                 Eval::Normal(_) | Eval::Continue => {}
-                Eval::Break => break,
+                Eval::Break => {
+                    broke = true;
+                    break;
+                }
                 other => return other,
             }
         }
+    }
+    if !broke {
+        ctx.cov_record_decision(node, false);
     }
     Eval::Normal(Value::Empty)
 }
@@ -454,13 +481,14 @@ fn eval_repeat(
         }
 
         let cond = match cond_node {
-            Some(n) => match eval_expr(n, source, stack, ctx) {
+            Some(n) => match eval_decision_condition(n, node, source, stack, ctx) {
                 Eval::Normal(v) => v,
                 other => return other,
             },
             None => return Eval::Error(simple_error("repeat_statement: missing until condition")),
         };
 
+        ctx.cov_record_decision(node, cond.is_truthy());
         if cond.is_truthy() {
             break;
         }
@@ -489,11 +517,25 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
 
     let mut cursor = node.walk();
     let children: Vec<Node> = node.named_children(&mut cursor).collect();
+    let arms: Vec<Node> = children
+        .iter()
+        .copied()
+        .filter(|child| matches!(child.kind(), "case_arm" | "case_branch"))
+        .collect();
+    for (index, arm) in arms.iter().enumerate() {
+        ctx.cov_ensure_path(
+            node,
+            format!("arm:{}:{}", index + 1, arm.start_position().row + 1),
+        );
+    }
+    let fallback_path = if else_body.is_some() {
+        "else"
+    } else {
+        "no-match"
+    };
+    ctx.cov_ensure_path(node, fallback_path);
 
-    for child in &children[1..] {
-        if !matches!(child.kind(), "case_arm" | "case_branch") {
-            continue;
-        }
+    for (index, child) in arms.iter().enumerate() {
         // Grammar: case_branch has fields 'labels' (case_label_list), 'sep' (:),
         // 'body', and an optional trailing semicolon (named). Use field lookups
         // so a trailing semicolon node can't shift the positional fallback.
@@ -514,7 +556,18 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
             let mut lc = ll.walk();
             for lbl in ll.named_children(&mut lc) {
                 if let Eval::Normal(v) = eval_expr(lbl, source, stack, ctx) {
-                    if crate::interpreter::eval_expr::values_equal(&selector, &v) {
+                    let label_matches = match &v {
+                        Value::Range { start, end } => {
+                            match crate::interpreter::eval_expr::value_in_range(
+                                &selector, start, end,
+                            ) {
+                                Ok(matches) => matches,
+                                Err(error) => return Eval::Error(error),
+                            }
+                        }
+                        _ => crate::interpreter::eval_expr::values_equal(&selector, &v),
+                    };
+                    if label_matches {
                         matched = true;
                         break;
                     }
@@ -523,11 +576,13 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
         }
 
         if matched {
-            // An arm matched; record the true side of the case decision.
-            // Per-arm path coverage is not
-            // tracked (see `coverage` module docs); the arm body's own lines
-            // are recorded by `eval_stmt` as it executes them.
+            // Retain the historical matched/no-match counters and additionally
+            // identify the exact arm for multi-way path coverage.
             ctx.cov_record_decision(node, true);
+            ctx.cov_record_path(
+                node,
+                format!("arm:{}:{}", index + 1, child.start_position().row + 1),
+            );
             return eval_stmt(arm_body, source, stack, ctx);
         }
     }
@@ -535,6 +590,7 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
     // No arm matched: record the ELSE side of the case decision (whether or
     // not an explicit `else` clause exists).
     ctx.cov_record_decision(node, false);
+    ctx.cov_record_path(node, fallback_path);
     match else_body {
         Some(body) => eval_stmt(body, source, stack, ctx),
         None => Eval::Normal(Value::Empty),
@@ -749,7 +805,7 @@ pub(crate) fn eval_call(
     // dispatch is handed the raw `args_node` rather than pre-evaluated values.
     if let Some(recv) = receiver.as_deref() {
         match stack.lookup(recv) {
-            Some(Value::Record(rv)) if records::is_record_method(&proc_name) => {
+            Some(Value::Record(rv)) if records::supports_record_method(&proc_name) => {
                 let table_name = rv.table_name.clone();
                 return records::dispatch_record_method(
                     &table_name,
@@ -760,7 +816,7 @@ pub(crate) fn eval_call(
                     ctx,
                 );
             }
-            Some(Value::List(_)) if records::is_list_method(&proc_name) => {
+            Some(Value::List(_)) if records::supports_list_method(&proc_name) => {
                 let args = match eval_args_opt(args_node, source, stack, ctx) {
                     Ok(v) => v,
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
@@ -775,7 +831,7 @@ pub(crate) fn eval_call(
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
-                let result = dispatch_call(Some(&object_name), &proc_name, args, ctx);
+                let result = dispatch_call_scoped(Some(&object_name), &proc_name, args, stack, ctx);
                 apply_var_writebacks(args_node, source, stack, ctx);
                 return result;
             }
@@ -789,7 +845,7 @@ pub(crate) fn eval_call(
         Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
     };
 
-    let result = dispatch_call(receiver.as_deref(), &proc_name, args, ctx);
+    let result = dispatch_call_scoped(receiver.as_deref(), &proc_name, args, stack, ctx);
     apply_var_writebacks(args_node, source, stack, ctx);
     result
 }

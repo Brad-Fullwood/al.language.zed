@@ -4,7 +4,7 @@
 /// An `app.json` dependency entry.
 ///
 /// Fields use camelCase for JSON serialization to match the `app.json` format.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppDependency {
     pub id: String,

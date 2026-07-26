@@ -10,7 +10,7 @@ pub fn cmd_search(query: &str, limit: usize, json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
     let params = serde_json::json!({ "query": query, "limit": limit });
-    match client.request("search", Some(params)) {
+    match request_checked(&mut client, "search", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -97,7 +97,11 @@ pub fn cmd_source(
         params.insert("trigger".into(), trigger.into());
     }
 
-    match client.request("source", Some(serde_json::Value::Object(params))) {
+    match request_checked(
+        &mut client,
+        "source",
+        Some(serde_json::Value::Object(params)),
+    ) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -131,7 +135,7 @@ pub fn cmd_events(name: &str, json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
     let params = serde_json::json!({ "name": name });
-    match client.request("events", Some(params)) {
+    match request_checked(&mut client, "events", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -161,29 +165,45 @@ pub fn cmd_events(name: &str, json: bool) -> ExitCode {
                         }
                     }
                     if i < SUBSCRIBER_LOOKUP_CAP {
-                        if let Ok(subs) = client
-                            .request("subscribers", Some(serde_json::json!({ "event": method })))
-                        {
-                            let subs = subs.as_array().map(|v| &v[..]).unwrap_or(&[]);
-                            let mine: Vec<_> = subs
-                                .iter()
-                                .filter(|s| {
-                                    s.get("targetObjectName")
-                                        .and_then(|v| v.as_str())
-                                        .map(|t| t.eq_ignore_ascii_case(obj_name))
-                                        .unwrap_or(false)
-                                })
-                                .collect();
-                            if mine.is_empty() {
-                                println!("  ← no workspace subscribers");
+                        let subs = match request_checked(
+                            &mut client,
+                            "subscribers",
+                            Some(serde_json::json!({ "event": method })),
+                        ) {
+                            Ok(subscribers) => subscribers,
+                            Err(error) => {
+                                return report_error(
+                                    &format!(
+                                        "subscriber enrichment for event '{method}' failed: {error}"
+                                    ),
+                                    json,
+                                );
                             }
-                            for s in mine {
-                                let sobj =
-                                    s.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
-                                let smethod =
-                                    s.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
-                                println!("  ← subscribed by {sobj}.{smethod}");
-                            }
+                        };
+                        let subs = subs
+                            .as_array()
+                            .expect("checked subscriber response must be an array");
+                        let mine: Vec<_> = subs
+                            .iter()
+                            .filter(|s| {
+                                s.get("targetObjectName")
+                                    .and_then(|v| v.as_str())
+                                    .is_some_and(|t| t.eq_ignore_ascii_case(obj_name))
+                            })
+                            .collect();
+                        if mine.is_empty() {
+                            println!("  ← no workspace subscribers");
+                        }
+                        for s in mine {
+                            let sobj = s
+                                .get("objectName")
+                                .and_then(|v| v.as_str())
+                                .expect("checked subscriber has objectName");
+                            let smethod = s
+                                .get("methodName")
+                                .and_then(|v| v.as_str())
+                                .expect("checked subscriber has methodName");
+                            println!("  ← subscribed by {sobj}.{smethod}");
                         }
                     }
                 }
@@ -212,7 +232,7 @@ pub fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
     let params = serde_json::json!({ "event": event });
-    match client.request("subscribers", Some(params)) {
+    match request_checked(&mut client, "subscribers", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -258,17 +278,21 @@ pub fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
 /// /resolve and show the actual publisher declaration behind the
 /// `[EventSubscriber(...)]` attribute at FILE:LINE.
 pub fn cmd_event_source(file: &str, line: u32, json: bool) -> ExitCode {
-    let abs = absolutize_path(file);
+    let abs = match absolutize_path(file) {
+        Ok(path) => path,
+        Err(error) => return report_error(&error, json),
+    };
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
     let params = serde_json::json!({ "file": abs, "line": line });
-    match client.request("eventSource", Some(params)) {
+    match request_checked(&mut client, "eventSource", Some(params)) {
         Ok(result) => {
+            let exit_code = event_source_exit_code(&result);
             if json {
                 print_json(&result);
-                return ExitCode::SUCCESS;
+                return exit_code;
             }
             let kind = result
                 .get("targetKind")
@@ -314,6 +338,18 @@ pub fn cmd_event_source(file: &str, line: u32, json: bool) -> ExitCode {
     }
 }
 
+fn event_source_exit_code(result: &serde_json::Value) -> ExitCode {
+    if result
+        .get("path")
+        .and_then(|value| value.as_str())
+        .is_some()
+    {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 pub fn cmd_composed(kind_or_name: &str, name: Option<&str>, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -326,7 +362,7 @@ pub fn cmd_composed(kind_or_name: &str, name: Option<&str>, json: bool) -> ExitC
         Some(n) => serde_json::json!({ "kind": kind_or_name, "name": n }),
         None => serde_json::json!({ "name": kind_or_name }),
     };
-    match client.request("composed", Some(params)) {
+    match request_checked(&mut client, "composed", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -362,7 +398,7 @@ pub fn cmd_packages(json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    match client.request("packages", None) {
+    match request_checked(&mut client, "packages", None) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -434,4 +470,24 @@ pub fn cmd_deps(json: bool) -> ExitCode {
             println!("\nAll dependencies (including implicit): {}", all.len());
         }
     })
+}
+
+#[cfg(test)]
+mod exit_status_tests {
+    use super::*;
+
+    #[test]
+    fn metadata_only_event_source_is_not_reported_as_resolved() {
+        assert_eq!(
+            event_source_exit_code(&serde_json::json!({
+                "path": null,
+                "sourceAvailability": "metadata_only"
+            })),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            event_source_exit_code(&serde_json::json!({"path": "/tmp/publisher.al"})),
+            ExitCode::SUCCESS
+        );
+    }
 }

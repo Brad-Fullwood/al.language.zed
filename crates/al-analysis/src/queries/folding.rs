@@ -31,7 +31,7 @@ mod tests {
         Message('Hello');
     end;
 }"#;
-        ws.documents.open(uri.clone(), src.to_string());
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
         let ranges = folding_ranges(&ws, &uri);
         assert!(
             ranges.is_some(),
@@ -60,7 +60,7 @@ mod tests {
         Message('b');
     end;
 }"#;
-        ws.documents.open(uri.clone(), src.to_string());
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
         let ranges = folding_ranges(&ws, &uri).expect("test");
         let region_count = ranges
             .iter()
@@ -85,7 +85,7 @@ mod tests {
     fn folding_ranges_empty_document_returns_some_empty() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/empty_fold.al").expect("test");
-        ws.documents.open(uri.clone(), String::new());
+        ws.documents.open(uri.clone(), String::new()).unwrap();
         let result = folding_ranges(&ws, &uri);
         assert!(
             result.is_some(),

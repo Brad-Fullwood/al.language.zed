@@ -26,30 +26,23 @@ pub struct SqlPatternViolation {
     pub line: u32,
 }
 
-pub fn detect_sql_patterns(workspace: &Workspace) -> Vec<SqlPatternViolation> {
+pub fn detect_sql_patterns(
+    workspace: &Workspace,
+) -> Result<Vec<SqlPatternViolation>, super::WorkspaceQueryError> {
+    let sources = crate::workspace_sources::snapshot(workspace)?;
     let mut violations = Vec::new();
 
-    for entry in workspace.file_index.files.iter() {
-        let path = entry.key();
-        let file_path = path.to_string_lossy().to_string();
-        let Some((text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {
-            continue;
-        };
-
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &text) else {
-            continue;
-        };
-
+    for source in sources {
         scan_file_for_sql_patterns(
-            &file_path,
-            &text,
-            &parsed_tree,
-            &obj_info.name,
+            &source.path.to_string_lossy(),
+            &source.text,
+            &source.tree,
+            &source.object.info.name,
             &mut violations,
         );
     }
 
-    violations
+    Ok(violations)
 }
 
 fn scan_file_for_sql_patterns(
@@ -298,7 +291,7 @@ mod tests {
 }"#,
         )]);
 
-        let v = detect_sql_patterns(&ws);
+        let v = detect_sql_patterns(&ws).unwrap();
         assert!(
             v.iter().any(|x| x.kind == SqlAntiPattern::FindInLoop),
             "FindFirst in loop: {:?}",
@@ -324,7 +317,7 @@ mod tests {
 }"#,
         )]);
 
-        let v = detect_sql_patterns(&ws);
+        let v = detect_sql_patterns(&ws).unwrap();
         assert!(
             v.iter()
                 .any(|x| x.kind == SqlAntiPattern::FindSetWithoutFilters),
@@ -352,7 +345,7 @@ mod tests {
 }"#,
         )]);
 
-        let v = detect_sql_patterns(&ws);
+        let v = detect_sql_patterns(&ws).unwrap();
         let filt: Vec<_> = v
             .iter()
             .filter(|x| x.kind == SqlAntiPattern::FindSetWithoutFilters)
@@ -362,7 +355,7 @@ mod tests {
 
     #[test]
     fn empty_workspace_no_violations() {
-        assert!(detect_sql_patterns(&Workspace::new()).is_empty());
+        assert!(detect_sql_patterns(&Workspace::new()).unwrap().is_empty());
     }
 
     #[test]
@@ -387,7 +380,7 @@ mod tests {
 }"#,
         )]);
 
-        let v = detect_sql_patterns(&ws);
+        let v = detect_sql_patterns(&ws).unwrap();
         assert!(
             v.iter().any(|x| x.kind == SqlAntiPattern::FindInLoop),
             "FindFirst after nested begin..end inside loop should be flagged: {:?}",
@@ -415,7 +408,7 @@ mod tests {
 }"#,
         )]);
 
-        let v = detect_sql_patterns(&ws);
+        let v = detect_sql_patterns(&ws).unwrap();
         assert!(
             !v.iter().any(|x| x.kind == SqlAntiPattern::FindInLoop),
             "FindFirst inside string literal/comment must not be flagged. Got: {:?}",

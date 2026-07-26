@@ -12,13 +12,23 @@ which are executed after `initialized` and before the first didOpen, and are
 counted toward the reported cold-ready time.
 """
 import argparse
+import datetime as dt
+import hashlib
 import json
 import os
+import platform
+import shlex
 import subprocess
 import statistics
 import sys
 import threading
 import time
+from pathlib import Path
+
+
+HERE = Path(__file__).resolve().parent
+BENCH = HERE.parent
+REPO = BENCH.parent
 
 
 def path_to_uri(p: str) -> str:
@@ -39,6 +49,109 @@ def loadavg():
             return float(fh.read().split()[0])
     except Exception:
         return None
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def command_output(args, default="unknown"):
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        text = (result.stdout + result.stderr).strip()
+        return text or default
+    except (OSError, subprocess.TimeoutExpired):
+        return default
+
+
+def repository_metadata():
+    commit = command_output(["git", "-C", str(REPO), "rev-parse", "HEAD"]).splitlines()[0]
+    status = command_output(["git", "-C", str(REPO), "status", "--porcelain"], "")
+    diff = subprocess.run(
+        ["git", "-C", str(REPO), "diff", "--binary", "HEAD"],
+        capture_output=True,
+        check=True,
+    ).stdout
+    dirty = bool(status)
+    if dirty and os.environ.get("AL_BENCH_ALLOW_DIRTY") != "1":
+        raise RuntimeError(
+            "publishable benchmarks require a clean repository; "
+            "set AL_BENCH_ALLOW_DIRTY=1 only for an explicitly provisional run"
+        )
+    return {
+        "commit": commit,
+        "dirty": dirty,
+        "trackedDiffSha256": hashlib.sha256(diff).hexdigest() if dirty else None,
+    }
+
+
+def machine_metadata():
+    cpu = "unknown"
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("model name"):
+                cpu = line.split(":", 1)[1].strip()
+                break
+    except OSError:
+        pass
+    return {
+        "os": platform.platform(),
+        "kernel": platform.release(),
+        "architecture": platform.machine(),
+        "cpu": cpu,
+        "logicalCpus": os.cpu_count(),
+    }
+
+
+def server_artifacts(command):
+    artifacts = []
+    executable = Path(command[0])
+    if executable.is_file():
+        artifacts.append(
+            {
+                "name": executable.name,
+                "bytes": executable.stat().st_size,
+                "sha256": sha256_file(executable),
+            }
+        )
+    extension = os.environ.get("AL_MS_EXT")
+    if extension:
+        tool_dir = Path(extension) / "bin" / "linux"
+        for name in (
+            "Microsoft.Dynamics.Nav.EditorServices.Host",
+            "Microsoft.Dynamics.Nav.EditorServices.Host.dll",
+            "alc.dll",
+        ):
+            path = tool_dir / name
+            if path.is_file():
+                artifacts.append(
+                    {
+                        "name": name,
+                        "bytes": path.stat().st_size,
+                        "sha256": sha256_file(path),
+                    }
+                )
+    return artifacts
+
+
+def display_project_path(path):
+    resolved = Path(path).resolve()
+    try:
+        return resolved.relative_to(REPO.resolve()).as_posix()
+    except ValueError:
+        return "<external-project>"
+
+
+def write_result(path, result):
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_suffix(output.suffix + ".tmp")
+    temporary.write_text(json.dumps(result, indent=2) + "\n")
+    temporary.replace(output)
 
 
 def deep_merge(base: dict, extra: dict) -> dict:
@@ -220,6 +333,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--stderr-log", required=True)
     args = ap.parse_args()
+    if args.iterations < 2:
+        raise RuntimeError("--iterations must be at least 2 (one discarded + one measured)")
 
     root = os.path.abspath(args.root)
     root_uri = path_to_uri(root)
@@ -228,18 +343,27 @@ def main():
     with open(open_path, "r", encoding="utf-8") as fh:
         open_text = fh.read()
 
+    cmd = shlex.split(args.server)
+    if not cmd:
+        raise RuntimeError("--server resolved to an empty command")
     out = {
+        "schemaVersion": 2,
+        "generatedAtUtc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "repository": repository_metadata(),
+        "machine": machine_metadata(),
         "label": args.label,
-        "server": args.server,
-        "root": root,
-        "open_file": open_path,
+        "serverCommand": [Path(cmd[0]).name, *cmd[1:]],
+        "serverArtifacts": server_artifacts(cmd),
+        "root": display_project_path(root),
+        "openFile": Path(open_path).resolve().relative_to(Path(root).resolve()).as_posix(),
+        "iterations": args.iterations,
+        "discardedIterations": [0],
         "pre_requests": [],
         "requests": {},
         "notes": [],
         "load_start": loadavg(),
     }
 
-    cmd = args.server.split()
     t_spawn = time.perf_counter()
     cli = LspClient(cmd, cwd=root, stderr_path=args.stderr_log)
 
@@ -288,8 +412,9 @@ def main():
     out["initialize_ms"] = round(init_ms, 4)
     if resp is None:
         out["notes"].append("initialize TIMED OUT or server died")
-        with open(args.out, "w") as fh:
-            json.dump(out, fh, indent=2)
+        out["valid"] = False
+        out["invalidReasons"] = ["initialize timed out or server exited"]
+        write_result(args.out, out)
         cli.close()
         print(f"[{args.label}] initialize FAILED", file=sys.stderr)
         return 1
@@ -338,7 +463,9 @@ def main():
     else:
         out["first_diagnostic_ms"] = round((diag_ts - t_open) * 1000.0, 4)
         out["first_diagnostic_count"] = len(diag.get("params", {}).get("diagnostics", []))
-        out["first_diagnostic_uri"] = diag.get("params", {}).get("uri")
+        out["first_diagnostic_file"] = os.path.basename(
+            diag.get("params", {}).get("uri", "")
+        )
 
     if out.get("first_diagnostic_ms") is not None:
         out["cold_ready_ms"] = round(
@@ -399,8 +526,27 @@ def main():
     out["load_end"] = loadavg()
     out["load_mean_during_probes"] = round(statistics.mean(seen), 2) if seen else None
 
-    with open(args.out, "w") as fh:
-        json.dump(out, fh, indent=2)
+    invalid_reasons = []
+    if not out["serverArtifacts"]:
+        invalid_reasons.append("no benchmark server binary artifact was identified")
+    if any(not request.get("ok", False) for request in out["pre_requests"]
+           if request.get("kind") == "request"):
+        invalid_reasons.append("one or more server-specific pre-requests failed")
+    if out.get("first_diagnostic_ms") is None:
+        invalid_reasons.append("no publishDiagnostics notification was observed")
+    expected_samples = args.iterations - 1
+    for name, entry in out["requests"].items():
+        if entry.get("errors") != 0:
+            invalid_reasons.append(f"{name} returned {entry.get('errors')} errors/timeouts")
+        if entry.get("n") != expected_samples:
+            invalid_reasons.append(
+                f"{name} recorded {entry.get('n', 0)} measured samples; expected {expected_samples}"
+            )
+        if not isinstance(entry.get("result_size"), int) or entry["result_size"] <= 0:
+            invalid_reasons.append(f"{name} warmup returned an empty result")
+    out["valid"] = not invalid_reasons
+    out["invalidReasons"] = invalid_reasons
+    write_result(args.out, out)
 
     print(f"\n=== {args.label} ===")
     print(f"  initialize          {out['initialize_ms']:>10.3f} ms")
@@ -420,6 +566,10 @@ def main():
           f"end={out['load_end']}")
     for n in out["notes"]:
         print(f"  NOTE: {n}")
+    if invalid_reasons:
+        for reason in invalid_reasons:
+            print(f"  INVALID: {reason}", file=sys.stderr)
+        return 1
     return 0
 
 

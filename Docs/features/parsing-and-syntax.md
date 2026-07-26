@@ -1,6 +1,6 @@
 # Parsing & Syntax Engine
 
-**Module:** `crates/al-syntax/src/` · **Status:** ✅ shipped (formatter & lint have gaps, noted below)
+**Module:** `crates/al-syntax/src/` · **Status:** ✅ shipped
 
 The syntax layer is the foundation everything else stands on. It wraps the bundled `tree-sitter-al`
 grammar and turns parse trees into the structured information that completions, hover, definitions,
@@ -21,7 +21,7 @@ symbols, folding, formatting, and analysis all consume. It is transport-agnostic
 | Member sort | `sort.rs` | canonical member ordering |
 | Complexity | `complexity.rs` | cyclomatic + cognitive complexity per procedure |
 | Formatting | `formatting.rs` | indentation/keyword-casing formatter |
-| Lint framework | `lint.rs` | rule/diagnostic types (currently an empty engine — see below) |
+| Native lint | `lint.rs` | rule registry plus file-local `AL-NL001`/`002`/`005`–`007` diagnostics; workspace and graph rules are composed by `al-analysis` |
 | Language data | `language_data.rs` | data-driven keyword/builtin/type tables |
 | Traversal & encoding | `traversal.rs`, `mod.rs` | tree walking + UTF-16 ⇄ byte conversion |
 
@@ -78,17 +78,20 @@ the `with`-elimination refactor.
 
 `compute_complexity` returns per-procedure cyclomatic complexity (decision points + 1) and cognitive
 complexity (Sonar-style nesting-weighted). Decision sources: `if`, `for`, `foreach`, `while`,
-`repeat`, each `case` branch, and `and`/`or` operators. It does not recurse into nested procedures.
-Exposed via `al-explorer metrics`.
+`repeat`, each `case` branch, and `and`/`or` operators. Nested procedure declarations are emitted as
+separate entries with `nestingDepth`; their decisions are excluded from the enclosing procedure so
+scores are not double-counted. Exposed via `al-explorer metrics` and the shared daemon/LSP metrics
+method.
 
 ### Formatting (`formatting.rs`)
 
 A keyword-driven state machine (`format_al`, `format_range`) that reindents AL using `begin`/`end`,
 `var`, `if`/`then`, `repeat`/`until`, `case`/`of`, paren depth, and property-continuation tracking.
-`FormatOptions` honored today: `tab_size`, `insert_spaces`, `keyword_casing`
-(Preserve/Lower/Upper). Parsed-but-not-yet-implemented options:
-`blank_lines_between_procedures`, `max_line_length`, `brace_style`, `sort_properties` — the format
-query logs a `tracing::warn!` when one of these is set (honesty over silence).
+All `FormatOptions` are honored: `tab_size`, `insert_spaces`, `keyword_casing`
+(Preserve/Lower/Upper), `blank_lines_between_procedures`, `max_line_length`, `brace_style`, and
+`sort_properties`. The advanced options are available through `.alformat.json` and matching
+`al.formatting.*` editor settings. Line wrapping intentionally targets supported single-line object
+properties rather than attempting general expression reflow.
 
 ### Sort (`sort.rs`)
 
@@ -112,7 +115,7 @@ keyword/type/builtin lists from a single source of truth.
 | Tokenization | 43-class semantic tokenizer, AL-aware | TextMate scopes + server semantic tokens |
 | Reusability | tokens/nav/complexity available to LSP, CLI, MCP, and analysis | coupled to the VS Code extension/server |
 | Complexity metrics | built-in (`metrics`) | not provided |
-| Formatter | native, fast, partial option coverage | compiler/extension formatter (more complete) |
+| Formatter | native, fast, all documented native options wired | compiler/extension formatter (broader compatibility surface) |
 
 ## Why this approach
 
@@ -135,17 +138,16 @@ and the analyzer disagree about what a keyword is" drift.
 
 ## Limitations
 
-- ✅ **Native lint is active.** File-local `AL-NL001`/`AL-NL002`, project-semantic
-  `AL-NC001`–`AL-NC006`, and resolved transaction-stack `AL-NL003`/`AL-NL004` diagnostics
-  share the editor, CLI/daemon, and native build surfaces. `al.enableNativeLint` and
-  `al.nativeLintRules` are honored.
-- 🟡 Formatter ignores four `FormatOptions` fields (blank lines, max line length, brace style,
-  property sort).
-- Complexity does not descend into nested procedures.
+- ✅ **Native lint is active.** File-local `AL-NL001`/`AL-NL002` and `AL-NL005`–`AL-NL007`,
+  project-semantic `AL-NC001`–`AL-NC006`, resolved transaction-stack `AL-NL003`/`AL-NL004`,
+  obsolete-use `AL-NL008`, and architecture-layer `AL-NL009` diagnostics share the editor,
+  CLI/daemon, and native build surfaces. `al.enableNativeLint` and `al.nativeLintRules` are
+  honored.
+- 🟡 Formatter line wrapping is intentionally limited to supported single-line object properties;
+  it does not attempt general expression reflow.
 
-## Roadmap
+## Maintenance invariants
 
-From `ROADMAP.md` (Native Lint And Diagnostics): extend the shipped rule set with missing
-`SetLoadFields`, `ApplicationArea`, tooltips, obsolete usage, and architecture checks; keep native
-lint output distinct from Microsoft analyzer diagnostics, and keep `schemas/settings.json`,
-settings docs, and README wording in lockstep with behavior.
+Keep native lint output distinct from Microsoft
+analyzer diagnostics, preserve conservative obsolete/architecture semantics, and keep
+`schemas/settings.json`, settings docs, and README wording in lockstep with behavior.

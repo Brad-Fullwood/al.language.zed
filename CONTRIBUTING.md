@@ -5,7 +5,7 @@
 ```sh
 git clone --recurse-submodules https://github.com/Brad-Fullwood/al.language.zed.git
 cd al.language.zed
-rustup target add wasm32-wasip1
+rustup target add wasm32-wasip2
 make build
 ```
 
@@ -64,6 +64,12 @@ The repository corpus clones the projects configured in
 `tree-sitter-al/tests/test_repos.toml` and reports the parse rate. Record the
 repository revisions and result when grammar behavior changes. The editor GUI
 test remains separate; see [Docs/testing-guide.md](Docs/testing-guide.md).
+
+Tenant-backed publish, DAP, test, and snapshot changes additionally require the
+strict `make live-bc-contracts` profile. Missing external inputs exit 2 as
+`UNAVAILABLE`; they are not a successful skip. See the testing guide for the
+required environment contract, and never commit its credentials or launch
+configuration.
 
 ## Two-repository grammar workflow
 

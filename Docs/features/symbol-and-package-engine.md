@@ -138,8 +138,8 @@ definitions, event discovery, and impact analysis — so all of those are fast f
 - **CLI:** `al-explorer search <q> [--limit N]`, `object <type> <name>`, `by-id <type> <id>`,
   `source <name> [--kind <type>] [--package <name>] [--procedure <name>|--trigger <name>]`,
   `composed [<kind>] <name>`, `packages`, `deps`, `events <name>`, `subscribers <event>`.
-- **Download:** `al-explorer download-symbols --source server|nuget` (Zed tasks: *AL: Download
-  Symbols (Server/NuGet)*); `al-explorer authenticate`; `al-explorer clear-cache`.
+- **Download:** `al-explorer download-symbols --source server|nuget`;
+  `al-explorer authenticate`; `al-explorer clear-cache`.
 - **LSP execute commands:** `al.downloadSymbols`, `al.downloadSymbolsServer`,
   `al.downloadSymbolsNuget`, `al.clearSymbolCache`.
 - **MCP:** named aliases `al_downloadsymbols` and `al_symbolsearch`; all other shared symbol/package

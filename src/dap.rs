@@ -53,10 +53,26 @@ pub fn build_dap_binary(
         args.push(format!("/browser:{}", browser));
     }
 
+    let mut envs = Vec::new();
+    let compile_settings = crate::settings::compile_settings_for_child(user_settings);
+    if compile_settings
+        .as_object()
+        .is_some_and(|settings| !settings.is_empty())
+    {
+        envs.push((
+            "AL_DAP_SETTINGS_JSON".to_string(),
+            serde_json::to_string(&compile_settings)
+                .map_err(|error| format!("AL DAP: cannot serialize compile settings: {error}"))?,
+        ));
+    }
+    if let Some(path) = crate::settings::resolve_dotnet_path(user_settings) {
+        envs.push(("AL_DOTNET_PATH".to_string(), path));
+    }
+
     Ok(zed::DebugAdapterBinary {
         command: Some(al_lsp_path),
         arguments: args,
-        envs: vec![],
+        envs,
         cwd: Some(workspace_path.to_string()),
         connection: None,
         request_args: zed::StartDebuggingRequestArguments {
@@ -85,8 +101,6 @@ pub fn dap_config_to_scenario(config: zed::DebugConfig) -> zed::Result<zed::Debu
     al_config.insert("type".to_string(), json!("al"));
     al_config.insert("name".to_string(), json!(config.label));
 
-    let is_attach = matches!(config.request, zed::DebugRequest::Attach(_));
-
     match &config.request {
         zed::DebugRequest::Launch(launch) => {
             al_config.insert("request".to_string(), json!("launch"));
@@ -99,7 +113,7 @@ pub fn dap_config_to_scenario(config: zed::DebugConfig) -> zed::Result<zed::Debu
             // Launch-only defaults — not applicable when attaching to a running session.
             al_config.insert("breakOnError".to_string(), json!(true));
             al_config.insert("launchBrowser".to_string(), json!(true));
-            al_config.insert("authentication".to_string(), json!("UserPassword"));
+            al_config.insert("authentication".to_string(), json!("MicrosoftEntraID"));
             al_config.insert("environmentType".to_string(), json!("OnPrem"));
         }
         zed::DebugRequest::Attach(_) => {
@@ -107,24 +121,12 @@ pub fn dap_config_to_scenario(config: zed::DebugConfig) -> zed::Result<zed::Debu
         }
     }
 
-    // Attach configurations connect to an existing BC session and must not
-    // compile or publish the project first.
-    let build = if is_attach {
-        None
-    } else {
-        Some(zed::BuildTaskDefinition::Template(
-            zed::BuildTaskDefinitionTemplatePayload {
-                locator_name: None,
-                template: zed::BuildTaskTemplate {
-                    label: "AL: Compile".to_string(),
-                    command: "al-explorer".to_string(),
-                    args: vec!["compile".to_string()],
-                    env: Default::default(),
-                    cwd: None,
-                },
-            },
-        ))
-    };
+    // The native launch request already performs the verified build and atomic
+    // artifact selection before publishing. Adding a shell build task here
+    // duplicated that work and, on fresh gallery installs, referenced a bare
+    // `al-explorer` that was not on the user's PATH. Attach never builds
+    // either, so both request kinds intentionally leave `build` empty.
+    let build = None;
 
     Ok(zed::DebugScenario {
         label: config.label,

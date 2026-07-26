@@ -15,6 +15,7 @@
 //! this module.
 
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
 
 /// Header record for a snapshot trace.
@@ -45,6 +46,12 @@ pub struct Sample {
     pub file: String,
     /// 1-based line number of the breakpoint.
     pub line: u32,
+    /// Optional condition that governed this breakpoint during capture.
+    ///
+    /// Older snapshot files omit this field and deserialize as an
+    /// unconditional breakpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
     /// How many times this breakpoint was hit before this sample (0 = first hit).
     pub iteration: u32,
     /// Variable state captured via `GetVariables` at this stop, as raw JSON.
@@ -59,6 +66,8 @@ pub enum FormatError {
     EmptyTrace,
     #[error("Header line missing or malformed: {0}")]
     BadHeader(String),
+    #[error("Invalid snapshot trace: {0}")]
+    InvalidTrace(String),
 }
 
 /// Serialize a `Snapshot` to a byte vector in the line-delimited JSON format.
@@ -67,6 +76,7 @@ pub enum FormatError {
 /// by `deserialize_snapshot` which reads samples from subsequent lines).
 /// Lines 2…N: one `Sample` per line.
 pub fn serialize_snapshot(snap: &Snapshot) -> Result<Vec<u8>, FormatError> {
+    validate_snapshot(snap)?;
     let mut out = Vec::new();
 
     let header = serde_json::to_string(snap)?;
@@ -86,8 +96,7 @@ pub fn serialize_snapshot(snap: &Snapshot) -> Result<Vec<u8>, FormatError> {
 ///
 /// The first line must be the header (`Snapshot` JSON). Subsequent lines are
 /// `Sample` objects and **override** the `samples` field from the header —
-/// this lets the format stay forward-compatible if the header `samples` array
-/// is omitted in a future version.
+/// this also accepts traces whose header omits the embedded sample array.
 pub fn deserialize_snapshot(bytes: &[u8]) -> Result<Snapshot, FormatError> {
     let text = std::str::from_utf8(bytes)
         .map_err(|e| FormatError::BadHeader(format!("UTF-8 error: {e}")))?;
@@ -108,7 +117,122 @@ pub fn deserialize_snapshot(bytes: &[u8]) -> Result<Snapshot, FormatError> {
         snap.samples = samples;
     }
 
+    validate_snapshot(&snap)?;
     Ok(snap)
+}
+
+/// Validate the semantic invariants required for unambiguous replay and diff.
+///
+/// In particular, `(breakpoint_id, iteration)` is the comparison key used by
+/// [`crate::diff_snapshots`]. Duplicate keys must be rejected instead of being
+/// silently overwritten by a map during comparison.
+pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), FormatError> {
+    if snapshot.run_id.trim().is_empty() {
+        return Err(FormatError::InvalidTrace(
+            "run_id must not be empty".to_string(),
+        ));
+    }
+    if snapshot.codeunit_id <= 0 {
+        return Err(FormatError::InvalidTrace(
+            "codeunit_id must be positive".to_string(),
+        ));
+    }
+    if snapshot.method_name.trim().is_empty() {
+        return Err(FormatError::InvalidTrace(
+            "method_name must not be empty".to_string(),
+        ));
+    }
+    if snapshot.bc_version.trim().is_empty() {
+        return Err(FormatError::InvalidTrace(
+            "bc_version must not be empty".to_string(),
+        ));
+    }
+    if snapshot.source_hash.trim().is_empty() {
+        return Err(FormatError::InvalidTrace(
+            "source_hash must not be empty".to_string(),
+        ));
+    }
+
+    let mut locations = BTreeMap::<u32, (&str, u32, Option<&str>)>::new();
+    let mut location_ids = BTreeMap::<(String, u32), u32>::new();
+    let mut keys = HashSet::<(u32, u32)>::new();
+    let mut iterations = BTreeMap::<u32, Vec<u32>>::new();
+    for sample in &snapshot.samples {
+        if sample.breakpoint_id == 0 {
+            return Err(FormatError::InvalidTrace(
+                "sample breakpoint_id must be positive".to_string(),
+            ));
+        }
+        if sample.file.trim().is_empty() {
+            return Err(FormatError::InvalidTrace(format!(
+                "breakpoint {} sample file must not be empty",
+                sample.breakpoint_id
+            )));
+        }
+        if sample.line == 0 {
+            return Err(FormatError::InvalidTrace(format!(
+                "breakpoint {} sample line must be positive",
+                sample.breakpoint_id
+            )));
+        }
+        if !keys.insert((sample.breakpoint_id, sample.iteration)) {
+            return Err(FormatError::InvalidTrace(format!(
+                "duplicate sample key ({}, {})",
+                sample.breakpoint_id, sample.iteration
+            )));
+        }
+        match locations.get(&sample.breakpoint_id) {
+            Some((file, line, _)) if *file != sample.file || *line != sample.line => {
+                return Err(FormatError::InvalidTrace(format!(
+                    "breakpoint {} maps to both {}:{} and {}:{}",
+                    sample.breakpoint_id, file, line, sample.file, sample.line
+                )));
+            }
+            Some((_, _, condition)) if *condition != sample.condition.as_deref() => {
+                return Err(FormatError::InvalidTrace(format!(
+                    "breakpoint {} changes condition between samples",
+                    sample.breakpoint_id
+                )));
+            }
+            Some(_) => {}
+            None => {
+                locations.insert(
+                    sample.breakpoint_id,
+                    (&sample.file, sample.line, sample.condition.as_deref()),
+                );
+            }
+        }
+        let normalized_file = sample.file.replace('\\', "/");
+        match location_ids.get(&(normalized_file.clone(), sample.line)) {
+            Some(existing_id) if *existing_id != sample.breakpoint_id => {
+                return Err(FormatError::InvalidTrace(format!(
+                    "breakpoint location {}:{} maps to both IDs {} and {}",
+                    sample.file, sample.line, existing_id, sample.breakpoint_id
+                )));
+            }
+            Some(_) => {}
+            None => {
+                location_ids.insert((normalized_file, sample.line), sample.breakpoint_id);
+            }
+        }
+        iterations
+            .entry(sample.breakpoint_id)
+            .or_default()
+            .push(sample.iteration);
+    }
+
+    for (breakpoint_id, values) in &mut iterations {
+        values.sort_unstable();
+        for (expected, actual) in values.iter().copied().enumerate() {
+            if actual != expected as u32 {
+                return Err(FormatError::InvalidTrace(format!(
+                    "breakpoint {breakpoint_id} iterations must be contiguous from 0; expected {expected}, found {actual}"
+                )));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -128,6 +252,7 @@ mod tests {
                     breakpoint_id: 1,
                     file: "src/MyCodeunit.al".to_string(),
                     line: 42,
+                    condition: None,
                     iteration: 0,
                     variables: serde_json::json!({"x": 1, "y": "hello"}),
                 },
@@ -135,6 +260,7 @@ mod tests {
                     breakpoint_id: 1,
                     file: "src/MyCodeunit.al".to_string(),
                     line: 42,
+                    condition: None,
                     iteration: 1,
                     variables: serde_json::json!({"x": 2, "y": "world"}),
                 },
@@ -194,5 +320,46 @@ mod tests {
         let result = deserialize_snapshot(b"\xFF\xFE bad bytes\n");
         assert!(result.is_err(), "expected error on non-UTF-8 input");
         assert!(matches!(result.unwrap_err(), FormatError::BadHeader(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_duplicate_sample_key() {
+        let mut snap = make_snapshot();
+        snap.samples[1].iteration = 0;
+        let error = validate_snapshot(&snap).expect_err("duplicate key must fail");
+        assert!(error.to_string().contains("duplicate sample key"));
+    }
+
+    #[test]
+    fn test_validate_rejects_breakpoint_location_drift() {
+        let mut snap = make_snapshot();
+        snap.samples[1].line = 43;
+        let error = validate_snapshot(&snap).expect_err("location drift must fail");
+        assert!(error.to_string().contains("maps to both"));
+    }
+
+    #[test]
+    fn test_validate_rejects_two_ids_for_one_location() {
+        let mut snap = make_snapshot();
+        snap.samples[1].breakpoint_id = 2;
+        snap.samples[1].iteration = 0;
+        let error = validate_snapshot(&snap).expect_err("ambiguous location must fail");
+        assert!(error.to_string().contains("maps to both IDs"));
+    }
+
+    #[test]
+    fn test_validate_rejects_iteration_gap() {
+        let mut snap = make_snapshot();
+        snap.samples[1].iteration = 2;
+        let error = validate_snapshot(&snap).expect_err("iteration gap must fail");
+        assert!(error.to_string().contains("contiguous"));
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_required_metadata() {
+        let mut snap = make_snapshot();
+        snap.source_hash.clear();
+        let error = validate_snapshot(&snap).expect_err("empty source hash must fail");
+        assert!(error.to_string().contains("source_hash"));
     }
 }

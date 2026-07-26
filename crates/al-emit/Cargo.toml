@@ -6,11 +6,13 @@ license.workspace = true
 description = "Native AL .app (Business Central) package emitter — reproduces alc's SymbolReference.json method-id hashes and OPC/NAVX package layout semantically identically, with no Microsoft runtime dependency"
 repository.workspace = true
 [dependencies]
+al-types = { path = "../al-types", version = "0.1.0" }
 al-symbols = { path = "../al-symbols", version = "0.1.0" }
 al-syntax = { path = "../al-syntax", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 zip = { workspace = true }
 getrandom = { workspace = true }
 sha2 = "0.10"

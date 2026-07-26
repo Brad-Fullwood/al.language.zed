@@ -21,6 +21,8 @@ confirming the control case compiles clean.
 import json
 import os
 import shutil
+import tempfile
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BENCH = os.path.dirname(HERE)
@@ -229,6 +231,7 @@ CASES = [
         Cust: Record Customer;
         Total: Decimal;
     begin
+        Cust.SetLoadFields("Balance (LCY)");
         if Cust.FindSet() then
             repeat
                 Total += Cust."Balance (LCY)";
@@ -254,44 +257,62 @@ def app_json(idx, name):
 
 
 def main():
-    root = os.path.join(BENCH, "projects", "accuracy")
-    if os.path.isdir(root):
-        shutil.rmtree(root)
-    os.makedirs(root)
+    projects_root = Path(BENCH, "projects").resolve()
+    root = projects_root / "accuracy"
+    if root.parent != projects_root or root == Path(root.anchor) or root == Path.home().resolve():
+        raise RuntimeError(f"refusing unsafe accuracy corpus path: {root}")
+
+    package_root = Path(SRC_PKGS).expanduser()
+    missing = [name for name in PKG_SET if not (package_root / name).is_file()]
+    if missing:
+        formatted = "\n  ".join(missing)
+        raise RuntimeError(
+            "AL_BENCH_PACKAGES must contain every required compiler package; missing:\n"
+            f"  {formatted}"
+        )
+
+    projects_root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".accuracy-stage-", dir=projects_root))
 
     # One shared symbol set: 60 MB copied once, referenced by every case via
     # /packagecachepath rather than duplicated 15 times.
-    shared = os.path.join(root, "_packages")
-    os.makedirs(shared)
+    shared = staging / "_packages"
+    shared.mkdir()
     for n in PKG_SET:
-        s = os.path.join(SRC_PKGS, n)
-        if os.path.isfile(s):
-            shutil.copy2(s, os.path.join(shared, n))
-        else:
-            print(f"  WARN missing package: {n}")
+        shutil.copy2(package_root / n, shared / n)
 
     manifest = []
     for i, c in enumerate(CASES):
-        proj = os.path.join(root, "case_" + c["id"])
-        src = os.path.join(proj, "src")
-        os.makedirs(src)
-        with open(os.path.join(proj, "app.json"), "w") as fh:
+        project_name = "case_" + c["id"]
+        proj = staging / project_name
+        final_proj = root / project_name
+        src = proj / "src"
+        src.mkdir(parents=True)
+        with open(proj / "app.json", "w") as fh:
             json.dump(app_json(i, c["id"]), fh, indent=2)
         # Each case points at the shared package set.
-        os.symlink(shared, os.path.join(proj, ".alpackages"))
+        os.symlink(root / "_packages", proj / ".alpackages")
         for fn, body in c["files"].items():
-            with open(os.path.join(src, fn), "w") as fh:
+            with open(src / fn, "w") as fh:
                 fh.write(body)
         manifest.append({
             "id": c["id"], "class": c["cls"], "expect": c["detects"],
-            "project": proj,
+            "project": str(final_proj),
             "files": sorted(c["files"]),
             "defect_file": c.get("defect_file", sorted(c["files"])[0]),
             "defect_line": c["defect_line"],
         })
 
-    with open(os.path.join(root, "manifest.json"), "w") as fh:
+    with open(staging / "manifest.json", "w") as fh:
         json.dump(manifest, fh, indent=2)
+
+    if root.is_symlink():
+        root.unlink()
+    elif root.is_dir():
+        shutil.rmtree(root)
+    elif root.exists():
+        raise RuntimeError(f"expected accuracy corpus path to be a directory: {root}")
+    staging.replace(root)
 
     print(f"wrote {len(CASES)} isolated case projects to {root}")
     for m in manifest:

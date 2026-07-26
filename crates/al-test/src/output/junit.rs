@@ -21,9 +21,29 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-/// Convert `Option<u64>` milliseconds to a 3-decimal-place seconds string.
-fn ms_to_secs(ms: Option<u64>) -> String {
-    format!("{:.3}", ms.unwrap_or(0) as f64 / 1000.0)
+/// Convert a measured millisecond duration to a 3-decimal-place seconds string.
+fn ms_to_secs(ms: u64) -> String {
+    format!("{:.3}", ms as f64 / 1000.0)
+}
+
+/// Return a total only when every constituent duration is known. Publishing a
+/// partial total would turn "not measured" into a false zero-duration claim.
+fn measured_total<'a>(
+    methods: impl Iterator<Item = &'a crate::result::TestMethodResult>,
+) -> Result<Option<String>, io::Error> {
+    let mut total = 0_u64;
+    for method in methods {
+        let Some(duration) = method.duration_ms else {
+            return Ok(None);
+        };
+        total = total.checked_add(duration).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JUnit duration total overflowed",
+            )
+        })?;
+    }
+    Ok(Some(ms_to_secs(total)))
 }
 
 /// Serialize `results` as JUnit XML to `out`.
@@ -39,23 +59,19 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
     let total_tests: usize = results.iter().map(|cu| cu.total).sum();
     let total_failures: usize = results.iter().map(|cu| cu.failed).sum();
     let total_skipped: usize = results.iter().map(|cu| cu.skipped).sum();
-    let total_ms: u64 = results
-        .iter()
-        .flat_map(|cu| cu.methods.iter())
-        .map(|m| m.duration_ms.unwrap_or(0))
-        .sum();
-    let total_time = format!("{:.3}", total_ms as f64 / 1000.0);
+    let total_time = measured_total(results.iter().flat_map(|cu| cu.methods.iter()))?;
 
     let mut suites_start = BytesStart::new("testsuites");
     suites_start.push_attribute(("tests", total_tests.to_string().as_str()));
     suites_start.push_attribute(("failures", total_failures.to_string().as_str()));
     suites_start.push_attribute(("skipped", total_skipped.to_string().as_str()));
-    suites_start.push_attribute(("time", total_time.as_str()));
+    if let Some(total_time) = &total_time {
+        suites_start.push_attribute(("time", total_time.as_str()));
+    }
     writer.write_event(Event::Start(suites_start))?;
 
     for cu in results {
-        let cu_ms: u64 = cu.methods.iter().map(|m| m.duration_ms.unwrap_or(0)).sum();
-        let cu_time = format!("{:.3}", cu_ms as f64 / 1000.0);
+        let cu_time = measured_total(cu.methods.iter())?;
 
         let mut suite_start = BytesStart::new("testsuite");
         suite_start.push_attribute(("name", cu.name.as_str()));
@@ -63,25 +79,31 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
         suite_start.push_attribute(("tests", cu.total.to_string().as_str()));
         suite_start.push_attribute(("failures", cu.failed.to_string().as_str()));
         suite_start.push_attribute(("skipped", cu.skipped.to_string().as_str()));
-        suite_start.push_attribute(("time", cu_time.as_str()));
+        if let Some(cu_time) = &cu_time {
+            suite_start.push_attribute(("time", cu_time.as_str()));
+        }
         writer.write_event(Event::Start(suite_start))?;
 
         for method in &cu.methods {
-            let method_time = ms_to_secs(method.duration_ms);
+            let method_time = method.duration_ms.map(ms_to_secs);
 
             match method.status {
                 TestStatus::Pass => {
                     let mut tc = BytesStart::new("testcase");
                     tc.push_attribute(("classname", cu.name.as_str()));
                     tc.push_attribute(("name", method.name.as_str()));
-                    tc.push_attribute(("time", method_time.as_str()));
+                    if let Some(method_time) = &method_time {
+                        tc.push_attribute(("time", method_time.as_str()));
+                    }
                     writer.write_event(Event::Empty(tc))?;
                 }
                 TestStatus::Skip => {
                     let mut tc = BytesStart::new("testcase");
                     tc.push_attribute(("classname", cu.name.as_str()));
                     tc.push_attribute(("name", method.name.as_str()));
-                    tc.push_attribute(("time", method_time.as_str()));
+                    if let Some(method_time) = &method_time {
+                        tc.push_attribute(("time", method_time.as_str()));
+                    }
                     writer.write_event(Event::Start(tc))?;
                     writer.write_event(Event::Empty(BytesStart::new("skipped")))?;
                     writer.write_event(Event::End(BytesEnd::new("testcase")))?;
@@ -97,7 +119,9 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
                     let mut tc = BytesStart::new("testcase");
                     tc.push_attribute(("classname", cu.name.as_str()));
                     tc.push_attribute(("name", method.name.as_str()));
-                    tc.push_attribute(("time", method_time.as_str()));
+                    if let Some(method_time) = &method_time {
+                        tc.push_attribute(("time", method_time.as_str()));
+                    }
                     writer.write_event(Event::Start(tc))?;
 
                     let mut failure_start = BytesStart::new("failure");
@@ -298,6 +322,11 @@ mod tests {
         assert!(
             xml.contains(r#"skipped="1""#),
             "Expected skipped=\"1\" at suite level, got:\n{xml}"
+        );
+        assert_eq!(
+            count_occurrences(&xml, " time="),
+            2,
+            "only the two measured testcases may claim durations; unknown values must not become zero: {xml}"
         );
     }
 

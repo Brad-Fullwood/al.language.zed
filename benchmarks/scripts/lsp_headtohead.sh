@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Head-to-head LSP latency: al-lsp vs Microsoft EditorServices, same client,
 # same project, same cursor positions, same iteration count.
-set -uo pipefail
+set -euo pipefail
 
 BENCH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(dirname "$BENCH")"

@@ -4,7 +4,10 @@ use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 use al_workspace::Workspace;
 use serde::Serialize;
 
-use super::{extract_position, extract_uri, invalid_params};
+use super::{
+    ensure_document, extract_position, extract_uri, invalid_params, optional_bool_param,
+    optional_bounded_usize_param, rpc_error,
+};
 
 /// Sentinel package name for workspace-local objects (not from .app packages).
 const WORKSPACE_PACKAGE: &str = "(workspace)";
@@ -60,7 +63,19 @@ pub(super) async fn dispatch_hover(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let result = al_analysis::queries::hover::hover_full(workspace, &uri, position).await;
+    if let Err(response) = ensure_document(workspace, &uri, id) {
+        return response;
+    }
+    let result = match al_analysis::queries::hover::hover_full(workspace, &uri, position).await {
+        Ok(result) => result,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("hover query failed: {error}"),
+            );
+        }
+    };
     ok_response_opt(id, result, "textDocument/hover")
 }
 
@@ -75,15 +90,23 @@ pub(super) fn dispatch_definition(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
+    if let Err(response) = ensure_document(workspace, &uri, id) {
+        return response;
+    }
     let result = al_analysis::queries::definition::definition(workspace, &uri, position);
     match result {
-        Some(locations) => ok_response(id, &locations, "textDocument/definition"),
-        None => Response {
+        Ok(Some(locations)) => ok_response(id, &locations, "textDocument/definition"),
+        Ok(None) => Response {
             id,
             result: None,
             error: None,
             ..Default::default()
         },
+        Err(error) => rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("definition query failed: {error}"),
+        ),
     }
 }
 
@@ -98,16 +121,28 @@ pub(super) fn dispatch_references(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let include_declaration = params
-        .get("includeDeclaration")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    let locations = al_analysis::queries::references::references(
+    let include_declaration = match optional_bool_param(params, "includeDeclaration", true) {
+        Ok(value) => value,
+        Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
+    };
+    if let Err(response) = ensure_document(workspace, &uri, id) {
+        return response;
+    }
+    let locations = match al_analysis::queries::references::references(
         workspace,
         &uri,
         position,
         include_declaration,
-    );
+    ) {
+        Ok(locations) => locations,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("references query failed: {error}"),
+            );
+        }
+    };
     ok_response(id, &locations, "textDocument/references")
 }
 
@@ -122,6 +157,9 @@ pub(super) fn dispatch_implementations(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
+    if let Err(response) = ensure_document(workspace, &uri, id) {
+        return response;
+    }
     let locations =
         al_analysis::queries::implementation::find_implementations(workspace, &uri, position);
     ok_response(id, &locations, "textDocument/implementation")
@@ -138,8 +176,23 @@ pub(super) async fn dispatch_completions(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let entries =
-        al_analysis::queries::completions::completions_full(workspace, &uri, position).await;
+    if let Err(response) = ensure_document(workspace, &uri, id) {
+        return response;
+    }
+    let entries = match al_analysis::queries::completions::completions_full(
+        workspace, &uri, position,
+    )
+    .await
+    {
+        Ok(entries) => entries,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("completion query failed: {error}"),
+            );
+        }
+    };
     ok_response(id, &entries, "textDocument/completion")
 }
 
@@ -154,8 +207,18 @@ pub(super) fn dispatch_signature_help(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
+    if let Err(response) = ensure_document(workspace, &uri, id) {
+        return response;
+    }
     let result = al_analysis::queries::signature::signature_help(workspace, &uri, position);
-    ok_response_opt(id, result, "textDocument/signatureHelp")
+    match result {
+        Ok(result) => ok_response_opt(id, result, "textDocument/signatureHelp"),
+        Err(error) => rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("signature-help query failed: {error}"),
+        ),
+    }
 }
 
 pub(super) fn dispatch_rename(
@@ -172,15 +235,23 @@ pub(super) fn dispatch_rename(
     let Some(new_name) = params.get("newName").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
+    if let Err(response) = ensure_document(workspace, &uri, id) {
+        return response;
+    }
     let result = al_analysis::queries::rename::rename(workspace, &uri, position, new_name);
     match result {
-        Some(we) => ok_response(id, &we, "textDocument/rename"),
-        None => Response {
+        Ok(Some(we)) => ok_response(id, &we, "textDocument/rename"),
+        Ok(None) => Response {
             id,
             result: None,
             error: None,
             ..Default::default()
         },
+        Err(error) => rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("rename query failed: {error}"),
+        ),
     }
 }
 
@@ -192,6 +263,9 @@ pub(super) fn dispatch_document_symbols(
     let Some(uri) = extract_uri(params) else {
         return invalid_params(id);
     };
+    if let Err(response) = ensure_document(workspace, &uri, id) {
+        return response;
+    }
     // Serialize the transport-agnostic AlDocumentSymbol vec directly. The daemon
     // returns JSON, so there is no need to round-trip through tower_lsp types.
     let result = al_analysis::queries::symbols::document_symbols(workspace, &uri);
@@ -206,6 +280,9 @@ pub(super) fn dispatch_folding_ranges(
     let Some(uri) = extract_uri(params) else {
         return invalid_params(id);
     };
+    if let Err(response) = ensure_document(workspace, &uri, id) {
+        return response;
+    }
     let result = al_analysis::queries::folding::folding_ranges(workspace, &uri);
     ok_response_opt(id, result, "textDocument/foldingRange")
 }
@@ -218,6 +295,9 @@ pub(super) fn dispatch_semantic_tokens(
     let Some(uri) = extract_uri(params) else {
         return invalid_params(id);
     };
+    if let Err(response) = ensure_document(workspace, &uri, id) {
+        return response;
+    }
     let tokens = al_analysis::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
     ok_response(id, &tokens, "textDocument/semanticTokens/full")
 }
@@ -248,6 +328,9 @@ pub(super) fn dispatch_inlay_hints(
             None => return invalid_params(id),
         },
     };
+    if let Err(response) = ensure_document(workspace, &uri, id) {
+        return response;
+    }
     let range = al_analysis::queries::Range {
         start: al_analysis::queries::Position {
             line: start_line,
@@ -258,8 +341,17 @@ pub(super) fn dispatch_inlay_hints(
             character: u32::MAX,
         },
     };
-    let hints =
-        al_analysis::queries::inlay_hints::inlay_hints(workspace, &uri, range).unwrap_or_default();
+    let hints = match al_analysis::queries::inlay_hints::inlay_hints(workspace, &uri, range) {
+        Ok(Some(hints)) => hints,
+        Ok(None) => Vec::new(),
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("inlay-hint query failed: {error}"),
+            );
+        }
+    };
     match serde_json::to_value(&hints) {
         Ok(v) => Response {
             id,
@@ -293,6 +385,9 @@ pub(super) fn dispatch_code_actions(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
+    if let Err(response) = ensure_document(workspace, &uri, id) {
+        return response;
+    }
     let range = al_analysis::queries::Range {
         start: position,
         end: position,
@@ -309,30 +404,57 @@ pub(super) fn dispatch_search(
     let Some(query) = params.get("query").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
     const MAX_SEARCH_RESULTS: usize = 500_000;
-    let limit = limit.min(MAX_SEARCH_RESULTS);
+    let limit = match optional_bounded_usize_param(params, "limit", 20, MAX_SEARCH_RESULTS) {
+        Ok(limit) => limit,
+        Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
+    };
     // `summary: true` strips member arrays (methods/fields/controls/
     // enum values/keys/properties/variables) from the response. A full dump
     // of a real workspace is ~60 MB of JSON and took seconds at every TUI
     // start; the browser list only needs identity fields and fetches
     // members lazily per selected object.
-    let summary = params
-        .get("summary")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let summary = match optional_bool_param(params, "summary", false) {
+        Ok(summary) => summary,
+        Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
+    };
     let results = workspace.symbols.search(query, limit);
-    let mut value: Vec<serde_json::Value> = results
+    let mut value: Vec<serde_json::Value> = match results
         .iter()
         .map(|entry| symbol_entry_to_json(workspace, entry, summary))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("workspace search response serialization failed: {error}"),
+            );
+        }
+    };
     // Use the shared search implementation for workspace file objects.
     let remaining = limit.saturating_sub(value.len());
     let ws_results = al_analysis::queries::search::workspace_search(workspace, query, remaining);
     for r in ws_results {
-        value.push(workspace_object_to_json(&r.info));
+        match workspace_object_to_json(&r.info) {
+            Ok(object) => value.push(object),
+            Err(error) => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("workspace search found invalid object metadata: {error}"),
+                );
+            }
+        }
     }
-    dedup_objects_by_identity(&mut value);
+    if let Err(error) = dedup_objects_by_identity(&mut value) {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("workspace search produced invalid object metadata: {error}"),
+        );
+    }
     Response {
         id,
         result: Some(serde_json::json!(value)),
@@ -345,7 +467,7 @@ fn symbol_entry_to_json(
     workspace: &Workspace,
     entry: &al_symbols::SymbolEntry,
     summary: bool,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, String> {
     let mut value = if summary {
         serde_json::json!({
             "kind": entry.kind,
@@ -355,16 +477,25 @@ fn symbol_entry_to_json(
             "extends": entry.extends,
         })
     } else {
-        serde_json::to_value(entry).expect("symbol entries must be JSON serializable")
+        serde_json::to_value(entry)
+            .map_err(|error| format!("symbol entry is not JSON serializable: {error}"))?
     };
-    if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "source_availability".into(),
-            serde_json::to_value(workspace.symbols.source_availability(entry))
-                .expect("source availability must be JSON serializable"),
-        );
-    }
-    value
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "serialized symbol entry is not an object".to_string())?;
+    object.insert(
+        "source_availability".into(),
+        source_availability_to_json(workspace, entry)?,
+    );
+    Ok(value)
+}
+
+fn source_availability_to_json(
+    workspace: &Workspace,
+    entry: &al_symbols::SymbolEntry,
+) -> Result<serde_json::Value, String> {
+    serde_json::to_value(workspace.symbols.source_availability(entry))
+        .map_err(|error| format!("source availability is not JSON serializable: {error}"))
 }
 
 /// Resolve an object kind from a bare name: succeeds when exactly one
@@ -388,6 +519,21 @@ fn resolve_unique_kind_by_name(
         .filter(|e| !e.synthetic)
         .map(|e| e.kind)
         .collect();
+    for info in workspace.file_index.object_info.iter() {
+        if !info.name.eq_ignore_ascii_case(name) {
+            continue;
+        }
+        match workspace_object_identity(&info) {
+            Ok((kind, _)) => kinds.push(kind),
+            Err(error) => {
+                return Err(rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("workspace object metadata is invalid: {error}"),
+                ));
+            }
+        }
+    }
     kinds.sort();
     kinds.dedup();
     match kinds.as_slice() {
@@ -434,22 +580,35 @@ pub(super) fn dispatch_object(
     // symbol under the cursor. When omitted, resolve by name — unambiguous
     // single-kind matches proceed; multi-kind matches get an actionable
     // error listing the candidates.
-    let kind = match params.get("kind").and_then(|v| v.as_str()) {
-        Some(kind_str) => match super::parse_object_kind(id, kind_str) {
-            Ok(k) => k,
-            Err(e) => return e,
-        },
+    let kind = match params.get("kind") {
         None => match resolve_unique_kind_by_name(workspace, id, name, "object") {
             Ok(k) => k,
             Err(resp) => return resp,
         },
+        Some(value) => match value.as_str() {
+            Some(kind_str) => match super::parse_object_kind(id, kind_str) {
+                Ok(k) => k,
+                Err(e) => return e,
+            },
+            None => return invalid_params(id),
+        },
     };
     let candidates = workspace.symbols.get_by_name(name);
-    let mut matches: Vec<serde_json::Value> = candidates
+    let mut matches: Vec<serde_json::Value> = match candidates
         .iter()
         .filter(|e| e.kind == kind)
         .map(|entry| symbol_entry_to_json(workspace, entry, false))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(matches) => matches,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("object response serialization failed: {error}"),
+            );
+        }
+    };
     let name_lower = name.to_lowercase();
     let kind_lower = kind.to_string().to_lowercase();
     for entry in workspace.file_index.object_info.iter() {
@@ -457,10 +616,25 @@ pub(super) fn dispatch_object(
         if info.name.eq_ignore_ascii_case(&name_lower)
             && info.kind.eq_ignore_ascii_case(&kind_lower)
         {
-            matches.push(workspace_object_to_json(info));
+            match workspace_object_to_json(info) {
+                Ok(object) => matches.push(object),
+                Err(error) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("workspace object metadata is invalid: {error}"),
+                    );
+                }
+            }
         }
     }
-    dedup_objects_by_identity(&mut matches);
+    if let Err(error) = dedup_objects_by_identity(&mut matches) {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("object lookup produced invalid metadata: {error}"),
+        );
+    }
     if matches.is_empty() {
         Response {
             id,
@@ -491,18 +665,29 @@ pub(super) fn dispatch_object(
 /// app plus its dependencies, so `(kind, id, name)` identifies an object
 /// regardless of which index produced it. The first occurrence — the richer
 /// symbol-index entry, which carries members — wins.
-fn dedup_objects_by_identity(objects: &mut Vec<serde_json::Value>) {
+fn dedup_objects_by_identity(objects: &mut Vec<serde_json::Value>) -> Result<(), String> {
     let mut seen = std::collections::HashSet::new();
-    objects.retain(|o| {
-        let kind = o.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        let id = o.get("id").and_then(serde_json::Value::as_i64).unwrap_or(0);
-        let name = o
+    let mut deduplicated = Vec::with_capacity(objects.len());
+    for object in objects.drain(..) {
+        let kind = object
+            .get("kind")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "object is missing string field 'kind'".to_string())?;
+        let id = object
+            .get("id")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| "object is missing integer field 'id'".to_string())?;
+        let name = object
             .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "object is missing string field 'name'".to_string())?
             .to_lowercase();
-        seen.insert((kind.to_string(), id, name))
-    });
+        if seen.insert((kind.to_string(), id, name)) {
+            deduplicated.push(object);
+        }
+    }
+    *objects = deduplicated;
+    Ok(())
 }
 
 /// Convert a workspace CachedObjectInfo to JSON matching SymbolEntry shape.
@@ -511,20 +696,30 @@ fn dedup_objects_by_identity(objects: &mut Vec<serde_json::Value>) {
 /// schema for SymbolEntry uses the al_symbols ObjectKind enum, whose serde
 /// representation is PascalCase. Normalize via `ObjectKind::from_str` so the
 /// payload deserializes cleanly on al-cli / al-explorer.
-fn workspace_object_to_json(info: &al_source::file_index::CachedObjectInfo) -> serde_json::Value {
-    let kind_value = info
+fn workspace_object_identity(
+    info: &al_source::file_index::CachedObjectInfo,
+) -> Result<(al_symbols::ObjectKind, i32), String> {
+    let kind = info
         .kind
         .parse::<al_symbols::ObjectKind>()
-        .ok()
-        .and_then(|k| serde_json::to_value(k).ok())
-        .unwrap_or_else(|| serde_json::Value::String(info.kind.clone()));
-    serde_json::json!({
-        "kind": kind_value,
-        "id": info.id.unwrap_or(0),
+        .map_err(|error| format!("object '{}': {error}", info.name))?;
+    let id = kind
+        .normalize_declaration_id(info.id)
+        .map_err(|error| format!("object '{}': {error}", info.name))?;
+    Ok((kind, id))
+}
+
+fn workspace_object_to_json(
+    info: &al_source::file_index::CachedObjectInfo,
+) -> Result<serde_json::Value, String> {
+    let (kind, id) = workspace_object_identity(info)?;
+    Ok(serde_json::json!({
+        "kind": kind,
+        "id": id,
         "name": info.name,
         "package": WORKSPACE_PACKAGE,
         "source_availability": al_symbols::SourceAvailability::WorkspaceSource,
-    })
+    }))
 }
 
 pub(super) fn dispatch_by_id(
@@ -546,19 +741,53 @@ pub(super) fn dispatch_by_id(
         Err(e) => return e,
     };
     let results = workspace.symbols.get_by_id(kind, obj_id);
-    let mut value: Vec<serde_json::Value> = results
+    let mut value: Vec<serde_json::Value> = match results
         .iter()
         .map(|entry| symbol_entry_to_json(workspace, entry, false))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("object-by-id response serialization failed: {error}"),
+            );
+        }
+    };
     // Workspace file objects — same merge as dispatch_object.
     let kind_lower = kind.to_string().to_lowercase();
     for entry in workspace.file_index.object_info.iter() {
         let info = entry.value();
-        if info.id == Some(i64::from(obj_id)) && info.kind.eq_ignore_ascii_case(&kind_lower) {
-            value.push(workspace_object_to_json(info));
+        let (workspace_kind, workspace_id) = match workspace_object_identity(info) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("workspace object metadata is invalid: {error}"),
+                );
+            }
+        };
+        if workspace_id == obj_id
+            && workspace_kind == kind
+            && info.kind.eq_ignore_ascii_case(&kind_lower)
+        {
+            match workspace_object_to_json(info) {
+                Ok(object) => value.push(object),
+                Err(error) => {
+                    return rpc_error(id, error_codes::INTERNAL_ERROR, &error);
+                }
+            }
         }
     }
-    dedup_objects_by_identity(&mut value);
+    if let Err(error) = dedup_objects_by_identity(&mut value) {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("object ID lookup produced invalid metadata: {error}"),
+        );
+    }
     if value.is_empty() {
         Response {
             id,
@@ -591,7 +820,13 @@ pub(super) fn dispatch_events(
     // [EventSubscriber] attributes) only enter the SymbolIndex via the
     // call-graph enrichment pass — trigger the cached build before querying
     // so the user's own publishers are visible, not just package symbols.
-    let _ = workspace.get_or_build_call_graph();
+    if let Err(error) = workspace.get_or_build_call_graph() {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("event query could not build a complete workspace graph: {error}"),
+        );
+    }
     let results = workspace.symbols.get_events(name);
     let publishers: Vec<serde_json::Value> = results
         .publishers
@@ -629,7 +864,13 @@ pub(super) fn dispatch_subscribers(
     };
     // see dispatch_events — workspace subscribers need the
     // enrichment pass too.
-    let _ = workspace.get_or_build_call_graph();
+    if let Err(error) = workspace.get_or_build_call_graph() {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("subscriber query could not build a complete workspace graph: {error}"),
+        );
+    }
     let results = workspace.symbols.get_events(event);
     let subscribers: Vec<serde_json::Value> = results
         .subscribers
@@ -663,46 +904,104 @@ pub(super) fn dispatch_composed(
     };
     // `kind` is optional: the Zed task only has the
     // symbol under the cursor.
-    let kind = match params.get("kind").and_then(|v| v.as_str()) {
-        Some(kind_str) => match super::parse_object_kind(id, kind_str) {
-            Ok(k) => k,
-            Err(e) => return e,
-        },
+    let kind = match params.get("kind") {
         None => match resolve_unique_kind_by_name(workspace, id, name, "composed") {
             Ok(k) => k,
             Err(resp) => return resp,
         },
+        Some(value) => match value.as_str() {
+            Some(kind_str) => match super::parse_object_kind(id, kind_str) {
+                Ok(k) => k,
+                Err(e) => return e,
+            },
+            None => return invalid_params(id),
+        },
     };
     // composition must see workspace extensions/bases as well —
     // they enter the SymbolIndex via the enrichment pass.
-    let _ = workspace.get_or_build_call_graph();
+    if let Err(error) = workspace.get_or_build_call_graph() {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("composition query could not build a complete workspace graph: {error}"),
+        );
+    }
     match workspace.symbols.get_composed_cached(kind, name) {
         Some(composed) => {
-            let mut value =
-                serde_json::to_value(composed.as_ref()).unwrap_or(serde_json::Value::Null);
-            if let Some(base) = value
+            let mut value = match serde_json::to_value(composed.as_ref()) {
+                Ok(value) => value,
+                Err(error) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("composed-symbol response serialization failed: {error}"),
+                    );
+                }
+            };
+            let Some(base) = value
                 .get_mut("base")
                 .and_then(serde_json::Value::as_object_mut)
-            {
-                base.insert(
-                    "source_availability".into(),
-                    serde_json::to_value(workspace.symbols.source_availability(&composed.base))
-                        .expect("source availability must be JSON serializable"),
+            else {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    "composed-symbol response has no object-shaped base",
                 );
-            }
-            if let Some(extensions) = value
+            };
+            let base_availability = match source_availability_to_json(workspace, &composed.base) {
+                Ok(availability) => availability,
+                Err(error) => {
+                    return rpc_error(
+                            id,
+                            error_codes::INTERNAL_ERROR,
+                            &format!(
+                                "composed-symbol base source availability serialization failed: {error}"
+                            ),
+                        );
+                }
+            };
+            base.insert("source_availability".into(), base_availability);
+
+            let Some(extensions) = value
                 .get_mut("extensions")
                 .and_then(serde_json::Value::as_array_mut)
+            else {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    "composed-symbol response has no extensions array",
+                );
+            };
+            if extensions.len() != composed.extensions.len() {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    "composed-symbol response extension count is inconsistent",
+                );
+            }
+            for (index, (extension, entry)) in
+                extensions.iter_mut().zip(&composed.extensions).enumerate()
             {
-                for (extension, entry) in extensions.iter_mut().zip(&composed.extensions) {
-                    if let Some(object) = extension.as_object_mut() {
-                        object.insert(
-                            "source_availability".into(),
-                            serde_json::to_value(workspace.symbols.source_availability(entry))
-                                .expect("source availability must be JSON serializable"),
+                let Some(object) = extension.as_object_mut() else {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("composed-symbol extension {index} is not an object"),
+                    );
+                };
+                let availability = match source_availability_to_json(workspace, entry) {
+                    Ok(availability) => availability,
+                    Err(error) => {
+                        return rpc_error(
+                            id,
+                            error_codes::INTERNAL_ERROR,
+                            &format!(
+                                "composed-symbol extension {index} source availability serialization failed: {error}"
+                            ),
                         );
                     }
-                }
+                };
+                object.insert("source_availability".into(), availability);
             }
             Response {
                 id,
@@ -724,34 +1023,47 @@ pub(super) fn dispatch_composed(
 }
 
 pub(super) fn dispatch_packages(workspace: &Workspace, id: u64) -> Response {
-    // recover from a poisoned lock via the workspace.rs-wide
-    // pattern (`unwrap_or_else(|e| e.into_inner())`). A single poisoned
-    // lock no longer permanently bricks this endpoint; the stale data
-    // visible after recovery is the same data the panicking writer was
-    // about to commit, so reads remain consistent with the rest of the
-    // workspace.
-    let pkgs = workspace
-        .package_info
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    let value: Vec<_> = pkgs
+    let pkgs = match workspace.package_info.read() {
+        Ok(packages) => packages.clone(),
+        Err(_) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                "package inventory lock is poisoned; refusing to report potentially inconsistent data",
+            );
+        }
+    };
+    let value: Vec<_> = match pkgs
         .iter()
-        .map(|package| {
-            let mut value = serde_json::to_value(package)
-                .expect("package information must be JSON serializable");
-            if let Some(object) = value.as_object_mut() {
-                object.insert(
-                    "source_availability".into(),
-                    serde_json::to_value(
-                        workspace.symbols.package_source_availability(&package.name),
-                    )
-                    .expect("source availability summary must be JSON serializable"),
-                );
-            }
-            value
+        .enumerate()
+        .map(|(index, package)| {
+            let mut value = serde_json::to_value(package).map_err(|error| {
+                format!("package {index} information is not JSON serializable: {error}")
+            })?;
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| format!("serialized package {index} is not an object"))?;
+            let availability =
+                serde_json::to_value(workspace.symbols.package_source_availability(&package.name))
+                    .map_err(|error| {
+                        format!(
+                            "package {index} source availability is not JSON serializable: {error}"
+                        )
+                    })?;
+            object.insert("source_availability".into(), availability);
+            Ok::<_, String>(value)
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("package response serialization failed: {error}"),
+            );
+        }
+    };
     Response {
         id,
         result: Some(serde_json::Value::Array(value)),
@@ -845,7 +1157,7 @@ mod tests {
             serde_json::json!({"kind": "Table", "id": 50100, "name": "Customer", "package": "(workspace)"}),
             serde_json::json!({"kind": "Codeunit", "id": 50100, "name": "Mgmt", "package": "workspace"}),
         ];
-        dedup_objects_by_identity(&mut objects);
+        dedup_objects_by_identity(&mut objects).unwrap();
         assert_eq!(objects.len(), 2, "duplicate table must collapse to one");
         // The first (richer symbol-index) entry wins.
         assert_eq!(objects[0]["package"], "workspace");
@@ -905,7 +1217,7 @@ mod tests {
                 end_point: tree_sitter::Point { row: 0, column: 0 },
             },
         };
-        let json = workspace_object_to_json(&info);
+        let json = workspace_object_to_json(&info).unwrap();
         assert_eq!(json["source_availability"], "workspace_source");
         let entry: al_symbols::SymbolEntry =
             serde_json::from_value(json).expect("workspace object must deserialize as SymbolEntry");
@@ -934,9 +1246,12 @@ mod tests {
                 continue;
             }
             covered += 1;
+            let kind = k
+                .parse::<al_symbols::ObjectKind>()
+                .unwrap_or_else(|error| panic!("kind {k:?} must normalize: {error}"));
             let info = al_source::file_index::CachedObjectInfo {
                 kind: k.to_string(),
-                id: Some(1),
+                id: kind.requires_numeric_id().then_some(1),
                 name: "X".to_string(),
                 range: tree_sitter::Range {
                     start_byte: 0,
@@ -945,7 +1260,7 @@ mod tests {
                     end_point: tree_sitter::Point { row: 0, column: 0 },
                 },
             };
-            let json = workspace_object_to_json(&info);
+            let json = workspace_object_to_json(&info).unwrap();
             let _: al_symbols::SymbolEntry = serde_json::from_value(json)
                 .unwrap_or_else(|e| panic!("kind {k:?} must deserialize: {e}"));
         }
@@ -1153,13 +1468,38 @@ mod tests {
     #[test]
     fn dispatch_inlay_hints_defaults_lines_when_absent() {
         let ws = al_workspace::Workspace::new();
-        let resp = dispatch_inlay_hints(&ws, 9, &serde_json::json!({ "uri": "file:///tmp/x.al" }));
+        let uri = url::Url::parse("file:///tmp/x.al").unwrap();
+        ws.documents
+            .open(uri.clone(), r#"codeunit 50100 "Hints" { }"#.to_string())
+            .unwrap();
+        let resp = dispatch_inlay_hints(&ws, 9, &serde_json::json!({ "uri": uri.as_str() }));
         assert!(
             resp.error.is_none(),
             "absent lines must default, not error: {:?}",
             resp.error
         );
         assert_eq!(resp.result, Some(serde_json::json!([])));
+    }
+
+    #[test]
+    fn document_queries_do_not_turn_missing_files_into_empty_results() {
+        let ws = al_workspace::Workspace::new();
+        let uri = "file:///definitely/not/existing/al-language-zed-missing.al";
+        for response in [
+            dispatch_definition(
+                &ws,
+                10,
+                &serde_json::json!({ "uri": uri, "line": 0, "character": 0 }),
+            ),
+            dispatch_inlay_hints(&ws, 10, &serde_json::json!({ "uri": uri })),
+            dispatch_document_symbols(&ws, 10, &serde_json::json!({ "uri": uri })),
+        ] {
+            assert!(
+                response.result.is_none(),
+                "missing source must not become an empty successful result"
+            );
+            assert!(response.error.is_some());
+        }
     }
 
     #[test]
@@ -1274,15 +1614,51 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_search_clamps_oversized_limit() {
+    fn dispatch_search_rejects_invalid_optional_parameters() {
         let ws = al_workspace::Workspace::new();
-        let resp = dispatch_search(
+        for params in [
+            serde_json::json!({ "query": "x", "limit": u64::MAX }),
+            serde_json::json!({ "query": "x", "limit": "20" }),
+            serde_json::json!({ "query": "x", "summary": "yes" }),
+        ] {
+            let resp = dispatch_search(&ws, 13, &params);
+            assert_invalid_params(&resp, 13);
+        }
+    }
+
+    #[test]
+    fn dispatch_references_rejects_non_boolean_include_declaration() {
+        let ws = al_workspace::Workspace::new();
+        let resp = dispatch_references(
             &ws,
-            13,
-            &serde_json::json!({ "query": "x", "limit": u64::MAX }),
+            14,
+            &serde_json::json!({
+                "uri": "file:///tmp/x.al",
+                "line": 0,
+                "character": 0,
+                "includeDeclaration": "yes"
+            }),
         );
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result, Some(serde_json::json!([])));
+        assert_invalid_params(&resp, 14);
+    }
+
+    #[test]
+    fn optional_object_kind_must_be_a_string_when_present() {
+        let ws = al_workspace::Workspace::new();
+        for response in [
+            dispatch_object(
+                &ws,
+                15,
+                &serde_json::json!({ "name": "Customer", "kind": 42 }),
+            ),
+            dispatch_composed(
+                &ws,
+                15,
+                &serde_json::json!({ "name": "Customer", "kind": 42 }),
+            ),
+        ] {
+            assert_invalid_params(&response, 15);
+        }
     }
 
     #[test]
@@ -1429,6 +1805,23 @@ mod tests {
         let resp = dispatch_packages(&ws, 24);
         assert!(resp.error.is_none());
         assert_eq!(resp.result, Some(serde_json::json!([])));
+    }
+
+    #[test]
+    fn dispatch_packages_rejects_poisoned_inventory() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        let poison_target = ws.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target.package_info.write().unwrap();
+            panic!("poison package inventory for fail-closed test");
+        })
+        .join();
+
+        let resp = dispatch_packages(&ws, 25);
+        assert!(resp.result.is_none());
+        let error = resp.error.expect("poisoned inventory must be explicit");
+        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
+        assert!(error.message.contains("poisoned"));
     }
 
     #[test]

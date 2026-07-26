@@ -34,6 +34,9 @@ keyring = { version = "3", default-features = false, features = [
     "tokio",
 ], optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [features]
 default = ["nuget"]
 # NuGet/BC symbol download + OAuth. Gates bc_server.rs/nuget.rs/oauth.rs and

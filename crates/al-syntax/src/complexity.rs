@@ -14,6 +14,8 @@ pub struct ProcedureComplexity {
     pub cognitive: u32,
     /// Start line (1-based).
     pub line: u32,
+    /// Procedure-declaration nesting depth (zero for an object-level member).
+    pub nesting_depth: u32,
 }
 
 pub fn compute_complexity(tree: &Tree, text: &str) -> Vec<ProcedureComplexity> {
@@ -26,12 +28,9 @@ pub fn compute_complexity(tree: &Tree, text: &str) -> Vec<ProcedureComplexity> {
 }
 
 fn collect_procedure_complexity(node: Node, source: &[u8], results: &mut Vec<ProcedureComplexity>) {
-    let mut stack = vec![node];
-    while let Some(current) = stack.pop() {
-        if matches!(
-            current.kind(),
-            "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
-        ) {
+    let mut stack = vec![(node, 0u32)];
+    while let Some((current, nesting_depth)) = stack.pop() {
+        if is_procedure_declaration(current) {
             let name = crate::node_name_or(current, source, "(unknown)");
 
             let line = current.start_position().row as u32 + 1;
@@ -43,14 +42,16 @@ fn collect_procedure_complexity(node: Node, source: &[u8], results: &mut Vec<Pro
                 cyclomatic,
                 cognitive,
                 line,
+                nesting_depth,
             });
-            // Don't recurse into procedure bodies for nested procedures
-            continue;
         }
 
         for i in (0..current.child_count()).rev() {
             if let Some(child) = current.child(i) {
-                stack.push(child);
+                stack.push((
+                    child,
+                    nesting_depth + u32::from(is_procedure_declaration(current)),
+                ));
             }
         }
     }
@@ -66,6 +67,11 @@ fn compute_cyclomatic(proc_node: Node, source: &[u8]) -> u32 {
 fn count_cyclomatic_decisions(node: Node, _source: &[u8], count: &mut u32) {
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {
+        // Nested declarations have their own metric entry. Their decisions
+        // must not inflate the enclosing procedure's score.
+        if current != node && is_procedure_declaration(current) {
+            continue;
+        }
         match current.kind() {
             "if_statement" | "empty_if_statement" => *count += 1,
             "for_statement" | "foreach_statement" | "while_statement" | "repeat_statement" => {
@@ -113,6 +119,11 @@ fn compute_cognitive(node: Node, _source: &[u8]) -> u32 {
     }
 
     while let Some((current, nesting)) = stack.pop() {
+        // As with cyclomatic complexity, a nested declaration is a separate
+        // unit of analysis rather than a cognitive branch of its parent.
+        if is_procedure_declaration(current) {
+            continue;
+        }
         let kind = current.kind();
         match kind {
             "if_statement" | "empty_if_statement" => {
@@ -162,6 +173,10 @@ fn compute_cognitive(node: Node, _source: &[u8]) -> u32 {
         }
     }
     total
+}
+
+fn is_procedure_declaration(node: Node) -> bool {
+    matches!(node.kind(), "procedure_declaration" | "trigger_declaration")
 }
 
 fn count_case_arms(case_node: Node) -> u32 {
@@ -296,5 +311,46 @@ mod tests {
             "expected at least base 1 + 3 case arms = 4, got {} — case_branch is not being counted",
             metrics[0].cyclomatic
         );
+    }
+
+    #[test]
+    fn separate_procedures_have_independent_complexity_scores() {
+        // Keep the two decision sets deliberately different: this guards the
+        // traversal contract used for nested declarations too, where a
+        // declaration's descendants must never inflate its parent's score.
+        let src = r#"codeunit 50100 T
+{
+    procedure Outer()
+    begin
+        if OuterCondition then
+            Message('outer');
+    end;
+
+    procedure Inner()
+    begin
+        if FirstInnerCondition then
+            if SecondInnerCondition then
+                Message('inner');
+    end;
+}"#;
+
+        let metrics = complexity_for(src);
+        assert_eq!(metrics.len(), 2);
+
+        let outer = metrics
+            .iter()
+            .find(|metric| metric.name == "Outer")
+            .unwrap();
+        assert_eq!(outer.nesting_depth, 0);
+        assert_eq!(outer.cyclomatic, 2, "only Outer’s if belongs to Outer");
+        assert_eq!(outer.cognitive, 1);
+
+        let inner = metrics
+            .iter()
+            .find(|metric| metric.name == "Inner")
+            .unwrap();
+        assert_eq!(inner.nesting_depth, 0);
+        assert_eq!(inner.cyclomatic, 3, "base path plus Inner’s two ifs");
+        assert_eq!(inner.cognitive, 3, "nested Inner if has cognitive weight");
     }
 }

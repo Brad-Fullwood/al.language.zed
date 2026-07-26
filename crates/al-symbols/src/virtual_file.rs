@@ -1,7 +1,6 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
 
@@ -36,10 +35,11 @@ pub struct MaterializedSource {
 /// Materialize package navigation and report the representation actually
 /// present in the returned file.
 ///
-/// This differs from package-level availability hints: extraction can fail
-/// after indexing because a package changed, disappeared, is unreadable, or
-/// contains source that violates the extraction bounds. Every such failure is
-/// downgraded to an outline or identity-only declaration here.
+/// This differs from package-level availability hints: a package that
+/// legitimately has no matching embedded source is rendered from metadata,
+/// while extraction failures are returned to the caller. A changed,
+/// unreadable, malformed, or over-limit package must not be misreported as a
+/// source-less package or cached as an outline.
 pub fn get_or_create_with_availability(
     entry: &SymbolEntry,
     app_path: Option<&Path>,
@@ -48,7 +48,7 @@ pub fn get_or_create_with_availability(
     let pkg_dir = cache_root.join(sanitize_filename(&entry.package));
     let file_path = pkg_dir.join(cache_filename(entry, app_path));
 
-    ensure_readonly_settings(&cache_root);
+    ensure_readonly_settings(&cache_root)?;
 
     fs::create_dir_all(&pkg_dir)?;
 
@@ -58,8 +58,7 @@ pub fn get_or_create_with_availability(
     // extraction or rendering logic without changing either input.
     if let Ok(cache_mtime) = fs::metadata(&file_path).and_then(|m| m.modified()) {
         if self_exe_mtime().is_some_and(|t| t > cache_mtime) {
-            let _ = clear_readonly(&file_path);
-            let _ = fs::remove_file(&file_path);
+            remove_readonly_file_if_exists(&file_path)?;
         }
     }
 
@@ -67,7 +66,10 @@ pub fn get_or_create_with_availability(
         // Generate before publishing and rename into place. Creating the final
         // path first allowed a concurrent navigation request to observe a
         // partially-written AL file.
-        let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
+        let extracted = match app_path {
+            Some(path) => extract_source_from_app(path, entry)?,
+            None => None,
+        };
         let source = match extracted {
             Some(source) => source,
             None => match classify_metadata(entry) {
@@ -105,7 +107,7 @@ pub fn get_or_create_with_availability(
         }
     }
 
-    enforce_readonly(&file_path);
+    enforce_readonly(&file_path)?;
     let availability = materialized_availability(&file_path)?;
     Ok(MaterializedSource {
         path: file_path,
@@ -171,6 +173,19 @@ fn clear_readonly(path: &Path) -> std::io::Result<()> {
     fs::set_permissions(path, perms)
 }
 
+fn remove_readonly_file_if_exists(path: &Path) -> std::io::Result<()> {
+    match clear_readonly(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum MemberKind {
     Field,
@@ -234,44 +249,53 @@ pub fn find_object_range(path: &Path, entry: &SymbolEntry) -> Option<MemberRange
 
 /// Examines ZIP entry metadata directly from the file; no package payload or
 /// source content is buffered.
-pub fn app_has_source(app_path: &Path) -> bool {
-    let mut file = match fs::File::open(app_path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    if file.metadata().map_or(true, |metadata| {
-        metadata.len() > super::app_reader::MAX_APP_FILE_SIZE
-    }) {
-        return false;
+pub fn app_has_source(app_path: &Path) -> std::io::Result<bool> {
+    let mut file = fs::File::open(app_path)?;
+    if file.metadata()?.len() > super::app_reader::MAX_APP_FILE_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                ".app exceeds the {} byte inspection limit",
+                super::app_reader::MAX_APP_FILE_SIZE
+            ),
+        ));
     }
     let mut magic = [0u8; 4];
-    if std::io::Read::read_exact(&mut file, &mut magic).is_err() || &magic != b"NAVX" {
-        return false;
+    std::io::Read::read_exact(&mut file, &mut magic)?;
+    if &magic != b"NAVX" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "missing NAVX header in .app",
+        ));
     }
-    if std::io::Seek::rewind(&mut file).is_err() {
-        return false;
-    }
-    let mut archive = match zip::ZipArchive::new(file) {
-        Ok(a) => a,
-        Err(_) => return false,
-    };
+    std::io::Seek::rewind(&mut file)?;
+    let mut archive = zip::ZipArchive::new(file)?;
     if archive.len() > super::app_reader::MAX_ARCHIVE_ENTRIES {
-        return false;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                ".app contains {} entries; inspection limit is {}",
+                archive.len(),
+                super::app_reader::MAX_ARCHIVE_ENTRIES
+            ),
+        ));
     }
 
     for i in 0..archive.len() {
-        if let Ok(entry) = archive.by_index_raw(i) {
-            if entry.name().to_ascii_lowercase().ends_with(".al") {
-                return true;
-            }
+        let entry = archive.by_index_raw(i)?;
+        if entry.name().to_ascii_lowercase().ends_with(".al") {
+            return Ok(true);
         }
     }
 
-    false
+    Ok(false)
 }
 
-fn extract_source_from_app(app_path: &Path, entry: &SymbolEntry) -> Option<String> {
-    let index = source_index::get_or_build(app_path).ok()?;
+fn extract_source_from_app(
+    app_path: &Path,
+    entry: &SymbolEntry,
+) -> std::io::Result<Option<String>> {
+    let index = source_index::get_or_build(app_path)?;
     index.extract_source_for_entry(entry)
 }
 
@@ -495,71 +519,188 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
     out
 }
 
-fn enforce_readonly(path: &Path) {
+fn enforce_readonly(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = fs::metadata(path) {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o444);
-            if let Err(e) = fs::set_permissions(path, perms) {
-                tracing::debug!(path = %path.display(), error = %e, "enforce_readonly: chmod 0o444 failed (virtual file may stay writable)");
-            }
-        }
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o444);
+        fs::set_permissions(path, perms)?;
     }
     #[cfg(not(unix))]
     {
-        if let Ok(meta) = fs::metadata(path) {
-            let mut perms = meta.permissions();
-            perms.set_readonly(true);
-            if let Err(e) = fs::set_permissions(path, perms) {
-                tracing::debug!(path = %path.display(), error = %e, "enforce_readonly: set_readonly failed (virtual file may stay writable)");
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
+fn ensure_readonly_settings(cache_root: &Path) -> std::io::Result<()> {
+    let settings_dir = cache_root.join(".zed");
+    let settings_path = settings_dir.join("settings.json");
+    fs::create_dir_all(&settings_dir)?;
+
+    let mut settings = match fs::read_to_string(&settings_path) {
+        Ok(text) => serde_json::from_str::<serde_json::Value>(&text).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "invalid virtual-source settings at '{}': {error}",
+                    settings_path.display()
+                ),
+            )
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(error) => return Err(error),
+    };
+
+    let object = settings.as_object_mut().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "virtual-source settings at '{}' must contain a JSON object",
+                settings_path.display()
+            ),
+        )
+    })?;
+
+    let pattern = "symbols/**/*.al";
+    match object.get_mut("read_only_files") {
+        Some(value) => {
+            let patterns = value.as_array_mut().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "'read_only_files' in '{}' must be an array of strings",
+                        settings_path.display()
+                    ),
+                )
+            })?;
+            if patterns.iter().any(|value| !value.is_string()) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "'read_only_files' in '{}' must contain only strings",
+                        settings_path.display()
+                    ),
+                ));
             }
+            if patterns.iter().any(|value| value.as_str() == Some(pattern)) {
+                return Ok(());
+            }
+            patterns.push(serde_json::Value::String(pattern.to_owned()));
         }
+        None => {
+            object.insert(
+                "read_only_files".to_owned(),
+                serde_json::Value::Array(vec![serde_json::Value::String(pattern.to_owned())]),
+            );
+        }
+    }
+
+    let mut serialized = serde_json::to_vec_pretty(&settings).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "failed to serialize virtual-source settings for '{}': {error}",
+                settings_path.display()
+            ),
+        )
+    })?;
+    serialized.push(b'\n');
+    atomic_write_settings(&settings_path, &serialized)
+}
+
+fn atomic_write_settings(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("settings.json");
+    let temp_path = path.with_file_name(format!(
+        ".{filename}.{}.{}.tmp",
+        std::process::id(),
+        sequence
+    ));
+
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(content)?;
+        file.flush()?;
+        file.sync_all()
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    if let Err(error) = atomic_replace(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    sync_parent_directory(path)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(source: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(source, target)
+}
+
+#[cfg(windows)]
+fn atomic_replace(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source: Vec<u16> = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let target: Vec<u16> = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: both buffers are live, NUL-terminated UTF-16 paths for the
+    // duration of the call. MoveFileExW does not retain either pointer.
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
-fn ensure_readonly_settings(cache_root: &Path) {
-    static ONCE: OnceLock<()> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        let settings_dir = cache_root.join(".zed");
-        let settings_path = settings_dir.join("settings.json");
-        let _ = fs::create_dir_all(&settings_dir);
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("'{}' has no parent directory", path.display()),
+        )
+    })?;
+    fs::File::open(parent)?.sync_all()
+}
 
-        let mut settings: serde_json::Value = if let Ok(text) = fs::read_to_string(&settings_path) {
-            serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
-
-        let list = settings
-            .get_mut("read_only_files")
-            .and_then(|v| v.as_array_mut());
-
-        let pattern = "symbols/**/*.al";
-        match list {
-            Some(arr) => {
-                let exists = arr.iter().any(|v| v.as_str() == Some(pattern));
-                if !exists {
-                    arr.push(serde_json::Value::String(pattern.to_string()));
-                }
-            }
-            None => {
-                settings["read_only_files"] =
-                    serde_json::Value::Array(vec![serde_json::Value::String(pattern.to_string())]);
-            }
-        }
-
-        if let Ok(text) = serde_json::to_string_pretty(&settings) {
-            if let Err(e) = fs::write(&settings_path, text) {
-                tracing::warn!(
-                    path = %settings_path.display(),
-                    error = %e,
-                    "failed to write virtual AL settings file"
-                );
-            }
-        }
-    });
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> std::io::Result<()> {
+    // MoveFileExW uses MOVEFILE_WRITE_THROUGH on Windows. Other targets have
+    // no portable directory-fsync primitive in std.
+    Ok(())
 }
 
 fn find_member_range_in_text(
@@ -907,6 +1048,78 @@ mod tests {
     }
 
     #[test]
+    fn readonly_settings_preserve_existing_fields_and_add_pattern() {
+        let cache = tempfile::tempdir().unwrap();
+        let settings_dir = cache.path().join(".zed");
+        fs::create_dir_all(&settings_dir).unwrap();
+        fs::write(
+            settings_dir.join("settings.json"),
+            r#"{"theme":"One Dark","read_only_files":["generated/**"]}"#,
+        )
+        .unwrap();
+
+        ensure_readonly_settings(cache.path()).expect("valid settings should be extended");
+
+        let settings: serde_json::Value =
+            serde_json::from_slice(&fs::read(settings_dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(settings["theme"], "One Dark");
+        assert_eq!(
+            settings["read_only_files"],
+            serde_json::json!(["generated/**", "symbols/**/*.al"])
+        );
+    }
+
+    #[test]
+    fn atomic_settings_write_replaces_an_existing_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, b"old").unwrap();
+
+        atomic_write_settings(&path, b"new\n").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"new\n");
+        assert_eq!(
+            fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| { entry.file_name().to_string_lossy().ends_with(".tmp") })
+                .count(),
+            0,
+            "successful replacement must not leak a temporary file"
+        );
+    }
+
+    #[test]
+    fn readonly_settings_reject_malformed_json_without_overwriting_it() {
+        let cache = tempfile::tempdir().unwrap();
+        let settings_dir = cache.path().join(".zed");
+        fs::create_dir_all(&settings_dir).unwrap();
+        let settings_path = settings_dir.join("settings.json");
+        let original = b"{ definitely not valid json";
+        fs::write(&settings_path, original).unwrap();
+
+        let error = ensure_readonly_settings(cache.path()).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(settings_path).unwrap(), original);
+    }
+
+    #[test]
+    fn readonly_settings_reject_invalid_pattern_shape_without_overwriting_it() {
+        let cache = tempfile::tempdir().unwrap();
+        let settings_dir = cache.path().join(".zed");
+        fs::create_dir_all(&settings_dir).unwrap();
+        let settings_path = settings_dir.join("settings.json");
+        let original = br#"{"read_only_files":["generated/**",42]}"#;
+        fs::write(&settings_path, original).unwrap();
+
+        let error = ensure_readonly_settings(cache.path()).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(settings_path).unwrap(), original);
+    }
+
+    #[test]
     #[serial_test::serial]
     fn get_or_create_writes_the_note_for_a_sourceless_package() {
         let tmp = tempfile::tempdir().unwrap();
@@ -932,7 +1145,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn materialization_downgrades_non_utf8_embedded_source_to_outline() {
+    fn materialization_rejects_non_utf8_embedded_source_without_caching_outline() {
         let cache = tempfile::tempdir().unwrap();
         let previous_cache = std::env::var_os("XDG_CACHE_HOME");
         std::env::set_var("XDG_CACHE_HOME", cache.path());
@@ -941,21 +1154,22 @@ mod tests {
         source.extend_from_slice(&[0xff, b'\n', b'}']);
         let app = write_app_with_raw_source(&source);
         let entry = package_codeunit();
-        let materialized =
-            get_or_create_with_availability(&entry, Some(app.path())).expect("outline fallback");
-        let content = fs::read_to_string(&materialized.path).unwrap();
+        let expected_path = cache_dir()
+            .join(sanitize_filename(&entry.package))
+            .join(cache_filename(&entry, Some(app.path())));
+        let error = get_or_create_with_availability(&entry, Some(app.path())).unwrap_err();
 
         match previous_cache {
             Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
             None => std::env::remove_var("XDG_CACHE_HOME"),
         }
 
-        assert_eq!(
-            materialized.availability,
-            SourceAvailability::GeneratedOutline
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("not UTF-8"));
+        assert!(
+            !expected_path.exists(),
+            "a failed extraction must not leave a cached outline"
         );
-        assert!(content.starts_with(OUTLINE_NOTE));
-        assert!(content.contains("procedure PostDocument"));
     }
 
     #[test]

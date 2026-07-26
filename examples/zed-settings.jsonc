@@ -67,7 +67,7 @@
     //
     // Zed's bundled JSON language server validates files against schemas you
     // associate by fileMatch. This works on ALL Zed channels TODAY. The URLs
-    // are pinned to this extension's v0.2.2 release tag for reproducible
+    // are pinned to this extension's v0.3.0 release tag for reproducible
     // validation; bump the tag when you upgrade the extension.
     // ─────────────────────────────────────────────────────────────────────
     "json-language-server": {
@@ -76,19 +76,23 @@
           "schemas": [
             {
               "fileMatch": ["app.json"],
-              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.2.2/schemas/app.json"
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.3.0/schemas/app.json"
             },
             {
               "fileMatch": ["*.ruleset.json"],
-              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.2.2/schemas/ruleset.json"
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.3.0/schemas/ruleset.json"
+            },
+            {
+              "fileMatch": [".alarch.json"],
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.3.0/schemas/alarch.json"
             },
             {
               "fileMatch": ["AppSourceCop.json"],
-              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.2.2/schemas/appsourcecop.json"
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.3.0/schemas/appsourcecop.json"
             },
             {
               "fileMatch": ["migration.json", "*.migration.json"],
-              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.2.2/schemas/migration.json"
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.3.0/schemas/migration.json"
             }
           ]
         }

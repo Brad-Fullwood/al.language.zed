@@ -46,7 +46,7 @@ fi
 # immune to later feature-less `cargo build` invocations.
 NATIVE_BUILD="build --workspace --exclude zed-al $PROFILE_FLAG"
 SEMANTIC_BUILD="cargo build -p al-lsp --bin al-lsp --features semantic $PROFILE_FLAG && rm -f $INSTALL_DIR/al-lsp && cp -f target/$PROFILE_DIR/al-lsp $INSTALL_DIR/al-lsp"
-WASM_BUILD="cargo build -p zed-al --target wasm32-wasip1 --release"
+WASM_BUILD="cargo build -p zed-al --target wasm32-wasip2 --release"
 BRIDGE_BUILD_ARGS=()
 if [ "$WATCH_BRIDGES" = "1" ]; then
   BRIDGE_BUILD_ARGS=(-s "make bridges")

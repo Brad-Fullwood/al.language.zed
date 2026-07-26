@@ -139,9 +139,10 @@ pub struct SemanticToken {
 pub fn extract_semantic_tokens(tree: &Tree, text: &str) -> Vec<SemanticToken> {
     let root = tree.root_node();
     let source = text.as_bytes();
+    let type_resolver = super::type_resolver::TypeResolver::new(tree, text);
 
     let mut raw_tokens: Vec<(u32, u32, u32, u32)> = Vec::new(); // (line, col, len, type)
-    collect_tokens(root, source, &mut raw_tokens);
+    collect_tokens(root, source, &type_resolver, &mut raw_tokens);
 
     raw_tokens.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
@@ -197,7 +198,12 @@ fn get_line<'a>(source: &'a [u8], line_starts: &[usize], row: usize) -> &'a [u8]
     &source[start..end]
 }
 
-fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u32)>) {
+fn collect_tokens(
+    node: Node,
+    source: &[u8],
+    type_resolver: &super::type_resolver::TypeResolver<'_>,
+    tokens: &mut Vec<(u32, u32, u32, u32)>,
+) {
     // Pre-build line offsets once so every per-token line lookup is O(1).
     let line_starts = build_line_starts(source);
 
@@ -206,7 +212,7 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
 
     while let Some(current) = stack.pop() {
         let kind = current.kind();
-        if let Some(token_type) = classify_node(kind, current, source) {
+        if let Some(token_type) = classify_node(kind, current, source, type_resolver) {
             let start = current.start_position();
             let end = current.end_position();
 
@@ -263,7 +269,12 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
 
 /// Classify a tree-sitter node kind to a semantic token type.
 /// Returns `None` for nodes that should not be highlighted or should recurse.
-fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
+fn classify_node(
+    kind: &str,
+    node: Node,
+    source: &[u8],
+    type_resolver: &super::type_resolver::TypeResolver<'_>,
+) -> Option<u32> {
     use super::language_data::token_classification;
 
     match kind {
@@ -290,7 +301,7 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         "operator" => Some(token_types::OPERATOR),
 
         "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword" => {
-            classify_name_like_node(node, source)
+            classify_name_like_node(node, source, type_resolver)
         }
         "verbatim_string" => Some(token_types::STRING),
 
@@ -340,7 +351,11 @@ fn is_trigger_variable(text: &str) -> bool {
         .any(|v| v.name.eq_ignore_ascii_case(text))
 }
 
-fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
+fn classify_name_like_node(
+    node: Node,
+    source: &[u8],
+    type_resolver: &super::type_resolver::TypeResolver<'_>,
+) -> Option<u32> {
     let parent = node.parent()?;
     match parent.kind() {
         "procedure_declaration" | "event_procedure_declaration" => {
@@ -366,7 +381,13 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
         }
         "member_call_suffix" | "scope_call_suffix" => {
             if parent.child_by_field_name("member").map(|n| n.id()) == Some(node.id()) {
-                Some(token_types::FUNCTION)
+                if parent.kind() == "member_call_suffix"
+                    && is_builtin_record_member(parent, node, source, type_resolver)
+                {
+                    Some(token_types::BUILTIN_FUNCTION)
+                } else {
+                    Some(token_types::FUNCTION)
+                }
             } else {
                 None
             }
@@ -472,6 +493,11 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 Some(token_types::TYPE)
             } else if matches!(node.kind(), "identifier") {
                 if let Ok(text) = node.utf8_text(source) {
+                    if is_global_builtin_call(node, text)
+                        && super::language_data::is_builtin_function(text)
+                    {
+                        return Some(token_types::BUILTIN_FUNCTION);
+                    }
                     if is_trigger_variable(text) && has_ancestor_kind(node, "trigger_declaration") {
                         return Some(token_types::SELF_KEYWORD);
                     }
@@ -484,6 +510,148 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
             }
         }
     }
+}
+
+fn is_global_builtin_call(node: Node<'_>, text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    let Some(name) = node.parent().filter(|parent| parent.kind() == "name") else {
+        return false;
+    };
+    let Some(primary) = name
+        .parent()
+        .filter(|parent| parent.kind() == "primary_expression")
+    else {
+        return false;
+    };
+    let Some(postfix) = primary
+        .parent()
+        .filter(|parent| parent.kind() == "postfix_expression")
+    else {
+        return false;
+    };
+    (0..postfix.child_count())
+        .filter_map(|index| postfix.child(index))
+        .any(|child| child.kind() == "call_suffix")
+}
+
+fn is_builtin_record_member(
+    suffix: Node<'_>,
+    member: Node<'_>,
+    source: &[u8],
+    type_resolver: &super::type_resolver::TypeResolver<'_>,
+) -> bool {
+    let Ok(member_name) = member.utf8_text(source) else {
+        return false;
+    };
+    if !is_record_builtin_method(member_name.trim_matches('"')) {
+        return false;
+    }
+
+    let Some(postfix) = suffix
+        .parent()
+        .filter(|parent| parent.kind() == "postfix_expression")
+    else {
+        return false;
+    };
+    let Some(primary) = (0..postfix.child_count())
+        .filter_map(|index| postfix.child(index))
+        .find(|child| child.kind() == "primary_expression")
+    else {
+        return false;
+    };
+    let Ok(receiver) = primary.utf8_text(source) else {
+        return false;
+    };
+    let receiver = receiver.trim().trim_matches('"');
+    if receiver.is_empty()
+        || !receiver
+            .chars()
+            .all(|character| character.is_alphanumeric() || character == '_')
+    {
+        return false;
+    }
+
+    let position = super::types::SyntaxPosition {
+        line: member.start_position().row as u32,
+        character: member.start_position().column as u32,
+    };
+    type_resolver
+        .resolve_type(receiver, position)
+        .is_some_and(|declaration| declaration.type_name.eq_ignore_ascii_case("Record"))
+}
+
+fn is_record_builtin_method(name: &str) -> bool {
+    const METHODS: &[&str] = &[
+        "addloadfields",
+        "arefieldsloaded",
+        "ascending",
+        "calcfields",
+        "calcsums",
+        "changecompany",
+        "consistent",
+        "copy",
+        "copyfilter",
+        "copyfilters",
+        "count",
+        "countapprox",
+        "currentcompany",
+        "delete",
+        "deleteall",
+        "fieldactive",
+        "fieldcaption",
+        "fieldname",
+        "fieldno",
+        "filtergroup",
+        "find",
+        "findfirst",
+        "findlast",
+        "findset",
+        "get",
+        "getascending",
+        "getbysystemid",
+        "getfilter",
+        "getfilters",
+        "getposition",
+        "getrangeMax",
+        "getrangeMin",
+        "getview",
+        "hasfilter",
+        "init",
+        "insert",
+        "isempty",
+        "loadfields",
+        "locktable",
+        "mark",
+        "markedonly",
+        "modify",
+        "modifyall",
+        "next",
+        "readisolation",
+        "recordid",
+        "rename",
+        "reset",
+        "securityfiltering",
+        "setascending",
+        "setautocalcfields",
+        "setcurrentkey",
+        "setfilter",
+        "setloadfields",
+        "setpermissionfilter",
+        "setposition",
+        "setrange",
+        "setrecfilter",
+        "setview",
+        "systemidno",
+        "testfield",
+        "transferfields",
+        "transferfieldswithvalidate",
+        "validate",
+    ];
+    METHODS
+        .iter()
+        .any(|method| name.eq_ignore_ascii_case(method))
 }
 
 fn is_regular_variable_name(node: Node, declaration: Node) -> bool {
@@ -1165,6 +1333,68 @@ codeunit 50100 Test
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
         assert_token_type_for_text(src, &tokens, "0DT", token_types::DATETIME);
+    }
+
+    #[test]
+    fn global_platform_call_is_a_builtin_function() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        Message('Hello');
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        assert_token_type_for_text(src, &tokens, "Message", token_types::BUILTIN_FUNCTION);
+    }
+
+    #[test]
+    fn record_platform_methods_are_builtin_but_custom_methods_are_not() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure DoSomething()
+    var
+        Customer: Record Customer;
+        Worker: Codeunit "Custom Worker";
+    begin
+        Customer.FindFirst();
+        Customer.Insert();
+        Customer.CustomProcedure();
+        Worker.Insert();
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        let decoded = decoded_tokens(&tokens);
+
+        let token_type_on_line = |line: u32, text: &str| {
+            decoded
+                .iter()
+                .find_map(|(token_line, col, len, token_type)| {
+                    (*token_line == line
+                        && token_text_at(src, *token_line, *col, *len) == Some(text))
+                    .then_some(*token_type)
+                })
+                .unwrap_or_else(|| panic!("missing semantic token {text:?} on line {line}"))
+        };
+
+        assert_eq!(
+            token_type_on_line(7, "FindFirst"),
+            token_types::BUILTIN_FUNCTION
+        );
+        assert_eq!(
+            token_type_on_line(8, "Insert"),
+            token_types::BUILTIN_FUNCTION
+        );
+        assert_eq!(
+            token_type_on_line(9, "CustomProcedure"),
+            token_types::FUNCTION
+        );
+        assert_eq!(token_type_on_line(10, "Insert"), token_types::FUNCTION);
     }
 
     #[test]

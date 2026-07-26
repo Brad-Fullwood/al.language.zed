@@ -313,6 +313,27 @@ pub fn collect_call_site_names(tree: &Tree, text: &str) -> std::collections::Has
     names
 }
 
+/// Collect every call-site identifier and its exact syntax range.
+///
+/// This is the range-preserving companion to [`collect_call_site_names`]. It
+/// applies the same call-position filter, so field access, declarations, type
+/// references, and variable names are not returned.
+pub fn collect_call_sites(tree: &Tree, text: &str) -> Vec<(String, tree_sitter::Range)> {
+    let root = tree.root_node();
+    let source = text.as_bytes();
+    let mut calls = Vec::new();
+    walk_tree(root, &mut |node| {
+        if matches!(node.kind(), "identifier" | "quoted_identifier")
+            && is_call_reference(node, source)
+        {
+            if let Ok(name) = node.utf8_text(source) {
+                calls.push((name.trim_matches('"').to_ascii_lowercase(), node.range()));
+            }
+        }
+    });
+    calls
+}
+
 /// Count call-site references to `target_name` in the AST rooted at `root`.
 fn count_call_refs_iterative(root: Node, source: &[u8], target_name: &str, count: &mut usize) {
     walk_tree(root, &mut |node| {
@@ -466,10 +487,141 @@ fn check_is_local(node: Node, source: &[u8]) -> bool {
     false
 }
 
+/// Collect names used as the member portion of an AST member access
+/// (`Receiver.Member`). Comments, string literals, declaration headers, and
+/// unrelated punctuation never enter the result because only `member_suffix`
+/// nodes are inspected.
+pub fn collect_member_access_names(tree: &Tree, source: &str) -> std::collections::HashSet<String> {
+    let bytes = source.as_bytes();
+    let mut names = std::collections::HashSet::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "member_suffix" {
+            if let Some(member) = node.child_by_field_name("member") {
+                if let Some(name) = super::node_text_clean(member, bytes) {
+                    names.insert(name.to_ascii_lowercase());
+                }
+            }
+            continue;
+        }
+        // Some declaration headers (notably page/report `field(...)`
+        // arguments) are intentionally represented by the grammar as generic
+        // parenthesized blocks rather than expression nodes. Their `Rec.Field`
+        // shape is still structural: an operator node containing exactly `.`
+        // followed by a name token. Include that form without falling back to
+        // raw source scanning.
+        if node.kind() == "operator" && node.utf8_text(bytes).ok().map(str::trim) == Some(".") {
+            if let Some(member) = node.next_named_sibling() {
+                if matches!(
+                    member.kind(),
+                    "name"
+                        | "name_or_keyword"
+                        | "identifier"
+                        | "quoted_identifier"
+                        | "object_keyword"
+                        | "type_keyword"
+                        | "metadata_keyword"
+                        | "property_keyword"
+                        | "keyword"
+                ) {
+                    if let Some(name) = super::node_text_clean(member, bytes) {
+                        names.insert(name.to_ascii_lowercase());
+                    }
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    names
+}
+
+/// Collect bare names that occur as primary expressions. This is useful for
+/// object-local semantic checks where an unqualified identifier can denote a
+/// member of the current object. Member suffixes are intentionally excluded so
+/// a local `Name` is not confused with `Customer.Name`.
+pub fn collect_primary_expression_names(
+    tree: &Tree,
+    source: &str,
+) -> std::collections::HashSet<String> {
+    let bytes = source.as_bytes();
+    let mut names = std::collections::HashSet::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "primary_expression" {
+            if let Some(child) = node.named_child(0) {
+                if matches!(
+                    child.kind(),
+                    "name"
+                        | "name_or_keyword"
+                        | "identifier"
+                        | "quoted_identifier"
+                        | "object_keyword"
+                        | "type_keyword"
+                        | "metadata_keyword"
+                        | "property_keyword"
+                        | "keyword"
+                ) {
+                    if let Some(name) = super::node_text_clean(child, bytes) {
+                        names.insert(name.to_ascii_lowercase());
+                    }
+                    continue;
+                }
+            }
+        }
+        if matches!(node.kind(), "for_statement" | "foreach_statement") {
+            if let Some(iterator) = node.child_by_field_name("iterator") {
+                if let Some(name) = super::node_text_clean(iterator, bytes) {
+                    names.insert(name.to_ascii_lowercase());
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::AlParser;
+
+    #[test]
+    fn ast_name_collectors_ignore_literals_and_declaration_headers() {
+        let src = r#"table 50100 "T"
+{
+    fields
+    {
+        field(1; "No. Series"; Code[20]) { }
+        field(2; Amount; Decimal) { }
+    }
+
+    procedure Run()
+    begin
+        Rec."No. Series" := '';
+        Validate(Amount);
+        Message('Rec.Hidden and Phantom');
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let parsed = parser.parse(src);
+        let members = collect_member_access_names(&parsed.tree, src);
+        assert!(members.contains("no. series"), "{members:?}");
+        assert!(!members.contains("hidden"), "{members:?}");
+
+        let primary = collect_primary_expression_names(&parsed.tree, src);
+        assert!(primary.contains("amount"), "{primary:?}");
+        assert!(!primary.contains("phantom"), "{primary:?}");
+
+        let page_src = r#"page 50101 "P"
+{
+    layout { area(Content) { field("No."; Rec."No.") { } } }
+}"#;
+        let page = parser.parse(page_src);
+        let page_members = collect_member_access_names(&page.tree, page_src);
+        assert!(page_members.contains("no."), "{page_members:?}");
+    }
 
     #[test]
     fn find_variable_references_returns_each_span_once() {
@@ -873,6 +1025,38 @@ mod tests {
             count, 1,
             "Case-insensitive call reference expected; got {}",
             count
+        );
+    }
+
+    #[test]
+    fn collect_call_sites_preserves_exact_call_ranges() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Run()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.FindFirst();
+        Message(Customer.Name);
+    end;
+}"#;
+        let result = AlParser::parse_quick(src);
+        let calls = collect_call_sites(&result.tree, src);
+        let find = calls
+            .iter()
+            .find(|(name, _)| name == "findfirst")
+            .expect("member call should be collected");
+        assert_eq!(
+            &src.as_bytes()[find.1.start_byte..find.1.end_byte],
+            b"FindFirst"
+        );
+        assert!(
+            calls.iter().any(|(name, _)| name == "message"),
+            "bare calls must also be collected"
+        );
+        assert!(
+            calls.iter().all(|(name, _)| name != "name"),
+            "field access must not be classified as a call"
         );
     }
 }

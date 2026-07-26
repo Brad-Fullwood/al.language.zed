@@ -109,13 +109,26 @@ pub enum SourceLookupError {
         kind: SourceMemberKind,
         reason: String,
     },
+    PackageSourceUnavailable {
+        object: String,
+        package: String,
+        path: String,
+        reason: String,
+    },
+    InvalidWorkspaceDeclaration {
+        path: PathBuf,
+        reason: String,
+    },
 }
 
 impl fmt::Display for SourceLookupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ObjectNotFound { name } => {
-                write!(f, "Object '{name}' not found in workspace or symbol packages")
+                write!(
+                    f,
+                    "Object '{name}' not found in workspace or symbol packages"
+                )
             }
             Self::Ambiguous { name, matches } => write!(
                 f,
@@ -146,6 +159,21 @@ impl fmt::Display for SourceLookupError {
                 object,
                 reason
             ),
+            Self::PackageSourceUnavailable {
+                object,
+                package,
+                path,
+                reason,
+            } => write!(
+                f,
+                "Source for object '{object}' in package '{package}' could not be read from '{}': {reason}",
+                path
+            ),
+            Self::InvalidWorkspaceDeclaration { path, reason } => write!(
+                f,
+                "Workspace source '{}' has an invalid AL object declaration: {reason}",
+                path.display()
+            ),
         }
     }
 }
@@ -163,7 +191,7 @@ pub fn source(
     package_filter: Option<&str>,
     member: Option<SourceMember<'_>>,
 ) -> Result<SourceResult, SourceLookupError> {
-    let candidates = source_candidates(workspace, name, kind_filter, package_filter);
+    let candidates = source_candidates(workspace, name, kind_filter, package_filter)?;
     let candidate = match candidates.as_slice() {
         [] => {
             return Err(SourceLookupError::ObjectNotFound {
@@ -205,7 +233,7 @@ fn source_candidates(
     name: &str,
     kind_filter: Option<ObjectKind>,
     package_filter: Option<&str>,
-) -> Vec<SourceCandidate> {
+) -> Result<Vec<SourceCandidate>, SourceLookupError> {
     let package_filter = package_filter
         .map(str::trim)
         .filter(|value| !value.is_empty());
@@ -216,12 +244,18 @@ fn source_candidates(
     let mut workspace_candidates = Vec::new();
     if workspace_requested {
         for path in workspace.file_index.object_paths(name) {
-            let Some(info) = workspace.file_index.object_info.get(&path) else {
-                continue;
-            };
-            let Ok(kind) = info.kind.parse::<ObjectKind>() else {
-                continue;
-            };
+            let info = workspace.file_index.object_info.get(&path).ok_or_else(|| {
+                SourceLookupError::InvalidWorkspaceDeclaration {
+                    path: path.clone(),
+                    reason: "object-name index has no matching declaration metadata".to_string(),
+                }
+            })?;
+            let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
+                SourceLookupError::InvalidWorkspaceDeclaration {
+                    path: path.clone(),
+                    reason,
+                }
+            })?;
             if kind_filter.is_none_or(|expected| expected == kind) {
                 workspace_candidates.push(SourceCandidate::Workspace { path, kind });
             }
@@ -233,10 +267,10 @@ fn source_candidates(
     // chooses a package. This mirrors normal AL project resolution while still
     // rejecting same-name objects of different workspace kinds.
     if package_filter.is_none() && !workspace_candidates.is_empty() {
-        return workspace_candidates;
+        return Ok(workspace_candidates);
     }
     if package_filter.is_some() && workspace_requested {
-        return workspace_candidates;
+        return Ok(workspace_candidates);
     }
 
     let mut package_candidates = workspace
@@ -255,7 +289,7 @@ fn source_candidates(
         .map(SourceCandidate::Package)
         .collect::<Vec<_>>();
     package_candidates.sort_by_key(candidate_sort_key);
-    package_candidates
+    Ok(package_candidates)
 }
 
 fn candidate_sort_key(candidate: &SourceCandidate) -> (String, String, i32) {
@@ -295,7 +329,24 @@ fn try_workspace_source(
             name: name.to_string(),
         }
     })?;
-    let id = obj_info.id.unwrap_or(0) as i32;
+    let declared_kind = obj_info.kind.parse::<ObjectKind>().map_err(|reason| {
+        SourceLookupError::InvalidWorkspaceDeclaration {
+            path: file_path.to_path_buf(),
+            reason,
+        }
+    })?;
+    if declared_kind != kind {
+        return Err(SourceLookupError::InvalidWorkspaceDeclaration {
+            path: file_path.to_path_buf(),
+            reason: format!("indexed kind {kind} does not match parsed kind {declared_kind}"),
+        });
+    }
+    let id = declared_kind
+        .normalize_declaration_id(obj_info.id)
+        .map_err(|error| SourceLookupError::InvalidWorkspaceDeclaration {
+            path: file_path.to_path_buf(),
+            reason: error.to_string(),
+        })?;
 
     if let Some(member) = member {
         let root = tree.root_node();
@@ -357,45 +408,59 @@ fn try_package_source(
     let app_path = workspace.symbols.app_path(&entry.package);
 
     if let Some(ref path) = app_path {
-        if let Ok(source_index) = al_symbols::source_index::get_or_build(path) {
-            if let Some(full_source) = source_index.extract_source_for_entry(entry) {
-                if let Some(member) = member {
-                    if let Some((code, sig)) = extract_member_from_text(&full_source, member) {
-                        return Ok(SourceResult {
-                            k: entry.kind,
-                            id: entry.id,
-                            n: entry.name.clone(),
-                            proc_name: Some(member.name.to_string()),
-                            src: SourceLevel::Package,
-                            source_availability: SourceAvailability::EmbeddedSource,
-                            pkg: Some(entry.package.clone()),
-                            sig: Some(sig),
-                            range: None,
-                            code,
-                            note: None,
-                        });
-                    }
-                    return Err(SourceLookupError::MemberNotFound {
-                        object: entry.name.clone(),
-                        member: member.name.to_string(),
-                        kind: member.kind,
+        let source_index = al_symbols::source_index::get_or_build(path).map_err(|error| {
+            SourceLookupError::PackageSourceUnavailable {
+                object: entry.name.clone(),
+                package: entry.package.clone(),
+                path: path.display().to_string(),
+                reason: error.to_string(),
+            }
+        })?;
+        let extracted = source_index
+            .extract_source_for_entry(entry)
+            .map_err(|error| SourceLookupError::PackageSourceUnavailable {
+                object: entry.name.clone(),
+                package: entry.package.clone(),
+                path: path.display().to_string(),
+                reason: error.to_string(),
+            })?;
+        if let Some(full_source) = extracted {
+            if let Some(member) = member {
+                if let Some((code, sig)) = extract_member_from_text(&full_source, member) {
+                    return Ok(SourceResult {
+                        k: entry.kind,
+                        id: entry.id,
+                        n: entry.name.clone(),
+                        proc_name: Some(member.name.to_string()),
+                        src: SourceLevel::Package,
+                        source_availability: SourceAvailability::EmbeddedSource,
+                        pkg: Some(entry.package.clone()),
+                        sig: Some(sig),
+                        range: None,
+                        code,
+                        note: None,
                     });
                 }
-
-                return Ok(SourceResult {
-                    k: entry.kind,
-                    id: entry.id,
-                    n: entry.name.clone(),
-                    proc_name: None,
-                    src: SourceLevel::Package,
-                    source_availability: SourceAvailability::EmbeddedSource,
-                    pkg: Some(entry.package.clone()),
-                    sig: None,
-                    range: None,
-                    code: full_source,
-                    note: None,
+                return Err(SourceLookupError::MemberNotFound {
+                    object: entry.name.clone(),
+                    member: member.name.to_string(),
+                    kind: member.kind,
                 });
             }
+
+            return Ok(SourceResult {
+                k: entry.kind,
+                id: entry.id,
+                n: entry.name.clone(),
+                proc_name: None,
+                src: SourceLevel::Package,
+                source_availability: SourceAvailability::EmbeddedSource,
+                pkg: Some(entry.package.clone()),
+                sig: None,
+                range: None,
+                code: full_source,
+                note: None,
+            });
         }
     }
 
@@ -865,6 +930,7 @@ mod tests {
                 properties: vec![],
             }],
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -902,6 +968,7 @@ mod tests {
             ],
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -959,6 +1026,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: vec![VariableSymbol {
                 name: "TotalAmount".to_string(),
                 type_name: "Decimal".to_string(),
@@ -988,6 +1056,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -1114,6 +1183,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         };
 
@@ -1355,6 +1425,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         };
         ws.symbols.add_entries_owned(vec![table, codeunit]);
@@ -1453,6 +1524,37 @@ mod tests {
             source(&ws, "Workspace Source", None, None, procedure("OnInsert")),
             Err(SourceLookupError::MemberNotFound { .. })
         ));
+    }
+
+    #[test]
+    fn source_rejects_numbered_workspace_object_without_id() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/MissingId.al"),
+            r#"codeunit "Missing Id" { procedure Run() begin end; }"#.to_string(),
+        );
+
+        let error = source(&ws, "Missing Id", None, None, None)
+            .expect_err("a numbered declaration must not normalize a missing ID to zero");
+        assert!(matches!(
+            error,
+            SourceLookupError::InvalidWorkspaceDeclaration { .. }
+        ));
+        assert!(error.to_string().contains("require a numeric object ID"));
+    }
+
+    #[test]
+    fn source_normalizes_idless_workspace_object_to_zero() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Contract.al"),
+            r#"interface "Source Contract" { procedure Run(); }"#.to_string(),
+        );
+
+        let result = source(&ws, "Source Contract", None, None, None)
+            .expect("name-scoped objects have an explicit normalized identity");
+        assert_eq!(result.k, ObjectKind::Interface);
+        assert_eq!(result.id, 0);
     }
 
     #[test]

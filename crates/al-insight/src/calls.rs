@@ -17,6 +17,7 @@
 //! - [`fanout_score`] — count call-suffix nodes in a tree (used for tier ranking).
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use al_symbols::{ObjectKind, SymbolEntry, SymbolIndex};
@@ -24,6 +25,87 @@ use al_symbols::{ObjectKind, SymbolEntry, SymbolIndex};
 use super::graph::{EventNodeType, InsightEdge, InsightGraph, InsightNode, NodeKey};
 use super::index::{CallGraph, EdgeResolutionState, NodeId};
 use al_source::file_index::FileIndex;
+
+/// A broken invariant in a source index used to construct a call graph.
+///
+/// These are not ordinary unresolved calls: they mean a file that was
+/// advertised as an indexed AL object could not participate in graph
+/// construction. Returning the error prevents callers from presenting a
+/// quietly incomplete graph as authoritative.
+#[derive(Debug, thiserror::Error)]
+pub enum SourceGraphError {
+    #[error("indexed AL object '{}' has unsupported kind '{kind}'", path.display())]
+    InvalidObjectKind { path: PathBuf, kind: String },
+    #[error("indexed AL object '{}' has no numeric object ID", path.display())]
+    MissingObjectId { path: PathBuf },
+    #[error("indexed AL object '{}' has ID {id}, outside the supported i32 range", path.display())]
+    ObjectIdOutOfRange { path: PathBuf, id: i64 },
+    #[error(
+        "indexed name-scoped AL object '{}' unexpectedly declares numeric ID {id}",
+        path.display()
+    )]
+    UnexpectedObjectId { path: PathBuf, id: i64 },
+    #[error("indexed AL object '{}' has no coherent cached source/tree pair", path.display())]
+    MissingCachedParse { path: PathBuf },
+    #[error(
+        "callable graph node for {kind} '{object}'.'{member}' from '{}' was not registered",
+        path.display()
+    )]
+    MissingCallableNode {
+        path: PathBuf,
+        kind: ObjectKind,
+        object: String,
+        member: String,
+    },
+}
+
+fn indexed_object_kind(
+    path: &Path,
+    info: &al_source::file_index::CachedObjectInfo,
+) -> Result<ObjectKind, SourceGraphError> {
+    info.kind
+        .parse()
+        .map_err(|_| SourceGraphError::InvalidObjectKind {
+            path: path.to_path_buf(),
+            kind: info.kind.clone(),
+        })
+}
+
+fn indexed_object_id(
+    path: &Path,
+    info: &al_source::file_index::CachedObjectInfo,
+    kind: ObjectKind,
+) -> Result<i32, SourceGraphError> {
+    kind.normalize_declaration_id(info.id)
+        .map_err(|error| match error {
+            al_symbols::DeclarationIdError::Missing { .. } => SourceGraphError::MissingObjectId {
+                path: path.to_path_buf(),
+            },
+            al_symbols::DeclarationIdError::OutOfRange { id, .. } => {
+                SourceGraphError::ObjectIdOutOfRange {
+                    path: path.to_path_buf(),
+                    id,
+                }
+            }
+            al_symbols::DeclarationIdError::Unexpected { id, .. } => {
+                SourceGraphError::UnexpectedObjectId {
+                    path: path.to_path_buf(),
+                    id,
+                }
+            }
+        })
+}
+
+fn indexed_parse(
+    file_index: &FileIndex,
+    path: &Path,
+) -> Result<(String, tree_sitter::Tree), SourceGraphError> {
+    file_index
+        .get_cached_parse(path)
+        .ok_or_else(|| SourceGraphError::MissingCachedParse {
+            path: path.to_path_buf(),
+        })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordOp {
@@ -948,7 +1030,7 @@ pub fn register_workspace_nodes(
     file_index: &FileIndex,
     symbols: &SymbolIndex,
     insight: &mut InsightGraph,
-) {
+) -> Result<(), SourceGraphError> {
     let mut workspace_entries: Vec<al_symbols::SymbolEntry> = Vec::new();
 
     // Snapshot the (path, info) pairs in one short-lived shard iteration.
@@ -969,12 +1051,8 @@ pub fn register_workspace_nodes(
         let path = path.as_path();
         let info = &info;
 
-        let ok: ObjectKind = match info.kind.parse() {
-            Ok(k) => k,
-            Err(_) => continue,
-        };
-
-        let id = info.id.unwrap_or(0) as i32;
+        let ok = indexed_object_kind(path, info)?;
+        let id = indexed_object_id(path, info, ok)?;
         let obj_key = NodeKey::Object(ok, info.name.to_lowercase());
         let obj_idx = insight.ensure_node(
             obj_key,
@@ -986,10 +1064,7 @@ pub fn register_workspace_nodes(
             },
         );
 
-        let (source, tree) = match file_index.get_cached_parse(path) {
-            Some(pair) => pair,
-            None => continue,
-        };
+        let (source, tree) = indexed_parse(file_index, path)?;
 
         let source_bytes = source.as_bytes();
         register_procedures_from_tree(
@@ -1040,6 +1115,7 @@ pub fn register_workspace_nodes(
     // target on the node but had no SubscribesTo edge, so `trace` showed
     // origins and nothing else.
     insight.resolve_subscriber_edges();
+    Ok(())
 }
 
 /// Register objects and callable members parsed from dependency package source.
@@ -1050,7 +1126,10 @@ pub fn register_workspace_nodes(
 /// bodies available to call-edge resolution. Unlike [`register_workspace_nodes`]
 /// it deliberately does not rewrite the shared [`SymbolIndex`]: dependency
 /// symbols are already indexed under their real package identities.
-pub fn register_dependency_source_nodes(file_index: &FileIndex, insight: &mut InsightGraph) {
+pub fn register_dependency_source_nodes(
+    file_index: &FileIndex,
+    insight: &mut InsightGraph,
+) -> Result<(), SourceGraphError> {
     let snapshot: Vec<(std::path::PathBuf, al_source::file_index::CachedObjectInfo)> = file_index
         .object_info
         .iter()
@@ -1058,22 +1137,19 @@ pub fn register_dependency_source_nodes(file_index: &FileIndex, insight: &mut In
         .collect();
 
     for (path, info) in snapshot {
-        let Ok(object_kind) = info.kind.parse::<ObjectKind>() else {
-            continue;
-        };
+        let object_kind = indexed_object_kind(&path, &info)?;
+        let object_id = indexed_object_id(&path, &info, object_kind)?;
         let object_key = NodeKey::Object(object_kind, info.name.to_lowercase());
         let object = insight.ensure_node(
             object_key,
             InsightNode::Object {
                 kind: object_kind,
-                id: info.id.unwrap_or_default() as i32,
+                id: object_id,
                 name: info.name.clone(),
                 package: "dependency-source".to_string(),
             },
         );
-        let Some((source, tree)) = file_index.get_cached_parse(&path) else {
-            continue;
-        };
+        let (source, tree) = indexed_parse(file_index, &path)?;
         register_procedures_from_tree(
             tree.root_node(),
             source.as_bytes(),
@@ -1085,6 +1161,7 @@ pub fn register_dependency_source_nodes(file_index: &FileIndex, insight: &mut In
     }
 
     insight.resolve_subscriber_edges();
+    Ok(())
 }
 
 /// Extract `FieldSymbol` data from table/tableextension field sections.
@@ -1753,14 +1830,12 @@ pub fn extract_attribute_args(attr_text: &str) -> Vec<String> {
 /// 2. Resolve Tier 1 (score >= 5 or top 20%) eagerly.
 /// 3. Return the number of procedures resolved.
 ///
-/// # Panics
-/// Does not panic. Missing symbols or nodes are silently skipped.
 pub fn populate_workspace_call_edges(
     file_index: &FileIndex,
     symbols: &SymbolIndex,
     insight: &InsightGraph,
     call_graph: &mut CallGraph,
-) -> usize {
+) -> Result<usize, SourceGraphError> {
     let mut file_scores: Vec<(
         std::path::PathBuf,
         String,
@@ -1773,53 +1848,52 @@ pub fn populate_workspace_call_edges(
         let path = entry.key().clone();
         let info = entry.value().clone();
 
-        let (source, tree) = match file_index.get_cached_parse(&path) {
-            Some(pair) => pair,
-            None => continue,
-        };
+        let (source, tree) = indexed_parse(file_index, &path)?;
 
         let score = fanout_score(&tree);
         file_scores.push((path, source, tree, info, score));
     }
 
     if file_scores.is_empty() {
-        return 0;
+        return Ok(0);
     }
 
     let threshold = tier1_threshold(&file_scores);
 
     let mut resolved = 0;
 
-    for (_, source, tree, info, score) in &file_scores {
+    for (path, source, tree, info, score) in &file_scores {
         if *score < threshold {
             continue;
         }
 
-        let ok: ObjectKind = match info.kind.parse() {
-            Ok(k) => k,
-            Err(_) => continue,
-        };
+        let ok = indexed_object_kind(path, info)?;
 
         let procedures = collect_procedure_names_from_tree(tree.root_node(), source.as_bytes());
         for proc_name in procedures {
-            if let Some(proc_id) = callable_node_id(insight, ok, &info.name, &proc_name) {
-                if call_graph.resolution_state(proc_id) == EdgeResolutionState::Unresolved {
-                    call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolving);
+            let proc_id =
+                callable_node_id(insight, ok, &info.name, &proc_name).ok_or_else(|| {
+                    SourceGraphError::MissingCallableNode {
+                        path: path.clone(),
+                        kind: ok,
+                        object: info.name.clone(),
+                        member: proc_name.clone(),
+                    }
+                })?;
+            if call_graph.resolution_state(proc_id) == EdgeResolutionState::Unresolved {
+                call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolving);
 
-                    // We need a mutable insight... but we're working with immutable here.
-                    // populate_call_edges_for_procedure takes &InsightGraph + &mut CallGraph.
-                    populate_call_edges_for_procedure(
-                        tree, source, ok, &info.name, &proc_name, symbols, insight, call_graph,
-                    );
+                populate_call_edges_for_procedure(
+                    tree, source, ok, &info.name, &proc_name, symbols, insight, call_graph,
+                );
 
-                    call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolved);
-                    resolved += 1;
-                }
+                call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolved);
+                resolved += 1;
             }
         }
     }
 
-    resolved
+    Ok(resolved)
 }
 
 /// Resolve direct-call / trigger edges for **every** workspace procedure,
@@ -1836,45 +1910,43 @@ pub fn populate_workspace_call_edges(
 ///
 /// Returns the number of procedures whose edges were resolved by this call.
 ///
-/// # Panics
-/// Does not panic. Missing symbols or nodes are silently skipped.
 pub fn resolve_all_workspace_call_edges(
     file_index: &FileIndex,
     symbols: &SymbolIndex,
     insight: &InsightGraph,
     call_graph: &mut CallGraph,
-) -> usize {
+) -> Result<usize, SourceGraphError> {
     let mut resolved = 0;
 
     for entry in file_index.object_info.iter() {
         let path = entry.key().clone();
         let info = entry.value().clone();
 
-        let (source, tree) = match file_index.get_cached_parse(&path) {
-            Some(pair) => pair,
-            None => continue,
-        };
-
-        let ok: ObjectKind = match info.kind.parse() {
-            Ok(k) => k,
-            Err(_) => continue,
-        };
+        let (source, tree) = indexed_parse(file_index, &path)?;
+        let ok = indexed_object_kind(&path, &info)?;
 
         let procedures = collect_procedure_names_from_tree(tree.root_node(), source.as_bytes());
         for proc_name in procedures {
-            if let Some(proc_id) = callable_node_id(insight, ok, &info.name, &proc_name) {
-                if call_graph.resolution_state(proc_id) != EdgeResolutionState::Resolved {
-                    populate_call_edges_for_procedure(
-                        &tree, &source, ok, &info.name, &proc_name, symbols, insight, call_graph,
-                    );
-                    call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolved);
-                    resolved += 1;
-                }
+            let proc_id =
+                callable_node_id(insight, ok, &info.name, &proc_name).ok_or_else(|| {
+                    SourceGraphError::MissingCallableNode {
+                        path: path.clone(),
+                        kind: ok,
+                        object: info.name.clone(),
+                        member: proc_name.clone(),
+                    }
+                })?;
+            if call_graph.resolution_state(proc_id) != EdgeResolutionState::Resolved {
+                populate_call_edges_for_procedure(
+                    &tree, &source, ok, &info.name, &proc_name, symbols, insight, call_graph,
+                );
+                call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolved);
+                resolved += 1;
             }
         }
     }
 
-    resolved
+    Ok(resolved)
 }
 
 /// Compute the Tier 1 fanout threshold.
@@ -1944,7 +2016,100 @@ fn collect_procedure_names_from_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use al_source::file_index::FileIndex;
     use al_symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
+
+    fn indexed_codeunit(path: &str) -> (FileIndex, PathBuf) {
+        let index = FileIndex::new();
+        let path = PathBuf::from(path);
+        index.add_file(
+            path.clone(),
+            r#"codeunit 50100 "Indexed"
+{
+    procedure Run()
+    begin
+        Helper();
+    end;
+
+    local procedure Helper()
+    begin
+    end;
+}"#
+            .to_string(),
+        );
+        (index, path)
+    }
+
+    #[test]
+    fn workspace_node_registration_rejects_invalid_indexed_object_kind() {
+        let (index, path) = indexed_codeunit("/workspace/InvalidKind.al");
+        index.object_info.get_mut(&path).unwrap().kind = "unknown-object".to_string();
+
+        let error = register_workspace_nodes(&index, &SymbolIndex::new(), &mut InsightGraph::new())
+            .unwrap_err();
+        assert!(
+            matches!(error, SourceGraphError::InvalidObjectKind { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn workspace_node_registration_rejects_missing_and_out_of_range_ids() {
+        let (missing_index, missing_path) = indexed_codeunit("/workspace/MissingId.al");
+        missing_index.object_info.get_mut(&missing_path).unwrap().id = None;
+        let missing_error = register_workspace_nodes(
+            &missing_index,
+            &SymbolIndex::new(),
+            &mut InsightGraph::new(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(missing_error, SourceGraphError::MissingObjectId { .. }),
+            "{missing_error}"
+        );
+
+        let (large_index, large_path) = indexed_codeunit("/workspace/LargeId.al");
+        large_index.object_info.get_mut(&large_path).unwrap().id = Some(i64::from(i32::MAX) + 1);
+        let large_error =
+            register_workspace_nodes(&large_index, &SymbolIndex::new(), &mut InsightGraph::new())
+                .unwrap_err();
+        assert!(
+            matches!(large_error, SourceGraphError::ObjectIdOutOfRange { .. }),
+            "{large_error}"
+        );
+    }
+
+    #[test]
+    fn workspace_node_registration_rejects_missing_cached_parse() {
+        let (index, indexed_path) = indexed_codeunit("/workspace/Indexed.al");
+        let info = index.object_info.get(&indexed_path).unwrap().clone();
+        index.object_info.clear();
+        index
+            .object_info
+            .insert(PathBuf::from("/workspace/MissingTree.al"), info);
+
+        let error = register_workspace_nodes(&index, &SymbolIndex::new(), &mut InsightGraph::new())
+            .unwrap_err();
+        assert!(
+            matches!(error, SourceGraphError::MissingCachedParse { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn call_edge_population_rejects_unregistered_callable_nodes() {
+        let (index, _) = indexed_codeunit("/workspace/Unregistered.al");
+        let insight = InsightGraph::new();
+        let mut call_graph = CallGraph::build_from_insight(&insight);
+
+        let error =
+            populate_workspace_call_edges(&index, &SymbolIndex::new(), &insight, &mut call_graph)
+                .unwrap_err();
+        assert!(
+            matches!(error, SourceGraphError::MissingCallableNode { .. }),
+            "{error}"
+        );
+    }
 
     #[test]
     fn extract_methods_captures_preceding_sibling_attributes() {
@@ -2055,6 +2220,7 @@ mod tests {
             enum_values: vec![],
             keys: vec![],
             properties: vec![],
+            permissions: Vec::new(),
             variables: vec![],
         }
     }
@@ -2075,6 +2241,7 @@ mod tests {
             enum_values: vec![],
             keys: vec![],
             properties: vec![],
+            permissions: Vec::new(),
             variables: vec![],
         }
     }
@@ -2443,7 +2610,7 @@ mod tests {
 
         let symbols = SymbolIndex::new();
         let mut insight = InsightGraph::new();
-        register_workspace_nodes(&file_index, &symbols, &mut insight);
+        register_workspace_nodes(&file_index, &symbols, &mut insight).unwrap();
 
         let steps = crate::search::trace_event(&insight, "OnAfterDoThing", 10);
         assert!(
@@ -2490,7 +2657,7 @@ mod tests {
 
         let symbols = SymbolIndex::new();
         let mut insight = InsightGraph::new();
-        register_workspace_nodes(&file_index, &symbols, &mut insight);
+        register_workspace_nodes(&file_index, &symbols, &mut insight).unwrap();
 
         let steps = crate::search::trace_event(&insight, "OnAfterInsertEvent", 10);
         assert!(
@@ -2700,9 +2867,9 @@ mod tests {
         }
         let symbols = SymbolIndex::new();
         let mut insight = InsightGraph::new();
-        register_workspace_nodes(&file_index, &symbols, &mut insight);
+        register_workspace_nodes(&file_index, &symbols, &mut insight).unwrap();
         let mut cg = CallGraph::build_from_insight(&insight);
-        resolve_all_workspace_call_edges(&file_index, &symbols, &insight, &mut cg);
+        resolve_all_workspace_call_edges(&file_index, &symbols, &insight, &mut cg).unwrap();
         (insight, cg)
     }
 

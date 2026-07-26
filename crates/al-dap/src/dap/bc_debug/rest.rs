@@ -105,11 +105,81 @@ pub async fn get_metadata(
     }
 }
 
+/// Resolve the Business Central Web client base URL from the developer
+/// endpoint. On-premises developer services and the Web client commonly use
+/// different ports, so deriving this URL from `DeveloperServicesPort` opens
+/// the wrong service. BC exposes the configured `PublicWebBaseUrl` through
+/// `/dev/webendpoint`; consume that authoritative value instead.
+pub async fn get_web_endpoint(
+    http: &reqwest::Client,
+    config: &BcDebugConfig,
+    access_token: &str,
+) -> Result<String> {
+    let base = config.base_url();
+    let url = format!(
+        "{base}/webendpoint?tenant={}",
+        percent_encode_url(&config.tenant)
+    );
+    let resp = http
+        .get(&url)
+        .header(AUTHORIZATION, format!("Bearer {access_token}"))
+        .send()
+        .await
+        .map_err(|e| DapError::ConnectionFailed(format!("Web endpoint request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = al_bc::bc_client::sanitize_error_body(
+            &resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<body read failed: {e}>")),
+        );
+        return Err(DapError::ConnectionFailed(format!(
+            "Web endpoint lookup failed (HTTP {status}): {body}. Configure \
+             PublicWebBaseUrl on the Business Central server."
+        )));
+    }
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| DapError::ConnectionFailed(format!("Web endpoint body failed: {e}")))?;
+    let trimmed = body.trim();
+    let endpoint = serde_json::from_str::<serde_json::Value>(trimmed)
+        .ok()
+        .and_then(|value| match value {
+            serde_json::Value::String(endpoint) => Some(endpoint),
+            serde_json::Value::Object(object) => ["webEndpoint", "WebEndpoint", "url", "Url"]
+                .iter()
+                .find_map(|key| {
+                    object
+                        .get(*key)
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                }),
+            _ => None,
+        })
+        .unwrap_or_else(|| trimmed.to_string());
+    let parsed = url::Url::parse(endpoint.trim()).map_err(|error| {
+        DapError::ConnectionFailed(format!(
+            "Business Central returned an invalid Web endpoint `{endpoint}`: {error}"
+        ))
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(DapError::ConnectionFailed(format!(
+            "Business Central returned an unsupported Web endpoint `{endpoint}`; expected an \
+             absolute http:// or https:// URL"
+        )));
+    }
+    Ok(endpoint.trim().trim_end_matches('/').to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // --- publish_app / get_metadata over wiremock (HTTP seam) ----------------
+    // --- publish_app / metadata/webendpoint over wiremock (HTTP seam) --------
     //
     // Both functions take an injected `&reqwest::Client` and build their URL
     // from `BcDebugConfig::base_url()`. By pointing an OnPrem config at a
@@ -287,5 +357,77 @@ mod tests {
             }
             other => panic!("expected ConnectionFailed, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn get_web_endpoint_uses_authoritative_public_web_base_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/BC/dev/webendpoint"))
+            .and(query_param("tenant", "default"))
+            .and(header(AUTHORIZATION, "Bearer web-token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"webEndpoint": "https://web.example/BC/"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let endpoint = get_web_endpoint(
+            &reqwest::Client::new(),
+            &config_for_mock(&server),
+            "web-token",
+        )
+        .await
+        .expect("valid endpoint");
+        assert_eq!(endpoint, "https://web.example/BC");
+    }
+
+    #[tokio::test]
+    async fn get_web_endpoint_accepts_json_string_and_rejects_unsafe_schemes() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/BC/dev/webendpoint"))
+            .respond_with(ResponseTemplate::new(200).set_body_json("https://web.example/BC"))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            get_web_endpoint(&reqwest::Client::new(), &config_for_mock(&server), "token")
+                .await
+                .expect("JSON string endpoint"),
+            "https://web.example/BC"
+        );
+
+        let unsafe_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/BC/dev/webendpoint"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("file:///etc/passwd"))
+            .mount(&unsafe_server)
+            .await;
+        let error = get_web_endpoint(
+            &reqwest::Client::new(),
+            &config_for_mock(&unsafe_server),
+            "token",
+        )
+        .await
+        .expect_err("non-http endpoint must fail");
+        assert!(error.to_string().contains("unsupported Web endpoint"));
+    }
+
+    #[tokio::test]
+    async fn get_web_endpoint_failure_names_public_web_base_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/BC/dev/webendpoint"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not configured"))
+            .mount(&server)
+            .await;
+        let error = get_web_endpoint(&reqwest::Client::new(), &config_for_mock(&server), "token")
+            .await
+            .expect_err("missing endpoint must fail");
+        let message = error.to_string();
+        assert!(message.contains("404"), "{message}");
+        assert!(message.contains("PublicWebBaseUrl"), "{message}");
     }
 }

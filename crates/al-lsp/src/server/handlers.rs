@@ -18,10 +18,15 @@ pub(crate) fn handle_signature_help(
     server: &AlServer,
     uri: &Url,
     position: Position,
-) -> Option<SignatureHelp> {
+) -> Result<Option<SignatureHelp>, String> {
     let core_pos = position.into();
-    let result = al_analysis::queries::signature::signature_help(&server.workspace, uri, core_pos)?;
-    Some(SignatureHelp {
+    let Some(result) =
+        al_analysis::queries::signature::signature_help(&server.workspace, uri, core_pos)
+            .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(SignatureHelp {
         signatures: result
             .signatures
             .into_iter()
@@ -49,7 +54,7 @@ pub(crate) fn handle_signature_help(
             .collect(),
         active_signature: result.active_signature,
         active_parameter: result.active_parameter,
-    })
+    }))
 }
 
 pub(crate) fn handle_code_action(
@@ -71,9 +76,12 @@ pub(crate) fn handle_code_action(
             message: diag.message.clone(),
             code,
         };
-        if let Some(entry) =
-            al_analysis::queries::code_actions::quick_fix_for_diagnostic(uri, &text, &diag_info)
-        {
+        if let Some(entry) = al_analysis::queries::code_actions::quick_fix_for_diagnostic(
+            &server.workspace,
+            uri,
+            &text,
+            &diag_info,
+        ) {
             actions.push(core_action_to_lsp(entry, Some(diag)));
         }
         // AL0185 (and similar "Type … not found") namespace
@@ -183,7 +191,7 @@ pub(crate) fn handle_inlay_hint(
     server: &AlServer,
     uri: &Url,
     range: Range,
-) -> Option<Vec<InlayHint>> {
+) -> Result<Option<Vec<InlayHint>>, String> {
     al_analysis::queries::inlay_hints::inlay_hints(&server.workspace, uri, range.into())
-        .map(|hints| hints.into_iter().map(Into::into).collect())
+        .map(|hints| hints.map(|items| items.into_iter().map(Into::into).collect()))
 }

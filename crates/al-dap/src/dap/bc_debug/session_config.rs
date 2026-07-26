@@ -3,15 +3,146 @@
 
 use super::wire::percent_encode_url;
 
-/// Parse a DAP arg value that may be a `bool` or a `string` ("none"/"false" → false).
-/// `default` is returned for non-bool, non-string variants.
-fn parse_bool_or_string(v: &serde_json::Value, default: bool) -> bool {
-    match v {
-        serde_json::Value::Bool(b) => *b,
-        serde_json::Value::String(s) => {
-            !s.eq_ignore_ascii_case("none") && !s.eq_ignore_ascii_case("false")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BreakOnError {
+    None,
+    All,
+    ExcludeTry,
+}
+
+impl BreakOnError {
+    pub const fn enabled(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub const fn wire_value(self) -> u8 {
+        match self {
+            Self::None => 1,
+            Self::All => 2,
+            Self::ExcludeTry => 3,
         }
-        _ => default,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BreakOnRecordWrite {
+    None,
+    All,
+    ExcludeTemporary,
+}
+
+impl BreakOnRecordWrite {
+    pub const fn enabled(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub const fn wire_value(self) -> u8 {
+        match self {
+            Self::None => 1,
+            Self::All => 2,
+            Self::ExcludeTemporary => 3,
+        }
+    }
+}
+
+fn parse_break_on_error(value: &serde_json::Value) -> Result<BreakOnError, String> {
+    match value {
+        serde_json::Value::Bool(false) => Ok(BreakOnError::None),
+        serde_json::Value::Bool(true) => Ok(BreakOnError::All),
+        serde_json::Value::String(value)
+            if value.eq_ignore_ascii_case("none") || value.eq_ignore_ascii_case("false") =>
+        {
+            Ok(BreakOnError::None)
+        }
+        serde_json::Value::String(value)
+            if value.eq_ignore_ascii_case("all") || value.eq_ignore_ascii_case("true") =>
+        {
+            Ok(BreakOnError::All)
+        }
+        serde_json::Value::String(value) if value.eq_ignore_ascii_case("excludetry") => {
+            Ok(BreakOnError::ExcludeTry)
+        }
+        _ => Err(
+            "breakOnError must be a boolean or one of None, False, All, True, ExcludeTry"
+                .to_string(),
+        ),
+    }
+}
+
+fn parse_break_on_record_write(value: &serde_json::Value) -> Result<BreakOnRecordWrite, String> {
+    match value {
+        serde_json::Value::Bool(false) => Ok(BreakOnRecordWrite::None),
+        serde_json::Value::Bool(true) => Ok(BreakOnRecordWrite::All),
+        serde_json::Value::String(value)
+            if value.eq_ignore_ascii_case("none") || value.eq_ignore_ascii_case("false") =>
+        {
+            Ok(BreakOnRecordWrite::None)
+        }
+        serde_json::Value::String(value)
+            if value.eq_ignore_ascii_case("all") || value.eq_ignore_ascii_case("true") =>
+        {
+            Ok(BreakOnRecordWrite::All)
+        }
+        serde_json::Value::String(value) if value.eq_ignore_ascii_case("excludetemporary") => {
+            Ok(BreakOnRecordWrite::ExcludeTemporary)
+        }
+        _ => Err(
+            "breakOnRecordWrite must be a boolean or one of None, False, All, True, \
+             ExcludeTemporary"
+                .to_string(),
+        ),
+    }
+}
+
+fn optional_string(
+    args: &serde_json::Value,
+    key: &str,
+    errors: &mut Vec<String>,
+) -> Option<String> {
+    match args.get(key) {
+        None => None,
+        Some(serde_json::Value::String(value)) => Some(value.clone()),
+        Some(_) => {
+            errors.push(format!("{key} must be a string"));
+            None
+        }
+    }
+}
+
+fn optional_bool(args: &serde_json::Value, key: &str, errors: &mut Vec<String>) -> Option<bool> {
+    match args.get(key) {
+        None => None,
+        Some(serde_json::Value::Bool(value)) => Some(*value),
+        Some(_) => {
+            errors.push(format!("{key} must be a boolean"));
+            None
+        }
+    }
+}
+
+fn optional_i64(args: &serde_json::Value, key: &str, errors: &mut Vec<String>) -> Option<i64> {
+    match args.get(key) {
+        None => None,
+        Some(value) => match value.as_i64() {
+            Some(value) => Some(value),
+            None => {
+                errors.push(format!("{key} must be an integer"));
+                None
+            }
+        },
+    }
+}
+
+fn optional_u64(args: &serde_json::Value, key: &str, errors: &mut Vec<String>) -> Option<u64> {
+    match args.get(key) {
+        None => None,
+        Some(value) => match value.as_u64() {
+            Some(value) => Some(value),
+            None => {
+                errors.push(format!("{key} must be a non-negative integer"));
+                None
+            }
+        },
     }
 }
 
@@ -24,8 +155,8 @@ pub struct BcDebugConfig {
     pub environment_type: String,
     pub environment_name: Option<String>,
     pub authentication: String,
-    pub break_on_error: bool,
-    pub break_on_record_write: bool,
+    pub break_on_error: BreakOnError,
+    pub break_on_record_write: BreakOnRecordWrite,
     pub break_on_next: Option<String>,
     /// `sessionId` — a specific BC client session to attach to. `None` (the
     /// schema's `-1` sentinel) means "no specific session", in which case the
@@ -34,10 +165,17 @@ pub struct BcDebugConfig {
     pub session_id: Option<i64>,
     pub startup_object_type: String,
     pub startup_object_id: i64,
+    pub startup_company: Option<String>,
     pub launch_browser: bool,
     pub schema_update_mode: String,
     pub dependency_publishing_option: String,
+    pub enable_sql_information_debugger: bool,
+    pub enable_long_running_sql_statements: bool,
+    pub long_running_sql_statements_threshold: u64,
+    pub number_of_sql_statements: u64,
     pub accept_invalid_certs: bool,
+    #[doc(hidden)]
+    pub validation_errors: Vec<String>,
 }
 
 impl Default for BcDebugConfig {
@@ -49,17 +187,23 @@ impl Default for BcDebugConfig {
             tenant: "default".to_string(),
             environment_type: "Sandbox".to_string(),
             environment_name: None,
-            authentication: "UserPassword".to_string(),
-            break_on_error: true,
-            break_on_record_write: false,
+            authentication: "MicrosoftEntraID".to_string(),
+            break_on_error: BreakOnError::All,
+            break_on_record_write: BreakOnRecordWrite::None,
             break_on_next: None,
             session_id: None,
             startup_object_type: "Page".to_string(),
             startup_object_id: 22,
+            startup_company: None,
             launch_browser: true,
             schema_update_mode: "Synchronize".to_string(),
             dependency_publishing_option: "Default".to_string(),
+            enable_sql_information_debugger: true,
+            enable_long_running_sql_statements: true,
+            long_running_sql_statements_threshold: 500,
+            number_of_sql_statements: 10,
             accept_invalid_certs: false,
+            validation_errors: Vec::new(),
         }
     }
 }
@@ -67,66 +211,213 @@ impl Default for BcDebugConfig {
 impl BcDebugConfig {
     pub fn from_dap_args(args: &serde_json::Value) -> Self {
         let mut cfg = Self::default();
-        if let Some(s) = args.get("server").and_then(|v| v.as_str()) {
-            cfg.server = Some(s.to_string());
+        if !args.is_object() {
+            cfg.validation_errors
+                .push("debug configuration must be a JSON object".to_string());
+            return cfg;
         }
-        if let Some(s) = args.get("serverInstance").and_then(|v| v.as_str()) {
-            cfg.server_instance = Some(s.to_string());
+        if let Some(value) = optional_string(args, "server", &mut cfg.validation_errors) {
+            cfg.server = Some(value);
         }
-        if let Some(n) = args.get("port").and_then(|v| v.as_u64()) {
-            if let Ok(port) = u16::try_from(n) {
-                cfg.port = port;
+        if let Some(value) = optional_string(args, "serverInstance", &mut cfg.validation_errors) {
+            cfg.server_instance = Some(value);
+        }
+        if let Some(value) = optional_i64(args, "port", &mut cfg.validation_errors) {
+            match u16::try_from(value) {
+                Ok(0) | Err(_) => cfg
+                    .validation_errors
+                    .push("port must be an integer from 1 through 65535".to_string()),
+                Ok(port) => cfg.port = port,
             }
         }
-        if let Some(s) = args.get("tenant").and_then(|v| v.as_str()) {
-            cfg.tenant = s.to_string();
+        if let Some(value) = optional_string(args, "tenant", &mut cfg.validation_errors) {
+            cfg.tenant = value;
         }
-        if let Some(s) = args.get("environmentType").and_then(|v| v.as_str()) {
-            cfg.environment_type = s.to_string();
+        if let Some(value) = optional_string(args, "environmentType", &mut cfg.validation_errors) {
+            cfg.environment_type = value;
         }
-        if let Some(s) = args.get("environmentName").and_then(|v| v.as_str()) {
-            cfg.environment_name = Some(s.to_string());
+        if let Some(value) = optional_string(args, "environmentName", &mut cfg.validation_errors) {
+            cfg.environment_name = Some(value);
         }
-        if let Some(s) = args.get("authentication").and_then(|v| v.as_str()) {
-            cfg.authentication = s.to_string();
+        if let Some(value) = optional_string(args, "authentication", &mut cfg.validation_errors) {
+            cfg.authentication = value;
         }
         if let Some(v) = args.get("breakOnError") {
-            cfg.break_on_error = parse_bool_or_string(v, true);
+            match parse_break_on_error(v) {
+                Ok(mode) => cfg.break_on_error = mode,
+                Err(error) => cfg.validation_errors.push(error),
+            }
         }
         if let Some(v) = args.get("breakOnRecordWrite") {
-            cfg.break_on_record_write = parse_bool_or_string(v, false);
+            match parse_break_on_record_write(v) {
+                Ok(mode) => cfg.break_on_record_write = mode,
+                Err(error) => cfg.validation_errors.push(error),
+            }
         }
-        if let Some(s) = args.get("breakOnNext").and_then(|v| v.as_str()) {
-            cfg.break_on_next = Some(s.to_string());
+        if let Some(value) = optional_string(args, "breakOnNext", &mut cfg.validation_errors) {
+            cfg.break_on_next = Some(value);
         }
         // `sessionId` selects one specific BC client session to attach to. The
         // schema default is `-1` ("no specific session" → use breakOnNext), so
         // map any negative value to None and only carry a real (>= 0) id.
-        if let Some(n) = args.get("sessionId").and_then(|v| v.as_i64()) {
-            cfg.session_id = (n >= 0).then_some(n);
+        if let Some(value) = optional_i64(args, "sessionId", &mut cfg.validation_errors) {
+            match value {
+                -1 => cfg.session_id = None,
+                0.. => cfg.session_id = Some(value),
+                _ => cfg
+                    .validation_errors
+                    .push("sessionId must be -1 or a non-negative integer".to_string()),
+            }
         }
-        if let Some(s) = args.get("startupObjectType").and_then(|v| v.as_str()) {
-            cfg.startup_object_type = s.to_string();
-        }
-        if let Some(n) = args.get("startupObjectId").and_then(|v| v.as_i64()) {
-            cfg.startup_object_id = n;
-        }
-        if let Some(v) = args.get("launchBrowser") {
-            cfg.launch_browser = parse_bool_or_string(v, cfg.launch_browser);
-        }
-        if let Some(s) = args.get("schemaUpdateMode").and_then(|v| v.as_str()) {
-            cfg.schema_update_mode = s.to_string();
-        }
-        if let Some(s) = args
-            .get("dependencyPublishingOption")
-            .and_then(|v| v.as_str())
+        if let Some(value) = optional_string(args, "startupObjectType", &mut cfg.validation_errors)
         {
-            cfg.dependency_publishing_option = s.to_string();
+            cfg.startup_object_type = value;
         }
-        if let Some(v) = args.get("validateServerCertificate") {
-            cfg.accept_invalid_certs = !parse_bool_or_string(v, !cfg.accept_invalid_certs);
+        if let Some(value) = optional_i64(args, "startupObjectId", &mut cfg.validation_errors) {
+            if value < 0 {
+                cfg.validation_errors
+                    .push("startupObjectId must be a non-negative integer".to_string());
+            } else {
+                cfg.startup_object_id = value;
+            }
+        }
+        if let Some(value) = optional_string(args, "startupCompany", &mut cfg.validation_errors) {
+            cfg.startup_company = Some(value);
+        }
+        if let Some(value) = optional_bool(args, "launchBrowser", &mut cfg.validation_errors) {
+            cfg.launch_browser = value;
+        }
+        if let Some(value) = optional_string(args, "schemaUpdateMode", &mut cfg.validation_errors) {
+            cfg.schema_update_mode = value;
+        }
+        if let Some(value) = optional_string(
+            args,
+            "dependencyPublishingOption",
+            &mut cfg.validation_errors,
+        ) {
+            cfg.dependency_publishing_option = value;
+        }
+        if let Some(value) = optional_bool(
+            args,
+            "enableSqlInformationDebugger",
+            &mut cfg.validation_errors,
+        ) {
+            cfg.enable_sql_information_debugger = value;
+        }
+        if let Some(value) = optional_bool(
+            args,
+            "enableLongRunningSqlStatements",
+            &mut cfg.validation_errors,
+        ) {
+            cfg.enable_long_running_sql_statements = value;
+        }
+        if let Some(value) = optional_u64(
+            args,
+            "longRunningSqlStatementsThreshold",
+            &mut cfg.validation_errors,
+        ) {
+            cfg.long_running_sql_statements_threshold = value;
+        }
+        if let Some(value) = optional_u64(args, "numberOfSqlStatements", &mut cfg.validation_errors)
+        {
+            cfg.number_of_sql_statements = value;
+        }
+        let validate_server_certificate = optional_bool(
+            args,
+            "validateServerCertificate",
+            &mut cfg.validation_errors,
+        );
+        let accept_invalid_certs =
+            optional_bool(args, "acceptInvalidCerts", &mut cfg.validation_errors);
+        match (validate_server_certificate, accept_invalid_certs) {
+            (Some(validate), Some(accept)) if accept == validate => {
+                cfg.validation_errors.push(
+                    "acceptInvalidCerts must be the inverse of validateServerCertificate when \
+                     both fields are present"
+                        .to_string(),
+                );
+            }
+            (Some(validate), _) => cfg.accept_invalid_certs = !validate,
+            (None, Some(accept)) => cfg.accept_invalid_certs = accept,
+            (None, None) => {}
         }
         cfg
+    }
+
+    /// Validate behavior that is specific to this native adapter.
+    ///
+    /// The Microsoft legacy DAP remains available for Windows and
+    /// NavUserPassword authentication. The native REST/SignalR client supports
+    /// OAuth bearer authentication only and must fail before attempting an
+    /// OAuth flow when a different mode is requested.
+    pub fn validate_native(&self) -> Result<(), String> {
+        if !self.validation_errors.is_empty() {
+            return Err(self.validation_errors.join("; "));
+        }
+        if !matches!(
+            self.authentication.to_ascii_lowercase().as_str(),
+            "microsoftentraid" | "aad"
+        ) {
+            return Err(format!(
+                "Native AL DAP does not support authentication mode `{}`. Use \
+                 MicrosoftEntraID/AAD, or set al.useOfficialDap=true for the Microsoft \
+                 adapter's Windows/UserPassword support.",
+                self.authentication
+            ));
+        }
+        if !matches!(
+            self.environment_type.to_ascii_lowercase().as_str(),
+            "onprem" | "sandbox" | "production"
+        ) {
+            return Err(format!(
+                "environmentType must be OnPrem, Sandbox, or Production; got `{}`",
+                self.environment_type
+            ));
+        }
+        if !matches!(
+            self.startup_object_type.to_ascii_lowercase().as_str(),
+            "page" | "table" | "report" | "query"
+        ) {
+            return Err(format!(
+                "startupObjectType must be one of Page, Table, Report, Query; got `{}`",
+                self.startup_object_type
+            ));
+        }
+        if let Some(break_on_next) = &self.break_on_next {
+            let normalized = break_on_next
+                .replace([' ', '-', '_'], "")
+                .to_ascii_lowercase();
+            if !matches!(
+                normalized.as_str(),
+                "webserviceclient" | "webclient" | "background" | "clientservice" | "agent"
+            ) {
+                return Err(format!(
+                    "breakOnNext must be one of WebServiceClient, WebClient, Background, \
+                     ClientService, Agent; got `{break_on_next}`"
+                ));
+            }
+        }
+        if !matches!(
+            self.schema_update_mode.to_ascii_lowercase().as_str(),
+            "synchronize" | "recreate" | "forcesync"
+        ) {
+            return Err(format!(
+                "schemaUpdateMode must be Synchronize, Recreate, or ForceSync; got `{}`",
+                self.schema_update_mode
+            ));
+        }
+        if !matches!(
+            self.dependency_publishing_option
+                .to_ascii_lowercase()
+                .as_str(),
+            "default" | "ignore" | "strict"
+        ) {
+            return Err(format!(
+                "dependencyPublishingOption must be Default, Ignore, or Strict; got `{}`",
+                self.dependency_publishing_option
+            ));
+        }
+        Ok(())
     }
 
     /// Build the base URL prefix for on-prem: `{server}:{port}/{instance}`.
@@ -165,6 +456,7 @@ impl BcDebugConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     fn cloud_config(tenant: &str, env_name: &str) -> BcDebugConfig {
         BcDebugConfig {
@@ -252,48 +544,60 @@ mod tests {
             BcDebugConfig::default().port,
             "out-of-range port must not truncate into a valid-looking port"
         );
+        assert!(cfg.validate_native().unwrap_err().contains("port"));
     }
 
     #[test]
-    fn parse_bool_or_string_handles_bool_variant() {
-        assert!(parse_bool_or_string(&serde_json::json!(true), false));
-        assert!(!parse_bool_or_string(&serde_json::json!(false), true));
+    fn break_modes_accept_boolean_variants() {
+        assert_eq!(
+            parse_break_on_error(&serde_json::json!(true)),
+            Ok(BreakOnError::All)
+        );
+        assert_eq!(
+            parse_break_on_record_write(&serde_json::json!(false)),
+            Ok(BreakOnRecordWrite::None)
+        );
     }
 
     #[test]
-    fn parse_bool_or_string_string_none_and_false_are_falsey() {
-        // The documented disabling strings "none"/"false" (case-insensitive)
-        // map to false even though they are non-empty strings.
-        for s in ["none", "None", "NONE", "false", "False", "FALSE"] {
-            assert!(
-                !parse_bool_or_string(&serde_json::json!(s), true),
-                "{s:?} must parse as false"
-            );
-        }
-    }
-
-    #[test]
-    fn parse_bool_or_string_other_strings_are_truthy() {
-        // Any other string (e.g. "all", "true", an event filter name) is true.
-        for s in ["true", "all", "yes", "RecordWrite"] {
-            assert!(
-                parse_bool_or_string(&serde_json::json!(s), false),
-                "{s:?} must parse as true"
-            );
-        }
-    }
-
-    #[test]
-    fn parse_bool_or_string_non_bool_non_string_returns_default() {
-        for v in [
-            serde_json::json!(1),
-            serde_json::json!(null),
-            serde_json::json!([1, 2]),
-            serde_json::json!({"a": 1}),
+    fn break_modes_preserve_every_documented_enum_value() {
+        for (value, expected) in [
+            ("None", BreakOnError::None),
+            ("False", BreakOnError::None),
+            ("All", BreakOnError::All),
+            ("True", BreakOnError::All),
+            ("ExcludeTry", BreakOnError::ExcludeTry),
         ] {
-            assert!(parse_bool_or_string(&v, true), "{v} default=true");
-            assert!(!parse_bool_or_string(&v, false), "{v} default=false");
+            assert_eq!(
+                parse_break_on_error(&serde_json::json!(value)),
+                Ok(expected)
+            );
         }
+        for (value, expected) in [
+            ("None", BreakOnRecordWrite::None),
+            ("False", BreakOnRecordWrite::None),
+            ("All", BreakOnRecordWrite::All),
+            ("True", BreakOnRecordWrite::All),
+            ("ExcludeTemporary", BreakOnRecordWrite::ExcludeTemporary),
+        ] {
+            assert_eq!(
+                parse_break_on_record_write(&serde_json::json!(value)),
+                Ok(expected)
+            );
+        }
+        assert_eq!(BreakOnError::ExcludeTry.wire_value(), 3);
+        assert_eq!(BreakOnRecordWrite::ExcludeTemporary.wire_value(), 3);
+    }
+
+    #[test]
+    fn invalid_break_mode_is_retained_as_a_validation_error() {
+        let config = BcDebugConfig::from_dap_args(&serde_json::json!({
+            "breakOnError": "Sometimes"
+        }));
+        assert!(config
+            .validate_native()
+            .expect_err("invalid mode must be rejected")
+            .contains("breakOnError"));
     }
 
     #[test]
@@ -320,11 +624,18 @@ mod tests {
             "environmentType": "OnPrem",
             "environmentName": "Prod",
             "authentication": "AAD",
-            "breakOnNext": "RecordWrite",
+            "breakOnNext": "WebClient",
             "startupObjectType": "Table",
             "startupObjectId": 18,
+            "startupCompany": "CRONUS UK",
+            "launchBrowser": false,
             "schemaUpdateMode": "Recreate",
             "dependencyPublishingOption": "Ignore",
+            "enableSqlInformationDebugger": false,
+            "enableLongRunningSqlStatements": false,
+            "longRunningSqlStatementsThreshold": 750,
+            "numberOfSqlStatements": 25,
+            "validateServerCertificate": false,
         });
         let cfg = BcDebugConfig::from_dap_args(&args);
         assert_eq!(cfg.server.as_deref(), Some("http://bc.local"));
@@ -334,11 +645,19 @@ mod tests {
         assert_eq!(cfg.environment_type, "OnPrem");
         assert_eq!(cfg.environment_name.as_deref(), Some("Prod"));
         assert_eq!(cfg.authentication, "AAD");
-        assert_eq!(cfg.break_on_next.as_deref(), Some("RecordWrite"));
+        assert_eq!(cfg.break_on_next.as_deref(), Some("WebClient"));
         assert_eq!(cfg.startup_object_type, "Table");
         assert_eq!(cfg.startup_object_id, 18);
+        assert_eq!(cfg.startup_company.as_deref(), Some("CRONUS UK"));
+        assert!(!cfg.launch_browser);
         assert_eq!(cfg.schema_update_mode, "Recreate");
         assert_eq!(cfg.dependency_publishing_option, "Ignore");
+        assert!(!cfg.enable_sql_information_debugger);
+        assert!(!cfg.enable_long_running_sql_statements);
+        assert_eq!(cfg.long_running_sql_statements_threshold, 750);
+        assert_eq!(cfg.number_of_sql_statements, 25);
+        assert!(cfg.accept_invalid_certs);
+        assert!(cfg.validate_native().is_ok());
     }
 
     #[test]
@@ -361,11 +680,18 @@ mod tests {
             "-1 sentinel maps to None (attach via breakOnNext instead)"
         );
 
-        // A non-integer value is ignored (stays None) rather than panicking.
-        assert_eq!(
-            BcDebugConfig::from_dap_args(&serde_json::json!({ "sessionId": "nope" })).session_id,
-            None
-        );
+        let wrong_type = BcDebugConfig::from_dap_args(&serde_json::json!({ "sessionId": "nope" }));
+        assert_eq!(wrong_type.session_id, None);
+        assert!(wrong_type
+            .validate_native()
+            .unwrap_err()
+            .contains("sessionId"));
+
+        let below_sentinel = BcDebugConfig::from_dap_args(&serde_json::json!({ "sessionId": -2 }));
+        assert!(below_sentinel
+            .validate_native()
+            .unwrap_err()
+            .contains("sessionId"));
     }
 
     #[test]
@@ -375,19 +701,16 @@ mod tests {
             "breakOnRecordWrite": true,
         });
         let cfg = BcDebugConfig::from_dap_args(&bool_args);
-        assert!(!cfg.break_on_error);
-        assert!(cfg.break_on_record_write);
+        assert_eq!(cfg.break_on_error, BreakOnError::None);
+        assert_eq!(cfg.break_on_record_write, BreakOnRecordWrite::All);
 
         let str_args = serde_json::json!({
             "breakOnError": "none",
             "breakOnRecordWrite": "all",
         });
         let cfg = BcDebugConfig::from_dap_args(&str_args);
-        assert!(!cfg.break_on_error, "\"none\" disables break_on_error");
-        assert!(
-            cfg.break_on_record_write,
-            "\"all\" enables break_on_record_write"
-        );
+        assert_eq!(cfg.break_on_error, BreakOnError::None);
+        assert_eq!(cfg.break_on_record_write, BreakOnRecordWrite::All);
     }
 
     #[test]
@@ -409,19 +732,149 @@ mod tests {
             !cfg.accept_invalid_certs,
             "validateServerCertificate=true must keep certs validated"
         );
+
+        let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({
+            "acceptInvalidCerts": true,
+        }));
+        assert!(
+            cfg.accept_invalid_certs,
+            "Zed's acceptInvalidCerts spelling must be consumed too"
+        );
+
+        let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({
+            "validateServerCertificate": true,
+            "acceptInvalidCerts": true,
+        }));
+        assert!(cfg
+            .validate_native()
+            .expect_err("contradictory certificate settings must be rejected")
+            .contains("inverse"));
     }
 
     #[test]
-    fn from_dap_args_ignores_wrong_typed_values() {
+    fn native_authentication_accepts_oauth_and_rejects_legacy_modes_before_network_io() {
+        for mode in ["MicrosoftEntraID", "AAD"] {
+            let config = BcDebugConfig::from_dap_args(&serde_json::json!({
+                "authentication": mode
+            }));
+            assert!(config.validate_native().is_ok(), "{mode}");
+        }
+        for mode in ["Windows", "UserPassword"] {
+            let config = BcDebugConfig::from_dap_args(&serde_json::json!({
+                "authentication": mode
+            }));
+            let error = config
+                .validate_native()
+                .expect_err("unsupported native mode must fail");
+            assert!(error.contains(mode));
+            assert!(error.contains("al.useOfficialDap=true"));
+        }
+    }
+
+    #[test]
+    fn from_dap_args_rejects_wrong_typed_values() {
         let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({
             "port": "not-a-number",
             "startupObjectId": "nope",
             "server": 123,
+            "launchBrowser": "yes",
+            "enableSqlInformationDebugger": 1,
+            "enableLongRunningSqlStatements": null,
+            "longRunningSqlStatementsThreshold": 1.5,
+            "numberOfSqlStatements": -1,
         }));
         let def = BcDebugConfig::default();
         assert_eq!(cfg.port, def.port);
         assert_eq!(cfg.startup_object_id, def.startup_object_id);
         assert_eq!(cfg.server, def.server);
+        let error = cfg
+            .validate_native()
+            .expect_err("every schema type mismatch must fail closed");
+        for field in [
+            "port",
+            "startupObjectId",
+            "server",
+            "launchBrowser",
+            "enableSqlInformationDebugger",
+            "enableLongRunningSqlStatements",
+            "longRunningSqlStatementsThreshold",
+            "numberOfSqlStatements",
+        ] {
+            assert!(error.contains(field), "missing {field} in: {error}");
+        }
+    }
+
+    #[test]
+    fn native_validation_rejects_unknown_enum_values_and_non_object_args() {
+        for (field, value) in [
+            ("environmentType", "Container"),
+            ("startupObjectType", "Codeunit"),
+            ("breakOnNext", "RecordWrite"),
+            ("schemaUpdateMode", "Merge"),
+            ("dependencyPublishingOption", "Lenient"),
+        ] {
+            let config = BcDebugConfig::from_dap_args(&serde_json::json!({ (field): value }));
+            let error = config
+                .validate_native()
+                .expect_err("unknown enum must fail");
+            assert!(error.contains(field), "missing {field} in: {error}");
+        }
+
+        let config = BcDebugConfig::from_dap_args(&serde_json::json!(["not", "an", "object"]));
+        assert!(config
+            .validate_native()
+            .unwrap_err()
+            .contains("JSON object"));
+    }
+
+    #[test]
+    fn every_advertised_debug_schema_field_has_an_owner() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../../debug_adapter_schemas/al.json"))
+                .expect("debug adapter schema must be valid JSON");
+        let actual = schema["properties"]
+            .as_object()
+            .expect("debug adapter schema must expose properties")
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+
+        // Zed consumes these before it starts the adapter. Every other field is
+        // parsed above and consumed by the native debug session.
+        let zed_owned = ["adapter", "build", "label", "request"];
+        let native_owned = [
+            "authentication",
+            "breakOnError",
+            "breakOnNext",
+            "breakOnRecordWrite",
+            "dependencyPublishingOption",
+            "enableLongRunningSqlStatements",
+            "enableSqlInformationDebugger",
+            "environmentName",
+            "environmentType",
+            "launchBrowser",
+            "longRunningSqlStatementsThreshold",
+            "numberOfSqlStatements",
+            "port",
+            "schemaUpdateMode",
+            "server",
+            "serverInstance",
+            "sessionId",
+            "startupCompany",
+            "startupObjectId",
+            "startupObjectType",
+            "tenant",
+            "validateServerCertificate",
+        ];
+        let owned = zed_owned
+            .into_iter()
+            .chain(native_owned)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            actual, owned,
+            "schema fields must never advertise native no-ops"
+        );
     }
 
     #[test]

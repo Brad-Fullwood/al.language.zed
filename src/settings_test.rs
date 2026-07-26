@@ -40,6 +40,18 @@ fn nested_al_wrapper_combined_with_other_shapes() {
 }
 
 #[test]
+fn extension_only_settings_are_not_forwarded_to_al_lsp_config() {
+    for key in ["useOfficialLsp", "useOfficialDap", "dotnetPath"] {
+        let merged =
+            apply_al_settings_to_config(&json!({}), &json!({ "al": { key: "/opt/dotnet" } }));
+        assert!(
+            merged.get(key).is_none(),
+            "extension-only setting {key} leaked into server config: {merged}"
+        );
+    }
+}
+
+#[test]
 fn dotted_al_prefix_still_strips_and_nests() {
     let config = json!({});
     let user_settings = json!({
@@ -49,6 +61,30 @@ fn dotted_al_prefix_still_strips_and_nests() {
     assert_eq!(
         merged,
         json!({ "compilationOptions": { "parallelBuild": true } })
+    );
+}
+
+#[test]
+fn formatter_settings_are_nested_for_the_lsp_config() {
+    let merged = apply_al_settings_to_config(
+        &json!({}),
+        &json!({
+            "al.formatting.blankLinesBetweenProcedures": "two",
+            "al.formatting.maxLineLength": 100,
+            "al.formatting.braceStyle": "sameLine",
+            "al.formatting.sortProperties": true,
+        }),
+    );
+    assert_eq!(
+        merged,
+        json!({
+            "formatting": {
+                "blankLinesBetweenProcedures": "two",
+                "maxLineLength": 100,
+                "braceStyle": "sameLine",
+                "sortProperties": true,
+            }
+        })
     );
 }
 
@@ -168,5 +204,58 @@ fn resolve_dap_backend_flag_honors_use_official_dap_in_all_shapes() {
     assert_eq!(
         crate::settings::resolve_dap_backend_flag(Some(&off)),
         "--dap"
+    );
+}
+
+#[test]
+fn resolve_dotnet_path_honors_all_settings_shapes() {
+    for shape in [
+        serde_json::json!({"dotnetPath": "/opt/dotnet"}),
+        serde_json::json!({"al.dotnetPath": "/opt/dotnet"}),
+        serde_json::json!({"al": {"dotnetPath": "/opt/dotnet"}}),
+    ] {
+        assert_eq!(
+            crate::settings::resolve_dotnet_path(Some(&shape)).as_deref(),
+            Some("/opt/dotnet"),
+            "shape: {shape}"
+        );
+    }
+    assert_eq!(
+        crate::settings::resolve_dotnet_path(Some(&serde_json::json!({
+            "al.dotnetPath": "   "
+        }))),
+        None
+    );
+    assert_eq!(
+        crate::settings::resolve_dotnet_path(Some(&serde_json::json!({
+            "al.dotnetPath": 42
+        }))),
+        None
+    );
+}
+
+#[test]
+fn dap_child_receives_only_normalized_compile_and_package_settings() {
+    let settings = serde_json::json!({
+        "al.useOfficialCompiler": true,
+        "al.codeAnalyzers": ["CodeCop"],
+        "al.packageCachePath": "cache",
+        "al.appLocalFolderPaths": ["vendor"],
+        "al.compilationOptions": ["/nowarn:AL0432"],
+        "al.incrementalBuild": true,
+        "al.enableCodeActions": false,
+        "al.useOfficialDap": true,
+        "al.dotnetPath": "/opt/dotnet",
+    });
+    assert_eq!(
+        crate::settings::compile_settings_for_child(Some(&settings)),
+        serde_json::json!({
+            "useOfficialCompiler": true,
+            "codeAnalyzers": ["CodeCop"],
+            "packageCachePath": "cache",
+            "appLocalFolderPaths": ["vendor"],
+            "compilationOptions": ["/nowarn:AL0432"],
+            "incrementalBuild": true,
+        })
     );
 }

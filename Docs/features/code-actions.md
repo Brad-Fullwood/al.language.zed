@@ -2,8 +2,9 @@
 
 **Module:** `crates/al-analysis/src/queries/code_actions/` · **Status:** ✅ shipped
 
-Code actions are the quick fixes and source-level refactorings offered in the editor (and via
-`al-explorer fix`). They are gated by `al.enableCodeActions` (default true). The module splits into
+Code actions are the quick fixes and source-level refactorings offered in the editor and shared
+daemon/MCP query. Registered safe diagnostic fixes are also batchable through `al-explorer fix`.
+They are gated by `al.enableCodeActions` (default true). The module splits into
 two paths in `code_actions/mod.rs`:
 
 - **`source_actions()`** — diagnostic-independent refactorings (offered any time).
@@ -27,6 +28,8 @@ Each action is a `CodeActionEntry { title, kind, edit, is_preferred }` where `ki
 | **Convert `if` to `case`** | `if_to_case.rs` | Converts an `if`/`else if` chain (≥3 branches comparing the same variable) into a `case` statement. |
 | **Add doc comment** | `doc_region.rs` | Generates an XML doc skeleton (`/// <summary>` + `<param>` per parameter + `<returns>`), skipping if docs already exist. |
 | **Wrap in region** | `doc_region.rs` | Wraps the selection in `#region Name … #endregion`. |
+| **Add data classification** | `code_actions/mod.rs` | For `AL-NL002`, inserts `DataClassification = CustomerContent;` into an ordinary table field. FlowFields and FlowFilters are excluded. |
+| **Add application area** | `code_actions/mod.rs` | For `AL-NL006`, inserts `ApplicationArea = All;` into a page field or action when no effective object/control property exists. |
 
 In the editor, `server/handlers.rs` also always offers an *AL: Format File* action when formatting
 yields edits and an *AL: Lint File* command action, alongside the quick fix for the diagnostic under
@@ -45,14 +48,18 @@ text/tree-based heuristics are deliberately conservative (e.g. *make local*) to 
 
 Running refactors on the parse tree keeps them fast and editor-independent, and the conservative
 heuristics (workspace scans for *make local*, type resolution for *with*-elimination) mean the
-actions fail safe. Because they live in `queries/`, the same logic is reachable from `al-explorer
-fix`, making "apply these fixes across the project" a scriptable, CI-friendly operation rather than a
-manual editor click.
+actions fail safe. Because they live in `queries/`, editor and daemon/MCP requests use the same
+implementations. The safe lint-annotation subset is also registered with `al-explorer fix`, making
+those project-wide changes scriptable without pretending that cursor-dependent refactors can be
+blindly batch-applied.
 
 ## How to use
 
 - **In Zed:** trigger the code-action menu on a diagnostic or anywhere in an object; pick the action.
-- **CLI:** `al-explorer fix [file] [--dry-run] [--rule <code>]` (Zed task: *AL: Apply Quick Fixes*).
+- **CLI:** `al-explorer fix [file] [--dry-run] [--rule <code>]` (Zed task: *AL: Apply safe quick fixes*).
+  With a file it applies that file's registered safe diagnostic edits; without one it scans the
+  loaded project. `AL-NL001`, `AL-NL005`, and `AL-NL007` remain explicitly unfixable because changing
+  query shape, choosing loaded fields, or inventing user-facing text requires developer intent.
   Workspace-wide property fixups have dedicated commands — see
   [analysis-and-insight](./analysis-and-insight.md) (bulk fixes) and
   [scaffolding-and-codegen](./scaffolding-and-codegen.md).
@@ -60,9 +67,10 @@ manual editor click.
   for diagnostic fixes, or the `fix.*` dispatcher methods for workspace property operations. The
   parameter objects are the same ones accepted by the daemon/CLI path.
 
-## Limitations & roadmap
+## Compatibility boundaries
 
-- The native set is a curated subset of Microsoft's code-fix catalog.
-- AL0185's namespace quick fix is wired; `ROADMAP.md` notes continued work to align the code-action
-  surface across LSP, daemon, and CLI and to expand coverage.
+- The native set is a curated subset of Microsoft's code-fix catalog. The CLI reports the
+  diagnostic, fixable, and unfixable counts separately instead of treating an unsafe rule as fixed.
+- AL0185's namespace quick fix and the shared query implementation are wired
+  across LSP, daemon/MCP, and CLI surfaces.
 - Disabling `al.enableCodeActions` turns all of these off (parity with VS Code).

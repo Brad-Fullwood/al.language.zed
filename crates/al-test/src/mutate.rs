@@ -6,11 +6,14 @@
 //! survived (all tests still passed — indicates a test gap).
 //!
 //! The built-in mutators target common business-logic test gaps:
-//! conditional boundary, conditional negation, arithmetic operator swap,
-//! boolean literal flip, and integer +/-1 offset.
+//! conditional boundary and whole-condition negation, comparison/logical/
+//! arithmetic operator swaps, unary `not` removal, Boolean/text literal
+//! replacement, and checked integer +/-1 offsets.
 //!
 //! Run scope is kept tight by default (`affected_only = true`) to keep wall
-//! time reasonable — only files that contain test procedures are mutated.
+//! time reasonable — only files transitively covered by discovered tests are
+//! mutated. Structural IDs/properties and declarations outside executable
+//! procedure/trigger bodies are never mutation targets.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -20,12 +23,24 @@ use al_workspace::Workspace;
 
 #[derive(Debug, Error)]
 pub enum MutationError {
-    #[error("No test files found in workspace")]
+    #[error("No discoverable AL tests with reachable executable code were found in workspace")]
     NoTestFiles,
+    #[error("None of the selected files are reachable from discovered AL tests: {files:?}")]
+    NoSelectedReachableFiles { files: Vec<String> },
+    #[error("No workspace files were available for mutation")]
+    NoMutationFiles,
     #[error("Failed to parse source file {file}: {reason}")]
     ParseError { file: String, reason: String },
     #[error("Mutation apply failed: {0}")]
     ApplyFailed(String),
+    #[error("Test selection failed: {0}")]
+    TestQuery(#[from] al_analysis::queries::tests::TestQueryError),
+    #[error("mutation event channel closed before the run completed")]
+    EventChannelClosed,
+    #[error("workspace file {file} is unavailable for mutation: {reason}")]
+    WorkspaceFileUnavailable { file: String, reason: String },
+    #[error("No mutation variants were generated from the reachable executable code")]
+    NoMutationVariants,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +75,24 @@ pub struct VariantOutcome {
     pub killing_test: Option<TestId>,
     /// Error encountered while running (distinct from a test assertion failure).
     pub error: Option<String>,
+    /// Why a non-errored mutant survived. `None` for killed/errored outcomes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub survival_reason: Option<SurvivalReason>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SurvivalReason {
+    /// No discovered test reaches the mutated executable file.
+    NoAffectedTests,
+    /// Every affected test requires live Business Central and cannot be run by
+    /// the offline mutation engine.
+    LiveBcOnly,
+    /// Local affected tests passed, but at least one affected test still
+    /// requires live Business Central.
+    PartialLiveBcCoverage,
+    /// Every affected interpreter-runnable test passed under the mutation.
+    LocalTestsPassed,
 }
 
 /// Identifies which test-execution phase produced this report.
@@ -107,18 +140,57 @@ impl MutationReport {
         if self.executor_phase == MutationExecutorPhase::Stub {
             return None;
         }
-        let total = self.killed + self.survived;
+        let (killed, survived) = if self.variants.is_empty() {
+            // Backward-compatible path for summary-only/legacy reports.
+            (self.killed, self.survived)
+        } else {
+            (
+                self.variants
+                    .iter()
+                    .filter(|outcome| outcome.killed)
+                    .count(),
+                self.variants
+                    .iter()
+                    .filter(|outcome| {
+                        !outcome.killed
+                            && outcome.error.is_none()
+                            && !matches!(
+                                outcome.survival_reason,
+                                Some(SurvivalReason::NoAffectedTests | SurvivalReason::LiveBcOnly)
+                            )
+                    })
+                    .count(),
+            )
+        };
+        let total = killed + survived;
         if total == 0 {
             return None;
         }
-        Some(self.killed as f64 * 100.0 / total as f64)
+        Some(killed as f64 * 100.0 / total as f64)
+    }
+
+    /// Mutants excluded from the score because no affected test could execute
+    /// locally. These remain visible as survivors with an explicit cause.
+    pub fn unscored_count(&self) -> usize {
+        self.variants
+            .iter()
+            .filter(|outcome| {
+                !outcome.killed
+                    && outcome.error.is_none()
+                    && matches!(
+                        outcome.survival_reason,
+                        Some(SurvivalReason::NoAffectedTests | SurvivalReason::LiveBcOnly)
+                    )
+            })
+            .count()
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MutationOptions {
-    /// Restrict mutations to files that contain `[Test]` procedures.
+    /// Restrict mutations to executable files transitively reachable from
+    /// discovered `[Test]` procedures.
     pub affected_only: bool,
     /// Run variants in parallel. Each variant executes against
     /// its own isolated workspace snapshot — concurrent mutants can never
@@ -154,15 +226,15 @@ pub enum MutationEvent {
 }
 
 /// Walk the parse tree of `source` (already parsed into `tree`) and produce
-/// one `MutationVariant` per applicable token, covering the five built-in
-/// mutators: conditional boundary, conditional negation, arithmetic operator
-/// swap, boolean literal flip, and integer +/-1.
+/// one `MutationVariant` per applicable executable token.
 ///
 /// # AL Grammar notes
 ///
 /// The AL tree-sitter grammar represents:
 /// - Operators (`<`, `<=`, `>`, `>=`, `=`, `<>`, `+`, `-`, `*`, `/`) as
 ///   `operator` named nodes nested inside `binary_operator` named nodes.
+/// - Word operators (`and`, `or`, `xor`, `div`, `mod`) inside
+///   `binary_operator` nodes.
 /// - Boolean literals `true` / `false` as `name` nodes (case-insensitive).
 /// - Integer literals as `integer` named nodes.
 pub(crate) fn generate_variants(
@@ -197,6 +269,39 @@ pub(crate) fn generate_variants(
             Ok(t) => t,
             Err(_) => continue,
         };
+
+        // Never mutate object/member IDs, properties, attributes, or variable
+        // declarations. A valid mutation target must sit under an executable
+        // begin/end body owned by a procedure, event procedure, or trigger.
+        if !is_in_executable_body(node) {
+            continue;
+        }
+
+        // Negate an entire control-flow condition. Operator-level mutations
+        // below remain useful for pinpointing a specific boundary; this family
+        // covers Boolean variables/calls and compound expressions that contain
+        // no mutable comparison token.
+        if matches!(
+            kind,
+            "if_statement" | "empty_if_statement" | "while_statement" | "repeat_statement"
+        ) {
+            if let Some(condition) = node.child_by_field_name("condition") {
+                if let Ok(condition_text) = condition.utf8_text(bytes) {
+                    variants.push(make_variant(
+                        "wc",
+                        file,
+                        condition.start_position().row as u32 + 1,
+                        condition_text,
+                        &format!("not ({condition_text})"),
+                        ByteRange {
+                            start: condition.start_byte(),
+                            end: condition.end_byte(),
+                        },
+                        "whole-condition negation",
+                    ));
+                }
+            }
+        }
 
         // Operators in AL grammar: named `operator` nodes inside `binary_operator` nodes.
         // The `operator` regex matches runs of symbols including `<`, `<=`, `>`, `>=`,
@@ -233,6 +338,49 @@ pub(crate) fn generate_variants(
                     description,
                 ));
             }
+        }
+        // Word operators are represented by a `binary_operator` wrapper, not
+        // the symbolic `operator` leaf handled above.
+        else if kind == "binary_operator" {
+            const WORD_MUTATIONS: &[(&str, &str, &str)] = &[
+                ("and", "or", "logical operator: and → or"),
+                ("or", "and", "logical operator: or → and"),
+                ("xor", "or", "logical operator: xor → or"),
+                ("div", "mod", "arithmetic operator: div → mod"),
+                ("mod", "div", "arithmetic operator: mod → div"),
+            ];
+            let lower = token_text.to_ascii_lowercase();
+            if let Some(&(_, replacement, description)) =
+                WORD_MUTATIONS.iter().find(|(op, ..)| *op == lower)
+            {
+                variants.push(make_variant(
+                    "wo",
+                    file,
+                    line,
+                    token_text,
+                    replacement,
+                    ByteRange {
+                        start: start_byte,
+                        end: end_byte,
+                    },
+                    description,
+                ));
+            }
+        }
+        // Remove unary NOT while leaving the operand intact.
+        else if kind == "op_not" {
+            variants.push(make_variant(
+                "un",
+                file,
+                line,
+                token_text,
+                "",
+                ByteRange {
+                    start: start_byte,
+                    end: end_byte,
+                },
+                "unary operator: remove not",
+            ));
         }
         // Boolean literal flip.
         // In AL, `true` and `false` are parsed as `name` identifier nodes.
@@ -271,37 +419,85 @@ pub(crate) fn generate_variants(
         // `integer` is a named leaf node in the AL grammar.
         else if kind == "integer" {
             if let Ok(n) = token_text.parse::<i64>() {
-                variants.push(make_variant(
-                    "io",
-                    file,
-                    line,
-                    token_text,
-                    &(n + 1).to_string(),
-                    ByteRange {
-                        start: start_byte,
-                        end: end_byte,
-                    },
-                    &format!("integer offset: {n} → {}", n + 1),
-                ));
-                if n != 0 {
+                if let Some(incremented) = n.checked_add(1) {
                     variants.push(make_variant(
                         "io",
                         file,
                         line,
                         token_text,
-                        &(n - 1).to_string(),
+                        &incremented.to_string(),
                         ByteRange {
                             start: start_byte,
                             end: end_byte,
                         },
-                        &format!("integer offset: {n} → {}", n - 1),
+                        &format!("integer offset: {n} → {incremented}"),
+                    ));
+                }
+                if let Some(decremented) = n.checked_sub(1) {
+                    variants.push(make_variant(
+                        "io",
+                        file,
+                        line,
+                        token_text,
+                        &decremented.to_string(),
+                        ByteRange {
+                            start: start_byte,
+                            end: end_byte,
+                        },
+                        &format!("integer offset: {n} → {decremented}"),
                     ));
                 }
             }
         }
+        // Replace non-empty text literals with the empty text value. Preserve
+        // apostrophe escaping by replacing the entire literal token.
+        else if matches!(kind, "string" | "verbatim_string")
+            && !matches!(token_text, "''" | "@''")
+        {
+            let replacement = if kind == "verbatim_string" {
+                "@''"
+            } else {
+                "''"
+            };
+            variants.push(make_variant(
+                "sl",
+                file,
+                line,
+                token_text,
+                replacement,
+                ByteRange {
+                    start: start_byte,
+                    end: end_byte,
+                },
+                "text literal: replace with empty text",
+            ));
+        }
     }
 
     variants
+}
+
+/// True when `node` is part of executable code rather than AL metadata.
+///
+/// Merely having a procedure ancestor is insufficient because its attributes,
+/// signature, and local declarations are also descendants. Requiring a
+/// `begin_end_block` before the owning procedure/trigger keeps mutation IDs and
+/// types structurally stable.
+fn is_in_executable_body(mut node: tree_sitter::Node<'_>) -> bool {
+    let mut saw_body = false;
+    while let Some(parent) = node.parent() {
+        match parent.kind() {
+            "begin_end_block" => saw_body = true,
+            "procedure_declaration"
+            | "event_procedure_declaration"
+            | "trigger_declaration"
+            | "event_trigger_declaration" => return saw_body,
+            "object_declaration" => return false,
+            _ => {}
+        }
+        node = parent;
+    }
+    false
 }
 
 /// Byte range of the token being mutated (start inclusive, end exclusive).
@@ -383,26 +579,32 @@ pub fn apply_variant(source: &str, variant: &MutationVariant) -> Result<String, 
 
 /// Generate mutation variants for a specific file in the workspace.
 ///
-/// Returns an empty `Vec` if the file is not found or cannot be parsed.
 pub(crate) fn generate_variants_for_file(
     workspace: &Workspace,
     file_path: &str,
-) -> Vec<MutationVariant> {
+) -> Result<Vec<MutationVariant>, MutationError> {
     let path = std::path::Path::new(file_path);
     let Some((text, tree)) = workspace.file_index.get_cached_parse(path) else {
-        let uri = url::Url::from_file_path(path).ok();
-        if let Some(uri) = uri {
-            if let Some(text) = workspace.documents.get_text(&uri) {
-                let result = al_syntax::AlParser::parse_quick(&text);
-                return generate_variants(file_path, &text, &result.tree);
-            }
+        let text = workspace_file_text(workspace, path)?;
+        let result = al_syntax::AlParser::parse_quick(&text);
+        if result.tree.root_node().has_error() {
+            return Err(MutationError::ParseError {
+                file: file_path.to_string(),
+                reason: "syntax tree contains parse errors".to_string(),
+            });
         }
-        return Vec::new();
+        return Ok(generate_variants(file_path, &text, &result.tree));
     };
-    generate_variants(file_path, &text, &tree)
+    if tree.root_node().has_error() {
+        return Err(MutationError::ParseError {
+            file: file_path.to_string(),
+            reason: "cached syntax tree contains parse errors".to_string(),
+        });
+    }
+    Ok(generate_variants(file_path, &text, &tree))
 }
 
-/// Run mutation testing across workspace test files.
+/// Run mutation testing across executable files covered by workspace tests.
 ///
 /// For each test file, generates variants and for each variant runs the
 /// affected tests using a lightweight in-process interpretation (no live BC).
@@ -415,7 +617,7 @@ pub async fn run_mutation_testing(
     opts: MutationOptions,
     tx: mpsc::Sender<MutationEvent>,
 ) -> Result<MutationReport, MutationError> {
-    let files = collect_mutation_files(workspace, &opts);
+    let files = collect_mutation_files(workspace, &opts)?;
     if files.is_empty() {
         return Err(MutationError::NoTestFiles);
     }
@@ -432,15 +634,18 @@ pub async fn run_mutation_testing(
         // cache was invalidated between reads, fetch the current source.
         let file_variants = match cached {
             Some((text, tree)) => generate_variants(file_path, text, tree),
-            None => generate_variants_for_file(workspace, file_path),
+            None => generate_variants_for_file(workspace, file_path)?,
         };
         variants.extend(file_variants);
     }
+    if variants.is_empty() {
+        return Err(MutationError::NoMutationVariants);
+    }
 
     let outcomes = if opts.parallel {
-        run_variants_parallel(workspace, &variants, &tx).await
+        run_variants_parallel(workspace, &variants, &opts, &tx).await?
     } else {
-        run_variants_sequential(workspace, &variants, &opts, &tx).await
+        run_variants_sequential(workspace, &variants, &opts, &tx).await?
     };
 
     let killed = outcomes.iter().filter(|o| o.killed).count();
@@ -458,11 +663,11 @@ pub async fn run_mutation_testing(
         executor_phase: MutationExecutorPhase::Interpreter,
     };
 
-    let _ = tx
-        .send(MutationEvent::Done {
-            report: report.clone(),
-        })
-        .await;
+    tx.send(MutationEvent::Done {
+        report: report.clone(),
+    })
+    .await
+    .map_err(|_| MutationError::EventChannelClosed)?;
 
     Ok(report)
 }
@@ -477,26 +682,26 @@ async fn run_variants_sequential(
     variants: &[MutationVariant],
     opts: &MutationOptions,
     tx: &mpsc::Sender<MutationEvent>,
-) -> Vec<VariantOutcome> {
+) -> Result<Vec<VariantOutcome>, MutationError> {
     let mut outcomes: Vec<VariantOutcome> = Vec::with_capacity(variants.len());
     for variant in variants {
-        let _ = tx
-            .send(MutationEvent::VariantStarted {
-                variant_id: variant.id.clone(),
-            })
-            .await;
+        tx.send(MutationEvent::VariantStarted {
+            variant_id: variant.id.clone(),
+        })
+        .await
+        .map_err(|_| MutationError::EventChannelClosed)?;
 
         let outcome = run_single_variant(workspace, variant, opts).await;
 
-        let _ = tx
-            .send(MutationEvent::VariantFinished {
-                outcome: outcome.clone(),
-            })
-            .await;
+        tx.send(MutationEvent::VariantFinished {
+            outcome: outcome.clone(),
+        })
+        .await
+        .map_err(|_| MutationError::EventChannelClosed)?;
 
         outcomes.push(outcome);
     }
-    outcomes
+    Ok(outcomes)
 }
 
 /// Execute `variants` concurrently.
@@ -516,10 +721,11 @@ async fn run_variants_sequential(
 async fn run_variants_parallel(
     workspace: &std::sync::Arc<Workspace>,
     variants: &[MutationVariant],
+    opts: &MutationOptions,
     tx: &mpsc::Sender<MutationEvent>,
-) -> Vec<VariantOutcome> {
+) -> Result<Vec<VariantOutcome>, MutationError> {
     // One immutable snapshot of the whole workspace, shared by every task.
-    let snapshot = std::sync::Arc::new(snapshot_workspace_files(workspace));
+    let snapshot = std::sync::Arc::new(snapshot_workspace_files(workspace)?);
 
     // Bound in-flight tasks so a workspace with thousands of variants doesn't
     // spawn thousands of isolated interpreters (each holding a copy of every
@@ -537,6 +743,7 @@ async fn run_variants_parallel(
         let snapshot = std::sync::Arc::clone(&snapshot);
         let permits = std::sync::Arc::clone(&permits);
         let tx = tx.clone();
+        let timeout_ms = opts.timeout_ms;
         handles.push(tokio::spawn(async move {
             // Held for the whole variant run; dropped on task completion.
             let _permit = permits
@@ -544,29 +751,32 @@ async fn run_variants_parallel(
                 .await
                 .expect("mutation semaphore is never closed");
 
-            let _ = tx
-                .send(MutationEvent::VariantStarted {
-                    variant_id: variant.id.clone(),
-                })
-                .await;
+            tx.send(MutationEvent::VariantStarted {
+                variant_id: variant.id.clone(),
+            })
+            .await
+            .map_err(|_| MutationError::EventChannelClosed)?;
 
             let outcome = match build_isolated_workspace(&snapshot, &variant) {
-                Ok(isolated) => run_interp_tests_against_mutant(&isolated, &variant).await,
+                Ok(isolated) => {
+                    run_interp_tests_against_mutant(&isolated, &variant, timeout_ms).await
+                }
                 Err(error) => VariantOutcome {
                     variant: variant.clone(),
                     killed: false,
                     killing_test: None,
                     error: Some(error.to_string()),
+                    survival_reason: None,
                 },
             };
 
-            let _ = tx
-                .send(MutationEvent::VariantFinished {
-                    outcome: outcome.clone(),
-                })
-                .await;
+            tx.send(MutationEvent::VariantFinished {
+                outcome: outcome.clone(),
+            })
+            .await
+            .map_err(|_| MutationError::EventChannelClosed)?;
 
-            outcome
+            Ok(outcome)
         }));
     }
 
@@ -575,18 +785,28 @@ async fn run_variants_parallel(
     // outcome for its variant rather than dropping the slot (which would shift
     // every later position and break the stable-order guarantee).
     let mut outcomes: Vec<VariantOutcome> = Vec::with_capacity(handles.len());
+    let mut event_error = None;
     for (idx, handle) in handles.into_iter().enumerate() {
         match handle.await {
-            Ok(outcome) => outcomes.push(outcome),
+            Ok(Ok(outcome)) => outcomes.push(outcome),
+            Ok(Err(error)) => {
+                if event_error.is_none() {
+                    event_error = Some(error);
+                }
+            }
             Err(join_err) => outcomes.push(VariantOutcome {
                 variant: variants[idx].clone(),
                 killed: false,
                 killing_test: None,
                 error: Some(format!("variant task panicked: {join_err}")),
+                survival_reason: None,
             }),
         }
     }
-    outcomes
+    if let Some(error) = event_error {
+        return Err(error);
+    }
+    Ok(outcomes)
 }
 
 /// Snapshot the text of every file currently in the workspace `file_index`.
@@ -595,25 +815,60 @@ async fn run_variants_parallel(
 /// resolution in `run_single_variant`: the cached parse is preferred, falling
 /// back to the document store when a file is indexed but not yet parsed. The
 /// result is sorted by path for deterministic workspace construction.
-fn snapshot_workspace_files(workspace: &Workspace) -> Vec<(std::path::PathBuf, String)> {
+fn snapshot_workspace_files(
+    workspace: &Workspace,
+) -> Result<Vec<(std::path::PathBuf, String)>, MutationError> {
     let mut files: Vec<(std::path::PathBuf, String)> = Vec::new();
     for entry in workspace.file_index.files.iter() {
         let path = entry.key().clone();
-        let text = workspace
-            .file_index
-            .get_cached_parse(&path)
-            .map(|(t, _)| t)
-            .or_else(|| {
-                url::Url::from_file_path(&path)
-                    .ok()
-                    .and_then(|uri| workspace.documents.get_text(&uri))
-            });
-        if let Some(text) = text {
-            files.push((path, text));
-        }
+        let text = match workspace.file_index.get_cached_parse(&path) {
+            Some((text, tree)) => {
+                if tree.root_node().has_error() {
+                    return Err(MutationError::ParseError {
+                        file: path.display().to_string(),
+                        reason: "cached syntax tree contains parse errors".to_string(),
+                    });
+                }
+                text
+            }
+            None => {
+                let text = workspace_file_text(workspace, &path)?;
+                if al_syntax::AlParser::parse_quick(&text)
+                    .tree
+                    .root_node()
+                    .has_error()
+                {
+                    return Err(MutationError::ParseError {
+                        file: path.display().to_string(),
+                        reason: "workspace snapshot source contains parse errors".to_string(),
+                    });
+                }
+                text
+            }
+        };
+        files.push((path, text));
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
-    files
+    Ok(files)
+}
+
+fn workspace_file_text(
+    workspace: &Workspace,
+    path: &std::path::Path,
+) -> Result<String, MutationError> {
+    let file = path.display().to_string();
+    let uri =
+        url::Url::from_file_path(path).map_err(|_| MutationError::WorkspaceFileUnavailable {
+            file: file.clone(),
+            reason: "path cannot be represented as a file URI".to_string(),
+        })?;
+    workspace
+        .documents
+        .get_text(&uri)
+        .ok_or_else(|| MutationError::WorkspaceFileUnavailable {
+            file,
+            reason: "no cached parse or document text is available".to_string(),
+        })
 }
 
 /// Build a fresh, throwaway `Workspace` containing every snapshot file, with
@@ -642,20 +897,32 @@ fn build_isolated_workspace(
 
 /// Collect the set of file paths to mutate.
 ///
-/// With `affected_only = true`, only files that contain `[Test]` codeunits are
-/// included — this keeps the default scope tight.
+/// With `affected_only = true`, only files on a fully-resolved forward call
+/// path from a `[Test]` procedure are included — this targets covered
+/// production code as well as the test body while excluding unrelated files.
 ///
 /// Returns `(path_string, Option<(text, tree)>)` per file. The cached parse is
 /// carried forward to the variant-generation step so the run loop doesn't
 /// re-fetch from `file_index` and pay a second `(String, Tree)` clone per
 /// file. When the cache is missed (rare for files added but not indexed), the
-/// tuple's second element is `None` and the run loop falls back
-/// to the document-store path inside `generate_variants_for_file`.
+/// tuple's second element is `None` and the run loop loads the document
+/// strictly through `generate_variants_for_file`.
+type MutationFile = (String, Option<(String, tree_sitter::Tree)>);
+
 fn collect_mutation_files(
     workspace: &Workspace,
     opts: &MutationOptions,
-) -> Vec<(String, Option<(String, tree_sitter::Tree)>)> {
-    let mut files: Vec<(String, Option<(String, tree_sitter::Tree)>)> = Vec::new();
+) -> Result<Vec<MutationFile>, MutationError> {
+    let mut files: Vec<MutationFile> = Vec::new();
+    let reachable = if opts.affected_only {
+        let reachable = al_analysis::queries::tests::files_reachable_from_tests(workspace)?;
+        if reachable.is_empty() {
+            return Err(MutationError::NoTestFiles);
+        }
+        Some(reachable)
+    } else {
+        None
+    };
 
     for entry in workspace.file_index.files.iter() {
         let path = entry.key();
@@ -669,19 +936,21 @@ fn collect_mutation_files(
         }
 
         let cached = workspace.file_index.get_cached_parse(path);
+        if cached
+            .as_ref()
+            .is_some_and(|(_, tree)| tree.root_node().has_error())
+        {
+            return Err(MutationError::ParseError {
+                file: path_str,
+                reason: "cached syntax tree contains parse errors".to_string(),
+            });
+        }
 
-        if opts.affected_only {
-            let Some((text, tree)) = cached.as_ref() else {
-                continue;
-            };
-            let root = tree.root_node();
-            let bytes = text.as_bytes();
-            let has_tests =
-                !al_analysis::queries::tests::collect_test_procedures(root, bytes).is_empty();
-            let has_subtype = al_analysis::queries::tests::has_test_subtype(root, bytes);
-            if !has_tests && !has_subtype {
-                continue;
-            }
+        if reachable
+            .as_ref()
+            .is_some_and(|reachable| !reachable.contains(path))
+        {
+            continue;
         }
 
         files.push((path_str, cached));
@@ -694,7 +963,17 @@ fn collect_mutation_files(
     // are equal-by-path semantically.
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
-    files
+    if files.is_empty() {
+        return match &opts.files {
+            Some(selected) => Err(MutationError::NoSelectedReachableFiles {
+                files: selected.clone(),
+            }),
+            None if opts.affected_only => Err(MutationError::NoTestFiles),
+            None => Err(MutationError::NoMutationFiles),
+        };
+    }
+
+    Ok(files)
 }
 
 /// Run a single variant: apply mutation, run tests, return outcome.
@@ -704,7 +983,7 @@ fn collect_mutation_files(
 async fn run_single_variant(
     workspace: &std::sync::Arc<Workspace>,
     variant: &MutationVariant,
-    _opts: &MutationOptions,
+    opts: &MutationOptions,
 ) -> VariantOutcome {
     let original_text = {
         let path = std::path::Path::new(&variant.file);
@@ -721,6 +1000,7 @@ async fn run_single_variant(
                             killed: false,
                             killing_test: None,
                             error: Some(format!("File not found in workspace: {}", variant.file)),
+                            survival_reason: None,
                         };
                     }
                 } else {
@@ -729,6 +1009,7 @@ async fn run_single_variant(
                         killed: false,
                         killing_test: None,
                         error: Some(format!("Invalid file path: {}", variant.file)),
+                        survival_reason: None,
                     };
                 }
             }
@@ -743,6 +1024,7 @@ async fn run_single_variant(
                 killed: false,
                 killing_test: None,
                 error: Some(error.to_string()),
+                survival_reason: None,
             }
         }
     };
@@ -757,78 +1039,117 @@ async fn run_single_variant(
         .file_index
         .add_file(path_buf.clone(), mutated_source);
 
-    let outcome = run_interp_tests_against_mutant(workspace, variant).await;
+    let outcome = run_interp_tests_against_mutant(workspace, variant, opts.timeout_ms).await;
 
     workspace.file_index.add_file(path_buf, original_text);
 
     outcome
 }
 
-/// Run every interp-routed test codeunit in the workspace against the
-/// currently-applied mutant. A mutant is KILLED when any test fails.
+/// Run the affected interpreter-routed tests against the currently-applied
+/// mutant. A mutant is KILLED when any affected local test fails; otherwise
+/// its survival reason records whether live-BC coverage remains unavailable.
 async fn run_interp_tests_against_mutant(
     workspace: &std::sync::Arc<Workspace>,
     variant: &MutationVariant,
+    timeout_ms: Option<u64>,
 ) -> VariantOutcome {
     use crate::backends::interp::InterpMode;
     use crate::router::RoutingDecision;
     use crate::session::{RunOptions, TestEvent, TestSession};
 
-    let discovered = al_analysis::queries::tests::discover_tests(workspace);
-    let classifications = crate::router::classify_codeunits(workspace, &discovered);
-    let mut local_capability: std::collections::HashMap<i32, (bool, bool)> =
-        std::collections::HashMap::new();
-    for c in &classifications {
-        let (is_local, needs_records) = match c.decision {
-            RoutingDecision::Interp => (true, false),
-            RoutingDecision::InterpRecord => (true, true),
-            RoutingDecision::LiveBc => (false, false),
-        };
-        local_capability
-            .entry(c.codeunit_id)
-            .and_modify(|state| {
-                state.0 &= is_local;
-                state.1 |= needs_records;
-            })
-            .or_insert((is_local, needs_records));
-    }
-    let file_by_id: std::collections::HashMap<i32, String> = discovered
-        .iter()
-        .map(|cu| (cu.id, cu.file.clone()))
-        .collect();
-    let local_tests: Vec<crate::session::TestId> = discovered
-        .iter()
-        .filter(|cu| {
-            local_capability
-                .get(&cu.id)
-                .is_some_and(|(is_local, _)| *is_local)
-        })
-        .map(|cu| crate::session::TestId {
-            codeunit_id: cu.id,
-            codeunit_name: cu.name.clone(),
-            method_name: None,
-        })
-        .collect();
-    if local_tests.is_empty() {
-        // No interpreter-runnable coverage — the mutant legitimately survives.
+    let discovered = match al_analysis::queries::tests::discover_tests(workspace) {
+        Ok(discovered) => discovered,
+        Err(error) => {
+            return VariantOutcome {
+                variant: variant.clone(),
+                killed: false,
+                killing_test: None,
+                error: Some(format!("test discovery failed: {error}")),
+                survival_reason: None,
+            };
+        }
+    };
+    let affected = match al_analysis::queries::tests::affected_tests(
+        workspace,
+        std::slice::from_ref(&variant.file),
+    ) {
+        Ok(affected) => affected,
+        Err(error) => {
+            return VariantOutcome {
+                variant: variant.clone(),
+                killed: false,
+                killing_test: None,
+                error: Some(format!("affected-test selection failed: {error}")),
+                survival_reason: None,
+            };
+        }
+    };
+    if affected.is_empty() {
         return VariantOutcome {
             variant: variant.clone(),
             killed: false,
             killing_test: None,
             error: None,
+            survival_reason: Some(SurvivalReason::NoAffectedTests),
         };
     }
 
-    let (record_tests, pure_tests): (Vec<_>, Vec<_>) = local_tests.into_iter().partition(|test| {
-        local_capability
-            .get(&test.codeunit_id)
-            .is_some_and(|(_, needs_records)| *needs_records)
-    });
+    let classifications = match crate::router::classify_codeunits(workspace, &discovered) {
+        Ok(classifications) => classifications,
+        Err(error) => {
+            return VariantOutcome {
+                variant: variant.clone(),
+                killed: false,
+                killing_test: None,
+                error: Some(format!("test routing failed: {error}")),
+                survival_reason: None,
+            };
+        }
+    };
+    let decisions: std::collections::HashMap<(i32, String), RoutingDecision> = classifications
+        .into_iter()
+        .map(|result| {
+            (
+                (result.codeunit_id, result.method_name.to_ascii_lowercase()),
+                result.decision,
+            )
+        })
+        .collect();
+    let file_by_id: std::collections::HashMap<i32, String> = discovered
+        .iter()
+        .map(|cu| (cu.id, cu.file.clone()))
+        .collect();
+    let mut pure_tests = Vec::new();
+    let mut record_tests = Vec::new();
+    let mut live_bc_count = 0usize;
+    for test in affected {
+        let id = crate::session::TestId {
+            codeunit_id: test.codeunit_id,
+            codeunit_name: test.codeunit_name,
+            method_name: Some(test.method_name.clone()),
+        };
+        match decisions.get(&(test.codeunit_id, test.method_name.to_ascii_lowercase())) {
+            Some(RoutingDecision::Interp) => pure_tests.push(id),
+            Some(RoutingDecision::InterpRecord) => record_tests.push(id),
+            Some(RoutingDecision::LiveBc) | None => live_bc_count += 1,
+        }
+    }
+    let local_count = pure_tests.len() + record_tests.len();
+    if local_count == 0 {
+        return VariantOutcome {
+            variant: variant.clone(),
+            killed: false,
+            killing_test: None,
+            error: None,
+            survival_reason: Some(SurvivalReason::LiveBcOnly),
+        };
+    }
     let (tx, mut rx) = tokio::sync::mpsc::channel::<TestEvent>(256);
     let opts = RunOptions {
-        // Mutants can turn terminating loops infinite — keep the per-run
-        // budget tight so a pathological variant can't stall the whole sweep.
-        timeout_ms: Some(5_000),
+        // Mutants can turn terminating loops infinite. Honour the public
+        // MutationOptions timeout exactly; None explicitly disables the cap.
+        timeout_ms,
         ..Default::default()
     };
     let mut run_handles = Vec::new();
@@ -872,21 +1193,42 @@ async fn run_interp_tests_against_mutant(
         }
     }
     for run_handle in run_handles {
-        if let Err(e) = run_handle.await {
-            return VariantOutcome {
-                variant: variant.clone(),
-                killed: false,
-                killing_test: None,
-                error: Some(format!("interp run panicked: {e}")),
-            };
+        match run_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                return VariantOutcome {
+                    variant: variant.clone(),
+                    killed: false,
+                    killing_test: None,
+                    error: Some(format!("interpreter test run failed: {error}")),
+                    survival_reason: None,
+                };
+            }
+            Err(error) => {
+                return VariantOutcome {
+                    variant: variant.clone(),
+                    killed: false,
+                    killing_test: None,
+                    error: Some(format!("interp run panicked: {error}")),
+                    survival_reason: None,
+                };
+            }
         }
     }
 
+    let killed = killing_test.is_some();
     VariantOutcome {
         variant: variant.clone(),
-        killed: killing_test.is_some(),
+        killed,
         killing_test,
         error: None,
+        survival_reason: if killed {
+            None
+        } else if live_bc_count > 0 {
+            Some(SurvivalReason::PartialLiveBcCoverage)
+        } else {
+            Some(SurvivalReason::LocalTestsPassed)
+        },
     }
 }
 
@@ -972,6 +1314,117 @@ mod tests {
         assert_eq!(
             text, source,
             "original source must be restored after the run"
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_event_channel_fails_the_mutation_run() {
+        let workspace = std::sync::Arc::new(al_workspace::Workspace::new());
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/ClosedChannel.al"),
+            r#"codeunit 50110 ClosedChannel
+{
+    Subtype = Test;
+    [Test]
+    procedure Mutatable()
+    begin
+        if 1 + 1 <> 2 then
+            Error('wrong');
+    end;
+}"#
+            .to_string(),
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+
+        let error = run_mutation_testing(&workspace, MutationOptions::default(), tx)
+            .await
+            .expect_err("a dropped result consumer must fail the operation");
+        assert!(matches!(error, MutationError::EventChannelClosed));
+    }
+
+    #[tokio::test]
+    async fn reachable_code_without_mutation_points_is_not_a_successful_empty_report() {
+        let workspace = std::sync::Arc::new(al_workspace::Workspace::new());
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/NoMutants.al"),
+            r#"codeunit 50111 NoMutants
+{
+    Subtype = Test;
+    [Test]
+    procedure NoOp()
+    begin
+    end;
+}"#
+            .to_string(),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+
+        let error = run_mutation_testing(&workspace, MutationOptions::default(), tx)
+            .await
+            .expect_err("an empty mutant set must be explicit");
+        assert!(matches!(error, MutationError::NoMutationVariants));
+    }
+
+    #[test]
+    fn malformed_source_is_rejected_before_variant_generation() {
+        let workspace = al_workspace::Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/Broken.al"),
+            "codeunit 50112 Broken { procedure Nope( begin".to_string(),
+        );
+
+        let error = generate_variants_for_file(&workspace, "/proj/Broken.al")
+            .expect_err("malformed source must not produce a partial variant set");
+        assert!(matches!(error, MutationError::ParseError { .. }));
+    }
+
+    #[test]
+    fn affected_only_scope_includes_reachable_production_code() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/Subject.al"),
+            r#"codeunit 50100 Subject
+{
+    procedure Add(A: Integer; B: Integer): Integer
+    begin
+        exit(A + B);
+    end;
+}"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/SubjectTests.al"),
+            r#"codeunit 50101 SubjectTests
+{
+    Subtype = Test;
+
+    [Test]
+    procedure Addition()
+    var
+        Subject: Codeunit Subject;
+    begin
+        if Subject.Add(2, 2) <> 4 then
+            Error('wrong result');
+    end;
+}"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/Unused.al"),
+            "codeunit 50102 Unused { procedure Value(): Integer begin exit(1); end; }".to_string(),
+        );
+
+        let files = collect_mutation_files(&workspace, &MutationOptions::default()).unwrap();
+        let paths: Vec<_> = files.iter().map(|(path, _)| path.as_str()).collect();
+        assert!(
+            paths.contains(&"/proj/Subject.al"),
+            "covered production file must be mutated: {paths:?}"
+        );
+        assert!(paths.contains(&"/proj/SubjectTests.al"));
+        assert!(
+            !paths.contains(&"/proj/Unused.al"),
+            "uncovered production file must remain out of affected-only scope"
         );
     }
 
@@ -1146,6 +1599,100 @@ mod tests {
     }
 
     #[test]
+    fn extended_mutators_cover_conditions_word_operators_not_and_text() {
+        let source = r#"codeunit 50100 Subject
+{
+    procedure Evaluate(A: Boolean; B: Boolean): Boolean
+    begin
+        if A and not B then
+            Error('blocked');
+        exit(A);
+    end;
+}"#;
+        let variants = generate_variants("subject.al", source, &parse(source));
+        assert!(
+            variants
+                .iter()
+                .any(|variant| variant.original.eq_ignore_ascii_case("and")
+                    && variant.mutated == "or"),
+            "logical word operator mutation missing: {variants:?}"
+        );
+        assert!(
+            variants
+                .iter()
+                .any(|variant| variant.original.eq_ignore_ascii_case("not")
+                    && variant.mutated.is_empty()),
+            "unary not removal missing: {variants:?}"
+        );
+        assert!(
+            variants
+                .iter()
+                .any(|variant| variant.description == "whole-condition negation"),
+            "whole-condition mutation missing: {variants:?}"
+        );
+        assert!(
+            variants
+                .iter()
+                .any(|variant| variant.original == "'blocked'" && variant.mutated == "''"),
+            "text literal mutation missing: {variants:?}"
+        );
+    }
+
+    #[test]
+    fn verbatim_text_literal_mutation_preserves_verbatim_syntax() {
+        let source = r#"codeunit 50100 Subject
+{
+    procedure Evaluate()
+    begin
+        Error(@'blocked');
+    end;
+}"#;
+        let variants = generate_variants("subject.al", source, &parse(source));
+        assert!(
+            variants
+                .iter()
+                .any(|variant| variant.original == "@'blocked'" && variant.mutated == "@''"),
+            "verbatim text mutation must remain valid AL: {variants:?}"
+        );
+    }
+
+    #[test]
+    fn structural_object_ids_are_not_mutated() {
+        let tree = parse(AL_FIXTURE);
+        let variants = generate_variants("test.al", AL_FIXTURE, &tree);
+        assert!(
+            variants.iter().all(|variant| variant.original != "50100"),
+            "object identity is metadata, not executable mutation input: {variants:?}"
+        );
+    }
+
+    #[test]
+    fn integer_mutator_handles_i64_max_without_overflow() {
+        let source = r#"codeunit 1 Subject
+{
+    procedure MaxValue(): BigInteger
+    begin
+        exit(9223372036854775807);
+    end;
+}"#;
+        let variants = generate_variants("subject.al", source, &parse(source));
+        assert!(
+            variants.iter().any(|variant| {
+                variant.original == "9223372036854775807"
+                    && variant.mutated == "9223372036854775806"
+            }),
+            "max value should have only its checked decrement: {variants:?}"
+        );
+        assert!(
+            variants.iter().all(|variant| {
+                !(variant.original == "9223372036854775807"
+                    && variant.mutated == "9223372036854775808")
+            }),
+            "overflowing increment must not be generated"
+        );
+    }
+
+    #[test]
     fn apply_variant_replaces_token_byte_precisely() {
         let source = r#"codeunit 1 "X"
 {
@@ -1175,9 +1722,17 @@ mod tests {
 
     #[test]
     fn apply_variant_is_byte_equivalent_for_same_length() {
-        let source = "if A > B then";
+        let source = r#"codeunit 1 X
+{
+    procedure F(A: Integer; B: Integer)
+    begin
+        if A > B then
+            A := B;
+    end;
+}"#;
         let tree = parse(source);
         let variants = generate_variants("x.al", source, &tree);
+        assert!(!variants.is_empty(), "fixture must produce mutations");
         for v in &variants {
             let result = apply_variant(source, v).unwrap();
             assert!(
@@ -1250,6 +1805,44 @@ mod tests {
     }
 
     #[test]
+    fn mutation_score_excludes_mutants_with_no_runnable_affected_tests() {
+        fn outcome(id: &str, killed: bool, reason: Option<SurvivalReason>) -> VariantOutcome {
+            VariantOutcome {
+                variant: MutationVariant {
+                    id: id.to_string(),
+                    file: "subject.al".to_string(),
+                    line: 1,
+                    original: "1".to_string(),
+                    mutated: "2".to_string(),
+                    description: "test".to_string(),
+                    byte_start: 0,
+                    byte_end: 1,
+                },
+                killed,
+                killing_test: None,
+                error: None,
+                survival_reason: reason,
+            }
+        }
+
+        let report = MutationReport {
+            variants: vec![
+                outcome("killed", true, None),
+                outcome("survived", false, Some(SurvivalReason::LocalTestsPassed)),
+                outcome("live", false, Some(SurvivalReason::LiveBcOnly)),
+                outcome("uncovered", false, Some(SurvivalReason::NoAffectedTests)),
+            ],
+            killed: 1,
+            survived: 3,
+            errored: 0,
+            executor_phase: MutationExecutorPhase::Interpreter,
+        };
+
+        assert_eq!(report.mutation_score(), Some(50.0));
+        assert_eq!(report.unscored_count(), 2);
+    }
+
+    #[test]
     fn generate_variants_no_panics_on_minimal_source() {
         let sources = ["", "begin", "end;", "if then", "42", "true", "false"];
         for s in &sources {
@@ -1308,7 +1901,17 @@ mod tests {
     #[test]
     fn mutation_error_display_no_test_files() {
         let err = MutationError::NoTestFiles;
-        assert!(err.to_string().contains("No test files"));
+        assert!(err.to_string().contains("No discoverable AL tests"));
+    }
+
+    #[test]
+    fn mutation_error_distinguishes_unreachable_selected_files() {
+        let err = MutationError::NoSelectedReachableFiles {
+            files: vec!["src/Uncovered.Codeunit.al".to_string()],
+        };
+        let message = err.to_string();
+        assert!(message.contains("selected files"));
+        assert!(message.contains("Uncovered.Codeunit.al"));
     }
 
     #[test]

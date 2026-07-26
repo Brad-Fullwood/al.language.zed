@@ -2,7 +2,10 @@ use std::process::ExitCode;
 
 use super::super::{DebugCommands, ProfileCommands, SnapshotCommands};
 
-use super::{absolutize_path, bc_server_params, connect, file_to_uri, print_json, report_error};
+use super::{
+    absolutize_path, bc_server_params, connect, file_to_uri, print_json, report_error,
+    request_checked,
+};
 
 pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
     match subcmd {
@@ -12,11 +15,11 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                 Err(e) => return report_error(&e, json),
             };
             client.set_request_timeout(std::time::Duration::from_secs(120));
-            let params = serde_json::json!({
-                "cmd": "start",
-                "config": config,
-            });
-            match client.request("debug", Some(params)) {
+            let mut params = serde_json::json!({ "cmd": "start" });
+            if let Some(config) = config {
+                params["config"] = serde_json::Value::String(config.clone());
+            }
+            match request_checked(&mut client, "debug", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -43,16 +46,18 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                 Err(e) => return report_error(&e, json),
             };
             let abs_file = match file_to_uri(file) {
-                Some(uri) => uri,
-                None => return ExitCode::FAILURE,
+                Ok(uri) => uri,
+                Err(error) => return report_error(&error, json),
             };
-            let params = serde_json::json!({
+            let mut params = serde_json::json!({
                 "cmd": "breakpoint",
                 "file": abs_file,
                 "line": line,
-                "condition": condition,
             });
-            match client.request("debug", Some(params)) {
+            if let Some(condition) = condition {
+                params["condition"] = serde_json::Value::String(condition.clone());
+            }
+            match request_checked(&mut client, "debug", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -81,7 +86,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                 Err(e) => return report_error(&e, json),
             };
             let params = serde_json::json!({"cmd": "state"});
-            match client.request("debug", Some(params)) {
+            match request_checked(&mut client, "debug", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -120,7 +125,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                 Err(e) => return report_error(&e, json),
             };
             let params = serde_json::json!({"cmd": "eval", "expr": expr});
-            match client.request("debug", Some(params)) {
+            match request_checked(&mut client, "debug", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -143,7 +148,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                 Err(e) => return report_error(&e, json),
             };
             let params = serde_json::json!({"cmd": "continue"});
-            match client.request("debug", Some(params)) {
+            match request_checked(&mut client, "debug", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -162,7 +167,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                 Err(e) => return report_error(&e, json),
             };
             let params = serde_json::json!({"cmd": "step", "stepType": step_type});
-            match client.request("debug", Some(params)) {
+            match request_checked(&mut client, "debug", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -185,8 +190,11 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            let params = serde_json::json!({"cmd": "history", "var": var});
-            match client.request("debug", Some(params)) {
+            let mut params = serde_json::json!({"cmd": "history"});
+            if let Some(var) = var {
+                params["var"] = serde_json::Value::String(var.clone());
+            }
+            match request_checked(&mut client, "debug", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -218,7 +226,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                 Err(e) => return report_error(&e, json),
             };
             let params = serde_json::json!({"cmd": "stop"});
-            match client.request("debug", Some(params)) {
+            match request_checked(&mut client, "debug", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -252,18 +260,21 @@ pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            let mut params = bc_server_params(
+            let mut params = match bc_server_params(
                 "start",
                 server,
                 company,
                 username.as_deref(),
                 password.as_deref(),
                 output_dir.as_deref(),
-            );
+            ) {
+                Ok(params) => params,
+                Err(error) => return report_error(&error, json),
+            };
             if let Some(d) = description {
                 params["description"] = serde_json::json!(d);
             }
-            match client.request("snapshot", Some(params)) {
+            match request_checked(&mut client, "snapshot", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -291,15 +302,18 @@ pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            let params = bc_server_params(
+            let params = match bc_server_params(
                 "list",
                 server,
                 company,
                 username.as_deref(),
                 password.as_deref(),
                 None,
-            );
-            match client.request("snapshot", Some(params)) {
+            ) {
+                Ok(params) => params,
+                Err(error) => return report_error(&error, json),
+            };
+            match request_checked(&mut client, "snapshot", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -341,16 +355,19 @@ pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            let mut params = bc_server_params(
+            let mut params = match bc_server_params(
                 "download",
                 server,
                 company,
                 username.as_deref(),
                 password.as_deref(),
                 output_dir.as_deref(),
-            );
+            ) {
+                Ok(params) => params,
+                Err(error) => return report_error(&error, json),
+            };
             params["snapshotId"] = serde_json::json!(snapshot_id);
-            match client.request("snapshot", Some(params)) {
+            match request_checked(&mut client, "snapshot", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -380,15 +397,18 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            let params = bc_server_params(
+            let params = match bc_server_params(
                 "start",
                 server,
                 company,
                 username.as_deref(),
                 password.as_deref(),
                 output_dir.as_deref(),
-            );
-            match client.request("profiling", Some(params)) {
+            ) {
+                Ok(params) => params,
+                Err(error) => return report_error(&error, json),
+            };
+            match request_checked(&mut client, "profiling", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -419,18 +439,21 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            let mut params = bc_server_params(
+            let mut params = match bc_server_params(
                 "stop",
                 server,
                 company,
                 username.as_deref(),
                 password.as_deref(),
                 output_dir.as_deref(),
-            );
+            ) {
+                Ok(params) => params,
+                Err(error) => return report_error(&error, json),
+            };
             if let Some(sid) = session_id {
                 params["sessionId"] = serde_json::json!(sid);
             }
-            match client.request("profiling", Some(params)) {
+            match request_checked(&mut client, "profiling", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
@@ -451,12 +474,16 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
+            let path = match absolutize_path(path) {
+                Ok(path) => path,
+                Err(error) => return report_error(&error, json),
+            };
             let params = serde_json::json!({
                 "cmd": "analyze",
-                "path": absolutize_path(path),
+                "path": path,
                 "topN": top,
             });
-            match client.request("profiling", Some(params)) {
+            match request_checked(&mut client, "profiling", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);

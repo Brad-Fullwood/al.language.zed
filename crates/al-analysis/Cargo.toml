@@ -17,12 +17,15 @@ al-project = { path = "../al-project", version = "0.1.0" }
 al-workspace = { path = "../al-workspace", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 petgraph = { workspace = true }
 tree-sitter = "0.25"
 url = { version = "2", features = ["serde"] }
 tower-lsp = { workspace = true, optional = true }
 rayon = "1"
+regex = { workspace = true }
+tempfile = "3"
 
 [features]
 # Enable the in-process .NET bridge in both semantic dependencies.
@@ -32,6 +35,5 @@ semantic = ["al-semantic/semantic", "al-workspace/semantic"]
 lsp = ["dep:tower-lsp"]
 
 [dev-dependencies]
-tempfile = "3"
 tokio = { workspace = true }
 zip = { workspace = true }

@@ -26,9 +26,9 @@ mod session_config;
 mod wire;
 
 pub use events::{BcEvent, BreakLocation};
-pub use rest::{get_metadata, publish_app};
+pub use rest::{get_metadata, get_web_endpoint, publish_app};
 pub use session::BcDebugSession;
-pub use session_config::BcDebugConfig;
+pub use session_config::{BcDebugConfig, BreakOnError, BreakOnRecordWrite};
 pub(crate) use wire::percent_encode_url;
 
 #[cfg(test)]

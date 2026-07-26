@@ -28,7 +28,44 @@ pub fn eval_expr(
     }
     let result = eval_expr_inner(node, source, stack, ctx);
     stack.exit_expr();
+    record_condition_trace(node, &result, ctx);
     result
+}
+
+/// Attach a source-ordered Boolean-condition trace to an evaluated syntax node
+/// while dynamic coverage is tracing a decision.
+///
+/// Logical chains install their precise combined trace in
+/// `eval_expression_node`. This fallback propagates that trace through
+/// transparent grammar wrappers; genuinely atomic Boolean values (a variable,
+/// literal, comparison, field access, or Boolean-returning call) become one
+/// condition. Procedure-call internals are intentionally not exposed as
+/// conditions of the caller's decision.
+fn record_condition_trace(node: Node<'_>, result: &Eval, ctx: &mut DispatchCtx) {
+    if !ctx.cov_condition_trace_active() || ctx.cov_expression_trace(node).is_some() {
+        return;
+    }
+    let Eval::Normal(Value::Boolean(outcome)) = result else {
+        return;
+    };
+
+    let transparent = match node.kind() {
+        "expression"
+        | "parenthesized_expression"
+        | "primary_expression"
+        | "case_label_expression" => true,
+        "unary_expression" => true,
+        "postfix_expression" => !crate::interpreter::eval_stmt::is_call_postfix(node),
+        _ => false,
+    };
+    let inherited = transparent.then(|| {
+        let mut cursor = node.walk();
+        let trace = node
+            .named_children(&mut cursor)
+            .find_map(|child| ctx.cov_expression_trace(child));
+        trace
+    });
+    ctx.cov_set_expression_trace(node, inherited.flatten().unwrap_or_else(|| vec![*outcome]));
 }
 
 fn eval_expr_inner(
@@ -81,6 +118,11 @@ fn eval_expr_inner(
                 None => Eval::Error(simple_error("empty expression wrapper")),
             }
         }
+        // In expression position the grammar's lossless generic bracket block
+        // is an AL set literal (`[A, B, Low .. High]`). Evaluate each top-level
+        // member as an ordinary expression so calls, enum scopes, variables,
+        // and ranges use exactly the same semantics as expressions elsewhere.
+        "bracketed_block" => eval_set_literal(node, source, stack, ctx),
         "identifier" | "variable_reference" | "name" => match utf8_text(node, source) {
             Some(name) => {
                 // Boolean keywords may appear as identifiers in some grammar versions.
@@ -202,18 +244,227 @@ fn eval_unary(
     };
 
     match (operator_text.to_ascii_lowercase().as_str(), value) {
-        ("-", Value::Integer(n)) => Eval::Normal(Value::Integer(-n)),
-        // A BigInteger can hold the full i64 range, so `-n` could overflow at
-        // i64::MIN (unlike the 32-bit Integer above); wrapping_neg avoids the
-        // debug-build panic and is identical for every reachable value.
-        ("-", Value::BigInteger(n)) => Eval::Normal(Value::BigInteger(n.wrapping_neg())),
+        ("+", Value::Integer(n)) => Eval::Normal(Value::Integer(n)),
+        ("+", Value::BigInteger(n)) => Eval::Normal(Value::BigInteger(n)),
+        ("+", Value::Decimal(n)) => Eval::Normal(Value::Decimal(n)),
+        ("+", Value::Option { ordinal, .. }) => Eval::Normal(Value::Integer(ordinal)),
+        ("-", Value::Integer(n)) => checked_int(n.checked_neg(), false),
+        ("-", Value::BigInteger(n)) => checked_int(n.checked_neg(), true),
         ("-", Value::Decimal(n)) => Eval::Normal(Value::Decimal(-n)),
+        ("-", Value::Option { ordinal, .. }) => checked_int(ordinal.checked_neg(), false),
         ("not", Value::Boolean(b)) => Eval::Normal(Value::Boolean(!b)),
         (op, v) => Eval::Error(simple_error(&format!(
             "unary operator `{op}` not supported on {}",
             v.type_name()
         ))),
     }
+}
+
+/// Evaluate an AL set literal represented by the grammar's generic
+/// `bracketed_block`.
+fn eval_set_literal(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let Some(text) = utf8_text(node, source) else {
+        return Eval::Error(simple_error("set literal: invalid source text"));
+    };
+    let Some(inner) = text
+        .strip_prefix('[')
+        .and_then(|text| text.strip_suffix(']'))
+    else {
+        return Eval::Error(simple_error("set literal: missing brackets"));
+    };
+    let members = match split_set_members(inner) {
+        Ok(members) => members,
+        Err(message) => return Eval::Error(simple_error(&message)),
+    };
+    let mut values = Vec::with_capacity(members.len());
+    for member in members {
+        match eval_expression_fragment(member, stack, ctx) {
+            Eval::Normal(value) => values.push(value),
+            other => return other,
+        }
+    }
+    Eval::Normal(Value::List(values))
+}
+
+/// Split on commas at the set literal's top level while respecting AL strings,
+/// quoted identifiers, and nested call/index/group delimiters.
+fn split_set_members(source: &str) -> Result<Vec<&str>, String> {
+    if source.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let bytes = source.as_bytes();
+    let mut members = Vec::new();
+    let mut start = 0usize;
+    let mut index = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut single_quoted = false;
+    let mut double_quoted = false;
+    let mut line_comment = false;
+    let mut block_comment = false;
+    while index < bytes.len() {
+        if line_comment {
+            if bytes[index] == b'\n' {
+                line_comment = false;
+            }
+            index += 1;
+            continue;
+        }
+        if block_comment {
+            if bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                block_comment = false;
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        if !single_quoted && !double_quoted {
+            if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'/') {
+                line_comment = true;
+                index += 2;
+                continue;
+            }
+            if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
+                block_comment = true;
+                index += 2;
+                continue;
+            }
+            if bytes[index] == b'#' {
+                line_comment = true;
+                index += 1;
+                continue;
+            }
+        }
+        match bytes[index] {
+            b'\'' if !double_quoted => {
+                if single_quoted && bytes.get(index + 1) == Some(&b'\'') {
+                    index += 2;
+                    continue;
+                }
+                single_quoted = !single_quoted;
+            }
+            b'"' if !single_quoted => {
+                if double_quoted && bytes.get(index + 1) == Some(&b'"') {
+                    index += 2;
+                    continue;
+                }
+                double_quoted = !double_quoted;
+            }
+            b'(' if !single_quoted && !double_quoted => paren_depth += 1,
+            b')' if !single_quoted && !double_quoted => {
+                paren_depth = paren_depth
+                    .checked_sub(1)
+                    .ok_or_else(|| "set literal: unmatched `)`".to_string())?;
+            }
+            b'[' if !single_quoted && !double_quoted => bracket_depth += 1,
+            b']' if !single_quoted && !double_quoted => {
+                bracket_depth = bracket_depth
+                    .checked_sub(1)
+                    .ok_or_else(|| "set literal: unmatched `]`".to_string())?;
+            }
+            b'{' if !single_quoted && !double_quoted => brace_depth += 1,
+            b'}' if !single_quoted && !double_quoted => {
+                brace_depth = brace_depth
+                    .checked_sub(1)
+                    .ok_or_else(|| "set literal: unmatched `}`".to_string())?;
+            }
+            b',' if !single_quoted
+                && !double_quoted
+                && paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0 =>
+            {
+                let member = source[start..index].trim();
+                if member.is_empty() {
+                    return Err("set literal: empty member".to_string());
+                }
+                members.push(member);
+                start = index + 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+
+    if single_quoted
+        || double_quoted
+        || paren_depth != 0
+        || bracket_depth != 0
+        || brace_depth != 0
+        || block_comment
+    {
+        return Err("set literal: unterminated quote or nested delimiter".to_string());
+    }
+    let member = source[start..].trim();
+    if member.is_empty() {
+        return Err("set literal: empty trailing member".to_string());
+    }
+    members.push(member);
+    Ok(members)
+}
+
+/// Parse one set member as a normal AL expression, then evaluate it against the
+/// caller's existing scope and dispatch context.
+fn eval_expression_fragment(
+    expression: &str,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let wrapper = format!(
+        "codeunit 0 __SetExpression {{ procedure __Eval(): Variant begin exit({expression}); end; }}"
+    );
+    let parsed = al_syntax::AlParser::parse_quick(&wrapper);
+    if !parsed.errors.is_empty() {
+        return Eval::Error(simple_error(&format!(
+            "set literal member is not a valid expression: `{expression}`"
+        )));
+    }
+
+    fn find_expression<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
+        if node.kind() == "exit_statement" {
+            let argument_list = node
+                .named_child(0)
+                .filter(|child| child.kind() == "argument_list")
+                .or_else(|| {
+                    let mut cursor = node.walk();
+                    let found = node
+                        .named_children(&mut cursor)
+                        .find(|child| child.kind() == "argument_list");
+                    found
+                })?;
+            let mut stack = vec![argument_list];
+            while let Some(candidate) = stack.pop() {
+                if candidate.kind() == "expression" {
+                    return Some(candidate);
+                }
+                let mut cursor = candidate.walk();
+                stack.extend(candidate.named_children(&mut cursor));
+            }
+            return None;
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if let Some(expression) = find_expression(child) {
+                return Some(expression);
+            }
+        }
+        None
+    }
+
+    let Some(node) = find_expression(parsed.tree.root_node()) else {
+        return Eval::Error(simple_error(
+            "set literal member expression could not be recovered",
+        ));
+    };
+    eval_expr(node, wrapper.as_bytes(), stack, ctx)
 }
 
 /// Evaluate a `postfix_expression`: a primary expression followed by zero or
@@ -308,7 +559,11 @@ fn eval_scope_access(
         (primary_text, member)
     };
 
-    let ordinal = resolve_workspace_enum_ordinal(ctx, &type_name, &member).unwrap_or(0);
+    let Some(ordinal) = resolve_workspace_enum_ordinal(ctx, &type_name, &member) else {
+        return Eval::Error(simple_error(&format!(
+            "enum member '{type_name}::{member}' has no workspace declaration; live BC execution is required"
+        )));
+    };
     Eval::Normal(Value::Option {
         type_name,
         member,
@@ -354,10 +609,33 @@ fn eval_date_literal(node: Node<'_>, source: &[u8]) -> Eval {
     if digits.len() != 8 || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return Eval::Error(simple_error(&format!("malformed date literal: {text}")));
     }
-    let year: i64 = digits[0..4].parse().unwrap_or(0);
-    let month: i64 = digits[4..6].parse().unwrap_or(0);
-    let day: i64 = digits[6..8].parse().unwrap_or(0);
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    let parse_component = |digits: &str, component: &str| {
+        digits.parse::<i64>().map_err(|error| {
+            simple_error(&format!(
+                "malformed {component} in date literal {text}: {error}"
+            ))
+        })
+    };
+    let year = match parse_component(&digits[0..4], "year") {
+        Ok(value) => value,
+        Err(error) => return Eval::Error(error),
+    };
+    let month = match parse_component(&digits[4..6], "month") {
+        Ok(value) => value,
+        Err(error) => return Eval::Error(error),
+    };
+    let day = match parse_component(&digits[6..8], "day") {
+        Ok(value) => value,
+        Err(error) => return Eval::Error(error),
+    };
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    };
+    if !(1..=9999).contains(&year) || day < 1 || day > max_day {
         return Eval::Error(simple_error(&format!("date literal out of range: {text}")));
     }
     Eval::Normal(Value::Date(value::al_days_from_ymd(year, month, day)))
@@ -374,17 +652,36 @@ fn eval_time_literal(node: Node<'_>, source: &[u8]) -> Eval {
     if digits == "0" {
         return Eval::Normal(Value::Time(0));
     }
-    if digits.len() < 6 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+    if !(6..=9).contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return Eval::Error(simple_error(&format!("malformed time literal: {text}")));
     }
-    let hours: i64 = digits[0..2].parse().unwrap_or(0);
-    let minutes: i64 = digits[2..4].parse().unwrap_or(0);
-    let seconds: i64 = digits[4..6].parse().unwrap_or(0);
+    let parse_component = |digits: &str, component: &str| {
+        digits.parse::<i64>().map_err(|error| {
+            simple_error(&format!(
+                "malformed {component} in time literal {text}: {error}"
+            ))
+        })
+    };
+    let hours = match parse_component(&digits[0..2], "hour") {
+        Ok(value) => value,
+        Err(error) => return Eval::Error(error),
+    };
+    let minutes = match parse_component(&digits[2..4], "minute") {
+        Ok(value) => value,
+        Err(error) => return Eval::Error(error),
+    };
+    let seconds = match parse_component(&digits[4..6], "second") {
+        Ok(value) => value,
+        Err(error) => return Eval::Error(error),
+    };
     // Optional thousandths: pad/truncate the trailing group to exactly 3 digits.
     let millis: i64 = if digits.len() > 6 {
         let frac = &digits[6..];
         let frac3: String = frac.chars().chain(std::iter::repeat('0')).take(3).collect();
-        frac3.parse().unwrap_or(0)
+        match parse_component(&frac3, "millisecond") {
+            Ok(value) => value,
+            Err(error) => return Eval::Error(error),
+        }
     } else {
         0
     };
@@ -393,6 +690,10 @@ fn eval_time_literal(node: Node<'_>, source: &[u8]) -> Eval {
     }
     let ms = ((hours * 60 + minutes) * 60 + seconds) * 1000 + millis;
     Eval::Normal(Value::Time(ms))
+}
+
+fn is_leap_year(year: i64) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
 /// Resolve a niladic clock builtin used without parentheses (`Today`,
@@ -417,8 +718,9 @@ fn niladic_clock_builtin(name: &str) -> Option<Value> {
 /// Named children alternate: operand, operator, operand, operator, operand, ...
 ///
 /// We collect all named children into a list, then find the `:=` operator
-/// (assignment, lowest precedence) and process accordingly. For pure
-/// computation, we evaluate left-to-right.
+/// (assignment, lowest precedence) and process accordingly. Pure computation
+/// is reduced with AL's documented operator hierarchy; the grammar deliberately
+/// keeps the source expression flat.
 fn eval_expression_node(
     node: Node<'_>,
     source: &[u8],
@@ -455,10 +757,12 @@ fn eval_expression_node(
         let lhs_node = children[op_idx - 1];
         let rhs_children = &children[(op_idx + 1)..];
 
-        let rhs_val = match eval_expr_chain(rhs_children, source, stack, ctx) {
-            Eval::Normal(v) => v,
-            other => return other,
-        };
+        let mut ignored_trace = None;
+        let rhs_val =
+            match eval_computation_chain(rhs_children, source, stack, ctx, &mut ignored_trace) {
+                Eval::Normal(v) => v,
+                other => return other,
+            };
 
         // Record field assignment: `Rec."Field" := value`. Handled before the
         // plain-identifier path so the whole record isn't overwritten.
@@ -511,7 +815,12 @@ fn eval_expression_node(
         return Eval::Normal(Value::Empty);
     }
 
-    eval_expr_chain(&children, source, stack, ctx)
+    let mut condition_trace = None;
+    let result = eval_computation_chain(&children, source, stack, ctx, &mut condition_trace);
+    if condition_trace.is_some() {
+        ctx.cov_set_expression_trace(node, condition_trace.unwrap_or_default());
+    }
+    result
 }
 
 /// The two flavours of AL assignment operator.
@@ -535,13 +844,135 @@ fn assignment_kind(text: &str) -> Option<AssignKind> {
     }
 }
 
+/// Precedence of AL's flat binary-expression operators.
+///
+/// Postfix and unary operators are already represented by nested syntax nodes,
+/// so this table starts with the multiplicative/logical tier. Larger values
+/// bind more tightly. Every binary tier is left-associative.
+fn binary_precedence(operator: &str) -> Option<u8> {
+    match operator.to_ascii_lowercase().as_str() {
+        "*" | "/" | "div" | "mod" | "and" | "xor" => Some(4),
+        "+" | "-" | "or" => Some(3),
+        ">" | ">=" | "<" | "<=" | "=" | "<>" | "in" => Some(2),
+        ".." => Some(1),
+        _ => None,
+    }
+}
+
+/// One token in a reverse-Polish representation of a flat AL expression.
+///
+/// Building this representation before evaluation gives us the official
+/// precedence without manufacturing a recursive tree. Operands retain source
+/// order in RPN, and operators are applied as soon as their complete
+/// precedence group is available, so an earlier runtime error still prevents
+/// later source operands from running.
+enum ChainToken<'tree> {
+    Operand(Node<'tree>),
+    Operator(String),
+}
+
+/// Evaluate a complete flat AL computation, including the conditional
+/// `condition ? when_true : when_false` operator.
+///
+/// Conditional expressions bind less tightly than the ordinary binary
+/// operators and associate to the right. They also evaluate exactly one
+/// result branch. Keeping this dispatch above the RPN binary evaluator is
+/// important: putting `?` and `:` into the RPN table would eagerly evaluate
+/// both branches and make side effects and runtime errors observably wrong.
+fn eval_computation_chain(
+    children: &[Node<'_>],
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+    condition_trace: &mut Option<Vec<bool>>,
+) -> Eval {
+    let question_index = children.iter().enumerate().find_map(|(index, child)| {
+        (index % 2 == 1
+            && child.kind() == "binary_operator"
+            && utf8_text(*child, source).is_some_and(|text| text.trim() == "?"))
+        .then_some(index)
+    });
+
+    let Some(question_index) = question_index else {
+        return eval_expr_chain(children, source, stack, ctx, condition_trace);
+    };
+
+    // Find the colon paired with the first question mark. Any conditional in
+    // the true arm increments the nesting depth, so `a ? b ? c : d : e`
+    // selects the final colon while `a ? b : c ? d : e` selects the first.
+    let mut nested_questions = 0usize;
+    let mut colon_index = None;
+    for index in ((question_index + 2)..children.len()).step_by(2) {
+        let child = children[index];
+        if child.kind() != "binary_operator" {
+            continue;
+        }
+        match utf8_text(child, source).unwrap_or("").trim() {
+            "?" => nested_questions += 1,
+            ":" if nested_questions == 0 => {
+                colon_index = Some(index);
+                break;
+            }
+            ":" => nested_questions -= 1,
+            _ => {}
+        }
+    }
+    let Some(colon_index) = colon_index else {
+        return Eval::Error(simple_error(
+            "conditional expression: `?` has no matching `:`",
+        ));
+    };
+
+    let condition_children = &children[..question_index];
+    let true_children = &children[(question_index + 1)..colon_index];
+    let false_children = &children[(colon_index + 1)..];
+    if condition_children.is_empty() || true_children.is_empty() || false_children.is_empty() {
+        return Eval::Error(simple_error(
+            "conditional expression: condition and both result branches are required",
+        ));
+    }
+
+    let mut condition_conditions = None;
+    let condition = match eval_computation_chain(
+        condition_children,
+        source,
+        stack,
+        ctx,
+        &mut condition_conditions,
+    ) {
+        Eval::Normal(Value::Boolean(value)) => value,
+        Eval::Normal(other) => {
+            return Eval::Error(simple_error(&format!(
+                "conditional expression requires Boolean condition, got {}",
+                other.type_name()
+            )));
+        }
+        other => return other,
+    };
+
+    let mut selected_trace = None;
+    let result = if condition {
+        eval_computation_chain(true_children, source, stack, ctx, &mut selected_trace)
+    } else {
+        eval_computation_chain(false_children, source, stack, ctx, &mut selected_trace)
+    };
+    if matches!(result, Eval::Normal(Value::Boolean(_))) {
+        *condition_trace = selected_trace.or_else(|| match &result {
+            Eval::Normal(Value::Boolean(value)) => Some(vec![*value]),
+            _ => None,
+        });
+    }
+    result
+}
+
 /// Evaluate a flat alternating chain [operand, op, operand, op, operand, ...]
-/// left-to-right, returning the final computed value.
+/// using AL operator precedence and left associativity.
 fn eval_expr_chain(
     children: &[Node<'_>],
     source: &[u8],
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
+    condition_trace: &mut Option<Vec<bool>>,
 ) -> Eval {
     if children.is_empty() {
         return Eval::Error(simple_error("expression chain: empty"));
@@ -550,29 +981,118 @@ fn eval_expr_chain(
         return eval_expr(children[0], source, stack, ctx);
     }
 
-    let mut acc = match eval_expr(children[0], source, stack, ctx) {
-        Eval::Normal(v) => v,
-        other => return other,
-    };
-
-    let mut i = 1;
-    while i + 1 < children.len() {
-        let op_node = children[i];
-        let rhs_node = children[i + 1];
-        let operator = utf8_text(op_node, source).unwrap_or("").trim().to_string();
-
-        let rhs = match eval_expr(rhs_node, source, stack, ctx) {
-            Eval::Normal(v) => v,
-            other => return other,
-        };
-
-        acc = match apply_binary(&operator, acc, rhs) {
-            Eval::Normal(v) => v,
-            other => return other,
-        };
-        i += 2;
+    if children.len().is_multiple_of(2) {
+        return Eval::Error(simple_error(
+            "expression chain: expected alternating operands and operators",
+        ));
     }
-    Eval::Normal(acc)
+
+    // Shunting-yard conversion. Operators at equal precedence are popped,
+    // making every tier left-associative as AL specifies.
+    let mut output = Vec::with_capacity(children.len());
+    let mut operators: Vec<(String, u8)> = Vec::with_capacity(children.len() / 2);
+    for (index, child) in children.iter().copied().enumerate() {
+        if index % 2 == 0 {
+            output.push(ChainToken::Operand(child));
+            continue;
+        }
+
+        let operator = utf8_text(child, source)
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let Some(precedence) = binary_precedence(&operator) else {
+            return Eval::Error(simple_error(&format!(
+                "unsupported binary operator in expression: `{operator}`"
+            )));
+        };
+        while operators
+            .last()
+            .is_some_and(|(_, stacked_precedence)| *stacked_precedence >= precedence)
+        {
+            let (stacked, _) = operators.pop().expect("last operator exists");
+            output.push(ChainToken::Operator(stacked));
+        }
+        operators.push((operator, precedence));
+    }
+    while let Some((operator, _)) = operators.pop() {
+        output.push(ChainToken::Operator(operator));
+    }
+
+    struct TracedValue {
+        value: Value,
+        conditions: Option<Vec<bool>>,
+    }
+
+    let mut values: Vec<TracedValue> = Vec::with_capacity(children.len().div_ceil(2));
+    for token in output {
+        match token {
+            ChainToken::Operand(node) => match eval_expr(node, source, stack, ctx) {
+                Eval::Normal(value) => values.push(TracedValue {
+                    conditions: ctx.cov_expression_trace(node),
+                    value,
+                }),
+                other => return other,
+            },
+            ChainToken::Operator(operator) => {
+                let Some(right) = values.pop() else {
+                    return Eval::Error(simple_error(
+                        "expression chain: binary operator missing right operand",
+                    ));
+                };
+                let Some(left) = values.pop() else {
+                    return Eval::Error(simple_error(
+                        "expression chain: binary operator missing left operand",
+                    ));
+                };
+                let logical = matches!(operator.as_str(), "and" | "or" | "xor");
+                let left_atomic = match &left.value {
+                    Value::Boolean(value) => Some(*value),
+                    _ => None,
+                };
+                let right_atomic = match &right.value {
+                    Value::Boolean(value) => Some(*value),
+                    _ => None,
+                };
+                match apply_binary(&operator, left.value, right.value) {
+                    Eval::Normal(value) => {
+                        let conditions = match &value {
+                            Value::Boolean(_) if logical => {
+                                let mut combined = left
+                                    .conditions
+                                    .or_else(|| left_atomic.map(|value| vec![value]))
+                                    .unwrap_or_default();
+                                combined.extend(
+                                    right
+                                        .conditions
+                                        .or_else(|| right_atomic.map(|value| vec![value]))
+                                        .unwrap_or_default(),
+                                );
+                                Some(combined)
+                            }
+                            // A comparison (including `in`) is one atomic
+                            // condition even when its operands contain their
+                            // own Boolean calculations.
+                            Value::Boolean(outcome) => Some(vec![*outcome]),
+                            _ => None,
+                        };
+                        values.push(TracedValue { value, conditions });
+                    }
+                    other => return other,
+                }
+            }
+        }
+    }
+
+    match values.pop() {
+        Some(value) if values.is_empty() => {
+            *condition_trace = value.conditions;
+            Eval::Normal(value.value)
+        }
+        _ => Eval::Error(simple_error(
+            "expression chain: invalid operand/operator structure",
+        )),
+    }
 }
 
 fn extract_identifier_name(node: Node<'_>, source: &[u8]) -> Option<String> {
@@ -620,7 +1140,123 @@ fn classify_numeric(v: &Value) -> Option<Num> {
             big: false,
         }),
         Value::BigInteger(n) => Some(Num::Int { val: *n, big: true }),
+        Value::Char(value) => Some(Num::Int {
+            val: *value as i64,
+            big: false,
+        }),
+        Value::Option { ordinal, .. } => Some(Num::Int {
+            val: *ordinal,
+            big: false,
+        }),
         Value::Decimal(d) => Some(Num::Dec(*d)),
+        _ => None,
+    }
+}
+
+/// Convert an AL integer-like/whole-decimal offset used by Date/Time
+/// arithmetic. Fractional Decimal offsets are invalid for these operations.
+fn whole_offset(value: &Value) -> Result<i64, ErrorInfo> {
+    match classify_numeric(value) {
+        Some(Num::Int { val, .. }) => Ok(val),
+        Some(Num::Dec(decimal)) if decimal.fract().is_zero() => decimal
+            .to_string()
+            .parse::<i64>()
+            .map_err(|_| simple_error("Date/Time arithmetic offset is out of range")),
+        Some(Num::Dec(_)) => Err(simple_error(
+            "Date/Time arithmetic requires a whole-number offset",
+        )),
+        None => Err(simple_error(&format!(
+            "Date/Time arithmetic does not support {}",
+            value.type_name()
+        ))),
+    }
+}
+
+fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Option<Eval> {
+    let op = operator.to_ascii_lowercase();
+    match (op.as_str(), left, right) {
+        ("+", Value::Date(date), offset) | ("+", offset, Value::Date(date)) => {
+            if *date == 0 {
+                return Some(Eval::Error(simple_error(
+                    "Date arithmetic is undefined for 0D",
+                )));
+            }
+            Some(
+                match whole_offset(offset).and_then(|offset| {
+                    date.checked_add(offset)
+                        .ok_or_else(|| simple_error("Date arithmetic overflow"))
+                }) {
+                    Ok(value) => Eval::Normal(Value::Date(value)),
+                    Err(error) => Eval::Error(error),
+                },
+            )
+        }
+        ("-", Value::Date(left), Value::Date(right)) => {
+            if *left == 0 || *right == 0 {
+                return Some(Eval::Error(simple_error(
+                    "Date arithmetic is undefined for 0D",
+                )));
+            }
+            Some(checked_int(left.checked_sub(*right), false))
+        }
+        ("-", Value::Date(date), offset) => {
+            if *date == 0 {
+                return Some(Eval::Error(simple_error(
+                    "Date arithmetic is undefined for 0D",
+                )));
+            }
+            Some(
+                match whole_offset(offset).and_then(|offset| {
+                    date.checked_sub(offset)
+                        .ok_or_else(|| simple_error("Date arithmetic overflow"))
+                }) {
+                    Ok(value) => Eval::Normal(Value::Date(value)),
+                    Err(error) => Eval::Error(error),
+                },
+            )
+        }
+        ("+", Value::Time(time), offset) | ("+", offset, Value::Time(time)) => {
+            if *time == 0 {
+                return Some(Eval::Error(simple_error(
+                    "Time arithmetic is undefined for 0T",
+                )));
+            }
+            Some(
+                match whole_offset(offset).and_then(|offset| {
+                    time.checked_add(offset)
+                        .filter(|value| (0..value::MS_PER_DAY).contains(value))
+                        .ok_or_else(|| simple_error("Time arithmetic overflow"))
+                }) {
+                    Ok(value) => Eval::Normal(Value::Time(value)),
+                    Err(error) => Eval::Error(error),
+                },
+            )
+        }
+        ("-", Value::Time(left), Value::Time(right)) => {
+            if *left == 0 || *right == 0 {
+                return Some(Eval::Error(simple_error(
+                    "Time arithmetic is undefined for 0T",
+                )));
+            }
+            Some(checked_int(left.checked_sub(*right), false))
+        }
+        ("-", Value::Time(time), offset) => {
+            if *time == 0 {
+                return Some(Eval::Error(simple_error(
+                    "Time arithmetic is undefined for 0T",
+                )));
+            }
+            Some(
+                match whole_offset(offset).and_then(|offset| {
+                    time.checked_sub(offset)
+                        .filter(|value| (0..value::MS_PER_DAY).contains(value))
+                        .ok_or_else(|| simple_error("Time arithmetic overflow"))
+                }) {
+                    Ok(value) => Eval::Normal(Value::Time(value)),
+                    Err(error) => Eval::Error(error),
+                },
+            )
+        }
         _ => None,
     }
 }
@@ -711,6 +1347,12 @@ fn apply_numeric(op: &str, l: Num, r: Num) -> Eval {
 pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
     let op = operator.to_ascii_lowercase();
 
+    if matches!(op.as_str(), "+" | "-") {
+        if let Some(result) = apply_temporal_arithmetic(&op, &left, &right) {
+            return result;
+        }
+    }
+
     // Numeric arithmetic (Integer, BigInteger, Decimal, and every mix) is
     // handled first, before the value-consuming match, so the operand-type
     // classification lives in one place. Non-arithmetic operations and
@@ -723,9 +1365,8 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
 
     match (&op[..], left, right) {
         ("+", Value::Text(a), Value::Text(b)) => Eval::Normal(Value::Text(format!("{a}{b}"))),
-        ("+", Value::Text(a), Value::Code(b)) | ("+", Value::Code(b), Value::Text(a)) => {
-            Eval::Normal(Value::Text(format!("{a}{b}")))
-        }
+        ("+", Value::Text(a), Value::Code(b)) => Eval::Normal(Value::Text(format!("{a}{b}"))),
+        ("+", Value::Code(a), Value::Text(b)) => Eval::Normal(Value::Text(format!("{a}{b}"))),
         ("+", Value::Code(a), Value::Code(b)) => Eval::Normal(Value::Code(format!("{a}{b}"))),
 
         ("=", a, b) => Eval::Normal(Value::Boolean(values_equal(&a, &b))),
@@ -738,6 +1379,25 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
         ("and", Value::Boolean(a), Value::Boolean(b)) => Eval::Normal(Value::Boolean(a && b)),
         ("or", Value::Boolean(a), Value::Boolean(b)) => Eval::Normal(Value::Boolean(a || b)),
         ("xor", Value::Boolean(a), Value::Boolean(b)) => Eval::Normal(Value::Boolean(a ^ b)),
+        ("..", start, end) => Eval::Normal(Value::Range {
+            start: Box::new(start),
+            end: Box::new(end),
+        }),
+        ("in", value, Value::List(members)) | ("in", value, Value::Array(members)) => {
+            for member in members {
+                let matched = match member {
+                    Value::Range { start, end } => match value_in_range(&value, &start, &end) {
+                        Ok(matched) => matched,
+                        Err(error) => return Eval::Error(error),
+                    },
+                    member => values_equal(&value, &member),
+                };
+                if matched {
+                    return Eval::Normal(Value::Boolean(true));
+                }
+            }
+            Eval::Normal(Value::Boolean(false))
+        }
 
         (op, a, b) => Eval::Error(simple_error(&format!(
             "binary operator `{op}` not supported on ({}, {})",
@@ -755,13 +1415,11 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
 ///   exact `Decimal` (infallible — i64 fits the 96-bit range), so `5 = 5.0`
 ///   holds and `5 = 5.1` does not, with no floating-point rounding.
 pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
+    if let (Some(left), Some(right)) = (classify_numeric(a), classify_numeric(b)) {
+        return left.to_decimal() == right.to_decimal();
+    }
     use Value::*;
     match (a, b) {
-        // Integer and BigInteger are one numeric class; compared by value.
-        (Integer(x) | BigInteger(x), Integer(y) | BigInteger(y)) => x == y,
-        (Integer(x) | BigInteger(x), Decimal(y)) | (Decimal(y), Integer(x) | BigInteger(x)) => {
-            rust_decimal::Decimal::from(*x) == *y
-        }
         // Code is caseless in BC; a Text compared to a Code is coerced to Code.
         (Code(x), Code(y)) | (Text(x), Code(y)) | (Code(y), Text(x)) => x.eq_ignore_ascii_case(y),
         // Everything else uses structural equality (`Value`'s Eq): Text,
@@ -773,13 +1431,16 @@ pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
     }
 }
 
-fn values_cmp(a: &Value, b: &Value, predicate: impl Fn(std::cmp::Ordering) -> bool) -> Eval {
+fn value_ordering(a: &Value, b: &Value) -> Result<std::cmp::Ordering, ErrorInfo> {
     use Value::*;
-    let ord = match (a, b) {
-        (Integer(x) | BigInteger(x), Integer(y) | BigInteger(y)) => x.cmp(y),
-        (Integer(x) | BigInteger(x), Decimal(y)) => rust_decimal::Decimal::from(*x).cmp(y),
-        (Decimal(x), Integer(y) | BigInteger(y)) => x.cmp(&rust_decimal::Decimal::from(*y)),
-        (Decimal(x), Decimal(y)) => x.cmp(y),
+    if let (Some(left), Some(right)) = (classify_numeric(a), classify_numeric(b)) {
+        return Ok(match (left, right) {
+            (Num::Int { val: left, .. }, Num::Int { val: right, .. }) => left.cmp(&right),
+            (left, right) => left.to_decimal().cmp(&right.to_decimal()),
+        });
+    }
+    Ok(match (a, b) {
+        (Boolean(left), Boolean(right)) => left.cmp(right),
         (Text(x), Text(y)) => x.cmp(y),
         // `Code` is caseless in BC, so relational operators must compare it
         // case-insensitively too — matching `values_equal` and the record
@@ -789,14 +1450,25 @@ fn values_cmp(a: &Value, b: &Value, predicate: impl Fn(std::cmp::Ordering) -> bo
         }
         (Date(x), Date(y)) | (Time(x), Time(y)) | (DateTime(x), DateTime(y)) => x.cmp(y),
         (l, r) => {
-            return Eval::Error(simple_error(&format!(
+            return Err(simple_error(&format!(
                 "cannot compare {} and {}",
                 l.type_name(),
                 r.type_name()
             )));
         }
-    };
-    Eval::Normal(Value::Boolean(predicate(ord)))
+    })
+}
+
+fn values_cmp(a: &Value, b: &Value, predicate: impl Fn(std::cmp::Ordering) -> bool) -> Eval {
+    match value_ordering(a, b) {
+        Ok(ordering) => Eval::Normal(Value::Boolean(predicate(ordering))),
+        Err(error) => Eval::Error(error),
+    }
+}
+
+/// Inclusive range membership shared by the `in` operator and CASE labels.
+pub(crate) fn value_in_range(value: &Value, start: &Value, end: &Value) -> Result<bool, ErrorInfo> {
+    Ok(value_ordering(value, start)?.is_ge() && value_ordering(value, end)?.is_le())
 }
 
 #[cfg(test)]
@@ -902,6 +1574,81 @@ mod tests {
         assert_eq!(
             ok(apply_binary("div", Value::Integer(7), Value::Integer(2))),
             Value::Integer(3)
+        );
+    }
+
+    #[test]
+    fn option_and_char_follow_al_numeric_conversion_rules() {
+        let option = Value::Option {
+            type_name: "State".into(),
+            member: "Ready".into(),
+            ordinal: 2,
+        };
+        assert_eq!(
+            ok(apply_binary("+", option.clone(), Value::Integer(3))),
+            Value::Integer(5)
+        );
+        assert_eq!(
+            ok(apply_binary("*", Value::Char('\u{0002}'), option.clone())),
+            Value::Integer(4)
+        );
+        assert_eq!(
+            ok(apply_binary("=", option, Value::Decimal(dec!(2.0)))),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            ok(apply_binary("<", Value::Char('A'), Value::Integer(66))),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn date_and_time_arithmetic_preserves_temporal_types() {
+        assert_eq!(
+            ok(apply_binary("+", Value::Date(100), Value::Integer(2))),
+            Value::Date(102)
+        );
+        assert_eq!(
+            ok(apply_binary("-", Value::Date(102), Value::Date(100))),
+            Value::Integer(2)
+        );
+        assert_eq!(
+            ok(apply_binary("+", Value::Time(1_000), Value::Integer(250))),
+            Value::Time(1_250)
+        );
+        assert_eq!(
+            ok(apply_binary("-", Value::Time(2_000), Value::Time(1_250))),
+            Value::Integer(750)
+        );
+        assert!(err(apply_binary("+", Value::Date(0), Value::Integer(1)))
+            .message
+            .contains("0D"));
+        assert!(err(apply_binary(
+            "+",
+            Value::Time(value::MS_PER_DAY - 1),
+            Value::Integer(1)
+        ))
+        .message
+        .contains("overflow"));
+    }
+
+    #[test]
+    fn mixed_code_text_concatenation_preserves_operand_order() {
+        assert_eq!(
+            ok(apply_binary(
+                "+",
+                Value::Code("LEFT".into()),
+                Value::Text("right".into())
+            )),
+            Value::Text("LEFTright".into())
+        );
+        assert_eq!(
+            ok(apply_binary(
+                "+",
+                Value::Text("left".into()),
+                Value::Code("RIGHT".into())
+            )),
+            Value::Text("leftRIGHT".into())
         );
     }
 
@@ -1294,11 +2041,30 @@ mod tests {
         let tree = result.tree;
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
+        if root.has_error() {
+            return Eval::Error(simple_error("test harness wrapper contains a syntax error"));
+        }
+
+        fn find_expression<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+            if node.kind() == "expression" {
+                return Some(node);
+            }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if let Some(found) = find_expression(child) {
+                    return Some(found);
+                }
+            }
+            None
+        }
 
         fn find_exit_arg<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
             if node.kind() == "exit_statement" {
                 let mut cursor = node.walk();
-                return node.named_children(&mut cursor).next();
+                return node
+                    .named_children(&mut cursor)
+                    .find(|child| child.kind() == "argument_list")
+                    .and_then(find_expression);
             }
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
@@ -1325,10 +2091,182 @@ mod tests {
     }
 
     #[test]
+    fn parsed_expression_uses_al_multiplicative_precedence() {
+        assert_eq!(ok(parse_and_eval("2 + 3 * 4")), Value::Integer(14));
+    }
+
+    #[test]
+    fn parsed_parentheses_override_al_precedence() {
+        assert_eq!(ok(parse_and_eval("(2 + 3) * 4")), Value::Integer(20));
+    }
+
+    #[test]
+    fn parsed_boolean_expression_uses_al_logical_precedence() {
+        assert_eq!(
+            ok(parse_and_eval("true or false and false")),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn parsed_equal_precedence_operators_are_left_associative() {
+        assert_eq!(ok(parse_and_eval("20 div 5 * 2")), Value::Integer(8));
+        assert_eq!(ok(parse_and_eval("20 - 5 - 2")), Value::Integer(13));
+    }
+
+    #[test]
+    fn parsed_parenthesized_comparisons_compose_logically() {
+        assert_eq!(
+            ok(parse_and_eval("(1 < 2) and (3 < 4)")),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn parsed_conditional_expression_uses_low_precedence_and_one_branch() {
+        assert_eq!(
+            ok(parse_and_eval("1 + 2 = 3 ? 10 : 20")),
+            Value::Integer(10)
+        );
+        assert_eq!(
+            ok(parse_and_eval("1 + 2 = 4 ? 10 : 20")),
+            Value::Integer(20)
+        );
+
+        // An unselected arm must not be evaluated: in real AL it may contain
+        // a call with side effects or a runtime failure.
+        assert_eq!(
+            ok(parse_and_eval("true ? 7 : UnboundIdentifier")),
+            Value::Integer(7)
+        );
+        assert_eq!(
+            ok(parse_and_eval("false ? UnboundIdentifier : 8")),
+            Value::Integer(8)
+        );
+    }
+
+    #[test]
+    fn parsed_conditional_expression_is_right_associative() {
+        assert_eq!(
+            ok(parse_and_eval("false ? 1 : true ? 2 : 3")),
+            Value::Integer(2)
+        );
+        assert_eq!(
+            ok(parse_and_eval("true ? false ? 1 : 2 : 3")),
+            Value::Integer(2)
+        );
+    }
+
+    #[test]
+    fn parsed_conditional_expression_requires_boolean_condition() {
+        let error = err(parse_and_eval("1 ? 2 : 3"));
+        assert!(error.message.contains("requires Boolean condition"));
+    }
+
+    #[test]
+    fn range_and_in_membership_are_inclusive() {
+        let range = ok(apply_binary("..", Value::Integer(10), Value::Integer(20)));
+        assert_eq!(
+            ok(apply_binary(
+                "in",
+                Value::Integer(10),
+                Value::List(vec![range.clone()])
+            )),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            ok(apply_binary(
+                "in",
+                Value::Integer(20),
+                Value::List(vec![range.clone()])
+            )),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            ok(apply_binary(
+                "in",
+                Value::Integer(21),
+                Value::List(vec![range])
+            )),
+            Value::Boolean(false)
+        );
+    }
+
+    #[test]
+    fn in_membership_supports_discrete_values_and_exact_numeric_coercion() {
+        assert_eq!(
+            ok(apply_binary(
+                "in",
+                Value::Integer(2),
+                Value::List(vec![
+                    Value::Integer(1),
+                    Value::Decimal(dec!(2.0)),
+                    Value::Integer(3),
+                ])
+            )),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn parsed_in_set_supports_values_ranges_and_nested_expressions() {
+        assert_eq!(ok(parse_and_eval("2 in [1, 2, 3]")), Value::Boolean(true));
+        assert_eq!(
+            ok(parse_and_eval("2 in [0, (1 + 1), 4 .. 8]")),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            ok(parse_and_eval("5 in [1, 4 .. 8, 10]")),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            ok(parse_and_eval("9 in [1, 4 .. 8, 10]")),
+            Value::Boolean(false)
+        );
+    }
+
+    #[test]
+    fn parsed_in_set_handles_quoted_commas_and_empty_sets() {
+        assert_eq!(
+            ok(parse_and_eval("'a,b' in ['x', 'a,b']")),
+            Value::Boolean(true)
+        );
+        assert_eq!(ok(parse_and_eval("1 in []")), Value::Boolean(false));
+        assert_eq!(
+            ok(parse_and_eval(
+                "2 in [1, // a comma in a comment is not a member: ,\n 2, 3]"
+            )),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            ok(parse_and_eval("2 in [1, /* ignored, comma */ 2, 3]")),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
     fn eval_integer_literal_via_parser() {
         if let Eval::Normal(v) = parse_and_eval("42") {
             assert_eq!(v, Value::Integer(42));
         }
+    }
+
+    #[test]
+    fn impossible_calendar_date_is_rejected() {
+        let result = parse_and_eval("20230229D");
+        assert!(
+            result.is_error(),
+            "a non-leap-year February 29 must not be normalized into another date: {result:?}"
+        );
+    }
+
+    #[test]
+    fn overprecise_time_literal_is_rejected() {
+        let result = parse_and_eval("1234561234T");
+        assert!(
+            result.is_error(),
+            "time precision beyond milliseconds must not be silently truncated: {result:?}"
+        );
     }
 
     #[test]

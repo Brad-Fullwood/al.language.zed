@@ -122,6 +122,19 @@ impl CompilationConfigOptions {
     }
 }
 
+impl From<&al_project::config::AlConfig> for CompilationConfigOptions {
+    fn from(config: &al_project::config::AlConfig) -> Self {
+        Self {
+            compilation_options: config.compilation_options.clone(),
+            incremental_build: config.incremental_build,
+            enable_external_rulesets: config.enable_external_rulesets,
+            rule_set_path: config.rule_set_path.clone(),
+            assembly_probing_paths: config.assembly_probing_paths.clone(),
+            output_analyzer_statistics: config.output_analyzer_statistics,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompileResult {
@@ -132,6 +145,9 @@ pub struct CompileResult {
     pub diagnostics: Vec<CompileDiagnostic>,
     /// Raw compiler output (stdout + stderr).
     pub output: String,
+    /// Native phase timings. Microsoft `alc` does not expose equivalent phases.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timings: Option<al_emit::BuildTimings>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -216,15 +232,7 @@ pub async fn compile_project_with_analyzers(
 
     let mut cmd = al_project::toolchain::dotnet_command_async(&toolchain.alc);
     cmd.arg(format!("/project:{}", project_root.display()));
-    let out_file_name = manifest_app_filename(project_root).ok_or_else(|| {
-        AlError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "{} must contain string publisher, name, and version fields",
-                project_root.join("app.json").display()
-            ),
-        ))
-    })?;
+    let out_file_name = manifest_app_filename(project_root)?;
     cmd.arg(format!("/out:{}", out_dir.join(&out_file_name).display()));
 
     let pkg_dir = package_cache
@@ -234,54 +242,12 @@ pub async fn compile_project_with_analyzers(
         cmd.arg(format!("/packagecachepath:{}", pkg_dir.display()));
     }
 
-    // Microsoft publishes these analyzer assembly names as part of the
-    // toolchain; custom analyzers are handled separately below.
-    let named_analyzers: [(&str, &PathBuf); 4] = [
-        ("CodeCop", &toolchain.analyzers.code_cop),
-        ("AppSourceCop", &toolchain.analyzers.app_source_cop),
-        ("UICop", &toolchain.analyzers.ui_cop),
-        ("PerTenantCop", &toolchain.analyzers.per_tenant_cop),
-    ];
-    let mut analyzer_paths = Vec::<String>::new();
-    for (name, path) in &named_analyzers {
-        if !path.is_file() {
-            continue;
-        }
-        if let Some(filter) = analyzer_filter {
-            if !filter.iter().any(|f| f.eq_ignore_ascii_case(name)) {
-                continue;
-            }
-        }
-        analyzer_paths.push(path.display().to_string());
-    }
-    for custom_path in &toolchain.analyzers.custom {
-        if !custom_path.is_file() {
-            continue;
-        }
-        let path_str = custom_path.display().to_string();
-        if let Some(filter) = analyzer_filter {
-            let stem_lower = custom_path
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            let matched = filter
-                .iter()
-                .any(|f| f == &path_str || f.to_lowercase() == stem_lower);
-            if !matched {
-                continue;
-            }
-        }
-        analyzer_paths.push(path_str);
-    }
-    // Absolute DLL paths in the filter not already covered by toolchain.custom.
-    if let Some(filter) = analyzer_filter {
-        for entry in filter {
-            let p = Path::new(entry.as_str());
-            if p.is_absolute() && p.is_file() && !analyzer_paths.contains(entry) {
-                analyzer_paths.push(entry.clone());
-            }
-        }
-    }
+    let analyzer_paths = resolve_analyzer_paths(
+        toolchain,
+        analyzer_filter,
+        project_root,
+        &config_options.assembly_probing_paths,
+    )?;
     if !analyzer_paths.is_empty() {
         if let Some(path) = analyzer_paths.iter().find(|path| path.contains(',')) {
             return Err(AlError::Io(std::io::Error::new(
@@ -394,7 +360,98 @@ pub async fn compile_project_with_analyzers(
         app_path,
         diagnostics,
         output: combined,
+        timings: None,
     })
+}
+
+fn resolve_analyzer_paths(
+    toolchain: &AlToolchain,
+    analyzer_filter: Option<&[String]>,
+    project_root: &Path,
+    assembly_probing_paths: &[PathBuf],
+) -> Result<Vec<String>, AlError> {
+    let builtins: [(&[&str], &PathBuf); 4] = [
+        (&["CodeCop"], &toolchain.analyzers.code_cop),
+        (&["AppSourceCop"], &toolchain.analyzers.app_source_cop),
+        (&["UICop"], &toolchain.analyzers.ui_cop),
+        (
+            &["PerTenantCop", "PerTenantExtensionCop"],
+            &toolchain.analyzers.per_tenant_cop,
+        ),
+    ];
+    let mut paths = Vec::<PathBuf>::new();
+
+    if let Some(filter) = analyzer_filter {
+        for requested in filter {
+            let requested = requested.trim();
+            let builtin = builtins.iter().find(|(names, _)| {
+                names.iter().any(|name| {
+                    al_project::analyzers::analyzer_name(requested).eq_ignore_ascii_case(name)
+                })
+            });
+            let resolved = if let Some((_, path)) = builtin {
+                if !path.is_file() {
+                    return Err(analyzer_configuration_error(format!(
+                        "requested built-in analyzer '{requested}' is not installed at {}",
+                        path.display()
+                    )));
+                }
+                path.to_path_buf()
+            } else if let Some(path) = toolchain.analyzers.custom.iter().find(|path| {
+                let path_text = path.to_string_lossy();
+                path_text.eq_ignore_ascii_case(requested)
+                    || path
+                        .file_stem()
+                        .is_some_and(|stem| stem.to_string_lossy().eq_ignore_ascii_case(requested))
+            }) {
+                if !path.is_file() {
+                    return Err(analyzer_configuration_error(format!(
+                        "configured analyzer '{}' is not a file",
+                        path.display()
+                    )));
+                }
+                path.clone()
+            } else {
+                al_project::analyzers::discover_custom_analyzer(
+                    requested,
+                    project_root,
+                    assembly_probing_paths,
+                )
+                .map_err(|error| analyzer_configuration_error(error.to_string()))?
+                .ok_or_else(|| {
+                    analyzer_configuration_error(format!(
+                        "requested analyzer '{requested}' could not be found in the project, probing paths, NuGet cache, or common editor extension locations"
+                    ))
+                })?
+            };
+            if !paths.contains(&resolved) {
+                paths.push(resolved);
+            }
+        }
+    } else {
+        for (_, path) in builtins {
+            if path.is_file() && !paths.contains(path) {
+                paths.push(path.clone());
+            }
+        }
+        for path in &toolchain.analyzers.custom {
+            if path.is_file() && !paths.contains(path) {
+                paths.push(path.clone());
+            }
+        }
+    }
+
+    Ok(paths
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect())
+}
+
+fn analyzer_configuration_error(message: String) -> AlError {
+    AlError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        message,
+    ))
 }
 
 /// Parse alc compiler output into structured diagnostics.
@@ -504,18 +561,40 @@ fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
 /// C# bridge. Native syntax/project/binding checks run before package assembly;
 /// blocking diagnostics prevent the output file from being replaced.
 pub fn native_compile(project_root: &Path) -> CompileResult {
+    native_compile_with_packages(project_root, None)
+}
+
+/// Compile through the native emitter using the exact dependency package set
+/// selected by the workspace/project configuration.
+///
+/// `None` preserves the standalone `<project>/.alpackages` behavior. `Some`
+/// (including an empty slice) is exact and never falls back implicitly.
+pub fn native_compile_with_packages(
+    project_root: &Path,
+    dependency_packages: Option<&[PathBuf]>,
+) -> CompileResult {
     use std::io::Write;
 
+    let compile_started = std::time::Instant::now();
     let timestamp = al_emit::now_timestamp();
     let version = concat!("native-emit/", env!("CARGO_PKG_VERSION"));
-    let fail = |msg: String, diagnostics: Vec<CompileDiagnostic>| CompileResult {
+    let fail = |msg: String,
+                diagnostics: Vec<CompileDiagnostic>,
+                timings: Option<al_emit::BuildTimings>| CompileResult {
         success: false,
         app_path: None,
         diagnostics,
         output: msg,
+        timings,
     };
-    match al_emit::build_verified_app_from_project(project_root, version, &timestamp) {
+    match al_emit::build_verified_app_from_project_with_packages(
+        project_root,
+        version,
+        &timestamp,
+        dependency_packages,
+    ) {
         Ok(verified) => {
+            let mut timings = verified.timings;
             let diagnostics = verified
                 .diagnostics
                 .into_iter()
@@ -542,15 +621,21 @@ pub fn native_compile(project_root: &Path) -> CompileResult {
                 return fail(
                     format!("native verification failed with {error_count} error(s)"),
                     diagnostics,
+                    Some(timings),
                 );
             };
             let out = project_root.join(&built.file_name);
+            let write_started = std::time::Instant::now();
             let write_result =
                 tempfile::NamedTempFile::new_in(project_root).and_then(|mut temp| {
                     temp.write_all(&built.bytes)?;
                     temp.as_file_mut().sync_all()?;
                     temp.persist(&out).map(|_| ()).map_err(|error| error.error)
                 });
+            timings.output_write_ns =
+                u64::try_from(write_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            timings.total_ns =
+                u64::try_from(compile_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
             match write_result {
                 Ok(()) => CompileResult {
                     success: true,
@@ -561,10 +646,12 @@ pub fn native_compile(project_root: &Path) -> CompileResult {
                         out.display(),
                         built.bytes.len()
                     ),
+                    timings: Some(timings),
                 },
                 Err(error) => fail(
                     format!("atomically writing {}: {error}", out.display()),
                     diagnostics,
+                    Some(timings),
                 ),
             }
         }
@@ -580,6 +667,7 @@ pub fn native_compile(project_root: &Path) -> CompileResult {
                 code: "ALN0000".to_string(),
                 message: error.to_string(),
             }],
+            None,
         ),
     }
 }
@@ -611,6 +699,14 @@ pub struct BuildRequest<'a> {
     pub backend: BuildBackend,
     /// Required for [`BuildBackend::Alc`]; ignored for `Native`.
     pub toolchain: Option<&'a AlToolchain>,
+    /// Exact dependency packages selected by project configuration. Native
+    /// emission indexes this slice directly; the `Alc` backend stages it into
+    /// one deterministic cache directory because `alc` accepts only one
+    /// `/packagecachepath`. `None` preserves each backend's standalone
+    /// `<project>/.alpackages` behavior.
+    pub dependency_packages: Option<&'a [PathBuf]>,
+    /// Package-cache directory forwarded to Microsoft `alc` when
+    /// `dependency_packages` is `None`.
     pub package_cache: Option<&'a Path>,
     pub analyzers: Option<&'a [String]>,
     pub config: CompilationConfigOptions,
@@ -633,20 +729,31 @@ pub async fn build(req: BuildRequest<'_>) -> Result<CompileResult, AlError> {
         BuildBackend::Native => {
             // Native compilation performs blocking filesystem I/O.
             let root = req.project_root.to_path_buf();
-            tokio::task::spawn_blocking(move || native_compile(&root))
-                .await
-                .map_err(|e| {
-                    AlError::Io(std::io::Error::other(format!(
-                        "native compile task panicked: {e}"
-                    )))
-                })
+            let packages = req.dependency_packages.map(<[PathBuf]>::to_vec);
+            tokio::task::spawn_blocking(move || {
+                native_compile_with_packages(&root, packages.as_deref())
+            })
+            .await
+            .map_err(|e| {
+                AlError::Io(std::io::Error::other(format!(
+                    "native compile task panicked: {e}"
+                )))
+            })
         }
         BuildBackend::Alc => {
             let toolchain = req.toolchain.ok_or(AlError::NoToolchain)?;
+            let staged_packages = req
+                .dependency_packages
+                .map(stage_dependency_packages)
+                .transpose()?;
+            let package_cache = staged_packages
+                .as_ref()
+                .map(tempfile::TempDir::path)
+                .or(req.package_cache);
             compile_project_with_analyzers(
                 toolchain,
                 req.project_root,
-                req.package_cache,
+                package_cache,
                 req.analyzers,
                 &req.config,
             )
@@ -655,11 +762,51 @@ pub async fn build(req: BuildRequest<'_>) -> Result<CompileResult, AlError> {
     }
 }
 
+fn stage_dependency_packages(packages: &[PathBuf]) -> Result<tempfile::TempDir, AlError> {
+    let staging = tempfile::Builder::new()
+        .prefix("al-package-cache-")
+        .tempdir()?;
+    let mut names = std::collections::HashSet::new();
+    for package in packages {
+        let file_name = package.file_name().ok_or_else(|| {
+            AlError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "dependency package path has no file name: {}",
+                    package.display()
+                ),
+            ))
+        })?;
+        let folded = file_name.to_string_lossy().to_lowercase();
+        if !names.insert(folded) {
+            return Err(AlError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "configured dependency packages contain a duplicate filename: {}",
+                    file_name.to_string_lossy()
+                ),
+            )));
+        }
+        let metadata = std::fs::metadata(package)?;
+        if !metadata.is_file() {
+            return Err(AlError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "dependency package is not a regular file: {}",
+                    package.display()
+                ),
+            )));
+        }
+        std::fs::copy(package, staging.path().join(file_name))?;
+    }
+    Ok(staging)
+}
+
 /// Return the package whose name matches the project's manifest.
 ///
 /// Unrelated `.app` files are deliberately ignored; selecting the newest file
 /// can publish a stale package left by a different build.
-pub fn find_app_file(project_root: &Path) -> Option<PathBuf> {
+pub fn find_app_file(project_root: &Path) -> Result<Option<PathBuf>, AlError> {
     find_app_file_from_manifest(project_root)
 }
 
@@ -670,16 +817,16 @@ pub fn find_app_file(project_root: &Path) -> Option<PathBuf> {
 /// with `AL1012: Could not write to output file … Access denied`). We therefore
 /// pass alc this exact name inside the build dir so the produced artefact also
 /// matches what [`find_app_file_from_manifest`] expects afterwards.
-fn manifest_app_filename(project_root: &Path) -> Option<String> {
-    let manifest_bytes = std::fs::read(project_root.join("app.json")).ok()?;
-    let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes).ok()?;
-    let publisher = manifest.get("publisher")?.as_str()?;
-    let name = manifest.get("name")?.as_str()?;
-    let version = manifest.get("version")?.as_str()?;
-    Some(format!("{publisher}_{name}_{version}.app"))
+fn manifest_app_filename(project_root: &Path) -> Result<String, AlError> {
+    let manifest = al_project::project::load_app_manifest(project_root)?;
+    Ok(al_types::app_package_filename(
+        &manifest.publisher,
+        &manifest.name,
+        &manifest.version,
+    ))
 }
 
-fn find_app_file_from_manifest(project_root: &Path) -> Option<PathBuf> {
+fn find_app_file_from_manifest(project_root: &Path) -> Result<Option<PathBuf>, AlError> {
     let filename = manifest_app_filename(project_root)?;
     let path = project_root.join(&filename);
     // symlink_metadata() does NOT follow symlinks: an attacker could pre-plant a
@@ -687,14 +834,115 @@ fn find_app_file_from_manifest(project_root: &Path) -> Option<PathBuf> {
     // returned path flows into read_app_capped(), so a symlink here would become
     // an arbitrary-file read. Require a real regular file.
     match std::fs::symlink_metadata(&path) {
-        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => Some(path),
-        _ => None,
+        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => Ok(Some(path)),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(AlError::Io(error)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn analyzer_test_toolchain(root: &Path) -> AlToolchain {
+        AlToolchain {
+            version: "1.0.0".to_string(),
+            dotnet_root: root.to_path_buf(),
+            alc: root.join("alc.dll"),
+            aldoc: None,
+            code_analysis: root.join("Microsoft.Dynamics.Nav.CodeAnalysis.dll"),
+            analyzers: al_project::toolchain::AnalyzerPaths {
+                code_cop: root.join("Microsoft.Dynamics.Nav.CodeCop.dll"),
+                app_source_cop: root.join("Microsoft.Dynamics.Nav.AppSourceCop.dll"),
+                ui_cop: root.join("Microsoft.Dynamics.Nav.UICop.dll"),
+                per_tenant_cop: root.join("Microsoft.Dynamics.Nav.PerTenantExtensionCop.dll"),
+                common: root.join("Microsoft.Dynamics.Nav.Analyzers.Common.dll"),
+                custom: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn named_custom_analyzer_is_discovered_for_official_compile() {
+        let root = tempfile::tempdir().unwrap();
+        let dll = root.path().join(
+            ".netpackages/businesscentral.lintercop/1.0.0/lib/net8.0/BusinessCentral.LinterCop.dll",
+        );
+        std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        std::fs::write(&dll, b"analyzer").unwrap();
+        let toolchain = analyzer_test_toolchain(root.path());
+
+        let resolved = resolve_analyzer_paths(
+            &toolchain,
+            Some(&["BusinessCentral.LinterCop".to_string()]),
+            root.path(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            resolved,
+            [dll.canonicalize().unwrap().display().to_string()]
+        );
+    }
+
+    #[test]
+    fn unresolved_or_missing_requested_analyzer_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let toolchain = analyzer_test_toolchain(root.path());
+
+        let custom = resolve_analyzer_paths(
+            &toolchain,
+            Some(&["Definitely.Not.Installed".to_string()]),
+            root.path(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(custom.to_string().contains("could not be found"));
+
+        let builtin =
+            resolve_analyzer_paths(&toolchain, Some(&["CodeCop".to_string()]), root.path(), &[])
+                .unwrap_err();
+        assert!(builtin.to_string().contains("is not installed"));
+    }
+
+    #[test]
+    fn requested_builtin_alias_resolves_exact_toolchain_dll() {
+        let root = tempfile::tempdir().unwrap();
+        let toolchain = analyzer_test_toolchain(root.path());
+        std::fs::write(&toolchain.analyzers.per_tenant_cop, b"analyzer").unwrap();
+
+        let resolved = resolve_analyzer_paths(
+            &toolchain,
+            Some(&["PerTenantExtensionCop".to_string()]),
+            root.path(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            resolved,
+            [toolchain.analyzers.per_tenant_cop.display().to_string()]
+        );
+    }
+
+    #[test]
+    fn requested_builtin_dll_suffix_is_case_insensitive() {
+        let root = tempfile::tempdir().unwrap();
+        let toolchain = analyzer_test_toolchain(root.path());
+        std::fs::write(&toolchain.analyzers.code_cop, b"analyzer").unwrap();
+
+        let resolved = resolve_analyzer_paths(
+            &toolchain,
+            Some(&["CodeCop.DLL".to_string()]),
+            root.path(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            resolved,
+            [toolchain.analyzers.code_cop.display().to_string()]
+        );
+    }
 
     #[test]
     fn parse_error_diagnostic() {
@@ -778,6 +1026,7 @@ Build failed.";
                 message: "test error".to_string(),
             }],
             output: "error output".to_string(),
+            timings: None,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"appPath\""));
@@ -814,7 +1063,7 @@ Build failed.";
 
         std::fs::write(
             root.join("app.json"),
-            r#"{"publisher":"MyPub","name":"MyApp","version":"2.0.0.0"}"#,
+            r#"{"id":"00000000-0000-0000-0000-000000000001","publisher":"MyPub","name":"MyApp","version":"2.0.0.0"}"#,
         )
         .unwrap();
 
@@ -823,7 +1072,7 @@ Build failed.";
 
         std::fs::write(root.join("MyPub_MyApp_2.0.0.0.app"), b"fresh").unwrap();
 
-        let result = find_app_file(root).unwrap();
+        let result = find_app_file(root).unwrap().unwrap();
         assert_eq!(result.file_name().unwrap(), "MyPub_MyApp_2.0.0.0.app");
     }
 
@@ -834,7 +1083,8 @@ Build failed.";
 
         std::fs::write(root.join("Some_1.0.0.0.app"), b"only one").unwrap();
 
-        assert!(find_app_file(root).is_none());
+        let error = find_app_file(root).unwrap_err();
+        assert!(error.to_string().contains("app.json"));
     }
 
     #[cfg(unix)]
@@ -845,7 +1095,7 @@ Build failed.";
 
         std::fs::write(
             root.join("app.json"),
-            r#"{"publisher":"MyPub","name":"MyApp","version":"2.0.0.0"}"#,
+            r#"{"id":"00000000-0000-0000-0000-000000000001","publisher":"MyPub","name":"MyApp","version":"2.0.0.0"}"#,
         )
         .unwrap();
 
@@ -858,7 +1108,7 @@ Build failed.";
 
         // Must be rejected: a symlink is not a legitimate build artifact and
         // would otherwise enable an arbitrary-file read.
-        assert!(find_app_file(root).is_none());
+        assert!(find_app_file(root).unwrap().is_none());
     }
 
     #[test]
@@ -868,13 +1118,43 @@ Build failed.";
 
         std::fs::write(
             root.join("app.json"),
-            r#"{"publisher":"MyPub","name":"MyApp","version":"2.0.0.0"}"#,
+            r#"{"id":"00000000-0000-0000-0000-000000000001","publisher":"MyPub","name":"MyApp","version":"2.0.0.0"}"#,
         )
         .unwrap();
         std::fs::write(root.join("MyPub_MyApp_2.0.0.0.app"), b"fresh").unwrap();
 
-        let result = find_app_file(root).unwrap();
+        let result = find_app_file(root).unwrap().unwrap();
         assert_eq!(result.file_name().unwrap(), "MyPub_MyApp_2.0.0.0.app");
+    }
+
+    #[test]
+    fn find_app_file_reports_malformed_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.json"), b"{not json").unwrap();
+
+        let error = find_app_file(dir.path()).unwrap_err();
+
+        assert!(error.to_string().contains("Invalid app.json"));
+    }
+
+    #[test]
+    fn manifest_artifact_name_cannot_escape_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"id":"00000000-0000-0000-0000-000000000001","publisher":"../Pub","name":"..\\App","version":"1.0/../../bad"}"#,
+        )
+        .unwrap();
+
+        let filename = manifest_app_filename(dir.path()).unwrap();
+
+        assert!(!filename.contains('/'));
+        assert!(!filename.contains('\\'));
+        assert_eq!(
+            dir.path().join(&filename).parent().unwrap(),
+            dir.path(),
+            "manifest-derived artifact path must remain inside the project"
+        );
     }
 
     /// Serialize env-var access to avoid races between concurrent #[test] threads.
@@ -1127,6 +1407,29 @@ Build failed.";
     }
 
     #[test]
+    fn config_options_from_al_config_maps_every_official_compiler_field() {
+        let config = al_project::config::AlConfig {
+            compilation_options: vec!["/target:Cloud".to_string()],
+            incremental_build: true,
+            enable_external_rulesets: true,
+            rule_set_path: Some(PathBuf::from("/rules.json")),
+            assembly_probing_paths: vec![PathBuf::from("/assemblies")],
+            output_analyzer_statistics: true,
+            ..al_project::config::AlConfig::default()
+        };
+        let options = CompilationConfigOptions::from(&config);
+        assert_eq!(options.compilation_options, vec!["/target:Cloud"]);
+        assert!(options.incremental_build);
+        assert!(options.enable_external_rulesets);
+        assert_eq!(options.rule_set_path, Some(PathBuf::from("/rules.json")));
+        assert_eq!(
+            options.assembly_probing_paths,
+            vec![PathBuf::from("/assemblies")]
+        );
+        assert!(options.output_analyzer_statistics);
+    }
+
+    #[test]
     fn build_backend_from_use_official_compiler() {
         assert_eq!(
             BuildBackend::from_use_official_compiler(false),
@@ -1147,6 +1450,7 @@ Build failed.";
             project_root: dir.path(),
             backend: BuildBackend::Alc,
             toolchain: None,
+            dependency_packages: None,
             package_cache: None,
             analyzers: None,
             config: CompilationConfigOptions::default(),
@@ -1175,6 +1479,7 @@ Build failed.";
             project_root: dir.path(),
             backend: BuildBackend::Native,
             toolchain: None,
+            dependency_packages: None,
             package_cache: None,
             analyzers: None,
             config: CompilationConfigOptions::default(),
@@ -1188,6 +1493,106 @@ Build failed.";
         );
         assert!(result.app_path.is_some());
         assert!(result.diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_build_uses_exact_configured_dependency_packages() {
+        let dependency = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dependency.path().join("app.json"),
+            r#"{
+                "id":"aaaaaaaa-1111-2222-3333-444444444444",
+                "name":"Dependency",
+                "publisher":"Tests",
+                "version":"1.0.0.0",
+                "runtime":"14.0",
+                "idRanges":[{"from":60000,"to":60049}]
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dependency.path().join("External.al"),
+            r#"table 60000 "External Table" {
+                fields { field(1; Value; Integer) { } }
+            }"#,
+        )
+        .unwrap();
+        let dependency_app = native_compile(dependency.path());
+        assert!(dependency_app.success, "{dependency_app:?}");
+        let dependency_path = dependency_app.app_path.unwrap();
+
+        let consumer = tempfile::tempdir().unwrap();
+        std::fs::write(
+            consumer.path().join("app.json"),
+            r#"{
+                "id":"bbbbbbbb-1111-2222-3333-444444444444",
+                "name":"Consumer",
+                "publisher":"Tests",
+                "version":"1.0.0.0",
+                "runtime":"14.0",
+                "idRanges":[{"from":50100,"to":50149}],
+                "dependencies":[{
+                    "id":"aaaaaaaa-1111-2222-3333-444444444444",
+                    "name":"Dependency",
+                    "publisher":"Tests",
+                    "version":"1.0.0.0"
+                }]
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            consumer.path().join("Consumer.al"),
+            r#"codeunit 50100 Consumer {
+                procedure Execute()
+                var
+                    External: Record "External Table";
+                begin
+                    External.Init();
+                end;
+            }"#,
+        )
+        .unwrap();
+
+        let without_configured_package = native_compile(consumer.path());
+        assert!(
+            !without_configured_package.success,
+            "the dependency must not appear without an explicit/default package path"
+        );
+
+        let configured_packages = vec![dependency_path];
+        let result = build(BuildRequest {
+            project_root: consumer.path(),
+            backend: BuildBackend::Native,
+            toolchain: None,
+            dependency_packages: Some(configured_packages.as_slice()),
+            package_cache: None,
+            analyzers: None,
+            config: CompilationConfigOptions::default(),
+        })
+        .await
+        .unwrap();
+        assert!(result.success, "{result:?}");
+        assert!(result.app_path.unwrap().is_file());
+    }
+
+    #[test]
+    fn official_package_staging_is_exact_and_rejects_name_collisions() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let first_app = first.path().join("Dependency.app");
+        let second_app = second.path().join("DEPENDENCY.APP");
+        std::fs::write(&first_app, b"first").unwrap();
+        std::fs::write(&second_app, b"second").unwrap();
+
+        let staged = stage_dependency_packages(std::slice::from_ref(&first_app)).unwrap();
+        assert_eq!(
+            std::fs::read(staged.path().join("Dependency.app")).unwrap(),
+            b"first"
+        );
+        assert_eq!(std::fs::read_dir(staged.path()).unwrap().count(), 1);
+
+        let error = stage_dependency_packages(&[first_app, second_app]).unwrap_err();
+        assert!(error.to_string().contains("duplicate filename"), "{error}");
     }
 
     fn write_native_test_project(dir: &Path, source: &str) {

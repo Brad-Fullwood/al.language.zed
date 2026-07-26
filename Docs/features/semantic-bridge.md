@@ -87,33 +87,37 @@ official server owns more project/session configuration and editor behavior. Cla
 therefore be scoped to the CodeAnalysis operations actually exercised by the live contract test, not
 the whole official extension.
 
-## Why this approach (and why it is being retired)
+## Native and Microsoft boundary
 
-Exact compile-time semantics belong to Microsoft, so for diagnostics/hover/completion the project
-delegates to the real compiler rather than approximating it. But an in-process CLR is heavy: it adds a
-.NET runtime dependency, serializes all calls, and is the slowest part of the editor loop. The native
-emitter already removed the bridge from the build path. Replacing the remaining bridge work requires:
+The bridge is optional Microsoft enrichment, not a prerequisite for the native
+language server. Native workspace diagnostics, type/scope resolution, hover,
+member completion, the generated builtin-function catalog, symbol/package
+navigation, and verified `.app` emission all operate without a CLR. When a
+native query has a sound result it wins; the bridge is consulted only for
+additional Microsoft type/completion detail or exact CodeAnalysis diagnostics.
 
-1. native semantic diagnostics (replace `analyze`),
-2. native type resolver + hover (replace `typeAt`),
-3. native member completions (replace `completions_at`),
-4. generated builtin catalog (replace `builtins`),
-5. generated error-code catalog (replace `errorCodes`),
-6. ✅ verified native compile — syntax/project/declaration/declared-binding/integrity checks run
-   before emission; expand §1 into procedure-body expression/overload/control-flow parity.
+Version-specific Microsoft error-code descriptions and the complete built-in
+type/member catalog are cached from the installed toolchain. Without that
+toolchain, diagnostics still carry their native code and message and generated
+builtin functions remain available; the server does not invent Microsoft-only
+catalog entries.
+
+The same boundary applies to builds: the default verified native pipeline is
+independent of this FFI bridge, while `al.useOfficialCompiler` deliberately
+invokes the real `alc` subprocess when exact Microsoft compiler/analyzer
+compatibility is required.
 
 ## How to use
 
 You normally don't call the bridge directly — it powers diagnostics, hover, and completion
 automatically. To control it:
 
-- `al.enableCodeAnalysis` (default true) — turn the bridge on/off.
+- `al.enableCodeAnalysis` (default true) — turn Microsoft bridge enrichment on/off.
 - `al.backgroundCodeAnalysis`, `al.diagnosticsTrigger`, `al.diagnosticsScope`, `al.codeAnalyzers`,
   and `al.packageCachePath` — control scheduling, analyzer selection, and dependency lookup (see the
-  [settings reference](../reference/settings.md)). The parsed-only settings listed under limitations
-  below do not currently affect bridge execution.
+  [settings reference](../reference/settings.md)).
 
-## Limitations & roadmap
+## Limitations
 
 - No async inside a CLR call (sync mutex); single CLR per process (no multi-toolchain in one session);
   a timeout prevents *new* calls during cooldown but cannot interrupt an in-flight CLR call.
@@ -122,9 +126,8 @@ automatically. To control it:
 - Analyzer names resolve only to shipped analyzer DLLs or explicit DLL paths. Custom analyzer DLLs run
   in-process and must be treated as trusted code.
 - `al.enableExternalRulesets`, `al.ruleSetPath`, `al.assemblyProbingPaths`, and
-  `al.outputAnalyzerStatistics` are parsed settings but are not yet plumbed into this bridge; see
-  [gaps and future work](../gaps-and-future-work.md). They must not be described as active controls.
-- Roadmap: complete the native replacements above so the .NET dependency can eventually be dropped.
+  `al.outputAnalyzerStatistics` intentionally apply to the official `alc` backend, where Microsoft
+  defines their behavior; they do not alter this focused per-document bridge.
 
 ## Verification
 
@@ -133,7 +136,7 @@ automatically. To control it:
   disabled-feature behavior.
 - `cargo test -p al-workspace --features semantic` covers workspace initialization, restart, and
   notification behavior.
-- `AL_TOOL_PATH=<official-extension>/bin/<platform> cargo test -p al-semantic --features semantic --test live_bridge`
+- `AL_TOOL_PATH=<official-extension>/bin/<platform> AL_PACKAGE_CACHE_PATH=<project>/.alpackages make microsoft-contracts`
   loads the real Microsoft DLL and verifies initialization/health, compiler semantic diagnostics,
   unsaved-buffer type lookup, invalid-position rejection, member completion, shipped CodeCop loading,
   built-ins, and error codes. Set `AL_PACKAGE_CACHE_PATH` as well to exercise package-reference loading.

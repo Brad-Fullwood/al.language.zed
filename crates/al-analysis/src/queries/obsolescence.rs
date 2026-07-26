@@ -35,20 +35,20 @@ pub struct ObsoleteEntry {
     pub caller_count: u32,
 }
 
-#[must_use]
-pub fn obsolescence_timeline(workspace: &Workspace) -> Vec<ObsoleteEntry> {
+pub fn obsolescence_timeline(
+    workspace: &Workspace,
+) -> Result<Vec<ObsoleteEntry>, super::WorkspaceQueryError> {
+    let sources = crate::workspace_sources::snapshot(workspace)?;
     let mut results = Vec::new();
 
-    let parsed: Vec<(String, String, tree_sitter::Tree)> = workspace
-        .file_index
-        .files
-        .iter()
-        .filter_map(|e| {
-            let path = e.key().clone();
-            let file_path_str = path.to_string_lossy().to_string();
-            drop(e);
-            let (text, tree) = workspace.file_index.get_cached_parse(&path)?;
-            Some((file_path_str, text, tree))
+    let parsed: Vec<(String, String, tree_sitter::Tree)> = sources
+        .into_iter()
+        .map(|source| {
+            (
+                source.path.to_string_lossy().to_string(),
+                source.text,
+                source.tree,
+            )
         })
         .collect();
 
@@ -92,7 +92,7 @@ pub fn obsolescence_timeline(workspace: &Workspace) -> Vec<ObsoleteEntry> {
         }
     }
 
-    results
+    Ok(results)
 }
 
 fn scan_file_for_obsolete(
@@ -328,7 +328,7 @@ mod tests {
 }"#,
         )]);
 
-        let entries = obsolescence_timeline(&ws);
+        let entries = obsolescence_timeline(&ws).unwrap();
         assert!(
             entries.iter().any(|e| e.symbol == "OldProc"),
             "Should find OldProc as obsolete: {:?}",
@@ -348,7 +348,7 @@ mod tests {
 }"#,
         )]);
 
-        let entries = obsolescence_timeline(&ws);
+        let entries = obsolescence_timeline(&ws).unwrap();
         assert!(
             !entries.iter().any(|e| e.symbol == "ActiveProc"),
             "ActiveProc should not be flagged: {:?}",
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn empty_workspace_returns_empty() {
         let ws = Workspace::new();
-        let entries = obsolescence_timeline(&ws);
+        let entries = obsolescence_timeline(&ws).unwrap();
         assert!(entries.is_empty());
     }
 
@@ -402,11 +402,12 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }];
         ws.symbols.add_entries(&entries);
 
-        let report = obsolescence_timeline(&ws);
+        let report = obsolescence_timeline(&ws).unwrap();
         let entry = report
             .iter()
             .find(|e| e.symbol == "OldHelper")

@@ -32,6 +32,10 @@ cargo bench -p al-lsp --bench perf -- completion
 
 # Compile the benches without running them (CI gate / quick check):
 cargo bench -p al-lsp --bench perf --no-run
+
+# The native-only CI audit: short Criterion samples, fixed fixture, measured
+# values in the job log. It is intentionally not a cross-machine pass/fail SLA.
+cargo bench -p al-lsp --bench perf -- --warm-up-time 0.1 --measurement-time 0.2 --sample-size 10
 ```
 
 HTML reports (with regression detection vs the previous run) are written to
@@ -39,7 +43,7 @@ HTML reports (with regression detection vs the previous run) are written to
 
 ## What is measured
 
-The fixture is a **synthetic AL workspace** generated in-bench from the SCALE
+Most benchmarks use a **synthetic AL workspace** generated in-bench from the SCALE
 constants at the top of `crates/al-lsp/benches/perf.rs` (default ~640 objects:
 200 tables, 200 codeunits, 120 pages, 80 enums, 40 interfaces). The codeunits
 form an event ring (each publishes one integration event and subscribes to the
@@ -47,9 +51,16 @@ previous one) and every table relates to `BenchTable0`, so the `impact` and
 `trace` queries against object 0 exercise a realistic fan-in. To grow the
 workload, bump the SCALE constants — the generator is a pure function of them.
 
+The second cold-load benchmark uses
+`crates/al-lsp/benches/fixtures/representative.app`, a committed NAVX package
+produced by the verified native emitter. It measures the production file,
+archive, manifest, SymbolReference, and index path without relying on a
+proprietary package download in CI.
+
 | Benchmark id | Hot path |
 |--------------|----------|
-| `symbols/cold_load_parse_index` | Parse SymbolReference JSON + index it (workspace-open cost) |
+| `symbols/cold_load_parse_index` | Parse scalable synthetic SymbolReference JSON + index it |
+| `symbols/cold_load_app_archive` | Read and validate a representative NAVX/ZIP `.app`, parse its manifest/symbols, and index it |
 | `symbols/warm_lookup/get_by_name` | Object lookup by name (hash) |
 | `symbols/warm_lookup/find_by_name` | First-match lookup by name |
 | `symbols/warm_lookup/get_by_id` | Object lookup by `(kind, id)` |
@@ -80,16 +91,21 @@ These are time benchmarks; Criterion does not measure memory. The bench prints o
 to stderr exactly once per run, before the timings:
 
 ```
-[MEMORY] indexed_symbols=642 serialized_bytes=… bytes_per_symbol=… insight_nodes=… insight_edges=…
+[MEMORY] indexed_symbols=642 symbol_bytes=… lookup_bytes=… package_metadata_bytes=… document_bytes=… file_text_bytes=… file_index_bytes=… insight_bytes=… call_graph_bytes=… insight_nodes=… insight_edges=… rss=external
 ```
 
-- `indexed_symbols` — number of entries in the index (`SymbolIndex::len`).
-- `serialized_bytes` / `bytes_per_symbol` — the **approximate** memory metric:
-  the serialized-JSON size of the fixture (its on-disk SymbolReference
-  footprint), used as a stable proxy for in-memory size. It does **not** count
-  `Arc`/`DashMap` overhead, so the live index is somewhat larger — this is a
-  byte-budget indicator, not exact RSS accounting.
-- `insight_nodes` / `insight_edges` — size of the graph the insight queries walk.
+- `symbol_bytes` / `lookup_bytes` — symbol payloads and owned lookup/index keys.
+- `package_metadata_bytes` — retained package display metadata.
+- `document_bytes`, `file_text_bytes`, `file_index_bytes` — open-document text/keys and the
+  workspace file-index text/secondary indexes. Cached tree counts are exposed through daemon
+  diagnostics rather than converted into invented byte totals.
+- `insight_bytes` / `call_graph_bytes` — retained node, edge, key, and adjacency-list allocations.
+- `rss=external` — process RSS is allocator/OS-dependent and must be captured separately when it is
+  useful; it is not derivable from owned allocations.
+
+The numbers are deterministic fixture accounting, not a claim about exact process RSS. CI runs the
+short native-only Criterion audit and retains its measured values in the job log. It has no threshold
+or Microsoft comparison because shared-host timing is not a valid cross-tool performance claim.
 
 Because the fixture is deterministic, these numbers are stable across runs and
 move only when the fixture (SCALE constants) or the data model changes.

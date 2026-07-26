@@ -1,8 +1,8 @@
 # Documentation
 
 This directory documents the current AL Language for Zed implementation. Feature
-pages describe native behavior, Microsoft-backed compatibility paths, and known
-limitations. Future work belongs in [ROADMAP.md](../ROADMAP.md).
+pages describe native behavior, Microsoft-backed compatibility paths, known
+limitations, and the maintained release contract in [ROADMAP.md](../ROADMAP.md).
 
 ## Core documentation
 
@@ -13,8 +13,9 @@ limitations. Future work belongs in [ROADMAP.md](../ROADMAP.md).
 | [Architecture](./architecture.md) | Crate dependencies, runtime modes, and request flow |
 | [Testing guide](./testing-guide.md) | Verification by layer, including grammar corpus and release checks |
 | [Microsoft comparison](./microsoft-comparison.md) | Neutral capability and compatibility comparison |
-| [Current limitations](./gaps-and-future-work.md) | Confirmed incomplete or intentionally bounded behavior |
-| [Roadmap](../ROADMAP.md) | Planned work |
+| [Current limitations](./current-limitations.md) | Deliberate compatibility and external-service boundaries |
+| [Completion roadmap](../ROADMAP.md) | Candidate scope, invariants, and release gates |
+| [Completion evidence ledger](./gaps-and-future-work.md) | Blocking implementation, release, and publication evidence |
 
 ## Feature guides
 

@@ -3,12 +3,14 @@
 **Modules:** `crates/al-dap/src/dap/`, `native_debug.rs`, `bc_client.rs`, `http_auth.rs`,
 `profiling.rs`, `snapshot.rs` + `crates/al-lsp/src/server/daemon/debug_dispatch.rs` (CLI/MCP
 control plane) + `src/dap.rs` (Zed glue) + `debug_adapter_schemas/al.json` ·
-**Status:** ✅ shipped (core flow); some schema fields parsed-but-unused
+**Status:** ✅ shipped (core flow); every field advertised by the native schema is
+consumed by Zed or the native adapter
 
 The debugger is a **native Rust Debug Adapter Protocol (DAP) server** that talks directly to a
 Business Central server over SignalR + REST — no Microsoft `EditorServices.Host` required (it remains
-available as a legacy fallback). Zed launches `al-lsp --dap`; the adapter compiles (natively),
-publishes the `.app`, connects to BC's debug hub, and drives breakpoints/stepping/inspection.
+available as a legacy fallback). Zed launches `al-lsp --dap`; the adapter selects the shared verified
+native build by default (or the explicit persisted `al.useOfficialCompiler` backend), publishes the
+manifest-selected `.app`, connects to BC's debug hub, and drives breakpoints/stepping/inspection.
 
 The `al-lsp mcp` server exposes the debugger through the stateful `al_debug` tool. An MCP client can
 retain a debug session
@@ -50,16 +52,29 @@ MCP client ── al_debug ─────► debug_dispatch.rs
 `initialize`, `configurationDone`, `launch`, `attach`, `setBreakpoints` (incl. **conditional**),
 `continue`, `next`, `stepIn`, `stepOut`, `threads` (single "AL Thread"), `stackTrace`, `scopes`
 (Locals + Globals), `variables`, `evaluate` (watch), `disconnect`, `terminate`. `pause` returns an
-explicit error — **BC's debug hub has no pause-while-running API**. Events emitted: `initialized`,
+explicit error — **BC's debug hub has no pause-while-running API**. Requests for
+`setFunctionBreakpoints`, `setVariable`, `completions`, `restart`, and `stepBack` also receive
+command-specific failure responses; they are never silently acknowledged. Events emitted: `initialized`,
 `stopped`, `output`, `al/openUri` (browser launch), `terminated`.
 
 Advertised capabilities include conditional breakpoints, evaluate-for-hovers, terminate, and delayed
-stack-trace loading; not supported: function breakpoints, set-variable, completions, restart, step-back.
+stack-trace loading. Function breakpoints, set-variable, completions, restart/restart-frame, and
+step-back remain explicitly `false`.
+
+That capability boundary is based on the installed Microsoft AL 17.0.2273547 EditorServices protocol
+assembly and its live `HubBasedDebuggerService` contract, not on DAP type names alone. Its protocol
+metadata contains the stack/variables/watch request family used here (`GetVariablesAsync`,
+`GetWatchNodeAsync`, and stack-frame conversion), while the reference adapter's completions
+request is an editor-workspace/LSP round trip rather than a Business Central hub operation. Its
+initialize result also advertises restart even though that assembly registers no restart request
+handler and exposes no live restart hub method. The native adapter therefore does not advertise
+either feature until it can provide the full behavior itself.
 
 ## How launch/attach works
 
 **Launch** (`native_dap.rs`):
-1. **Compile** natively (`build::native_compile`) — no `alc`.
+1. **Compile** through the shared build service: verified native by default, or `alc` only when
+   `al.useOfficialCompiler` is explicitly enabled in persisted project settings.
 2. **Authenticate** (OAuth callback / env token).
 3. **Publish** the `.app` to BC (`POST …/dev/apps`); a missing `.app` fails the launch with a clear
    error rather than silently debugging a stale build.
@@ -106,10 +121,13 @@ field access tolerates both PascalCase and camelCase from different BC versions.
 
 `src/dap.rs` builds the adapter command: default `--dap` (native), `--dap-legacy` for the Microsoft
 proxy via `al.useOfficialDap`. Debug configs are authored with the bundled snippets and validated
-against `debug_adapter_schemas/al.json`, which mirrors Microsoft's AL launch schema (authentication,
-breakOnError/Next/RecordWrite, environmentType/Name, tenant, server/serverInstance/port,
-launchBrowser, startupObjectType/Id, schemaUpdateMode, dependencyPublishingOption,
-validateServerCertificate). A build step (`al-explorer compile`) is attached to launch flows.
+against `debug_adapter_schemas/al.json`, which exposes the native adapter's consumed launch fields
+(authentication, breakOnError/Next/RecordWrite, environmentType/Name, tenant,
+server/serverInstance/port, launchBrowser, startupObjectType/Id, schemaUpdateMode,
+dependencyPublishingOption, and validateServerCertificate). Zed consumes the schema's optional
+`build` field when a user explicitly supplies one. Generated launch scenarios leave it empty:
+the adapter's launch request already compiles through the shared build service and selects the
+manifest-derived artifact atomically, while attach intentionally performs no build.
 
 ## MCP debug control
 
@@ -172,6 +190,13 @@ protocol handling to enforce
 can't. The BC runtime remains the source of truth for *executing* AL — this is a better control plane
 around it, not a reimplementation of it.
 
+The service-backed contract is `make live-bc-contracts`. It drives the real
+DAP framing and BC service through launch compilation, publication, attach,
+breakpoint verification, stack/scopes/locals, evaluation, step, continue, and
+disconnect. The profile requires explicit AAD configuration, test identity,
+breakpoint, evaluation expression, BC version, and bearer token; missing inputs
+exit as `UNAVAILABLE`, never passed.
+
 ## How to use
 
 - **In Zed:** create a debug config from the snippets, then launch/attach from the debugger UI.
@@ -184,9 +209,10 @@ around it, not a reimplementation of it.
 
 ## Limitations
 
-- No pause, function breakpoints, set-variable, completions, restart, or step-back.
-- MCP clients can expand values explicitly by `path`; the Zed DAP presentation still returns
-  `variablesReference: 0`, so editor-side click-through drilling into records is not wired yet.
+- No pause, function breakpoints, set-variable, completions, restart, or step-back. Each request is
+  rejected with a specific explanation, and every corresponding optional DAP capability remains false.
+- Nested DAP variables use bounded adapter-owned `variablesReference` handles and lazy
+  `ExpandNode` requests; MCP clients can also expand values explicitly by `path`.
 - MCP exposes structured equivalents of the native runtime control and inspection loop rather than
   raw DAP request/event frames.
 - `sessionId` and `breakOnNext` are forwarded to the BC `Attach` payload. Fields with no native

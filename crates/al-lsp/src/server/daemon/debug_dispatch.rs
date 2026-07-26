@@ -74,6 +74,49 @@ fn missing_cmd(id: u64, msg: &str) -> Response {
     Response::error(id, al_protocol::jsonrpc::error_codes::INVALID_PARAMS, msg)
 }
 
+fn optional_non_empty_string<'a>(
+    params: &'a serde_json::Value,
+    key: &str,
+) -> Result<Option<&'a str>, String> {
+    match params.get(key) {
+        None => Ok(None),
+        Some(value) => {
+            let value = value
+                .as_str()
+                .ok_or_else(|| format!("'{key}' must be a string when supplied"))?
+                .trim();
+            if value.is_empty() {
+                Err(format!("'{key}' must not be empty"))
+            } else {
+                Ok(Some(value))
+            }
+        }
+    }
+}
+
+fn optional_frame_id(params: &serde_json::Value) -> Result<i64, String> {
+    match params.get("frameId") {
+        None => Ok(0),
+        Some(value) => value
+            .as_i64()
+            .ok_or_else(|| "'frameId' must be an integer when supplied".to_string()),
+    }
+}
+
+fn optional_i32_param(params: &serde_json::Value, key: &str) -> Result<Option<i32>, String> {
+    match params.get(key) {
+        None => Ok(None),
+        Some(value) => {
+            let value = value
+                .as_i64()
+                .ok_or_else(|| format!("'{key}' must be an integer when supplied"))?;
+            i32::try_from(value)
+                .map(Some)
+                .map_err(|_| format!("'{key}' is outside the supported i32 range"))
+        }
+    }
+}
+
 /// Resolve `(objectType, objectId)` from the workspace file index for
 /// a given file path, so daemon breakpoints land at the correct BC object
 /// instead of `(0, 0)`. Returns `None` when the file isn't indexed yet — the
@@ -122,7 +165,6 @@ pub(super) fn resolve_debug_config(
     params: &serde_json::Value,
 ) -> Result<al_dap::dap::bc_debug::BcDebugConfig, String> {
     use al_bc::launch::find_launch_config;
-    use al_dap::dap::bc_debug::BcDebugConfig;
 
     let project_root = workspace
         .project
@@ -131,41 +173,53 @@ pub(super) fn resolve_debug_config(
         .and_then(|g| g.as_ref().map(|p| p.root.clone()))
         .ok_or_else(|| "No active project".to_string())?;
 
-    let debug_file = find_launch_config(&project_root).ok_or_else(|| {
-        "No debug configuration found in project (.zed/debug.json or .vscode/launch.json)"
-            .to_string()
-    })?;
+    let debug_file = find_launch_config(&project_root)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            "No debug configuration found in project (.zed/debug.json or .vscode/launch.json)"
+                .to_string()
+        })?;
 
-    let config_name = params.get("config").and_then(|v| v.as_str());
+    let config_name = optional_non_empty_string(params, "config")?;
     let bc_cfg = pick_named_config(&debug_file.configs, config_name)?;
 
-    use al_bc::launch::{AuthMethod, EnvironmentType};
+    Ok(debug_config_from_server_config(bc_cfg))
+}
 
-    let environment_type = match bc_cfg.environment_type {
+fn debug_config_from_server_config(
+    bc_cfg: &al_bc::launch::BcServerConfig,
+) -> al_dap::dap::bc_debug::BcDebugConfig {
+    use al_bc::launch::{AuthMethod, EnvironmentType};
+    use al_dap::dap::bc_debug::BcDebugConfig;
+
+    let mut config = BcDebugConfig::from_dap_args(&bc_cfg.debug_args);
+    config.server = bc_cfg.server.clone();
+    config.server_instance = bc_cfg.server_instance.clone();
+    if let Some(port) = bc_cfg.port {
+        config.port = port;
+    }
+    if let Some(tenant) = &bc_cfg.tenant {
+        config.tenant = tenant.clone();
+    }
+    config.environment_type = match bc_cfg.environment_type {
         EnvironmentType::OnPrem => "OnPrem".to_string(),
         EnvironmentType::Sandbox => "Sandbox".to_string(),
         EnvironmentType::Production => "Production".to_string(),
     };
-    let authentication = match bc_cfg.authentication {
-        AuthMethod::Windows => "Windows".to_string(),
-        AuthMethod::UserPassword => "UserPassword".to_string(),
-        AuthMethod::AAD => "AAD".to_string(),
-    };
-
-    Ok(BcDebugConfig {
-        server: bc_cfg.server.clone(),
-        server_instance: bc_cfg.server_instance.clone(),
-        port: bc_cfg.port.unwrap_or(7049),
-        tenant: bc_cfg
-            .tenant
-            .clone()
-            .unwrap_or_else(|| "default".to_string()),
-        environment_type,
-        environment_name: bc_cfg.environment_name.clone(),
-        authentication,
-        accept_invalid_certs: bc_cfg.accept_invalid_certs,
-        ..BcDebugConfig::default()
-    })
+    config.environment_name = bc_cfg.environment_name.clone();
+    if bc_cfg.debug_args.get("authentication").is_none() {
+        config.authentication = match bc_cfg.authentication {
+            AuthMethod::Windows => "Windows".to_string(),
+            AuthMethod::UserPassword => "UserPassword".to_string(),
+            AuthMethod::AAD => "AAD".to_string(),
+        };
+    }
+    if bc_cfg.debug_args.get("validateServerCertificate").is_none()
+        && bc_cfg.debug_args.get("acceptInvalidCerts").is_none()
+    {
+        config.accept_invalid_certs = bc_cfg.accept_invalid_certs;
+    }
+    config
 }
 
 pub(super) fn debug_uses_oauth(config: &al_dap::dap::bc_debug::BcDebugConfig) -> bool {
@@ -201,11 +255,22 @@ pub(super) async fn dispatch_debug(
 
     match cmd {
         "start" => {
-            let supplied_access_token = params
-                .get("accessToken")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let supplied_access_token = match params.get("accessToken") {
+                None => String::new(),
+                Some(value) => match value.as_str() {
+                    Some(token) => token.to_string(),
+                    None => {
+                        return Response::error(
+                            id,
+                            error_codes::INVALID_PARAMS,
+                            "'accessToken' must be a string when supplied",
+                        );
+                    }
+                },
+            };
+            if let Err(message) = optional_non_empty_string(params, "config") {
+                return Response::error(id, error_codes::INVALID_PARAMS, message);
+            }
 
             // Look up the named config in the project's debug configuration.
             // or fall back to parsing full DAP args from params for backward compat.
@@ -227,6 +292,9 @@ pub(super) async fn dispatch_debug(
             } else {
                 BcDebugConfig::from_dap_args(params)
             };
+            if let Err(message) = config.validate_native() {
+                return Response::error(id, error_codes::INVALID_PARAMS, message);
+            }
 
             // MCP/CLI callers normally authenticate through the shared OAuth
             // cache (`authenticate login`). Requiring them to extract that
@@ -236,18 +304,30 @@ pub(super) async fn dispatch_debug(
             // token for automation, otherwise acquire/refresh through the same
             // keyring-backed flow used by symbol download and authentication.
             let access_token = if supplied_access_token.is_empty() && debug_uses_oauth(&config) {
-                let client = reqwest::Client::new();
-                match al_symbols::oauth::acquire_token(&client, &config.tenant, |message| {
-                    tracing::info!("debug authentication: {message}");
-                })
-                .await
-                {
-                    Ok(token) => token,
-                    Err(e) => {
+                match al_bc::http_auth::access_token_from_env() {
+                    Ok(Some(token)) => token,
+                    Ok(None) => {
+                        let client = reqwest::Client::new();
+                        match al_symbols::oauth::acquire_token(&client, &config.tenant, |message| {
+                            tracing::info!("debug authentication: {message}");
+                        })
+                        .await
+                        {
+                            Ok(token) => token,
+                            Err(e) => {
+                                return Response::error(
+                                    id,
+                                    error_codes::INTERNAL_ERROR,
+                                    format!("Debug authentication failed: {e}"),
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
                         return Response::error(
                             id,
-                            error_codes::INTERNAL_ERROR,
-                            format!("Debug authentication failed: {e}"),
+                            error_codes::INVALID_PARAMS,
+                            format!("Invalid bearer-token environment: {error}"),
                         );
                     }
                 }
@@ -255,13 +335,58 @@ pub(super) async fn dispatch_debug(
                 supplied_access_token
             };
 
+            let onprem_web_base = if config.launch_browser
+                && config.environment_type.eq_ignore_ascii_case("OnPrem")
+            {
+                let http = match reqwest::Client::builder()
+                    .danger_accept_invalid_certs(config.accept_invalid_certs)
+                    .build()
+                {
+                    Ok(client) => client,
+                    Err(error) => {
+                        return Response::error(
+                            id,
+                            error_codes::INTERNAL_ERROR,
+                            format!("Cannot create the debug HTTP client: {error}"),
+                        );
+                    }
+                };
+                match al_dap::dap::bc_debug::get_web_endpoint(&http, &config, &access_token).await {
+                    Ok(endpoint) => Some(endpoint),
+                    Err(error) => {
+                        return Response::error(
+                            id,
+                            error_codes::INTERNAL_ERROR,
+                            format!("Cannot resolve the on-premises Web client URL: {error}"),
+                        );
+                    }
+                }
+            } else {
+                None
+            };
+            let launch_browser = config.launch_browser;
+
             match NativeDebugSession::start(config, &access_token).await {
                 Ok(session) => {
                     let session_id = session.session_id().to_string();
-                    let browser_url = al_dap::dap::native_dap::build_debug_browser_url(
-                        &session.config,
-                        &session_id,
-                    );
+                    let browser_url = if launch_browser {
+                        match al_dap::dap::native_dap::build_debug_browser_url(
+                            &session.config,
+                            &session_id,
+                            onprem_web_base.as_deref(),
+                        ) {
+                            Ok(url) => Some(url),
+                            Err(error) => {
+                                return Response::error(
+                                    id,
+                                    error_codes::INTERNAL_ERROR,
+                                    format!("Cannot build the Web client URL: {error}"),
+                                );
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     *workspace.debug_session.lock().await = Some(session);
                     Response {
                         id,
@@ -288,18 +413,17 @@ pub(super) async fn dispatch_debug(
         }
 
         "breakpoint" => {
-            let file = match params.get("file").and_then(|v| v.as_str()) {
-                Some(f) => f.to_string(),
-                None => {
-                    return Response {
+            let file = match optional_non_empty_string(params, "file") {
+                Ok(Some(file)) => file.to_string(),
+                Ok(None) => {
+                    return Response::error(
                         id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INVALID_PARAMS,
-                            message: "Missing 'file' parameter".to_string(),
-                        }),
-                        ..Default::default()
-                    };
+                        error_codes::INVALID_PARAMS,
+                        "Missing 'file' parameter",
+                    );
+                }
+                Err(message) => {
+                    return Response::error(id, error_codes::INVALID_PARAMS, message);
                 }
             };
             // Reject missing/overflowing `line` rather than silently defaulting
@@ -322,10 +446,12 @@ pub(super) async fn dispatch_debug(
                     ..Default::default()
                 };
             };
-            let condition = params
-                .get("condition")
-                .and_then(|v| v.as_str())
-                .map(String::from);
+            let condition = match optional_non_empty_string(params, "condition") {
+                Ok(condition) => condition.map(str::to_string),
+                Err(message) => {
+                    return Response::error(id, error_codes::INVALID_PARAMS, message);
+                }
+            };
 
             // Prefer caller-supplied objectType/objectId; otherwise
             // resolve from the workspace file_index. Defaulting to (0, 0)
@@ -336,16 +462,27 @@ pub(super) async fn dispatch_debug(
             // rejects it so an upstream caller bug surfaces instead of
             // silently routing at the wrong object.
             let resolved = resolve_object_metadata(workspace, &file);
-            let obj_type = params
-                .get("objectType")
-                .and_then(|v| v.as_i64())
-                .and_then(|v| i32::try_from(v).ok())
-                .or(resolved.map(|(t, _)| t));
-            let obj_id = params
-                .get("objectId")
-                .and_then(|v| v.as_i64())
-                .and_then(|v| i32::try_from(v).ok())
-                .or(resolved.map(|(_, i)| i));
+            let explicit_type = match optional_i32_param(params, "objectType") {
+                Ok(value) => value,
+                Err(message) => {
+                    return Response::error(id, error_codes::INVALID_PARAMS, message);
+                }
+            };
+            let explicit_id = match optional_i32_param(params, "objectId") {
+                Ok(value) => value,
+                Err(message) => {
+                    return Response::error(id, error_codes::INVALID_PARAMS, message);
+                }
+            };
+            if explicit_type.is_some() != explicit_id.is_some() {
+                return Response::error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'objectType' and 'objectId' must be supplied together",
+                );
+            }
+            let obj_type = explicit_type.or(resolved.map(|(object_type, _)| object_type));
+            let obj_id = explicit_id.or(resolved.map(|(_, object_id)| object_id));
 
             let (obj_type, obj_id) = match (obj_type, obj_id) {
                 (Some(t), Some(i)) => (t, i),
@@ -441,7 +578,12 @@ pub(super) async fn dispatch_debug(
         }
 
         "variables" | "globals" => {
-            let frame_id = params.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
+            let frame_id = match optional_frame_id(params) {
+                Ok(frame_id) => frame_id,
+                Err(message) => {
+                    return Response::error(id, error_codes::INVALID_PARAMS, message);
+                }
+            };
             let mut guard = workspace.debug_session.lock().await;
             match guard.as_mut() {
                 None => no_session(id),
@@ -476,10 +618,19 @@ pub(super) async fn dispatch_debug(
         }
 
         "expand" => {
-            let Some(path) = params.get("path").and_then(|v| v.as_str()) else {
-                return missing_cmd(id, "Missing 'path' parameter for expand");
+            let path = match optional_non_empty_string(params, "path") {
+                Ok(Some(path)) => path,
+                Ok(None) => return missing_cmd(id, "Missing 'path' parameter for expand"),
+                Err(message) => {
+                    return Response::error(id, error_codes::INVALID_PARAMS, message);
+                }
             };
-            let frame_id = params.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
+            let frame_id = match optional_frame_id(params) {
+                Ok(frame_id) => frame_id,
+                Err(message) => {
+                    return Response::error(id, error_codes::INVALID_PARAMS, message);
+                }
+            };
             let mut guard = workspace.debug_session.lock().await;
             match guard.as_mut() {
                 None => no_session(id),
@@ -508,21 +659,25 @@ pub(super) async fn dispatch_debug(
         }
 
         "eval" => {
-            let expr = match params.get("expr").and_then(|v| v.as_str()) {
-                Some(e) => e.to_string(),
-                None => {
-                    return Response {
+            let expr = match optional_non_empty_string(params, "expr") {
+                Ok(Some(expression)) => expression.to_string(),
+                Ok(None) => {
+                    return Response::error(
                         id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INVALID_PARAMS,
-                            message: "Missing 'expr' parameter".to_string(),
-                        }),
-                        ..Default::default()
-                    };
+                        error_codes::INVALID_PARAMS,
+                        "Missing 'expr' parameter",
+                    );
+                }
+                Err(message) => {
+                    return Response::error(id, error_codes::INVALID_PARAMS, message);
                 }
             };
-            let frame_id = params.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
+            let frame_id = match optional_frame_id(params) {
+                Ok(frame_id) => frame_id,
+                Err(message) => {
+                    return Response::error(id, error_codes::INVALID_PARAMS, message);
+                }
+            };
 
             let mut guard = workspace.debug_session.lock().await;
             match guard.as_mut() {
@@ -572,16 +727,26 @@ pub(super) async fn dispatch_debug(
         }
 
         "step" => {
-            let step_type = params
-                .get("stepType")
-                .and_then(|v| v.as_str())
-                .unwrap_or("over")
-                .to_string();
+            let step_type = match optional_non_empty_string(params, "stepType") {
+                Ok(None | Some("over")) => "over",
+                Ok(Some("in" | "into")) => "in",
+                Ok(Some("out")) => "out",
+                Ok(Some(other)) => {
+                    return Response::error(
+                        id,
+                        error_codes::INVALID_PARAMS,
+                        format!("'stepType' must be 'over', 'in'/'into', or 'out'; got '{other}'"),
+                    );
+                }
+                Err(message) => {
+                    return Response::error(id, error_codes::INVALID_PARAMS, message);
+                }
+            };
 
             let mut guard = workspace.debug_session.lock().await;
             match guard.as_mut() {
                 None => no_session(id),
-                Some(session) => match session.step(&step_type).await {
+                Some(session) => match session.step(step_type).await {
                     Ok(state) => state_response(id, &state, "step"),
                     Err(e) => Response {
                         id,
@@ -597,7 +762,12 @@ pub(super) async fn dispatch_debug(
         }
 
         "history" => {
-            let var_filter = params.get("var").and_then(|v| v.as_str()).map(String::from);
+            let var_filter = match optional_non_empty_string(params, "var") {
+                Ok(value) => value.map(str::to_string),
+                Err(message) => {
+                    return Response::error(id, error_codes::INVALID_PARAMS, message);
+                }
+            };
 
             let guard = workspace.debug_session.lock().await;
             match guard.as_ref() {
@@ -672,9 +842,12 @@ pub(super) async fn dispatch_debug(
 
 #[cfg(test)]
 mod pick_named_config_tests {
-    use super::{debug_uses_oauth, has_inline_debug_config, pick_named_config};
+    use super::{
+        debug_config_from_server_config, debug_uses_oauth, has_inline_debug_config,
+        pick_named_config,
+    };
     use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
-    use al_dap::dap::bc_debug::BcDebugConfig;
+    use al_dap::dap::bc_debug::{BcDebugConfig, BreakOnError, BreakOnRecordWrite};
 
     fn cfg(name: &str) -> BcServerConfig {
         BcServerConfig {
@@ -687,6 +860,7 @@ mod pick_named_config_tests {
             tenant: None,
             authentication: AuthMethod::UserPassword,
             accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
         }
     }
 
@@ -712,6 +886,75 @@ mod pick_named_config_tests {
         let err = pick_named_config(&configs, Some("alfa")).expect_err("typo must error");
         assert!(err.contains("\"alfa\""), "{err}");
         assert!(err.contains("alpha") && err.contains("beta"), "{err}");
+    }
+
+    #[test]
+    fn named_config_preserves_every_native_debug_field() {
+        let mut server = cfg("complete");
+        server.server = Some("https://bc.example.test".to_string());
+        server.server_instance = Some("BC240".to_string());
+        server.port = Some(7050);
+        server.tenant = Some("tenant.example".to_string());
+        server.environment_name = Some("Production".to_string());
+        server.authentication = AuthMethod::AAD;
+        server.debug_args = serde_json::json!({
+            "environmentType": "OnPrem",
+            "authentication": "AAD",
+            "breakOnError": "ExcludeTry",
+            "breakOnRecordWrite": "ExcludeTemporary",
+            "breakOnNext": "Background",
+            "sessionId": 73,
+            "startupObjectType": "Report",
+            "startupObjectId": 50123,
+            "startupCompany": "CRONUS UK",
+            "launchBrowser": false,
+            "schemaUpdateMode": "ForceSync",
+            "dependencyPublishingOption": "Strict",
+            "enableSqlInformationDebugger": false,
+            "enableLongRunningSqlStatements": false,
+            "longRunningSqlStatementsThreshold": 975,
+            "numberOfSqlStatements": 37,
+            "validateServerCertificate": false
+        });
+
+        let config = debug_config_from_server_config(&server);
+        assert_eq!(config.server.as_deref(), Some("https://bc.example.test"));
+        assert_eq!(config.server_instance.as_deref(), Some("BC240"));
+        assert_eq!(config.port, 7050);
+        assert_eq!(config.tenant, "tenant.example");
+        assert_eq!(config.environment_type, "OnPrem");
+        assert_eq!(config.environment_name.as_deref(), Some("Production"));
+        assert_eq!(config.authentication, "AAD");
+        assert_eq!(config.break_on_error, BreakOnError::ExcludeTry);
+        assert_eq!(
+            config.break_on_record_write,
+            BreakOnRecordWrite::ExcludeTemporary
+        );
+        assert_eq!(config.break_on_next.as_deref(), Some("Background"));
+        assert_eq!(config.session_id, Some(73));
+        assert_eq!(config.startup_object_type, "Report");
+        assert_eq!(config.startup_object_id, 50123);
+        assert_eq!(config.startup_company.as_deref(), Some("CRONUS UK"));
+        assert!(!config.launch_browser);
+        assert_eq!(config.schema_update_mode, "ForceSync");
+        assert_eq!(config.dependency_publishing_option, "Strict");
+        assert!(!config.enable_sql_information_debugger);
+        assert!(!config.enable_long_running_sql_statements);
+        assert_eq!(config.long_running_sql_statements_threshold, 975);
+        assert_eq!(config.number_of_sql_statements, 37);
+        assert!(config.accept_invalid_certs);
+        assert!(config.validate_native().is_ok());
+    }
+
+    #[test]
+    fn named_config_without_authentication_keeps_environment_default() {
+        let server = cfg("legacy-onprem-default");
+        let config = debug_config_from_server_config(&server);
+        assert_eq!(config.authentication, "UserPassword");
+        assert!(
+            config.validate_native().is_err(),
+            "native DAP must reject a legacy default instead of silently switching to OAuth"
+        );
     }
 
     #[test]
@@ -914,6 +1157,35 @@ mod dispatch_debug_tests {
     }
 
     #[tokio::test]
+    async fn breakpoint_rejects_malformed_optional_metadata_and_condition() {
+        let ws = Workspace::new();
+        for params in [
+            json!({
+                "cmd": "breakpoint",
+                "file": "/nope/Foo.al",
+                "line": 3,
+                "condition": false
+            }),
+            json!({
+                "cmd": "breakpoint",
+                "file": "/nope/Foo.al",
+                "line": 3,
+                "objectType": "codeunit",
+                "objectId": 50100
+            }),
+            json!({
+                "cmd": "breakpoint",
+                "file": "/nope/Foo.al",
+                "line": 3,
+                "objectType": 5
+            }),
+        ] {
+            let response = dispatch_debug(&ws, 70, &params).await;
+            assert_eq!(err_code(&response), error_codes::INVALID_PARAMS);
+        }
+    }
+
+    #[tokio::test]
     async fn breakpoint_with_caller_metadata_but_no_session_is_no_session() {
         let ws = Workspace::new();
         let r = dispatch_debug(
@@ -959,6 +1231,21 @@ mod dispatch_debug_tests {
     }
 
     #[tokio::test]
+    async fn inspection_commands_reject_wrong_typed_frame_ids_before_session_lookup() {
+        let ws = Workspace::new();
+        for params in [
+            json!({"cmd": "variables", "frameId": "top"}),
+            json!({"cmd": "globals", "frameId": []}),
+            json!({"cmd": "expand", "frameId": false, "path": "Rec"}),
+            json!({"cmd": "eval", "frameId": {}, "expr": "Rec"}),
+        ] {
+            let response = dispatch_debug(&ws, 71, &params).await;
+            assert_eq!(err_code(&response), error_codes::INVALID_PARAMS);
+            assert!(err_msg(&response).contains("frameId"));
+        }
+    }
+
+    #[tokio::test]
     async fn expand_requires_a_path() {
         let ws = Workspace::new();
         let r = dispatch_debug(&ws, 21, &json!({"cmd": "expand"})).await;
@@ -996,6 +1283,23 @@ mod dispatch_debug_tests {
         let r = dispatch_debug(&ws, 13, &json!({"cmd": "step"})).await;
         assert_eq!(err_code(&r), error_codes::INTERNAL_ERROR);
         assert!(err_msg(&r).contains("No active debug session"));
+
+        let into = dispatch_debug(&ws, 131, &json!({"cmd": "step", "stepType": "into"})).await;
+        assert_eq!(err_code(&into), error_codes::INTERNAL_ERROR);
+        assert!(err_msg(&into).contains("No active debug session"));
+    }
+
+    #[tokio::test]
+    async fn step_and_history_reject_malformed_optional_strings() {
+        let ws = Workspace::new();
+        for params in [
+            json!({"cmd": "step", "stepType": 1}),
+            json!({"cmd": "step", "stepType": "sideways"}),
+            json!({"cmd": "history", "var": false}),
+        ] {
+            let response = dispatch_debug(&ws, 72, &params).await;
+            assert_eq!(err_code(&response), error_codes::INVALID_PARAMS);
+        }
     }
 
     #[tokio::test]
@@ -1027,6 +1331,19 @@ mod dispatch_debug_tests {
         let r = dispatch_debug(&ws, 16, &json!({"cmd": "start"})).await;
         assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
         assert!(err_msg(&r).contains("No active project"), "{}", err_msg(&r));
+    }
+
+    #[tokio::test]
+    async fn start_rejects_malformed_config_and_access_token_before_project_lookup() {
+        let ws = Workspace::new();
+        for params in [
+            json!({"cmd": "start", "config": null}),
+            json!({"cmd": "start", "config": ""}),
+            json!({"cmd": "start", "accessToken": 42}),
+        ] {
+            let response = dispatch_debug(&ws, 73, &params).await;
+            assert_eq!(err_code(&response), error_codes::INVALID_PARAMS);
+        }
     }
 }
 

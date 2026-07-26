@@ -11,6 +11,7 @@ pub mod bulk_fix;
 pub mod code_actions;
 pub mod code_lens;
 pub mod completions;
+pub mod complexity;
 pub mod dead_code;
 pub mod definition;
 pub mod deps;
@@ -24,6 +25,7 @@ pub mod implementation;
 pub mod inlay_hints;
 pub mod native_check;
 pub mod obsolescence;
+pub mod obsolete_usage;
 pub mod profiler_hints;
 pub mod references;
 pub mod rename;
@@ -43,11 +45,18 @@ pub mod upgrade;
 use al_symbols::SymbolEntry;
 use url::Url;
 
-/// Strip an AL `field(` prefix, tolerating the optional space in `field (`.
-/// Returns the remainder after the opening paren, or `None` if absent.
-pub(crate) fn strip_field_prefix(s: &str) -> Option<&str> {
-    s.strip_prefix("field(")
-        .or_else(|| s.strip_prefix("field ("))
+#[derive(Debug, thiserror::Error)]
+pub enum WorkspaceQueryError {
+    #[error("whole-workspace query refused an incomplete source snapshot: {reason}")]
+    IncompleteSourceSnapshot { reason: String },
+}
+
+impl From<crate::workspace_sources::WorkspaceSourceError> for WorkspaceQueryError {
+    fn from(error: crate::workspace_sources::WorkspaceSourceError) -> Self {
+        Self::IncompleteSourceSnapshot {
+            reason: error.to_string(),
+        }
+    }
 }
 
 /// Extract the clean (unquoted) name from a tree-sitter node.

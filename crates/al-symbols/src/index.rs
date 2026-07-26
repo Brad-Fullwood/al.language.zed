@@ -15,6 +15,107 @@ use super::source_availability::{self, SourceAvailability, SourceAvailabilitySum
 
 const DEFAULT_COMPLETIONS_CAP: usize = 30;
 
+/// Acquire a derived-cache read guard, discarding (never inspecting) a value
+/// left behind by a panicked writer and replacing it with `T::default()`.
+///
+/// These locks protect only caches derived from the authoritative DashMap
+/// indexes. Rebuilding or emptying them is therefore lossless; applying this
+/// recovery rule to authoritative symbol state would not be safe.
+fn read_derived_cache<'a, T: Default>(
+    lock: &'a std::sync::RwLock<T>,
+    component: &'static str,
+) -> (std::sync::RwLockReadGuard<'a, T>, bool) {
+    let mut repaired = false;
+    loop {
+        match lock.read() {
+            Ok(guard) => return (guard, repaired),
+            Err(poisoned) => {
+                // Drop the inaccessible read view, then acquire an exclusive
+                // guard so the whole cache can be replaced.
+                drop(poisoned.into_inner());
+                let (guard, recovered) = write_derived_cache(lock, component);
+                drop(guard);
+                repaired = true;
+                if !recovered {
+                    // Another thread repaired the cache between our read and
+                    // write attempts. Its complete replacement is authoritative.
+                    continue;
+                }
+            }
+        }
+    }
+}
+
+/// Acquire a derived-cache write guard. A poisoned value is overwritten in
+/// full before the poison flag is cleared.
+fn write_derived_cache<'a, T: Default>(
+    lock: &'a std::sync::RwLock<T>,
+    component: &'static str,
+) -> (std::sync::RwLockWriteGuard<'a, T>, bool) {
+    match lock.write() {
+        Ok(guard) => (guard, false),
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = T::default();
+            lock.clear_poison();
+            warn!(
+                component,
+                "discarded and repaired poisoned derived symbol cache"
+            );
+            (guard, true)
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageLoadFailure {
+    pub path: std::path::PathBuf,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageLoadError {
+    pub failures: Vec<PackageLoadFailure>,
+}
+
+impl std::fmt::Display for PackageLoadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} symbol package{} failed to load",
+            self.failures.len(),
+            if self.failures.len() == 1 { "" } else { "s" }
+        )?;
+        for failure in &self.failures {
+            write!(
+                formatter,
+                "; '{}': {}",
+                failure.path.display(),
+                failure.message
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for PackageLoadError {}
+
+fn complete_package_batch<T>(
+    parsed: Vec<Result<T, PackageLoadFailure>>,
+) -> Result<Vec<T>, PackageLoadError> {
+    let failures = parsed
+        .iter()
+        .filter_map(|result| result.as_ref().err().cloned())
+        .collect::<Vec<_>>();
+    if !failures.is_empty() {
+        return Err(PackageLoadError { failures });
+    }
+    Ok(parsed
+        .into_iter()
+        .map(|result| result.expect("failures were checked above"))
+        .collect())
+}
+
 fn prewarm_source_index(path: &Path) {
     if let Err(error) = super::source_index::get_or_build(path) {
         debug!(
@@ -86,6 +187,51 @@ impl SymbolIndex {
         }
     }
 
+    /// Replace the entire symbol generation with a separately validated index.
+    ///
+    /// This deliberately rebuilds secondary indexes from the staged entries
+    /// instead of copying their internal maps independently. Callers publishing
+    /// into a live workspace must hold the workspace-generation write lock.
+    pub fn replace_with(&self, replacement: &SymbolIndex) {
+        let entries = replacement
+            .all_entries()
+            .into_iter()
+            .map(|entry| (*entry).clone())
+            .collect::<Vec<_>>();
+        let app_paths = replacement
+            .app_paths
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect::<Vec<_>>();
+        let source_paths = replacement
+            .source_path_cache
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect::<Vec<_>>();
+
+        self.by_name.clear();
+        *write_derived_cache(&self.sorted_names, "sorted_names").0 = None;
+        self.by_kind_id.clear();
+        self.by_kind.clear();
+        self.by_extends.clear();
+        self.all.clear();
+        self.next_id.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.app_paths.clear();
+        self.source_path_cache.clear();
+        self.composed_cache.clear();
+        write_derived_cache(&self.default_completions, "default_completions")
+            .0
+            .clear();
+
+        self.add_entries_owned(entries);
+        for (key, value) in app_paths {
+            self.app_paths.insert(key, value);
+        }
+        for (key, value) in source_paths {
+            self.source_path_cache.insert(key, value);
+        }
+    }
+
     pub fn memory_stats(&self) -> SymbolIndexMemoryStats {
         let arc_allocation_overhead = 2 * std::mem::size_of::<usize>();
         let symbol_payload_bytes = self
@@ -144,20 +290,15 @@ impl SymbolIndex {
                     + entry.value().1.capacity()
             })
             .sum::<usize>();
-        if let Some(names) = self
-            .sorted_names
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
-            .as_ref()
-        {
+        let (sorted_names, _) = read_derived_cache(&self.sorted_names, "sorted_names");
+        if let Some(names) = sorted_names.as_ref() {
             lookup_index_bytes += std::mem::size_of::<Vec<String>>()
                 + names.capacity() * std::mem::size_of::<String>()
                 + names.iter().map(String::capacity).sum::<usize>();
         }
-        lookup_index_bytes += self
-            .default_completions
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
+        drop(sorted_names);
+        lookup_index_bytes += read_derived_cache(&self.default_completions, "default_completions")
+            .0
             .capacity()
             * arc_bytes;
 
@@ -256,8 +397,12 @@ impl SymbolIndex {
 
     /// Load and index all .app files from the given paths.
     ///
-    /// Files that fail to parse are logged and skipped.
-    pub fn load_packages(&self, paths: &[impl AsRef<Path> + Sync]) -> Vec<SymbolPackage> {
+    /// The batch is atomic: if any configured package is unreadable or invalid,
+    /// nothing from this call is indexed and every failed path is returned.
+    pub fn load_packages(
+        &self,
+        paths: &[impl AsRef<Path> + Sync],
+    ) -> Result<Vec<SymbolPackage>, PackageLoadError> {
         use rayon::prelude::*;
 
         // Parse in parallel, then mutate the shared indexes sequentially. The
@@ -267,26 +412,27 @@ impl SymbolIndex {
         // applying results in input order is deterministic and idempotent.
         let parsed: Vec<_> = paths
             .par_iter()
-            .filter_map(|path| {
+            .map(|path| {
                 let path = path.as_ref();
                 match app_reader::read_app_file(path) {
                     Ok(pkg) => {
                         prewarm_source_index(path);
-                        Some((path.to_path_buf(), pkg))
+                        Ok((path.to_path_buf(), pkg))
                     }
-                    Err(e) => {
-                        warn!(path = %path.display(), error = %e, "Failed to load .app file");
-                        None
-                    }
+                    Err(error) => Err(PackageLoadFailure {
+                        path: path.to_path_buf(),
+                        message: error.to_string(),
+                    }),
                 }
             })
             .collect();
+        let parsed = complete_package_batch(parsed)?;
 
         let mut results = Vec::with_capacity(parsed.len());
         for (path, pkg) in parsed {
             results.push(self.index_loaded_package(pkg, Some(&path), false));
         }
-        results
+        Ok(results)
     }
 
     /// Load and index .app files with disk caching.
@@ -298,17 +444,17 @@ impl SymbolIndex {
         &self,
         paths: &[impl AsRef<Path> + Sync],
         cache: &super::cache::SymbolCache,
-    ) -> Vec<SymbolPackage> {
+    ) -> Result<Vec<SymbolPackage>, PackageLoadError> {
         use rayon::prelude::*;
 
         let parsed: Vec<_> = paths
             .par_iter()
-            .filter_map(|path| {
+            .map(|path| {
                 let path = path.as_ref();
 
                 if let Some(pkg) = cache.load(path) {
                     prewarm_source_index(path);
-                    return Some((path.to_path_buf(), pkg, true));
+                    return Ok((path.to_path_buf(), pkg, true));
                 }
 
                 match app_reader::read_app_file(path) {
@@ -322,21 +468,22 @@ impl SymbolIndex {
                         if let Err(e) = cache.save(path, &pkg) {
                             warn!(path = %path.display(), error = %e, "Failed to save to cache");
                         }
-                        Some((path.to_path_buf(), pkg, false))
+                        Ok((path.to_path_buf(), pkg, false))
                     }
-                    Err(e) => {
-                        warn!(path = %path.display(), error = %e, "Failed to load .app file");
-                        None
-                    }
+                    Err(error) => Err(PackageLoadFailure {
+                        path: path.to_path_buf(),
+                        message: error.to_string(),
+                    }),
                 }
             })
             .collect();
+        let parsed = complete_package_batch(parsed)?;
 
         let mut results = Vec::with_capacity(parsed.len());
         for (path, pkg, from_cache) in parsed {
             results.push(self.index_loaded_package(pkg, Some(&path), from_cache));
         }
-        results
+        Ok(results)
     }
 
     /// Replace every file-backed package currently in the index with `paths`.
@@ -348,16 +495,16 @@ impl SymbolIndex {
         &self,
         paths: &[impl AsRef<Path> + Sync],
         cache: &super::cache::SymbolCache,
-    ) -> Vec<SymbolPackage> {
+    ) -> Result<Vec<SymbolPackage>, PackageLoadError> {
         use rayon::prelude::*;
 
         let parsed: Vec<_> = paths
             .par_iter()
-            .filter_map(|path| {
+            .map(|path| {
                 let path = path.as_ref();
                 if let Some(pkg) = cache.load(path) {
                     prewarm_source_index(path);
-                    return Some((path.to_path_buf(), pkg, true));
+                    return Ok((path.to_path_buf(), pkg, true));
                 }
                 match app_reader::read_app_file(path) {
                     Ok(pkg) => {
@@ -365,30 +512,23 @@ impl SymbolIndex {
                         if let Err(error) = cache.save(path, &pkg) {
                             warn!(path = %path.display(), %error, "Failed to save to cache");
                         }
-                        Some((path.to_path_buf(), pkg, false))
+                        Ok((path.to_path_buf(), pkg, false))
                     }
-                    Err(error) => {
-                        warn!(path = %path.display(), %error, "Failed to load .app file");
-                        None
-                    }
+                    Err(error) => Err(PackageLoadFailure {
+                        path: path.to_path_buf(),
+                        message: error.to_string(),
+                    }),
                 }
             })
             .collect();
-
-        if !paths.is_empty() && parsed.is_empty() {
-            warn!(
-                attempted = paths.len(),
-                "All replacement symbol packages failed to load; keeping the previous index generation"
-            );
-            return Vec::new();
-        }
+        let parsed = complete_package_batch(parsed)?;
 
         self.clear_loaded_packages();
         let mut results = Vec::with_capacity(parsed.len());
         for (path, pkg, from_cache) in parsed {
             results.push(self.index_loaded_package(pkg, Some(&path), from_cache));
         }
-        results
+        Ok(results)
     }
 
     fn index_loaded_package(
@@ -467,6 +607,7 @@ impl SymbolIndex {
                 enum_values,
                 keys: Vec::new(),
                 properties: Vec::new(),
+                permissions: Vec::new(),
                 variables: Vec::new(),
             });
         }
@@ -514,10 +655,8 @@ impl SymbolIndex {
     pub fn add_entries(&self, entries: &[SymbolEntry]) {
         self.invalidate_composed_for_entries(entries.iter());
         let update_sorted_names = entries.len() <= 64
-            && self
-                .sorted_names
-                .read()
-                .unwrap_or_else(|error| error.into_inner())
+            && read_derived_cache(&self.sorted_names, "sorted_names")
+                .0
                 .is_some();
         let new_arcs: Vec<Arc<SymbolEntry>> = entries
             .iter()
@@ -531,10 +670,8 @@ impl SymbolIndex {
     pub fn add_entries_owned(&self, entries: Vec<SymbolEntry>) {
         self.invalidate_composed_for_entries(entries.iter());
         let update_sorted_names = entries.len() <= 64
-            && self
-                .sorted_names
-                .read()
-                .unwrap_or_else(|error| error.into_inner())
+            && read_derived_cache(&self.sorted_names, "sorted_names")
+                .0
                 .is_some();
         let new_arcs: Vec<Arc<SymbolEntry>> = entries
             .into_iter()
@@ -545,11 +682,8 @@ impl SymbolIndex {
     }
 
     fn update_sorted_names_after_add(&self, entries: &[Arc<SymbolEntry>], update_in_place: bool) {
-        let mut cache = self
-            .sorted_names
-            .write()
-            .unwrap_or_else(|error| error.into_inner());
-        if !update_in_place {
+        let (mut cache, repaired) = write_derived_cache(&self.sorted_names, "sorted_names");
+        if repaired || !update_in_place {
             *cache = None;
             return;
         }
@@ -570,19 +704,24 @@ impl SymbolIndex {
     /// Called after all entries from a batch are indexed. Uses a fast read-check
     /// to skip acquiring the write lock when the cache is already full.
     fn update_default_completions(&self, new_arcs: &[Arc<SymbolEntry>]) {
-        if self
-            .default_completions
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
-            >= DEFAULT_COMPLETIONS_CAP
-        {
+        let (cache, repaired) =
+            read_derived_cache(&self.default_completions, "default_completions");
+        if repaired {
+            drop(cache);
+            self.rebuild_default_completions();
             return;
         }
-        let mut cache = self
-            .default_completions
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
+        if cache.len() >= DEFAULT_COMPLETIONS_CAP {
+            return;
+        }
+        drop(cache);
+        let (mut cache, repaired) =
+            write_derived_cache(&self.default_completions, "default_completions");
+        if repaired {
+            drop(cache);
+            self.rebuild_default_completions();
+            return;
+        }
         for arc in new_arcs {
             if arc.synthetic {
                 continue;
@@ -599,10 +738,16 @@ impl SymbolIndex {
     /// O(1) pointer copies — never iterates the full symbol index. Use in place of
     /// `search("", 30)` on completion hot paths.
     pub fn get_default_completions(&self) -> Vec<Arc<SymbolEntry>> {
-        self.default_completions
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        let (cache, repaired) =
+            read_derived_cache(&self.default_completions, "default_completions");
+        if repaired {
+            drop(cache);
+            self.rebuild_default_completions();
+            return read_derived_cache(&self.default_completions, "default_completions")
+                .0
+                .clone();
+        }
+        cache.clone()
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<SymbolEntry>> {
@@ -666,19 +811,13 @@ impl SymbolIndex {
     }
 
     fn sorted_names(&self) -> Arc<Vec<String>> {
-        if let Some(names) = self
-            .sorted_names
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
-            .as_ref()
-        {
+        let (cache, _) = read_derived_cache(&self.sorted_names, "sorted_names");
+        if let Some(names) = cache.as_ref() {
             return Arc::clone(names);
         }
+        drop(cache);
 
-        let mut cache = self
-            .sorted_names
-            .write()
-            .unwrap_or_else(|error| error.into_inner());
+        let (mut cache, _) = write_derived_cache(&self.sorted_names, "sorted_names");
         if let Some(names) = cache.as_ref() {
             return Arc::clone(names);
         }
@@ -779,6 +918,23 @@ impl SymbolIndex {
         self.app_paths
             .get(&package_name.to_lowercase())
             .map(|v| v.value().clone())
+    }
+
+    /// Return every file-backed package path currently published in the index.
+    ///
+    /// Package paths remain authoritative even when `SymbolReference.json`
+    /// contains no object entries. Deriving this list from [`Self::all_entries`]
+    /// would make an empty-symbol package (which may still contain embedded AL
+    /// source) invisible to dependency-source and call-graph construction.
+    pub fn loaded_package_paths(&self) -> Vec<std::path::PathBuf> {
+        let mut paths: Vec<_> = self
+            .app_paths
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        paths.sort_unstable();
+        paths.dedup();
+        paths
     }
 
     /// Get a composed view with caching. Returns Arc for zero-copy sharing.
@@ -896,10 +1052,8 @@ impl SymbolIndex {
         let ptrs: std::collections::HashSet<*const SymbolEntry> =
             to_remove.iter().map(|(_, arc)| Arc::as_ptr(arc)).collect();
         let update_sorted_names = to_remove.len() <= 64
-            && self
-                .sorted_names
-                .read()
-                .unwrap_or_else(|error| error.into_inner())
+            && read_derived_cache(&self.sorted_names, "sorted_names")
+                .0
                 .is_some();
         let removed_names: Vec<String> = if update_sorted_names {
             to_remove
@@ -918,11 +1072,8 @@ impl SymbolIndex {
         Self::retain_arcs_not_in(&self.by_kind_id, &ptrs);
         Self::retain_arcs_not_in(&self.by_kind, &ptrs);
         Self::retain_arcs_not_in(&self.by_extends, &ptrs);
-        let mut sorted_names = self
-            .sorted_names
-            .write()
-            .unwrap_or_else(|error| error.into_inner());
-        if update_sorted_names {
+        let (mut sorted_names, repaired) = write_derived_cache(&self.sorted_names, "sorted_names");
+        if update_sorted_names && !repaired {
             if let Some(names) = sorted_names.as_mut() {
                 let names = Arc::make_mut(names);
                 for name in removed_names {
@@ -962,10 +1113,7 @@ impl SymbolIndex {
         remaining.sort_unstable_by_key(|(seq, _)| *seq);
         remaining.truncate(DEFAULT_COMPLETIONS_CAP);
 
-        let mut cache = self
-            .default_completions
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
+        let (mut cache, _) = write_derived_cache(&self.default_completions, "default_completions");
         *cache = remaining.into_iter().map(|(_, arc)| arc).collect();
     }
 
@@ -1011,6 +1159,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -1031,6 +1180,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -1054,6 +1204,38 @@ mod tests {
         let results = index.search("SALES", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "Sales Management");
+    }
+
+    #[test]
+    fn replace_with_rebuilds_every_lookup_and_completion_index() {
+        let active = SymbolIndex::new();
+        active.add_entries(&[make_entry(ObjectKind::Table, 50_100, "Old")]);
+        assert_eq!(active.get_default_completions().len(), 1);
+        let _ = active.search("Old", 10);
+
+        let staged = SymbolIndex::new();
+        staged.add_entries(&[
+            make_entry(ObjectKind::Page, 50_101, "New"),
+            make_extension(ObjectKind::PageExtension, 50_102, "New Ext", "New"),
+        ]);
+
+        active.replace_with(&staged);
+
+        assert!(active.find_by_name("Old").is_none());
+        assert!(active.get_by_id(ObjectKind::Table, 50_100).is_empty());
+        assert!(active.search("Old", 10).is_empty());
+        assert_eq!(active.find_by_name("New").unwrap().kind, ObjectKind::Page);
+        assert_eq!(
+            active
+                .get_by_id(ObjectKind::Page, 50_101)
+                .first()
+                .unwrap()
+                .name,
+            "New"
+        );
+        assert_eq!(active.get_extensions_of("New").len(), 1);
+        assert_eq!(active.get_default_completions().len(), 2);
+        assert_eq!(active.len(), 2);
     }
 
     #[test]
@@ -1245,6 +1427,38 @@ mod tests {
                 + populated.path_cache_bytes
                 + populated.composed_cache_bytes
         );
+    }
+
+    #[test]
+    fn poisoned_derived_caches_are_discarded_and_rebuilt_from_symbol_indexes() {
+        let index = Arc::new(SymbolIndex::new());
+        index.add_entries(&[
+            make_entry(ObjectKind::Table, 1, "Alpha"),
+            make_entry(ObjectKind::Page, 2, "Beta"),
+        ]);
+        assert_eq!(index.search("alpha", 10).len(), 1);
+        assert_eq!(index.get_default_completions().len(), 2);
+
+        let poison_target = Arc::clone(&index);
+        let _ = std::thread::spawn(move || {
+            let mut names = poison_target.sorted_names.write().unwrap();
+            let mut completions = poison_target.default_completions.write().unwrap();
+            *names = Some(Arc::new(vec!["corrupt".to_string()]));
+            completions.clear();
+            panic!("poison derived symbol caches for test");
+        })
+        .join();
+
+        let search = index.search("alpha", 10);
+        assert_eq!(search.len(), 1);
+        assert_eq!(search[0].name, "Alpha");
+
+        let completions = index.get_default_completions();
+        assert_eq!(completions.len(), 2);
+        assert!(completions.iter().any(|entry| entry.name == "Alpha"));
+        assert!(completions.iter().any(|entry| entry.name == "Beta"));
+        assert!(!index.sorted_names.is_poisoned());
+        assert!(!index.default_completions.is_poisoned());
     }
 
     #[test]
@@ -1469,7 +1683,9 @@ mod tests {
         std::fs::write(&app_path, build_app("Local Lib", 50123, "Local Widget")).unwrap();
 
         let index = SymbolIndex::new();
-        let loaded = index.load_packages(std::slice::from_ref(&app_path));
+        let loaded = index
+            .load_packages(std::slice::from_ref(&app_path))
+            .expect("valid local package");
 
         // The package parsed and contributed its object...
         assert_eq!(loaded.len(), 1, "the local-folder .app should load");
@@ -1514,6 +1730,7 @@ mod tests {
         assert_eq!(
             index
                 .load_packages(std::slice::from_ref(&alias_app_path))
+                .expect("valid aliased package")
                 .len(),
             1
         );
@@ -1536,13 +1753,19 @@ mod tests {
         std::fs::write(&app_path, build_app("Local Lib", 50_123, "Old Widget")).unwrap();
         let index = SymbolIndex::new();
         assert_eq!(
-            index.load_packages(std::slice::from_ref(&app_path)).len(),
+            index
+                .load_packages(std::slice::from_ref(&app_path))
+                .expect("valid first generation")
+                .len(),
             1
         );
 
         std::fs::write(&app_path, build_app("Local Lib", 50_124, "New Widget")).unwrap();
         assert_eq!(
-            index.load_packages(std::slice::from_ref(&app_path)).len(),
+            index
+                .load_packages(std::slice::from_ref(&app_path))
+                .expect("valid replacement generation")
+                .len(),
             1
         );
 
@@ -1560,9 +1783,13 @@ mod tests {
         std::fs::write(&second, build_app("Second", 50_002, "Second Table")).unwrap();
         let cache = crate::cache::SymbolCache::at(dir.path().join("cache"));
         let index = SymbolIndex::new();
-        index.load_packages_cached(&[first.clone(), second.clone()], &cache);
+        index
+            .load_packages_cached(&[first.clone(), second.clone()], &cache)
+            .expect("valid initial package generation");
 
-        index.replace_packages_cached(std::slice::from_ref(&second), &cache);
+        index
+            .replace_packages_cached(std::slice::from_ref(&second), &cache)
+            .expect("valid replacement package generation");
 
         assert!(index.get_by_name("First Table").is_empty());
         assert_eq!(index.get_by_name("Second Table").len(), 1);
@@ -1586,18 +1813,46 @@ mod tests {
         assert_eq!(
             index
                 .load_packages_cached(std::slice::from_ref(&valid), &cache)
+                .expect("valid initial package")
                 .len(),
             1
         );
 
-        let loaded = index.replace_packages_cached(std::slice::from_ref(&invalid), &cache);
+        let error = index
+            .replace_packages_cached(std::slice::from_ref(&invalid), &cache)
+            .expect_err("invalid replacement must fail");
 
-        assert!(loaded.is_empty());
+        assert_eq!(error.failures.len(), 1);
+        assert_eq!(error.failures[0].path, invalid);
         assert!(index.find_by_name("Keep Table").is_some());
         let resolved_valid = std::fs::canonicalize(&valid).unwrap();
         assert_eq!(
             index.app_path("Keep").as_deref(),
             Some(resolved_valid.as_path())
         );
+    }
+
+    #[test]
+    fn package_batches_are_atomic_when_one_file_is_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid = dir.path().join("Valid.app");
+        let invalid = dir.path().join("Invalid.app");
+        std::fs::write(&valid, build_app("Valid", 50_001, "Valid Table")).unwrap();
+        std::fs::write(&invalid, b"not an app").unwrap();
+
+        let direct = SymbolIndex::new();
+        let error = direct
+            .load_packages(&[valid.clone(), invalid.clone()])
+            .expect_err("mixed direct batch must fail");
+        assert_eq!(error.failures.len(), 1);
+        assert!(direct.is_empty(), "direct load published a partial batch");
+
+        let cached = SymbolIndex::new();
+        let cache = crate::cache::SymbolCache::at(dir.path().join("cache"));
+        let error = cached
+            .load_packages_cached(&[valid, invalid], &cache)
+            .expect_err("mixed cached batch must fail");
+        assert_eq!(error.failures.len(), 1);
+        assert!(cached.is_empty(), "cached load published a partial batch");
     }
 }

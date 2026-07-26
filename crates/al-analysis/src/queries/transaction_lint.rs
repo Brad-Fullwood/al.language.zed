@@ -96,12 +96,13 @@ struct ProcedureEffects {
 /// loaded from standard and third-party `.app` packages. When a package embeds
 /// AL source, its complete procedure bodies participate in call/effect
 /// resolution. Symbol-only packages retain declaration/event fallback behavior.
-#[must_use]
-pub fn transaction_lints(workspace: &Workspace) -> Vec<WorkspaceLintDiagnostic> {
+pub fn transaction_lints(
+    workspace: &Workspace,
+) -> Result<Vec<WorkspaceLintDiagnostic>, al_workspace::CallGraphBuildError> {
     // Ensure the cached graph is workspace-enriched (package nodes alone are
     // insufficient), then build a private fully-resolved edge set. The shared
     // interactive graph intentionally resolves only high-fanout files eagerly.
-    let (insight, cached_call_graph) = workspace.get_or_build_call_graph();
+    let (insight, cached_call_graph) = workspace.get_or_build_call_graph()?;
     drop(cached_call_graph);
     let mut call_graph = CallGraph::build_from_insight(&insight);
     al_insight::calls::resolve_all_workspace_call_edges(
@@ -109,19 +110,19 @@ pub fn transaction_lints(workspace: &Workspace) -> Vec<WorkspaceLintDiagnostic> 
         &workspace.symbols,
         &insight,
         &mut call_graph,
-    );
-    let dependency_sources = workspace.get_or_build_dependency_source_index();
+    )?;
+    let dependency_sources = workspace.get_or_build_dependency_source_index()?;
     al_insight::calls::resolve_all_workspace_call_edges(
         &dependency_sources,
         &workspace.symbols,
         &insight,
         &mut call_graph,
-    );
+    )?;
 
-    let mut effects = collect_effects(&workspace.file_index, &insight, true);
-    effects.extend(collect_effects(&dependency_sources, &insight, false));
+    let mut effects = collect_effects(&workspace.file_index, &insight, true)?;
+    effects.extend(collect_effects(&dependency_sources, &insight, false)?);
     if effects.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let by_node: HashMap<NodeId, &ProcedureEffects> =
         effects.iter().map(|effect| (effect.node, effect)).collect();
@@ -139,7 +140,7 @@ pub fn transaction_lints(workspace: &Workspace) -> Vec<WorkspaceLintDiagnostic> 
             .then(a.range.start.character.cmp(&b.range.start.character))
             .then(a.code.cmp(b.code))
     });
-    diagnostics
+    Ok(diagnostics)
 }
 
 fn lint_commits(
@@ -345,7 +346,7 @@ fn collect_effects(
     file_index: &al_source::file_index::FileIndex,
     insight: &InsightGraph,
     reportable: bool,
-) -> Vec<ProcedureEffects> {
+) -> Result<Vec<ProcedureEffects>, al_insight::calls::SourceGraphError> {
     let snapshot: Vec<(PathBuf, al_source::file_index::CachedObjectInfo)> = file_index
         .object_info
         .iter()
@@ -354,12 +355,34 @@ fn collect_effects(
     let mut effects = Vec::new();
 
     for (path, object) in snapshot {
-        let Ok(object_kind) = object.kind.parse::<ObjectKind>() else {
-            continue;
-        };
-        let Some((source, tree)) = file_index.get_cached_parse(&path) else {
-            continue;
-        };
+        let object_kind = object.kind.parse::<ObjectKind>().map_err(|_| {
+            al_insight::calls::SourceGraphError::InvalidObjectKind {
+                path: path.clone(),
+                kind: object.kind.clone(),
+            }
+        })?;
+        object_kind
+            .normalize_declaration_id(object.id)
+            .map_err(|error| match error {
+                al_symbols::DeclarationIdError::Missing { .. } => {
+                    al_insight::calls::SourceGraphError::MissingObjectId { path: path.clone() }
+                }
+                al_symbols::DeclarationIdError::OutOfRange { id, .. } => {
+                    al_insight::calls::SourceGraphError::ObjectIdOutOfRange {
+                        path: path.clone(),
+                        id,
+                    }
+                }
+                al_symbols::DeclarationIdError::Unexpected { id, .. } => {
+                    al_insight::calls::SourceGraphError::UnexpectedObjectId {
+                        path: path.clone(),
+                        id,
+                    }
+                }
+            })?;
+        let (source, tree) = file_index.get_cached_parse(&path).ok_or_else(|| {
+            al_insight::calls::SourceGraphError::MissingCachedParse { path: path.clone() }
+        })?;
         let mut stack = vec![tree.root_node()];
         while let Some(node) = stack.pop() {
             if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
@@ -381,7 +404,7 @@ fn collect_effects(
             stack.extend(node.children(&mut cursor));
         }
     }
-    effects
+    Ok(effects)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -715,7 +738,8 @@ mod tests {
         std::fs::write(&app_path, bytes).unwrap();
         let loaded = workspace
             .symbols
-            .load_packages(std::slice::from_ref(&app_path));
+            .load_packages(std::slice::from_ref(&app_path))
+            .expect("valid dependency package");
         assert_eq!(loaded.len(), 1);
         workspace.invalidate_insight_graph();
         directory
@@ -736,7 +760,7 @@ mod tests {
     end;
 }"#,
         )]);
-        let diagnostics = transaction_lints(&ws);
+        let diagnostics = transaction_lints(&ws).unwrap();
         assert!(
             diagnostics
                 .iter()
@@ -765,7 +789,7 @@ mod tests {
     end;
 }"#,
         )]);
-        let diagnostics = transaction_lints(&ws);
+        let diagnostics = transaction_lints(&ws).unwrap();
         let diagnostic = diagnostics
             .iter()
             .find(|d| d.code == COMMIT_AFTER_DATABASE_CHANGE)
@@ -793,7 +817,7 @@ mod tests {
     end;
 }"#,
         )]);
-        let diagnostics = transaction_lints(&ws);
+        let diagnostics = transaction_lints(&ws).unwrap();
         let diagnostic = diagnostics
             .iter()
             .find(|d| d.code == DATABASE_WRITE_IN_TRY_STACK)
@@ -819,7 +843,7 @@ mod tests {
     end;
 }"#,
         )]);
-        let diagnostics = transaction_lints(&ws);
+        let diagnostics = transaction_lints(&ws).unwrap();
         assert!(
             diagnostics.is_empty(),
             "temporary writes are not database changes: {diagnostics:?}"
@@ -848,7 +872,7 @@ mod tests {
             package: "Base Application".to_string(),
             ..Default::default()
         }]);
-        let diagnostics = transaction_lints(&ws);
+        let diagnostics = transaction_lints(&ws).unwrap();
         let diagnostic = diagnostics
             .iter()
             .find(|d| d.code == COMMIT_AFTER_DATABASE_CHANGE)
@@ -891,7 +915,7 @@ mod tests {
             )],
         );
 
-        let diagnostics = transaction_lints(&ws);
+        let diagnostics = transaction_lints(&ws).unwrap();
         let diagnostic = diagnostics
             .iter()
             .find(|diagnostic| diagnostic.code == COMMIT_AFTER_DATABASE_CHANGE)
@@ -931,7 +955,7 @@ mod tests {
             )],
         );
 
-        let diagnostics = transaction_lints(&ws);
+        let diagnostics = transaction_lints(&ws).unwrap();
         let diagnostic = diagnostics
             .iter()
             .find(|diagnostic| diagnostic.code == DATABASE_WRITE_IN_TRY_STACK)
@@ -983,7 +1007,7 @@ mod tests {
             },
         ]);
 
-        let diagnostics = transaction_lints(&ws);
+        let diagnostics = transaction_lints(&ws).unwrap();
         assert!(
             diagnostics.iter().any(|diagnostic| {
                 diagnostic.code == DATABASE_WRITE_IN_TRY_STACK
@@ -1008,7 +1032,7 @@ mod tests {
     end;
 }"#,
         )]);
-        assert!(transaction_lints(&ws).is_empty());
+        assert!(transaction_lints(&ws).unwrap().is_empty());
     }
 
     #[test]

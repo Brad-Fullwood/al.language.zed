@@ -13,7 +13,28 @@ use std::sync::atomic::Ordering;
 use al_semantic::{BuiltinType, SemanticBridge, SemanticCache};
 use tokio::sync::RwLockReadGuard;
 
-use crate::Workspace;
+use crate::{Workspace, WorkspaceStateError};
+
+/// Acquire a write guard for state that the caller is about to replace from a
+/// complete external payload. A poisoned value is reset before it can be read.
+fn write_replaceable_state<'a, T: Default>(
+    lock: &'a std::sync::RwLock<T>,
+    component: &'static str,
+) -> (std::sync::RwLockWriteGuard<'a, T>, bool) {
+    match lock.write() {
+        Ok(guard) => (guard, false),
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = T::default();
+            lock.clear_poison();
+            tracing::warn!(
+                component,
+                "discarded poisoned semantic state before full replacement"
+            );
+            (guard, true)
+        }
+    }
+}
 
 /// Store builtins in the workspace and build the semantic cache.
 ///
@@ -22,15 +43,15 @@ use crate::Workspace;
 /// can observe one written without the other. A double-check on `builtins_guard`
 /// prevents a second concurrent caller from overwriting a just-written value.
 pub fn set_builtins(workspace: &Workspace, builtins: Vec<BuiltinType>, version: &str) {
-    let mut builtins_guard = workspace
-        .builtins
-        .write()
-        .unwrap_or_else(|e| e.into_inner());
-    let mut cache_guard = workspace
-        .semantic_cache
-        .write()
-        .unwrap_or_else(|e| e.into_inner());
-    if !builtins_guard.is_empty() && !cache_guard.is_stale(version) {
+    let (mut builtins_guard, builtins_repaired) =
+        write_replaceable_state(&workspace.builtins, "builtins");
+    let (mut cache_guard, cache_repaired) =
+        write_replaceable_state(&workspace.semantic_cache, "semantic_cache");
+    if !builtins_repaired
+        && !cache_repaired
+        && !builtins_guard.is_empty()
+        && !cache_guard.is_stale(version)
+    {
         return; // Another concurrent caller already populated with matching version — skip.
     }
     if !builtins_guard.is_empty() {
@@ -78,15 +99,12 @@ pub async fn ensure_error_codes_loaded(workspace: &Workspace) {
 /// bridge (lazily initializing the bridge if a toolchain is present).
 ///
 /// Idempotent; see [`ensure_error_codes_loaded`]. Backs the `builtinTypes` RPC.
-pub async fn ensure_builtins_loaded(workspace: &Workspace) {
-    if !workspace
-        .builtins
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_empty()
-    {
-        return;
-    }
+pub async fn ensure_builtins_loaded(workspace: &Workspace) -> Result<(), WorkspaceStateError> {
+    let poisoned = match workspace.builtins.read() {
+        Ok(builtins) if !builtins.is_empty() => return Ok(()),
+        Ok(_) => None,
+        Err(_) => Some(WorkspaceStateError::poisoned("builtins")),
+    };
     if let Some(guard) = get_or_init_bridge(workspace).await {
         if let Some(bridge) = guard.as_ref() {
             match bridge.builtin_types().await {
@@ -94,11 +112,16 @@ pub async fn ensure_builtins_loaded(workspace: &Workspace) {
                     tracing::info!(count = types.len(), "Loaded built-in types via bridge");
                     let version = bridge.version().to_string();
                     set_builtins(workspace, types, &version);
+                    return Ok(());
                 }
                 Err(error) => tracing::warn!(%error, "Failed to load built-in types via bridge"),
             }
         }
     }
+    if let Some(error) = poisoned {
+        return Err(error);
+    }
+    Ok(())
 }
 
 pub const MAX_RESTARTS: u32 = 3;
@@ -713,6 +736,44 @@ mod tests {
         assert_eq!(cache.len(), 3);
         assert_eq!(cache.version(), "1.0.0");
         assert!(cache.get_type("Text").is_some());
+    }
+
+    #[test]
+    fn set_builtins_discards_poisoned_state_before_full_replacement() {
+        let ws = std::sync::Arc::new(Workspace::new());
+        let poison_target = std::sync::Arc::clone(&ws);
+        let _ = std::thread::spawn(move || {
+            let _builtins = poison_target.builtins.write().unwrap();
+            let _cache = poison_target.semantic_cache.write().unwrap();
+            panic!("poison semantic state for test");
+        })
+        .join();
+
+        set_builtins(&ws, sample_builtins(), "1.0.0");
+
+        assert!(!ws.builtins.is_poisoned());
+        assert!(!ws.semantic_cache.is_poisoned());
+        assert_eq!(ws.builtins.read().unwrap().len(), 3);
+        assert_eq!(ws.semantic_cache.read().unwrap().version(), "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn ensure_builtins_reports_poison_when_no_fresh_payload_is_available() {
+        let ws = std::sync::Arc::new(Workspace::new());
+        let poison_target = std::sync::Arc::clone(&ws);
+        let _ = std::thread::spawn(move || {
+            let _builtins = poison_target.builtins.write().unwrap();
+            panic!("poison builtins for test");
+        })
+        .join();
+
+        let error = ensure_builtins_loaded(&ws).await.unwrap_err();
+        assert_eq!(
+            error,
+            WorkspaceStateError::Poisoned {
+                component: "builtins"
+            }
+        );
     }
 
     #[test]

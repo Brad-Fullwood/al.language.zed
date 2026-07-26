@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 
 use al_protocol::DaemonClient;
 
+use crate::cli::commands::request_checked;
 use crate::types;
 use crate::{DetailTarget, display_object_id};
 
@@ -35,40 +36,72 @@ impl App {
         if !needs_members {
             return;
         }
-        let (kind, name, package) = match self.current_objects.get(selected) {
-            Some(e) => (e.kind, e.name.clone(), e.package.clone()),
+        let (kind, id, name, package) = match self.current_objects.get(selected) {
+            Some(e) => (e.kind, e.id, e.name.clone(), e.package.clone()),
             None => return,
         };
         if self.daemon_client.is_none() {
-            self.daemon_client = DaemonClient::connect(&self.project_root).ok();
+            match DaemonClient::connect(&self.project_root) {
+                Ok(client) => self.daemon_client = Some(client),
+                Err(error) => {
+                    self.init_status = Some(format!(
+                        "Workspace interaction failed: cannot connect to daemon: {error}"
+                    ));
+                    return;
+                }
+            }
         }
         let Some(client) = self.daemon_client.as_mut() else {
             return;
         };
-        let result = client.request(
+        let result = request_checked(
+            client,
             "object",
             Some(serde_json::json!({
                 "kind": format!("{:?}", kind),
                 "name": name,
             })),
         );
-        let Ok(val) = result else {
-            self.daemon_client = None;
-            return;
+        let val = match result {
+            Ok(value) => value,
+            Err(error) => {
+                self.daemon_client = None;
+                self.init_status = Some(format!(
+                    "Workspace interaction failed while loading {kind:?} {name:?}: {error}"
+                ));
+                return;
+            }
         };
         let full: Vec<types::SymbolEntry> = match serde_json::from_value(val) {
             Ok(v) => v,
-            Err(_) => return,
+            Err(error) => {
+                self.init_status = Some(format!(
+                    "Workspace interaction failed: invalid object data for {kind:?} \
+                     {name:?}: {error}"
+                ));
+                return;
+            }
         };
-        // `object` returns every match for (kind, name) — prefer the entry
-        // from the same package as the slim one we're hydrating.
-        if let Some(hydrated) = full
+        // `object` returns every match for (kind, name). Hydrating the first
+        // result can attach members from a dependency object to a same-named
+        // workspace object, so require the full identity selected in the slim
+        // search result. The two workspace package spellings are equivalent.
+        let same_package = |candidate: &str| {
+            candidate.eq_ignore_ascii_case(&package)
+                || is_workspace_package(candidate) && is_workspace_package(&package)
+        };
+        let Some(hydrated) = full
             .iter()
-            .find(|e| e.package == package)
-            .or_else(|| full.first())
-        {
-            self.current_objects[selected] = Arc::new(hydrated.clone());
-        }
+            .find(|entry| entry.id == id && same_package(&entry.package))
+        else {
+            self.init_status = Some(format!(
+                "Workspace interaction failed: object lookup did not return the selected \
+                 {kind:?} {id} {name:?} from package {package:?}"
+            ));
+            return;
+        };
+        self.current_objects[selected] = Arc::new(hydrated.clone());
+        self.init_status = None;
     }
 
     pub(crate) fn update_details_items(&mut self) {
@@ -335,67 +368,108 @@ impl App {
             .and_then(|idx| self.details_items.get(idx))
             .and_then(|(m, _)| m.clone());
 
-        if let Some(selected) = self.object_list_state.selected()
-            && let Some(entry) = self.current_objects.get(selected)
-        {
-            // Reconnect if the persistent client has been dropped.
-            if self.daemon_client.is_none() {
-                match DaemonClient::connect(&self.project_root) {
-                    Ok(c) => self.daemon_client = Some(c),
-                    Err(e) => {
-                        // App has no status bar field (status lives on
-                        // sub-views). Write to stderr so the user sees the
-                        // cause after the TUI exits — otherwise the
-                        // double-click silently does nothing and a missing
-                        // daemon looks indistinguishable from a missing
-                        // workspace path.
-                        eprintln!(
-                            "al-explorer: daemon connect failed (project_root={}): {e}",
-                            self.project_root.display()
-                        );
-                    }
+        let Some(selected) = self.object_list_state.selected() else {
+            self.init_status =
+                Some("Workspace interaction failed: no object is selected".to_string());
+            return;
+        };
+        let Some(entry) = self.current_objects.get(selected) else {
+            self.init_status =
+                Some("Workspace interaction failed: selected object is unavailable".to_string());
+            return;
+        };
+        let entry_name = entry.name.clone();
+        let entry_kind = entry.kind;
+        let entry_id = entry.id;
+        let entry_package = entry.package.clone();
+
+        // Reconnect if the persistent client has been dropped.
+        if self.daemon_client.is_none() {
+            match DaemonClient::connect(&self.project_root) {
+                Ok(client) => self.daemon_client = Some(client),
+                Err(error) => {
+                    self.init_status = Some(format!(
+                        "Workspace interaction failed: cannot connect to daemon for \
+                         {}: {error}",
+                        self.project_root.display()
+                    ));
+                    return;
                 }
             }
-            if let Some(client) = self.daemon_client.as_mut() {
-                let loc_result = client.request(
-                    "location",
-                    Some(serde_json::json!({
-                        "name": entry.name,
-                        "kind": format!("{:?}", entry.kind),
-                        "id": entry.id,
-                        "package": entry.package,
-                    })),
-                );
-                match loc_result {
-                    Ok(val) => {
-                        if let Some(path_str) = val.get("path").and_then(|v| v.as_str()) {
-                            let abs_path = std::path::Path::new(path_str);
-                            let line = if let Some(member) = &target_member {
-                                find_member_line_in_file(abs_path, &member.name)
-                                    .map(|l| l + 1)
-                                    .unwrap_or(1)
-                            } else {
-                                1
-                            };
-                            // use `zed <path>:<line>:<col>` CLI instead of
-                            // zed:// URL which is unreliable on Linux.
-                            let file_spec = format!("{}:{}:1", path_str, line);
-                            if let Err(e) =
-                                std::process::Command::new("zed").arg(&file_spec).spawn()
-                            {
-                                eprintln!("al-explorer: failed to spawn 'zed {file_spec}': {e}");
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        // Connection may have dropped; reset so next call reconnects.
-                        self.daemon_client = None;
-                    }
+        }
+        let Some(client) = self.daemon_client.as_mut() else {
+            self.init_status =
+                Some("Workspace interaction failed: daemon client is unavailable".to_string());
+            return;
+        };
+        let loc_result = request_checked(
+            client,
+            "location",
+            Some(serde_json::json!({
+                "name": entry_name,
+                "kind": format!("{:?}", entry_kind),
+                "id": entry_id,
+                "package": entry_package,
+            })),
+        );
+        let location = match loc_result {
+            Ok(value) => value,
+            Err(error) => {
+                // Connection may have dropped; reset so next call reconnects.
+                self.daemon_client = None;
+                self.init_status = Some(format!(
+                    "Workspace interaction failed while resolving {entry_kind:?} \
+                     {entry_id} {entry_name:?}: {error}"
+                ));
+                return;
+            }
+        };
+        let Some(path_str) = location.get("path").and_then(|value| value.as_str()) else {
+            self.init_status = Some(format!(
+                "Workspace interaction failed: location response for {entry_name:?} \
+                 has no path"
+            ));
+            return;
+        };
+        let abs_path = std::path::Path::new(path_str);
+        let line = if let Some(member) = &target_member {
+            match find_member_line_in_file(abs_path, &member.name) {
+                Ok(Some(line)) => line.saturating_add(1),
+                Ok(None) => {
+                    self.init_status = Some(format!(
+                        "Workspace interaction failed: member {:?} was not found in {}",
+                        member.name,
+                        abs_path.display()
+                    ));
+                    return;
+                }
+                Err(error) => {
+                    self.init_status = Some(format!(
+                        "Workspace interaction failed while locating member {:?}: {error}",
+                        member.name
+                    ));
+                    return;
                 }
             }
-            // No fallback for .app package symbols -- they have no workspace file.
+        } else {
+            1
+        };
+        // use `zed <path>:<line>:<col>` CLI instead of zed:// URL which is
+        // unreliable on Linux.
+        let file_spec = format!("{}:{}:1", path_str, line);
+        match std::process::Command::new("zed").arg(&file_spec).spawn() {
+            Ok(_) => self.init_status = None,
+            Err(error) => {
+                self.init_status = Some(format!(
+                    "Workspace interaction failed: could not spawn 'zed {file_spec}': {error}"
+                ));
+            }
         }
     }
+}
+
+fn is_workspace_package(package: &str) -> bool {
+    package.eq_ignore_ascii_case("workspace") || package.eq_ignore_ascii_case("(workspace)")
 }
 
 /// Scan a text file for the first line containing `member_name` as a whole word.
@@ -403,8 +477,12 @@ impl App {
 /// Match must be surrounded by non-identifier characters (or start/end of line)
 /// so a 1-character field name doesn't accidentally match every line that
 /// happens to contain that letter.
-fn find_member_line_in_file(path: &std::path::Path, member_name: &str) -> Option<u32> {
-    let content = std::fs::read_to_string(path).ok()?;
+fn find_member_line_in_file(
+    path: &std::path::Path,
+    member_name: &str,
+) -> Result<Option<u32>, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     let lower = member_name.to_lowercase();
     let is_ident_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     for (i, line) in content.lines().enumerate() {
@@ -420,10 +498,10 @@ fn find_member_line_in_file(path: &std::path::Path, member_name: &str) -> Option
                 // Saturate rather than silently wrap: `i as u32` would truncate
                 // modulo 2^32 for a (pathological) >4-billion-line file, handing
                 // the editor a bogus line number. Clamp to u32::MAX instead.
-                return Some(u32::try_from(i).unwrap_or(u32::MAX));
+                return Ok(Some(u32::try_from(i).unwrap_or(u32::MAX)));
             }
             start = abs + 1;
         }
     }
-    None
+    Ok(None)
 }

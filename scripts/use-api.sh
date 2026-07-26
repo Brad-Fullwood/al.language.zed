@@ -73,5 +73,6 @@ case "${1:-}" in
 esac
 
 echo "Rebuilding WASM extension..."
-cargo build -p zed-al --target wasm32-wasip1 --release
+cargo build -p zed-al --target wasm32-wasip2 --release
+bash scripts/check-zed-wasm-component.sh target/wasm32-wasip2/release/zed_al.wasm
 echo "Done. Reload the extension in Zed to apply."

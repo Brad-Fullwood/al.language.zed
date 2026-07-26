@@ -153,7 +153,23 @@ pub fn native_semantic_checks(
     workspace: &Workspace,
     project_root: Option<&Path>,
 ) -> Vec<NativeFinding> {
-    let objects = collect_objects(&workspace.file_index);
+    let sources = match crate::workspace_sources::snapshot(workspace) {
+        Ok(sources) => sources,
+        Err(error) => {
+            return vec![NativeFinding {
+                code: CONFIGURATION_ERROR,
+                severity: NativeSeverity::Error,
+                object_type: "workspace".to_string(),
+                object_id: None,
+                object_name: "source snapshot".to_string(),
+                file: error.path().map(|path| path.display().to_string()),
+                message: format!(
+                    "Native semantic checks refused incomplete workspace input: {error}"
+                ),
+            }];
+        }
+    };
+    let objects = collect_objects(&sources);
     let pkg_targets = package_targets(workspace);
     let mut config_findings = Vec::new();
     let (id_ranges, affixes) = match project_root {
@@ -199,34 +215,19 @@ fn configuration_finding(file: PathBuf, message: String) -> NativeFinding {
     }
 }
 
-/// Build [`ObjectRecord`]s from the workspace file index's cached object info,
-/// enriching each with its extension target and field/value IDs by reusing the
-/// already-cached parse tree (no re-parse). A cache miss leaves those fields
-/// empty — the id/name checks still run off the cached object info.
-fn collect_objects(file_index: &al_source::file_index::FileIndex) -> Vec<ObjectRecord> {
-    file_index
-        .object_info
+/// Build [`ObjectRecord`]s from a complete validated workspace snapshot.
+fn collect_objects(sources: &[crate::workspace_sources::WorkspaceSource]) -> Vec<ObjectRecord> {
+    sources
         .iter()
-        .map(|entry| {
-            let info = entry.value();
-            let path = entry.key();
-            let (extends, member_ids) = file_index
-                .get_cached_parse(path)
-                .map(|(text, tree)| {
-                    let source = text.as_bytes();
-                    (
-                        extract_extends(&tree, source),
-                        extract_member_ids(&tree, source, &info.kind),
-                    )
-                })
-                .unwrap_or_default();
+        .map(|source| {
+            let bytes = source.text.as_bytes();
             ObjectRecord {
-                object_type: info.kind.clone(),
-                id: info.id,
-                name: info.name.clone(),
-                file: path.clone(),
-                extends,
-                member_ids,
+                object_type: source.object.info.kind.clone(),
+                id: source.object.info.id,
+                name: source.object.info.name.clone(),
+                file: source.path.clone(),
+                extends: extract_extends(&source.tree, bytes),
+                member_ids: extract_member_ids(&source.tree, bytes, &source.object.info.kind),
             }
         })
         .collect()
@@ -349,7 +350,7 @@ pub fn affix_rules_from_appsourcecop(root: &Path) -> Result<AffixRules, String> 
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(AffixRules::default())
+            return Ok(AffixRules::default());
         }
         Err(error) => return Err(format!("Failed to read {}: {error}", path.display())),
     };
@@ -534,7 +535,7 @@ fn member_from_paren(section: Node, source: &[u8]) -> Option<(i64, String)> {
             _ => {}
         }
     }
-    Some((id?, name.unwrap_or_default()))
+    Some((id?, name?))
 }
 
 /// Extract `(ordinal, name)` from an `enum_value_declaration` node.
@@ -547,7 +548,7 @@ fn enum_value_member(node: Node, source: &[u8]) -> Option<(i64, String)> {
         .child_by_field_name("name")
         .and_then(|n| n.utf8_text(source).ok())
         .map(|t| t.trim().trim_matches('"').to_string())
-        .unwrap_or_default();
+        .filter(|name| !name.is_empty())?;
     Some((id, name))
 }
 
@@ -1043,17 +1044,18 @@ mod tests {
     /// surfaced by `collect_objects` + `check_objects`.
     #[test]
     fn collect_objects_from_file_index_then_check() {
-        let fi = al_source::file_index::FileIndex::new();
-        fi.add_file(
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
             PathBuf::from("/virtual/Foo.al"),
             "codeunit 50100 \"Foo\" { }".to_string(),
         );
-        fi.add_file(
+        workspace.file_index.add_file(
             PathBuf::from("/virtual/Bar.al"),
             "codeunit 50100 \"Bar\" { }".to_string(),
         );
 
-        let objects = collect_objects(&fi);
+        let sources = crate::workspace_sources::snapshot(&workspace).unwrap();
+        let objects = collect_objects(&sources);
         assert_eq!(objects.len(), 2);
         let findings = check_objects(&objects, &[(50000, 50199)]);
         assert!(
@@ -1366,8 +1368,8 @@ mod tests {
     /// duplicate-member check then flags them.
     #[test]
     fn collect_objects_extracts_field_ids_and_flags_duplicates() {
-        let fi = al_source::file_index::FileIndex::new();
-        fi.add_file(
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
             PathBuf::from("/virtual/DupFields.al"),
             r#"table 50100 "Dup Fields"
 {
@@ -1380,7 +1382,8 @@ mod tests {
 }"#
             .to_string(),
         );
-        let objects = collect_objects(&fi);
+        let sources = crate::workspace_sources::snapshot(&workspace).unwrap();
+        let objects = collect_objects(&sources);
         let table = objects
             .iter()
             .find(|o| o.name == "Dup Fields")
@@ -1401,8 +1404,8 @@ mod tests {
     /// header, and the dangling check resolves it.
     #[test]
     fn collect_objects_extracts_extends_target() {
-        let fi = al_source::file_index::FileIndex::new();
-        fi.add_file(
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
             PathBuf::from("/virtual/CustExt.al"),
             r#"tableextension 50100 "Customer Ext" extends Customer
 {
@@ -1410,7 +1413,8 @@ mod tests {
 }"#
             .to_string(),
         );
-        let objects = collect_objects(&fi);
+        let sources = crate::workspace_sources::snapshot(&workspace).unwrap();
+        let objects = collect_objects(&sources);
         let ext = objects
             .iter()
             .find(|o| o.name == "Customer Ext")

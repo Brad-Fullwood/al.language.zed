@@ -17,7 +17,6 @@ use tracing::{debug, info, warn};
 use al_bc::bc_client::{BcClient, BcClientError};
 use al_bc::launch::{find_launch_config, BcServerConfig};
 use al_compile::{CompileDiagnostic, CompileResult};
-use al_project::toolchain::AlToolchain;
 use al_workspace::Workspace;
 
 #[derive(Debug, Clone)]
@@ -80,6 +79,8 @@ pub struct PublishResult {
 pub enum PublishError {
     #[error("No launch.json configuration found in project root")]
     NoLaunchConfig,
+    #[error(transparent)]
+    InvalidLaunchConfig(#[from] al_bc::launch::LaunchConfigError),
     #[error("Named configuration '{name}' not found in launch.json")]
     ConfigNotFound { name: String },
     #[error("Toolchain not available (ALTool not installed)")]
@@ -166,11 +167,11 @@ pub async fn publish(
         debug!(app_id = %app_id, "Using RAD incremental deploy");
         match bc_client.rad_publish(&app_id, &app_path).await {
             Ok(resp) => {
-                let success = resp.status.as_deref() != Some("Failed");
+                let success = publish_status_is_complete(resp.status.as_deref());
                 steps.push(PublishStep {
                     phase: PublishPhase::Rad,
                     success,
-                    message: resp.status.clone(),
+                    message: Some(publish_status_message(resp.status.as_deref())),
                 });
                 (resp.app_id, resp.version, success)
             }
@@ -217,15 +218,11 @@ async fn do_standard_publish(
 ) -> (Option<String>, Option<String>, bool) {
     match bc_client.publish_extension(app_path).await {
         Ok(resp) => {
-            let success = resp
-                .status
-                .as_deref()
-                .map(|s| s != "Failed")
-                .unwrap_or(true);
+            let success = publish_status_is_complete(resp.status.as_deref());
             steps.push(PublishStep {
                 phase: PublishPhase::Upload,
                 success,
-                message: resp.status.clone().or_else(|| Some("Uploaded".to_string())),
+                message: Some(publish_status_message(resp.status.as_deref())),
             });
             (resp.app_id, resp.version, success)
         }
@@ -241,6 +238,27 @@ async fn do_standard_publish(
     }
 }
 
+/// A successful HTTP upload is not the same as a completed deployment.
+///
+/// Business Central exposes deployment as background work and documents
+/// `Completed` as the successful terminal state. Missing, in-progress, failed,
+/// or unknown states must therefore remain unsuccessful until a caller can
+/// positively establish completion.
+fn publish_status_is_complete(status: Option<&str>) -> bool {
+    status.is_some_and(|status| status.eq_ignore_ascii_case("Completed"))
+}
+
+fn publish_status_message(status: Option<&str>) -> String {
+    match status {
+        Some(status) if publish_status_is_complete(Some(status)) => status.to_string(),
+        Some(status) => format!(
+            "BC reported deployment status '{status}'; deployment completion was not confirmed"
+        ),
+        None => "BC response omitted deployment status; deployment completion was not confirmed"
+            .to_string(),
+    }
+}
+
 /// Compile the project, using the workspace's toolchain.
 ///
 /// Native-first: the default path is the pure-Rust native `.app` emitter — no
@@ -252,31 +270,52 @@ async fn run_compile(
     workspace: &Workspace,
     project_root: &Path,
 ) -> Result<CompileResult, PublishError> {
-    let use_official_compiler = workspace.config.read().await.use_official_compiler;
-
-    if !use_official_compiler {
-        return Ok(al_compile::native_compile(project_root));
+    let config = workspace.config.read().await.clone();
+    let backend =
+        al_compile::BuildBackend::from_use_official_compiler(config.use_official_compiler);
+    let (package_cache, dependency_packages) = workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| (Some(project.packages_dir.clone()), project.packages.clone()))
+        .unwrap_or_default();
+    let toolchain = if backend == al_compile::BuildBackend::Alc {
+        // Use blocking .read().await rather than try_read() — contention and a
+        // genuinely missing toolchain must not collapse into the same error.
+        let toolchain = workspace.toolchain.read().await;
+        Some(toolchain.clone().ok_or(PublishError::NoToolchain)?)
+    } else {
+        None
+    };
+    if backend == al_compile::BuildBackend::Alc {
+        warn!(
+            "al.useOfficialCompiler=true - publishing with the NON-NATIVE `dotnet alc` subprocess"
+        );
     }
 
-    // Use blocking .read().await rather than try_read() — try_read() maps both
-    // lock contention (WouldBlock) and a nonexistent toolchain to the same
-    // NoToolchain error, making it impossible to diagnose a "server is busy"
-    // situation vs. "no toolchain configured".
-    let tc = workspace.toolchain.read().await;
-    let toolchain: AlToolchain = tc.clone().ok_or(PublishError::NoToolchain)?;
-    drop(tc);
-
-    warn!("al.useOfficialCompiler=true - publishing with the NON-NATIVE `dotnet alc` subprocess");
-    al_compile::compile_project(&toolchain, project_root, None)
-        .await
-        .map_err(|e| PublishError::Build(e.to_string()))
+    al_compile::build(al_compile::BuildRequest {
+        project_root,
+        backend,
+        toolchain: toolchain.as_ref(),
+        dependency_packages: Some(dependency_packages.as_slice()),
+        package_cache: package_cache.as_deref(),
+        analyzers: if config.code_analyzers.is_empty() {
+            None
+        } else {
+            Some(config.code_analyzers.as_slice())
+        },
+        config: al_compile::CompilationConfigOptions::from(&config),
+    })
+    .await
+    .map_err(|error| PublishError::Build(error.to_string()))
 }
 
 fn resolve_server_config(
     project_root: &Path,
     config_name: Option<&str>,
 ) -> Result<BcServerConfig, PublishError> {
-    let debug_config = find_launch_config(project_root).ok_or(PublishError::NoLaunchConfig)?;
+    let debug_config = find_launch_config(project_root)?.ok_or(PublishError::NoLaunchConfig)?;
 
     match config_name {
         Some(name) => debug_config
@@ -468,10 +507,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_config_empty_config_list_returns_no_launch_config() {
+    fn resolve_config_invalid_entry_returns_configuration_error() {
         let dir = tempfile::tempdir().unwrap();
-        // File parses but every entry is dropped (unknown environmentType), so
-        // find_launch_config returns None (it requires non-empty configs).
         write_zed_debug(
             dir.path(),
             r#"[
@@ -480,7 +517,7 @@ mod tests {
         );
 
         let result = resolve_server_config(dir.path(), None);
-        assert!(matches!(result, Err(PublishError::NoLaunchConfig)));
+        assert!(matches!(result, Err(PublishError::InvalidLaunchConfig(_))));
     }
 
     #[test]
@@ -553,6 +590,7 @@ mod tests {
             tenant: None,
             authentication: AuthMethod::Windows,
             accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
         }
     }
 
@@ -623,11 +661,14 @@ mod tests {
         assert!(version.is_none());
         assert_eq!(steps.len(), 1);
         assert!(!steps[0].success);
-        assert_eq!(steps[0].message.as_deref(), Some("Failed"));
+        assert!(steps[0]
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("'Failed'")));
     }
 
     #[tokio::test]
-    async fn do_standard_publish_missing_status_defaults_to_success() {
+    async fn do_standard_publish_missing_status_fails_closed() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -647,11 +688,42 @@ mod tests {
 
         let (app_id, _version, success) = do_standard_publish(&client, &app, &mut steps).await;
 
-        // No status field => unwrap_or(true): treated as success, with a
-        // synthesized "Uploaded" message.
-        assert!(success);
+        assert!(!success);
         assert_eq!(app_id.as_deref(), Some("no-status-app"));
-        assert_eq!(steps[0].message.as_deref(), Some("Uploaded"));
+        assert!(steps[0]
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("omitted deployment status")));
+    }
+
+    #[tokio::test]
+    async fn do_standard_publish_in_progress_status_is_not_complete() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/extensions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "appId": "pending-app",
+                "operationId": "operation-1",
+                "status": "InProgress"
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let app = dummy_app(dir.path());
+        let client = BcClient::new(&mock_config(&server.uri()));
+        let mut steps = Vec::new();
+
+        let (_, _, success) = do_standard_publish(&client, &app, &mut steps).await;
+
+        assert!(!success);
+        assert!(steps[0]
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("InProgress")));
     }
 
     #[tokio::test]

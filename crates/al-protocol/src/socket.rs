@@ -22,8 +22,10 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 ///
 /// If `XDG_RUNTIME_DIR` is unset, falls back (in order) to `/run/user/<uid>`
 /// on Linux, `$TMPDIR` on macOS, and a per-user subdirectory of the system
-/// temp dir everywhere else. Returns `None` only if none of those can be
-/// determined at all (see `runtime_dir`).
+/// temp dir everywhere else. An overlong runtime path is compacted beneath the
+/// system temp directory with a stable scope hash so Unix `sockaddr_un`
+/// pathname limits cannot turn daemon startup into an opaque timeout. Returns
+/// `None` only if no usable endpoint can be formed (see `runtime_dir`).
 pub fn socket_path(project_root: &Path) -> Option<PathBuf> {
     socket_path_with_runtime_dir(project_root, runtime_dir()?)
 }
@@ -56,12 +58,30 @@ pub fn socket_path_with_runtime_dir(
     }
     #[cfg(not(windows))]
     {
-        Some(PathBuf::from(format!(
-            "{}/al-lsp/{}.sock",
-            runtime_dir.as_ref(),
-            hash
-        )))
+        let runtime_dir = runtime_dir.as_ref();
+        let candidate = PathBuf::from(format!("{}/al-lsp/{}.sock", runtime_dir, hash));
+        if unix_socket_path_fits(&candidate) {
+            return Some(candidate);
+        }
+
+        // `sun_path` is only 104 bytes on the smallest supported Unix target
+        // (macOS; Linux provides 108). Keep the caller's isolation boundary by
+        // hashing the original runtime directory into a compact, owner-only
+        // path. The daemon reasserts mode 0700 on the endpoint directory.
+        let scope_hash = fnv1a64(runtime_dir.as_bytes());
+        let compact = std::env::temp_dir()
+            .join(format!("al-lsp-{scope_hash:016x}"))
+            .join("al-lsp")
+            .join(format!("{hash}.sock"));
+        unix_socket_path_fits(&compact).then_some(compact)
     }
+}
+
+#[cfg(not(windows))]
+fn unix_socket_path_fits(path: &Path) -> bool {
+    // macOS has `sun_path[104]` and requires room for the trailing NUL.
+    const MAX_PATH_BYTES: usize = 103;
+    path.as_os_str().as_encoded_bytes().len() <= MAX_PATH_BYTES
 }
 
 /// Filesystem lock used to serialize daemon auto-start for one project.
@@ -225,5 +245,27 @@ mod tests {
             assert!(path_a.starts_with("/run/user/1000/al-lsp/"));
             assert!(path_b.starts_with("/run/user/1001/al-lsp/"));
         }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn socket_path_compacts_overlong_runtime_directory_without_losing_scope() {
+        let long_a = format!("/tmp/{}/runtime", "a".repeat(160));
+        let long_b = format!("/tmp/{}/runtime", "b".repeat(160));
+        let path_a =
+            socket_path_with_runtime_dir(Path::new("/tmp/project"), &long_a).expect("compact path");
+        let path_b =
+            socket_path_with_runtime_dir(Path::new("/tmp/project"), &long_b).expect("compact path");
+
+        assert!(unix_socket_path_fits(&path_a), "{}", path_a.display());
+        assert!(unix_socket_path_fits(&path_b), "{}", path_b.display());
+        assert_ne!(
+            path_a, path_b,
+            "runtime isolation scope must affect fallback"
+        );
+        assert!(
+            !path_a.starts_with(&long_a),
+            "overlong runtime path must be compacted"
+        );
     }
 }

@@ -5,6 +5,7 @@
 
 use dashmap::DashMap;
 use ropey::Rope;
+use thiserror::Error;
 use url::Url;
 
 /// A text change to apply to an open document.
@@ -18,12 +19,64 @@ pub struct TextChange {
 }
 
 /// A range within a document (line/character based, 0-indexed).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextRange {
     pub start_line: u32,
     pub start_character: u32,
     pub end_line: u32,
     pub end_character: u32,
+}
+
+/// A rejected document mutation.
+///
+/// Document changes are transactional: when any change in a batch is invalid,
+/// the store returns one of these errors and leaves the document text, internal
+/// version, client version, and parse-tree cache untouched.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum DocumentMutationError {
+    #[error("document {uri} is {bytes} bytes, exceeding the configured maximum of {cap} bytes")]
+    TooLarge { uri: Url, bytes: usize, cap: usize },
+
+    #[error("document {uri} is not open")]
+    NotOpen { uri: Url },
+
+    #[error(
+        "change range {start_line}:{start_character}-{end_line}:{end_character} is outside document {uri} ({document_lines} lines)"
+    )]
+    RangeOutOfBounds {
+        uri: Url,
+        start_line: u32,
+        start_character: u32,
+        end_line: u32,
+        end_character: u32,
+        document_lines: usize,
+    },
+
+    #[error(
+        "change range for document {uri} ends before it starts (character offsets {start}..{end})"
+    )]
+    BackwardRange { uri: Url, start: usize, end: usize },
+
+    #[error(
+        "client version {received} for document {uri} is not newer than the current version {current}"
+    )]
+    StaleClientVersion {
+        uri: Url,
+        received: i32,
+        current: i32,
+    },
+
+    #[error("document size overflow while applying a change to {uri}")]
+    SizeOverflow { uri: Url },
+
+    #[error("cannot rename document {source_uri}: it is not open")]
+    RenameSourceNotOpen { source_uri: Url },
+
+    #[error("cannot rename document {source_uri} to {destination_uri}: the destination is open")]
+    RenameDestinationOpen {
+        source_uri: Box<Url>,
+        destination_uri: Box<Url>,
+    },
 }
 
 /// Default upper bound on the number of cached parse trees.
@@ -77,6 +130,19 @@ pub struct DocumentStore {
     max_doc_bytes: std::sync::atomic::AtomicUsize,
 }
 
+/// Byte accounting for memory directly owned by the open-document cache.
+///
+/// This deliberately excludes allocator slabs and tree-sitter's opaque tree
+/// allocation; callers should use process RSS separately for that view.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentStoreMemoryStats {
+    pub document_text_bytes: usize,
+    pub document_index_bytes: usize,
+    pub cached_tree_count: usize,
+    pub tracked_bytes: usize,
+}
+
 struct Document {
     text: Rope,
     /// Cached Arc<String> -- updated on every change, avoids repeated Rope::to_string().
@@ -107,6 +173,50 @@ impl DocumentStore {
             max_cached_trees: std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_CACHED_TREES),
             parse_locks: DashMap::new(),
             max_doc_bytes: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Return deterministic byte totals for owned document text and lookup
+    /// keys. Tree-sitter does not expose a reliable allocation-size API, so
+    /// tree count is reported separately rather than inventing a byte value.
+    pub fn memory_stats(&self) -> DocumentStoreMemoryStats {
+        let document_text_bytes = self
+            .docs
+            .iter()
+            .map(|entry| entry.value().text_cache.len())
+            .sum::<usize>();
+        let document_index_bytes = self
+            .docs
+            .iter()
+            .map(|entry| {
+                std::mem::size_of::<Url>()
+                    + entry.key().as_str().len()
+                    + std::mem::size_of::<Document>()
+            })
+            .sum::<usize>()
+            + self
+                .trees
+                .iter()
+                .map(|entry| {
+                    std::mem::size_of::<Url>()
+                        + entry.key().as_str().len()
+                        + std::mem::size_of::<CachedTree>()
+                })
+                .sum::<usize>()
+            + self
+                .parse_locks
+                .iter()
+                .map(|entry| {
+                    std::mem::size_of::<Url>()
+                        + entry.key().as_str().len()
+                        + std::mem::size_of::<std::sync::Arc<std::sync::Mutex<()>>>()
+                })
+                .sum::<usize>();
+        DocumentStoreMemoryStats {
+            document_text_bytes,
+            document_index_bytes,
+            cached_tree_count: self.trees.len(),
+            tracked_bytes: document_text_bytes + document_index_bytes,
         }
     }
 
@@ -169,6 +279,30 @@ impl DocumentStore {
             .store(cap.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Validate a prospective cap against every currently-open document.
+    ///
+    /// Configuration hot reload uses this before publishing the new setting so
+    /// lowering the cap cannot leave already-cached documents in a state the
+    /// store would reject on their next edit.
+    pub fn validate_max_doc_bytes(&self, cap: Option<usize>) -> Result<(), DocumentMutationError> {
+        let Some(cap) = cap.filter(|cap| *cap != 0) else {
+            return Ok(());
+        };
+        let mut oversized: Vec<(Url, usize)> = self
+            .docs
+            .iter()
+            .filter_map(|entry| {
+                let bytes = entry.value().text_cache.len();
+                (bytes > cap).then(|| (entry.key().clone(), bytes))
+            })
+            .collect();
+        oversized.sort_by(|left, right| left.0.cmp(&right.0));
+        if let Some((uri, bytes)) = oversized.into_iter().next() {
+            return Err(DocumentMutationError::TooLarge { uri, bytes, cap });
+        }
+        Ok(())
+    }
+
     /// Returns the active per-document byte cap, or `None` when unbounded.
     #[inline]
     fn doc_cap(&self) -> Option<usize> {
@@ -181,21 +315,28 @@ impl DocumentStore {
         }
     }
 
-    /// Whether `len` bytes exceed the configured cap. Logs a warning and
-    /// returns `true` when the content should be rejected.
-    fn exceeds_cap(&self, uri: &Url, len: usize) -> bool {
+    /// Validate `len` against the configured per-document byte cap.
+    fn validate_size(&self, uri: &Url, len: usize) -> Result<(), DocumentMutationError> {
         match self.doc_cap() {
-            Some(cap) if len > cap => {
-                tracing::warn!(
-                    uri = %uri,
-                    bytes = len,
-                    cap,
-                    "DocumentStore: refusing document exceeding configured max_document_size_bytes"
-                );
-                true
-            }
-            _ => false,
+            Some(cap) if len > cap => Err(DocumentMutationError::TooLarge {
+                uri: uri.clone(),
+                bytes: len,
+                cap,
+            }),
+            _ => Ok(()),
         }
+    }
+
+    /// Validate prospective document content without mutating the store.
+    ///
+    /// Disk-backed writers use this before committing a file so a configured
+    /// document cap cannot leave disk and in-memory generations divergent.
+    pub fn validate_document_text(
+        &self,
+        uri: &Url,
+        text: &str,
+    ) -> Result<(), DocumentMutationError> {
+        self.validate_size(uri, text.len())
     }
 
     /// Acquire (or lazily create) the parse-coordination lock for `uri`.
@@ -213,48 +354,104 @@ impl DocumentStore {
             .clone()
     }
 
-    pub fn open(&self, uri: Url, text: String) {
-        // Leave an existing document untouched when the replacement exceeds the cap.
-        if self.exceeds_cap(&uri, text.len()) {
-            return;
-        }
+    pub fn open(&self, uri: Url, text: String) -> Result<(), DocumentMutationError> {
+        self.open_with_client_version(uri, text, 0)
+    }
+
+    /// Open a document and record the client-supplied version atomically.
+    pub fn open_with_client_version(
+        &self,
+        uri: Url,
+        text: String,
+        client_version: i32,
+    ) -> Result<(), DocumentMutationError> {
+        self.validate_size(&uri, text.len())?;
         self.docs.insert(
             uri,
             Document {
                 text: Rope::from_str(&text),
                 text_cache: std::sync::Arc::new(text),
                 version: 0,
-                client_version: 0,
+                client_version,
             },
         );
+        Ok(())
     }
 
-    pub fn close(&self, uri: &Url) {
-        self.docs.remove(uri);
+    /// Replace an existing cached document without resetting its versions, or
+    /// open it when absent. The occupied/vacant decision and mutation happen
+    /// under one DashMap entry lock, so daemon-side disk refreshes cannot race
+    /// a concurrent open between a separate `contains` check and update.
+    pub fn replace_or_open(
+        &self,
+        uri: Url,
+        text: String,
+    ) -> Result<(std::sync::Arc<String>, i32), DocumentMutationError> {
+        self.validate_size(&uri, text.len())?;
+        let text = std::sync::Arc::new(text);
+        let version = match self.docs.entry(uri.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                let document = entry.get_mut();
+                document.text = Rope::from_str(&text);
+                document.text_cache = std::sync::Arc::clone(&text);
+                document.version += 1;
+                document.version
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(Document {
+                    text: Rope::from_str(&text),
+                    text_cache: std::sync::Arc::clone(&text),
+                    version: 0,
+                    client_version: 0,
+                });
+                0
+            }
+        };
+        self.trees.remove(&uri);
+        Ok((text, version))
+    }
+
+    /// Close a document and its derived caches.
+    ///
+    /// Returns `true` only when an open document was actually removed.
+    pub fn close(&self, uri: &Url) -> bool {
+        let removed = self.docs.remove(uri).is_some();
         self.trees.remove(uri);
         // Evict the parse-coordination lock too. A long-running daemon can open
         // and close thousands of distinct files over its lifetime; keeping their
         // locks around forever is a slow memory leak with no benefit, since the
         // lock only matters while the document is open and being parsed.
         self.parse_locks.remove(uri);
+        removed
     }
 
     /// Move an open document and its derived state to a new URI without
     /// recreating it. This preserves both the internal edit counter and the
     /// last client-supplied LSP version across daemon-side file renames.
     ///
-    /// Returns `true` when an open document was moved. If `new_uri` is already
-    /// open, the store is left unchanged and `false` is returned.
-    pub fn rename(&self, old_uri: &Url, new_uri: Url) -> bool {
+    /// Returns an explicit error when the source is not open or the destination
+    /// is already open. In either case the store is left unchanged.
+    pub fn rename(&self, old_uri: &Url, new_uri: Url) -> Result<(), DocumentMutationError> {
         if old_uri == &new_uri {
-            return self.docs.contains_key(old_uri);
+            return if self.docs.contains_key(old_uri) {
+                Ok(())
+            } else {
+                Err(DocumentMutationError::RenameSourceNotOpen {
+                    source_uri: old_uri.clone(),
+                })
+            };
         }
         if self.docs.contains_key(&new_uri) {
-            return false;
+            return Err(DocumentMutationError::RenameDestinationOpen {
+                source_uri: Box::new(old_uri.clone()),
+                destination_uri: Box::new(new_uri),
+            });
         }
 
         let Some((_, document)) = self.docs.remove(old_uri) else {
-            return false;
+            return Err(DocumentMutationError::RenameSourceNotOpen {
+                source_uri: old_uri.clone(),
+            });
         };
         match self.docs.entry(new_uri.clone()) {
             dashmap::mapref::entry::Entry::Vacant(entry) => {
@@ -265,7 +462,10 @@ impl DocumentStore {
                 // and entry acquisition. Restore the original document rather
                 // than overwriting either editor state.
                 self.docs.insert(old_uri.clone(), document);
-                return false;
+                return Err(DocumentMutationError::RenameDestinationOpen {
+                    source_uri: Box::new(old_uri.clone()),
+                    destination_uri: Box::new(new_uri),
+                });
             }
         }
 
@@ -275,7 +475,7 @@ impl DocumentStore {
         if let Some((_, lock)) = self.parse_locks.remove(old_uri) {
             self.parse_locks.insert(new_uri, lock);
         }
-        true
+        Ok(())
     }
 
     /// Prefer `get_text_arc` on hot paths to avoid deep-copying large file content.
@@ -309,6 +509,16 @@ impl DocumentStore {
             .map(|d| (std::sync::Arc::clone(&d.text_cache), d.version))
     }
 
+    /// Return text and the last client-supplied LSP version from one document
+    /// snapshot. Callers can additionally compare the returned `Arc` with a
+    /// later [`get_text_arc`](Self::get_text_arc) result by pointer identity to
+    /// detect close/reopen and same-content replacement races.
+    pub fn get_text_and_client_version(&self, uri: &Url) -> Option<(std::sync::Arc<String>, i32)> {
+        self.docs
+            .get(uri)
+            .map(|d| (std::sync::Arc::clone(&d.text_cache), d.client_version))
+    }
+
     pub fn get_version(&self, uri: &Url) -> Option<i32> {
         self.docs.get(uri).map(|d| d.version)
     }
@@ -316,14 +526,6 @@ impl DocumentStore {
     /// The last client-supplied LSP version for `uri`, or `None` if not open.
     pub fn get_client_version(&self, uri: &Url) -> Option<i32> {
         self.docs.get(uri).map(|d| d.client_version)
-    }
-
-    /// Record the client-supplied LSP version for `uri` (from `didOpen` /
-    /// `didChange`). No-op if the document isn't open.
-    pub fn set_client_version(&self, uri: &Url, version: i32) {
-        if let Some(mut d) = self.docs.get_mut(uri) {
-            d.client_version = version;
-        }
     }
 
     pub fn len(&self) -> usize {
@@ -348,8 +550,12 @@ impl DocumentStore {
         self.docs.iter().map(|e| e.key().clone()).collect()
     }
 
-    pub fn apply_changes(&self, uri: &Url, changes: &[TextChange]) {
-        let _ = self.apply_changes_and_get(uri, changes);
+    pub fn apply_changes(
+        &self,
+        uri: &Url,
+        changes: &[TextChange],
+    ) -> Result<(), DocumentMutationError> {
+        self.apply_changes_and_get(uri, changes).map(|_| ())
     }
 
     /// Apply `changes` and return the resulting `(text, version)` pair captured
@@ -366,71 +572,101 @@ impl DocumentStore {
     /// the returned text and version are always mutually
     /// consistent and reflect exactly the changes this call applied.
     ///
-    /// Returns `None` only if the document is not open.
+    /// The complete batch is transactional. An invalid range or an intermediate
+    /// size above the configured cap rejects the batch without changing any
+    /// observable document state.
     pub fn apply_changes_and_get(
         &self,
         uri: &Url,
         changes: &[TextChange],
-    ) -> Option<(std::sync::Arc<String>, i32)> {
-        if let Some(mut doc) = self.docs.get_mut(uri) {
-            for change in changes {
-                if let Some(range) = change.range {
-                    let start =
-                        position_to_offset(&doc.text, range.start_line, range.start_character);
-                    let end = position_to_offset(&doc.text, range.end_line, range.end_character);
-                    match (start, end) {
-                        (Some(s), Some(e)) if s <= e => {
-                            doc.text.remove(s..e);
-                            doc.text.insert(s, &change.text);
-                        }
-                        (Some(s), Some(e)) => {
-                            tracing::warn!(
-                                uri = %uri,
-                                start = s,
-                                end = e,
-                                "DocumentStore: skipping malformed TextChange with end<start"
-                            );
-                        }
-                        _ => {
-                            tracing::warn!(
-                                uri = %uri,
-                                start_line = range.start_line,
-                                start_char = range.start_character,
-                                end_line = range.end_line,
-                                end_char = range.end_character,
-                                doc_lines = doc.text.len_lines(),
-                                "DocumentStore: skipping TextChange with out-of-bounds range"
-                            );
-                        }
-                    }
-                } else if self.exceeds_cap(uri, change.text.len()) {
-                    // Leave the prior text intact after an oversized
-                    // full-document replacement; the editor should resync on
-                    // the next edit.
-                } else {
-                    doc.text = Rope::from_str(&change.text);
-                }
+    ) -> Result<(std::sync::Arc<String>, i32), DocumentMutationError> {
+        self.apply_changes_inner(uri, changes, None)
+    }
+
+    /// Apply a client-versioned batch, rejecting stale or duplicate versions
+    /// under the same document lock that commits the text.
+    pub fn apply_versioned_changes_and_get(
+        &self,
+        uri: &Url,
+        client_version: i32,
+        changes: &[TextChange],
+    ) -> Result<(std::sync::Arc<String>, i32), DocumentMutationError> {
+        self.apply_changes_inner(uri, changes, Some(client_version))
+    }
+
+    fn apply_changes_inner(
+        &self,
+        uri: &Url,
+        changes: &[TextChange],
+        client_version: Option<i32>,
+    ) -> Result<(std::sync::Arc<String>, i32), DocumentMutationError> {
+        let mut doc = self
+            .docs
+            .get_mut(uri)
+            .ok_or_else(|| DocumentMutationError::NotOpen { uri: uri.clone() })?;
+
+        if let Some(received) = client_version {
+            if received <= doc.client_version {
+                return Err(DocumentMutationError::StaleClientVersion {
+                    uri: uri.clone(),
+                    received,
+                    current: doc.client_version,
+                });
             }
-            // Incremental inserts cannot be rejected up front based on their
-            // final size, so warn when the completed batch exceeds the cap.
-            let cap = self
-                .max_doc_bytes
-                .load(std::sync::atomic::Ordering::Relaxed);
-            if cap != 0 && doc.text.len_bytes() > cap {
-                tracing::warn!(
-                    uri = %uri,
-                    size = doc.text.len_bytes(),
-                    cap,
-                    "DocumentStore: document exceeds max_doc_bytes after incremental edits"
-                );
-            }
-            doc.text_cache = std::sync::Arc::new(doc.text.to_string());
-            doc.version += 1;
-            self.trees.remove(uri);
-            Some((std::sync::Arc::clone(&doc.text_cache), doc.version))
-        } else {
-            None
         }
+
+        // Work on a candidate rope so a later invalid change cannot expose a
+        // partially applied batch.
+        let mut candidate = doc.text.clone();
+        for change in changes {
+            if let Some(range) = change.range {
+                let start = position_to_offset(&candidate, range.start_line, range.start_character);
+                let end = position_to_offset(&candidate, range.end_line, range.end_character);
+                let (start, end) = match (start, end) {
+                    (Some(start), Some(end)) => (start, end),
+                    _ => {
+                        return Err(DocumentMutationError::RangeOutOfBounds {
+                            uri: uri.clone(),
+                            start_line: range.start_line,
+                            start_character: range.start_character,
+                            end_line: range.end_line,
+                            end_character: range.end_character,
+                            document_lines: candidate.len_lines(),
+                        });
+                    }
+                };
+                if start > end {
+                    return Err(DocumentMutationError::BackwardRange {
+                        uri: uri.clone(),
+                        start,
+                        end,
+                    });
+                }
+
+                let removed_bytes = candidate.slice(start..end).len_bytes();
+                let next_len = candidate
+                    .len_bytes()
+                    .checked_sub(removed_bytes)
+                    .and_then(|len| len.checked_add(change.text.len()))
+                    .ok_or_else(|| DocumentMutationError::SizeOverflow { uri: uri.clone() })?;
+                self.validate_size(uri, next_len)?;
+                candidate.remove(start..end);
+                candidate.insert(start, &change.text);
+            } else {
+                self.validate_size(uri, change.text.len())?;
+                candidate = Rope::from_str(&change.text);
+            }
+        }
+
+        let text = std::sync::Arc::new(candidate.to_string());
+        doc.text = candidate;
+        doc.text_cache = std::sync::Arc::clone(&text);
+        doc.version += 1;
+        if let Some(client_version) = client_version {
+            doc.client_version = client_version;
+        }
+        self.trees.remove(uri);
+        Ok((text, doc.version))
     }
 
     /// Return the cached parse tree if the version matches the current document version.
@@ -555,7 +791,7 @@ mod tests {
     fn test_open_and_get() {
         let store = DocumentStore::new();
         let uri = test_uri("hello");
-        store.open(uri.clone(), "hello world".to_string());
+        store.open(uri.clone(), "hello world".to_string()).unwrap();
         assert_eq!(store.get_text(&uri), Some("hello world".to_string()));
         assert!(store.contains(&uri));
     }
@@ -564,9 +800,9 @@ mod tests {
     fn test_close() {
         let store = DocumentStore::new();
         let uri = test_uri("close");
-        store.open(uri.clone(), "content".to_string());
+        store.open(uri.clone(), "content".to_string()).unwrap();
         assert!(store.contains(&uri));
-        store.close(&uri);
+        assert!(store.close(&uri));
         assert!(!store.contains(&uri));
         assert_eq!(store.get_text(&uri), None);
     }
@@ -576,20 +812,23 @@ mod tests {
         let store = DocumentStore::new();
         let old_uri = test_uri("rename_old");
         let new_uri = test_uri("rename_new");
-        store.open(old_uri.clone(), "codeunit 50100 A { }".to_string());
-        store.apply_changes(
-            &old_uri,
-            &[TextChange {
-                range: None,
-                text: "codeunit 50100 A { trigger OnRun() begin end; }".to_string(),
-            }],
-        );
-        store.set_client_version(&old_uri, 42);
+        store
+            .open_with_client_version(old_uri.clone(), "codeunit 50100 A { }".to_string(), 42)
+            .unwrap();
+        store
+            .apply_changes(
+                &old_uri,
+                &[TextChange {
+                    range: None,
+                    text: "codeunit 50100 A { trigger OnRun() begin end; }".to_string(),
+                }],
+            )
+            .unwrap();
         let tree = parse_al(&store.get_text(&old_uri).unwrap());
         store.cache_tree(&old_uri, store.get_version(&old_uri).unwrap(), tree);
         let old_lock = store.parse_lock(&old_uri);
 
-        assert!(store.rename(&old_uri, new_uri.clone()));
+        store.rename(&old_uri, new_uri.clone()).unwrap();
         assert!(!store.contains(&old_uri));
         assert_eq!(store.get_version(&new_uri), Some(1));
         assert_eq!(store.get_client_version(&new_uri), Some(42));
@@ -606,10 +845,18 @@ mod tests {
         let store = DocumentStore::new();
         let old_uri = test_uri("rename_source");
         let new_uri = test_uri("rename_destination");
-        store.open(old_uri.clone(), "source".to_string());
-        store.open(new_uri.clone(), "destination".to_string());
+        store.open(old_uri.clone(), "source".to_string()).unwrap();
+        store
+            .open(new_uri.clone(), "destination".to_string())
+            .unwrap();
 
-        assert!(!store.rename(&old_uri, new_uri.clone()));
+        assert_eq!(
+            store.rename(&old_uri, new_uri.clone()),
+            Err(DocumentMutationError::RenameDestinationOpen {
+                source_uri: Box::new(old_uri.clone()),
+                destination_uri: Box::new(new_uri.clone()),
+            })
+        );
         assert_eq!(store.get_text(&old_uri).as_deref(), Some("source"));
         assert_eq!(store.get_text(&new_uri).as_deref(), Some("destination"));
     }
@@ -621,11 +868,11 @@ mod tests {
 
         for i in 0..50 {
             let uri = test_uri(&format!("ephemeral{i}"));
-            store.open(uri.clone(), "content".to_string());
+            store.open(uri.clone(), "content".to_string()).unwrap();
             // Materialize the lock as get_or_parse would.
             let _lock = store.parse_lock(&uri);
             assert_eq!(store.parse_locks_len(), 1);
-            store.close(&uri);
+            assert!(store.close(&uri));
             assert_eq!(
                 store.parse_locks_len(),
                 0,
@@ -648,7 +895,9 @@ mod tests {
         let mut uris = Vec::new();
         for i in 0..10 {
             let uri = test_uri(&format!("f{i}"));
-            store.open(uri.clone(), "codeunit 50100 X { }".to_string());
+            store
+                .open(uri.clone(), "codeunit 50100 X { }".to_string())
+                .unwrap();
             store.cache_tree(&uri, 0, parse_al("codeunit 50100 X { }"));
             uris.push(uri);
         }
@@ -678,14 +927,18 @@ mod tests {
         store.set_max_cached_trees(Some(3));
 
         let hot = test_uri("hot");
-        store.open(hot.clone(), "codeunit 50100 H { }".to_string());
+        store
+            .open(hot.clone(), "codeunit 50100 H { }".to_string())
+            .unwrap();
         store.cache_tree(&hot, 0, parse_al("codeunit 50100 H { }"));
 
         // Insert several colder entries, touching `hot` between each so its
         // access stamp stays the newest.
         for i in 0..6 {
             let uri = test_uri(&format!("cold{i}"));
-            store.open(uri.clone(), "codeunit 50100 C { }".to_string());
+            store
+                .open(uri.clone(), "codeunit 50100 C { }".to_string())
+                .unwrap();
             store.cache_tree(&uri, 0, parse_al("codeunit 50100 C { }"));
             assert!(store.get_cached_tree(&hot).is_some());
         }
@@ -703,7 +956,9 @@ mod tests {
         store.set_max_cached_trees(None);
         for i in 0..50 {
             let uri = test_uri(&format!("u{i}"));
-            store.open(uri.clone(), "codeunit 50100 U { }".to_string());
+            store
+                .open(uri.clone(), "codeunit 50100 U { }".to_string())
+                .unwrap();
             store.cache_tree(&uri, 0, parse_al("codeunit 50100 U { }"));
         }
         assert_eq!(store.cached_trees_len(), 50);
@@ -715,7 +970,9 @@ mod tests {
         let n = DEFAULT_MAX_CACHED_TREES * 3;
         for i in 0..n {
             let uri = test_uri(&format!("daemon{i}"));
-            store.open(uri.clone(), "codeunit 50100 D { }".to_string());
+            store
+                .open(uri.clone(), "codeunit 50100 D { }".to_string())
+                .unwrap();
             store.cache_tree(&uri, 0, parse_al("codeunit 50100 D { }"));
         }
         assert!(
@@ -729,14 +986,16 @@ mod tests {
     fn test_full_replace() {
         let store = DocumentStore::new();
         let uri = test_uri("replace");
-        store.open(uri.clone(), "old content".to_string());
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: None,
-                text: "new content".to_string(),
-            }],
-        );
+        store.open(uri.clone(), "old content".to_string()).unwrap();
+        store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: None,
+                    text: "new content".to_string(),
+                }],
+            )
+            .unwrap();
         assert_eq!(store.get_text(&uri), Some("new content".to_string()));
     }
 
@@ -745,7 +1004,17 @@ mod tests {
         let store = DocumentStore::new();
         store.set_max_doc_bytes(Some(8));
         let uri = test_uri("huge");
-        store.open(uri.clone(), "0123456789".to_string()); // 10 bytes > cap
+        let error = store
+            .open(uri.clone(), "0123456789".to_string())
+            .expect_err("10 bytes must exceed the 8-byte cap");
+        assert_eq!(
+            error,
+            DocumentMutationError::TooLarge {
+                uri: uri.clone(),
+                bytes: 10,
+                cap: 8,
+            }
+        );
         assert!(!store.contains(&uri), "oversized open() must be refused");
         assert_eq!(store.get_text(&uri), None);
     }
@@ -755,7 +1024,7 @@ mod tests {
         let store = DocumentStore::new();
         store.set_max_doc_bytes(Some(8));
         let uri = test_uri("small");
-        store.open(uri.clone(), "01234".to_string()); // 5 bytes <= cap
+        store.open(uri.clone(), "01234".to_string()).unwrap(); // 5 bytes <= cap
         assert!(store.contains(&uri));
         assert_eq!(store.get_text(&uri), Some("01234".to_string()));
     }
@@ -766,7 +1035,7 @@ mod tests {
         let store = DocumentStore::new();
         store.set_max_doc_bytes(Some(5));
         let uri = test_uri("edge");
-        store.open(uri.clone(), "01234".to_string()); // 5 bytes == cap
+        store.open(uri.clone(), "01234".to_string()).unwrap(); // 5 bytes == cap
         assert!(store.contains(&uri));
     }
 
@@ -776,7 +1045,7 @@ mod tests {
         let store = DocumentStore::new();
         let uri = test_uri("nocap");
         let big = "x".repeat(1_000_000);
-        store.open(uri.clone(), big.clone());
+        store.open(uri.clone(), big.clone()).unwrap();
         assert_eq!(store.get_text(&uri), Some(big));
     }
 
@@ -785,49 +1054,82 @@ mod tests {
         let store = DocumentStore::new();
         store.set_max_doc_bytes(Some(4));
         let uri = test_uri("cleared");
-        store.open(uri.clone(), "toolong".to_string());
+        assert!(matches!(
+            store.open(uri.clone(), "toolong".to_string()),
+            Err(DocumentMutationError::TooLarge { .. })
+        ));
         assert!(!store.contains(&uri), "should be refused while cap active");
         // Clearing the cap (None) restores unbounded ingestion.
         store.set_max_doc_bytes(None);
-        store.open(uri.clone(), "toolong".to_string());
+        store.open(uri.clone(), "toolong".to_string()).unwrap();
         assert_eq!(store.get_text(&uri), Some("toolong".to_string()));
     }
 
     #[test]
+    fn prospective_cap_rejects_an_already_open_oversized_document() {
+        let store = DocumentStore::new();
+        let uri = test_uri("prospective_cap");
+        store.open(uri.clone(), "ninebytes".to_string()).unwrap();
+
+        assert_eq!(
+            store.validate_max_doc_bytes(Some(8)),
+            Err(DocumentMutationError::TooLarge {
+                uri,
+                bytes: 9,
+                cap: 8,
+            })
+        );
+        assert_eq!(store.doc_cap(), None, "validation must not publish the cap");
+    }
+
+    #[test]
     fn test_max_doc_bytes_rejects_oversized_full_replace() {
-        // A full-document replacement larger than the cap is skipped, leaving
-        // the prior text intact rather than ingesting the giant payload.
+        // A full-document replacement larger than the cap is rejected,
+        // leaving text, version, and derived state unchanged.
         let store = DocumentStore::new();
         store.set_max_doc_bytes(Some(8));
         let uri = test_uri("replace_huge");
-        store.open(uri.clone(), "small".to_string());
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: None,
-                text: "this is far too long".to_string(),
-            }],
-        );
+        store.open(uri.clone(), "small".to_string()).unwrap();
+        let error = store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: None,
+                    text: "this is far too long".to_string(),
+                }],
+            )
+            .expect_err("oversized replacement must fail explicitly");
+        assert!(matches!(
+            error,
+            DocumentMutationError::TooLarge {
+                bytes: 20,
+                cap: 8,
+                ..
+            }
+        ));
         assert_eq!(store.get_text(&uri), Some("small".to_string()));
+        assert_eq!(store.get_version(&uri), Some(0));
     }
 
     #[test]
     fn test_incremental_update() {
         let store = DocumentStore::new();
         let uri = test_uri("incr");
-        store.open(uri.clone(), "hello world".to_string());
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: Some(TextRange {
-                    start_line: 0,
-                    start_character: 6,
-                    end_line: 0,
-                    end_character: 11,
-                }),
-                text: "AL".to_string(),
-            }],
-        );
+        store.open(uri.clone(), "hello world".to_string()).unwrap();
+        store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: Some(TextRange {
+                        start_line: 0,
+                        start_character: 6,
+                        end_line: 0,
+                        end_character: 11,
+                    }),
+                    text: "AL".to_string(),
+                }],
+            )
+            .unwrap();
         assert_eq!(store.get_text(&uri), Some("hello AL".to_string()));
     }
 
@@ -835,15 +1137,17 @@ mod tests {
     fn test_version_increments() {
         let store = DocumentStore::new();
         let uri = test_uri("ver");
-        store.open(uri.clone(), "v0".to_string());
+        store.open(uri.clone(), "v0".to_string()).unwrap();
         assert_eq!(store.get_version(&uri), Some(0));
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: None,
-                text: "v1".to_string(),
-            }],
-        );
+        store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: None,
+                    text: "v1".to_string(),
+                }],
+            )
+            .unwrap();
         assert_eq!(store.get_version(&uri), Some(1));
     }
 
@@ -859,19 +1163,21 @@ mod tests {
     fn test_tree_cache_invalidated_on_change() {
         let store = DocumentStore::new();
         let uri = test_uri("tree");
-        store.open(uri.clone(), "content".to_string());
+        store.open(uri.clone(), "content".to_string()).unwrap();
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&al_syntax::parser::language()).unwrap();
         let tree = parser.parse("content", None).unwrap();
         store.cache_tree(&uri, 0, tree);
         assert!(store.get_cached_tree(&uri).is_some());
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: None,
-                text: "changed".to_string(),
-            }],
-        );
+        store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: None,
+                    text: "changed".to_string(),
+                }],
+            )
+            .unwrap();
         assert!(store.get_cached_tree(&uri).is_none());
     }
 
@@ -885,7 +1191,7 @@ mod tests {
     fn test_get_text_arc_cheap_clone() {
         let store = DocumentStore::new();
         let uri = test_uri("arc");
-        store.open(uri.clone(), "arc content".to_string());
+        store.open(uri.clone(), "arc content".to_string()).unwrap();
         let arc1 = store.get_text_arc(&uri).unwrap();
         let arc2 = store.get_text_arc(&uri).unwrap();
         // Both arcs point to the same allocation
@@ -897,15 +1203,17 @@ mod tests {
     fn test_get_text_arc_updates_after_change() {
         let store = DocumentStore::new();
         let uri = test_uri("arc_change");
-        store.open(uri.clone(), "original".to_string());
+        store.open(uri.clone(), "original".to_string()).unwrap();
         let arc1 = store.get_text_arc(&uri).unwrap();
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: None,
-                text: "updated".to_string(),
-            }],
-        );
+        store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: None,
+                    text: "updated".to_string(),
+                }],
+            )
+            .unwrap();
         let arc2 = store.get_text_arc(&uri).unwrap();
         assert_eq!(arc1.as_str(), "original");
         assert_eq!(arc2.as_str(), "updated");
@@ -915,71 +1223,81 @@ mod tests {
     fn test_incremental_multiline_edits() {
         let store = DocumentStore::new();
         let uri = test_uri("multi");
-        store.open(uri.clone(), "line one\nline two\nline three\n".to_string());
+        store
+            .open(uri.clone(), "line one\nline two\nline three\n".to_string())
+            .unwrap();
 
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: Some(TextRange {
-                    start_line: 0,
-                    start_character: 5,
-                    end_line: 0,
-                    end_character: 8,
-                }),
-                text: "1".to_string(),
-            }],
-        );
+        store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: Some(TextRange {
+                        start_line: 0,
+                        start_character: 5,
+                        end_line: 0,
+                        end_character: 8,
+                    }),
+                    text: "1".to_string(),
+                }],
+            )
+            .unwrap();
         assert_eq!(
             store.get_text(&uri),
             Some("line 1\nline two\nline three\n".to_string())
         );
 
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: Some(TextRange {
-                    start_line: 1,
-                    start_character: 5,
-                    end_line: 1,
-                    end_character: 8,
-                }),
-                text: "2".to_string(),
-            }],
-        );
+        store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: Some(TextRange {
+                        start_line: 1,
+                        start_character: 5,
+                        end_line: 1,
+                        end_character: 8,
+                    }),
+                    text: "2".to_string(),
+                }],
+            )
+            .unwrap();
         assert_eq!(
             store.get_text(&uri),
             Some("line 1\nline 2\nline three\n".to_string())
         );
 
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: Some(TextRange {
-                    start_line: 0,
-                    start_character: 6,
-                    end_line: 1,
-                    end_character: 6,
-                }),
-                text: "".to_string(),
-            }],
-        );
+        store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: Some(TextRange {
+                        start_line: 0,
+                        start_character: 6,
+                        end_line: 1,
+                        end_character: 6,
+                    }),
+                    text: "".to_string(),
+                }],
+            )
+            .unwrap();
         assert_eq!(
             store.get_text(&uri),
             Some("line 1\nline three\n".to_string())
         );
 
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: Some(TextRange {
-                    start_line: 0,
-                    start_character: 0,
-                    end_line: 0,
-                    end_character: 0,
-                }),
-                text: "// ".to_string(),
-            }],
-        );
+        store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: Some(TextRange {
+                        start_line: 0,
+                        start_character: 0,
+                        end_line: 0,
+                        end_character: 0,
+                    }),
+                    text: "// ".to_string(),
+                }],
+            )
+            .unwrap();
         assert_eq!(
             store.get_text(&uri),
             Some("// line 1\nline three\n".to_string())
@@ -1000,7 +1318,7 @@ mod tests {
             let s = Arc::clone(&store);
             handles.push(thread::spawn(move || {
                 let uri = Url::parse(&format!("file:///test/doc{i}.al")).unwrap();
-                s.open(uri, format!("content {i}"));
+                s.open(uri, format!("content {i}")).unwrap();
             }));
         }
 
@@ -1084,7 +1402,7 @@ mod tests {
     fn apply_changes_version_bump_and_tree_remove_are_consistent() {
         let store = DocumentStore::new();
         let uri = test_uri("lockdiscipline");
-        store.open(uri.clone(), "v0".to_string());
+        store.open(uri.clone(), "v0".to_string()).unwrap();
 
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&al_syntax::parser::language()).unwrap();
@@ -1093,13 +1411,15 @@ mod tests {
         assert!(store.get_cached_tree(&uri).is_some());
         assert_eq!(store.get_version(&uri), Some(0));
 
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: None,
-                text: "v1".to_string(),
-            }],
-        );
+        store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: None,
+                    text: "v1".to_string(),
+                }],
+            )
+            .unwrap();
 
         // Post-state: version is 1 AND tree is gone. Both must be true; if
         // apply_changes ever leaks the v0 tree under v1's version, this fails.
@@ -1116,7 +1436,7 @@ mod tests {
     fn apply_changes_and_get_returns_post_change_snapshot() {
         let store = DocumentStore::new();
         let uri = test_uri("atomic_snapshot");
-        store.open(uri.clone(), "v0".to_string());
+        store.open(uri.clone(), "v0".to_string()).unwrap();
 
         let (text, version) = store
             .apply_changes_and_get(
@@ -1146,15 +1466,13 @@ mod tests {
         // is bumped per apply — the two must not be conflated.
         let store = DocumentStore::new();
         let uri = test_uri("client_version");
-        store.open(uri.clone(), "x".to_string());
+        store
+            .open_with_client_version(uri.clone(), "x".to_string(), 5)
+            .unwrap();
 
-        // Fresh document: client version defaults to 0, internal version 0.
-        assert_eq!(store.get_client_version(&uri), Some(0));
-        assert_eq!(store.get_version(&uri), Some(0));
-
-        // A client version can jump by more than 1 per notification.
-        store.set_client_version(&uri, 5);
+        // Client and internal versions are tracked independently.
         assert_eq!(store.get_client_version(&uri), Some(5));
+        assert_eq!(store.get_version(&uri), Some(0));
 
         // Applying an edit bumps the internal counter but NOT the client version.
         store
@@ -1177,11 +1495,10 @@ mod tests {
         assert_eq!(store.get_client_version(&test_uri("nope")), None);
     }
 
-    /// `apply_changes_and_get` returns `None` (rather than a stale
-    /// snapshot) when the document is not open, so `did_change` skips scheduling
-    /// diagnostics for a URI that was closed out from under it.
+    /// `apply_changes_and_get` reports a closed document explicitly rather than
+    /// returning a stale snapshot or silently discarding the edit.
     #[test]
-    fn apply_changes_and_get_returns_none_for_unopened_document() {
+    fn apply_changes_and_get_errors_for_unopened_document() {
         let store = DocumentStore::new();
         let uri = test_uri("never_opened");
         let result = store.apply_changes_and_get(
@@ -1191,7 +1508,10 @@ mod tests {
                 text: "ignored".to_string(),
             }],
         );
-        assert!(result.is_none());
+        assert_eq!(
+            result,
+            Err(DocumentMutationError::NotOpen { uri: uri.clone() })
+        );
         assert!(!store.contains(&uri));
     }
 
@@ -1207,8 +1527,8 @@ mod tests {
             let s = Arc::clone(&store);
             handles.push(thread::spawn(move || {
                 let uri = Url::parse(&format!("file:///race/{i}.al")).unwrap();
-                s.open(uri.clone(), format!("ver{i}"));
-                s.close(&uri);
+                s.open(uri.clone(), format!("ver{i}")).unwrap();
+                assert!(s.close(&uri));
             }));
         }
 
@@ -1222,23 +1542,34 @@ mod tests {
     }
 
     #[test]
-    fn apply_changes_skips_backward_range_and_logs() {
+    fn apply_changes_rejects_backward_range_atomically() {
         let store = DocumentStore::new();
         let uri = test_uri("backward");
-        store.open(uri.clone(), "hello\n".to_string());
+        store.open(uri.clone(), "hello\n".to_string()).unwrap();
         let before = store.get_text(&uri).unwrap();
+        let before_version = store.get_version(&uri);
 
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: Some(TextRange {
-                    start_line: 0,
-                    start_character: 5, // after "hello"
-                    end_line: 0,
-                    end_character: 1, // BEFORE start
-                }),
-                text: "BAD".to_string(),
-            }],
+        let error = store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: Some(TextRange {
+                        start_line: 0,
+                        start_character: 5, // after "hello"
+                        end_line: 0,
+                        end_character: 1, // BEFORE start
+                    }),
+                    text: "BAD".to_string(),
+                }],
+            )
+            .expect_err("backward range must be rejected");
+        assert_eq!(
+            error,
+            DocumentMutationError::BackwardRange {
+                uri: uri.clone(),
+                start: 5,
+                end: 1,
+            }
         );
 
         let after = store.get_text(&uri).unwrap();
@@ -1248,31 +1579,175 @@ mod tests {
         );
         assert_eq!(
             after, before,
-            "doc should be unchanged after skipped change"
+            "doc should be unchanged after rejected change"
         );
+        assert_eq!(store.get_version(&uri), before_version);
     }
 
     #[test]
-    fn apply_changes_skips_out_of_bounds_range_and_logs() {
+    fn apply_changes_rejects_out_of_bounds_range_atomically() {
         let store = DocumentStore::new();
         let uri = test_uri("oob");
-        store.open(uri.clone(), "abc\n".to_string());
+        store.open(uri.clone(), "abc\n".to_string()).unwrap();
 
-        store.apply_changes(
-            &uri,
-            &[TextChange {
-                range: Some(TextRange {
-                    start_line: 999,
-                    start_character: 0,
-                    end_line: 999,
-                    end_character: 5,
-                }),
-                text: "EVIL".to_string(),
-            }],
+        let error = store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: Some(TextRange {
+                        start_line: 999,
+                        start_character: 0,
+                        end_line: 999,
+                        end_character: 5,
+                    }),
+                    text: "EVIL".to_string(),
+                }],
+            )
+            .expect_err("out-of-bounds range must be rejected");
+        assert_eq!(
+            error,
+            DocumentMutationError::RangeOutOfBounds {
+                uri: uri.clone(),
+                start_line: 999,
+                start_character: 0,
+                end_line: 999,
+                end_character: 5,
+                document_lines: 2,
+            }
         );
 
         let after = store.get_text(&uri).unwrap();
         assert!(!after.contains("EVIL"));
         assert_eq!(after, "abc\n");
+    }
+
+    #[test]
+    fn later_invalid_change_rolls_back_the_entire_batch() {
+        let store = DocumentStore::new();
+        let uri = test_uri("transactional_batch");
+        store
+            .open(uri.clone(), "alpha\nbeta\n".to_string())
+            .unwrap();
+
+        let result = store.apply_changes(
+            &uri,
+            &[
+                TextChange {
+                    range: Some(TextRange {
+                        start_line: 0,
+                        start_character: 0,
+                        end_line: 0,
+                        end_character: 5,
+                    }),
+                    text: "changed".to_string(),
+                },
+                TextChange {
+                    range: Some(TextRange {
+                        start_line: 99,
+                        start_character: 0,
+                        end_line: 99,
+                        end_character: 0,
+                    }),
+                    text: "invalid".to_string(),
+                },
+            ],
+        );
+
+        assert!(matches!(
+            result,
+            Err(DocumentMutationError::RangeOutOfBounds { .. })
+        ));
+        assert_eq!(store.get_text(&uri).as_deref(), Some("alpha\nbeta\n"));
+        assert_eq!(store.get_version(&uri), Some(0));
+    }
+
+    #[test]
+    fn incremental_change_cannot_cross_document_size_cap() {
+        let store = DocumentStore::new();
+        store.set_max_doc_bytes(Some(8));
+        let uri = test_uri("incremental_cap");
+        store.open(uri.clone(), "12345678".to_string()).unwrap();
+
+        let error = store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: Some(TextRange {
+                        start_line: 0,
+                        start_character: 8,
+                        end_line: 0,
+                        end_character: 8,
+                    }),
+                    text: "9".to_string(),
+                }],
+            )
+            .expect_err("incremental insert over the cap must fail");
+
+        assert!(matches!(
+            error,
+            DocumentMutationError::TooLarge {
+                bytes: 9,
+                cap: 8,
+                ..
+            }
+        ));
+        assert_eq!(store.get_text(&uri).as_deref(), Some("12345678"));
+        assert_eq!(store.get_version(&uri), Some(0));
+    }
+
+    #[test]
+    fn versioned_change_rejects_stale_version_without_mutation() {
+        let store = DocumentStore::new();
+        let uri = test_uri("stale_version");
+        store
+            .open_with_client_version(uri.clone(), "v5".to_string(), 5)
+            .unwrap();
+
+        let error = store
+            .apply_versioned_changes_and_get(
+                &uri,
+                5,
+                &[TextChange {
+                    range: None,
+                    text: "duplicate".to_string(),
+                }],
+            )
+            .expect_err("duplicate client version must be rejected");
+
+        assert_eq!(
+            error,
+            DocumentMutationError::StaleClientVersion {
+                uri: uri.clone(),
+                received: 5,
+                current: 5,
+            }
+        );
+        assert_eq!(store.get_text(&uri).as_deref(), Some("v5"));
+        assert_eq!(store.get_version(&uri), Some(0));
+        assert_eq!(store.get_client_version(&uri), Some(5));
+    }
+
+    #[test]
+    fn versioned_change_commits_text_and_client_version_together() {
+        let store = DocumentStore::new();
+        let uri = test_uri("versioned_commit");
+        store
+            .open_with_client_version(uri.clone(), "v5".to_string(), 5)
+            .unwrap();
+
+        let (text, internal_version) = store
+            .apply_versioned_changes_and_get(
+                &uri,
+                9,
+                &[TextChange {
+                    range: None,
+                    text: "v9".to_string(),
+                }],
+            )
+            .unwrap();
+
+        assert_eq!(text.as_str(), "v9");
+        assert_eq!(internal_version, 1);
+        assert_eq!(store.get_client_version(&uri), Some(9));
     }
 }

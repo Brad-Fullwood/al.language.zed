@@ -24,11 +24,10 @@ stray `pkill` can take down the developer's real editor windows.
 ## Prerequisites
 
 - **podman** (rootless is fine).
-- The extension's compiled artifacts must exist at the repo root:
-  `extension.wasm` and `grammars/al.wasm`. These are **gitignored, Zed-built**
-  artifacts. Produce them once on the host: `make install`, then run the
-  command-palette action **"zed: install dev extension"** on this repo in Zed.
-  The container reuses them (it has no Rust/wasi toolchain to recompile them).
+- The `tree-sitter` CLI and Rust's `wasm32-wasip2` target. `drive.sh` rebuilds
+  the gitignored `extension.wasm` component and `grammars/al.wasm` from the
+  current checkout before every Zed run, so stale dev-extension artifacts
+  cannot produce a false pass.
 - `target/debug/al-lsp` (built automatically by `drive.sh` if missing). The
   host-built Linux binary runs as-is inside the Ubuntu container.
 

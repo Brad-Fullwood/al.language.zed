@@ -44,16 +44,14 @@ pub fn apply_al_settings_to_config(
         set_nested_value(&mut result, &parts, value);
     }
 
-    // `useOfficialLsp` / `useOfficialDap` are launch-mode switches consumed by
-    // the extension itself (`resolve_server_args` / `resolve_dap_backend_flag`)
-    // to pick the native vs Microsoft LSP/DAP binary. They are NOT al-lsp server
-    // config, so they must not ride along into the server's settings — otherwise
-    // the server reports them as "Unknown AL settings". Every input shape (flat,
-    // `al.`-dotted, nested `al: {…}`) lands as a top-level key in `result`, so a
-    // top-level remove covers all of them.
+    // These launch settings are consumed by the extension itself. They are NOT
+    // al-lsp server config, so they must not ride along into the server's
+    // settings. Every input shape (flat, `al.`-dotted, nested `al: {…}`) lands
+    // as a top-level key in `result`, so a top-level remove covers all of them.
     if let Some(obj) = result.as_object_mut() {
         obj.remove("useOfficialLsp");
         obj.remove("useOfficialDap");
+        obj.remove("dotnetPath");
     }
 
     result
@@ -150,4 +148,59 @@ pub fn resolve_dap_backend_flag(user_settings: Option<&serde_json::Value>) -> &'
     } else {
         "--dap"
     }
+}
+
+/// Resolve `al.dotnetPath` from every settings shape accepted by the extension.
+///
+/// The value is exported to child processes as `AL_DOTNET_PATH`, keeping the
+/// existing CLI/environment contract while making the same override available
+/// from Zed settings. Empty and non-string values are ignored so they cannot
+/// replace a working `dotnet` lookup with an unusable command.
+pub fn resolve_dotnet_path(user_settings: Option<&serde_json::Value>) -> Option<String> {
+    user_settings
+        .and_then(|settings| {
+            settings
+                .get("dotnetPath")
+                .or_else(|| settings.get("al.dotnetPath"))
+                .or_else(|| settings.get("al").and_then(|al| al.get("dotnetPath")))
+        })
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Select and normalize the AL settings needed by the separate DAP process
+/// when it performs a launch build.
+///
+/// Zed gives the extension the live global/project settings, but `al-lsp
+/// --dap` is a new process and cannot query them. Passing only compile and
+/// package-selection keys avoids configuration drift without exporting
+/// unrelated editor state.
+pub fn compile_settings_for_child(user_settings: Option<&serde_json::Value>) -> serde_json::Value {
+    const KEYS: &[&str] = &[
+        "codeAnalyzers",
+        "enableExternalRulesets",
+        "ruleSetPath",
+        "assemblyProbingPaths",
+        "outputAnalyzerStatistics",
+        "packageCachePath",
+        "appLocalFolderPaths",
+        "compilationOptions",
+        "incrementalBuild",
+        "useOfficialCompiler",
+    ];
+
+    let normalized = user_settings
+        .map(|settings| apply_al_settings_to_config(&json!({}), settings))
+        .unwrap_or_else(|| json!({}));
+    let mut selected = serde_json::Map::new();
+    if let Some(object) = normalized.as_object() {
+        for key in KEYS {
+            if let Some(value) = object.get(*key) {
+                selected.insert((*key).to_string(), value.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(selected)
 }

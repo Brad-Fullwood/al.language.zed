@@ -292,6 +292,22 @@ pub struct DaemonClient {
 }
 
 impl DaemonClient {
+    /// Connect only if a daemon is already listening for this project.
+    ///
+    /// Unlike [`Self::connect`], this never spawns a process. It is used by
+    /// lifecycle tooling that must not accidentally populate caches merely to
+    /// ask whether an existing daemon should stop.
+    pub fn connect_existing(project_root: &Path) -> Result<Self, String> {
+        let endpoint = socket_path(project_root).ok_or_else(|| {
+            "Cannot determine a local daemon endpoint: no per-user runtime directory is available"
+                .to_string()
+        })?;
+        let stream = connect_stream(&endpoint).map_err(|error| {
+            format!("No running daemon for {}: {error}", project_root.display())
+        })?;
+        Self::from_stream(stream)
+    }
+
     /// Connect to the daemon for a project, auto-starting if needed.
     ///
     /// concurrent first-time callers are serialised via a per-socket
@@ -317,14 +333,14 @@ impl DaemonClient {
                     Self::from_stream(stream)
                 } else {
                     Self::start_daemon(project_root)
-                        .and_then(|()| Self::wait_for_daemon(&endpoint))
+                        .and_then(|mut child| Self::wait_for_daemon(&endpoint, Some(&mut child)))
                         .and_then(Self::from_stream)
                 };
                 let _ = std::fs::remove_file(&lock_path);
                 result
             }
             SpawnLockResult::Contended => {
-                let stream = Self::wait_for_daemon(&endpoint)?;
+                let stream = Self::wait_for_daemon(&endpoint, None)?;
                 Self::from_stream(stream)
             }
         }
@@ -501,9 +517,9 @@ impl DaemonClient {
         serde_json::from_str(line.trim()).map_err(|e| format!("Failed to parse response: {}", e))
     }
 
-    fn start_daemon(project_root: &Path) -> Result<(), String> {
+    fn start_daemon(project_root: &Path) -> Result<std::process::Child, String> {
         let al_lsp = find_al_lsp_binary()?;
-        let _child = std::process::Command::new(&al_lsp)
+        std::process::Command::new(&al_lsp)
             .arg("daemon")
             .arg("--project")
             .arg(project_root)
@@ -511,18 +527,35 @@ impl DaemonClient {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .map_err(|e| format!("Failed to start al-lsp daemon: {}", e))?;
-        Ok(())
+            .map_err(|e| format!("Failed to start al-lsp daemon: {}", e))
     }
 
-    fn wait_for_daemon(endpoint: &Path) -> Result<Stream, String> {
+    fn wait_for_daemon(
+        endpoint: &Path,
+        mut spawned: Option<&mut std::process::Child>,
+    ) -> Result<Stream, String> {
         for _ in 0..50 {
             if let Ok(stream) = connect_stream(endpoint) {
                 return Ok(stream);
             }
+            if let Some(child) = spawned.as_deref_mut() {
+                if let Some(status) = child
+                    .try_wait()
+                    .map_err(|error| format!("Failed to inspect al-lsp daemon process: {error}"))?
+                {
+                    return Err(format!(
+                        "al-lsp daemon exited before opening its endpoint ({status}); \
+                         inspect ~/.local/share/al-lsp/logs/al-lsp.log for the startup error"
+                    ));
+                }
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
-        Err("Daemon did not start within 5 seconds".to_string())
+        Err(format!(
+            "Daemon did not open {} within 5 seconds; inspect \
+             ~/.local/share/al-lsp/logs/al-lsp.log",
+            endpoint.display()
+        ))
     }
 }
 

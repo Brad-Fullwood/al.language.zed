@@ -133,13 +133,22 @@ pub(super) async fn lint_file(server: &AlServer, arguments: &[serde_json::Value]
             return;
         }
     };
-    if let Some(text) = server.workspace.documents.get_text(&uri) {
-        diagnostics::publish_diagnostics(server, &uri, &text).await;
+    if let Some((text, version)) = server.workspace.documents.get_text_and_client_version(&uri) {
+        diagnostics::publish_diagnostics(server, &uri, text, version).await;
+    } else {
+        tracing::warn!(%uri, "al.lintFile document is not open");
+        server
+            .client
+            .show_message(
+                MessageType::WARNING,
+                format!("Lint failed: document is not open: {uri}"),
+            )
+            .await;
     }
 }
 
 /// `al.getStatus` — health/inventory snapshot for the status command.
-pub(super) async fn get_status(server: &AlServer) -> serde_json::Value {
+pub(super) async fn get_status(server: &AlServer) -> Result<serde_json::Value, String> {
     let has_bridge = server.workspace.semantic.read().await.is_some();
     let has_toolchain = server.workspace.toolchain.read().await.is_some();
     let indexed_symbols = server.workspace.symbols.len();
@@ -149,18 +158,25 @@ pub(super) async fn get_status(server: &AlServer) -> serde_json::Value {
         .workspace
         .builtins
         .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .len(); // Recover from RwLock poison.
+        .map_err(|_| "workspace builtin type state is poisoned".to_string())?
+        .len();
+    let (workspace_state, workspace_error) = match server.workspace_init_state.borrow().clone() {
+        super::WorkspaceInitState::Initializing => ("initializing", None),
+        super::WorkspaceInitState::Ready => ("ready", None),
+        super::WorkspaceInitState::Failed(error) => ("failed", Some(error)),
+    };
 
-    serde_json::json!({
+    Ok(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
+        "workspaceState": workspace_state,
+        "workspaceError": workspace_error,
         "semanticBridge": has_bridge,
         "toolchain": has_toolchain,
         "indexedSymbols": indexed_symbols,
         "workspaceFiles": workspace_files,
         "workspaceObjects": workspace_objects,
         "builtinTypes": builtins,
-    })
+    }))
 }
 
 /// `al.reindex` — re-run workspace initialization in the background,
@@ -172,24 +188,31 @@ pub(super) async fn reindex(server: &AlServer) {
         let ws = Arc::clone(&server.workspace);
         let client = server.client.clone();
         let uri_cloned = uri.clone();
-        // Reindex path: pass throwaway ready/notify pair so the
-        // call satisfies the signature; reindex doesn't need to
-        // gate request handlers since the workspace is already
-        // serving traffic.
-        let throwaway_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let throwaway_notify = Arc::new(tokio::sync::Notify::new());
+        let diagnostic_state = server.diagnostic_publication_state();
         let handle = tokio::spawn(async move {
-            workspace::initialize_workspace(
+            match workspace::initialize_workspace(
                 ws,
                 client.clone(),
                 Some(uri_cloned),
-                throwaway_flag,
-                throwaway_notify,
+                None,
+                Some(diagnostic_state),
             )
-            .await;
-            client
-                .show_message(MessageType::INFO, "Workspace reindex complete")
-                .await;
+            .await
+            {
+                Ok(()) => {
+                    client
+                        .show_message(MessageType::INFO, "Workspace reindex complete")
+                        .await;
+                }
+                Err(error) => {
+                    client
+                        .show_message(
+                            MessageType::ERROR,
+                            format!("Workspace reindex failed: {error}"),
+                        )
+                        .await;
+                }
+            }
         });
         // Cancel any previous in-flight reindex so rapid clicks
         // don't run two full scans concurrently.
@@ -212,17 +235,15 @@ pub(super) async fn reindex(server: &AlServer) {
 /// `al.useOfficialCompiler=true` opts into Microsoft's `dotnet alc`
 /// subprocess for compiler diagnostics and authoritative validation.
 pub(super) async fn compile(server: &AlServer) {
-    let toolchain_guard = server.workspace.toolchain.read().await;
-    let project_guard = server.workspace.project.read().await;
-    let config_guard = server.workspace.config.read().await;
-    let toolchain = toolchain_guard.clone();
-    let project_root = project_guard.as_ref().map(|p| p.root.clone());
-    let use_official_compiler = config_guard.use_official_compiler;
-    drop(toolchain_guard);
-    drop(project_guard);
-    drop(config_guard);
-
-    let Some(root) = project_root else {
+    let project = server.workspace.project.read().await;
+    let Some((root, package_cache, dependency_packages)) = project.as_ref().map(|project| {
+        (
+            project.root.clone(),
+            project.packages_dir.clone(),
+            project.packages.clone(),
+        )
+    }) else {
+        drop(project);
         server
             .client
             .show_message(
@@ -232,9 +253,14 @@ pub(super) async fn compile(server: &AlServer) {
             .await;
         return;
     };
+    drop(project);
 
-    if use_official_compiler {
-        let Some(tc) = toolchain else {
+    let config = server.workspace.config.read().await.clone();
+    let backend =
+        al_compile::BuildBackend::from_use_official_compiler(config.use_official_compiler);
+    let toolchain = if backend == al_compile::BuildBackend::Alc {
+        let toolchain = server.workspace.toolchain.read().await.clone();
+        let Some(toolchain) = toolchain else {
             server
                 .client
                 .show_message(
@@ -244,20 +270,16 @@ pub(super) async fn compile(server: &AlServer) {
                 .await;
             return;
         };
-        match al_compile::compile_project(&tc, &root, None).await {
-            Ok(result) => publish_compile_result(server, &root, &result).await,
-            Err(e) => {
-                server
-                    .client
-                    .show_message(MessageType::ERROR, format!("Compilation error: {e}"))
-                    .await;
-            }
-        }
-        return;
-    }
+        Some(toolchain)
+    } else {
+        None
+    };
 
-    let config = server.workspace.config.read().await.clone();
-    let mut workspace_diagnostics = native_workspace_compile_diagnostics(server, &config, &root);
+    let mut workspace_diagnostics = if backend == al_compile::BuildBackend::Native {
+        native_workspace_compile_diagnostics(server, &config, &root)
+    } else {
+        Vec::new()
+    };
     let has_errors = workspace_diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == al_compile::DiagnosticSeverity::Error);
@@ -267,9 +289,36 @@ pub(super) async fn compile(server: &AlServer) {
             app_path: None,
             diagnostics: Vec::new(),
             output: "native workspace semantic validation failed; .app was not emitted".to_string(),
+            timings: None,
         }
     } else {
-        al_compile::native_compile(&root)
+        match al_compile::build(al_compile::BuildRequest {
+            project_root: &root,
+            backend,
+            toolchain: toolchain.as_ref(),
+            dependency_packages: Some(dependency_packages.as_slice()),
+            package_cache: Some(&package_cache),
+            analyzers: if config.code_analyzers.is_empty() {
+                None
+            } else {
+                Some(config.code_analyzers.as_slice())
+            },
+            config: al_compile::CompilationConfigOptions::from(&config),
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                server
+                    .client
+                    .show_message(
+                        MessageType::ERROR,
+                        format!("Compilation infrastructure error: {error}"),
+                    )
+                    .await;
+                return;
+            }
+        }
     };
     result.diagnostics.append(&mut workspace_diagnostics);
     publish_compile_result(server, &root, &result).await;
@@ -396,8 +445,10 @@ async fn publish_compile_result(
     drop(last);
     for file in &stale {
         if let Ok(uri) = Url::from_file_path(file) {
-            if let Some(text) = server.workspace.documents.get_text(&uri) {
-                diagnostics::publish_diagnostics(server, &uri, &text).await;
+            if let Some((text, version)) =
+                server.workspace.documents.get_text_and_client_version(&uri)
+            {
+                diagnostics::publish_diagnostics(server, &uri, text, version).await;
             } else {
                 server
                     .client
@@ -466,10 +517,8 @@ pub(super) async fn apply_recommended_settings(server: &AlServer) {
 pub(super) fn find_references(
     server: &AlServer,
     arguments: &[serde_json::Value],
-) -> serde_json::Value {
+) -> Result<serde_json::Value, String> {
     let arg = arguments.first();
-    // Malformed arguments from the client are not user-affecting; an
-    // empty result is the correct "nothing to show" response.
     let uri = arg
         .and_then(|v| v.get("uri"))
         .and_then(|v| serde_json::from_value::<Url>(v.clone()).ok());
@@ -477,16 +526,18 @@ pub(super) fn find_references(
         .and_then(|v| v.get("position"))
         .and_then(|v| serde_json::from_value::<Position>(v.clone()).ok());
     let (Some(uri), Some(position)) = (uri, position) else {
-        return serde_json::json!([]);
+        return Err("al.findReferences requires { uri, position } arguments".to_string());
     };
     let locations = al_analysis::queries::references::references(
         &server.workspace,
         &uri,
         position.into(),
         false,
-    );
+    )
+    .map_err(|error| error.to_string())?;
     let lsp_locations: Vec<Location> = locations.into_iter().map(Into::into).collect();
-    serde_json::to_value(lsp_locations).unwrap_or_else(|_| serde_json::json!([]))
+    serde_json::to_value(lsp_locations)
+        .map_err(|error| format!("serializing al.findReferences result failed: {error}"))
 }
 
 /// `al.showProfiler` — return the active `.alcpuprofile` session's hotspots so
@@ -497,20 +548,20 @@ pub(super) fn find_references(
 pub(super) fn show_profiler(
     server: &AlServer,
     _arguments: &[serde_json::Value],
-) -> serde_json::Value {
+) -> Result<serde_json::Value, String> {
     let guard = server
         .workspace
         .profiler_session
         .read()
-        .unwrap_or_else(|e| e.into_inner()); // Recover from RwLock poison.
-    match guard.as_ref() {
+        .map_err(|_| "profiler session state is poisoned".to_string())?;
+    Ok(match guard.as_ref() {
         Some(session) if session.is_active() => serde_json::json!({
             "active": true,
             "profilePath": session.profile_path,
             "hints": session.hints,
         }),
         _ => serde_json::json!({ "active": false, "hints": [] }),
-    }
+    })
 }
 
 /// `al.runTest` — run the `[Test]` procedure the lens targets against the
@@ -549,10 +600,23 @@ pub(super) async fn run_test(
         .await
         .as_ref()
         .map(|p| p.root.clone());
-    let config = project_root
-        .as_deref()
-        .and_then(al_bc::launch::find_launch_config)
-        .and_then(|df| df.configs.into_iter().next());
+    let config = match project_root.as_deref() {
+        Some(root) => match al_bc::launch::find_launch_config(root) {
+            Ok(file) => file.and_then(|df| df.configs.into_iter().next()),
+            Err(error) => {
+                server
+                    .client
+                    .show_message(MessageType::ERROR, format!("Cannot run test: {error}"))
+                    .await;
+                return serde_json::json!({
+                    "status": "configurationError",
+                    "target": target,
+                    "error": error.to_string(),
+                });
+            }
+        },
+        None => None,
+    };
 
     let Some(config) = config else {
         server
@@ -601,7 +665,18 @@ async fn run_test_background(
     target: al_analysis::queries::code_lens::TestTarget,
 ) {
     let codeunit_name = format!("Codeunit {}", target.codeunit_id);
-    let runner = al_test::test_runner::TestRunnerClient::new(&config);
+    let runner = match al_test::test_runner::TestRunnerClient::new(&config) {
+        Ok(runner) => runner,
+        Err(error) => {
+            client
+                .show_message(
+                    MessageType::ERROR,
+                    format!("Could not construct the Business Central test client: {error}"),
+                )
+                .await;
+            return;
+        }
+    };
     let result = runner
         .run_codeunit(
             target.codeunit_id,
@@ -626,9 +701,21 @@ async fn run_test_background(
     // Persist so CodeLens / tests.last_results / the TUI agree, but only if a
     // results store is already initialised — we don't create one here.
     if let Some(store) = workspace.test_results.read().ok().and_then(|g| g.clone()) {
+        let timestamp = match al_test::persistence::now_secs() {
+            Ok(timestamp) => timestamp,
+            Err(error) => {
+                client
+                    .show_message(
+                        MessageType::ERROR,
+                        format!("Could not timestamp test results: {error}"),
+                    )
+                    .await;
+                return;
+            }
+        };
         for m in &result.methods {
             let rec = al_test::persistence::TestRunRecord {
-                timestamp: al_test::persistence::now_secs(),
+                timestamp,
                 codeunit_id: result.id,
                 codeunit_name: result.name.clone(),
                 method_name: m.name.clone(),

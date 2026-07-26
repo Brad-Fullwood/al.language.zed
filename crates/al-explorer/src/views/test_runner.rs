@@ -8,12 +8,13 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
+use crate::cli::commands::request_checked;
 use crate::{App, ViewMode, advance_list_selection, ensure_daemon_client};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum MethodStatus {
     NotRun,
-    Pass { duration_ms: u64 },
+    Pass { duration_ms: Option<u64> },
     Fail { error: Option<String> },
     Skip,
 }
@@ -55,12 +56,14 @@ impl TestRunnerView {
     }
 
     pub(crate) fn refresh_discovery(&mut self) {
+        self.rows.clear();
+        self.list_state.select(None);
         self.ensure_client();
         let Some(client) = self.client.as_mut() else {
             return;
         };
 
-        let discovered = match client.request("tests.discover", None) {
+        let discovered = match request_checked(client, "tests.discover", None) {
             Ok(v) => v,
             Err(e) => {
                 self.client = None;
@@ -69,44 +72,22 @@ impl TestRunnerView {
             }
         };
 
-        let last_results = client
-            .request("tests.last_results", None)
-            .unwrap_or(serde_json::Value::Null);
-
-        self.rows.clear();
-        let Some(codeunits) = discovered.as_array() else {
-            self.status = "No test codeunits found".to_string();
-            return;
-        };
-
-        for cu in codeunits {
-            let cu_name = cu
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("(unknown)")
-                .to_string();
-            let cu_id = cu.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            self.rows.push(TestRow::Codeunit {
-                name: cu_name,
-                id: cu_id,
-            });
-
-            if let Some(tests) = cu.get("tests").and_then(|v| v.as_array()) {
-                for t in tests {
-                    let method_name = t
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("(unknown)")
-                        .to_string();
-                    let status = find_method_status(&last_results, cu_id, &method_name);
-                    self.rows.push(TestRow::Method {
-                        codeunit_id: cu_id,
-                        name: method_name,
-                        status,
-                    });
-                }
+        let last_results = match request_checked(client, "tests.last_results", None) {
+            Ok(value) => value,
+            Err(error) => {
+                self.client = None;
+                self.status = format!("Daemon error (last results): {error}");
+                return;
             }
-        }
+        };
+        self.rows = match parse_test_rows(&discovered, &last_results) {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.client = None;
+                self.status = format!("Invalid daemon test response: {error}");
+                return;
+            }
+        };
 
         if self.rows.is_empty() {
             self.status = "No test codeunits discovered".to_string();
@@ -130,7 +111,7 @@ impl TestRunnerView {
             return;
         };
         let params = serde_json::json!({ "codeunitIds": [codeunit_id] });
-        match client.request("tests.run_batch", Some(params)) {
+        match request_checked(client, "tests.run_batch", Some(params)) {
             Ok(_) => {
                 self.status = format!("Run complete for codeunit {codeunit_id}. Refreshing…");
             }
@@ -148,7 +129,7 @@ impl TestRunnerView {
         let Some(client) = self.client.as_mut() else {
             return;
         };
-        match client.request("tests.run_auto", None) {
+        match request_checked(client, "tests.run_auto", None) {
             Ok(_) => {
                 self.status = "Run all complete. Refreshing…".to_string();
             }
@@ -183,16 +164,14 @@ impl TestRunnerView {
 /// Look up the run status for `(codeunit_id, method_name)` in a JSON
 /// last-results response.  Returns `NotRun` if not found.
 fn find_method_status(
-    last_results: &serde_json::Value,
+    last_results: &[serde_json::Value],
     codeunit_id: i32,
     method_name: &str,
-) -> MethodStatus {
-    let arr = match last_results.as_array() {
-        Some(a) => a,
-        None => return MethodStatus::NotRun,
-    };
+) -> Result<MethodStatus, String> {
     let lower = method_name.to_lowercase();
-    let matching = arr.iter().find(|r| {
+    // History is append-only. Walk newest-to-oldest so the icon represents the
+    // latest run, not the first run ever recorded for this method.
+    let matching = last_results.iter().rev().find(|r| {
         r.get("codeunitId").and_then(|v| v.as_i64()) == Some(codeunit_id as i64)
             && r.get("methodName")
                 .and_then(|v| v.as_str())
@@ -201,22 +180,81 @@ fn find_method_status(
                 == Some(&lower)
     });
     let Some(r) = matching else {
-        return MethodStatus::NotRun;
+        return Ok(MethodStatus::NotRun);
     };
-    let status_str = r.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    let status_str = r
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            format!("history for codeunit {codeunit_id} method {method_name:?} has no status")
+        })?;
     match status_str {
-        "pass" | "Pass" => MethodStatus::Pass {
-            duration_ms: r.get("durationMs").and_then(|v| v.as_u64()).unwrap_or(0),
-        },
-        "fail" | "Fail" => MethodStatus::Fail {
+        "pass" => Ok(MethodStatus::Pass {
+            duration_ms: r.get("durationMs").and_then(|v| v.as_u64()),
+        }),
+        "fail" => Ok(MethodStatus::Fail {
             error: r
                 .get("error")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
-        },
-        "skip" | "Skip" => MethodStatus::Skip,
-        _ => MethodStatus::NotRun,
+        }),
+        "skip" => Ok(MethodStatus::Skip),
+        other => Err(format!(
+            "history for codeunit {codeunit_id} method {method_name:?} has unknown status {other:?}"
+        )),
     }
+}
+
+fn parse_test_rows(
+    discovered: &serde_json::Value,
+    last_results: &serde_json::Value,
+) -> Result<Vec<TestRow>, String> {
+    let codeunits = discovered
+        .as_array()
+        .ok_or_else(|| "tests.discover is not an array".to_string())?;
+    let history = last_results
+        .get("results")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "tests.last_results.results is not an array".to_string())?;
+    let mut rows = Vec::new();
+    for (codeunit_index, codeunit) in codeunits.iter().enumerate() {
+        let name = codeunit
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("tests.discover[{codeunit_index}].name is not a string"))?
+            .to_string();
+        let id = codeunit
+            .get("id")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| format!("tests.discover[{codeunit_index}].id is not an integer"))
+            .and_then(|id| {
+                i32::try_from(id)
+                    .map_err(|_| format!("tests.discover[{codeunit_index}].id is outside i32"))
+            })?;
+        rows.push(TestRow::Codeunit { name, id });
+        let tests = codeunit
+            .get("tests")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("tests.discover[{codeunit_index}].tests is not an array"))?;
+        for (test_index, test) in tests.iter().enumerate() {
+            let method_name = test
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    format!(
+                        "tests.discover[{codeunit_index}].tests[{test_index}].name is not a string"
+                    )
+                })?
+                .to_string();
+            let status = find_method_status(history, id, &method_name)?;
+            rows.push(TestRow::Method {
+                codeunit_id: id,
+                name: method_name,
+                status,
+            });
+        }
+    }
+    Ok(rows)
 }
 
 pub(crate) fn handle_test_runner_key(app: &mut App, key: crossterm::event::KeyEvent) {
@@ -261,10 +299,11 @@ pub(crate) fn render_test_runner(f: &mut Frame, area: Rect, view: &mut TestRunne
                     MethodStatus::Fail { .. } => ("✗", Color::Red),
                     MethodStatus::Skip => ("⊘", Color::Yellow),
                 };
-                let duration = if let MethodStatus::Pass { duration_ms } = status {
-                    format!(" ({duration_ms}ms)")
-                } else {
-                    String::new()
+                let duration = match status {
+                    MethodStatus::Pass {
+                        duration_ms: Some(duration_ms),
+                    } => format!(" ({duration_ms}ms)"),
+                    _ => String::new(),
                 };
                 ListItem::new(Line::from(vec![
                     Span::raw("   "),
@@ -303,4 +342,65 @@ pub(crate) fn render_test_runner(f: &mut Frame, area: Rect, view: &mut TestRunne
         )
         .wrap(ratatui::widgets::Wrap { trim: false });
     f.render_widget(detail, columns[1]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MethodStatus, TestRow, parse_test_rows};
+
+    fn discovered() -> serde_json::Value {
+        serde_json::json!([{
+            "name": "Example Tests",
+            "id": 50100,
+            "file": "ExampleTests.Codeunit.al",
+            "tests": [{
+                "name": "DoesWork",
+                "line": 7,
+                "handlerFunctions": []
+            }],
+            "testInitializers": [],
+            "testCleanups": []
+        }])
+    }
+
+    #[test]
+    fn persisted_history_envelope_uses_the_latest_matching_result() {
+        let history = serde_json::json!({
+            "results": [
+                {
+                    "timestamp": 1,
+                    "codeunitId": 50100,
+                    "codeunitName": "Example Tests",
+                    "methodName": "DoesWork",
+                    "status": "fail",
+                    "error": "old failure"
+                },
+                {
+                    "timestamp": 2,
+                    "codeunitId": 50100,
+                    "codeunitName": "Example Tests",
+                    "methodName": "DoesWork",
+                    "status": "pass",
+                    "durationMs": 14
+                }
+            ]
+        });
+        let rows = parse_test_rows(&discovered(), &history).expect("valid test responses");
+        assert!(matches!(
+            &rows[1],
+            TestRow::Method {
+                status: MethodStatus::Pass {
+                    duration_ms: Some(14)
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn malformed_history_envelope_is_not_treated_as_not_run() {
+        let error = parse_test_rows(&discovered(), &serde_json::json!([]))
+            .expect_err("malformed history must be visible");
+        assert!(error.contains("tests.last_results.results"), "{error}");
+    }
 }

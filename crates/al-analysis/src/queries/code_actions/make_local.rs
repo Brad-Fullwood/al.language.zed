@@ -133,7 +133,7 @@ mod tests {
     use url::Url;
 
     fn open_doc(ws: &al_workspace::Workspace, uri: &url::Url, al_code: &str) {
-        ws.documents.open(uri.clone(), al_code.to_string());
+        ws.documents.open(uri.clone(), al_code.to_string()).unwrap();
     }
 
     #[test]

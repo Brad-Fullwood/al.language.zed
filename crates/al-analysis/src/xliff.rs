@@ -994,7 +994,7 @@ pub fn build_xliff(
     workspace: &Workspace,
     project_root: &Path,
 ) -> std::io::Result<Option<(PathBuf, usize)>> {
-    let app_name = read_app_name(project_root).unwrap_or_else(|| "App".to_string());
+    let app_name = read_app_name(project_root)?;
 
     let units = extract_translation_units(workspace);
     if units.is_empty() {
@@ -1012,12 +1012,20 @@ pub fn build_xliff(
     Ok(Some((xlf_path, units.len())))
 }
 
-fn read_app_name(project_root: &Path) -> Option<String> {
-    let bytes = std::fs::read(project_root.join("app.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    v.get("name")?
-        .as_str()
-        .map(|s| s.replace([' ', '"', '\''], ""))
+fn read_app_name(project_root: &Path) -> std::io::Result<String> {
+    let manifest = al_project::project::load_app_manifest(project_root)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let name = al_types::sanitize_filename_component(&manifest.name.replace([' ', '"', '\''], ""));
+    if name == "_" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} must contain a non-empty application name",
+                project_root.join("app.json").display()
+            ),
+        ));
+    }
+    Ok(name)
 }
 
 #[cfg(test)]
@@ -1685,5 +1693,40 @@ le monde</target>
         );
         let bare = parsed.get("bare").expect("bare unit should parse");
         assert_eq!(bare.note.as_deref(), Some("plain note"));
+    }
+
+    #[test]
+    fn app_name_errors_on_a_malformed_manifest_instead_of_using_a_fake_default() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("app.json"), b"{not json").unwrap();
+
+        let error = read_app_name(project.path()).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("Invalid app.json"));
+    }
+
+    #[test]
+    fn app_name_is_a_single_safe_filename_component() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join("app.json"),
+            br#"{
+                "id": "00000000-0000-0000-0000-000000000001",
+                "name": "../../Dangerous App",
+                "publisher": "Publisher",
+                "version": "1.0.0.0"
+            }"#,
+        )
+        .unwrap();
+
+        let name = read_app_name(project.path()).unwrap();
+
+        assert_eq!(name, ".._.._DangerousApp");
+        assert_eq!(
+            std::path::Path::new(&name).components().count(),
+            1,
+            "manifest name must not create a nested output path"
+        );
     }
 }

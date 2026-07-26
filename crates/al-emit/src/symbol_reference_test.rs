@@ -46,6 +46,67 @@ fn min_app_meta() -> SymbolRefMeta {
     }
 }
 
+#[test]
+fn namespaces_are_emitted_as_nested_segments_and_round_trip_with_identity() {
+    let source = r#"namespace Contoso.Sales;
+
+codeunit 50100 "Namespaced API"
+{
+    procedure Run()
+    begin
+    end;
+}
+"#;
+    let objects = extract_objects(source, "src/Api.al");
+    assert_eq!(objects[0].entry.namespace, "Contoso.Sales");
+
+    let document = build_symbol_reference(&objects, &min_app_meta(), &Default::default());
+    assert_eq!(document["Namespaces"][0]["Name"], "Contoso");
+    assert_eq!(document["Namespaces"][0]["Namespaces"][0]["Name"], "Sales");
+    assert_eq!(
+        document["Namespaces"][0]["Namespaces"][0]["Codeunits"][0]["Name"],
+        "Namespaced API"
+    );
+
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let entries = al_symbols::read_symbol_reference_bytes(&bytes, "Min App").unwrap();
+    let entry = entries
+        .iter()
+        .find(|entry| entry.name == "Namespaced API")
+        .unwrap();
+    assert_eq!(entry.namespace, "Contoso.Sales");
+}
+
+#[test]
+fn permission_grants_round_trip_in_public_symbol_surface() {
+    let source = r#"codeunit 50100 "Target API"
+{
+}
+
+permissionset 50101 "API User"
+{
+    Assignable = true;
+    Permissions = codeunit "Target API" = X;
+}
+"#;
+    let objects = extract_objects(source, "src/Permissions.al");
+    let document = build_symbol_reference(&objects, &min_app_meta(), &Default::default());
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let entries = al_symbols::read_symbol_reference_bytes(&bytes, "Min App").unwrap();
+    let permission_set = entries
+        .iter()
+        .find(|entry| entry.name == "API User")
+        .unwrap();
+    assert_eq!(
+        permission_set.permissions,
+        vec![al_symbols::PermissionSymbol {
+            permission_object: 5,
+            object_id: 50100,
+            value: 16,
+        }]
+    );
+}
+
 /// The inline control add-in `PublicKeyToken` is the first 8 bytes of
 /// `SHA256(app name)` in lowercase hex — derived from the app name, not the
 /// add-in name. Known-answer vector verified against alc.
@@ -126,6 +187,80 @@ fn external_base_table_field_type_resolves_in_page_extension() {
     assert_eq!(
         field["TypeDefinition"],
         serde_json::json!({ "Name": "Decimal" })
+    );
+}
+
+#[test]
+fn page_modify_properties_and_customization_defaults_match_alc() {
+    let src = r#"
+        table 50100 T { fields { field(1; Name; Text[100]) { } } }
+        page 50100 P { SourceTable = T; layout { area(content) { field(Name; Rec.Name) { } } } }
+        pageextension 50101 PE extends P {
+            layout { modify(Name) { Caption = 'Changed'; ToolTip = 'Changed tip'; } }
+        }
+        pagecustomization PC customizes P {
+            layout {
+                modify(Name) { Visible = true; }
+                addlast(content) { field(CustomizedName; Rec.Name) { Caption = 'Custom'; } }
+            }
+        }
+    "#;
+    let objects = extract_objects(src, "src/Pages.al");
+    let doc = build_symbol_reference(&objects, &min_app_meta(), &Default::default());
+
+    assert_eq!(
+        doc["PageExtensions"][0]["ControlChanges"][0],
+        serde_json::json!({
+            "Anchor": "Name",
+            "ChangeKind": 9,
+            "Properties": [
+                { "Name": "Caption", "Value": "Changed" },
+                { "Name": "ToolTip", "Value": "Changed tip" }
+            ]
+        })
+    );
+    assert_eq!(
+        doc["PageCustomizations"][0]["ControlChanges"][0],
+        serde_json::json!({
+            "Anchor": "Name",
+            "ChangeKind": 9,
+            "Properties": [{ "Name": "Visible", "Value": "true" }]
+        })
+    );
+    let customized =
+        &doc["PageCustomizations"][0]["ControlChanges"][1]["Controls"][0]["Properties"];
+    assert!(
+        customized
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|property| property
+                == &serde_json::json!({
+                    "Name": "Editable",
+                    "Value": "False"
+                })),
+        "page-customization-added fields must publish Editable=False"
+    );
+}
+
+#[test]
+fn external_report_dataitem_uses_module_qualified_related_table() {
+    let mut external = ExternalSymbols::default();
+    external.resolver.insert(
+        "customer".to_string(),
+        ObjectRef {
+            id: 18,
+            module_id: Some("437dbf0e-84ff-417a-965d-ed2bb9650972".to_string()),
+        },
+    );
+    let src = r#"report 50100 R {
+        dataset { dataitem(Customer; Customer) { column(No; "No.") { } } }
+    }"#;
+    let objects = extract_objects(src, "src/Report.al");
+    let doc = build_symbol_reference(&objects, &min_app_meta(), &external);
+    assert_eq!(
+        doc["Reports"][0]["DataItems"][0]["RelatedTable"],
+        "#437dbf0e84ff417a965ded2bb9650972#Customer"
     );
 }
 

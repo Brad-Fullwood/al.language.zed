@@ -124,21 +124,16 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
 
     let workspace = Arc::new(Workspace::new());
 
-    // CLI/TUI daemon clients do not send LSP initializationOptions. Honour the
-    // persisted config so symbol cache/local-folder settings have the same
-    // effect outside an editor session.
-    if let Some(settings_path) = al_project::config::AlConfig::default_settings_path() {
-        if let Some(config) = al_project::config::AlConfig::load(&settings_path) {
-            *workspace.config.write().await = config;
-            tracing::info!(path = %settings_path.display(), "daemon: loaded persisted settings");
-        }
-    }
+    // CLI/TUI daemon clients do not send LSP initializationOptions. Merge the
+    // persisted config with project-local VS Code/Zed settings so compiler
+    // backend and symbol-package paths match the editor.
+    *workspace.config.write().await = al_project::config::AlConfig::load_effective(&project_root)?;
 
     let _ = workspace.notify_sink.set(std::sync::Arc::new(|msg: &str| {
         tracing::warn!("daemon: {msg}");
     }));
 
-    initialize_daemon_workspace(&workspace, &project_root).await;
+    initialize_daemon_workspace(&workspace, &project_root).await?;
 
     // stored as millis-since-`DAEMON_EPOCH` in an AtomicU64 so
     // the hot per-connection-accept + per-dispatch update is lock-free.
@@ -469,7 +464,7 @@ pub(crate) async fn dispatch_request(
         "packages" => lsp_dispatch::dispatch_packages(workspace, id),
         "deps" => lsp_dispatch::dispatch_deps(workspace, id),
         "lint" => build_dispatch::dispatch_lint(workspace, id, &params).await,
-        "format" => build_dispatch::dispatch_format(workspace, id, &params),
+        "format" => build_dispatch::dispatch_format(workspace, id, &params).await,
         "fix" => build_dispatch::dispatch_fix(workspace, id, &params),
         "fix.applicationArea" => {
             build_dispatch::dispatch_fix_application_area(workspace, id, &params)
@@ -545,9 +540,17 @@ pub(crate) async fn dispatch_request(
         "tests.affected" => build_dispatch::dispatch_tests_affected(workspace, id, &params),
         "tests.classify" => build_dispatch::dispatch_tests_classify(workspace, id),
         "tests.snapshot_validate" => {
-            build_dispatch::dispatch_tests_snapshot_validate(id, &params).await
+            build_dispatch::dispatch_tests_snapshot_validate(workspace, id, &params).await
         }
-        "tests.snapshot_diff" => build_dispatch::dispatch_tests_snapshot_diff(id, &params).await,
+        "tests.snapshot_capture" => {
+            build_dispatch::dispatch_tests_snapshot_capture(workspace, id, &params).await
+        }
+        "tests.snapshot_replay" => {
+            build_dispatch::dispatch_tests_snapshot_replay(workspace, id, &params).await
+        }
+        "tests.snapshot_diff" => {
+            build_dispatch::dispatch_tests_snapshot_diff(workspace, id, &params).await
+        }
         "tests.mutate" => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
         "generate" => build_dispatch::dispatch_generate(workspace, id, &params),
         "obsolete" => build_dispatch::dispatch_obsolete(workspace, id),
@@ -555,11 +558,11 @@ pub(crate) async fn dispatch_request(
             build_dispatch::dispatch_audit_data_classification(workspace, id)
         }
         "permissions.audit" => build_dispatch::dispatch_permission_set_audit(workspace, id),
-        "deps.graph" => build_dispatch::dispatch_deps_graph(workspace, id, &params),
-        "breaking" => build_dispatch::dispatch_breaking_changes(workspace, id, &params),
+        "deps.graph" => build_dispatch::dispatch_deps_graph(workspace, id, &params).await,
+        "breaking" => build_dispatch::dispatch_breaking_changes(workspace, id, &params).await,
         "arch.lint" => build_dispatch::dispatch_arch_lint(workspace, id).await,
         "duplicates" => build_dispatch::dispatch_find_duplicates(workspace, id, &params),
-        "upgrade" => build_dispatch::dispatch_upgrade_report(workspace, id, &params),
+        "upgrade" => build_dispatch::dispatch_upgrade_report(workspace, id, &params).await,
         "profiler.hints" => build_dispatch::dispatch_profiler_hints(workspace, id, &params),
         "diag" => dispatch_diag(workspace, id, &params),
         "ping" => Response {
@@ -573,22 +576,43 @@ pub(crate) async fn dispatch_request(
             shutdown.notify_one();
             Response {
                 id,
-                result: Some(serde_json::json!("ok")),
+                result: Some(serde_json::json!({"shutdownRequested": true})),
                 error: None,
                 ..Default::default()
             }
         }
         "status" => {
-            let cache_stats = workspace.semantic_cache.read().ok().map(|c| {
+            let semantic_cache = match workspace.semantic_cache.read() {
+                Ok(cache) => cache,
+                Err(_) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        "semantic-cache lock is poisoned; workspace status is unavailable",
+                    );
+                }
+            };
+            let builtins = match workspace.builtins.read() {
+                Ok(builtins) => builtins,
+                Err(_) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        "built-in symbol lock is poisoned; workspace status is unavailable",
+                    );
+                }
+            };
+            let cache_stats = {
+                let c = &*semantic_cache;
                 let (hits, misses) = c.stats();
                 serde_json::json!({ "types": c.len(), "hits": hits, "misses": misses, "version": c.version() })
-            });
+            };
             let status = serde_json::json!({
                 "pid": std::process::id(),
                 "indexedSymbols": workspace.symbols.len(),
                 "workspaceFiles": workspace.file_index.len(),
                 "workspaceObjects": workspace.file_index.object_count(),
-                "builtinTypes": workspace.builtins.read().ok().map(|g| g.len()).unwrap_or(0),
+                "builtinTypes": builtins.len(),
                 "semanticCache": cache_stats,
             });
             Response {
@@ -611,13 +635,31 @@ pub(crate) async fn dispatch_request(
 }
 
 fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let cmd = params
-        .get("cmd")
-        .and_then(|v| v.as_str())
-        .unwrap_or("summary");
+    let cmd = match params.get("cmd") {
+        None => "summary",
+        Some(value) => match value.as_str() {
+            Some(cmd) => cmd,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'cmd' must be a string when supplied",
+                );
+            }
+        },
+    };
     match cmd {
         "summary" => {
-            let stats = workspace.memory_stats();
+            let stats = match workspace.memory_stats() {
+                Ok(stats) => stats,
+                Err(error) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("diag/summary could not inspect workspace state: {error}"),
+                    );
+                }
+            };
             match serde_json::to_value(&stats) {
                 Ok(value) => Response {
                     id,
@@ -667,6 +709,43 @@ pub(crate) fn extract_position(
 /// query.
 pub(crate) fn extract_i32(params: &serde_json::Value, key: &str) -> Option<i32> {
     i32::try_from(params.get(key)?.as_i64()?).ok()
+}
+
+pub(crate) fn optional_bool_param(
+    params: &serde_json::Value,
+    key: &str,
+    default: bool,
+) -> Result<bool, String> {
+    match params.get(key) {
+        None => Ok(default),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| format!("'{key}' must be a boolean when supplied")),
+    }
+}
+
+pub(crate) fn optional_bounded_usize_param(
+    params: &serde_json::Value,
+    key: &str,
+    default: usize,
+    maximum: usize,
+) -> Result<usize, String> {
+    match params.get(key) {
+        None => Ok(default),
+        Some(value) => {
+            let raw = value
+                .as_u64()
+                .ok_or_else(|| format!("'{key}' must be a non-negative integer when supplied"))?;
+            let parsed = usize::try_from(raw)
+                .map_err(|_| format!("'{key}' is too large for this platform"))?;
+            if parsed > maximum {
+                return Err(format!(
+                    "'{key}' must be no greater than {maximum}; received {parsed}"
+                ));
+            }
+            Ok(parsed)
+        }
+    }
 }
 
 pub(crate) fn invalid_params(id: u64) -> Response {
@@ -749,12 +828,14 @@ pub(crate) async fn require_document_text(
     if let Some(text) = workspace.documents.get_text(uri) {
         return Ok(text);
     }
-    let path = uri.to_file_path().map_err(|_| file_not_found(id))?;
-    let text = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|_| file_not_found(id))?;
-    workspace.documents.open(uri.clone(), text.clone());
-    Ok(text)
+    ensure_document(workspace, uri, id)?;
+    workspace.documents.get_text(uri).ok_or_else(|| {
+        rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            "Document loader completed without publishing the document",
+        )
+    })
 }
 
 // Err is a ready-to-send JSON-RPC `Response` (cold path); see require_project_root.
@@ -772,38 +853,138 @@ pub(crate) fn parse_object_kind(
     })
 }
 
-/// Ensure a file is loaded in the document store. If not found, read from disk.
-pub(crate) fn ensure_document(workspace: &Workspace, uri: &url::Url) -> Option<()> {
+/// Ensure a file is loaded in the document store. If not found, read it through
+/// the same bounded, regular-file-only ingestion path used by workspace scans.
+#[allow(clippy::result_large_err)]
+pub(crate) fn ensure_document(
+    workspace: &Workspace,
+    uri: &url::Url,
+    id: u64,
+) -> Result<(), Response> {
     if workspace.documents.contains(uri) {
-        return Some(());
+        return Ok(());
     }
-    // Try to read from disk (block_in_place avoids blocking the tokio runtime)
-    let path = uri.to_file_path().ok()?;
-    let content = tokio::task::block_in_place(|| std::fs::read_to_string(&path)).ok()?;
-    workspace.documents.open(uri.clone(), content);
-    Some(())
+    let path = uri.to_file_path().map_err(|()| {
+        rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "Document URI is not a local file",
+        )
+    })?;
+    let read_result = match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) =>
+        {
+            tokio::task::block_in_place(|| al_source::file_index::read_source_file(&path))
+        }
+        // Synchronous/unit-test callers and current-thread runtimes cannot use
+        // block_in_place. The dispatcher API is synchronous, so perform the
+        // bounded read directly rather than panicking.
+        _ => al_source::file_index::read_source_file(&path),
+    };
+    let content = read_result
+        .map_err(|error| {
+            rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("Failed to load {}: {error}", path.display()),
+            )
+        })?
+        .ok_or_else(|| file_not_found(id))?;
+    workspace
+        .documents
+        .open(uri.clone(), content)
+        .map_err(|error| {
+            rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!("Document was rejected: {error}"),
+            )
+        })
 }
 
-pub(crate) fn file_uri_from_params(params: &serde_json::Value) -> Option<url::Url> {
-    // Accept either "uri" (file:// URL) or "file" (path string)
-    if let Some(uri) = extract_uri(params) {
-        return Some(uri);
+pub(crate) fn file_uri_from_params(params: &serde_json::Value) -> Result<Option<url::Url>, String> {
+    // Daemon file operations accept exactly one existing local regular file.
+    // Failing canonicalisation used to fall back to the unresolved path, which
+    // made missing files, inaccessible parents, and symlink failures look like
+    // a valid request until a later and often unrelated operation failed.
+    let uri_value = params.get("uri");
+    let file_value = params.get("file");
+    if uri_value.is_some() && file_value.is_some() {
+        return Err("'uri' and 'file' are mutually exclusive".to_string());
     }
-    if let Some(file_str) = params.get("file").and_then(|v| v.as_str()) {
-        let path = std::path::Path::new(file_str);
-        let abs_path = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir().ok()?.join(path)
-        };
-        let canon = abs_path.canonicalize().unwrap_or(abs_path);
-        return url::Url::from_file_path(canon).ok();
+
+    let path = match (uri_value, file_value) {
+        (Some(value), None) => {
+            let raw = value
+                .as_str()
+                .ok_or_else(|| "'uri' must be a string when supplied".to_string())?;
+            if raw.trim().is_empty() {
+                return Err("'uri' must not be empty".to_string());
+            }
+            let uri = url::Url::parse(raw).map_err(|error| format!("invalid 'uri': {error}"))?;
+            uri.to_file_path()
+                .map_err(|()| "'uri' must identify a local file".to_string())?
+        }
+        (None, Some(value)) => {
+            let raw = value
+                .as_str()
+                .ok_or_else(|| "'file' must be a string when supplied".to_string())?;
+            if raw.trim().is_empty() {
+                return Err("'file' must not be empty".to_string());
+            }
+            let path = std::path::Path::new(raw);
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map_err(|error| format!("resolve current directory failed: {error}"))?
+                    .join(path)
+            }
+        }
+        (None, None) => return Ok(None),
+        (Some(_), Some(_)) => unreachable!("mutual exclusion checked above"),
+    };
+
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("resolve input file '{}' failed: {error}", path.display()))?;
+    if !canonical.is_file() {
+        return Err(format!(
+            "input path '{}' is not a regular file",
+            canonical.display()
+        ));
     }
-    None
+    let uri = url::Url::from_file_path(&canonical).map_err(|()| {
+        format!(
+            "input file cannot be represented as a file URI: {}",
+            canonical.display()
+        )
+    })?;
+    Ok(Some(uri))
 }
 
-pub(crate) async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path) {
-    let result = al_workspace::initialize_core_workspace(workspace, project_root).await;
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DaemonWorkspaceInitError {
+    #[error(transparent)]
+    Core(#[from] al_workspace::CoreInitError),
+    #[error("indexed workspace path cannot be represented as a file URI: {}", .0.display())]
+    InvalidFilePath(PathBuf),
+    #[error(transparent)]
+    Document(#[from] al_source::documents::DocumentMutationError),
+}
+
+pub(crate) async fn initialize_daemon_workspace(
+    workspace: &Workspace,
+    project_root: &Path,
+) -> Result<(), DaemonWorkspaceInitError> {
+    workspace
+        .documents
+        .set_max_doc_bytes(workspace.config.read().await.max_document_size_bytes);
+    let result = al_workspace::initialize_core_workspace(workspace, project_root).await?;
 
     tracing::info!(
         files = result.file_count,
@@ -815,10 +996,12 @@ pub(crate) async fn initialize_daemon_workspace(workspace: &Workspace, project_r
 
     // Daemon-specific: open all scanned files in DocumentStore for query access.
     for entry in workspace.file_index.files.iter() {
-        if let Ok(uri) = url::Url::from_file_path(entry.key()) {
-            workspace.documents.open(uri, entry.value().clone());
-        }
+        let path = entry.key().clone();
+        let uri = url::Url::from_file_path(&path)
+            .map_err(|()| DaemonWorkspaceInitError::InvalidFilePath(path))?;
+        workspace.documents.open(uri, entry.value().clone())?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -830,7 +1013,49 @@ mod tests {
     };
     use al_protocol::jsonrpc::{error_codes, Request};
     use futures::FutureExt;
+    use std::collections::BTreeSet;
     use tokio::sync::Notify;
+
+    fn dispatched_method_literals(source: &str) -> BTreeSet<String> {
+        let dispatch = source
+            .split_once("match req.method.as_str() {")
+            .expect("dispatch_request method match")
+            .1
+            .split_once("\n        _ => Response {")
+            .expect("dispatch_request unknown-method arm")
+            .0;
+        dispatch
+            .lines()
+            .filter_map(|line| line.strip_prefix("        \""))
+            .filter_map(|line| line.split_once('"').map(|(method, _)| method))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The daemon reference and MCP's generic `al_call` promise the complete
+    /// dispatcher, not a hand-picked subset. Keep the human reference pinned
+    /// directly to the executable method match so newly registered methods
+    /// cannot become undocumented agent-only knowledge.
+    #[test]
+    fn daemon_reference_names_every_dispatched_method() {
+        let source = include_str!("mod.rs");
+        let methods = dispatched_method_literals(source);
+        assert!(
+            methods.len() >= 80,
+            "dispatcher extraction unexpectedly found only {} methods",
+            methods.len()
+        );
+        let reference = include_str!("../../../../../Docs/reference/daemon-methods.md");
+        let missing = methods
+            .iter()
+            .filter(|method| !reference.contains(&format!("`{method}`")))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "Docs/reference/daemon-methods.md omits dispatched methods: {missing:?}"
+        );
+    }
 
     #[cfg(unix)]
     #[test]
@@ -957,13 +1182,17 @@ mod tests {
     }
 
     #[test]
-    fn file_uri_prefers_explicit_uri_field() {
+    fn file_uri_accepts_existing_local_uri() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("doc.al");
+        std::fs::write(&file, b"x").unwrap();
         let params = serde_json::json!({
-            "uri": "file:///some/where.al",
-            "file": "/other/path.al",
+            "uri": url::Url::from_file_path(&file).unwrap(),
         });
-        let uri = file_uri_from_params(&params).expect("uri must parse");
-        assert_eq!(uri.as_str(), "file:///some/where.al");
+        let uri = file_uri_from_params(&params)
+            .expect("uri must be valid")
+            .expect("uri must be present");
+        assert_eq!(uri.to_file_path().unwrap(), file.canonicalize().unwrap());
     }
 
     #[test]
@@ -972,39 +1201,61 @@ mod tests {
         let file = dir.path().join("doc.al");
         std::fs::write(&file, b"x").unwrap();
         let params = serde_json::json!({ "file": file.to_str().unwrap() });
-        let uri = file_uri_from_params(&params).expect("absolute file path must produce a uri");
+        let uri = file_uri_from_params(&params)
+            .expect("absolute file path must be valid")
+            .expect("absolute file path must produce a uri");
         let canon = file.canonicalize().unwrap();
         assert_eq!(uri.to_file_path().unwrap(), canon);
     }
 
     #[test]
-    fn file_uri_resolves_relative_path_against_cwd() {
-        let params = serde_json::json!({ "file": "relative/file.al" });
-        let uri = file_uri_from_params(&params).expect("relative path must produce a uri");
+    fn file_uri_resolves_existing_relative_path_against_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
+        let file = dir.path().join("relative.al");
+        std::fs::write(&file, b"x").unwrap();
+        let relative = file.strip_prefix(&cwd).unwrap();
+        let params = serde_json::json!({ "file": relative });
+        let uri = file_uri_from_params(&params)
+            .expect("relative path must be valid")
+            .expect("relative path must produce a uri");
         let path = uri.to_file_path().unwrap();
-        assert!(
-            path.is_absolute(),
-            "resolved path must be absolute: {path:?}"
-        );
-        assert!(path.ends_with("relative/file.al"));
+        assert_eq!(path, file.canonicalize().unwrap());
     }
 
     #[test]
-    fn file_uri_falls_back_when_canonicalize_fails() {
+    fn file_uri_rejects_missing_path_instead_of_falling_back() {
         let params = serde_json::json!({
             "file": "/definitely/not/existing/al-test-xyz.al"
         });
-        let uri = file_uri_from_params(&params).expect("nonexistent path must still produce a uri");
-        assert_eq!(
-            uri.to_file_path().unwrap(),
-            std::path::Path::new("/definitely/not/existing/al-test-xyz.al")
+        let error = file_uri_from_params(&params).expect_err("nonexistent path must be rejected");
+        assert!(
+            error.contains("resolve input file"),
+            "unexpected error: {error}"
         );
     }
 
     #[test]
-    fn file_uri_returns_none_without_uri_or_file() {
+    fn file_uri_returns_absent_without_uri_or_file() {
         let params = serde_json::json!({ "something": "else" });
-        assert!(file_uri_from_params(&params).is_none());
+        assert_eq!(file_uri_from_params(&params).unwrap(), None);
+    }
+
+    #[test]
+    fn file_uri_rejects_ambiguous_or_malformed_inputs() {
+        for params in [
+            serde_json::json!({"uri": "file:///tmp/x.al", "file": "/tmp/x.al"}),
+            serde_json::json!({"uri": 7}),
+            serde_json::json!({"uri": "not a url"}),
+            serde_json::json!({"uri": "https://example.com/Test.al"}),
+            serde_json::json!({"file": false}),
+            serde_json::json!({"file": "  "}),
+        ] {
+            assert!(
+                file_uri_from_params(&params).is_err(),
+                "malformed input must be rejected: {params}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1052,6 +1303,34 @@ mod tests {
             result.get("indexedSymbols").and_then(|v| v.as_u64()),
             Some(0)
         );
+        assert!(
+            result
+                .get("semanticCache")
+                .is_some_and(serde_json::Value::is_object),
+            "a healthy cache must report concrete statistics"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_status_rejects_poisoned_inventory_locks() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        let poison_target = std::sync::Arc::clone(&ws);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target
+                .semantic_cache
+                .write()
+                .expect("lock starts healthy");
+            panic!("poison semantic-cache lock for status regression");
+        })
+        .join();
+
+        let shutdown = Notify::new();
+        let response = dispatch_request(&ws, Request::new(4, "status", None), &shutdown).await;
+        let error = response
+            .error
+            .expect("poisoned status inventory must not be reported as empty");
+        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
+        assert!(error.message.contains("poisoned"), "got: {}", error.message);
     }
 
     #[tokio::test]
@@ -1069,7 +1348,10 @@ mod tests {
         let resp = dispatch_request(&ws, req, &shutdown).await;
         assert_eq!(resp.id, 99);
         assert!(resp.error.is_none());
-        assert_eq!(resp.result, Some(serde_json::json!("ok")));
+        assert_eq!(
+            resp.result,
+            Some(serde_json::json!({"shutdownRequested": true}))
+        );
 
         assert!(
             notified.as_mut().now_or_never().is_some(),
@@ -1114,6 +1396,15 @@ mod tests {
         let err = resp.error.expect("unknown subcommand must error");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("bogus"));
+    }
+
+    #[test]
+    fn dispatch_diag_rejects_non_string_subcommand() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        let resp = dispatch_diag(&ws, 3, &serde_json::json!({ "cmd": false }));
+        let err = resp.error.expect("wrong-type subcommand must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("'cmd'"));
     }
 
     #[test]
@@ -1171,14 +1462,20 @@ mod tests {
     }
 
     #[test]
-    fn ensure_document_returns_none_for_non_file_uri() {
+    fn ensure_document_returns_invalid_params_for_non_file_uri() {
         // A non-file URI has no filesystem path; ensure_document must return
-        // None rather than panicking.
+        // a concrete protocol error rather than silently failing.
         let ws = std::sync::Arc::new(al_workspace::Workspace::new());
         let uri = url::Url::parse("https://example.com/x.al").unwrap();
         let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-        let got = rt.block_on(async { ensure_document(&ws, &uri) });
-        assert!(got.is_none());
+        let response = rt
+            .block_on(async { ensure_document(&ws, &uri, 7) })
+            .expect_err("non-file URI must be rejected");
+        assert_eq!(response.id, 7);
+        assert_eq!(
+            response.error.expect("RPC error").code,
+            error_codes::INVALID_PARAMS
+        );
     }
 
     #[test]
@@ -1251,9 +1548,9 @@ mod tests {
 
     /// `rules` is a static query (lint rule catalogue) needing no project; it
     /// must route through `dispatch_request` and return a JSON array result
-    /// with no error. (The catalogue itself is currently empty because all
-    /// diagnostics come from the .NET bridge, but the routing + JSON shape
-    /// are what we pin here.)
+    /// with no error. The catalogue combines file-local, transaction,
+    /// native-check, and workspace-native rule registries; this test pins the
+    /// transport shape while the registry-specific test pins its contents.
     #[tokio::test]
     async fn dispatch_rules_returns_array_result() {
         let ws = std::sync::Arc::new(al_workspace::Workspace::new());

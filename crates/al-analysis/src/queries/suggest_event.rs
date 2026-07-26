@@ -16,16 +16,83 @@ use al_insight::index::{CallGraph, EdgeResolutionState, NodeId};
 use al_symbols::ParameterSymbol;
 use al_workspace::Workspace;
 
-/// Resolve an object's `ObjectKind` from the symbol index, defaulting to
-/// `Codeunit` when the object is not found.
-fn resolve_object_kind(workspace: &Workspace, object_name: &str) -> ObjectKind {
-    workspace
+#[derive(Debug, thiserror::Error)]
+pub enum SuggestEventError {
+    #[error(transparent)]
+    Graph(#[from] al_workspace::CallGraphBuildError),
+    #[error("invalid AL object kind '{kind}': {reason}")]
+    InvalidObjectKind { kind: String, reason: String },
+    #[error("AL object '{name}' was not found{kind_suffix}")]
+    ObjectNotFound { name: String, kind_suffix: String },
+    #[error("AL object name '{name}' is ambiguous across kinds {kinds}; supply objectKind/--kind")]
+    AmbiguousObject { name: String, kinds: String },
+    #[error("{target} '{name}' was not found in {kind} '{object}'")]
+    TargetNotFound {
+        target: &'static str,
+        name: String,
+        kind: ObjectKind,
+        object: String,
+    },
+}
+
+fn resolve_object_kind(
+    workspace: &Workspace,
+    object_name: &str,
+    requested_kind: Option<&str>,
+) -> Result<ObjectKind, SuggestEventError> {
+    let requested_kind = requested_kind
+        .map(|kind| {
+            kind.parse::<ObjectKind>()
+                .map_err(|reason| SuggestEventError::InvalidObjectKind {
+                    kind: kind.to_string(),
+                    reason,
+                })
+        })
+        .transpose()?;
+    let mut kinds = workspace
         .symbols
         .get_by_name(object_name)
         .into_iter()
-        .next()
-        .map(|e| e.kind)
-        .unwrap_or(ObjectKind::Codeunit)
+        .map(|entry| entry.kind)
+        .collect::<Vec<_>>();
+    for path in workspace.file_index.object_paths(object_name) {
+        if let Some(info) = workspace.file_index.object_info.get(&path) {
+            let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
+                SuggestEventError::InvalidObjectKind {
+                    kind: info.kind.clone(),
+                    reason,
+                }
+            })?;
+            kinds.push(kind);
+        }
+    }
+    kinds.sort_unstable();
+    kinds.dedup();
+
+    if let Some(requested_kind) = requested_kind {
+        return kinds
+            .contains(&requested_kind)
+            .then_some(requested_kind)
+            .ok_or_else(|| SuggestEventError::ObjectNotFound {
+                name: object_name.to_string(),
+                kind_suffix: format!(" as {requested_kind}"),
+            });
+    }
+    match kinds.as_slice() {
+        [] => Err(SuggestEventError::ObjectNotFound {
+            name: object_name.to_string(),
+            kind_suffix: String::new(),
+        }),
+        [kind] => Ok(*kind),
+        _ => Err(SuggestEventError::AmbiguousObject {
+            name: object_name.to_string(),
+            kinds: kinds
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        }),
+    }
 }
 
 fn map_parameters_to_param_info(parameters: &[ParameterSymbol]) -> Vec<ParamInfo> {
@@ -43,6 +110,9 @@ fn map_parameters_to_param_info(parameters: &[ParameterSymbol]) -> Vec<ParamInfo
 #[serde(rename_all = "camelCase")]
 pub struct EventQuery {
     pub source: QuerySource,
+    /// Optional AL object kind used to disambiguate same-named objects.
+    #[serde(default)]
+    pub object_kind: Option<String>,
     #[serde(default)]
     pub filter_table: Option<String>,
     #[serde(default)]
@@ -103,12 +173,16 @@ pub struct TraceHop {
     pub edge_kind: String,
 }
 
-pub fn suggest_event(workspace: &Workspace, query: &EventQuery) -> SuggestEventResult {
+pub fn suggest_event(
+    workspace: &Workspace,
+    query: &EventQuery,
+) -> Result<SuggestEventResult, SuggestEventError> {
     match &query.source {
         QuerySource::Procedure { object, procedure } => query_procedure(
             workspace,
             object,
             procedure.as_deref(),
+            query.object_kind.as_deref(),
             query.filter_table.as_deref(),
             query.filter_field.as_deref(),
         ),
@@ -119,6 +193,7 @@ pub fn suggest_event(workspace: &Workspace, query: &EventQuery) -> SuggestEventR
             workspace,
             object,
             event,
+            query.object_kind.as_deref(),
             query.filter_table.as_deref(),
             query.filter_field.as_deref(),
         ),
@@ -129,13 +204,14 @@ fn query_procedure(
     workspace: &Workspace,
     object_name: &str,
     procedure_name: Option<&str>,
+    requested_kind: Option<&str>,
     filter_table: Option<&str>,
     filter_field: Option<&str>,
-) -> SuggestEventResult {
-    let (insight, cg_guard) = workspace.get_or_build_call_graph();
+) -> Result<SuggestEventResult, SuggestEventError> {
+    let (insight, cg_guard) = workspace.get_or_build_call_graph()?;
     let cg_opt = cg_guard.as_ref();
 
-    let object_kind = resolve_object_kind(workspace, object_name);
+    let object_kind = resolve_object_kind(workspace, object_name, requested_kind)?;
 
     let mut points: Vec<IntegrationPoint> = Vec::new();
     let mut visited: HashSet<NodeId> = HashSet::new();
@@ -170,6 +246,13 @@ fn query_procedure(
                     10,
                 );
             }
+        } else {
+            return Err(SuggestEventError::TargetNotFound {
+                target: "procedure",
+                name: proc_name.to_string(),
+                kind: object_kind,
+                object: object_name.to_string(),
+            });
         }
     } else {
         let obj_lower = object_name.to_lowercase();
@@ -226,18 +309,18 @@ fn query_procedure(
 
     points = dedup_points(points);
     points = apply_filters(points, filter_table, filter_field);
-    SuggestEventResult {
+    Ok(SuggestEventResult {
         integration_points: points,
         partial,
-    }
+    })
 }
 
 fn query_table(
     workspace: &Workspace,
     table_name: &str,
     filter_field: Option<&str>,
-) -> SuggestEventResult {
-    let (insight, _cg_guard) = workspace.get_or_build_call_graph();
+) -> Result<SuggestEventResult, SuggestEventError> {
+    let (insight, _cg_guard) = workspace.get_or_build_call_graph()?;
 
     let mut points: Vec<IntegrationPoint> = Vec::new();
 
@@ -286,23 +369,24 @@ fn query_table(
 
     points = dedup_points(points);
     points = apply_filters(points, None, filter_field);
-    SuggestEventResult {
+    Ok(SuggestEventResult {
         integration_points: points,
         partial: false,
-    }
+    })
 }
 
 fn query_event(
     workspace: &Workspace,
     object_name: &str,
     event_name: &str,
+    requested_kind: Option<&str>,
     filter_table: Option<&str>,
     filter_field: Option<&str>,
-) -> SuggestEventResult {
-    let (insight, cg_guard) = workspace.get_or_build_call_graph();
+) -> Result<SuggestEventResult, SuggestEventError> {
+    let (insight, cg_guard) = workspace.get_or_build_call_graph()?;
     let cg_opt = cg_guard.as_ref();
 
-    let object_kind = resolve_object_kind(workspace, object_name);
+    let object_kind = resolve_object_kind(workspace, object_name, requested_kind)?;
 
     let mut points: Vec<IntegrationPoint> = Vec::new();
     let mut visited: HashSet<NodeId> = HashSet::new();
@@ -362,14 +446,21 @@ fn query_event(
                 );
             }
         }
+    } else {
+        return Err(SuggestEventError::TargetNotFound {
+            target: "event",
+            name: event_name.to_string(),
+            kind: object_kind,
+            object: object_name.to_string(),
+        });
     }
 
     points = dedup_points(points);
     points = apply_filters(points, filter_table, filter_field);
-    SuggestEventResult {
+    Ok(SuggestEventResult {
         integration_points: points,
         partial,
-    }
+    })
 }
 
 /// Recursively trace from a node, collecting events along the way.
@@ -665,6 +756,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -723,18 +815,19 @@ mod tests {
     fn procedure_query_finds_published_events() {
         let ws = workspace_with_event();
 
-        let _ = ws.get_or_build_call_graph();
+        let _ = ws.get_or_build_call_graph().unwrap();
 
         let query = EventQuery {
             source: QuerySource::Procedure {
                 object: "Sales-Post".to_string(),
                 procedure: None,
             },
+            object_kind: None,
             filter_table: None,
             filter_field: None,
         };
 
-        let result = suggest_event(&ws, &query);
+        let result = suggest_event(&ws, &query).unwrap();
         assert!(
             !result.integration_points.is_empty(),
             "Should find at least one integration point"
@@ -768,18 +861,19 @@ mod tests {
             ],
         )]);
 
-        let _ = ws.get_or_build_call_graph();
+        let _ = ws.get_or_build_call_graph().unwrap();
 
         let query = EventQuery {
             source: QuerySource::Procedure {
                 object: "Sales-Post".to_string(),
                 procedure: None,
             },
+            object_kind: None,
             filter_table: Some("Sales Header".to_string()),
             filter_field: None,
         };
 
-        let result = suggest_event(&ws, &query);
+        let result = suggest_event(&ws, &query).unwrap();
         assert_eq!(
             result.integration_points.len(),
             1,
@@ -800,17 +894,18 @@ mod tests {
             )],
         )]);
 
-        let _ = ws.get_or_build_call_graph();
+        let _ = ws.get_or_build_call_graph().unwrap();
 
         let query = EventQuery {
             source: QuerySource::Table {
                 table: "Sales Header".to_string(),
             },
+            object_kind: None,
             filter_table: None,
             filter_field: None,
         };
 
-        let result = suggest_event(&ws, &query);
+        let result = suggest_event(&ws, &query).unwrap();
         assert!(
             !result.integration_points.is_empty(),
             "Should find events where Sales Header is a var param"
@@ -825,25 +920,84 @@ mod tests {
     }
 
     #[test]
-    fn empty_results_for_unknown_object() {
+    fn unknown_object_is_an_explicit_query_error() {
         let ws = Workspace::new();
 
-        let _ = ws.get_or_build_call_graph();
+        let _ = ws.get_or_build_call_graph().unwrap();
 
         let query = EventQuery {
             source: QuerySource::Procedure {
                 object: "NonExistentCU".to_string(),
                 procedure: None,
             },
+            object_kind: None,
             filter_table: None,
             filter_field: None,
         };
 
-        let result = suggest_event(&ws, &query);
-        assert!(
-            result.integration_points.is_empty(),
-            "Unknown object should return empty results"
-        );
+        assert!(matches!(
+            suggest_event(&ws, &query),
+            Err(SuggestEventError::ObjectNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn ambiguous_object_requires_kind_and_kind_resolves_it() {
+        let ws = workspace_with_event();
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: ObjectKind::Table,
+            id: 50_100,
+            name: "Sales-Post".to_string(),
+            package: "Test".to_string(),
+            ..Default::default()
+        }]);
+
+        let mut query = EventQuery {
+            source: QuerySource::Procedure {
+                object: "Sales-Post".to_string(),
+                procedure: None,
+            },
+            object_kind: None,
+            filter_table: None,
+            filter_field: None,
+        };
+        assert!(matches!(
+            suggest_event(&ws, &query),
+            Err(SuggestEventError::AmbiguousObject { .. })
+        ));
+
+        query.object_kind = Some("codeunit".to_string());
+        let result = suggest_event(&ws, &query).expect("kind disambiguates the object");
+        assert!(result
+            .integration_points
+            .iter()
+            .any(|point| point.event == "OnBeforePostSalesDoc"));
+    }
+
+    #[test]
+    fn missing_procedure_and_event_are_explicit_query_errors() {
+        let ws = workspace_with_event();
+        for source in [
+            QuerySource::Procedure {
+                object: "Sales-Post".to_string(),
+                procedure: Some("DoesNotExist".to_string()),
+            },
+            QuerySource::Event {
+                object: "Sales-Post".to_string(),
+                event: "DoesNotExist".to_string(),
+            },
+        ] {
+            let query = EventQuery {
+                source,
+                object_kind: Some("codeunit".to_string()),
+                filter_table: None,
+                filter_field: None,
+            };
+            assert!(matches!(
+                suggest_event(&ws, &query),
+                Err(SuggestEventError::TargetNotFound { .. })
+            ));
+        }
     }
 
     #[test]
@@ -865,18 +1019,19 @@ mod tests {
     #[test]
     fn event_query_returns_event_itself() {
         let ws = workspace_with_event();
-        let _ = ws.get_or_build_call_graph();
+        let _ = ws.get_or_build_call_graph().unwrap();
 
         let query = EventQuery {
             source: QuerySource::Event {
                 object: "Sales-Post".to_string(),
                 event: "OnBeforePostSalesDoc".to_string(),
             },
+            object_kind: None,
             filter_table: None,
             filter_field: None,
         };
 
-        let result = suggest_event(&ws, &query);
+        let result = suggest_event(&ws, &query).unwrap();
         assert!(
             !result.integration_points.is_empty(),
             "Should find the event itself"

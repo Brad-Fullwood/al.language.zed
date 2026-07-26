@@ -134,6 +134,68 @@ fn release_asset_names_match_workflow() {
     );
 }
 
+/// Current Zed instantiates Rust extensions as WebAssembly components. The
+/// `wasm32-wasip1` target produces a core module that builds successfully but
+/// is rejected by Zed before any LSP/DAP/MCP adapter code can run.
+#[test]
+fn extension_builds_and_releases_a_wasm_component() {
+    let makefile = include_str!("../Makefile");
+    let ci = include_str!("../.github/workflows/ci.yml");
+    let release = include_str!("../.github/workflows/release.yml");
+    let drive = include_str!("../crates/al-test-harness/editor-e2e/drive.sh");
+
+    for (name, source) in [
+        ("Makefile", makefile),
+        ("CI workflow", ci),
+        ("release workflow", release),
+    ] {
+        assert!(
+            source.contains("wasm32-wasip2"),
+            "{name} must build the Zed extension as a WASI Preview 2 component"
+        );
+        assert!(
+            !source.contains("wasm32-wasip1"),
+            "{name} still builds the unloadable WASI Preview 1 core module"
+        );
+    }
+    assert!(
+        makefile.contains("check-zed-wasm-component.sh")
+            && ci.contains("check-zed-wasm-component.sh")
+            && release.contains("check-zed-wasm-component.sh"),
+        "local, CI, and release builds must reject a non-component artifact"
+    );
+    assert!(
+        drive.contains("check-zed-wasm-component.sh"),
+        "the editor harness must reject a stale core-module extension.wasm before launching Zed"
+    );
+}
+
+/// Gallery installs download `al-lsp` into the extension work directory, which
+/// is not part of the user's shell PATH. LSP, DAP, and MCP therefore have to
+/// share the path-returning release resolver; a bare context-server command
+/// would work only in developer checkouts that ran `make install`.
+#[test]
+fn mcp_and_dap_do_not_depend_on_path_installed_sidecars() {
+    let lib = include_str!("lib.rs");
+    let dap = include_str!("dap.rs");
+    let manifest = include_str!("../extension.toml");
+
+    assert!(
+        lib.contains("self.find_or_download_binary(None, None, None)?")
+            && lib.contains("command: al_lsp_path"),
+        "MCP context_server_command must use the same resolved/downloaded al-lsp path as LSP/DAP"
+    );
+    assert!(
+        !manifest.contains("Spawns `al-lsp mcp` from PATH")
+            && !manifest.contains("PATH (`make install`)"),
+        "extension.toml still promises a developer-only PATH contract for MCP"
+    );
+    assert!(
+        !dap.contains("command: \"al-explorer\""),
+        "generated debug scenarios must not add a PATH-dependent al-explorer build task"
+    );
+}
+
 /// Windows support is only credible if CI runs the real daemon/client path on
 /// a Windows host. A cross-compile alone cannot catch named-pipe runtime bugs.
 #[test]
@@ -380,13 +442,18 @@ fn snake_to_camel(s: &str) -> String {
 /// al-project.
 fn al_config_camel_fields() -> Vec<String> {
     let src = include_str!("../crates/al-project/src/config.rs");
+    rust_struct_camel_fields(src, "AlConfig")
+}
+
+fn rust_struct_camel_fields(src: &str, struct_name: &str) -> Vec<String> {
+    let marker = format!("pub struct {struct_name} {{");
     let start = src
-        .find("pub struct AlConfig {")
-        .expect("al-core config.rs must define `pub struct AlConfig`");
+        .find(&marker)
+        .unwrap_or_else(|| panic!("config.rs must define `{marker}`"));
     let body = &src[start..];
     let end = body
         .find("\n}")
-        .expect("AlConfig struct must have a closing brace");
+        .unwrap_or_else(|| panic!("{struct_name} must have a closing brace"));
     body[..end]
         .lines()
         .map(str::trim)
@@ -405,22 +472,29 @@ fn al_config_camel_fields() -> Vec<String> {
 }
 
 /// The `al.*` keys `schemas/settings.json` is expected to declare: one per
-/// `AlConfig` field, with `inlayHints` expanded into its nested leaf keys and
-/// the launch-only backend toggles (`useOfficialLsp`/`useOfficialDap`, resolved
-/// in `settings.rs`, not `AlConfig` fields) added.
+/// `AlConfig` field, with structured settings expanded into their nested leaf keys and
+/// the extension-only launch settings (`useOfficialLsp`, `useOfficialDap`, and
+/// `dotnetPath`, resolved in `settings.rs`, not `AlConfig` fields) added.
 fn expected_schema_keys() -> std::collections::BTreeSet<String> {
+    let config_src = include_str!("../crates/al-project/src/config.rs");
     let mut keys = std::collections::BTreeSet::new();
     for field in al_config_camel_fields() {
-        if field == "inlayHints" {
-            // Nested InlayHintConfig — the schema models the leaves as dotted keys.
-            keys.insert("al.inlayHints.parameterNames".to_string());
-            keys.insert("al.inlayHints.returnTypes".to_string());
-        } else {
-            keys.insert(format!("al.{field}"));
+        let nested_struct = match field.as_str() {
+            "formatting" => Some("FormattingConfig"),
+            "inlayHints" => Some("InlayHintConfig"),
+            _ => None,
+        };
+        if let Some(nested_struct) = nested_struct {
+            for child in rust_struct_camel_fields(config_src, nested_struct) {
+                keys.insert(format!("al.{field}.{child}"));
+            }
+            continue;
         }
+        keys.insert(format!("al.{field}"));
     }
     keys.insert("al.useOfficialLsp".to_string());
     keys.insert("al.useOfficialDap".to_string());
+    keys.insert("al.dotnetPath".to_string());
     keys
 }
 
@@ -465,6 +539,7 @@ fn all_shipped_schemas_are_valid_json() {
         ("settings.json", include_str!("../schemas/settings.json")),
         ("app.json", include_str!("../schemas/app.json")),
         ("ruleset.json", include_str!("../schemas/ruleset.json")),
+        ("alarch.json", include_str!("../schemas/alarch.json")),
         (
             "appsourcecop.json",
             include_str!("../schemas/appsourcecop.json"),
@@ -499,4 +574,45 @@ fn al_settings_schema_parses() {
             .is_some(),
         "embedded settings schema must have a `properties` object"
     );
+}
+
+/// Debug snippets are user-facing launch configurations. Every property they
+/// insert must be accepted by the shipped debug schema; otherwise completion
+/// creates a configuration that validation immediately rejects.
+#[test]
+fn debug_snippet_fields_are_declared_by_debug_schema() {
+    let snippets: serde_json::Value = serde_json::from_str(include_str!("../snippets/json.json"))
+        .expect("snippets/json.json must be valid JSON");
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../debug_adapter_schemas/al.json"))
+            .expect("debug adapter schema must be valid JSON");
+    let schema_keys = schema["properties"]
+        .as_object()
+        .expect("debug adapter schema must expose properties")
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for (snippet_name, snippet) in snippets
+        .as_object()
+        .expect("snippets/json.json must contain a snippet object")
+    {
+        let body = snippet["body"]
+            .as_array()
+            .unwrap_or_else(|| panic!("debug snippet {snippet_name:?} must have a body array"));
+        for line in body.iter().filter_map(serde_json::Value::as_str) {
+            let trimmed = line.trim_start();
+            let Some(after_quote) = trimmed.strip_prefix('"') else {
+                continue;
+            };
+            let Some((field, _)) = after_quote.split_once('"') else {
+                continue;
+            };
+            assert!(
+                schema_keys.contains(field),
+                "debug snippet {snippet_name:?} emits field {field:?}, but \
+                 debug_adapter_schemas/al.json does not declare it"
+            );
+        }
+    }
 }

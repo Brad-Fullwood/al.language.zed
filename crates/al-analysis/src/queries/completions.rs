@@ -64,10 +64,13 @@ impl serde::Serialize for CompletionKind {
 use al_syntax::context::{detect_context, CompletionContext};
 
 /// Get completions at a position in a document.
-#[must_use]
-pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
+pub fn completions(
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+) -> Result<Vec<CompletionEntry>, al_workspace::WorkspaceStateError> {
     let Some(text) = workspace.documents.get_text_arc(uri) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let context = detect_context(&text, position.into());
     tracing::debug!(
@@ -91,9 +94,9 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                         &tree,
                         &receiver_expr,
                         position,
-                    ) {
+                    )? {
                         let lsp_items =
-                            resolution::completion_items_for_receiver(workspace, &receiver);
+                            resolution::completion_items_for_receiver(workspace, &receiver)?;
                         items.extend(lsp_items.into_iter().map(from_lsp_completion));
                     }
                 }
@@ -112,12 +115,12 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                         &tree,
                         &receiver_expr,
                         position,
-                    )
+                    )?
                     .unwrap_or_else(|| resolution::ResolvedType {
                         type_name: receiver_expr.clone(),
                         type_subtype: Some(receiver_expr.clone()),
                     });
-                    let lsp_items = resolution::enum_completion_items(workspace, &enum_type);
+                    let lsp_items = resolution::enum_completion_items(workspace, &enum_type)?;
                     items.extend(lsp_items.into_iter().map(from_lsp_completion));
                 }
             }
@@ -171,14 +174,14 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                     sort_text: None,
                 });
             }
-            add_default_completions(workspace, uri, position, &mut items);
+            add_default_completions(workspace, uri, position, &mut items)?;
         }
     }
 
     if !items.is_empty() {
         finalize_completion_items(&mut items);
     }
-    items
+    Ok(items)
 }
 
 /// Full completions: native resolution first, then .NET CodeAnalysis bridge for member access.
@@ -189,32 +192,32 @@ pub async fn completions_full(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
-) -> Vec<CompletionEntry> {
-    let items = completions(workspace, uri, position);
+) -> Result<Vec<CompletionEntry>, String> {
+    let items = completions(workspace, uri, position).map_err(|error| error.to_string())?;
     if !items.is_empty() {
-        return items;
+        return Ok(items);
     }
 
     // Bridge fallback: only for member access context.
     // Use get_text_arc to share the cached Arc<String> instead of deep-cloning
     // the entire file contents on every keystroke.
     let Some(text) = workspace.documents.get_text_arc(uri) else {
-        return items;
+        return Ok(items);
     };
     let ctx = al_syntax::context::detect_context(&text, position.into());
     if !matches!(ctx, al_syntax::context::CompletionContext::MemberAccess) {
-        return items;
+        return Ok(items);
     }
 
     let Some(guard) = al_workspace::get_or_init_bridge(workspace).await else {
-        return items;
+        return Ok(items);
     };
     let Some(bridge) = guard.as_ref() else {
-        return items;
+        return Ok(items);
     };
     let bridge_generation = bridge.generation();
     let Ok(path) = uri.to_file_path() else {
-        return items;
+        return Ok(items);
     };
     // The bridge uses the same zero-based coordinates as LSP.
     let pos = (position.line, position.character);
@@ -256,11 +259,11 @@ pub async fn completions_full(
                     tracing::warn!(error = %restart_error, "completions_full: bridge restart failed");
                 }
             }
-            return items;
+            return Err(format!("semantic completion bridge failed: {e}"));
         }
     };
     if bridge_items.is_empty() {
-        return items;
+        return Ok(items);
     }
 
     fn completion_kind_from_str(s: &str) -> CompletionKind {
@@ -281,7 +284,7 @@ pub async fn completions_full(
         count = bridge_items.len(),
         "completions_full: bridge results"
     );
-    bridge_items
+    Ok(bridge_items
         .into_iter()
         .map(|item| CompletionEntry {
             sort_text: Some(format!("2_{}", item.label.to_ascii_lowercase())),
@@ -291,7 +294,7 @@ pub async fn completions_full(
             label: item.label,
             insert_text: None,
         })
-        .collect()
+        .collect())
 }
 
 fn add_default_completions(
@@ -299,7 +302,7 @@ fn add_default_completions(
     uri: &Url,
     position: Position,
     items: &mut Vec<CompletionEntry>,
-) {
+) -> Result<(), al_workspace::WorkspaceStateError> {
     let kw_data = al_syntax::language_data::keywords();
     for entry in kw_data.control.iter().chain(kw_data.operator.iter()) {
         items.push(CompletionEntry {
@@ -390,7 +393,13 @@ fn add_default_completions(
         });
     }
 
-    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner());
+    let builtins =
+        workspace
+            .builtins
+            .read()
+            .map_err(|_| al_workspace::WorkspaceStateError::Poisoned {
+                component: "builtins",
+            })?;
     for bt in builtins.iter() {
         items.push(CompletionEntry {
             label: bt.name.clone(),
@@ -402,6 +411,7 @@ fn add_default_completions(
         });
     }
     drop(builtins); // release read lock promptly
+    Ok(())
 }
 
 fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
@@ -468,6 +478,19 @@ mod tests {
     use super::*;
     use al_workspace::Workspace;
 
+    fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
+        super::completions(workspace, uri, position).unwrap()
+    }
+
+    fn add_default_completions(
+        workspace: &Workspace,
+        uri: &Url,
+        position: Position,
+        items: &mut Vec<CompletionEntry>,
+    ) {
+        super::add_default_completions(workspace, uri, position, items).unwrap();
+    }
+
     fn test_uri() -> Url {
         Url::parse("file:///test/src/Test.al").unwrap()
     }
@@ -532,7 +555,7 @@ mod tests {
     fn completions_on_empty_file() {
         let ws = Workspace::new();
         let uri = test_uri();
-        ws.documents.open(uri.clone(), String::new());
+        ws.documents.open(uri.clone(), String::new()).unwrap();
         let pos = Position {
             line: 0,
             character: 0,
@@ -547,7 +570,8 @@ mod tests {
         let ws = Workspace::new();
         let uri = test_uri();
         ws.documents
-            .open(uri.clone(), "{{{{not valid al code}}}}".to_string());
+            .open(uri.clone(), "{{{{not valid al code}}}}".to_string())
+            .unwrap();
         let pos = Position {
             line: 0,
             character: 5,
@@ -562,7 +586,8 @@ mod tests {
         let ws = Workspace::new();
         let uri = test_uri();
         ws.documents
-            .open(uri.clone(), "codeunit 50100 \"X\" { }".to_string());
+            .open(uri.clone(), "codeunit 50100 \"X\" { }".to_string())
+            .unwrap();
         // Line 100 doesn't exist — should return empty, not panic
         let pos = Position {
             line: 100,
@@ -576,17 +601,19 @@ mod tests {
     fn completions_include_keywords_in_begin_block() {
         let ws = Workspace::new();
         let uri = test_uri();
-        ws.documents.open(
-            uri.clone(),
-            r#"codeunit 50100 "Test"
+        ws.documents
+            .open(
+                uri.clone(),
+                r#"codeunit 50100 "Test"
 {
     procedure Foo()
     begin
 
     end;
 }"#
-            .to_string(),
-        );
+                .to_string(),
+            )
+            .unwrap();
         let pos = Position {
             line: 4,
             character: 8,
@@ -780,9 +807,10 @@ mod tests {
     fn completions_include_local_procedures() {
         let ws = Workspace::new();
         let uri = test_uri();
-        ws.documents.open(
-            uri.clone(),
-            r#"codeunit 50100 "Test"
+        ws.documents
+            .open(
+                uri.clone(),
+                r#"codeunit 50100 "Test"
 {
     procedure Helper()
     begin
@@ -793,8 +821,9 @@ mod tests {
 
     end;
 }"#
-            .to_string(),
-        );
+                .to_string(),
+            )
+            .unwrap();
         let pos = Position {
             line: 8,
             character: 8,

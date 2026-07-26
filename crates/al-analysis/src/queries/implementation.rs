@@ -160,6 +160,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -270,8 +271,7 @@ mod tests {
 
         let cur_uri = Url::parse("file:///proj/Caller.al").unwrap();
         let caller_src = impl_source("Caller", "IFoo");
-        ws.documents.open(cur_uri.clone(), caller_src);
-
+        ws.documents.open(cur_uri.clone(), caller_src).unwrap();
         let impl_path = PathBuf::from("/proj/FooImpl.al");
         ws.file_index
             .add_file(impl_path.clone(), impl_source("FooImpl", "IFoo"));
@@ -299,7 +299,8 @@ mod tests {
 
         let cur_uri = Url::parse("file:///proj/Caller.al").unwrap();
         ws.documents
-            .open(cur_uri.clone(), impl_source("Caller", "IFoo"));
+            .open(cur_uri.clone(), impl_source("Caller", "IFoo"))
+            .unwrap();
 
         let impl_path = PathBuf::from("/proj/FooImpl.al");
         ws.file_index
@@ -320,7 +321,9 @@ mod tests {
         let cur_path = PathBuf::from("/proj/Caller.al");
         let cur_uri = Url::from_file_path(&cur_path).unwrap();
         let caller_src = impl_source("Caller", "IFoo");
-        ws.documents.open(cur_uri.clone(), caller_src.clone());
+        ws.documents
+            .open(cur_uri.clone(), caller_src.clone())
+            .unwrap();
         ws.file_index.add_file(cur_path, caller_src);
 
         let result = find_implementations(&ws, &cur_uri, iface_position("Caller"));
@@ -336,7 +339,8 @@ mod tests {
 
         let cur_uri = Url::parse("file:///proj/Caller.al").unwrap();
         ws.documents
-            .open(cur_uri.clone(), impl_source("Caller", "IUnknown"));
+            .open(cur_uri.clone(), impl_source("Caller", "IUnknown"))
+            .unwrap();
 
         // The only source implements IFoo, which is not the caret's interface.
         ws.file_index.add_file(

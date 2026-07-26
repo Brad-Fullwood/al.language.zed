@@ -45,6 +45,12 @@ pub struct ControlChange {
     /// The change keyword (`add`, `addfirst`, `addlast`, `modify`, …).
     pub kind: String,
     pub anchor: String,
+    /// Properties assigned directly by `modify(...) { ... }`.
+    ///
+    /// These do not appear as added controls in SymbolReference.json, but the
+    /// verifier needs them to reject page-customization property kinds that
+    /// Microsoft's compiler does not permit.
+    pub properties: Vec<PropertyValue>,
     /// Added controls (for add operations).
     pub controls: Vec<PageControl>,
 }
@@ -86,6 +92,10 @@ pub struct PermissionDecl {
 pub struct EmitObject {
     pub entry: SymbolEntry,
     pub source_file: String,
+    /// The parsed source snapshot this object was extracted from.  Keeping it
+    /// alongside the symbol entry lets the native verifier inspect procedure
+    /// bodies without reparsing a potentially different file revision.
+    pub source_text: String,
     /// Object declaration range in 0-based UTF-16 coordinates. Native build
     /// diagnostics use this instead of collapsing structural errors to 1:1.
     pub source_range: al_syntax::SyntaxRange,
@@ -127,14 +137,31 @@ pub fn extract_objects(source: &str, source_file: &str) -> Vec<EmitObject> {
 pub fn extract_objects_from_tree(source: &str, source_file: &str, tree: &Tree) -> Vec<EmitObject> {
     let src = source.as_bytes();
     let root = tree.root_node();
+    let namespace = {
+        let mut cursor = root.walk();
+        let value = root
+            .children(&mut cursor)
+            .find(|child| {
+                child.kind() == "namespace_or_using_declaration"
+                    && child
+                        .child_by_field_name("keyword")
+                        .is_some_and(|keyword| text(keyword, src).eq_ignore_ascii_case("namespace"))
+            })
+            .and_then(|declaration| declaration.child_by_field_name("name"))
+            .map(|name| text(name, src))
+            .unwrap_or_default();
+        value
+    };
     let mut out = Vec::new();
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
         if child.kind() == "object_declaration" {
-            if let Some(ex) = extract_object(child, src) {
+            if let Some(mut ex) = extract_object(child, src) {
+                ex.entry.namespace = namespace.to_string();
                 out.push(EmitObject {
                     entry: ex.entry,
                     source_file: source_file.to_string(),
+                    source_text: source.to_string(),
                     source_range: al_syntax::ts_range_to_syntax(&child.range(), src),
                     enum_value_properties: ex.enum_value_properties,
                     query_elements: ex.query_elements,
@@ -373,13 +400,15 @@ fn extract_control_changes(layout_body: Node, src: &[u8]) -> Vec<ControlChange> 
             .map(|p| paren_parts(p, src))
             .and_then(|p| p.first().map(|s| unquote(s)))
             .unwrap_or_default();
-        let controls = child
-            .child_by_field_name("body")
-            .map(|b| extract_page_nodes(b, src))
+        let body = child.child_by_field_name("body");
+        let properties = body
+            .map(|body| extract_object_properties(body, src))
             .unwrap_or_default();
+        let controls = body.map(|b| extract_page_nodes(b, src)).unwrap_or_default();
         out.push(ControlChange {
             kind: kw,
             anchor,
+            properties,
             controls,
         });
     }

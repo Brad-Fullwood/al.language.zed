@@ -5,15 +5,14 @@
 //! Auto-downloads missing BC symbol packages via BC server (launch.json) or NuGet.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use al_workspace::Workspace;
 use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
-use super::AlServer;
+use super::{diagnostics, AlServer, WorkspaceInitState};
 
 /// Where to download symbol packages from.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -34,22 +33,38 @@ impl DownloadSource {
     }
 }
 
+#[derive(Debug, Default)]
+struct DownloadBatch {
+    paths: Vec<PathBuf>,
+    failures: Vec<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct WorkspaceInitError(String);
+
+fn publish_ready(state: &Option<tokio::sync::watch::Sender<WorkspaceInitState>>) {
+    if let Some(state) = state {
+        state.send_replace(WorkspaceInitState::Ready);
+    }
+}
+
 /// Initialize the workspace: discover toolchain, load packages, scan files.
 ///
 /// Called from the background task spawned by the `initialized` notification
-/// handler. Failures are logged but do not prevent the server from operating
-/// (graceful degradation).
+/// handler. A project/source/package failure before a complete generation is
+/// returned to the caller and retained as a failed server state.
 ///
-/// `ready_flag` and `init_notify` are signalled as soon as the file scan is complete
-/// so that LSP request handlers can serve workspace/symbol and other queries without
-/// waiting for the (potentially blocking) package-download prompt to finish.
+/// `init_state` is set to Ready as soon as the file and warm package scans are
+/// complete so request handlers do not wait for an interactive cold-download
+/// prompt. Reindex passes `None` because an existing generation remains usable.
 pub(crate) async fn initialize_workspace(
     workspace: Arc<Workspace>,
     client: Client,
     root_uri: Option<Url>,
-    ready_flag: Arc<AtomicBool>,
-    init_notify: Arc<tokio::sync::Notify>,
-) {
+    init_state: Option<tokio::sync::watch::Sender<WorkspaceInitState>>,
+    diagnostic_state: Option<diagnostics::DiagnosticPublicationState>,
+) -> Result<(), WorkspaceInitError> {
     client
         .log_message(MessageType::INFO, "AL workspace: initializing...")
         .await;
@@ -70,7 +85,7 @@ pub(crate) async fn initialize_workspace(
             *workspace.toolchain.write().await = Some(tc.clone());
 
             // Load builtins + error codes from disk cache (no bridge needed, <1ms)
-            load_caches_from_disk(&workspace, &tc.version).await;
+            load_caches_from_disk(&workspace, &tc.version).await?;
         }
         Err(e) => {
             warn!(error = %e, "AL toolchain not found (continuing without)");
@@ -80,32 +95,80 @@ pub(crate) async fn initialize_workspace(
         }
     }
 
-    let workspace_root = root_uri
-        .as_ref()
-        .and_then(|u| u.to_file_path().ok()) // Non-file URIs legitimately have no path.
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let workspace_root = match root_uri.as_ref() {
+        Some(uri) => match uri.to_file_path() {
+            Ok(path) => path,
+            Err(()) => {
+                warn!(%uri, "non-file workspace URI; starting in open-document syntax mode");
+                client
+                    .show_message(
+                        MessageType::INFO,
+                        format!(
+                            "Workspace URI '{uri}' is not a local file URI; project indexing is unavailable"
+                        ),
+                    )
+                    .await;
+                publish_ready(&init_state);
+                return Ok(());
+            }
+        },
+        None => std::env::current_dir().map_err(|error| {
+            WorkspaceInitError(format!(
+                "workspace root was not supplied and the current directory is unavailable: {error}"
+            ))
+        })?,
+    };
 
     match al_project::project::find_project(&workspace_root) {
         Ok(mut project) => {
             let symbol_config = workspace.config.read().await.clone();
-            project.apply_symbol_settings(&symbol_config);
+            if let Err(error) = project.apply_symbol_settings(&symbol_config) {
+                tracing::error!(%error, "configured symbol package folders could not be scanned");
+                let message = format!("AL workspace initialization failed: {error}");
+                client
+                    .show_message(MessageType::ERROR, message.clone())
+                    .await;
+                return Err(WorkspaceInitError(message));
+            }
             info!(
                 name = %project.app_json.name,
                 packages = project.packages.len(),
                 "Found AL project"
             );
 
-            // 3. Scan workspace for .al files FIRST (blocking std::fs walk;
-            // isolate via block_in_place).  Scanning before the optional
-            // package-download prompt means workspace/symbol can return
-            // project-local objects immediately, even if the user has not yet
-            // responded to the download dialog.
-            let count = tokio::task::block_in_place(|| workspace.file_index.scan(&project.root));
+            // Stage source and package indexes independently from the active
+            // workspace. A failed reindex must not publish new source files
+            // alongside the previous package/project generation.
+            let source_root = project.root.clone();
+            let (staged_files, count) = match tokio::task::spawn_blocking(move || {
+                let staged = al_source::file_index::FileIndex::new();
+                staged.scan(&source_root).map(|count| (staged, count))
+            })
+            .await
+            {
+                Ok(Ok(staged)) => staged,
+                Ok(Err(error)) => {
+                    tracing::error!(%error, "AL workspace source scan failed");
+                    let message = format!(
+                        "AL workspace initialization failed; no partial source index was published: {error}"
+                    );
+                    client
+                        .show_message(MessageType::ERROR, message.clone())
+                        .await;
+                    return Err(WorkspaceInitError(message));
+                }
+                Err(error) => {
+                    let message = format!("AL workspace source-index worker failed: {error}");
+                    tracing::error!(%error, "AL workspace source-index worker failed");
+                    client
+                        .show_message(MessageType::ERROR, message.clone())
+                        .await;
+                    return Err(WorkspaceInitError(message));
+                }
+            };
             if count > 0 {
                 info!(count, "Scanned workspace .al files");
             }
-
-            *workspace.project.write().await = Some(project.clone());
 
             // load already-cached packages BEFORE flipping `ready` so
             // that warm-start queries (the common case) see complete symbol
@@ -113,37 +176,66 @@ pub(crate) async fn initialize_workspace(
             // before user interaction so a missing-dependencies dialog
             // doesn't strand the editor — but warm starts no longer race
             // package symbol load against the first hover/completion.
-            let mut loaded_packages = Vec::new();
-            if !project.packages.is_empty() {
+            let package_paths = project.packages.clone();
+            let (staged_symbols, loaded_packages) = match tokio::task::spawn_blocking(move || {
+                let staged = al_symbols::SymbolIndex::new();
                 let cache = al_symbols::cache::SymbolCache::default_location();
-                loaded_packages = tokio::task::block_in_place(|| {
-                    workspace
-                        .symbols
-                        .load_packages_cached(&project.packages, &cache)
-                });
+                let loaded = staged.load_packages_cached(&package_paths, &cache)?;
+                staged.load_runtime_enums();
+                Ok::<_, al_symbols::PackageLoadError>((staged, loaded))
+            })
+            .await
+            {
+                Ok(Ok(staged)) => staged,
+                Ok(Err(error)) => {
+                    tracing::error!(%error, "configured AL symbol package load failed");
+                    let message = format!(
+                        "AL workspace initialization failed; no partial package batch was indexed: {error}"
+                    );
+                    client
+                        .show_message(MessageType::ERROR, message.clone())
+                        .await;
+                    return Err(WorkspaceInitError(message));
+                }
+                Err(error) => {
+                    let message = format!("AL workspace package-index worker failed: {error}");
+                    tracing::error!(%error, "AL workspace package-index worker failed");
+                    client
+                        .show_message(MessageType::ERROR, message.clone())
+                        .await;
+                    return Err(WorkspaceInitError(message));
+                }
+            };
+            if !project.packages.is_empty() {
                 info!(
                     loaded = loaded_packages.len(),
-                    total_symbols = workspace.symbols.len(),
-                    "Loaded symbol packages (pre-ready)"
+                    total_symbols = staged_symbols.len(),
+                    "Staged symbol packages (pre-ready)"
                 );
-                workspace.invalidate_insight_graph();
             }
-            workspace.symbols.load_runtime_enums();
-            set_package_info(&workspace, &loaded_packages);
 
             // Signal readiness. For warm starts the package symbol index is
             // already populated above; for cold starts (no cached packages
             // yet) we signal early to avoid blocking on the prompt and load
-            // again after download completes.
-            ready_flag.store(true, Ordering::Release);
-            init_notify.notify_waiters();
+            // again after download completes. Publish the valid pre-download
+            // project generation first so requests released by the ready
+            // notification never observe a spurious "no active project".
+            publish_complete_generation(
+                &workspace,
+                staged_files,
+                &staged_symbols,
+                Some(project.clone()),
+                &loaded_packages,
+            )
+            .await;
+            publish_ready(&init_state);
 
             let deps = missing_dependencies(&project.all_dependencies(), &loaded_packages);
             if !deps.is_empty() {
                 let has_server = !project.server_configs.is_empty();
                 if let Some(source) = prompt_download_symbols(&client, deps.len(), has_server).await
                 {
-                    let downloaded = match source {
+                    let batch = match source {
                         DownloadSource::Server => {
                             download_symbols_from_server(&project, &deps, &client).await
                         }
@@ -151,56 +243,101 @@ pub(crate) async fn initialize_workspace(
                             download_packages_nuget(&workspace, &deps, &project.packages_dir).await
                         }
                     };
+                    if !batch.failures.is_empty() {
+                        client
+                            .show_message(
+                                MessageType::ERROR,
+                                format!(
+                                    "Symbol download completed with {} failure(s): {}",
+                                    batch.failures.len(),
+                                    batch.failures.join("; ")
+                                ),
+                            )
+                            .await;
+                    }
+                    let downloaded = batch.paths;
                     if !downloaded.is_empty() {
-                        project.packages.extend(downloaded.iter().cloned());
-
-                        let cache = al_symbols::cache::SymbolCache::default_location();
-                        let loaded = tokio::task::block_in_place(|| {
-                            workspace.symbols.load_packages_cached(&downloaded, &cache)
-                        });
-                        info!(
-                            loaded = loaded.len(),
-                            total_symbols = workspace.symbols.len(),
-                            "Loaded symbol packages (post-download)"
-                        );
-                        workspace.symbols.load_runtime_enums();
-                        workspace.invalidate_insight_graph();
-
-                        for package in loaded {
-                            loaded_packages.retain(|existing| {
-                                !existing.app_id.eq_ignore_ascii_case(&package.app_id)
-                            });
-                            loaded_packages.push(package);
+                        match refresh_current_symbol_generation(&workspace).await {
+                            Ok((loaded, total_symbols)) => {
+                                info!(
+                                    loaded,
+                                    total_symbols, "Published symbol packages (post-download)"
+                                );
+                                if let Some(active_project) = workspace.project.read().await.clone()
+                                {
+                                    project = active_project;
+                                }
+                            }
+                            Err(error) => {
+                                tracing::error!(%error, "downloaded AL symbol generation rejected");
+                                client
+                                    .show_message(
+                                        MessageType::ERROR,
+                                        format!(
+                                            "Downloaded symbol packages were not indexed; the previous complete generation remains active: {error}"
+                                        ),
+                                    )
+                                    .await;
+                            }
                         }
-
-                        // Re-scan all configured folders so the stored
-                        // project keeps pre-existing/local packages as well
-                        // as the newly downloaded files.
-                        project.apply_symbol_settings(&symbol_config);
                     }
                 }
             }
 
             log_source_availability(&project.packages);
-            set_package_info(&workspace, &loaded_packages);
-
-            *workspace.project.write().await = Some(project.clone());
         }
-        Err(e) => {
+        Err(e @ al_project::errors::DiscoveryError::NoProjectFound { .. }) => {
             warn!(error = %e, "No AL project found (continuing without packages)");
             client
                 .show_message(MessageType::INFO, format!("No AL project found: {e}"))
                 .await;
 
-            let count = tokio::task::block_in_place(|| workspace.file_index.scan(&workspace_root));
+            let source_root = workspace_root.clone();
+            let (staged_files, count) = match tokio::task::spawn_blocking(move || {
+                let staged = al_source::file_index::FileIndex::new();
+                staged.scan(&source_root).map(|count| (staged, count))
+            })
+            .await
+            {
+                Ok(Ok(staged)) => staged,
+                Ok(Err(error)) => {
+                    tracing::error!(%error, "AL syntax-only workspace source scan failed");
+                    let message = format!(
+                        "AL workspace initialization failed; no partial source index was published: {error}"
+                    );
+                    client
+                        .show_message(MessageType::ERROR, message.clone())
+                        .await;
+                    return Err(WorkspaceInitError(message));
+                }
+                Err(error) => {
+                    let message = format!("AL workspace source-index worker failed: {error}");
+                    tracing::error!(%error, "AL workspace source-index worker failed");
+                    client
+                        .show_message(MessageType::ERROR, message.clone())
+                        .await;
+                    return Err(WorkspaceInitError(message));
+                }
+            };
             if count > 0 {
                 info!(count, "Scanned workspace .al files");
             }
 
+            let staged_symbols = al_symbols::SymbolIndex::new();
+            staged_symbols.load_runtime_enums();
+            publish_complete_generation(&workspace, staged_files, &staged_symbols, None, &[]).await;
+
             // Signal readiness even without a project so request handlers
             // don't block forever waiting for initialization.
-            ready_flag.store(true, Ordering::Release);
-            init_notify.notify_waiters();
+            publish_ready(&init_state);
+        }
+        Err(error) => {
+            tracing::error!(%error, "AL project discovery failed");
+            let message = format!("AL workspace initialization failed: {error}");
+            client
+                .show_message(MessageType::ERROR, message.clone())
+                .await;
+            return Err(WorkspaceInitError(message));
         }
     }
 
@@ -277,67 +414,48 @@ pub(crate) async fn initialize_workspace(
         // the prompt was dismissed/lost, so retry next time.
     }
 
-    // Project-scoped diagnostics: lint ALL .al files at startup.
-    // Our native lint is fast enough to run on the entire project.
-    {
-        let config = workspace.config.read().await.clone();
-        if config.enable_native_lint
-            && config.diagnostics_scope == al_project::config::DiagnosticsScope::Project
+    if let Some(diagnostic_state) = diagnostic_state {
+        diagnostic_state.semantic_cache.lock().await.clear();
+        if workspace.config.read().await.diagnostics_scope
+            == al_project::config::DiagnosticsScope::Project
         {
-            let project_root = workspace
-                .project
-                .read()
-                .await
-                .as_ref()
-                .map(|project| project.root.clone());
-            // Compute the same combined syntax/file/project/call-graph result
-            // used by pull diagnostics and CLI lint. Running the workspace
-            // semantic pass once avoids rebuilding it independently per file.
-            let results = al_analysis::queries::diagnostics::workspace_syntax_diagnostics_at_root(
-                &workspace,
-                &config,
-                project_root.as_deref(),
-            );
-            let file_count = results.len();
-            for (i, (path, diagnostics)) in results.into_iter().enumerate() {
-                if i > 0 && i % 10 == 0 {
-                    tokio::task::yield_now().await;
-                }
-                if let Ok(uri) = url::Url::from_file_path(&path) {
-                    if !diagnostics.is_empty() {
-                        let lsp_diags = diagnostics
-                            .iter()
-                            .map(crate::server::diagnostics::syntax_diag_to_lsp)
-                            .collect();
-                        client.publish_diagnostics(uri, lsp_diags, None).await;
-                    }
-                }
-            }
-            info!(
-                file_count,
-                "Published project-scoped diagnostics for all .al files"
-            );
+            diagnostics::publish_workspace_diagnostics_parts(
+                Arc::clone(&workspace),
+                client.clone(),
+                diagnostic_state.semantic_cache,
+                diagnostic_state.published_uris,
+                None,
+            )
+            .await;
+            info!("Published project-scoped diagnostics generation");
         }
     }
+    Ok(())
 }
 
 /// Load builtins and error codes from disk cache (fast path, no bridge needed).
 ///
 /// Extracted from `AlServer::load_caches_from_disk` to be callable from the background init task.
-async fn load_caches_from_disk(workspace: &Workspace, version: &str) {
-    // Recover from RwLock poison by taking the inner value.
-    if workspace
-        .builtins
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_empty()
-    {
+async fn load_caches_from_disk(
+    workspace: &Workspace,
+    version: &str,
+) -> Result<(), WorkspaceInitError> {
+    let (needs_builtins, poisoned_builtins) = match workspace.builtins.read() {
+        Ok(builtins) => (builtins.is_empty(), false),
+        Err(_) => (true, true),
+    };
+    if needs_builtins {
         if let Some(cached) = crate::semantic::cache::read_builtins(version) {
             info!(
                 count = cached.len(),
                 "Loaded built-in types from disk cache"
             );
             crate::semantic::set_builtins(workspace, cached, version);
+        } else if poisoned_builtins {
+            return Err(WorkspaceInitError(
+                "built-in type catalog is poisoned and no complete disk-cache payload is available"
+                    .to_string(),
+            ));
         }
     }
     if workspace.error_codes.is_empty() {
@@ -349,6 +467,96 @@ async fn load_caches_from_disk(workspace: &Workspace, version: &str) {
                     .insert(ec.code.clone(), ec.message.clone());
             }
         }
+    }
+    Ok(())
+}
+
+async fn publish_complete_generation(
+    workspace: &Workspace,
+    staged_files: al_source::file_index::FileIndex,
+    staged_symbols: &al_symbols::SymbolIndex,
+    project: Option<al_project::project::AlProject>,
+    packages: &[al_symbols::model::SymbolPackage],
+) {
+    // didOpen/didChange take a generation read guard. Once this write guard is
+    // acquired, the document store and its corresponding file-index overlays
+    // cannot advance until publication finishes.
+    let _publication = workspace.generation_lock.write().await;
+    for uri in workspace.documents.open_uris() {
+        let (Ok(path), Some(text)) = (uri.to_file_path(), workspace.documents.get_text(&uri))
+        else {
+            continue;
+        };
+        staged_files.add_file(path, text);
+    }
+
+    workspace.file_index.replace_with(staged_files);
+    workspace.symbols.replace_with(staged_symbols);
+    *workspace.project.write().await = project;
+    set_package_info(workspace, packages);
+    workspace.invalidate_insight_graph();
+    workspace
+        .generation_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Release);
+}
+
+async fn refresh_current_symbol_generation(
+    workspace: &Workspace,
+) -> Result<(usize, usize), String> {
+    loop {
+        let generation = workspace.generation_lock.read().await;
+        let revision = workspace
+            .generation_revision
+            .load(std::sync::atomic::Ordering::Acquire);
+        let project = workspace.project.read().await.clone();
+        let config = workspace.config.read().await.clone();
+        let Some(mut project) = project else {
+            return Err("the AL project was closed".to_string());
+        };
+        // Staging may parse many packages. The revision check below makes the
+        // snapshot optimistic, so holding the generation read lock throughout
+        // that blocking work would only freeze document mutations needlessly.
+        drop(generation);
+
+        let staged = tokio::task::spawn_blocking(move || {
+            project
+                .apply_symbol_settings(&config)
+                .map_err(|error| error.to_string())?;
+            let symbols = al_symbols::SymbolIndex::new();
+            let cache = al_symbols::cache::SymbolCache::default_location();
+            let loaded = symbols
+                .load_packages_cached(&project.packages, &cache)
+                .map_err(|error| error.to_string())?;
+            symbols.load_runtime_enums();
+            Ok::<_, String>((project, symbols, loaded))
+        })
+        .await;
+
+        let (project, symbols, loaded) = match staged {
+            Ok(Ok(staged)) => staged,
+            Ok(Err(error)) => return Err(error),
+            Err(error) => return Err(format!("package-index worker failed: {error}")),
+        };
+
+        let publication = workspace.generation_lock.write().await;
+        if workspace
+            .generation_revision
+            .load(std::sync::atomic::Ordering::Acquire)
+            != revision
+        {
+            drop(publication);
+            continue;
+        }
+        workspace.symbols.replace_with(&symbols);
+        *workspace.project.write().await = Some(project);
+        set_package_info(workspace, &loaded);
+        workspace.invalidate_insight_graph();
+        workspace
+            .generation_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        let counts = (loaded.len(), workspace.symbols.len());
+        drop(publication);
+        return Ok(counts);
     }
 }
 
@@ -377,21 +585,30 @@ fn set_package_info(workspace: &Workspace, packages: &[al_symbols::model::Symbol
             object_count: package.object_count,
         })
         .collect();
-    *workspace
-        .package_info
-        .write()
-        .unwrap_or_else(|error| error.into_inner()) = info;
+    workspace.replace_package_info(info);
 }
 
 fn missing_dependencies_in_paths(
     dependencies: &[al_project::project::AppDependency],
     package_paths: &[PathBuf],
-) -> Vec<al_project::project::AppDependency> {
-    let manifests: Vec<_> = package_paths
-        .iter()
-        .filter_map(|path| al_symbols::app_reader::read_app_manifest_file(path).ok())
-        .collect();
-    dependencies
+) -> Result<Vec<al_project::project::AppDependency>, String> {
+    let mut manifests = Vec::with_capacity(package_paths.len());
+    let mut failures = Vec::new();
+    for path in package_paths {
+        match al_symbols::app_reader::read_app_manifest_file(path) {
+            Ok(manifest) => manifests.push(manifest),
+            Err(error) => failures.push(format!("'{}': {error}", path.display())),
+        }
+    }
+    if !failures.is_empty() {
+        return Err(format!(
+            "{} configured package manifest(s) could not be read: {}",
+            failures.len(),
+            failures.join("; ")
+        ));
+    }
+
+    Ok(dependencies
         .iter()
         .filter(|dependency| {
             !manifests.iter().any(|manifest| {
@@ -400,25 +617,32 @@ fn missing_dependencies_in_paths(
             })
         })
         .cloned()
-        .collect()
+        .collect())
 }
 
 /// Log which loaded packages lack `.al` source files.
 /// Outlines are always generated from symbol metadata — no user prompt needed.
 fn log_source_availability(packages: &[PathBuf]) {
-    let no_source: Vec<String> = packages
-        .iter()
-        .filter_map(|path| {
-            if al_symbols::virtual_file::app_has_source(path) {
-                return None;
+    let mut no_source = Vec::new();
+    for path in packages {
+        match al_symbols::virtual_file::app_has_source(path) {
+            Ok(true) => {}
+            Ok(false) => {
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown");
+                no_source.push(stem.to_string());
             }
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown");
-            Some(stem.to_string())
-        })
-        .collect();
+            Err(error) => {
+                warn!(
+                    package = %path.display(),
+                    %error,
+                    "Could not inspect package source availability"
+                );
+            }
+        }
+    }
 
     if !no_source.is_empty() {
         info!(
@@ -496,11 +720,16 @@ async fn download_symbols_from_server(
     project: &al_project::project::AlProject,
     deps: &[al_project::project::AppDependency],
     lsp_client: &tower_lsp::Client,
-) -> Vec<PathBuf> {
+) -> DownloadBatch {
     let configs = &project.server_configs;
     if configs.is_empty() {
-        debug!("No BC server configs in launch.json, skipping server download");
-        return Vec::new();
+        return DownloadBatch {
+            paths: Vec::new(),
+            failures: vec![
+                "no BC server configuration exists in .zed/debug.json or .vscode/launch.json"
+                    .to_string(),
+            ],
+        };
     }
 
     let config = &configs[0];
@@ -535,18 +764,26 @@ async fn download_symbols_from_server(
     ) {
         Ok(c) => c,
         Err(e) => {
-            warn!(error = %e, "Failed to build HTTP client for BC server; skipping server download");
-            return Vec::new();
+            return DownloadBatch {
+                paths: Vec::new(),
+                failures: vec![format!("cannot create BC server HTTP client: {e}")],
+            };
         }
     };
     // al_project::project::AppDependency is re-exported from al_symbols — clone directly.
-    let url_deps: Vec<(String, al_symbols::nuget::AppDependency)> = deps
-        .iter()
-        .filter_map(|dep| config.dev_packages_url(dep).map(|url| (url, dep.clone())))
-        .collect();
+    let mut batch = DownloadBatch::default();
+    let mut url_deps = Vec::new();
+    for dep in deps {
+        match config.dev_packages_url(dep) {
+            Some(url) => url_deps.push((url, dep.clone())),
+            None => batch.failures.push(format!(
+                "{}: launch configuration cannot construct a BC dev-packages URL",
+                dep.name
+            )),
+        }
+    }
     let results = client.download_all(&url_deps, &dest).await;
 
-    let mut downloaded = Vec::new();
     // `results` is parallel to `url_deps` (not `deps`): some dependencies are
     // filtered out above when they lack a dev_packages_url, so indexing into
     // `deps[i]` would be out of bounds. Pair each result with its originating
@@ -559,7 +796,7 @@ async fn download_symbols_from_server(
                     path = %path.display(),
                     "Downloaded from BC server"
                 );
-                downloaded.push(path);
+                batch.paths.push(path);
             }
             Err(e) => {
                 warn!(
@@ -567,11 +804,12 @@ async fn download_symbols_from_server(
                     error = %e,
                     "Failed to download from BC server"
                 );
+                batch.failures.push(format!("{}: {e}", dep.name));
             }
         }
     }
 
-    downloaded
+    batch
 }
 
 /// Convert the global NuGet feed list to the symbol-loader type.
@@ -617,7 +855,7 @@ async fn download_packages_nuget(
     workspace: &al_workspace::Workspace,
     deps: &[al_project::project::AppDependency],
     dest: &Path,
-) -> Vec<PathBuf> {
+) -> DownloadBatch {
     info!(
         count = deps.len(),
         dest = %dest.display(),
@@ -634,10 +872,26 @@ async fn download_packages_nuget(
         )
     };
 
-    let client = al_symbols::nuget::NuGetClient::new(feeds).with_country(country);
+    let client = match al_symbols::nuget::NuGetClient::new(feeds) {
+        Ok(client) => client.with_country(country),
+        Err(error) => {
+            return DownloadBatch {
+                paths: Vec::new(),
+                failures: deps
+                    .iter()
+                    .map(|dependency| {
+                        format!(
+                            "{}: could not initialize NuGet client: {error}",
+                            dependency.name
+                        )
+                    })
+                    .collect(),
+            };
+        }
+    };
     let results = client.download_all(deps, dest).await;
 
-    let mut downloaded = Vec::new();
+    let mut batch = DownloadBatch::default();
     for (i, result) in results.into_iter().enumerate() {
         match result {
             Ok(path) => {
@@ -646,7 +900,7 @@ async fn download_packages_nuget(
                     path = %path.display(),
                     "Downloaded symbol package from NuGet"
                 );
-                downloaded.push(path);
+                batch.paths.push(path);
             }
             Err(e) => {
                 warn!(
@@ -654,19 +908,22 @@ async fn download_packages_nuget(
                     error = %e,
                     "Failed to download symbol package from NuGet"
                 );
+                batch.failures.push(format!("{}: {e}", deps[i].name));
             }
         }
     }
 
-    downloaded
+    batch
 }
 
 /// Handle the `al.downloadSymbols*` commands.
 ///
 /// Downloads symbols from the specified source and reloads the symbol index.
 pub(crate) async fn download_symbols_command(server: &AlServer, source: DownloadSource) {
+    let generation = server.workspace.generation_lock.read().await;
     let project = server.workspace.project.read().await.clone();
     let Some(project) = project else {
+        drop(generation);
         warn!("No AL project found — cannot download symbols");
         server
             .client
@@ -674,11 +931,41 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
             .await;
         return;
     };
+    // Package inventory and downloads operate on this immutable project
+    // snapshot. Do not block editor writes while filesystem/network work runs.
+    drop(generation);
 
     let all_dependencies = project.all_dependencies();
-    let deps = tokio::task::block_in_place(|| {
-        missing_dependencies_in_paths(&all_dependencies, &project.packages)
-    });
+    let indexed_paths = project.packages.clone();
+    let deps = match tokio::task::spawn_blocking(move || {
+        missing_dependencies_in_paths(&all_dependencies, &indexed_paths)
+    })
+    .await
+    {
+        Ok(Ok(deps)) => deps,
+        Ok(Err(error)) => {
+            tracing::error!(%error, "existing symbol package inventory is invalid");
+            server
+                .client
+                .show_message(
+                    MessageType::ERROR,
+                    format!("Cannot determine missing symbols: {error}"),
+                )
+                .await;
+            return;
+        }
+        Err(error) => {
+            tracing::error!(%error, "symbol inventory worker failed");
+            server
+                .client
+                .show_message(
+                    MessageType::ERROR,
+                    format!("Cannot determine missing symbols because the inventory worker failed: {error}"),
+                )
+                .await;
+            return;
+        }
+    };
     if deps.is_empty() {
         info!("All symbol dependencies are already satisfied");
         server
@@ -705,7 +992,7 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         )
         .await;
 
-    let packages = match source {
+    let batch = match source {
         DownloadSource::Server => {
             download_symbols_from_server(&project, &deps, &server.client).await
         }
@@ -713,6 +1000,20 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
             download_packages_nuget(&server.workspace, &deps, &project.packages_dir).await
         }
     };
+    if !batch.failures.is_empty() {
+        server
+            .client
+            .show_message(
+                MessageType::ERROR,
+                format!(
+                    "{} symbol download failure(s): {}",
+                    batch.failures.len(),
+                    batch.failures.join("; ")
+                ),
+            )
+            .await;
+    }
+    let packages = batch.paths;
 
     if packages.is_empty() {
         server
@@ -725,28 +1026,31 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         return;
     }
 
-    // Reload symbol index (with cache for fast subsequent starts)
-    let cache = al_symbols::cache::SymbolCache::default_location();
-    let loaded = tokio::task::block_in_place(|| {
-        server
-            .workspace
-            .symbols
-            .load_packages_cached(&packages, &cache)
-    });
-    server.workspace.symbols.load_runtime_enums();
-    // Package changes invalidate the insight graph.
-    server.workspace.invalidate_insight_graph();
-    merge_package_info(&server.workspace, &loaded);
+    let (loaded_count, symbol_count) = match refresh_current_symbol_generation(&server.workspace)
+        .await
+    {
+        Ok(counts) => counts,
+        Err(error) => {
+            tracing::error!(%error, "downloaded symbol generation rejected");
+            server
+                    .client
+                    .show_message(
+                        MessageType::ERROR,
+                        format!(
+                            "Downloaded packages were not indexed; the previous complete generation remains active: {error}"
+                        ),
+                    )
+                    .await;
+            return;
+        }
+    };
+
     info!(
-        loaded = loaded.len(),
-        total_symbols = server.workspace.symbols.len(),
+        loaded = loaded_count,
+        total_symbols = symbol_count,
         source = source_name,
-        "Reloaded symbol packages after download"
+        "Published downloaded symbol generation"
     );
-    let symbol_config = server.workspace.config.read().await.clone();
-    if let Some(project) = server.workspace.project.write().await.as_mut() {
-        project.apply_symbol_settings(&symbol_config);
-    }
 
     server
         .client
@@ -754,31 +1058,10 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
             MessageType::INFO,
             format!(
                 "Downloaded {} packages from {} ({} symbols)",
-                loaded.len(),
-                source_name,
-                server.workspace.symbols.len()
+                loaded_count, source_name, symbol_count
             ),
         )
         .await;
-}
-
-fn merge_package_info(workspace: &Workspace, packages: &[al_symbols::model::SymbolPackage]) {
-    let mut info = workspace
-        .package_info
-        .write()
-        .unwrap_or_else(|error| error.into_inner());
-    for package in packages {
-        info.retain(|existing| {
-            !(existing.name.eq_ignore_ascii_case(&package.name)
-                && existing.publisher.eq_ignore_ascii_case(&package.publisher))
-        });
-        info.push(al_workspace::PackageInfo {
-            name: package.name.clone(),
-            publisher: package.publisher.clone(),
-            version: package.version.clone(),
-            object_count: package.object_count,
-        });
-    }
 }
 
 /// Handle workspace/symbol request.
@@ -1347,10 +1630,22 @@ mod tests {
             },
         ];
 
-        let missing = missing_dependencies_in_paths(&dependencies, &[package]);
+        let missing = missing_dependencies_in_paths(&dependencies, &[package]).unwrap();
 
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].id, "other-id");
+    }
+
+    #[test]
+    fn path_dependency_check_rejects_unreadable_package_inventory() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("broken.app");
+        std::fs::write(&package, b"not a package").unwrap();
+
+        let error = missing_dependencies_in_paths(&[], &[package]).unwrap_err();
+
+        assert!(error.contains("could not be read"));
+        assert!(error.contains("broken.app"));
     }
 
     /// (`al.nugetFeeds` / `al.useOnlyCustomFeeds` parity):
@@ -1427,8 +1722,8 @@ mod tests {
     fn log_source_availability_handles_empty_and_missing_files() {
         // Empty package list: no-op, no panic.
         log_source_availability(&[]);
-        // Non-existent .app path: app_has_source returns false, the stem is
-        // collected, and the function logs without panicking.
+        // Non-existent and malformed package paths are logged as inspection
+        // errors rather than being misclassified as source-less packages.
         log_source_availability(&[PathBuf::from("/nonexistent/Some.App.app")]);
         // Path with no file stem must fall back to "unknown" without panic.
         log_source_availability(&[PathBuf::from("/")]);
@@ -1801,6 +2096,161 @@ mod tests {
     fn test_server() -> tower_lsp::LspService<AlServer> {
         let (service, _socket) = tower_lsp::LspService::new(AlServer::new);
         service
+    }
+
+    #[tokio::test]
+    async fn malformed_project_is_returned_as_failed_initialization_state() {
+        let root = tempfile::tempdir().expect("temporary workspace");
+        std::fs::write(root.path().join("app.json"), "{not json").expect("malformed manifest");
+        let service = test_server();
+        let server = service.inner();
+        let state = server.workspace_init_state.clone();
+        let result = initialize_workspace(
+            Arc::clone(&server.workspace),
+            server.client.clone(),
+            Some(Url::from_directory_path(root.path()).expect("workspace URI")),
+            Some(state.clone()),
+            None,
+        )
+        .await;
+
+        let error = result.expect_err("malformed app.json must fail initialization");
+        state.send_replace(WorkspaceInitState::Failed(error.to_string()));
+        assert!(matches!(
+            state.borrow().clone(),
+            WorkspaceInitState::Failed(message)
+                if message.contains("app.json") || message.contains("JSON")
+        ));
+        assert_eq!(server.workspace.file_index.len(), 0);
+        assert!(server.workspace.project.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_reindex_retains_the_previous_complete_generation() {
+        let root = tempfile::tempdir().expect("temporary workspace");
+        std::fs::write(
+            root.path().join("app.json"),
+            r#"{
+                "id":"00000000-0000-0000-0000-000000000001",
+                "name":"Replacement",
+                "publisher":"Test",
+                "version":"1.0.0.0"
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("Replacement.al"),
+            r#"codeunit 50101 Replacement { }"#,
+        )
+        .unwrap();
+        std::fs::create_dir(root.path().join(".alpackages")).unwrap();
+        std::fs::write(
+            root.path().join(".alpackages/Broken.app"),
+            b"not a NAVX package",
+        )
+        .unwrap();
+
+        let service = test_server();
+        let server = service.inner();
+        let old_path = PathBuf::from("/previous/Stable.al");
+        server
+            .workspace
+            .file_index
+            .add_file(old_path.clone(), r#"codeunit 50100 Stable { }"#.to_string());
+        server
+            .workspace
+            .symbols
+            .add_entries(&[al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Codeunit,
+                id: 50_100,
+                name: "Stable".to_string(),
+                package: "Previous".to_string(),
+                ..Default::default()
+            }]);
+
+        let result = initialize_workspace(
+            Arc::clone(&server.workspace),
+            server.client.clone(),
+            Some(Url::from_directory_path(root.path()).expect("workspace URI")),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(result.is_err(), "invalid replacement package must fail");
+        assert_eq!(
+            server
+                .workspace
+                .file_index
+                .get_content(&old_path)
+                .as_deref(),
+            Some(r#"codeunit 50100 Stable { }"#),
+            "failed reindex must leave the old source generation intact"
+        );
+        assert!(
+            server.workspace.symbols.find_by_name("Stable").is_some(),
+            "failed reindex must leave the old symbol generation intact"
+        );
+        assert!(
+            server
+                .workspace
+                .file_index
+                .find_by_object_name("Replacement")
+                .is_none(),
+            "staged replacement sources must not leak into the active index"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_reindex_reapplies_unsaved_open_documents_at_commit() {
+        let root = tempfile::tempdir().expect("temporary workspace");
+        std::fs::write(
+            root.path().join("app.json"),
+            r#"{
+                "id":"00000000-0000-0000-0000-000000000001",
+                "name":"OpenBuffer",
+                "publisher":"Test",
+                "version":"1.0.0.0"
+            }"#,
+        )
+        .unwrap();
+        let path = root.path().join("OpenBuffer.al");
+        std::fs::write(&path, r#"codeunit 50100 "Saved Name" { }"#).unwrap();
+
+        let service = test_server();
+        let server = service.inner();
+        let uri = Url::from_file_path(&path).unwrap();
+        let unsaved = r#"codeunit 50100 "Unsaved Name" { }"#;
+        server
+            .workspace
+            .documents
+            .open(uri.clone(), unsaved.to_string())
+            .unwrap();
+
+        initialize_workspace(
+            Arc::clone(&server.workspace),
+            server.client.clone(),
+            Some(Url::from_directory_path(root.path()).expect("workspace URI")),
+            None,
+            None,
+        )
+        .await
+        .expect("valid generation");
+
+        assert_eq!(
+            server.workspace.file_index.get_content(&path).as_deref(),
+            Some(unsaved)
+        );
+        assert_eq!(
+            server
+                .workspace
+                .file_index
+                .object_info
+                .get(&path)
+                .map(|info| info.name.clone())
+                .as_deref(),
+            Some("Unsaved Name")
+        );
     }
 
     #[tokio::test]

@@ -23,4 +23,5 @@ pub mod queries;
 // query layer keeps reaching its `pub(crate)` resolver helpers intra-crate.
 pub mod resolution;
 pub mod scaffold;
+pub(crate) mod workspace_sources;
 pub mod xliff;

@@ -3,24 +3,23 @@
 use url::Url;
 
 use super::{Location, Position, Range};
-use al_workspace::Workspace;
+use al_workspace::{Workspace, WorkspaceStateError};
 
-#[must_use]
 pub fn references(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
     include_declaration: bool,
-) -> Vec<Location> {
+) -> Result<Vec<Location>, WorkspaceStateError> {
     let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
 
     let Some(node) = al_syntax::find_node_at_position(&tree, &text, position.into()) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Some(clean_name) = super::node_clean_name(node, text.as_bytes()) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
 
     // The canonical declaration the cursor binds to. Every *identifier*
@@ -29,17 +28,20 @@ pub fn references(
     // callers. This applies the same binding awareness used by rename.
     // Event-subscriber string-literal references are already specific to the
     // named event, so they are kept without the binding filter.
-    let cursor_decl = super::binding::decl_loc(workspace, uri, position);
+    let cursor_decl = super::binding::decl_loc(workspace, uri, position)?;
 
     let mut locations = Vec::new();
 
     // Collect binding-filtered identifier refs + unfiltered event-subscriber
     // refs from one parsed file into `locations`.
-    let mut collect_from = |file_uri: &Url, ftext: &str, ftree: &tree_sitter::Tree| {
+    let mut collect_from = |file_uri: &Url,
+                            ftext: &str,
+                            ftree: &tree_sitter::Tree|
+     -> Result<(), WorkspaceStateError> {
         let bytes = ftext.as_bytes();
         for r in al_syntax::find_variable_references(ftree, ftext, clean_name) {
             let range: Range = al_syntax::ts_range_to_syntax(&r, bytes).into();
-            if super::binding::decl_loc(workspace, file_uri, range.start) == cursor_decl {
+            if super::binding::decl_loc(workspace, file_uri, range.start)? == cursor_decl {
                 locations.push(Location {
                     uri: file_uri.clone(),
                     range,
@@ -56,9 +58,10 @@ pub fn references(
                 range: al_syntax::ts_range_to_syntax(&r, bytes).into(),
             });
         }
+        Ok(())
     };
 
-    collect_from(uri, &text, &tree);
+    collect_from(uri, &text, &tree)?;
 
     let current_path = uri.to_file_path().ok();
     // Snapshot file paths to avoid holding the DashMap shard lock across
@@ -80,7 +83,7 @@ pub fn references(
         let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(&file_path) else {
             continue;
         };
-        collect_from(&file_uri, &file_text, &file_tree);
+        collect_from(&file_uri, &file_text, &file_tree)?;
     }
 
     // `includeDeclaration: false` means exclude the symbol's *declaration*, not
@@ -100,7 +103,7 @@ pub fn references(
         });
     }
 
-    locations
+    Ok(locations)
 }
 
 #[cfg(test)]
@@ -109,9 +112,18 @@ mod tests {
     use al_workspace::Workspace;
     use url::Url;
 
+    fn references(
+        workspace: &Workspace,
+        uri: &Url,
+        position: Position,
+        include_declaration: bool,
+    ) -> Vec<Location> {
+        super::references(workspace, uri, position, include_declaration).unwrap()
+    }
+
     fn ws_with_doc(uri: &Url, text: &str) -> Workspace {
         let ws = Workspace::new();
-        ws.documents.open(uri.clone(), text.to_string());
+        ws.documents.open(uri.clone(), text.to_string()).unwrap();
         ws
     }
 
@@ -304,8 +316,8 @@ mod tests {
         let uri_b = Url::parse("file:///test/refbind/B.al").unwrap();
         let src_a = "codeunit 50100 \"A\"\n{\n    procedure Post()\n    begin\n    end;\n\n    procedure Run()\n    begin\n        Post();\n    end;\n}";
         let src_b = "codeunit 50101 \"B\"\n{\n    procedure Post()\n    begin\n    end;\n\n    procedure Run()\n    begin\n        Post();\n    end;\n}";
-        ws.documents.open(uri_a.clone(), src_a.to_string());
-        ws.documents.open(uri_b.clone(), src_b.to_string());
+        ws.documents.open(uri_a.clone(), src_a.to_string()).unwrap();
+        ws.documents.open(uri_b.clone(), src_b.to_string()).unwrap();
         ws.file_index
             .add_file(uri_a.to_file_path().unwrap(), src_a.to_string());
         ws.file_index

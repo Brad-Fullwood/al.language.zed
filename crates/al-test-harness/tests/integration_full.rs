@@ -1415,7 +1415,7 @@ async fn hover_out_of_bounds_position() {
 
 #[tokio::test]
 async fn syntax_error_file_is_parsed_tolerantly() {
-    let code = include_str!("../data/test_al_project/src/ErrorCases.al");
+    let code = include_str!("../data/syntax_errors/ErrorCases.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_q06.al", code).await;
@@ -1561,9 +1561,9 @@ async fn workspace_symbol_with_unknown_field_is_graceful() {
     client.shutdown().await;
 }
 
-// The daemon's methods map 1-to-1 to al-core queries. We exercise them via
-// the LSP transport since the socket transport is not yet implemented.
-// These tests verify the underlying al-core query paths are exercised.
+// The daemon and LSP handlers share these query implementations. This section
+// deliberately exercises the LSP mapping; real daemon IPC/auto-start coverage
+// lives in cli_smoke and extension_smoke.
 
 /// definition query (→ al-core::queries::definition)
 #[tokio::test]

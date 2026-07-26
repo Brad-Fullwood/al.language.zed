@@ -36,6 +36,37 @@ async fn read_until_id(reader: &mut Lines<BufReader<ChildStdout>>, id: i64) -> V
     .unwrap_or_else(|_| panic!("timed out waiting for mcp response id {id}"))
 }
 
+/// Complete the MCP initialization handshake used by every black-box session.
+///
+/// Keeping the request and required `notifications/initialized` notification
+/// together prevents individual tool tests from accidentally exercising an
+/// invalid half-initialized lifecycle.
+async fn initialize_session(
+    stdin: &mut ChildStdin,
+    reader: &mut Lines<BufReader<ChildStdout>>,
+) -> Value {
+    send(
+        stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "smoke", "version": "0"}}
+        }),
+    )
+    .await;
+    let initialized = read_until_id(reader, 1).await;
+    assert!(
+        initialized.get("result").is_some(),
+        "MCP initialize failed: {initialized}"
+    );
+    send(
+        stdin,
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .await;
+    initialized
+}
+
 #[tokio::test]
 async fn mcp_initialize_and_list_tools() {
     let mut child = Command::new(al_lsp_binary())
@@ -51,26 +82,12 @@ async fn mcp_initialize_and_list_tools() {
     let mut stdin = child.stdin.take().unwrap();
     let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
 
-    send(
-        &mut stdin,
-        json!({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                       "clientInfo": {"name": "smoke", "version": "0"}}
-        }),
-    )
-    .await;
-    let init = read_until_id(&mut reader, 1).await;
+    let init = initialize_session(&mut stdin, &mut reader).await;
     assert_eq!(
         init["result"]["serverInfo"]["name"], "al-lsp",
         "initialize: {init}"
     );
 
-    send(
-        &mut stdin,
-        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-    )
-    .await;
     send(
         &mut stdin,
         json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
@@ -155,16 +172,7 @@ async fn mcp_al_call_reaches_the_complete_dispatcher() {
     let mut stdin = child.stdin.take().unwrap();
     let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
 
-    send(
-        &mut stdin,
-        json!({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                       "clientInfo": {"name": "smoke", "version": "0"}}
-        }),
-    )
-    .await;
-    let _ = read_until_id(&mut reader, 1).await;
+    let _ = initialize_session(&mut stdin, &mut reader).await;
 
     send(
         &mut stdin,
@@ -201,16 +209,7 @@ async fn mcp_al_debug_reaches_the_debug_control_plane() {
     let mut stdin = child.stdin.take().unwrap();
     let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
 
-    send(
-        &mut stdin,
-        json!({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                       "clientInfo": {"name": "smoke", "version": "0"}}
-        }),
-    )
-    .await;
-    let _ = read_until_id(&mut reader, 1).await;
+    let _ = initialize_session(&mut stdin, &mut reader).await;
 
     send(
         &mut stdin,
@@ -259,21 +258,7 @@ async fn mcp_testclassify_reports_local_vs_bc_routing() {
     let mut stdin = child.stdin.take().unwrap();
     let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
 
-    send(
-        &mut stdin,
-        json!({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                       "clientInfo": {"name": "smoke", "version": "0"}}
-        }),
-    )
-    .await;
-    let _ = read_until_id(&mut reader, 1).await;
-    send(
-        &mut stdin,
-        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-    )
-    .await;
+    let _ = initialize_session(&mut stdin, &mut reader).await;
 
     send(
         &mut stdin,

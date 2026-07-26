@@ -36,8 +36,12 @@ pub enum BcServerError {
     Io(#[from] std::io::Error),
     #[error("No credentials available. Set BC_USERNAME and BC_PASSWORD environment variables.")]
     CredentialsRequired,
+    #[error("Invalid bearer-token environment: {0}")]
+    CredentialConfiguration(#[from] al_bc::http_auth::AccessTokenEnvError),
     #[error("OAuth error: {0}")]
     OAuth(#[from] oauth::OAuthError),
+    #[error("BC server client state lock '{0}' is poisoned")]
+    StatePoisoned(&'static str),
 }
 
 /// Callback for displaying authentication messages (device code URL, etc.) to the user.
@@ -112,16 +116,16 @@ impl BcServerClient {
         })
     }
 
-    fn lock_for(&self, output_path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    fn lock_for(&self, output_path: &Path) -> Result<Arc<tokio::sync::Mutex<()>>, BcServerError> {
         let mut locks = self
             .package_locks
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        Arc::clone(
+            .map_err(|_| BcServerError::StatePoisoned("package locks"))?;
+        Ok(Arc::clone(
             locks
                 .entry(output_path.to_path_buf())
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-        )
+        ))
     }
 
     /// Forget the in-memory cached access token so the next `add_auth` call
@@ -147,13 +151,13 @@ impl BcServerClient {
         dest: &Path,
     ) -> Result<PathBuf, BcServerError> {
         let output_path = dest.join(package_filename(&dep.publisher, &dep.name, &dep.version));
-        let lock = self.lock_for(&output_path);
+        let lock = self.lock_for(&output_path)?;
         let _guard = lock.lock().await;
 
         let completed = self
             .completed_downloads
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .map_err(|_| BcServerError::StatePoisoned("completed downloads"))?
             .get(&output_path)
             .cloned();
         if let Some(completed) = completed {
@@ -163,7 +167,7 @@ impl BcServerClient {
             }
             self.completed_downloads
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .map_err(|_| BcServerError::StatePoisoned("completed downloads"))?
                 .remove(&output_path);
         }
 
@@ -172,7 +176,7 @@ impl BcServerClient {
             .await?;
         self.completed_downloads
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .map_err(|_| BcServerError::StatePoisoned("completed downloads"))?
             .insert(output_path, downloaded.clone());
         Ok(downloaded)
     }
@@ -224,10 +228,14 @@ impl BcServerClient {
                 // downloads in the same batch don't keep re-using the dead
                 // token; the disk-cache invalidation above does not touch it.
                 self.reset_cached_token().await;
-                // If the auth came from the BC_ACCESS_TOKEN env var, mark it
+                // If the auth came from either supported token env var, mark it
                 // stale so subsequent retries fall through to the OAuth flow
                 // instead of re-presenting the same dead token on every call.
-                if matches!(self.auth, AuthMethod::AAD) && std::env::var("BC_ACCESS_TOKEN").is_ok()
+                if matches!(self.auth, AuthMethod::AAD)
+                    && al_bc::http_auth::access_token_from_env()
+                        .ok()
+                        .flatten()
+                        .is_some()
                 {
                     self.stale_env_token
                         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -374,7 +382,7 @@ impl BcServerClient {
                 // recover via the OAuth flow instead of re-presenting a dead
                 // credential on every retry.
                 if self.env_token_active() {
-                    if let Ok(token) = std::env::var("BC_ACCESS_TOKEN") {
+                    if let Some(token) = al_bc::http_auth::access_token_from_env()? {
                         return Ok(request.bearer_auth(token));
                     }
                 }
@@ -701,6 +709,45 @@ mod tests {
     fn no_auth_client() -> BcServerClient {
         BcServerClient::new(AuthMethod::Windows, None, Arc::new(|_| {}), false)
             .expect("client builds")
+    }
+
+    #[test]
+    fn lock_for_reports_poisoned_package_lock_registry() {
+        let client = no_auth_client();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = client.package_locks.lock().expect("package lock registry");
+            panic!("poison package lock registry for test");
+        }));
+
+        let error = client
+            .lock_for(Path::new("/tmp/Foo.app"))
+            .expect_err("poisoned package lock registry must fail");
+        assert!(matches!(
+            error,
+            BcServerError::StatePoisoned("package locks")
+        ));
+    }
+
+    #[tokio::test]
+    async fn download_reports_poisoned_completed_download_cache() {
+        let client = no_auth_client();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = client
+                .completed_downloads
+                .lock()
+                .expect("completed download cache");
+            panic!("poison completed download cache for test");
+        }));
+        let dependency = dep("Foo", "Microsoft", "1.0.0.0");
+
+        let error = client
+            .download_one("http://127.0.0.1:1", &dependency, Path::new("/tmp"))
+            .await
+            .expect_err("poisoned completed-download cache must fail");
+        assert!(matches!(
+            error,
+            BcServerError::StatePoisoned("completed downloads")
+        ));
     }
 
     #[tokio::test]

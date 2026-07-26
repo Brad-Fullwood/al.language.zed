@@ -31,7 +31,7 @@
   {
     "label": "Extension: build WASM (zed-al)",
     "command": "cargo",
-    "args": ["build", "-p", "zed-al", "--target", "wasm32-wasip1", "--release"],
+    "args": ["build", "-p", "zed-al", "--target", "wasm32-wasip2", "--release"],
     "reveal": "always"
   },
   {
@@ -42,9 +42,23 @@
     "reveal": "always"
   },
   {
+    "label": "AL: Apply safe quick fixes (current file)",
+    "command": "al-explorer",
+    "args": ["fix", "$ZED_FILE"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
     "label": "AL: Dependency graph (JSON)",
     "command": "al-explorer",
     "args": ["deps-graph", "--format", "json"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
+    "label": "AL: XLIFF generate base",
+    "command": "al-explorer",
+    "args": ["xlf", "generate", "--project", "$ZED_WORKTREE_ROOT"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "reveal": "always"
   },
@@ -63,6 +77,13 @@
     "reveal": "always"
   },
   {
+    "label": "AL: XLIFF suggest translations (current .xlf)",
+    "command": "al-explorer",
+    "args": ["xlf", "suggest", "$ZED_FILE"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
     "label": "AL: Test snapshot diff (baseline vs current)",
     "command": "al-explorer",
     "args": ["test-snapshot", "diff", "$ZED_WORKTREE_ROOT/test-snapshots/baseline.snap.json", "$ZED_FILE"],
@@ -73,6 +94,13 @@
     "label": "AL: Validate test snapshot (current .snap.json)",
     "command": "al-explorer",
     "args": ["test-snapshot", "validate", "$ZED_FILE"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
+    "label": "AL: Replay test snapshot on live BC (current .snap.json)",
+    "command": "al-explorer",
+    "args": ["test-snapshot", "replay", "$ZED_FILE", "--bc-version", "$AL_BC_VERSION"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "reveal": "always"
   },

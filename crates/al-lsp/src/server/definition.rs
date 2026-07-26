@@ -8,9 +8,14 @@ pub(crate) fn handle_definition(
     server: &AlServer,
     uri: &Url,
     position: Position,
-) -> Option<GotoDefinitionResponse> {
+) -> Result<Option<GotoDefinitionResponse>, String> {
     let core_pos = position.into();
-    let locations = al_analysis::queries::definition::definition(&server.workspace, uri, core_pos)?;
+    let Some(locations) =
+        al_analysis::queries::definition::definition(&server.workspace, uri, core_pos)
+            .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
 
     // A `LocationLink[]` response is only valid when the client advertised
     // `textDocument.definition.linkSupport`; otherwise the LSP spec requires a
@@ -22,7 +27,7 @@ pub(crate) fn handle_definition(
         .load(std::sync::atomic::Ordering::Relaxed)
     {
         let locs: Vec<Location> = locations.into_iter().map(Into::into).collect();
-        return Some(GotoDefinitionResponse::Array(locs));
+        return Ok(Some(GotoDefinitionResponse::Array(locs)));
     }
 
     // Return `LocationLink`s carrying an `originSelectionRange` — the full
@@ -42,7 +47,7 @@ pub(crate) fn handle_definition(
             }
         })
         .collect();
-    Some(GotoDefinitionResponse::Link(links))
+    Ok(Some(GotoDefinitionResponse::Link(links)))
 }
 
 /// The range of the identifier at `pos` — used as the go-to-definition
@@ -68,10 +73,15 @@ pub(crate) fn handle_rename(
     uri: &Url,
     position: Position,
     new_name: String,
-) -> Option<WorkspaceEdit> {
+) -> Result<Option<WorkspaceEdit>, String> {
     let core_pos = position.into();
-    let result = al_analysis::queries::rename::rename(&server.workspace, uri, core_pos, &new_name)?;
-    Some(super::handlers::core_workspace_edit_to_lsp(result))
+    let Some(result) =
+        al_analysis::queries::rename::rename(&server.workspace, uri, core_pos, &new_name)
+            .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(super::handlers::core_workspace_edit_to_lsp(result)))
 }
 
 pub(crate) fn handle_prepare_rename(

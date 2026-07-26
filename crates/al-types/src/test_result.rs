@@ -1,6 +1,7 @@
 //! Test execution results and persisted history.
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,4 +87,20 @@ pub enum PersistenceError {
     Io(#[from] std::io::Error),
     #[error("test results JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("failed to read test result record at '{}' line {line}: {source}", path.display())]
+    ReadRecord {
+        path: PathBuf,
+        line: usize,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("malformed test result record at '{}' line {line}: {source}", path.display())]
+    CorruptRecord {
+        path: PathBuf,
+        line: usize,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("system clock precedes the Unix epoch: {0}")]
+    Clock(#[from] std::time::SystemTimeError),
 }

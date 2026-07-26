@@ -1,173 +1,251 @@
 #!/usr/bin/env python3
-"""Real-world tier: a production Business Central extension, not synthetic code.
+"""Private-corpus release benchmark with publish-safe aggregate output.
 
-Synthetic projects are uniform by construction; real AL
-has interfaces, enums, report layouts, event subscribers, permission sets and
-inconsistent formatting, which is where parsers actually diverge.
-
-The customer working copy is treated as READ-ONLY: each project is copied into
-benchmarks/work/ before anything runs, and only aggregate timings and counts
-are ever reported — never customer source.
-
-Unlike the synthetic tier this uses each project's OWN .alpackages unmodified,
-because real projects commonly depend on third-party symbols that the
-standardised Microsoft-only set does not contain.
+Each selected project is copied into `benchmarks/work/`; source input is never
+modified. The same release driver and semantic package comparison used by the
+public synthetic tier measure process-cold, warm-unchanged, and one-file-edit
+states. Project names, source paths, source text, package names, diagnostic
+text, and artifact paths are excluded from the result.
 """
+
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
 import json
 import os
 import shutil
-import statistics
-import subprocess
 import sys
-import time
+from pathlib import Path
+from typing import Any
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-BENCH = os.path.dirname(HERE)
-REPO = os.path.dirname(BENCH)
+from emit_bench import (
+    DRIVER,
+    SCENARIOS,
+    compiler_metadata,
+    machine_metadata,
+    repository_metadata,
+    run_round,
+    sha256_file,
+    source_fingerprint,
+    summarize_rounds,
+)
 
-ALC = os.environ.get("ALC_PATH") or os.path.join(
-    os.environ.get("AL_MS_EXT", ""), "bin", "linux", "alc.dll")
-EXPLORER = os.path.join(REPO, "target", "release", "al-explorer")
-CORPUS_ROOT = os.environ.get("AL_BENCH_REAL_ROOT", "")
+HERE = Path(__file__).resolve().parent
+BENCH = HERE.parent
+CORPUS_ROOT_VALUE = os.environ.get("AL_BENCH_REAL_ROOT", "")
+CORPUS_ROOT = Path(CORPUS_ROOT_VALUE).resolve() if CORPUS_ROOT_VALUE else None
 CORPUS_NAME = os.environ.get("AL_BENCH_CORPUS_NAME", "private production corpus")
-
 PROJECTS = [
     name.strip()
     for name in os.environ.get("AL_BENCH_PROJECTS", "").split(",")
     if name.strip()
 ]
-ROUNDS = 4
+ROUNDS = int(os.environ.get("AL_BENCH_REAL_ROUNDS", "4"))
+RESULT_PATH = Path(
+    os.environ.get("AL_BENCH_REAL_RESULT", BENCH / "results" / "realworld.json")
+)
 
 
-def loadavg():
+def resolve_source(name: str) -> Path:
+    if CORPUS_ROOT is None or not CORPUS_ROOT.is_dir():
+        raise RuntimeError("AL_BENCH_REAL_ROOT must name the private corpus directory")
+    source = (CORPUS_ROOT / name).resolve()
     try:
-        with open("/proc/loadavg") as fh:
-            return float(fh.read().split()[0])
-    except Exception:
-        return None
+        source.relative_to(CORPUS_ROOT)
+    except ValueError as error:
+        raise RuntimeError(f"project target escapes AL_BENCH_REAL_ROOT: {name}") from error
+    if not source.is_dir() or not (source / "app.json").is_file():
+        raise RuntimeError(f"private benchmark project is missing or has no app.json: {name}")
+    return source
 
 
-def stage(name):
-    """Copy a customer project into the benchmark work tree (read-only source)."""
-    src = os.path.join(CORPUS_ROOT, name)
-    dest = os.path.join(BENCH, "work", "real-" + name.replace(" ", "-"))
-    if os.path.isdir(dest):
-        shutil.rmtree(dest)
-    shutil.copytree(src, dest, ignore=shutil.ignore_patterns(
-        ".git", "output", "*.app", ".vscode", ".snapshots"))
-    pkgs = os.path.join(src, ".alpackages")
-    dpkgs = os.path.join(dest, ".alpackages")
-    os.makedirs(dpkgs, exist_ok=True)
-    if os.path.isdir(pkgs):
-        for f in os.listdir(pkgs):
-            s = os.path.join(pkgs, f)
-            if os.path.isfile(s) and not os.path.isfile(os.path.join(dpkgs, f)):
-                shutil.copy2(s, os.path.join(dpkgs, f))
-    return dest
+def stage_project(source: Path, label: str) -> Path:
+    work_root = BENCH / "work" / "realworld"
+    if work_root.is_symlink():
+        raise RuntimeError(f"refusing symlinked real-world benchmark work root: {work_root}")
+    destination = work_root / label
+    if destination.is_symlink() or destination.is_file():
+        destination.unlink()
+    elif destination.is_dir():
+        shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        destination,
+        ignore=shutil.ignore_patterns(
+            ".git", "output", "*.app", ".vscode", ".snapshots", "target"
+        ),
+    )
+    source_packages = source / ".alpackages"
+    destination_packages = destination / ".alpackages"
+    destination_packages.mkdir(parents=True, exist_ok=True)
+    if source_packages.is_dir():
+        for package in sorted(source_packages.glob("*.app")):
+            shutil.copy2(package, destination_packages / package.name)
+    return destination
 
 
-def count_al(root):
-    n = lines = 0
-    for dirpath, _, files in os.walk(root):
-        if ".alpackages" in dirpath:
-            continue
-        for f in files:
-            if f.endswith(".al"):
-                n += 1
-                try:
-                    with open(os.path.join(dirpath, f), "r", encoding="utf-8",
-                              errors="replace") as fh:
-                        lines += sum(1 for _ in fh)
-                except Exception:
-                    pass
-    return n, lines
-
-
-def run_once(cmd, cwd, out_app):
-    if os.path.exists(out_app):
-        os.remove(out_app)
-    lb = loadavg()
-    t0 = time.perf_counter()
-    try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=1800)
-        rc, so, se = p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired:
-        rc, so, se = -9, "", "TIMEOUT after 1800s"
-    ms = (time.perf_counter() - t0) * 1000.0
-    size = os.path.getsize(out_app) if os.path.exists(out_app) else 0
-    return {"ms": ms, "rc": rc, "size": size, "load": lb,
-            "stdout": so[-1500:], "stderr": se[-1500:]}
-
-
-def summarize(runs):
-    timed = [r["ms"] for r in runs[1:]] or [runs[0]["ms"]]
+def package_fingerprint(project: Path) -> dict[str, Any]:
+    packages = sorted((project / ".alpackages").glob("*.app"))
+    if not packages:
+        raise RuntimeError("staged private project has no .app package dependencies")
+    digest = hashlib.sha256()
+    total_bytes = 0
+    for package in packages:
+        file_hash = sha256_file(package)
+        digest.update(file_hash.encode())
+        digest.update(b"\0")
+        total_bytes += package.stat().st_size
     return {
-        "n": len(timed),
-        "min_ms": round(min(timed), 2),
-        "median_ms": round(statistics.median(timed), 2),
-        "max_ms": round(max(timed), 2),
-        "ok_runs": sum(1 for r in runs if r["rc"] == 0 and r["size"] > 0),
-        "total_runs": len(runs),
-        "out_size": runs[-1]["size"],
-        "last_rc": runs[-1]["rc"],
-        "samples_ms": [round(r["ms"], 2) for r in runs],
-        "last_stderr": runs[-1]["stderr"][-800:],
-        "last_stdout": runs[-1]["stdout"][-800:],
+        "count": len(packages),
+        "bytes": total_bytes,
+        "aggregateContentSha256": digest.hexdigest(),
     }
 
 
-def main():
-    results = {"corpus": CORPUS_NAME,
-               "note": "customer sources copied read-only; only aggregates reported",
-               "projects": {}}
-    targets = sys.argv[1:] or PROJECTS
+def publish_round(round_result: dict[str, Any]) -> dict[str, Any]:
+    measurements = []
+    for measurement in round_result["measurements"]:
+        measurements.append(
+            {
+                "backend": measurement["backend"],
+                "scenario": measurement["scenario"],
+                "elapsedNs": measurement["elapsedNs"],
+                "loadAverage": measurement["loadAverage"],
+                "success": measurement["success"],
+                "appSize": measurement["appSize"],
+                "diagnostics": measurement["diagnostics"],
+                "errors": measurement["errors"],
+                "timings": measurement["timings"],
+            }
+        )
+    return {"editedFile": "<redacted>", "measurements": measurements}
 
-    for name in targets:
-        src = os.path.join(CORPUS_ROOT, name)
-        if not os.path.isdir(src):
-            print(f"skip {name}: not present")
-            continue
-        print(f"\n### {name}")
-        proj = stage(name)
-        n_files, n_lines = count_al(proj)
-        npkg = len(os.listdir(os.path.join(proj, ".alpackages")))
-        print(f"  al_files={n_files} lines={n_lines} packages={npkg}")
-        entry = {"al_files": n_files, "al_lines": n_lines, "packages": npkg}
 
-        out_native = os.path.join(proj, "bench-native.app")
-        out_alc = os.path.join(proj, "bench-alc.app")
-        arms = {
-            "native": ([EXPLORER, "pack-native", "--project", proj, "--out", out_native],
-                       proj, out_native),
-            "alc": (["dotnet", ALC, f"/project:{proj}", f"/out:{out_alc}",
-                     f"/packagecachepath:{os.path.join(proj, '.alpackages')}"],
-                    proj, out_alc),
+def publish_comparison(comparison: dict[str, Any]) -> dict[str, Any]:
+    return {
+        scenario: {
+            "equivalent": value["equivalent"],
+            "entryCount": value["entryCount"],
+            "onlyNativeCount": len(value["onlyNative"]),
+            "onlyAlcCount": len(value["onlyAlc"]),
+            "mismatchCount": len(value["mismatches"]),
+            "normalizedDifferences": [
+                item["normalization"] for item in value["normalizedDifferences"]
+            ],
         }
-        runs = {k: [] for k in arms}
-        for i in range(ROUNDS):
-            tag = "warmup" if i == 0 else f"run{i}"
-            for k, (cmd, cwd, out) in arms.items():
-                r = run_once(cmd, cwd, out)
-                runs[k].append(r)
-                print(f"    {k:<8} {tag}: {r['ms']:>10.1f} ms rc={r['rc']} "
-                      f"size={r['size']:<9} load={r['load']}")
-        for k in arms:
-            entry[k] = summarize(runs[k])
+        for scenario, value in comparison.items()
+    }
 
-        nat, alc = entry["native"]["median_ms"], entry["alc"]["median_ms"]
-        entry["speedup"] = round(alc / nat, 2) if nat else None
-        entry["valid"] = entry["native"]["ok_runs"] > 0 and entry["alc"]["ok_runs"] > 0
-        flag = "" if entry["valid"] else "   [NOT VALID: an arm produced no .app]"
-        print(f"  => native {nat:.1f} ms vs alc {alc:.1f} ms = {entry['speedup']}x{flag}")
-        if not entry["valid"]:
-            print(f"     alc rc={entry['alc']['last_rc']} tail: {entry['alc']['last_stdout'][-300:]}")
 
-        results["projects"][name] = entry
-        with open(os.path.join(BENCH, "results", "realworld.json"), "w") as fh:
-            json.dump(results, fh, indent=2)
+def write_result(result: dict[str, Any]) -> None:
+    RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = RESULT_PATH.with_suffix(RESULT_PATH.suffix + ".tmp")
+    temporary.write_text(json.dumps(result, indent=2) + "\n")
+    temporary.replace(RESULT_PATH)
 
-    print("\nwrote results/realworld.json")
+
+def main() -> int:
+    if ROUNDS < 2:
+        raise RuntimeError(
+            "AL_BENCH_REAL_ROUNDS must be at least 2 (one discarded + one measured)"
+        )
+    if not DRIVER.is_file():
+        raise RuntimeError(
+            "release benchmark driver is missing; run "
+            "`cargo build --release -p al-compile --example build_bench`"
+        )
+    targets = sys.argv[1:] or PROJECTS
+    if not targets:
+        raise RuntimeError("set AL_BENCH_PROJECTS or pass one or more project names")
+
+    result: dict[str, Any] = {
+        "schemaVersion": 2,
+        "generatedAtUtc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "repository": repository_metadata(),
+        "machine": machine_metadata(),
+        "compiler": compiler_metadata(),
+        "corpus": CORPUS_NAME,
+        "privacy": {
+            "sourceCopiedReadOnly": True,
+            "projectNamesPublished": False,
+            "sourceOrDiagnosticTextPublished": False,
+            "packageNamesPublished": False,
+        },
+        "methodology": {
+            "rounds": ROUNDS,
+            "discardedRounds": [0],
+            "measuredRounds": ROUNDS - 1,
+            "scenarios": list(SCENARIOS),
+            "backendOrderAlternates": True,
+            "freshDriverPerRound": True,
+            "semanticPackageComparisonRequired": True,
+        },
+        "projects": {},
+    }
+    all_valid = True
+
+    for index, name in enumerate(targets, start=1):
+        label = f"project-{index:02d}"
+        source = resolve_source(name)
+        source_before = source_fingerprint(source)
+        staged = stage_project(source, label)
+        staged_before = source_fingerprint(staged)
+        if staged_before != source_before:
+            raise RuntimeError(f"{label}: staged source fingerprint differs from read-only input")
+        packages = package_fingerprint(staged)
+        print(
+            f"\n### {label}: {staged_before['files']} AL files, "
+            f"{staged_before['lines']} lines, {packages['count']} packages"
+        )
+
+        rounds = []
+        comparisons = []
+        for round_index in range(ROUNDS):
+            round_result, comparison = run_round(
+                staged, f"realworld/{label}", round_index
+            )
+            rounds.append(round_result)
+            comparisons.append(comparison)
+            state = "discarded warmup" if round_index == 0 else "measured"
+            equivalence = all(
+                comparison[scenario]["equivalent"] for scenario in SCENARIOS
+            )
+            print(
+                f"  round {round_index} ({state}): "
+                f"semantic={'ok' if equivalence else 'FAIL'}"
+            )
+
+        if source_fingerprint(staged) != staged_before:
+            raise RuntimeError(f"{label}: benchmark edit was not restored")
+        if source_fingerprint(source) != source_before:
+            raise RuntimeError(f"{label}: read-only source changed during benchmark")
+
+        summary, valid = summarize_rounds(rounds, comparisons)
+        all_valid &= valid
+        result["projects"][label] = {
+            "input": staged_before,
+            "packageSet": packages,
+            "summary": summary,
+            "rounds": [publish_round(round_result) for round_result in rounds],
+            "packageComparisons": [
+                publish_comparison(comparison) for comparison in comparisons
+            ],
+            "valid": valid,
+        }
+        write_result(result)
+        print(f"  result: {'VALID' if valid else 'INVALID'}")
+
+    result["valid"] = all_valid
+    write_result(result)
+    print(f"\nwrote {RESULT_PATH}")
+    return 0 if all_valid else 1
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        raise SystemExit(1)

@@ -219,7 +219,7 @@ impl AppManifest {
             x.push_str("  <Dependencies>\n");
             for d in &self.dependencies {
                 x.push_str(&format!(
-                    "    <Dependency Id=\"{}\" Name=\"{}\" Publisher=\"{}\" Version=\"{}\" />\n",
+                    "    <Dependency Id=\"{}\" Name=\"{}\" Publisher=\"{}\" MinVersion=\"{}\" CompatibilityId=\"0.0.0.0\" />\n",
                     e(&d.id),
                     e(&d.name),
                     e(&d.publisher),

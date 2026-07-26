@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use al_types::strip_json_comments;
 use serde::Deserialize;
+use thiserror::Error;
 use tracing::{debug, warn};
 
 use al_types::AppDependency;
@@ -19,6 +20,22 @@ pub use al_types::AuthMethod;
 pub struct DebugConfigFile {
     pub path: PathBuf,
     pub configs: Vec<BcServerConfig>,
+}
+
+#[derive(Debug, Error)]
+#[error("Invalid AL launch configuration at '{}': {message}", path.display())]
+pub struct LaunchConfigError {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+impl LaunchConfigError {
+    fn new(path: &Path, error: impl std::fmt::Display) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +56,10 @@ pub struct BcServerConfig {
     /// Accept invalid/self-signed TLS certificates. Defaults to `false`.
     /// Set to `true` only for on-prem servers with self-signed certs.
     pub accept_invalid_certs: bool,
+    /// Complete launch/debug object as written by the user. Connection,
+    /// publishing, test, and native-DAP consumers share this parsed source so
+    /// debug-only fields are not silently discarded by the connection model.
+    pub debug_args: serde_json::Value,
 }
 
 impl BcServerConfig {
@@ -164,40 +185,51 @@ struct VsCodeLaunchConfigJson {
     accept_invalid_certs: bool,
 }
 
-pub fn find_launch_config(project_root: &Path) -> Option<DebugConfigFile> {
+pub fn find_launch_config(
+    project_root: &Path,
+) -> Result<Option<DebugConfigFile>, LaunchConfigError> {
     let zed_path = project_root.join(".zed").join("debug.json");
-    if zed_path.exists() {
+    if launch_file_exists(&zed_path)? {
         match parse_zed_debug_file(&zed_path) {
             Ok(df) if !df.configs.is_empty() => {
                 debug!(path = %zed_path.display(), configs = df.configs.len(), "Found Zed debug configuration");
-                return Some(df);
+                return Ok(Some(df));
             }
             Ok(_) => {
                 debug!(path = %zed_path.display(), "Zed debug.json found but no AL configurations");
             }
             Err(e) => {
-                warn!(path = %zed_path.display(), error = %e, "Failed to parse .zed/debug.json");
+                return Err(LaunchConfigError::new(&zed_path, e));
             }
         }
     }
 
     let vscode_path = project_root.join(".vscode").join("launch.json");
-    if vscode_path.exists() {
+    if launch_file_exists(&vscode_path)? {
         match parse_vscode_launch_file(&vscode_path) {
             Ok(df) if !df.configs.is_empty() => {
                 debug!(path = %vscode_path.display(), configs = df.configs.len(), "Found VS Code launch configuration");
-                return Some(df);
+                return Ok(Some(df));
             }
             Ok(_) => {
                 debug!(path = %vscode_path.display(), "VS Code launch.json found but no AL configurations");
             }
             Err(e) => {
-                warn!(path = %vscode_path.display(), error = %e, "Failed to parse .vscode/launch.json");
+                return Err(LaunchConfigError::new(&vscode_path, e));
             }
         }
     }
 
-    None
+    Ok(None)
+}
+
+fn launch_file_exists(path: &Path) -> Result<bool, LaunchConfigError> {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err(LaunchConfigError::new(path, "path is not a regular file")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(LaunchConfigError::new(path, error)),
+    }
 }
 
 /// Maximum bytes accepted for a debug-config file (Zed `debug.json` or
@@ -246,13 +278,25 @@ fn read_launch_file_capped(path: &Path) -> Result<String, Box<dyn std::error::Er
 fn parse_zed_debug_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::error::Error>> {
     let content = read_launch_file_capped(path)?;
     let clean = strip_json_comments(&content);
-    let configs_raw: Vec<ZedDebugConfigJson> = serde_json::from_str(&clean)?;
+    let configs_raw: Vec<serde_json::Value> = serde_json::from_str(&clean)?;
 
     let configs: Vec<BcServerConfig> = configs_raw
         .into_iter()
-        .filter(|c| c.adapter == "al" || c.environment_type.is_some())
-        .filter_map(convert_zed_config)
-        .collect();
+        .enumerate()
+        .map(|debug_args| {
+            let (index, debug_args) = debug_args;
+            let parsed: ZedDebugConfigJson = serde_json::from_value(debug_args.clone())
+                .map_err(|error| format!("configuration {index}: {error}"))?;
+            Ok((index, parsed, debug_args))
+        })
+        .collect::<Result<Vec<_>, String>>()?
+        .into_iter()
+        .filter(|(_, config, _)| config.adapter == "al" || config.environment_type.is_some())
+        .map(|(index, config, debug_args)| {
+            convert_zed_config(config, debug_args)
+                .map_err(|error| format!("configuration {index}: {error}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
 
     Ok(DebugConfigFile {
         path: path.to_path_buf(),
@@ -263,14 +307,25 @@ fn parse_zed_debug_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::err
 fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::error::Error>> {
     let content = read_launch_file_capped(path)?;
     let clean = strip_json_comments(&content);
-    let raw: VsCodeLaunchJson = serde_json::from_str(&clean)?;
+    let raw_value: serde_json::Value = serde_json::from_str(&clean)?;
+    let raw: VsCodeLaunchJson = serde_json::from_value(raw_value.clone())?;
+    let raw_configs = raw_value
+        .get("configurations")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
 
     let configs: Vec<BcServerConfig> = raw
         .configurations
         .into_iter()
-        .filter(|c| c.config_type == "al" || c.environment_type.is_some())
-        .filter_map(convert_vscode_config)
-        .collect();
+        .zip(raw_configs)
+        .enumerate()
+        .filter(|(_, (config, _))| config.config_type == "al" || config.environment_type.is_some())
+        .map(|(index, (config, debug_args))| {
+            convert_vscode_config(config, debug_args)
+                .map_err(|error| format!("configuration {index}: {error}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
 
     Ok(DebugConfigFile {
         path: path.to_path_buf(),
@@ -278,10 +333,17 @@ fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std:
     })
 }
 
-fn convert_zed_config(raw: ZedDebugConfigJson) -> Option<BcServerConfig> {
-    let env_type = parse_environment_type(raw.environment_type.as_deref()?)?;
-    let auth = parse_auth_method(raw.authentication.as_deref(), &env_type);
-    Some(BcServerConfig {
+fn convert_zed_config(
+    raw: ZedDebugConfigJson,
+    debug_args: serde_json::Value,
+) -> Result<BcServerConfig, String> {
+    let environment_type = raw
+        .environment_type
+        .as_deref()
+        .ok_or_else(|| "AL configuration is missing environmentType".to_string())?;
+    let env_type = parse_environment_type(environment_type)?;
+    let auth = parse_auth_method(raw.authentication.as_deref(), &env_type)?;
+    Ok(BcServerConfig {
         name: raw.label,
         environment_type: env_type,
         server: raw.server,
@@ -291,13 +353,21 @@ fn convert_zed_config(raw: ZedDebugConfigJson) -> Option<BcServerConfig> {
         tenant: raw.tenant,
         authentication: auth,
         accept_invalid_certs: raw.accept_invalid_certs,
+        debug_args,
     })
 }
 
-fn convert_vscode_config(raw: VsCodeLaunchConfigJson) -> Option<BcServerConfig> {
-    let env_type = parse_environment_type(raw.environment_type.as_deref()?)?;
-    let auth = parse_auth_method(raw.authentication.as_deref(), &env_type);
-    Some(BcServerConfig {
+fn convert_vscode_config(
+    raw: VsCodeLaunchConfigJson,
+    debug_args: serde_json::Value,
+) -> Result<BcServerConfig, String> {
+    let environment_type = raw
+        .environment_type
+        .as_deref()
+        .ok_or_else(|| "AL configuration is missing environmentType".to_string())?;
+    let env_type = parse_environment_type(environment_type)?;
+    let auth = parse_auth_method(raw.authentication.as_deref(), &env_type)?;
+    Ok(BcServerConfig {
         name: raw.name,
         environment_type: env_type,
         server: raw.server,
@@ -307,53 +377,31 @@ fn convert_vscode_config(raw: VsCodeLaunchConfigJson) -> Option<BcServerConfig> 
         tenant: raw.tenant,
         authentication: auth,
         accept_invalid_certs: raw.accept_invalid_certs,
+        debug_args,
     })
 }
 
-fn parse_environment_type(s: &str) -> Option<EnvironmentType> {
+fn parse_environment_type(s: &str) -> Result<EnvironmentType, String> {
     match s {
-        "OnPrem" => Some(EnvironmentType::OnPrem),
-        "Sandbox" => Some(EnvironmentType::Sandbox),
-        "Production" => Some(EnvironmentType::Production),
-        other => {
-            // ERROR (not WARN) because the launch entry is silently dropped —
-            // the user typed a config they wanted to use and we're refusing
-            // it. Naming the valid values in the message lets them fix the
-            // typo without consulting docs.
-            tracing::error!(
-                environment_type = %other,
-                "Unknown environmentType in launch.json — expected one of OnPrem / Sandbox / Production; dropping this configuration entry"
-            );
-            None
-        }
+        "OnPrem" => Ok(EnvironmentType::OnPrem),
+        "Sandbox" => Ok(EnvironmentType::Sandbox),
+        "Production" => Ok(EnvironmentType::Production),
+        other => Err(format!(
+            "unknown environmentType {other:?}; expected OnPrem, Sandbox, or Production"
+        )),
     }
 }
 
-fn parse_auth_method(s: Option<&str>, env_type: &EnvironmentType) -> AuthMethod {
+fn parse_auth_method(s: Option<&str>, env_type: &EnvironmentType) -> Result<AuthMethod, String> {
     match s {
-        Some("UserPassword") => AuthMethod::UserPassword,
-        Some("Windows") => AuthMethod::Windows,
-        Some("AAD") | Some("MicrosoftEntraID") => AuthMethod::AAD,
-        None if *env_type == EnvironmentType::OnPrem => AuthMethod::Windows,
-        None => AuthMethod::AAD,
-        Some(other) => {
-            // Use the environment's default rather than always falling back to
-            // AAD. A misconfigured launch.json
-            // for an OnPrem server should not silently switch to cloud OAuth — it
-            // typically means the user typed a vendor-specific value (e.g.
-            // "NavUserPassword") that maps to UserPassword in spirit. Match the
-            // None-arm policy so the fallback is "what would the env type pick by
-            // default" not "always AAD".
-            let fallback = match env_type {
-                EnvironmentType::OnPrem => AuthMethod::Windows,
-                _ => AuthMethod::AAD,
-            };
-            warn!(
-                auth = %other, env = ?env_type, fallback = ?fallback,
-                "Unknown auth method in launch.json — falling back to env-type default"
-            );
-            fallback
-        }
+        Some("UserPassword") => Ok(AuthMethod::UserPassword),
+        Some("Windows") => Ok(AuthMethod::Windows),
+        Some("AAD") | Some("MicrosoftEntraID") => Ok(AuthMethod::AAD),
+        None if *env_type == EnvironmentType::OnPrem => Ok(AuthMethod::Windows),
+        None => Ok(AuthMethod::AAD),
+        Some(other) => Err(format!(
+            "unknown authentication {other:?}; expected UserPassword, Windows, AAD, or MicrosoftEntraID"
+        )),
     }
 }
 
@@ -398,6 +446,65 @@ mod tests {
     }
 
     #[test]
+    fn launch_parsers_preserve_complete_debug_objects() {
+        let dir = make_tempdir("preserve-debug-objects");
+        let zed_path = dir.join("debug.json");
+        let zed_debug = serde_json::json!({
+            "adapter": "al",
+            "label": "Zed Native",
+            "environmentType": "Sandbox",
+            "environmentName": "Dev",
+            "tenant": "tenant.example",
+            "authentication": "AAD",
+            "breakOnError": "ExcludeTry",
+            "breakOnRecordWrite": "ExcludeTemporary",
+            "startupObjectType": "Report",
+            "startupObjectId": 50100,
+            "startupCompany": "CRONUS UK",
+            "enableSqlInformationDebugger": false,
+            "longRunningSqlStatementsThreshold": 900
+        });
+        std::fs::write(
+            &zed_path,
+            serde_json::to_vec(&serde_json::json!([zed_debug.clone()])).unwrap(),
+        )
+        .unwrap();
+        let zed = parse_zed_debug_file(&zed_path).expect("Zed debug config must parse");
+        assert_eq!(zed.configs.len(), 1);
+        assert_eq!(zed.configs[0].debug_args, zed_debug);
+
+        let vscode_path = dir.join("launch.json");
+        let vscode_debug = serde_json::json!({
+            "type": "al",
+            "request": "launch",
+            "name": "VS Code Native",
+            "environmentType": "OnPrem",
+            "server": "https://bc.example.test",
+            "serverInstance": "BC",
+            "authentication": "AAD",
+            "breakOnNext": "Background",
+            "sessionId": 42,
+            "startupObjectType": "Query",
+            "startupObjectId": 50101,
+            "numberOfSqlStatements": 25,
+            "validateServerCertificate": false
+        });
+        std::fs::write(
+            &vscode_path,
+            serde_json::to_vec(&serde_json::json!({
+                "version": "0.2.0",
+                "configurations": [vscode_debug.clone()]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let vscode =
+            parse_vscode_launch_file(&vscode_path).expect("VS Code launch config must parse");
+        assert_eq!(vscode.configs.len(), 1);
+        assert_eq!(vscode.configs[0].debug_args, vscode_debug);
+    }
+
+    #[test]
     fn vscode_launch_oversize_is_rejected() {
         let dir = make_tempdir("over-cap");
         let path = dir.join("launch.json");
@@ -428,6 +535,79 @@ mod tests {
             err.contains("refusing to parse"),
             "error must mention size refusal: {err}"
         );
+    }
+
+    #[test]
+    fn malformed_zed_config_blocks_vscode_fallback() {
+        let dir = make_tempdir("malformed-zed");
+        std::fs::create_dir_all(dir.join(".zed")).unwrap();
+        std::fs::create_dir_all(dir.join(".vscode")).unwrap();
+        std::fs::write(dir.join(".zed/debug.json"), "{not json").unwrap();
+        std::fs::write(
+            dir.join(".vscode/launch.json"),
+            r#"{"configurations":[{"type":"al","environmentType":"Sandbox"}]}"#,
+        )
+        .unwrap();
+
+        let error = find_launch_config(&dir).expect_err("invalid preferred config must fail");
+        assert!(error.path.ends_with(".zed/debug.json"));
+    }
+
+    #[test]
+    fn valid_non_al_zed_config_can_fall_back_to_vscode() {
+        let dir = make_tempdir("non-al-zed");
+        std::fs::create_dir_all(dir.join(".zed")).unwrap();
+        std::fs::create_dir_all(dir.join(".vscode")).unwrap();
+        std::fs::write(
+            dir.join(".zed/debug.json"),
+            r#"[{"adapter":"debugpy","label":"Python"}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".vscode/launch.json"),
+            r#"{"configurations":[{"name":"AL","type":"al","environmentType":"Sandbox"}]}"#,
+        )
+        .unwrap();
+
+        let file = find_launch_config(&dir)
+            .expect("both files are valid")
+            .expect("VS Code AL config");
+        assert_eq!(file.configs[0].name, "AL");
+        assert!(file.path.ends_with(".vscode/launch.json"));
+    }
+
+    #[test]
+    fn invalid_al_literals_are_configuration_errors() {
+        let dir = make_tempdir("invalid-literals");
+        std::fs::create_dir_all(dir.join(".vscode")).unwrap();
+        let path = dir.join(".vscode/launch.json");
+        std::fs::write(
+            &path,
+            r#"{"configurations":[{"type":"al","environmentType":"Sandbx"}]}"#,
+        )
+        .unwrap();
+        let error = find_launch_config(&dir).expect_err("unknown environment must fail");
+        assert!(error.message.contains("unknown environmentType"));
+
+        std::fs::write(
+            &path,
+            r#"{"configurations":[{"type":"al","environmentType":"OnPrem","authentication":"NavUserPassword"}]}"#,
+        )
+        .unwrap();
+        let error = find_launch_config(&dir).expect_err("unknown auth must fail");
+        assert!(error.message.contains("unknown authentication"));
+    }
+
+    #[test]
+    fn missing_launch_files_are_distinct_from_invalid_files() {
+        let dir = make_tempdir("missing");
+        assert!(find_launch_config(&dir)
+            .expect("missing files are valid absence")
+            .is_none());
+
+        std::fs::create_dir_all(dir.join(".zed/debug.json")).unwrap();
+        let error = find_launch_config(&dir).expect_err("directory is not a config file");
+        assert!(error.message.contains("not a regular file"));
     }
 
     #[test]
@@ -470,6 +650,7 @@ mod tests {
             tenant: None,
             authentication: AuthMethod::Windows,
             accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
         }
     }
 
@@ -540,6 +721,7 @@ mod tests {
             tenant: Some("contoso.onmicrosoft.com".to_string()),
             authentication: AuthMethod::AAD,
             accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
         };
         let url = cfg.dev_packages_url(&make_dep()).unwrap();
         assert!(
@@ -562,6 +744,7 @@ mod tests {
             tenant: None,
             authentication: AuthMethod::AAD,
             accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
         };
         assert!(cfg.dev_packages_url(&make_dep()).is_none());
         cfg.tenant = Some("t".to_string());

@@ -4,6 +4,7 @@
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 
 use super::bc_server_params::{parse_bc_server_params, reject_unsafe_server_url};
+use crate::server::daemon::{optional_bounded_usize_param, rpc_error};
 
 pub(in crate::server::daemon) async fn dispatch_snapshot(
     id: u64,
@@ -25,7 +26,10 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
         }
     };
 
-    let bc = parse_bc_server_params(params, "snapshots");
+    let bc = match parse_bc_server_params(params, "snapshots") {
+        Ok(config) => config,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
     if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
         return err;
     }
@@ -40,7 +44,19 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
 
     match cmd {
         "start" => {
-            let description = params.get("description").and_then(|v| v.as_str());
+            let description = match params.get("description") {
+                None => None,
+                Some(value) => match value.as_str() {
+                    Some(description) => Some(description),
+                    None => {
+                        return rpc_error(
+                            id,
+                            error_codes::INVALID_PARAMS,
+                            "'description' must be a string when supplied",
+                        );
+                    }
+                },
+            };
             match al_bc::snapshot::start_snapshot(&config, description).await {
                 Ok(snapshot_id) => Response {
                     id,
@@ -65,15 +81,8 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
         }
 
         "list" => match al_bc::snapshot::list_snapshots(&config).await {
-            Ok(snapshots) => {
-                let items: Vec<serde_json::Value> = snapshots
-                    .iter()
-                    .map(|snapshot| {
-                        serde_json::to_value(snapshot)
-                            .expect("snapshot metadata must be JSON serializable")
-                    })
-                    .collect();
-                Response {
+            Ok(snapshots) => match serde_json::to_value(&snapshots) {
+                Ok(items) => Response {
                     id,
                     result: Some(serde_json::json!({
                         "cmd": "list",
@@ -81,8 +90,13 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
                     })),
                     error: None,
                     ..Default::default()
-                }
-            }
+                },
+                Err(error) => rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("serialize snapshot list failed: {error}"),
+                ),
+            },
             Err(e) => Response {
                 id,
                 result: None,
@@ -95,8 +109,12 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
         },
 
         "download" => {
-            let snapshot_id = match params.get("snapshotId").and_then(|v| v.as_str()) {
-                Some(s) => s.to_string(),
+            let snapshot_id = match params
+                .get("snapshotId")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+            {
+                Some(snapshot_id) => snapshot_id.to_string(),
                 None => {
                     return Response {
                         id,
@@ -164,7 +182,10 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
         }
     };
 
-    let bc = parse_bc_server_params(params, "profiles");
+    let bc = match parse_bc_server_params(params, "profiles") {
+        Ok(config) => config,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
     if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
         return err;
     }
@@ -201,8 +222,12 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
         },
 
         "stop" => {
-            let session_id = match params.get("sessionId").and_then(|v| v.as_str()) {
-                Some(s) => s.to_string(),
+            let session_id = match params
+                .get("sessionId")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+            {
+                Some(session_id) => session_id.to_string(),
                 None => {
                     return Response {
                         id,
@@ -267,20 +292,14 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
                     ..Default::default()
                 };
             }
-            let top_n = params.get("topN").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-            let top_n = top_n.min(1000);
+            let top_n = match optional_bounded_usize_param(params, "topN", 20, 1000) {
+                Ok(top_n) => top_n,
+                Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+            };
 
             match al_bc::profiling::analyze_profile_file(&profile_path, top_n).await {
-                Ok(result) => {
-                    let hotspots: Vec<serde_json::Value> = result
-                        .hotspots
-                        .iter()
-                        .map(|hotspot| {
-                            serde_json::to_value(hotspot)
-                                .expect("profiling hotspots must be JSON serializable")
-                        })
-                        .collect();
-                    Response {
+                Ok(result) => match serde_json::to_value(&result.hotspots) {
+                    Ok(hotspots) => Response {
                         id,
                         result: Some(serde_json::json!({
                             "cmd": "analyze",
@@ -290,8 +309,13 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
                         })),
                         error: None,
                         ..Default::default()
-                    }
-                }
+                    },
+                    Err(error) => rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("serialize profiling hotspots failed: {error}"),
+                    ),
+                },
                 Err(e) => Response {
                     id,
                     result: None,
@@ -398,6 +422,41 @@ mod tests {
         let err = resp.error.expect("err");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("absolute"), "got: {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn snapshot_and_profiling_reject_malformed_optional_params() {
+        for params in [
+            serde_json::json!({ "cmd": "list", "serverUrl": 7049 }),
+            serde_json::json!({ "cmd": "list", "acceptInvalidCerts": "yes" }),
+            serde_json::json!({ "cmd": "list", "outputDir": "relative" }),
+            serde_json::json!({ "cmd": "start", "description": 7 }),
+        ] {
+            assert_eq!(
+                dispatch_snapshot(20, &params)
+                    .await
+                    .error
+                    .expect("malformed snapshot params")
+                    .code,
+                error_codes::INVALID_PARAMS
+            );
+        }
+
+        for top_n in [serde_json::json!("many"), serde_json::json!(1001)] {
+            let response = dispatch_profiling(
+                21,
+                &serde_json::json!({
+                    "cmd": "analyze",
+                    "path": "/nonexistent/profile.json",
+                    "topN": top_n
+                }),
+            )
+            .await;
+            assert_eq!(
+                response.error.expect("malformed topN").code,
+                error_codes::INVALID_PARAMS
+            );
+        }
     }
 
     // =======================================================================

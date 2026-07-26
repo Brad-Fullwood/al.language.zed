@@ -13,6 +13,7 @@ real output (or inspect the screenshot), not just an exit code.
 | tree-sitter grammar or generator | Grammar crate/generator tests, fixture build, and `tree-sitter-al/tests/run_repo_tests.sh` |
 | `languages/al/*.scm`, `extension.toml`, language-server wiring, in-editor behavior | GUI e2e: `crates/al-test-harness/editor-e2e/drive.sh` — **open the screenshot** |
 | Native `.app` emit / `alc` / live semantic bridge | env-gated harness tests with `AL_TOOL_PATH=…` (see below) |
+| Publish/install, native DAP, live-routed tests, or test snapshots | strict live service profile: `make live-bc-contracts` (see below) |
 | Generated artifacts (`languages/al`, grammar, themes) | `make repro-artifacts` (and `scripts/check-release-hygiene.sh`) |
 | Anything you intend to release | `make release-dryrun` |
 
@@ -24,7 +25,7 @@ cargo test --workspace --exclude zed-al   # whole engine (zed-al is a wasm-only 
 ```
 
 `zed-al` is excluded from the native workspace command because its release
-artifact targets `wasm32-wasip1`. Run its host-side unit tests with
+artifact targets `wasm32-wasip2` and must be a WebAssembly component. Run its host-side unit tests with
 `cargo test -p zed-al`, then build the actual extension with `make wasm`. Unit
 tests do not prove the behavior survives the real binary transport; that is what
 the native harness covers.
@@ -112,11 +113,10 @@ Traps that make a "passing" e2e run lie:
 - **A PASS only means `al-lsp` spawned.** You must **open the screenshot**
   (default `target/zed-extension-screenshot.png`) and confirm the
   highlighting/behavior you changed.
-- **The compiled extension artifacts are gitignored and Zed-built.**
-  `extension.wasm` and `grammars/al.wasm` come from `make install` + the
-  command-palette action `zed: install dev extension`. A source edit to the
-  grammar/extension is **not** in the editor until those are regenerated — the
-  harness reuses whatever is on disk.
+- **The compiled extension artifacts are gitignored.** The harness rebuilds
+  `extension.wasm` as a `wasm32-wasip2` component and rebuilds
+  `grammars/al.wasm` from the current checkout before launch. It fails before
+  Zed starts if the Rust artifact is a Preview 1 core module.
 - **Grammar rev drift.** `extension.toml` `[grammars.al].rev` (Zed highlighting)
   must equal the `tree-sitter-al` submodule HEAD (native parsing);
   `make release-dryrun` checks this.
@@ -124,31 +124,29 @@ Traps that make a "passing" e2e run lie:
   shares one process across windows; a broad kill takes down the developer's
   real windows. The container exists precisely to isolate this.
 
-## 4. Env-gated `alc` / semantic tests
+## 4. Microsoft `alc` / semantic contract profile
 
-These require Microsoft's AL toolchain and **skip cleanly** when `AL_TOOL_PATH`
-is unset (the common dev/CI case), so they are not part of the default harness
-run. Point `AL_TOOL_PATH` at the AL extension's platform `bin` dir (the one
-containing `alc.dll` / `Microsoft.Dynamics.Nav.CodeAnalysis.dll`), with `dotnet`
-on `PATH`:
+These external-contract tests are `#[ignore]` in the self-contained Rust suite,
+so `cargo test` reports them as ignored rather than passed. The strict profile
+requires Microsoft's AL toolchain, a coherent dependency package cache, and
+`dotnet`; a missing input prints `UNAVAILABLE` and exits non-zero.
 
 ```bash
-# Native .app emitter is semantically identical to alc (reads .app NAVX+zip entries).
-AL_TOOL_PATH=<ext>/bin/linux cargo test -p al-test-harness --test emit_differential
-
-# pack-native --validate refuses to emit a semantically-invalid .app (alc oracle).
-AL_TOOL_PATH=<ext>/bin/linux cargo test -p al-test-harness --test pack_native_validate
-
-# Live in-process .NET CodeAnalysis contract: compiler diagnostics, type lookup,
-# completion, CodeCop, builtins, error codes, and FFI health.
 AL_TOOL_PATH=<ext>/bin/linux \
-  cargo test -p al-semantic --features semantic --test live_bridge
+AL_PACKAGE_CACHE_PATH=<project>/.alpackages \
+  make microsoft-contracts
+```
 
-# Optional: also exercise dependency-reference loading.
-AL_TOOL_PATH=<ext>/bin/linux AL_PACKAGE_CACHE_PATH=<project>/.alpackages \
-  cargo test -p al-semantic --features semantic --test live_bridge
+The profile builds the semantic-feature LSP, runs the live CodeAnalysis and CLI
+catalog contracts, both `pack-native --validate` cases, all native-versus-`alc`
+emitter differentials (including the Base Application/resource fixture), and
+receiver-sensitive Zed built-in hover cases. It cannot silently omit the
+package-backed arm.
 
-# Required consumer finish gate after changing the bridge or its lifecycle.
+Do not treat that external profile alone as complete. After bridge or lifecycle
+changes, also run the consumer finish gate:
+
+```bash
 cargo test -p al-semantic --all-features
 cargo test -p al-workspace
 cargo test -p al-analysis
@@ -156,16 +154,58 @@ cargo test -p al-test
 cargo test -p al-lsp --lib --features semantic
 ```
 
-Do not treat a bridge-only pass as complete: the consumer finish gate catches drift in lifecycle,
-hover/completion, diagnostics, test routing/runtime, daemon routing, and semantic feature wiring. The
-package-backed live contract and all five consumer commands above were last run successfully on
-2026-07-21.
-
 Reminder: a plain `cargo build --workspace` links `al-lsp` against the **no-op
 semantic stub** and rewrites `target/debug/al-lsp`; only a `--features semantic`
 build has the real bridge. Don't symlink the plain `target/debug/al-lsp` onto `PATH`.
 
-## 5. Reproducible generated artifacts
+## 5. Live Business Central contract profile
+
+`make live-bc-contracts` is the strict service-backed profile. It does not skip
+or pass when credentials, a launch configuration, an exact test, or a usable
+breakpoint is absent: preflight prints `UNAVAILABLE` and exits 2. The underlying
+Rust test stays `#[ignore]` in the self-contained suite so ordinary `cargo test`
+cannot count an unattempted tenant check as green.
+
+The supplied test must route to live BC, invoke the supplied breakpoint, have a
+second executable statement for step-over, expose at least one local, and be
+deterministic at the captured sample. Run:
+
+```bash
+AL_LIVE_BC_PROJECT=/absolute/path/to/live-test-app \
+AL_LIVE_BC_CONFIG='BC Online Sandbox' \
+AL_LIVE_BC_TEST_CODEUNIT_ID=50100 \
+AL_LIVE_BC_TEST_CODEUNIT_NAME='Live Contract Tests' \
+AL_LIVE_BC_TEST_METHOD='PublishDebugAndSnapshot' \
+AL_LIVE_BC_BREAKPOINT_FILE='src/LiveContractTests.Codeunit.al' \
+AL_LIVE_BC_BREAKPOINT_LINE=24 \
+AL_LIVE_BC_EVAL='ObservedValue' \
+AL_LIVE_BC_EXPECT_EVAL='42' \
+AL_LIVE_BC_VERSION='26.5.0.0' \
+BC_ACCESS_TOKEN='<headless AAD bearer token>' \
+  make live-bc-contracts
+```
+
+`BC_TOKEN` remains an alias for existing automation. If both token variables
+are present they must contain the same value; disagreement fails closed before
+network access. The profile:
+
+1. Builds the current `al-lsp` and `al-explorer` binaries.
+2. Runs the shared publish pipeline and requires BC to report a completed
+   upload/install step.
+3. Drives native DAP over its real `Content-Length` transport through
+   initialize, launch compile/publish/attach, verified breakpoint, threads,
+   stack, scopes, locals, evaluate, step, continue, and disconnect.
+4. Runs the exact test through the BC test API and proves the CLI reports the
+   `liveBc` routing decision.
+5. Captures a live breakpoint snapshot, validates it, replays it against the
+   declared BC version with zero divergences, and self-diffs the persisted file.
+
+The profile writes build output to the supplied project as normal publish
+tooling does. Its temporary snapshot directory is created inside that project
+(required by the path sandbox) and removed afterward. Never commit credentials,
+tenant launch files, or captured service data.
+
+## 6. Reproducible generated artifacts
 
 `make repro-artifacts` proves the committed generated outputs can be regenerated
 from their sources with **no diff**:
@@ -201,49 +241,49 @@ The repository suite clones the repositories configured in
 revisions and the per-repository results. The corpus measures compatibility; it
 does not replace focused valid/invalid fixtures or editor inspection.
 
-## 6. Release dry-run
+## 7. Release dry-run
 
 `make release-dryrun` is a **read-only** release-readiness gate — it never
-publishes:
+publishes. Its numbered output is the authoritative order:
 
-1. `scripts/check-repo-consistency.sh` — the binary-download repo slug is
-   consistent across `src/lib.rs`, `extension.toml`, and the git remote.
-2. `scripts/check-doc-paths.sh` — stale `crates/<name>` references in Markdown
-   are rejected.
-3. `scripts/check-release-hygiene.sh` — product-version alignment (root `zed-al`
-   = `extension.toml` = `al-lsp` = `al-explorer` = their `Cargo.lock` entries), submodule/grammar-rev
-   alignment, generated-asset presence, and `languages/al` currency.
-4. `make repro-artifacts` — the regenerate-and-diff guard above.
-5. `cargo build --workspace --exclude zed-al` plus the real
-   `cargo build -p al-lsp --bin al-lsp --features semantic` binary.
-6. `cargo test --workspace --exclude zed-al`.
-7. `cargo publish --dry-run --no-verify` for each **publishable** crate (the 17
-   library crates; `zed-al`/`al-lsp`/`al-explorer`/`al-protocol`/
-   `al-test-harness` are `publish = false`).
+1. Grammar crate tests.
+2. Grammar generator tests.
+3. Focused grammar fixtures and the pinned external repository corpus.
+4. Grammar package-manifest listing.
+5. Binary-download repository-slug consistency.
+6. Stale `crates/<name>` documentation-path rejection.
+7. Release hygiene: product-version alignment (root `zed-al` =
+   `extension.toml` = `al-lsp` = `al-explorer` = their `Cargo.lock` entries),
+   submodule/grammar-revision alignment, required generated assets, and
+   `languages/al` currency.
+8. `make repro-artifacts`, including language-package regeneration/diff and
+   deterministic Zed-index generation.
+9. Workspace formatting plus `clippy -D warnings`.
+10. Native workspace build plus the real semantic-feature `al-lsp` binary.
+11. Full native workspace tests.
+12. Host tests and the release WASM build for the actual Zed extension.
+13. `cargo package --list` for every publishable library crate. This validates
+    local package manifests/content without pretending that unpublished
+    workspace dependencies already resolve on crates.io.
 
-**Honest caveat on step 7:** until the workspace has had its first real publish,
-a crate whose path-deps are not yet on crates.io cannot be fully dry-run. Two
-forms show up, both treated as `blocked … (expected pre-first-publish)` and
-**not** failed:
+Registry publication has a separate strict gate:
 
-- `no matching package named al-…` — an unpublished `al-*` sibling.
-- `failed to select a version for the requirement` — most notably the external
-  `tree-sitter-al = "0.1.0"` path-dep of `al-syntax`/`al-lsp`: an **unrelated**
-  crate named `tree-sitter-al` already exists on crates.io (at 2.x/3.x), so the
-  pinned `0.1.0` does not resolve. This is a genuine release blocker for those
-  two crates — publishing the grammar submodule under that name (or repointing
-  the dep) must be resolved before they can ship — and is surfaced as a distinct
-  `blocked … unmatched workspace dep version` line.
+```bash
+make crates-publish-dryrun
+```
 
-`release-dryrun` only hard-fails on a *different* packaging/metadata error. Leaf
-crates with no unpublished deps (e.g. `al-types`, `al-semantic`) dry-run green.
-The first real release must publish in dependency order (foundation crates
-first); after that, every crate's dry-run becomes meaningful.
+It runs `cargo publish --dry-run --no-verify` for every publishable library and
+returns non-zero if any crate is blocked or fails. No dependency-resolution
+failure is converted into a successful release result. Before the first real
+library publication, publish in dependency order: the owned grammar package is
+`tree-sitter-al-bc` (consumed locally through the `tree-sitter-al` Rust alias),
+followed by foundation crates and then their dependants. The Zed extension
+release does not upload these independent libraries.
 
 ## Minimal reproducible-report template
 
 When you find a bug or verify a change, file the result in this shape so it can
-be acted on or dismissed (this mirrors how `Docs/gaps-and-future-work.md` cites
+be acted on or dismissed (this mirrors how `Docs/current-limitations.md` cites
 evidence):
 
 ````markdown

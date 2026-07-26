@@ -132,13 +132,34 @@ const INSTALL_CMD: &str =
 ///    sibling `.store/` probe.
 pub fn find_toolchain() -> Result<AlToolchain, DiscoveryError> {
     if let Ok(tool_path) = std::env::var("AL_TOOL_PATH") {
+        if tool_path.trim().is_empty() {
+            return Err(DiscoveryError::InvalidToolchainPath {
+                path: PathBuf::from(tool_path),
+                message: "the environment variable is empty".to_string(),
+            });
+        }
         let dir = PathBuf::from(&tool_path);
+        let metadata =
+            std::fs::metadata(&dir).map_err(|source| DiscoveryError::ToolchainDirectory {
+                path: dir.clone(),
+                source,
+            })?;
+        if !metadata.is_dir() {
+            return Err(DiscoveryError::InvalidToolchainPath {
+                path: dir,
+                message: "path is not a directory".to_string(),
+            });
+        }
         if dir.join(ALC_DLL).is_file() {
             return build_toolchain(&dir);
         }
-        if let Some(tc) = search_dir_recursive(&dir) {
+        if let Some(tc) = search_dir_recursive(&dir)? {
             return Ok(tc);
         }
+        return Err(DiscoveryError::InvalidToolchainPath {
+            path: dir,
+            message: "no complete AL toolchain was found below this directory".to_string(),
+        });
     }
 
     if let Some(home) = home_dir() {
@@ -148,15 +169,30 @@ pub fn find_toolchain() -> Result<AlToolchain, DiscoveryError> {
             ".local/share/dotnet/tools/.store",
         ] {
             let store = home.join(rel);
-            if store.is_dir() {
-                if let Some(tc) = search_dotnet_tool_store(&store) {
-                    return Ok(tc);
+            match std::fs::metadata(&store) {
+                Ok(metadata) if metadata.is_dir() => {
+                    if let Some(tc) = search_dotnet_tool_store(&store)? {
+                        return Ok(tc);
+                    }
+                }
+                Ok(_) => {
+                    return Err(DiscoveryError::InvalidToolchainPath {
+                        path: store,
+                        message: "known tool-store path is not a directory".to_string(),
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(DiscoveryError::ToolchainDirectory {
+                        path: store,
+                        source,
+                    });
                 }
             }
         }
     }
 
-    if let Some(tc) = search_system_path() {
+    if let Some(tc) = search_system_path()? {
         return Ok(tc);
     }
 
@@ -245,77 +281,105 @@ fn extract_version_from_path(dir: &Path) -> String {
     "unknown".to_string()
 }
 
-fn search_dotnet_tool_store(store: &Path) -> Option<AlToolchain> {
-    let entries = std::fs::read_dir(store).ok()?; // ok(): store unreadable is non-fatal
+fn search_dotnet_tool_store(store: &Path) -> Result<Option<AlToolchain>, DiscoveryError> {
+    let entries =
+        std::fs::read_dir(store).map_err(|source| DiscoveryError::ToolchainDirectory {
+            path: store.to_path_buf(),
+            source,
+        })?;
 
-    let mut package_dirs: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .to_lowercase()
-                .starts_with(DOTNET_TOOL_PACKAGE_PREFIX)
-        })
-        .map(|e| e.path())
-        .collect();
+    let mut package_dirs = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| DiscoveryError::ToolchainDirectory {
+            path: store.to_path_buf(),
+            source,
+        })?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .to_lowercase()
+            .starts_with(DOTNET_TOOL_PACKAGE_PREFIX)
+        {
+            package_dirs.push(entry.path());
+        }
+    }
 
     package_dirs.sort();
     package_dirs.reverse();
 
     for pkg_dir in package_dirs {
-        if let Some(tc) = search_dir_recursive(&pkg_dir) {
-            return Some(tc);
+        if let Some(tc) = search_dir_recursive(&pkg_dir)? {
+            return Ok(Some(tc));
         }
     }
 
-    None
+    Ok(None)
 }
 
-fn search_dir_recursive(root: &Path) -> Option<AlToolchain> {
+fn search_dir_recursive(root: &Path) -> Result<Option<AlToolchain>, DiscoveryError> {
     if root.join(ALC_DLL).is_file() {
-        if let Ok(tc) = build_toolchain(root) {
-            return Some(tc);
-        }
+        return build_toolchain(root).map(Some);
     }
 
     // Tool stores are user-writable, so canonical paths must remain below the
     // requested root. If the root cannot be canonicalized, do not traverse it
     // without the containment check.
-    let canonical_root = std::fs::canonicalize(root).ok()?;
+    let canonical_root =
+        std::fs::canonicalize(root).map_err(|source| DiscoveryError::ToolchainDirectory {
+            path: root.to_path_buf(),
+            source,
+        })?;
 
-    let mut queue: Vec<(PathBuf, u8)> = vec![(root.to_path_buf(), 0)];
-    while let Some((dir, depth)) = queue.pop() {
-        if depth > 8 {
-            continue;
-        }
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
+    let mut queue = vec![root.to_path_buf()];
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(canonical_root.clone());
+    while let Some(dir) = queue.pop() {
+        let entries =
+            std::fs::read_dir(&dir).map_err(|source| DiscoveryError::ToolchainDirectory {
+                path: dir.clone(),
+                source,
+            })?;
+        for entry in entries {
+            let entry = entry.map_err(|source| DiscoveryError::ToolchainDirectory {
+                path: dir.clone(),
+                source,
+            })?;
             let path = entry.path();
-            if path.is_dir() {
+            let file_type =
+                entry
+                    .file_type()
+                    .map_err(|source| DiscoveryError::ToolchainDirectory {
+                        path: path.clone(),
+                        source,
+                    })?;
+            if file_type.is_dir() || file_type.is_symlink() {
                 // `is_dir()` follows symlinks, so validate the canonical path
                 // before descending.
-                match std::fs::canonicalize(&path) {
-                    Ok(canon) if canon.starts_with(&canonical_root) => {}
-                    _ => continue,
+                let canon = std::fs::canonicalize(&path).map_err(|source| {
+                    DiscoveryError::ToolchainDirectory {
+                        path: path.clone(),
+                        source,
+                    }
+                })?;
+                if !canon.starts_with(&canonical_root) || !canon.is_dir() {
+                    continue;
+                }
+                if !visited.insert(canon) {
+                    continue;
                 }
                 if path.join(ALC_DLL).is_file() {
-                    if let Ok(tc) = build_toolchain(&path) {
-                        return Some(tc);
-                    }
+                    return build_toolchain(&path).map(Some);
                 }
-                queue.push((path, depth + 1));
+                queue.push(path);
             }
         }
     }
-    None
+    Ok(None)
 }
 
-fn search_system_path() -> Option<AlToolchain> {
-    if let Some(tc) = search_path_for("alc") {
-        return Some(tc);
+fn search_system_path() -> Result<Option<AlToolchain>, DiscoveryError> {
+    if let Some(tc) = search_path_for("alc")? {
+        return Ok(Some(tc));
     }
     // Microsoft's dotnet-tool wrapper installs as `al`, not `alc`. When found,
     // its parent directory typically holds a sibling `.store/` containing the
@@ -323,7 +387,7 @@ fn search_system_path() -> Option<AlToolchain> {
     search_path_for("al")
 }
 
-fn search_path_for(cmd_name: &str) -> Option<AlToolchain> {
+fn search_path_for(cmd_name: &str) -> Result<Option<AlToolchain>, DiscoveryError> {
     // Use `where` on Windows, `which` on Unix — both are non-fatal if missing.
     #[cfg(target_os = "windows")]
     let which_cmd = "where";
@@ -333,10 +397,13 @@ fn search_path_for(cmd_name: &str) -> Option<AlToolchain> {
     let output = std::process::Command::new(which_cmd)
         .arg(cmd_name)
         .output()
-        .ok()?; // ok(): command missing is non-fatal
+        .map_err(|source| DiscoveryError::ToolchainDiscoveryCommand {
+            command: which_cmd.to_string(),
+            source,
+        })?;
 
     if !output.status.success() {
-        return None;
+        return Ok(None);
     }
 
     // Take only the first line — `where` (Windows) can return multiple matches.
@@ -344,23 +411,23 @@ fn search_path_for(cmd_name: &str) -> Option<AlToolchain> {
     let first_line = stdout.lines().next().unwrap_or("").trim();
     let cmd_path = PathBuf::from(first_line);
     if !cmd_path.is_file() {
-        return None;
+        return Ok(None);
     }
 
-    let dir = cmd_path.parent()?;
+    let Some(dir) = cmd_path.parent() else {
+        return Ok(None);
+    };
 
     if dir.join(ALC_DLL).is_file() {
-        if let Ok(tc) = build_toolchain(dir) {
-            return Some(tc);
-        }
+        return build_toolchain(dir).map(Some);
     }
 
     // Wrapper script (`al`) lives in e.g. `~/.local/bin/`; the dotnet tool
     // payload is under `<dir>/.store/<package>/<version>/.../tools/net8.0/any`.
     let sibling_store = dir.join(".store");
     if sibling_store.is_dir() {
-        if let Some(tc) = search_dotnet_tool_store(&sibling_store) {
-            return Some(tc);
+        if let Some(tc) = search_dotnet_tool_store(&sibling_store)? {
+            return Ok(Some(tc));
         }
     }
 
@@ -600,7 +667,9 @@ mod tests {
         std::fs::create_dir_all(&store).unwrap();
         let leaf = make_fake_dotnet_tool_store(&store, "17.0.34.45391");
 
-        let tc = search_dotnet_tool_store(&store).expect("toolchain not found in user-local store");
+        let tc = search_dotnet_tool_store(&store)
+            .expect("tool-store search failed")
+            .expect("toolchain not found in user-local store");
         assert_eq!(tc.alc, leaf.join(ALC_DLL));
         assert!(tc.code_analysis.is_file());
     }
@@ -611,7 +680,9 @@ mod tests {
         let store = tmp.path().join(".store");
         std::fs::create_dir_all(&store).unwrap();
         // Intentionally do not create any package directory.
-        assert!(search_dotnet_tool_store(&store).is_none());
+        assert!(search_dotnet_tool_store(&store)
+            .expect("tool-store search failed")
+            .is_none());
     }
 
     #[test]
@@ -625,7 +696,9 @@ mod tests {
         std::fs::write(other.join(ALC_DLL), b"").unwrap();
         let leaf = make_fake_dotnet_tool_store(&store, "17.0.34.45391");
 
-        let tc = search_dotnet_tool_store(&store).expect("expected AL package");
+        let tc = search_dotnet_tool_store(&store)
+            .expect("tool-store search failed")
+            .expect("expected AL package");
         assert_eq!(tc.alc, leaf.join(ALC_DLL));
     }
 
@@ -638,7 +711,9 @@ mod tests {
         std::fs::write(leaf.join(ALC_DLL), b"").unwrap();
         std::fs::write(leaf.join(CODE_ANALYSIS_DLL), b"").unwrap();
 
-        let tc = search_dir_recursive(tmp.path()).expect("expected to find alc.dll deep");
+        let tc = search_dir_recursive(tmp.path())
+            .expect("recursive search failed")
+            .expect("expected to find alc.dll deep");
         assert_eq!(tc.alc, leaf.join(ALC_DLL));
     }
 
@@ -650,7 +725,24 @@ mod tests {
         // Put a sibling DLL but not alc.dll.
         std::fs::write(leaf.join("Other.dll"), b"").unwrap();
 
-        assert!(search_dir_recursive(tmp.path()).is_none());
+        assert!(search_dir_recursive(tmp.path())
+            .expect("recursive search failed")
+            .is_none());
+    }
+
+    #[test]
+    fn search_dir_recursive_has_no_arbitrary_depth_cutoff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut leaf = tmp.path().to_path_buf();
+        for level in 0..24 {
+            leaf.push(format!("level-{level}"));
+        }
+        write_minimal_toolchain(&leaf);
+
+        let toolchain = search_dir_recursive(tmp.path())
+            .expect("recursive search failed")
+            .expect("deep toolchain must be discoverable");
+        assert_eq!(toolchain.alc, leaf.join(ALC_DLL));
     }
 
     /// Serializes tests that mutate process-global env (`PATH`, `AL_TOOL_PATH`,
@@ -769,7 +861,9 @@ mod tests {
         // Without the bounds check, the traversal would follow `link` into
         // `outside/evil` and return its alc.dll. With the fix it must not.
         assert!(
-            search_dir_recursive(root.path()).is_none(),
+            search_dir_recursive(root.path())
+                .expect("recursive search failed")
+                .is_none(),
             "search escaped the root via a symlink"
         );
     }
@@ -786,7 +880,9 @@ mod tests {
         let real = root.path().join("real/tools/net8.0/any");
         write_minimal_toolchain(&real);
 
-        let tc = search_dir_recursive(root.path()).expect("in-root toolchain should be found");
+        let tc = search_dir_recursive(root.path())
+            .expect("recursive search failed")
+            .expect("in-root toolchain should be found");
         // Resolve symlinks on the temp dir prefix (macOS /var -> /private/var).
         let expected = std::fs::canonicalize(real.join(ALC_DLL)).unwrap();
         let got = std::fs::canonicalize(&tc.alc).unwrap();
@@ -796,7 +892,9 @@ mod tests {
     #[test]
     fn search_path_for_missing_command_returns_none() {
         // A command that cannot exist on PATH must be handled gracefully.
-        assert!(search_path_for("al-lsp-definitely-not-a-real-command-xyz").is_none());
+        assert!(search_path_for("al-lsp-definitely-not-a-real-command-xyz")
+            .expect("PATH discovery command failed")
+            .is_none());
     }
 
     #[cfg(unix)]
@@ -839,7 +937,9 @@ mod tests {
             }
         }
 
-        let tc = result.expect("toolchain not discovered via `which alc`");
+        let tc = result
+            .expect("PATH discovery command failed")
+            .expect("toolchain not discovered via `which alc`");
         assert_eq!(tc.alc, bin.join(ALC_DLL));
         assert!(tc.code_analysis.is_file());
     }
@@ -895,5 +995,29 @@ mod tests {
 
         let tc = result.expect("nested AL_TOOL_PATH toolchain should be discovered");
         assert_eq!(tc.alc, leaf.join(ALC_DLL));
+    }
+
+    #[test]
+    fn invalid_explicit_al_tool_path_is_not_reported_as_missing_toolchain() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let invalid = tmp.path().join("missing");
+        let original = std::env::var_os("AL_TOOL_PATH");
+        // SAFETY: synchronised via ENV_LOCK above.
+        unsafe { std::env::set_var("AL_TOOL_PATH", &invalid) };
+
+        let result = find_toolchain();
+
+        // SAFETY: synchronised via ENV_LOCK above.
+        unsafe {
+            match original {
+                Some(value) => std::env::set_var("AL_TOOL_PATH", value),
+                None => std::env::remove_var("AL_TOOL_PATH"),
+            }
+        }
+        assert!(matches!(
+            result,
+            Err(DiscoveryError::ToolchainDirectory { path, .. }) if path == invalid
+        ));
     }
 }

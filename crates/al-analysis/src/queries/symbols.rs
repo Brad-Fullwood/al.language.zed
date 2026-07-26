@@ -32,8 +32,7 @@ mod tests {
         Message('Hello');
     end;
 }"#;
-        ws.documents.open(uri.clone(), src.to_string());
-
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
         let symbols = document_symbols(&ws, &uri).expect("open document yields Some");
         assert_eq!(
             symbols.len(),
@@ -64,8 +63,7 @@ mod tests {
     begin
     end;
 }"#;
-        ws.documents.open(uri.clone(), src.to_string());
-
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
         let symbols = document_symbols(&ws, &uri).expect("open document yields Some");
         let object = &symbols[0];
         let children = object
@@ -98,8 +96,7 @@ mod tests {
 codeunit 50101 "Helper"
 {
 }"#;
-        ws.documents.open(uri.clone(), src.to_string());
-
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
         let symbols = document_symbols(&ws, &uri).expect("open document yields Some");
         assert_eq!(
             symbols.len(),
@@ -125,8 +122,7 @@ codeunit 50101 "Helper"
     fn document_symbols_empty_document_returns_some_empty() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/empty_sym.al").expect("test");
-        ws.documents.open(uri.clone(), String::new());
-
+        ws.documents.open(uri.clone(), String::new()).unwrap();
         let result = document_symbols(&ws, &uri);
         assert!(
             result.is_some(),
@@ -143,7 +139,8 @@ codeunit 50101 "Helper"
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/garbage.al").expect("test");
         ws.documents
-            .open(uri.clone(), "// just a comment\nfoo bar baz".to_string());
+            .open(uri.clone(), "// just a comment\nfoo bar baz".to_string())
+            .unwrap();
 
         let result = document_symbols(&ws, &uri).expect("opened document yields Some");
         assert!(

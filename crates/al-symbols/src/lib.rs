@@ -23,18 +23,18 @@ pub mod nuget;
 #[cfg(feature = "nuget")]
 pub mod oauth;
 
-pub use index::{SymbolIndex, SymbolIndexMemoryStats};
+pub use index::{PackageLoadError, PackageLoadFailure, SymbolIndex, SymbolIndexMemoryStats};
 pub use model::{
-    AttributeSymbol, ComposedObject, ControlSymbol, EnumValueSymbol, FieldSymbol, KeySymbol,
-    MethodSymbol, ObjectKind, ParameterSymbol, PropertyValue, SymbolEntry, SymbolPackage,
-    VariableSymbol,
+    AttributeSymbol, ComposedObject, ControlSymbol, DeclarationIdError, EnumValueSymbol,
+    FieldSymbol, KeySymbol, MethodSymbol, ObjectKind, ParameterSymbol, PermissionSymbol,
+    PropertyValue, SymbolEntry, SymbolPackage, VariableSymbol,
 };
 pub use source_availability::{SourceAvailability, SourceAvailabilitySummary};
 
-pub use app_reader::{read_app_bytes, read_app_file};
+pub use app_reader::{read_app_bytes, read_app_file, read_symbol_reference_bytes};
 pub use composition::get_composed;
 pub use events::{get_events, EventPublisher, EventResults, EventSubscriber, EventType};
-pub use manifest::{parse_manifest, NavxManifest};
+pub use manifest::{parse_manifest, ManifestDependency, NavxManifest};
 
 #[cfg(feature = "nuget")]
 pub use nuget::{AppDependency, NuGetClient, NuGetError, NuGetFeed, PackageRef};
