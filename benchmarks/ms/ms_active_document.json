@@ -1,0 +1,12 @@
+[
+  {
+    "method": "al/didChangeActiveDocument",
+    "kind": "request",
+    "params": {
+      "textDocument": {
+        "uri": "__OPEN_URI__"
+      },
+      "sequenceNumber": 0
+    }
+  }
+]

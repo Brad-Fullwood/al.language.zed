@@ -56,6 +56,8 @@ python3 -u "$BENCH/scripts/lsp_bench.py" \
   --completion-pos "$COMP" --hover-pos "$HOV" --definition-pos "$DEF" \
   --iterations "$ITERS" \
   --pre-requests "$BENCH/ms/ms_active_ws.json" \
+  --post-open-requests "$BENCH/ms/ms_active_document.json" \
+  --probe-profile "$BENCH/ms/ms_probe_profile.json" \
   --diag-timeout 180 --req-timeout 90 --pre-timeout 300 \
   --out "$BENCH/results/lsp_ms_$TAG.json" \
   --stderr-log "$BENCH/results/lsp_ms_$TAG.stderr.log"

@@ -6,12 +6,15 @@ initialize, first diagnostic publish, and a set of standard requests. Both
 al-lsp and Microsoft's EditorServices host are driven through this same client
 so the comparison is apples-to-apples.
 
-Servers that need extra handshake steps before they will load a project (the
-Microsoft host requires `al/setActiveWorkspace`) are handled via --pre-requests,
-which are executed after `initialized` and before the first didOpen, and are
-counted toward the reported cold-ready time.
+Server-specific lifecycle steps model the real editor client around the shared
+LSP core. For example, Microsoft requires workspace activation, a project-ready
+event, and an active-document request. Probe profiles likewise map a logical
+operation to the real provider protocol when the editor extension uses a custom
+endpoint (Microsoft definition uses `al/gotodefinition`). The result records the
+actual method for every probe so those adaptations remain visible.
 """
 import argparse
+import copy
 import datetime as dt
 import hashlib
 import json
@@ -154,6 +157,90 @@ def write_result(path, result):
     temporary.replace(output)
 
 
+def prepare_output_paths(result_path, stderr_path):
+    """Create output parents before spawning a server that writes either file."""
+    for path in (Path(result_path), Path(stderr_path)):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def failed_required_steps(entries):
+    return [
+        entry
+        for entry in entries
+        if entry.get("kind") in {"request", "wait_notification"}
+        and not entry.get("ok", False)
+    ]
+
+
+def load_lifecycle_steps(path, substitutions):
+    """Load lifecycle steps after replacing their declared placeholders."""
+    raw = Path(path).read_text()
+    for key, value in substitutions.items():
+        raw = raw.replace(key, json.dumps(value)[1:-1])
+    return json.loads(raw)
+
+
+def mapping_contains(actual, expected):
+    """Return whether actual recursively contains every expected mapping item."""
+    if not isinstance(actual, dict) or not isinstance(expected, dict):
+        return actual == expected
+    return all(
+        key in actual and mapping_contains(actual[key], value)
+        for key, value in expected.items()
+    )
+
+
+def execute_lifecycle_steps(client, items, default_timeout):
+    """Execute declared request, notification, and readiness-wait steps."""
+    entries = []
+    total_ms = 0.0
+    for item in items:
+        method = item["method"]
+        params = item.get("params")
+        kind = item.get("kind", "request")
+        if kind == "notification":
+            client.notify(method, params)
+            entries.append({"method": method, "kind": kind, "ms": 0.0})
+            continue
+        if kind == "wait_notification":
+            started = time.perf_counter()
+            expected = item.get("match", {})
+            message, _ = client.wait_notification(
+                method,
+                timeout=item.get("timeout", default_timeout),
+                predicate=lambda candidate: mapping_contains(
+                    candidate.get("params", {}),
+                    expected,
+                ),
+            )
+            elapsed = (time.perf_counter() - started) * 1000.0
+            total_ms += elapsed
+            entries.append({
+                "method": method,
+                "kind": kind,
+                "ms": round(elapsed, 4),
+                "ok": message is not None,
+                "match": expected,
+            })
+            continue
+        if kind != "request":
+            raise RuntimeError(f"unsupported lifecycle step kind: {kind}")
+        response, elapsed = client.request(
+            method,
+            params,
+            timeout=item.get("timeout", default_timeout),
+        )
+        total_ms += elapsed
+        entries.append({
+            "method": method,
+            "kind": kind,
+            "ms": round(elapsed, 4),
+            "ok": response is not None and "error" not in (response or {}),
+            "error": (response or {}).get("error"),
+        })
+    return entries, total_ms
+
+
 def deep_merge(base: dict, extra: dict) -> dict:
     for k, v in extra.items():
         if isinstance(v, dict) and isinstance(base.get(k), dict):
@@ -163,13 +250,33 @@ def deep_merge(base: dict, extra: dict) -> dict:
     return base
 
 
+def apply_probe_profile(probes, profile):
+    """Adapt a logical probe to a server's real client-facing protocol."""
+    adapted = []
+    for name, method, params in probes:
+        override = profile.get(name)
+        if not override:
+            adapted.append((name, method, params))
+            continue
+        envelope = override.get("wrapParamsAs")
+        if envelope:
+            adapted_params = copy.deepcopy(override.get("params", {}))
+            adapted_params[envelope] = params
+        else:
+            adapted_params = copy.deepcopy(params)
+            deep_merge(adapted_params, override.get("params", {}))
+        adapted.append((name, override.get("method", method), adapted_params))
+    return adapted
+
+
 class LspClient:
-    def __init__(self, cmd, cwd, stderr_path):
+    def __init__(self, cmd, cwd, stderr_path, workspace_folders=None):
         self.stderr_file = open(stderr_path, "wb")
         self.proc = subprocess.Popen(
             cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=self.stderr_file, bufsize=0,
         )
+        self.workspace_folders = workspace_folders
         self._id = 0
         self._lock = threading.Lock()
         self._responses = {}
@@ -231,7 +338,7 @@ class LspClient:
                         "client/unregisterCapability"):
             result = None
         elif method == "workspace/workspaceFolders":
-            result = None
+            result = self.workspace_folders
         else:
             result = None
         self._send({"jsonrpc": "2.0", "id": msg["id"], "result": result})
@@ -262,12 +369,13 @@ class LspClient:
                     return None, (time.perf_counter() - t0) * 1000.0
                 remaining = deadline - time.time()
                 if remaining <= 0:
+                    self.notify("$/cancelRequest", {"id": rid})
                     return None, (time.perf_counter() - t0) * 1000.0
                 self._event.wait(min(remaining, 0.05))
             msg, _ = self._responses.pop(rid)
         return msg, (time.perf_counter() - t0) * 1000.0
 
-    def wait_notification(self, method, timeout=30.0, predicate=None):
+    def wait_notification(self, method, timeout=30.0, predicate=None, after=None):
         deadline = time.time() + timeout
         seen = 0
         with self._event:
@@ -275,7 +383,11 @@ class LspClient:
                 while seen < len(self._notifications):
                     msg, ts = self._notifications[seen]
                     seen += 1
-                    if msg.get("method") == method and (predicate is None or predicate(msg)):
+                    if (
+                        msg.get("method") == method
+                        and (after is None or ts >= after)
+                        and (predicate is None or predicate(msg))
+                    ):
                         return msg, ts
                 if not self._alive:
                     return None, None
@@ -328,13 +440,18 @@ def main():
     ap.add_argument("--req-timeout", type=float, default=30.0)
     ap.add_argument("--pre-timeout", type=float, default=120.0)
     ap.add_argument("--pre-requests", default=None,
-                    help="JSON file: list of {method, params, kind:request|notification}")
+                    help="JSON lifecycle steps run after initialized and before didOpen")
+    ap.add_argument("--post-open-requests", default=None,
+                    help="JSON lifecycle steps run immediately after didOpen")
+    ap.add_argument("--probe-profile", default=None,
+                    help="JSON adaptations from logical probes to a server's real protocol")
     ap.add_argument("--init-params", default=None, help="JSON file merged into initialize params")
     ap.add_argument("--out", required=True)
     ap.add_argument("--stderr-log", required=True)
     args = ap.parse_args()
     if args.iterations < 2:
         raise RuntimeError("--iterations must be at least 2 (one discarded + one measured)")
+    prepare_output_paths(args.out, args.stderr_log)
 
     root = os.path.abspath(args.root)
     root_uri = path_to_uri(root)
@@ -347,7 +464,7 @@ def main():
     if not cmd:
         raise RuntimeError("--server resolved to an empty command")
     out = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "generatedAtUtc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "repository": repository_metadata(),
         "machine": machine_metadata(),
@@ -359,13 +476,22 @@ def main():
         "iterations": args.iterations,
         "discardedIterations": [0],
         "pre_requests": [],
+        "post_open_requests": [],
         "requests": {},
         "notes": [],
         "load_start": loadavg(),
     }
 
     t_spawn = time.perf_counter()
-    cli = LspClient(cmd, cwd=root, stderr_path=args.stderr_log)
+    workspace_folders = [
+        {"uri": root_uri, "name": os.path.basename(root.rstrip("/"))}
+    ]
+    cli = LspClient(
+        cmd,
+        cwd=root,
+        stderr_path=args.stderr_log,
+        workspace_folders=workspace_folders,
+    )
 
     init_params = {
         "processId": os.getpid(),
@@ -373,7 +499,7 @@ def main():
         "locale": "en-us",
         "rootPath": root,
         "rootUri": root_uri,
-        "workspaceFolders": [{"uri": root_uri, "name": os.path.basename(root.rstrip("/"))}],
+        "workspaceFolders": workspace_folders,
         "capabilities": {
             "workspace": {
                 "workspaceFolders": True,
@@ -423,53 +549,118 @@ def main():
 
     cli.notify("initialized", {})
 
+    lifecycle_start = time.perf_counter()
+    substitutions = {
+        "__ROOT_URI__": root_uri,
+        "__ROOT_PATH__": root,
+        "__ROOT_NAME__": os.path.basename(root.rstrip("/")),
+        "__OPEN_URI__": open_uri,
+        "__OPEN_PATH__": open_path,
+        "__ALPACKAGES__": os.path.join(root, ".alpackages"),
+    }
     pre_total_ms = 0.0
     if args.pre_requests:
-        with open(args.pre_requests) as fh:
-            pre_raw = fh.read()
-        subs = {
-            "__ROOT_URI__": root_uri,
-            "__ROOT_PATH__": root,
-            "__ROOT_NAME__": os.path.basename(root.rstrip("/")),
-            "__ALPACKAGES__": os.path.join(root, ".alpackages"),
-        }
-        for k, v in subs.items():
-            pre_raw = pre_raw.replace(k, json.dumps(v)[1:-1])
-        for item in json.loads(pre_raw):
-            method = item["method"]
-            params = item.get("params")
-            if item.get("kind") == "notification":
-                cli.notify(method, params)
-                out["pre_requests"].append({"method": method, "kind": "notification", "ms": 0.0})
-                continue
-            r, ms = cli.request(method, params, timeout=item.get("timeout", args.pre_timeout))
-            pre_total_ms += ms
-            out["pre_requests"].append({
-                "method": method, "kind": "request", "ms": round(ms, 4),
-                "ok": r is not None and "error" not in (r or {}),
-                "error": (r or {}).get("error"),
-            })
+        out["pre_requests"], pre_total_ms = execute_lifecycle_steps(
+            cli,
+            load_lifecycle_steps(args.pre_requests, substitutions),
+            args.pre_timeout,
+        )
     out["pre_requests_total_ms"] = round(pre_total_ms, 4)
+    failed_pre_requests = failed_required_steps(out["pre_requests"])
+    if failed_pre_requests:
+        failed_methods = ", ".join(entry["method"] for entry in failed_pre_requests)
+        out["cold_ready_ms"] = None
+        out["load_end"] = loadavg()
+        out["valid"] = False
+        out["invalidReasons"] = [
+            f"required server-specific pre-request failed: {failed_methods}"
+        ]
+        write_result(args.out, out)
+        cli.close()
+        print(
+            f"[{args.label}] required pre-request FAILED: {failed_methods}",
+            file=sys.stderr,
+        )
+        return 1
+
+    def project_diagnostic(message):
+        uri = message.get("params", {}).get("uri", "")
+        return uri == root_uri or uri.startswith(root_uri.rstrip("/") + "/")
+
+    # Microsoft publishes clean project diagnostics during activation, before
+    # didOpen. Preserve that real readiness event rather than requiring a
+    # duplicate notification the server does not send.
+    diag, diag_ts = cli.wait_notification(
+        "textDocument/publishDiagnostics",
+        timeout=0,
+        predicate=project_diagnostic,
+        after=lifecycle_start,
+    )
+    diagnostic_phase = "pre_open" if diag is not None else None
 
     t_open = time.perf_counter()
     cli.notify("textDocument/didOpen", {
         "textDocument": {"uri": open_uri, "languageId": "al", "version": 1, "text": open_text}
     })
 
-    diag, diag_ts = cli.wait_notification("textDocument/publishDiagnostics", timeout=args.diag_timeout)
+    post_open_total_ms = 0.0
+    if args.post_open_requests:
+        out["post_open_requests"], post_open_total_ms = execute_lifecycle_steps(
+            cli,
+            load_lifecycle_steps(args.post_open_requests, substitutions),
+            args.pre_timeout,
+        )
+    out["post_open_requests_total_ms"] = round(post_open_total_ms, 4)
+    failed_post_open_requests = failed_required_steps(out["post_open_requests"])
+    if failed_post_open_requests:
+        failed_methods = ", ".join(
+            entry["method"] for entry in failed_post_open_requests
+        )
+        out["cold_ready_ms"] = None
+        out["load_end"] = loadavg()
+        out["valid"] = False
+        out["invalidReasons"] = [
+            f"required post-open request failed: {failed_methods}"
+        ]
+        write_result(args.out, out)
+        cli.close()
+        print(
+            f"[{args.label}] required post-open request FAILED: {failed_methods}",
+            file=sys.stderr,
+        )
+        return 1
+    lifecycle_ready = time.perf_counter()
+
+    if diag is None:
+        diag, diag_ts = cli.wait_notification(
+            "textDocument/publishDiagnostics",
+            timeout=args.diag_timeout,
+            predicate=lambda message: message.get("params", {}).get("uri") == open_uri,
+            after=t_open,
+        )
+        if diag is not None:
+            diagnostic_phase = "post_open"
     if diag is None:
         out["first_diagnostic_ms"] = None
         out["notes"].append(f"no publishDiagnostics within {args.diag_timeout}s — GAP")
     else:
-        out["first_diagnostic_ms"] = round((diag_ts - t_open) * 1000.0, 4)
+        out["first_diagnostic_ms"] = round(
+            (diag_ts - lifecycle_start) * 1000.0,
+            4,
+        )
         out["first_diagnostic_count"] = len(diag.get("params", {}).get("diagnostics", []))
         out["first_diagnostic_file"] = os.path.basename(
             diag.get("params", {}).get("uri", "")
         )
+        out["first_diagnostic_phase"] = diagnostic_phase
 
     if out.get("first_diagnostic_ms") is not None:
+        lifecycle_ready_ms = (lifecycle_ready - lifecycle_start) * 1000.0
         out["cold_ready_ms"] = round(
-            out["initialize_ms"] + pre_total_ms + out["first_diagnostic_ms"], 4)
+            out["initialize_ms"]
+            + max(lifecycle_ready_ms, out["first_diagnostic_ms"]),
+            4,
+        )
     else:
         out["cold_ready_ms"] = None
 
@@ -489,6 +680,9 @@ def main():
          {"textDocument": {"uri": open_uri}}),
         ("workspaceSymbol", "workspace/symbol", {"query": "Bench"}),
     ]
+    if args.probe_profile:
+        with open(args.probe_profile) as profile_file:
+            probes = apply_probe_profile(probes, json.load(profile_file))
 
     loads = []
     for name, method, params in probes:
@@ -517,6 +711,7 @@ def main():
             if i > 0:  # discard warmup
                 samples.append(ms)
         entry = summarize(samples) or {"n": 0}
+        entry["method"] = method
         entry["result_size"] = result_size
         entry["errors"] = errors
         out["requests"][name] = entry
@@ -529,9 +724,12 @@ def main():
     invalid_reasons = []
     if not out["serverArtifacts"]:
         invalid_reasons.append("no benchmark server binary artifact was identified")
-    if any(not request.get("ok", False) for request in out["pre_requests"]
-           if request.get("kind") == "request"):
-        invalid_reasons.append("one or more server-specific pre-requests failed")
+    for phase, entries in (
+        ("pre-request", out["pre_requests"]),
+        ("post-open request", out["post_open_requests"]),
+    ):
+        if failed_required_steps(entries):
+            invalid_reasons.append(f"one or more server-specific {phase}s failed")
     if out.get("first_diagnostic_ms") is None:
         invalid_reasons.append("no publishDiagnostics notification was observed")
     expected_samples = args.iterations - 1
@@ -552,6 +750,8 @@ def main():
     print(f"  initialize          {out['initialize_ms']:>10.3f} ms")
     if pre_total_ms:
         print(f"  pre-requests        {pre_total_ms:>10.3f} ms")
+    if post_open_total_ms:
+        print(f"  post-open requests  {post_open_total_ms:>10.3f} ms")
     fd = out.get("first_diagnostic_ms")
     print(f"  first diagnostic    {fd if fd is None else f'{fd:10.3f} ms'}"
           f"  (count={out.get('first_diagnostic_count')})")

@@ -1,0 +1,16 @@
+{
+  "definition": {
+    "method": "al/gotodefinition",
+    "wrapParamsAs": "textDocumentPositionParams",
+    "params": {
+      "configuration": null,
+      "browserInfo": {
+        "browser": "SystemDefault",
+        "incognito": false
+      },
+      "environmentInfo": {},
+      "nugetFeeds": [],
+      "useOnlyCustomFeeds": false
+    }
+  }
+}
