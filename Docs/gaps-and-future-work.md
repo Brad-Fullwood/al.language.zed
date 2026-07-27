@@ -50,8 +50,8 @@ environment has not supplied its contract evidence.
 | LSP correctness | Document mutation/version/generation handling, diagnostics, navigation, edits, commands, shutdown, malformed input, stale state, and long-runtime daemon transport regressions pass; previously aspirational hover/definition cases now assert concrete results | Verified |
 | Repository honesty | README, feature pages, settings, schemas, CLI/daemon/MCP catalogs, benchmarks, and limitations have been swept against current registrations and runtime wiring; benchmark claims now link clean raw evidence and distinguish phase-one diagnostics, semantic readiness, and forced Microsoft teardown | Verified |
 | Dependency and automation policy | `cargo-deny` advisories/bans/licenses/sources pass; all repository shell scripts pass ShellCheck; root and grammar workflows pass Actionlint/YAML parsing | Verified |
-| Clean release hygiene | Clean commit `955efe53` passed `make release-dryrun`, full Microsoft-extension regeneration with zero drift, product/submodule/revision alignment, package manifests, formatting, workspace and extension tests, Clippy, semantic/default/WASM builds, component validation, Microsoft contracts, policy checks, deterministic performance audit, and isolated editor comparison | Verified |
-| Publication | Grammar commit must be pushed first; the superproject gitlink and `extension.toml` revision must then point to it; both repositories must be clean, pushed, remotely reachable, and green on the final commit | Open |
+| Clean release hygiene | Implementation commit `dd757aff` passed `make release-dryrun`, full Microsoft-extension regeneration with zero drift, product/submodule/revision alignment, package manifests, formatting, workspace and extension tests, Clippy, semantic/default/WASM builds, component validation, Microsoft contracts, policy checks, deterministic performance audit, aliased-root platform regression coverage, and isolated editor comparison | Verified |
+| Publication | Grammar head `f26b067` is pushed and green in draft PR [AL-Tree-Sitter#2](https://github.com/Brad-Fullwood/AL-Tree-Sitter/pull/2); the superproject branch points its gitlink and `extension.toml` revision to that head, is pushed in draft PR [al.language.zed#26](https://github.com/Brad-Fullwood/al.language.zed/pull/26), and its final GitHub review and six-job CI checks are green | Verified |
 
 ## External service contract
 
@@ -102,14 +102,21 @@ package manifest.
   fallback.
 - Root workspace tests, root Clippy with `-D warnings`, 42 Zed extension host
   tests, release WASM build/component validation, CLI/TUI/MCP/archive smoke, and
-  the isolated Zed/VS Code comparison passed on clean commit `955efe53`.
-- `make release-dryrun` passed all 13 stages on `955efe53`; the full regeneration
+  the isolated Zed/VS Code comparison passed on the clean implementation series
+  ending at `dd757aff`.
+- The full native workspace suite also passed with `TMPDIR` deliberately routed
+  through a symlink alias. macOS then passed the same suite after project-wide
+  source discovery was unified with the workspace index and package-cache tests
+  were made to assert their documented canonical identity.
+- `make release-dryrun` passed all 13 stages on `dd757aff`; the full regeneration
   profile was byte-stable, and ShellCheck, root/grammar Actionlint and YAML
   parsing, cargo-deny advisories/bans/licenses/sources, the Criterion
   archive/index/query graph audit, and `make microsoft-contracts` also passed.
+- Grammar branch `agent/complete-grammar-corpus` and superproject branch
+  `agent/complete-project` are clean, pushed, remotely reachable through draft
+  PRs #2 and #26 respectively, and their required GitHub checks are green.
 - The strict live-BC target was invoked without credentials and returned exit 2
   as designed. No live tenant check is recorded as passed.
 
-The remaining repository-controlled gate is publication. The
-service-controlled live-BC gate remains unavailable until its explicit inputs
-are supplied.
+No repository-controlled completion gate remains open. The service-controlled
+live-BC gate remains unavailable until its explicit inputs are supplied.
