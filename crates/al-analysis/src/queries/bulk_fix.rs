@@ -148,63 +148,11 @@ pub fn plan_data_classification(project_dir: &Path, value: &str) -> Result<BulkF
 /// Collect project AL files without following symlinks out of the project.
 ///
 /// Project-wide mutations must not quietly skip unreadable directories or
-/// walk a symlink cycle. Those conditions are explicit errors.
+/// disagree with the workspace index about which paths belong to the project.
+/// Discovery is therefore delegated to the source index's authoritative
+/// walker rather than maintaining a second set of path and exclusion rules.
 pub fn collect_al_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    const MAX_WALK_DEPTH: usize = 64;
-
-    let root = dir
-        .canonicalize()
-        .map_err(|error| format!("Failed to resolve project root {}: {error}", dir.display()))?;
-    if !root.is_dir() {
-        return Err(format!(
-            "Project root is not a directory: {}",
-            root.display()
-        ));
-    }
-
-    let mut files = Vec::new();
-    let mut stack: Vec<(PathBuf, usize)> = vec![(root, 0)];
-    while let Some((current, depth)) = stack.pop() {
-        let entries = std::fs::read_dir(&current)
-            .map_err(|error| format!("Failed to read {}: {error}", current.display()))?;
-        for entry in entries {
-            let entry = entry
-                .map_err(|error| format!("Failed to enumerate {}: {error}", current.display()))?;
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
-            if file_type.is_symlink() {
-                continue;
-            }
-            if file_type.is_dir() {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                if !name.starts_with('.') && name != "target" {
-                    if depth >= MAX_WALK_DEPTH {
-                        return Err(format!(
-                            "Project directory nesting exceeds {MAX_WALK_DEPTH} levels at {}",
-                            path.display()
-                        ));
-                    }
-                    stack.push((path, depth + 1));
-                }
-            } else if file_type.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("al"))
-            {
-                files.push(path);
-                if files.len() > al_source::file_index::MAX_WORKSPACE_FILES {
-                    return Err(format!(
-                        "Project contains more than {} AL files",
-                        al_source::file_index::MAX_WORKSPACE_FILES
-                    ));
-                }
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
+    al_source::file_index::collect_al_files(dir).map_err(|error| error.to_string())
 }
 
 fn is_page_kind(kind: &str) -> bool {
@@ -1147,8 +1095,8 @@ mod tests {
         std::os::unix::fs::symlink(external.path(), project.path().join("linked")).unwrap();
 
         let files = collect_al_files(project.path()).unwrap();
-        let expected = project.path().canonicalize().unwrap().join("Inside.al");
-        let outside = external.path().canonicalize().unwrap().join("Outside.al");
+        let expected = project.path().join("Inside.al");
+        let outside = external.path().join("Outside.al");
         assert_eq!(files, vec![expected]);
         assert!(!files.contains(&outside));
     }

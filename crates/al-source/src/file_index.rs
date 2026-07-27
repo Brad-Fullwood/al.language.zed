@@ -697,7 +697,14 @@ impl Default for FileIndex {
     }
 }
 
-fn collect_al_files(root: &Path) -> Result<Vec<PathBuf>, ScanError> {
+/// Discover the exact AL source set used by [`FileIndex::scan`].
+///
+/// Returned paths preserve the caller's root identity instead of
+/// canonicalizing it. This is important on platforms such as macOS where
+/// lexical aliases (for example `/var` and `/private/var`) can name the same
+/// directory: consumers must be able to compare discovery results with the
+/// paths stored in the index.
+pub fn collect_al_files(root: &Path) -> Result<Vec<PathBuf>, ScanError> {
     let mut directories = vec![root.to_path_buf()];
     let mut files = Vec::new();
 
@@ -1037,6 +1044,25 @@ mod tests {
         assert_eq!(index.scan(dir.path()).unwrap(), 1);
         assert!(index.find_by_object_name("Inside").is_some());
         assert!(index.find_by_object_name("Outside").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_preserves_an_aliased_project_root() {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempfile::tempdir().unwrap();
+        let project = parent.path().join("project");
+        let alias = parent.path().join("alias");
+        fs::create_dir(&project).unwrap();
+        fs::write(project.join("Inside.al"), "codeunit 2 Inside {}").unwrap();
+        symlink(&project, &alias).unwrap();
+
+        assert_eq!(
+            collect_al_files(&alias).unwrap(),
+            vec![alias.join("Inside.al")],
+            "discovery paths must use the same root identity as the index caller"
+        );
     }
 
     #[test]
