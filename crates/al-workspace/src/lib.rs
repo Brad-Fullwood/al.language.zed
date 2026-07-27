@@ -1221,7 +1221,11 @@ mod workspace_lifecycle_tests {
             .get_or_build_call_graph()
             .expect("ID-less dependency objects must participate in graph construction");
         assert!(call_graph.is_some());
-        assert_eq!(workspace.symbols.loaded_package_paths(), vec![app_path]);
+        assert_eq!(
+            workspace.symbols.loaded_package_paths(),
+            vec![app_path.canonicalize().unwrap()],
+            "loaded package paths use the canonical source-index cache identity"
+        );
     }
 
     #[test]
