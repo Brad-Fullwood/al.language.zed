@@ -29,10 +29,11 @@ prepare_repository_fixture() {
 
     local tenant="$AL_LIVE_BC_TENANT"
     local environment="$AL_LIVE_BC_ENVIRONMENT"
+    local tenant_pattern='^[[:alnum:]][[:alnum:].-]*[[:alnum:]]$'
     local environment_pattern='^[[:alnum:]_. -]+$'
-    [[ "$tenant" =~ ^[[:alnum:]][[:alnum:].-]*[[:alnum:]]$ ]] &&
-        [[ "$tenant" != *..* ]] ||
+    if [[ ! "$tenant" =~ $tenant_pattern ]] || [[ "$tenant" == *..* ]]; then
         unavailable "AL_LIVE_BC_TENANT must be a tenant GUID or domain"
+    fi
     [[ "$environment" =~ $environment_pattern ]] ||
         unavailable "AL_LIVE_BC_ENVIRONMENT contains unsupported characters"
 
