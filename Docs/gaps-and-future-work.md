@@ -50,8 +50,8 @@ environment has not supplied its contract evidence.
 | LSP correctness | Document mutation/version/generation handling, diagnostics, navigation, edits, commands, shutdown, malformed input, stale state, and long-runtime daemon transport regressions pass; previously aspirational hover/definition cases now assert concrete results | Verified |
 | Repository honesty | README, feature pages, settings, schemas, CLI/daemon/MCP catalogs, benchmarks, and limitations have been swept against current registrations and runtime wiring; benchmark claims now link clean raw evidence and distinguish phase-one diagnostics, semantic readiness, and forced Microsoft teardown | Verified |
 | Dependency and automation policy | `cargo-deny` advisories/bans/licenses/sources pass; all repository shell scripts pass ShellCheck; root and grammar workflows pass Actionlint/YAML parsing | Verified |
-| Clean release hygiene | Prior implementation commit `dd757aff` passed the complete clean gate; the current completion candidate passes the same 13-stage `make release-dryrun`, full Microsoft-extension regeneration with zero drift, Microsoft contracts, policy checks, deterministic performance audit, aliased-root platform regression coverage, and isolated editor comparison, but still needs a clean committed-head rerun | Audit |
-| Publication | Grammar head `f26b067` is pushed and green in draft PR [AL-Tree-Sitter#2](https://github.com/Brad-Fullwood/AL-Tree-Sitter/pull/2); the superproject's previous head is pushed and green in draft PR [al.language.zed#26](https://github.com/Brad-Fullwood/al.language.zed/pull/26), while the current completion candidate and its exact-head checks still need publication | Audit |
+| Clean release hygiene | The current implementation series passed full Microsoft-extension regeneration with zero drift, Microsoft contracts, policy checks, deterministic performance audit, aliased-root platform regression coverage, and isolated editor comparison; exact clean pushed root head `a4e7d5fe` then passed all 13 stages of `make release-dryrun` and all six jobs in [GitHub Actions run 30429227486](https://github.com/Brad-Fullwood/al.language.zed/actions/runs/30429227486) | Verified |
+| Publication | Grammar head `f26b067` and superproject head `a4e7d5fe` are clean, pushed, remotely reachable, mergeable, and green in [AL-Tree-Sitter#2](https://github.com/Brad-Fullwood/AL-Tree-Sitter/pull/2) and [al.language.zed#26](https://github.com/Brad-Fullwood/al.language.zed/pull/26), respectively | Verified |
 
 ## External service contract
 
@@ -103,25 +103,28 @@ package manifest.
   protocol shutdown but required the explicitly recorded forced-termination
   fallback.
 - Root workspace tests, root Clippy with `-D warnings`, 43 Zed extension host
-  tests, release WASM build/component validation, CLI/TUI/MCP/archive smoke, and
-  the isolated Zed/VS Code comparison passed on the clean implementation series
-  ending at `dd757aff`.
+  tests, release WASM build/component validation, and CLI/TUI/MCP/archive smoke
+  passed at `a4e7d5fe`. The isolated Zed/VS Code comparison passed at
+  implementation head `673a3761`; the three subsequent fixes were confined to
+  live-fixture shell portability and regression-tested atomic executable
+  staging.
 - The full native workspace suite also passed with `TMPDIR` deliberately routed
   through a symlink alias. macOS then passed the same suite after project-wide
   source discovery was unified with the workspace index and package-cache tests
   were made to assert their documented canonical identity.
-- `make release-dryrun` passed all 13 stages on `dd757aff`; the full regeneration
+- `make release-dryrun` passed all 13 stages on `a4e7d5fe`; the full regeneration
   profile was byte-stable, and ShellCheck, root/grammar Actionlint and YAML
   parsing, cargo-deny advisories/bans/licenses/sources, the Criterion
   archive/index/query graph audit, and `make microsoft-contracts` also passed.
 - Grammar branch `agent/complete-grammar-corpus` is clean, pushed, remotely
-  reachable through draft PR #2, and green. Superproject PR #26 is green at its
-  previous pushed head; the current completion candidate is not yet published.
+  reachable through draft PR #2, and green at `f26b067`. Superproject branch
+  `agent/complete-project` is clean, pushed, remotely reachable through draft PR
+  #26, and all six exact-head CI jobs are green at `a4e7d5fe`.
 - The checked-in live fixture builds through the native emitter, its exact test
   classifies as `liveBc`, generated-profile preflight passes without an external
   project, unsafe tenant values fail before network access, and a missing live
   tenant/token still returns exit 2. No live tenant check is recorded as passed.
 
-The repository-controlled clean-head and publication gates remain open for this
-candidate. The service-controlled live-BC gate remains unavailable until its
-explicit inputs are supplied.
+The repository-controlled clean-head and publication gates are verified. The
+service-controlled live-BC gate remains unavailable until its explicit inputs
+are supplied.
