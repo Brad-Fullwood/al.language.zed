@@ -79,18 +79,34 @@ impl Drop for StagedRelease {
 }
 
 fn copy_release_binary(source: &Path, destination: &Path) {
-    std::fs::copy(source, destination).unwrap_or_else(|error| {
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("release binary destination has a UTF-8 file name");
+    let staging = destination.with_file_name(format!(".{file_name}.staging"));
+
+    // Never expose the executable path while its inode is still open for
+    // writing. Linux can otherwise reject an immediate spawn with ETXTBSY on
+    // busy CI filesystems even after `fs::copy` has returned.
+    std::fs::copy(source, &staging).unwrap_or_else(|error| {
         panic!(
             "copy release binary {} -> {}: {error}",
             source.display(),
-            destination.display()
+            staging.display()
         )
     });
     let permissions = std::fs::metadata(source)
         .unwrap_or_else(|error| panic!("stat {}: {error}", source.display()))
         .permissions();
-    std::fs::set_permissions(destination, permissions)
-        .unwrap_or_else(|error| panic!("set permissions on {}: {error}", destination.display()));
+    std::fs::set_permissions(&staging, permissions)
+        .unwrap_or_else(|error| panic!("set permissions on {}: {error}", staging.display()));
+    std::fs::rename(&staging, destination).unwrap_or_else(|error| {
+        panic!(
+            "install staged release binary {} -> {}: {error}",
+            staging.display(),
+            destination.display()
+        )
+    });
 }
 
 fn stage_release_layout() -> StagedRelease {
