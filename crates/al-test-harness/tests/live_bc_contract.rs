@@ -731,7 +731,10 @@ fn repository_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn generated_fixture_preflight(tenant: &str) -> io::Result<std::process::Output> {
+fn generated_fixture_preflight_with_bash_env(
+    tenant: &str,
+    bash_env: Option<&Path>,
+) -> io::Result<std::process::Output> {
     let mut command = Command::new("bash");
     command
         .arg(repository_root().join("scripts/live-bc-contracts.sh"))
@@ -752,8 +755,12 @@ fn generated_fixture_preflight(tenant: &str) -> io::Result<std::process::Output>
         "AL_LIVE_BC_VERSION",
         "BC_ACCESS_TOKEN",
         "BC_TOKEN",
+        "BASH_ENV",
     ] {
         command.env_remove(name);
+    }
+    if let Some(path) = bash_env {
+        command.env("BASH_ENV", path);
     }
     command
         .env("AL_LIVE_BC_TENANT", tenant)
@@ -761,6 +768,10 @@ fn generated_fixture_preflight(tenant: &str) -> io::Result<std::process::Output>
         .env("AL_LIVE_BC_VERSION", "26.5.0.0")
         .env("BC_ACCESS_TOKEN", "fixture-preflight-token")
         .output()
+}
+
+fn generated_fixture_preflight(tenant: &str) -> io::Result<std::process::Output> {
+    generated_fixture_preflight_with_bash_env(tenant, None)
 }
 
 #[test]
@@ -850,6 +861,34 @@ fn repository_live_fixture_preflight_needs_no_external_project() -> AnyResult<()
         || String::from_utf8_lossy(&output.stderr).contains("fixture-preflight-token")
     {
         return Err(failure("live preflight printed its bearer token").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn repository_live_fixture_preflight_does_not_require_gnu_sed_in_place() -> AnyResult<()> {
+    let temp = tempfile::tempdir()?;
+    let bash_env = temp.path().join("reject-sed-in-place.sh");
+    std::fs::write(
+        &bash_env,
+        r#"sed() {
+    case "${1:-}" in
+        -i|-i*) echo "GNU-only sed -i rejected by contract test" >&2; return 97 ;;
+    esac
+    command sed "$@"
+}
+"#,
+    )?;
+
+    let output =
+        generated_fixture_preflight_with_bash_env("demo.onmicrosoft.com", Some(&bash_env))?;
+    if !output.status.success() {
+        return Err(failure(format!(
+            "generated fixture preflight requires GNU sed behavior:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ))
+        .into());
     }
     Ok(())
 }

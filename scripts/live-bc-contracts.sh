@@ -55,9 +55,16 @@ prepare_repository_fixture() {
     ((build <= 65535)) ||
         unavailable "generated fixture version no longer fits an AL version component"
     fixture_version="1.0.${build}.${revision}"
-    sed -i \
+    local app_json="$generated_project/app.json"
+    local app_json_tmp
+    app_json_tmp="$(mktemp "$generated_project/.app.json.XXXXXX")" ||
+        unavailable "could not create the generated fixture manifest replacement"
+    if ! sed \
         "s/\"version\": \"1.0.0.0\"/\"version\": \"$fixture_version\"/" \
-        "$generated_project/app.json"
+        "$app_json" >"$app_json_tmp"; then
+        unavailable "could not write the generated fixture version"
+    fi
+    mv -- "$app_json_tmp" "$app_json"
 
     local launch_template
     launch_template="$(<"$generated_project/.vscode/launch.json.in")"
