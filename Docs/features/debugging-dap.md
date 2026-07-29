@@ -194,8 +194,9 @@ The service-backed contract is `make live-bc-contracts`. It drives the real
 DAP framing and BC service through launch compilation, publication, attach,
 breakpoint verification, stack/scopes/locals, evaluation, step, continue, and
 disconnect. The profile requires explicit AAD configuration, test identity,
-breakpoint, evaluation expression, BC version, and bearer token; missing inputs
-exit as `UNAVAILABLE`, never passed.
+breakpoint, evaluation expression, BC version, and bearer token. The default
+repository fixture supplies the test/breakpoint details from tenant and
+environment inputs; missing external inputs exit as `UNAVAILABLE`, never passed.
 
 ## How to use
 

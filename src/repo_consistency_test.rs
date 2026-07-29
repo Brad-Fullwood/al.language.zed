@@ -10,6 +10,7 @@
 //! drift independently.
 
 use crate::{release_lookup_failure_message, spawn_failure_message, GITHUB_REPO};
+use std::path::Path;
 use zed_extension_api as zed;
 
 /// Extract the `owner/repo` slug from a `https://github.com/owner/repo[.git]`
@@ -212,6 +213,57 @@ fn windows_ci_exercises_named_pipe_daemon_end_to_end() {
     assert!(
         workflow.contains("cargo test -p al-test-harness --test cli_smoke --test extension_smoke"),
         "Windows CI must run the daemon auto-start and CLI round-trip smoke tests"
+    );
+}
+
+/// `actions/checkout` persists the job token in `.git/config` unless explicitly
+/// disabled. Every workflow subsequently runs repository code, build scripts,
+/// or shell commands, so no checkout step may leave that credential behind.
+#[test]
+fn every_checkout_discards_persisted_credentials() {
+    let workflows = Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows");
+    let mut checkout_count = 0usize;
+
+    for entry in std::fs::read_dir(&workflows).expect("read .github/workflows") {
+        let path = entry.expect("workflow directory entry").path();
+        if !matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("yml" | "yaml")
+        ) {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let lines: Vec<&str> = source.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            if !line.trim().starts_with("uses: actions/checkout@") {
+                continue;
+            }
+            checkout_count += 1;
+            let step_indent = line.len() - line.trim_start().len();
+            let block_end = lines[index + 1..]
+                .iter()
+                .position(|candidate| {
+                    let indent = candidate.len() - candidate.trim_start().len();
+                    indent < step_indent
+                        || (indent == step_indent && candidate.trim_start().starts_with("- "))
+                })
+                .map_or(lines.len(), |offset| index + 1 + offset);
+            let block = &lines[index..block_end];
+            assert!(
+                block
+                    .iter()
+                    .any(|candidate| candidate.trim() == "persist-credentials: false"),
+                "{}:{} must set persist-credentials: false on actions/checkout",
+                path.display(),
+                index + 1
+            );
+        }
+    }
+
+    assert!(
+        checkout_count > 0,
+        "no actions/checkout steps were found; the guard is not exercising a workflow"
     );
 }
 

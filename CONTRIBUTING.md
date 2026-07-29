@@ -68,8 +68,9 @@ test remains separate; see [Docs/testing-guide.md](Docs/testing-guide.md).
 Tenant-backed publish, DAP, test, and snapshot changes additionally require the
 strict `make live-bc-contracts` profile. Missing external inputs exit 2 as
 `UNAVAILABLE`; they are not a successful skip. See the testing guide for the
-required environment contract, and never commit its credentials or launch
-configuration.
+required tenant/environment/version/token contract. The default repository
+fixture generates its launch configuration outside the checkout; never commit
+credentials or a custom tenant launch configuration.
 
 ## Two-repository grammar workflow
 

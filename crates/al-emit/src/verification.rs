@@ -572,7 +572,7 @@ fn verify_local_procedure_semantics(objects: &[EmitObject], out: &mut Vec<Verifi
                     let is_record = vars
                         .get(&receiver.to_ascii_lowercase())
                         .is_some_and(|ty| record_subtype(ty).is_some());
-                    if is_record && !known_builtin_call(&site.name) {
+                    if is_record && !known_record_method(&site.name) {
                         out.push(VerificationDiagnostic::error_at_source_offset(
                             object,
                             body_offset + site.offset,
@@ -586,7 +586,7 @@ fn verify_local_procedure_semantics(objects: &[EmitObject], out: &mut Vec<Verifi
                     continue;
                 }
                 let Some(candidates) = methods.get(&site.name.to_ascii_lowercase()) else {
-                    if !known_builtin_call(&site.name) {
+                    if !known_unqualified_builtin_call(&site.name) {
                         out.push(VerificationDiagnostic::error_at_source_offset(
                             object,
                             body_offset + site.offset,
@@ -743,29 +743,18 @@ fn has_uncovered_single_statement_return(body: &str) -> bool {
     false
 }
 
-fn known_builtin_call(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "message"
-            | "format"
-            | "findset"
-            | "findfirst"
-            | "findlast"
-            | "next"
-            | "init"
-            | "insert"
-            | "modify"
-            | "delete"
-            | "reset"
-            | "setrange"
-            | "setfilter"
-            | "setloadfields"
-            | "calcfields"
-            | "get"
-            | "count"
-            | "isempty"
-            | "exit"
-    )
+fn known_unqualified_builtin_call(name: &str) -> bool {
+    al_syntax::language_data::builtin_function_by_name(name).is_some()
+        || name.eq_ignore_ascii_case("exit")
+        // Table/page triggers may invoke methods on their implicit `Rec`
+        // without spelling the receiver. Keep those separate from global
+        // functions so `Customer.Error(...)` cannot be accepted merely
+        // because `Error(...)` is a valid global built-in.
+        || known_record_method(name)
+}
+
+fn known_record_method(name: &str) -> bool {
+    al_syntax::language_data::is_record_method(name)
 }
 
 fn verify_local_event_contracts(objects: &[EmitObject], out: &mut Vec<VerificationDiagnostic>) {
@@ -1848,5 +1837,43 @@ mod literal_contract_tests {
             literal_type_compatibility("20260725120000DT", "DateTime"),
             Some(true)
         );
+    }
+}
+
+#[cfg(test)]
+mod builtin_call_contract_tests {
+    use super::{known_record_method, known_unqualified_builtin_call};
+
+    #[test]
+    fn generated_global_builtin_catalog_is_the_verifier_authority() {
+        for builtin in al_syntax::language_data::builtin_functions() {
+            assert!(
+                known_unqualified_builtin_call(&builtin.name),
+                "generated global built-in '{}' must not be diagnosed as an unknown local call",
+                builtin.name
+            );
+        }
+        assert!(known_unqualified_builtin_call("Error"));
+        assert!(known_unqualified_builtin_call("StrSubstNo"));
+        assert!(known_unqualified_builtin_call("Commit"));
+        assert!(known_unqualified_builtin_call("Exit"));
+        assert!(!known_unqualified_builtin_call(
+            "ThisProcedureWasNeverDefined"
+        ));
+    }
+
+    #[test]
+    fn record_methods_do_not_inherit_the_global_function_catalog() {
+        for method in al_syntax::language_data::record_methods() {
+            assert!(
+                known_record_method(method),
+                "generated Record method {method} must be accepted"
+            );
+        }
+        assert!(known_record_method("SetCurrentKey"));
+        assert!(known_record_method("FieldError"));
+        assert!(known_record_method("Truncate"));
+        assert!(!known_record_method("Error"));
+        assert!(!known_record_method("NoSuchMethodHere"));
     }
 }

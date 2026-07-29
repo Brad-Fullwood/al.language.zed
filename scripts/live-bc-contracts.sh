@@ -6,6 +6,92 @@ unavailable() {
     exit 2
 }
 
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd -- "$script_dir/.." && pwd -P)"
+generated_project=""
+
+cleanup() {
+    if [[ -n "$generated_project" && -d "$generated_project" ]]; then
+        rm -rf -- "$generated_project"
+    fi
+}
+trap cleanup EXIT
+
+require_non_blank() {
+    local name="$1"
+    [[ -n "${!name:-}" ]] || unavailable "$name must be set and non-blank"
+}
+
+prepare_repository_fixture() {
+    require_non_blank AL_LIVE_BC_TENANT
+    require_non_blank AL_LIVE_BC_ENVIRONMENT
+    require_non_blank AL_LIVE_BC_VERSION
+
+    local tenant="$AL_LIVE_BC_TENANT"
+    local environment="$AL_LIVE_BC_ENVIRONMENT"
+    local environment_pattern='^[[:alnum:]_. -]+$'
+    [[ "$tenant" =~ ^[[:alnum:]][[:alnum:].-]*[[:alnum:]]$ ]] &&
+        [[ "$tenant" != *..* ]] ||
+        unavailable "AL_LIVE_BC_TENANT must be a tenant GUID or domain"
+    [[ "$environment" =~ $environment_pattern ]] ||
+        unavailable "AL_LIVE_BC_ENVIRONMENT contains unsupported characters"
+
+    local fixture_source="$repo_root/crates/al-test-harness/data/live_bc_contract_project"
+    [[ -f "$fixture_source/app.json" ]] ||
+        unavailable "repository live-BC fixture is missing app.json"
+    [[ -f "$fixture_source/.vscode/launch.json.in" ]] ||
+        unavailable "repository live-BC fixture is missing launch.json.in"
+
+    generated_project="$(mktemp -d "${TMPDIR:-/tmp}/al-live-bc-contract.XXXXXX")"
+    cp -R "$fixture_source/." "$generated_project/"
+
+    local epoch day half build revision fixture_version
+    epoch="$(date -u +%s)"
+    day="$((epoch / 86400))"
+    half="$(((epoch % 86400) / 43200))"
+    build="$((day * 2 + half))"
+    revision="$((epoch % 43200))"
+    ((build <= 65535)) ||
+        unavailable "generated fixture version no longer fits an AL version component"
+    fixture_version="1.0.${build}.${revision}"
+    sed -i \
+        "s/\"version\": \"1.0.0.0\"/\"version\": \"$fixture_version\"/" \
+        "$generated_project/app.json"
+
+    local launch_template
+    launch_template="$(<"$generated_project/.vscode/launch.json.in")"
+    launch_template="${launch_template//@TENANT@/$tenant}"
+    launch_template="${launch_template//@ENVIRONMENT@/$environment}"
+    printf '%s\n' "$launch_template" >"$generated_project/.vscode/launch.json"
+    rm -- "$generated_project/.vscode/launch.json.in"
+
+    local breakpoint_file="src/LiveContractTests.Codeunit.al"
+    local marker_count breakpoint_line
+    marker_count="$(
+        grep -c 'LIVE_BC_BREAKPOINT' "$generated_project/$breakpoint_file" || true
+    )"
+    [[ "$marker_count" == "1" ]] ||
+        unavailable "repository live-BC fixture must contain exactly one breakpoint marker"
+    breakpoint_line="$(
+        awk '/LIVE_BC_BREAKPOINT/ { print NR; exit }' \
+            "$generated_project/$breakpoint_file"
+    )"
+
+    export AL_LIVE_BC_PROJECT="$generated_project"
+    export AL_LIVE_BC_CONFIG="Live BC Contract"
+    export AL_LIVE_BC_TEST_CODEUNIT_ID="50100"
+    export AL_LIVE_BC_TEST_CODEUNIT_NAME="Live Contract Tests"
+    export AL_LIVE_BC_TEST_METHOD="PublishDebugAndSnapshot"
+    export AL_LIVE_BC_BREAKPOINT_FILE="$breakpoint_file"
+    export AL_LIVE_BC_BREAKPOINT_LINE="$breakpoint_line"
+    export AL_LIVE_BC_EVAL="ObservedValue"
+    export AL_LIVE_BC_EXPECT_EVAL="42"
+}
+
+if [[ -z "${AL_LIVE_BC_PROJECT:-}" ]]; then
+    prepare_repository_fixture
+fi
+
 required=(
     AL_LIVE_BC_PROJECT
     AL_LIVE_BC_CONFIG
@@ -18,7 +104,7 @@ required=(
     AL_LIVE_BC_VERSION
 )
 for name in "${required[@]}"; do
-    [[ -n "${!name:-}" ]] || unavailable "$name must be set and non-blank"
+    require_non_blank "$name"
 done
 
 [[ -d "$AL_LIVE_BC_PROJECT" ]] ||

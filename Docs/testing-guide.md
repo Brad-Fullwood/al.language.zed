@@ -143,6 +143,21 @@ emitter differentials (including the Base Application/resource fixture), and
 receiver-sensitive Zed built-in hover cases. It cannot silently omit the
 package-backed arm.
 
+When the pinned Microsoft AL extension changes, regenerate the shared `Record`
+method catalog from its `TableClass` metadata:
+
+```bash
+AL_TOOL_PATH=<ext>/bin/linux make record-methods
+```
+
+The generated catalog drives both semantic-token classification and native
+unknown-method verification. Generation fails if Microsoft returns fewer than
+50 unique methods, and the Rust tests enforce uniqueness plus representative
+methods that were absent from the former hand-written allowlists.
+`make check-record-methods` regenerates to a temporary file and requires an
+exact byte match without modifying the checkout; `make microsoft-contracts`
+runs that drift check before its live bridge and compiler contracts.
+
 Do not treat that external profile alone as complete. After bridge or lifecycle
 changes, also run the consumer finish gate:
 
@@ -161,14 +176,32 @@ build has the real bridge. Don't symlink the plain `target/debug/al-lsp` onto `P
 ## 5. Live Business Central contract profile
 
 `make live-bc-contracts` is the strict service-backed profile. It does not skip
-or pass when credentials, a launch configuration, an exact test, or a usable
-breakpoint is absent: preflight prints `UNAVAILABLE` and exits 2. The underlying
-Rust test stays `#[ignore]` in the self-contained suite so ordinary `cargo test`
-cannot count an unattempted tenant check as green.
+or pass when tenant coordinates, the declared BC version, or a bearer token is
+absent: preflight prints `UNAVAILABLE` and exits 2. The underlying Rust test
+stays `#[ignore]` in the self-contained suite so ordinary `cargo test` cannot
+count an unattempted tenant check as green.
 
-The supplied test must route to live BC, invoke the supplied breakpoint, have a
-second executable statement for step-over, expose at least one local, and be
-deterministic at the captured sample. Run:
+The default path copies the checked-in
+`crates/al-test-harness/data/live_bc_contract_project` fixture to a temporary
+directory, writes a non-secret launch profile for the declared tenant, gives the
+app a monotonic four-part version, and supplies the exact test/breakpoint
+metadata. Run:
+
+```bash
+AL_LIVE_BC_TENANT='00000000-0000-0000-0000-000000000000' \
+AL_LIVE_BC_ENVIRONMENT='Sandbox' \
+AL_LIVE_BC_VERSION='26.5.0.0' \
+BC_ACCESS_TOKEN='<headless AAD bearer token>' \
+  make live-bc-contracts
+```
+
+`BC_ACCESS_TOKEN` must be a Microsoft Entra/AAD bearer token; a username and
+password are not accepted by the native profile. `BC_TOKEN` remains an alias
+for existing automation. If both token variables are present they must contain
+the same value; disagreement fails closed before network access.
+
+To exercise a different app, set `AL_LIVE_BC_PROJECT` and the complete custom
+contract instead:
 
 ```bash
 AL_LIVE_BC_PROJECT=/absolute/path/to/live-test-app \
@@ -185,9 +218,9 @@ BC_ACCESS_TOKEN='<headless AAD bearer token>' \
   make live-bc-contracts
 ```
 
-`BC_TOKEN` remains an alias for existing automation. If both token variables
-are present they must contain the same value; disagreement fails closed before
-network access. The profile:
+The custom test must route to live BC, invoke the supplied breakpoint, have a
+second executable statement for step-over, expose at least one local, and be
+deterministic at the captured sample. The profile:
 
 1. Builds the current `al-lsp` and `al-explorer` binaries.
 2. Runs the shared publish pipeline and requires BC to report a completed
@@ -200,10 +233,12 @@ network access. The profile:
 5. Captures a live breakpoint snapshot, validates it, replays it against the
    declared BC version with zero divergences, and self-diffs the persisted file.
 
-The profile writes build output to the supplied project as normal publish
-tooling does. Its temporary snapshot directory is created inside that project
-(required by the path sandbox) and removed afterward. Never commit credentials,
-tenant launch files, or captured service data.
+The generated local project and snapshots are removed when the command exits.
+A custom project receives normal build output and a temporary snapshot
+directory, which is removed afterward. The fixture extension is intentionally
+published/installed in the selected tenant and is not automatically uninstalled;
+use a disposable sandbox. Never commit credentials, tenant launch files, or
+captured service data.
 
 ## 6. Reproducible generated artifacts
 
@@ -223,6 +258,9 @@ from their sources with **no diff**:
 `scripts/check-release-hygiene.sh` independently enforces that `languages/al` is
 current (it runs the generator and fails on any diff), and that the generated
 grammar/query/data/theme artifacts exist — `make release-dryrun` calls it.
+Its pinned `--full-regenerate` profile also derives `AL_TOOL_PATH` from the same
+Microsoft extension snapshot and requires the checked-in Record method catalog
+to match that DLL exactly.
 
 `make repro-artifacts` is deliberately narrower than full grammar regeneration.
 After changing grammar or generator inputs, additionally run:

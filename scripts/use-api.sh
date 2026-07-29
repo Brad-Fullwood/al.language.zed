@@ -20,35 +20,60 @@
 # After switching, the WASM is rebuilt. In Zed, reload the dev extension
 # (command palette: "zed: reload extensions" or reinstall dev extension).
 set -euo pipefail
+
+# `sed -i` is not portable: GNU takes an optional suffix, BSD/macOS *requires*
+# one, so a bare `-i` fails on macOS (a supported dev platform — CI builds on
+# macos-latest). Build a mode-preserving replacement beside the target, then
+# rename it atomically over the original.
+sed_inplace() { # $1 = sed expression, $2 = file
+  local expression="$1"
+  local target="$2"
+  local target_dir target_name tmp
+
+  if [[ ! -f "$target" || -L "$target" ]]; then
+    echo "ERROR: atomic rewrite target must be a regular non-symlink file: $target" >&2
+    return 1
+  fi
+
+  target_dir="$(dirname "$target")" || return 1
+  target_name="$(basename "$target")" || return 1
+  tmp="$(mktemp "$target_dir/.${target_name}.tmp.XXXXXX")" || return 1
+
+  # POSIX `cp -p` transfers the existing mode to the already-created temporary
+  # file without GNU-only `chmod --reference`. The temp lives in the target
+  # directory, so the final rename cannot cross filesystems.
+  if ! cp -p "$target" "$tmp"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to preserve metadata for $target" >&2
+    return 1
+  fi
+
+  # A failing or interrupted sed can damage only the temporary file. The
+  # original remains byte-identical until the single same-directory rename.
+  if ! sed "$expression" "$target" > "$tmp"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to rewrite $target (sed expression: $expression)" >&2
+    return 1
+  fi
+  if ! mv -f "$tmp" "$target"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to install atomic rewrite for $target" >&2
+    return 1
+  fi
+}
+
+# Allow the atomic helper to be sourced by its cross-platform contract test
+# without switching dependencies or rebuilding the extension.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
+
 cd "$(dirname "$0")/.."
 
 DEV_VER="0.8.0"
 STABLE_VER="0.7.0"
 DEV_DEP='zed_extension_api = { git = "https://github.com/zed-industries/zed", branch = "main" }'
 STABLE_DEP="zed_extension_api = \"$STABLE_VER\""
-
-# `sed -i` is not portable: GNU takes an optional suffix, BSD/macOS *requires*
-# one, so a bare `-i` fails on macOS (a supported dev platform — CI builds on
-# macos-latest). Edit through a temp file instead, which behaves the same
-# everywhere.
-sed_inplace() { # $1 = sed expression, $2 = file
-  local tmp
-  tmp="$(mktemp)" || return 1
-  # Only touch the target once sed has succeeded — writing the target directly
-  # (or copying back unconditionally) would truncate a manifest to whatever
-  # partial output a failing sed produced.
-  if ! sed "$1" "$2" > "$tmp"; then
-    rm -f "$tmp"
-    echo "ERROR: failed to rewrite $2 (sed expression: $1)" >&2
-    return 1
-  fi
-  # Copy back rather than `mv`: this keeps the target's existing mode and
-  # inode. `mktemp` creates 0600, and `mv` would leave a tracked manifest
-  # owner-only. `chmod --reference` is GNU-only, so it is not an option in a
-  # script whose whole point is BSD/macOS portability.
-  cat "$tmp" > "$2"
-  rm -f "$tmp"
-}
 
 set_lib_version() { # $1 = version
   # Replace `version = "..."` only inside the [lib] table of extension.toml.

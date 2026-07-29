@@ -704,6 +704,173 @@ fn exercise_cli_live_test_and_snapshots(contract: &LiveContract) -> AnyResult<()
     Ok(())
 }
 
+fn repository_live_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/live_bc_contract_project")
+}
+
+fn copy_fixture_tree(source: &Path, destination: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_fixture_tree(&source_path, &destination_path)?;
+        } else {
+            std::fs::copy(source_path, destination_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("al-test-harness must be inside <repository>/crates")
+        .to_path_buf()
+}
+
+fn generated_fixture_preflight(tenant: &str) -> io::Result<std::process::Output> {
+    let mut command = Command::new("bash");
+    command
+        .arg(repository_root().join("scripts/live-bc-contracts.sh"))
+        .arg("--preflight-only")
+        .current_dir(repository_root());
+    for name in [
+        "AL_LIVE_BC_PROJECT",
+        "AL_LIVE_BC_CONFIG",
+        "AL_LIVE_BC_TEST_CODEUNIT_ID",
+        "AL_LIVE_BC_TEST_CODEUNIT_NAME",
+        "AL_LIVE_BC_TEST_METHOD",
+        "AL_LIVE_BC_BREAKPOINT_FILE",
+        "AL_LIVE_BC_BREAKPOINT_LINE",
+        "AL_LIVE_BC_EVAL",
+        "AL_LIVE_BC_EXPECT_EVAL",
+        "AL_LIVE_BC_TENANT",
+        "AL_LIVE_BC_ENVIRONMENT",
+        "AL_LIVE_BC_VERSION",
+        "BC_ACCESS_TOKEN",
+        "BC_TOKEN",
+    ] {
+        command.env_remove(name);
+    }
+    command
+        .env("AL_LIVE_BC_TENANT", tenant)
+        .env("AL_LIVE_BC_ENVIRONMENT", "CDX Sandbox")
+        .env("AL_LIVE_BC_VERSION", "26.5.0.0")
+        .env("BC_ACCESS_TOKEN", "fixture-preflight-token")
+        .output()
+}
+
+#[test]
+fn repository_live_fixture_builds_and_routes_the_exact_test_to_live_bc() -> AnyResult<()> {
+    let fixture = repository_live_fixture();
+    let temp = tempfile::tempdir()?;
+    copy_fixture_tree(&fixture, temp.path())?;
+    let launch_template = std::fs::read_to_string(temp.path().join(".vscode/launch.json.in"))?;
+    std::fs::write(
+        temp.path().join(".vscode/launch.json"),
+        launch_template
+            .replace("@TENANT@", "demo.onmicrosoft.com")
+            .replace("@ENVIRONMENT@", "CDX Sandbox"),
+    )?;
+    let server = selected_server_config(temp.path(), "Live BC Contract")?;
+    if server.authentication != AuthMethod::AAD
+        || server.tenant.as_deref() != Some("demo.onmicrosoft.com")
+        || server.environment_name.as_deref() != Some("CDX Sandbox")
+    {
+        return Err(failure(format!(
+            "repository fixture launch template parsed incorrectly: {server:?}"
+        ))
+        .into());
+    }
+
+    let build = al_compile::native_compile(temp.path());
+    if !build.success {
+        return Err(failure(format!(
+            "repository live fixture did not build:\n{}\n{:#?}",
+            build.output, build.diagnostics
+        ))
+        .into());
+    }
+    let app_path = build
+        .app_path
+        .ok_or_else(|| failure("repository live fixture build produced no .app"))?;
+    if !app_path.is_file() {
+        return Err(failure(format!(
+            "repository live fixture artifact is missing: {}",
+            app_path.display()
+        ))
+        .into());
+    }
+
+    let source_path = temp.path().join("src/LiveContractTests.Codeunit.al");
+    let source = std::fs::read_to_string(&source_path)?;
+    if source.matches("LIVE_BC_BREAKPOINT").count() != 1 {
+        return Err(failure("repository live fixture must have one breakpoint marker").into());
+    }
+    let workspace = al_workspace::Workspace::new();
+    workspace.file_index.add_file(source_path, source);
+    let classified = al_test::router::classify_all(&workspace)?;
+    let exact = classified
+        .iter()
+        .find(|entry| {
+            entry.codeunit_id == 50100
+                && entry.codeunit_name == "Live Contract Tests"
+                && entry.method_name == "PublishDebugAndSnapshot"
+        })
+        .ok_or_else(|| failure("repository live fixture exact test was not discovered"))?;
+    if exact.decision != al_test::router::RoutingDecision::LiveBc {
+        return Err(failure(format!(
+            "repository live fixture routed as {:?}: {:?}",
+            exact.decision, exact.reasons
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn repository_live_fixture_preflight_needs_no_external_project() -> AnyResult<()> {
+    let output = generated_fixture_preflight("demo.onmicrosoft.com")?;
+    if !output.status.success() {
+        return Err(failure(format!(
+            "generated fixture preflight failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ))
+        .into());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.contains("Live BC contract preflight passed") {
+        return Err(failure(format!("unexpected preflight output: {stdout}")).into());
+    }
+    if stdout.contains("fixture-preflight-token")
+        || String::from_utf8_lossy(&output.stderr).contains("fixture-preflight-token")
+    {
+        return Err(failure("live preflight printed its bearer token").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn repository_live_fixture_rejects_an_unsafe_tenant_before_network() -> AnyResult<()> {
+    let output = generated_fixture_preflight("https://example.com/other")?;
+    if output.status.code() != Some(2) {
+        return Err(failure(format!(
+            "unsafe tenant preflight returned {:?}, expected 2",
+            output.status.code()
+        ))
+        .into());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.contains("AL_LIVE_BC_TENANT must be a tenant GUID or domain") {
+        return Err(failure(format!("unsafe tenant diagnostic was unclear: {stderr}")).into());
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires explicit live Business Central inputs; run via make live-bc-contracts"]
 async fn live_bc_publish_dap_test_and_snapshot_contract() -> AnyResult<()> {

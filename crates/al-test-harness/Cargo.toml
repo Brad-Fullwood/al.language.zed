@@ -16,6 +16,7 @@ toml = "0.8"
 
 [dev-dependencies]
 al-bc = { path = "../al-bc", version = "0.1.0" }
+al-compile = { path = "../al-compile", version = "0.1.0" }
 al-project = { path = "../al-project", version = "0.1.0" }
 al-publish = { path = "../al-publish", version = "0.1.0" }
 al-test = { path = "../al-test", version = "0.1.0" }

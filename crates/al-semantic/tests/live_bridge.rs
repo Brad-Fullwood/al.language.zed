@@ -123,9 +123,9 @@ async fn live_bridge_satisfies_its_public_contracts() {
         .expect("the built-in CodeCop analyzer should resolve and run");
 
     let builtins = bridge
-        .builtin_types()
+        .builtin_types_fresh()
         .await
-        .expect("builtins should be extractable");
+        .expect("builtins should be freshly extractable from the loaded DLL");
     assert!(builtins.len() > 20, "builtin catalog is implausibly small");
 
     let error_codes = bridge

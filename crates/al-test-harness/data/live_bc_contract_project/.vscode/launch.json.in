@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Live BC Contract",
+            "type": "al",
+            "request": "launch",
+            "environmentType": "Sandbox",
+            "environmentName": "@ENVIRONMENT@",
+            "tenant": "@TENANT@",
+            "authentication": "MicrosoftEntraID",
+            "startupObjectId": 22,
+            "startupObjectType": "Page",
+            "breakOnError": "All",
+            "launchBrowser": false,
+            "schemaUpdateMode": "Synchronize"
+        }
+    ]
+}

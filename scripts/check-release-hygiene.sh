@@ -35,8 +35,8 @@ Options:
   --regenerate                Run make grammar and fail if generated outputs change.
   --full-regenerate           Requires a pinned unpacked Microsoft AL extension
                               at AL_EXTENSION_PATH; regenerates the complete
-                              grammar/data/theme output and runs the pinned
-                              external repository corpus.
+                              grammar/data/theme output, verifies the Record
+                              method catalog, and runs the pinned corpus.
   -h, --help                  Show this help.
 
 Environment:
@@ -261,6 +261,7 @@ check_generated_files_exist() {
         tree-sitter-al/data/token_classification.json
         tree-sitter-al/data/builtin_functions.json
         tree-sitter-al/data/runtime_enums.json
+        crates/al-syntax/data/record_methods.json
         themes/bc-themes.json
     )
     local file
@@ -279,8 +280,8 @@ check_generated_files_exist() {
 }
 
 show_generated_drift() {
-    git status --short -- languages/al themes/bc-themes.json
-    git diff --stat -- languages/al themes/bc-themes.json
+    git status --short -- languages/al themes/bc-themes.json crates/al-syntax/data/record_methods.json
+    git diff --stat -- languages/al themes/bc-themes.json crates/al-syntax/data/record_methods.json
     git -C tree-sitter-al status --short -- grammar.js src queries data
     git -C tree-sitter-al diff --stat -- grammar.js src queries data
 }
@@ -339,11 +340,11 @@ check_generated_cochange() {
         return 0
     }
 
-    local generator_patterns=(
+    local language_generator_patterns=(
         'tree-sitter-al/generator/*'
         'tree-sitter-al/generator/**'
     )
-    local generated_patterns=(
+    local language_generated_patterns=(
         'tree-sitter-al/grammar.js'
         'tree-sitter-al/src/grammar.json'
         'tree-sitter-al/src/keywords.c'
@@ -356,21 +357,33 @@ check_generated_cochange() {
         'themes/bc-themes.json'
     )
 
-    local saw_generator=0
-    local saw_generated=0
+    local saw_language_generator=0
+    local saw_language_generated=0
+    local saw_record_generator=0
+    local saw_record_generated=0
     local file
     for file in "${changed[@]}"; do
-        if path_matches "${file}" "${generator_patterns[@]}"; then
-            saw_generator=1
+        if path_matches "${file}" "${language_generator_patterns[@]}"; then
+            saw_language_generator=1
         fi
-        if path_matches "${file}" "${generated_patterns[@]}"; then
-            saw_generated=1
+        if path_matches "${file}" "${language_generated_patterns[@]}"; then
+            saw_language_generated=1
+        fi
+        if [ "${file}" = 'crates/al-semantic/examples/export_record_methods.rs' ]; then
+            saw_record_generator=1
+        fi
+        if [ "${file}" = 'crates/al-syntax/data/record_methods.json' ]; then
+            saw_record_generated=1
         fi
     done
 
-    if [ "${saw_generator}" -eq 1 ] && [ "${saw_generated}" -eq 0 ]; then
+    if [ "${saw_language_generator}" -eq 1 ] && [ "${saw_language_generated}" -eq 0 ]; then
         fail "generator inputs changed since ${base}, but no generated grammar/query/data/theme outputs changed.
 Run the generator or use --regenerate locally to prove the generated artifacts are fresh."
+    fi
+    if [ "${saw_record_generator}" -eq 1 ] && [ "${saw_record_generated}" -eq 0 ]; then
+        fail "Record method generator changed since ${base}, but crates/al-syntax/data/record_methods.json did not.
+Run 'AL_TOOL_PATH=<official-extension>/bin/<platform> make record-methods' and commit the result."
     fi
 
     ok "generated-source/generated-output co-change guard passed since ${base}"
@@ -457,6 +470,8 @@ check_full_regenerate_clean() {
         || fail "AL_EXTENSION_PATH is not a directory: ${AL_EXTENSION_PATH}"
     command -v tree-sitter >/dev/null \
         || fail "--full-regenerate requires the tree-sitter CLI on PATH"
+    command -v dotnet >/dev/null \
+        || fail "--full-regenerate requires dotnet for the Microsoft Record method catalog"
     tree-sitter-al/tests/check_cli_version.sh
 
     # Restrict the before/after snapshot to generator-owned output. This keeps
@@ -478,7 +493,17 @@ check_full_regenerate_clean() {
         show_generated_drift
         fail "full grammar regeneration changed generator-owned output; commit the regenerated artifacts"
     fi
-    ok "full AL-extension regeneration and pinned external corpus produced no diff or failures"
+
+    local code_analysis_dll
+    code_analysis_dll="$(
+        find "${AL_EXTENSION_PATH}/bin" -type f \
+            -name Microsoft.Dynamics.Nav.CodeAnalysis.dll -print -quit 2>/dev/null
+    )"
+    [ -n "${code_analysis_dll}" ] \
+        || fail "Microsoft.Dynamics.Nav.CodeAnalysis.dll was not found below AL_EXTENSION_PATH/bin"
+    AL_TOOL_PATH="$(dirname "${code_analysis_dll}")" make check-record-methods
+
+    ok "full AL-extension regeneration, Record catalog, and pinned external corpus produced no diff or failures"
 }
 
 repo_slug() {

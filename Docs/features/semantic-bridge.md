@@ -140,6 +140,11 @@ automatically. To control it:
   loads the real Microsoft DLL and verifies initialization/health, compiler semantic diagnostics,
   unsaved-buffer type lookup, invalid-position rejection, member completion, shipped CodeCop loading,
   built-ins, and error codes. Set `AL_PACKAGE_CACHE_PATH` as well to exercise package-reference loading.
+- `AL_TOOL_PATH=<official-extension>/bin/<platform> make record-methods` regenerates the checked-in,
+  shared AL `Record` method catalog from Microsoft's `TableClass` metadata; syntax highlighting and
+  native verification consume that same catalog instead of separate hand-maintained lists.
+- `scripts/check-release-hygiene.sh --full-regenerate` finds that same CodeAnalysis DLL below the
+  pinned `AL_EXTENSION_PATH` and requires a byte-identical catalog as part of generated-asset CI.
 - `cargo test -p al-workspace`, `cargo test -p al-analysis`, `cargo test -p al-test`, and
   `cargo test -p al-lsp --lib --features semantic` are the consumer finish gate. They prove that the
   lifecycle, hover/completion, diagnostics, test routing/runtime, and semantic-enabled LSP wiring

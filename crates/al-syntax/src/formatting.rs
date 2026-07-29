@@ -135,21 +135,25 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
 
     for line in text.lines() {
         let trimmed = line.trim();
+        let started_in_block_comment = in_block_comment;
 
-        // A line that *starts* inside a block comment is comment text through
-        // and through. Emit it byte-for-byte — the interior layout of a
-        // `/* … */` block (ASCII art, aligned tables, indented examples) is the
-        // author's, not the formatter's — and run no block-structure analysis
-        // on it. Only the line that *opens* the comment is re-indented, like
-        // any other statement.
-        if in_block_comment {
-            let (_, still_open) = strip_comments(trimmed, true);
+        // Preserve comment-interior layout byte-for-byte. A closing line with
+        // code after `*/` is different: preserve its physical layout, but feed
+        // that code tail through the normal state machine so `*/ end;`, calls,
+        // and block openers affect every following line correctly.
+        let carried_comment_code = if started_in_block_comment {
+            let (code, still_open) = strip_comments(trimmed, true);
             in_block_comment = still_open;
-            result.push_str(line.trim_end());
-            result.push('\n');
-            prev_was_empty = false;
-            continue;
-        }
+            if code.is_empty() {
+                result.push_str(line.trim_end());
+                result.push('\n');
+                prev_was_empty = false;
+                continue;
+            }
+            Some(code)
+        } else {
+            None
+        };
 
         if trimmed.is_empty() {
             if prev_was_empty {
@@ -173,8 +177,13 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // have every comment span removed, so commented-out braces and
         // keywords can't drive the indent state machine; an unterminated `/*`
         // sets `in_block_comment` for the following lines.
-        let (code, opens_block_comment) = strip_comments(trimmed, false);
-        in_block_comment = opens_block_comment;
+        let code = if let Some(code) = carried_comment_code {
+            code
+        } else {
+            let (code, opens_block_comment) = strip_comments(trimmed, false);
+            in_block_comment = opens_block_comment;
+            code
+        };
         let code_lower = code.to_lowercase();
 
         // `begin` closes a var section — dedent back to the procedure level
@@ -283,16 +292,22 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             indent_level = (indent_level - 1).max(0);
         }
 
-        for _ in 0..indent_level {
-            result.push_str(&indent_str);
-        }
-        // apply keyword casing transformation. Skips work entirely
-        // for Preserve (no allocation). For Lower/Upper, walks the line and
-        // case-folds only AL keyword tokens (matched via word boundaries +
-        // language_data lookup) — keeps identifiers, string literals and
-        // comment text untouched. Lines *inside* a block comment never reach
-        // here; they are emitted verbatim at the top of the loop.
-        let transformed = apply_keyword_casing(trimmed, &options.keyword_casing);
+        let output_line = if started_in_block_comment {
+            line.trim_end()
+        } else {
+            for _ in 0..indent_level {
+                result.push_str(&indent_str);
+            }
+            trimmed
+        };
+        // Apply casing only to code spans. On a carried block-comment closing
+        // line, the scanner starts in comment state so prose before `*/` stays
+        // byte-for-byte while an executable tail still receives normal casing.
+        let transformed = if started_in_block_comment {
+            apply_keyword_casing_with_state(output_line, &options.keyword_casing, true)
+        } else {
+            apply_keyword_casing(output_line, &options.keyword_casing)
+        };
         result.push_str(&transformed);
         result.push('\n');
 
@@ -549,101 +564,53 @@ fn count_net_parens(line: &str) -> i32 {
 /// numeric literals pass through unchanged.
 ///
 /// Returns the input string when casing is `Preserve` (no allocation).
-fn apply_keyword_casing(line: &str, casing: &KeywordCasing) -> String {
+fn apply_keyword_casing<'a>(line: &'a str, casing: &KeywordCasing) -> std::borrow::Cow<'a, str> {
+    apply_keyword_casing_with_state(line, casing, false)
+}
+
+fn apply_keyword_casing_with_state<'a>(
+    line: &'a str,
+    casing: &KeywordCasing,
+    in_block_comment: bool,
+) -> std::borrow::Cow<'a, str> {
     if matches!(casing, KeywordCasing::Preserve) {
-        return line.to_string();
+        return std::borrow::Cow::Borrowed(line);
     }
 
     let mut out = String::with_capacity(line.len());
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        // String literal — copy verbatim until the matching quote. AL escapes
-        // a single quote inside a single-quoted literal by doubling it (''), so
-        // a `''` pair is content, not a terminator. Mirror the escape handling
-        // in count_net_delimiters (mod.rs) so an escaped quote can't desync the
-        // scanner and let a later keyword be mis-cased.
-        if b == b'\'' || b == b'"' {
-            let quote = b;
-            let start = i;
-            i += 1;
-            // Advance to the matching close quote, honoring the `''` escape for
-            // single-quoted literals. Quotes and escapes are ASCII, so this
-            // byte scan never mistakes a UTF-8 continuation byte for a quote,
-            // and `i` lands back on a char boundary at the terminator.
-            while i < bytes.len() {
-                if bytes[i] == quote {
-                    if quote == b'\'' && i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                        i += 2; // escaped quote — content, not a terminator
-                    } else {
-                        i += 1; // consume the closing quote
-                        break;
-                    }
-                } else {
+    for span in super::lexical::LineScanner::new(line, in_block_comment) {
+        if span.kind != super::lexical::SpanKind::Code {
+            out.push_str(span.text);
+            continue;
+        }
+
+        let bytes = span.text.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b.is_ascii_alphabetic() || b == b'_' {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                     i += 1;
                 }
-            }
-            // Copy the whole literal as a str slice (both ends are char
-            // boundaries) — never byte-by-byte, which corrupted non-ASCII
-            // content (e.g. `'Grüße'`, `"Preis in €"`) into mojibake.
-            out.push_str(&line[start..i]);
-            continue;
-        }
-        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            // SAFETY: bytes is the original UTF-8 line; `&line[i..]` is a
-            // valid str slice because i lies on a char boundary (we only
-            // advanced past ASCII bytes above).
-            out.push_str(&line[i..]);
-            break;
-        }
-        // Block comment — copy verbatim through the closing `*/`, or to the end
-        // of the line when the comment continues onto the next one. Comment
-        // prose is not code: re-casing words that happen to be AL keywords
-        // (`/* call begin here */`) rewrites the author's text.
-        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-            let start = i;
-            i += 2;
-            while i < bytes.len() {
-                if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                    i += 2;
-                    break;
+                let word = &span.text[start..i];
+                if super::language_data::is_keyword(word) {
+                    match casing {
+                        KeywordCasing::Lower => out.push_str(&word.to_ascii_lowercase()),
+                        KeywordCasing::Upper => out.push_str(&word.to_ascii_uppercase()),
+                        KeywordCasing::Preserve => out.push_str(word),
+                    }
+                } else {
+                    out.push_str(word);
                 }
-                i += 1;
+                continue;
             }
-            // `*` and `/` are ASCII, so `i` lands on a char boundary and this
-            // slice preserves any non-ASCII comment text intact.
-            out.push_str(&line[start..i]);
-            continue;
+            let ch = span.text[i..].chars().next().unwrap_or(b as char);
+            out.push(ch);
+            i += ch.len_utf8();
         }
-        // Identifier-shaped word (letters + digits + underscore, starting
-        // with letter or underscore). AL is ASCII-only so byte-level scan
-        // is safe.
-        if b.is_ascii_alphabetic() || b == b'_' {
-            let start = i;
-            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                i += 1;
-            }
-            let word = &line[start..i];
-            if super::language_data::is_keyword(word) {
-                match casing {
-                    KeywordCasing::Lower => out.push_str(&word.to_ascii_lowercase()),
-                    KeywordCasing::Upper => out.push_str(&word.to_ascii_uppercase()),
-                    KeywordCasing::Preserve => out.push_str(word),
-                }
-            } else {
-                out.push_str(word);
-            }
-            continue;
-        }
-        // Any other char: copy it whole. `i` is on a char boundary here (the
-        // string/comment/identifier branches all leave it aligned), so a stray
-        // multi-byte char is preserved rather than truncated to one byte.
-        let ch = line[i..].chars().next().unwrap_or(b as char);
-        out.push(ch);
-        i += ch.len_utf8();
     }
-    out
+    std::borrow::Cow::Owned(out)
 }
 
 /// Single-statement openers are loaded from `tree-sitter-al/data/single_stmt_openers.json`
@@ -686,45 +653,24 @@ fn join_lines(lines: Vec<String>) -> String {
 /// level — i.e. outside single/double-quoted spans, outside `()`/`[]`, and
 /// before any `//` line comment. `None` if no such occurrence exists.
 fn first_top_level(s: &str, target: u8) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let mut i = 0;
     let mut paren = 0i32;
     let mut bracket = 0i32;
-    let mut in_single = false;
-    let mut in_double = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if in_single {
-            if b == b'\'' {
-                // AL escapes a single quote inside a literal by doubling it.
-                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                    i += 2;
-                    continue;
+    for span in super::lexical::LineScanner::new(s, false) {
+        if span.kind != super::lexical::SpanKind::Code {
+            continue;
+        }
+        for (offset, b) in span.text.bytes().enumerate() {
+            match b {
+                b'(' => paren += 1,
+                b')' => paren -= 1,
+                b'[' => bracket += 1,
+                b']' => bracket -= 1,
+                c if c == target && paren == 0 && bracket == 0 => {
+                    return Some(span.start + offset);
                 }
-                in_single = false;
+                _ => {}
             }
-            i += 1;
-            continue;
         }
-        if in_double {
-            if b == b'"' {
-                in_double = false;
-            }
-            i += 1;
-            continue;
-        }
-        match b {
-            b'\'' => in_single = true,
-            b'"' => in_double = true,
-            b'(' => paren += 1,
-            b')' => paren -= 1,
-            b'[' => bracket += 1,
-            b']' => bracket -= 1,
-            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => return None,
-            c if c == target && paren == 0 && bracket == 0 => return Some(i),
-            _ => {}
-        }
-        i += 1;
     }
     None
 }
@@ -733,49 +679,29 @@ fn first_top_level(s: &str, target: u8) -> Option<usize> {
 /// not part of `:=`, `<=`, `>=`, `<>`, `!=`, or `==`). `None` if absent.
 fn property_eq_pos(s: &str) -> Option<usize> {
     let bytes = s.as_bytes();
-    let mut i = 0;
     let mut paren = 0i32;
     let mut bracket = 0i32;
-    let mut in_single = false;
-    let mut in_double = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if in_single {
-            if b == b'\'' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                    i += 2;
-                    continue;
-                }
-                in_single = false;
-            }
-            i += 1;
+    for span in super::lexical::LineScanner::new(s, false) {
+        if span.kind != super::lexical::SpanKind::Code {
             continue;
         }
-        if in_double {
-            if b == b'"' {
-                in_double = false;
-            }
-            i += 1;
-            continue;
-        }
-        match b {
-            b'\'' => in_single = true,
-            b'"' => in_double = true,
-            b'(' => paren += 1,
-            b')' => paren -= 1,
-            b'[' => bracket += 1,
-            b']' => bracket -= 1,
-            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => return None,
-            b'=' if paren == 0 && bracket == 0 => {
-                let prev = if i > 0 { bytes[i - 1] } else { 0 };
-                let next = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
-                if !matches!(prev, b':' | b'<' | b'>' | b'!' | b'=') && next != b'=' {
-                    return Some(i);
+        for (offset, b) in span.text.bytes().enumerate() {
+            let absolute = span.start + offset;
+            match b {
+                b'(' => paren += 1,
+                b')' => paren -= 1,
+                b'[' => bracket += 1,
+                b']' => bracket -= 1,
+                b'=' if paren == 0 && bracket == 0 => {
+                    let prev = if absolute > 0 { bytes[absolute - 1] } else { 0 };
+                    let next = bytes.get(absolute + 1).copied().unwrap_or(0);
+                    if !matches!(prev, b':' | b'<' | b'>' | b'!' | b'=') && next != b'=' {
+                        return Some(absolute);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
-        i += 1;
     }
     None
 }
@@ -822,39 +748,9 @@ fn property_sort_key(first_line: &str) -> String {
 /// `None` if the line has no such comment. Doubled single-quotes (`''`) inside
 /// a `'...'` string are escapes, not string terminators.
 fn line_comment_start(s: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    let mut in_single = false;
-    let mut in_double = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if in_single {
-            if b == b'\'' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                    i += 2;
-                    continue;
-                }
-                in_single = false;
-            }
-            i += 1;
-            continue;
-        }
-        if in_double {
-            if b == b'"' {
-                in_double = false;
-            }
-            i += 1;
-            continue;
-        }
-        match b {
-            b'\'' => in_single = true,
-            b'"' => in_double = true,
-            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => return Some(i),
-            _ => {}
-        }
-        i += 1;
-    }
-    None
+    super::lexical::LineScanner::new(s, false)
+        .find(|span| span.kind == super::lexical::SpanKind::LineComment)
+        .map(|span| span.start)
 }
 
 fn has_line_comment_outside_strings(s: &str) -> bool {
@@ -876,58 +772,28 @@ fn has_line_comment_outside_strings(s: &str) -> bool {
 /// A removed span collapses to a single space so `end;/*x*/` does not fuse
 /// its neighbours into one token; the result is trimmed.
 pub(crate) fn strip_comments(line: &str, in_block: bool) -> (String, bool) {
-    let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len());
-    let mut i = 0;
-    let mut in_block = in_block;
-    while i < bytes.len() {
-        if in_block {
-            if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                in_block = false;
-                out.push(' ');
-                i += 2;
-            } else {
-                i += 1;
+    let mut scanner = super::lexical::LineScanner::new(line, in_block);
+    for span in scanner.by_ref() {
+        match span.kind {
+            super::lexical::SpanKind::Code | super::lexical::SpanKind::String => {
+                out.push_str(span.text);
             }
-            continue;
-        }
-        let b = bytes[i];
-        match b {
-            // String literal / quoted identifier — copy verbatim. AL doubles a
-            // single quote (`''`) to escape it inside a single-quoted literal.
-            b'\'' | b'"' => {
-                let quote = b;
-                let start = i;
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == quote {
-                        if quote == b'\'' && i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                            i += 2;
-                        } else {
-                            i += 1;
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
+            super::lexical::SpanKind::LineComment => {}
+            super::lexical::SpanKind::BlockComment => {
+                // Preserve the existing separator contract exactly: the old
+                // scanner inserted one space for each `/*` and one for each
+                // `*/`. Surrounding source whitespace is copied separately.
+                if span.text.starts_with("/*") {
+                    out.push(' ');
                 }
-                // Both ends are char boundaries (quotes are ASCII), so this
-                // slice never splits a multi-byte character.
-                out.push_str(&line[start..i]);
-            }
-            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => break,
-            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
-                in_block = true;
-                out.push(' ');
-                i += 2;
-            }
-            _ => {
-                let ch = line[i..].chars().next().unwrap_or(b as char);
-                out.push(ch);
-                i += ch.len_utf8();
+                if span.text.ends_with("*/") {
+                    out.push(' ');
+                }
             }
         }
     }
+    let in_block = scanner.ends_in_block_comment();
     (out.trim().to_string(), in_block)
 }
 
@@ -935,39 +801,10 @@ pub(crate) fn strip_comments(line: &str, in_block: bool) -> (String, bool) {
 /// Lets case-label detection accept quoted labels like `'a;b'` whose `;`
 /// lives inside the quotes.
 fn contains_char_outside_strings(s: &str, needles: &[char]) -> bool {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    let mut in_single = false;
-    let mut in_double = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if in_single {
-            if b == b'\'' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                    i += 2;
-                    continue;
-                }
-                in_single = false;
-            }
-            i += 1;
-            continue;
-        }
-        if in_double {
-            if b == b'"' {
-                in_double = false;
-            }
-            i += 1;
-            continue;
-        }
-        match b {
-            b'\'' => in_single = true,
-            b'"' => in_double = true,
-            _ if needles.contains(&(b as char)) => return true,
-            _ => {}
-        }
-        i += 1;
-    }
-    false
+    super::lexical::LineScanner::new(s, false).any(|span| {
+        span.kind == super::lexical::SpanKind::Code
+            && span.text.chars().any(|ch| needles.contains(&ch))
+    })
 }
 
 /// PASS 1 — `sort_properties`. Within each object body, sort every contiguous
@@ -1143,44 +980,23 @@ fn wrap_property_line(line: &str, unit: &str) -> Vec<String> {
     let content = line.trim();
 
     // Collect top-level comma positions (paren/bracket/string aware).
-    let bytes = content.as_bytes();
     let mut cuts: Vec<usize> = Vec::new();
-    let mut i = 0;
     let mut paren = 0i32;
     let mut bracket = 0i32;
-    let mut in_single = false;
-    let mut in_double = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if in_single {
-            if b == b'\'' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                    i += 2;
-                    continue;
-                }
-                in_single = false;
-            }
-            i += 1;
+    for span in super::lexical::LineScanner::new(content, false) {
+        if span.kind != super::lexical::SpanKind::Code {
             continue;
         }
-        if in_double {
-            if b == b'"' {
-                in_double = false;
+        for (offset, b) in span.text.bytes().enumerate() {
+            match b {
+                b'(' => paren += 1,
+                b')' => paren -= 1,
+                b'[' => bracket += 1,
+                b']' => bracket -= 1,
+                b',' if paren == 0 && bracket == 0 => cuts.push(span.start + offset),
+                _ => {}
             }
-            i += 1;
-            continue;
         }
-        match b {
-            b'\'' => in_single = true,
-            b'"' => in_double = true,
-            b'(' => paren += 1,
-            b')' => paren -= 1,
-            b'[' => bracket += 1,
-            b']' => bracket -= 1,
-            b',' if paren == 0 && bracket == 0 => cuts.push(i),
-            _ => {}
-        }
-        i += 1;
     }
 
     if cuts.is_empty() {
@@ -1819,6 +1635,51 @@ codeunit 50100 T
         let out = format_al(input, &FormatOptions::default());
         assert!(out.contains("         +-----+-----+"), "got:\n{out}");
         assert!(out.contains("         |  a  |  b  |"), "got:\n{out}");
+    }
+
+    #[test]
+    fn code_after_block_comment_closer_updates_indentation_state() {
+        let closing_end = "\
+codeunit 50100 T
+{
+    procedure P()
+    begin
+        Foo();
+        /* trailing
+        */ end;
+
+    procedure Q()
+    begin
+        Bar();
+    end;
+}
+";
+        let out = format_al(closing_end, &FormatOptions::default());
+        assert_eq!(indent_of(&out, "procedure Q"), 4, "got:\n{out}");
+        assert_eq!(
+            out.lines().rfind(|line| !line.trim().is_empty()),
+            Some("}"),
+            "got:\n{out}"
+        );
+        assert_eq!(format_al(&out, &FormatOptions::default()), out);
+
+        // A statement after `*/` must consume a pending single-statement body;
+        // otherwise the next statement drifts one level deeper.
+        let closing_call = "\
+codeunit 50100 T
+{
+    procedure P()
+    begin
+        if Ready then
+            /* why
+            */ Foo();
+        Bar();
+    end;
+}
+";
+        let out = format_al(closing_call, &FormatOptions::default());
+        assert_eq!(indent_of(&out, "Bar()"), 8, "got:\n{out}");
+        assert_eq!(format_al(&out, &FormatOptions::default()), out);
     }
 
     #[test]

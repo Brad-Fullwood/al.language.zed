@@ -9,6 +9,8 @@
 #   make grammar   — regenerate the tree-sitter-al parser sources before a
 #                    fresh `tree-sitter build`
 #   make language  — regenerate only the Zed-facing languages/al package files
+#   make record-methods — regenerate the Microsoft-derived Record method catalog
+#   make check-record-methods — prove the catalog matches the pinned Microsoft DLL
 #   make repro-artifacts — regenerate generated artifacts; fail on any diff (CI drift guard)
 #   make live-bc-contracts — strict tenant-backed publish/DAP/test/snapshot profile
 #   make release-dryrun  — read-only release-readiness gate (never publishes)
@@ -25,7 +27,7 @@ ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
 WASM_BIN := $(ROOT)/target/wasm32-wasip2/release/zed_al.wasm
 
-.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language repro-artifacts microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun clean
+.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun clean
 
 # Crates that are NOT published to crates.io (publish = false): the root wasm
 # extension plus the binary/harness crates. Everything else under crates/* is a
@@ -176,6 +178,35 @@ language:
 	cd tree-sitter-al/generator && cargo run --release --bin al-gen -- --zed-language-only
 	@echo "Zed language package regenerated."
 
+# ── Regenerate the Microsoft-derived Record method catalog ───────
+record-methods:
+	@test -n "$(AL_TOOL_PATH)" || { echo "ERROR: set AL_TOOL_PATH to the Microsoft AL extension's bin/<platform> directory."; exit 2; }
+	@test -f "$(AL_TOOL_PATH)/Microsoft.Dynamics.Nav.CodeAnalysis.dll" || { echo "ERROR: Microsoft.Dynamics.Nav.CodeAnalysis.dll not found below AL_TOOL_PATH."; exit 2; }
+	cargo run -p al-semantic --features semantic --example export_record_methods -- \
+		"$(AL_TOOL_PATH)/Microsoft.Dynamics.Nav.CodeAnalysis.dll" \
+		"$(ROOT)/crates/al-syntax/data/record_methods.json"
+
+# Generate beside the checkout and compare bytes so verification neither
+# rewrites the working tree nor mistakes another generated-file change for a
+# current Record catalog.
+check-record-methods:
+	@test -n "$(AL_TOOL_PATH)" || { echo "UNAVAILABLE: set AL_TOOL_PATH to the Microsoft AL extension's bin/<platform> directory."; exit 2; }
+	@test -f "$(AL_TOOL_PATH)/Microsoft.Dynamics.Nav.CodeAnalysis.dll" || { echo "UNAVAILABLE: Microsoft.Dynamics.Nav.CodeAnalysis.dll not found below AL_TOOL_PATH."; exit 2; }
+	@tmp_file=$$(mktemp "$${TMPDIR:-/tmp}/al-record-methods.XXXXXX.json") || exit 1; \
+	trap 'rm -f -- "$$tmp_file"' EXIT; \
+	if ! cargo run -p al-semantic --features semantic --example export_record_methods -- \
+		"$(AL_TOOL_PATH)/Microsoft.Dynamics.Nav.CodeAnalysis.dll" "$$tmp_file"; then \
+		echo "ERROR: Record method catalog generation failed."; \
+		exit 1; \
+	fi; \
+	if cmp -s "$(ROOT)/crates/al-syntax/data/record_methods.json" "$$tmp_file"; then \
+		echo "Record method catalog matches the Microsoft AL toolchain."; \
+	else \
+		echo "DRIFT: crates/al-syntax/data/record_methods.json does not match the Microsoft AL toolchain."; \
+		diff -u "$(ROOT)/crates/al-syntax/data/record_methods.json" "$$tmp_file" | head -120; \
+		exit 1; \
+	fi
+
 # ── Reproducible generated artifacts (CI drift guard) ────────────
 # Prove the committed generated outputs regenerate with NO diff. On success the
 # working tree stays clean (regeneration is byte-identical); on drift it exits
@@ -226,6 +257,7 @@ microsoft-contracts:
 		echo "UNAVAILABLE: AL_PACKAGE_CACHE_PATH must name a coherent dependency package directory"; \
 		exit 2; \
 	fi
+	@$(MAKE) --no-print-directory check-record-methods
 	cargo build -p al-lsp --bin al-lsp --features semantic
 	cargo test -p al-semantic --features semantic --test live_bridge -- --ignored --nocapture
 	cargo test -p al-test-harness --test semantic_bridge -- --ignored --nocapture
@@ -235,9 +267,10 @@ microsoft-contracts:
 	@echo "Microsoft AL toolchain contract profile passed."
 
 # ── Live Business Central contract profile ───────────────────────
-# Strict external-service gate. Missing project/config/test/breakpoint/token
-# inputs are UNAVAILABLE/non-zero; the ignored Rust integration test is never
-# counted as passed by the self-contained suite.
+# Strict external-service gate. The default repository fixture derives the
+# project/test/breakpoint contract; missing tenant/environment/version/token
+# inputs are UNAVAILABLE/non-zero, and the ignored Rust integration test is
+# never counted as passed by the self-contained suite.
 live-bc-contracts:
 	@bash scripts/live-bc-contracts.sh
 
@@ -262,6 +295,7 @@ release-dryrun:
 	cd tree-sitter-al && cargo package --list
 	@echo "--- 5/13 repo-slug consistency ---"
 	@bash scripts/check-repo-consistency.sh
+	@bash scripts/test-use-api.sh
 	@echo "--- 6/13 stale crates/<name> doc references ---"
 	@bash scripts/check-doc-paths.sh
 	@echo "--- 7/13 release hygiene (versions / submodule / grammar rev / generated assets) ---"
@@ -289,7 +323,7 @@ release-dryrun:
 		name=$$(awk -F'"' '/^name[[:space:]]*=/{print $$2; exit}' "$$f"); \
 		case " $(PUBLISH_EXCLUDE) " in *" $$name "*) continue;; esac; \
 		grep -Eq '^publish[[:space:]]*=[[:space:]]*false' "$$f" && continue; \
-		out=$$(cargo package --list -p "$$name" 2>&1); \
+		out=$$(cargo package --list --allow-dirty -p "$$name" 2>&1); \
 		if [ $$? -eq 0 ]; then \
 			echo "  $$name: OK (package manifest)"; \
 		else \

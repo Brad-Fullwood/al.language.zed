@@ -141,30 +141,27 @@ fn line_range(text: &str, line_idx: usize, _line: &str) -> Range {
     }
 }
 
-/// Replace AL string literal contents (`'...'` and `"..."`) with spaces so a
-/// text scan doesn't see method-call-like substrings buried inside literals
-/// or identifiers (e.g. a field named "FindFirst Date"). Quotes themselves
-/// are preserved so token shape is unchanged for the caller's own scanning.
-fn strip_string_literals(line: &str) -> String {
+/// Replace every non-code span with spaces while preserving byte offsets.
+///
+/// The lint rules below perform deliberately small line-level scans after the
+/// syntax tree has identified a procedure. They must still share the exact AL
+/// quote/comment rules used by the formatter and sorter: otherwise an inline
+/// comment, a quoted field name, or a carried block comment can masquerade as
+/// an executable method call.
+fn mask_non_code(line: &str, in_block_comment: bool) -> (String, bool) {
     let mut out = String::with_capacity(line.len());
-    let mut in_single = false;
-    let mut chars = line.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\'' if in_single && chars.peek() == Some(&'\'') => {
-                out.push(' ');
-                out.push(' ');
-                chars.next();
-            }
-            '\'' => {
-                in_single = !in_single;
-                out.push(ch);
-            }
-            _ if in_single => out.push(' '),
-            _ => out.push(ch),
+    let mut scanner = crate::lexical::LineScanner::new(line, in_block_comment);
+    for span in scanner.by_ref() {
+        if span.kind == crate::lexical::SpanKind::Code {
+            out.push_str(span.text);
+        } else {
+            // One ASCII space per source byte keeps all later byte offsets
+            // stable even when a literal/comment contains multibyte UTF-8.
+            out.extend(std::iter::repeat_n(' ', span.text.len()));
         }
     }
-    out
+    let in_block_comment = scanner.ends_in_block_comment();
+    (out, in_block_comment)
 }
 
 fn is_loop_start(lower: &str) -> bool {
@@ -205,14 +202,12 @@ fn scan_procedure_for_find_in_loop(
     out: &mut Vec<LintDiagnostic>,
 ) {
     let mut loop_begin_depth: Vec<u32> = Vec::new();
+    let mut in_block_comment = false;
 
     for (offset, line) in proc_text.lines().enumerate() {
         let line_idx = proc_start_row + offset;
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("//") {
-            continue;
-        }
-        let cleaned = strip_string_literals(line);
+        let (cleaned, still_in_block_comment) = mask_non_code(line, in_block_comment);
+        in_block_comment = still_in_block_comment;
         let lower = cleaned.trim().to_lowercase();
 
         if is_loop_start(&lower) {
@@ -331,9 +326,10 @@ fn lint_missing_set_load_fields(tree: &Tree, text: &str, out: &mut Vec<LintDiagn
             if let Ok(proc_text) = node.utf8_text(source) {
                 let mut prepared = std::collections::HashSet::new();
                 let start_row = node.start_position().row;
+                let mut in_block_comment = false;
                 for (offset, line) in proc_text.lines().enumerate() {
-                    let cleaned =
-                        strip_string_literals(line.split_once("//").map_or(line, |(code, _)| code));
+                    let (cleaned, still_in_block_comment) = mask_non_code(line, in_block_comment);
+                    in_block_comment = still_in_block_comment;
                     let mut events: Vec<(usize, bool, String)> =
                         method_calls(&cleaned, "setloadfields")
                             .into_iter()
@@ -689,6 +685,24 @@ mod tests {
     }
 
     #[test]
+    fn non_code_mask_uses_shared_quotes_comments_and_carried_state() {
+        let first = r#"Item."FindFirst()" := 1; /* Fake.FindLast()"#;
+        let (masked, in_block) = mask_non_code(first, false);
+        assert_eq!(masked.len(), first.len());
+        assert!(!masked.contains("FindFirst"), "{masked:?}");
+        assert!(!masked.contains("FindLast"), "{masked:?}");
+        assert!(in_block);
+
+        let second = "Fake.FindSet() */ Item.FindSet(); // Fake.FindFirst()";
+        let (masked, in_block) = mask_non_code(second, in_block);
+        assert_eq!(masked.len(), second.len());
+        assert_eq!(masked.matches("Item.FindSet()").count(), 1, "{masked:?}");
+        assert!(!masked.contains("Fake.FindSet"), "{masked:?}");
+        assert!(!masked.contains("Fake.FindFirst"), "{masked:?}");
+        assert!(!in_block);
+    }
+
+    #[test]
     fn lint_flags_findfirst_in_loop() {
         let src = r#"codeunit 50100 Test
 {
@@ -742,6 +756,9 @@ mod tests {
         for i := 1 to 10 do begin
             msg := 'FindFirst() should not match';
             // .FindFirst() in a comment should not match either
+            i := i + 1; // Item.FindFirst() in an inline comment must not match
+            /* Item.FindFirst() in a block comment must not match.
+               Item.FindLast() must not match either. */
             Message(msg);
         end;
     end;
@@ -894,6 +911,26 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code == "AL-NL005"),
             "expected AL-NL005, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn lint_sees_record_read_after_string_containing_comment_marker() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure ReadItems()
+    var
+        Item: Record Item;
+    begin
+        Message('// this is literal text');
+        if Item.FindFirst() then;
+    end;
+}"#;
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert!(
+            diags.iter().any(|d| d.code == "AL-NL005"),
+            "expected AL-NL005 after the literal, got {diags:?}"
         );
     }
 

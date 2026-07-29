@@ -583,75 +583,7 @@ fn is_builtin_record_member(
 }
 
 fn is_record_builtin_method(name: &str) -> bool {
-    const METHODS: &[&str] = &[
-        "addloadfields",
-        "arefieldsloaded",
-        "ascending",
-        "calcfields",
-        "calcsums",
-        "changecompany",
-        "consistent",
-        "copy",
-        "copyfilter",
-        "copyfilters",
-        "count",
-        "countapprox",
-        "currentcompany",
-        "delete",
-        "deleteall",
-        "fieldactive",
-        "fieldcaption",
-        "fieldname",
-        "fieldno",
-        "filtergroup",
-        "find",
-        "findfirst",
-        "findlast",
-        "findset",
-        "get",
-        "getascending",
-        "getbysystemid",
-        "getfilter",
-        "getfilters",
-        "getposition",
-        "getrangeMax",
-        "getrangeMin",
-        "getview",
-        "hasfilter",
-        "init",
-        "insert",
-        "isempty",
-        "loadfields",
-        "locktable",
-        "mark",
-        "markedonly",
-        "modify",
-        "modifyall",
-        "next",
-        "readisolation",
-        "recordid",
-        "rename",
-        "reset",
-        "securityfiltering",
-        "setascending",
-        "setautocalcfields",
-        "setcurrentkey",
-        "setfilter",
-        "setloadfields",
-        "setpermissionfilter",
-        "setposition",
-        "setrange",
-        "setrecfilter",
-        "setview",
-        "systemidno",
-        "testfield",
-        "transferfields",
-        "transferfieldswithvalidate",
-        "validate",
-    ];
-    METHODS
-        .iter()
-        .any(|method| name.eq_ignore_ascii_case(method))
+    super::language_data::is_record_method(name)
 }
 
 fn is_regular_variable_name(node: Node, declaration: Node) -> bool {
@@ -1362,6 +1294,9 @@ codeunit 50100 Test
     begin
         Customer.FindFirst();
         Customer.Insert();
+        Customer.SetCurrentKey("No.");
+        Customer.FieldError("No.");
+        Customer.Truncate();
         Customer.CustomProcedure();
         Worker.Insert();
     end;
@@ -1391,10 +1326,22 @@ codeunit 50100 Test
             token_types::BUILTIN_FUNCTION
         );
         assert_eq!(
-            token_type_on_line(9, "CustomProcedure"),
+            token_type_on_line(9, "SetCurrentKey"),
+            token_types::BUILTIN_FUNCTION
+        );
+        assert_eq!(
+            token_type_on_line(10, "FieldError"),
+            token_types::BUILTIN_FUNCTION
+        );
+        assert_eq!(
+            token_type_on_line(11, "Truncate"),
+            token_types::BUILTIN_FUNCTION
+        );
+        assert_eq!(
+            token_type_on_line(12, "CustomProcedure"),
             token_types::FUNCTION
         );
-        assert_eq!(token_type_on_line(10, "Insert"), token_types::FUNCTION);
+        assert_eq!(token_type_on_line(13, "Insert"), token_types::FUNCTION);
     }
 
     #[test]

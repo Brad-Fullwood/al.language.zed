@@ -412,6 +412,7 @@ name = "al-test-harness"
 version = "0.3.0"
 dependencies = [
  "al-bc",
+ "al-compile",
  "al-project",
  "al-publish",
  "al-test",

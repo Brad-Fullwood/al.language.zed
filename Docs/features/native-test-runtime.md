@@ -173,6 +173,7 @@ Live BC fallback is a permanent correctness boundary, not a failure of the nativ
 does not guess platform behavior it cannot reproduce safely.
 
 `make live-bc-contracts` verifies that boundary against an explicitly supplied
-tenant and test. It requires the CLI to report a `liveBc` route, executes the
+tenant/environment and the repository-owned test fixture (or a complete custom
+project contract). It requires the CLI to report a `liveBc` route, executes the
 exact method through BC, and exercises snapshot capture, validation, replay,
 and diff. Its ignored harness test is never counted as a self-contained pass.

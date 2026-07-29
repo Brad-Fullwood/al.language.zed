@@ -50,19 +50,21 @@ environment has not supplied its contract evidence.
 | LSP correctness | Document mutation/version/generation handling, diagnostics, navigation, edits, commands, shutdown, malformed input, stale state, and long-runtime daemon transport regressions pass; previously aspirational hover/definition cases now assert concrete results | Verified |
 | Repository honesty | README, feature pages, settings, schemas, CLI/daemon/MCP catalogs, benchmarks, and limitations have been swept against current registrations and runtime wiring; benchmark claims now link clean raw evidence and distinguish phase-one diagnostics, semantic readiness, and forced Microsoft teardown | Verified |
 | Dependency and automation policy | `cargo-deny` advisories/bans/licenses/sources pass; all repository shell scripts pass ShellCheck; root and grammar workflows pass Actionlint/YAML parsing | Verified |
-| Clean release hygiene | Implementation commit `dd757aff` passed `make release-dryrun`, full Microsoft-extension regeneration with zero drift, product/submodule/revision alignment, package manifests, formatting, workspace and extension tests, Clippy, semantic/default/WASM builds, component validation, Microsoft contracts, policy checks, deterministic performance audit, aliased-root platform regression coverage, and isolated editor comparison | Verified |
-| Publication | Grammar head `f26b067` is pushed and green in draft PR [AL-Tree-Sitter#2](https://github.com/Brad-Fullwood/AL-Tree-Sitter/pull/2); the superproject branch points its gitlink and `extension.toml` revision to that head, is pushed in draft PR [al.language.zed#26](https://github.com/Brad-Fullwood/al.language.zed/pull/26), and its final GitHub review and six-job CI checks are green | Verified |
+| Clean release hygiene | Prior implementation commit `dd757aff` passed the complete clean gate; the current completion candidate passes the same 13-stage `make release-dryrun`, full Microsoft-extension regeneration with zero drift, Microsoft contracts, policy checks, deterministic performance audit, aliased-root platform regression coverage, and isolated editor comparison, but still needs a clean committed-head rerun | Audit |
+| Publication | Grammar head `f26b067` is pushed and green in draft PR [AL-Tree-Sitter#2](https://github.com/Brad-Fullwood/AL-Tree-Sitter/pull/2); the superproject's previous head is pushed and green in draft PR [al.language.zed#26](https://github.com/Brad-Fullwood/al.language.zed/pull/26), while the current completion candidate and its exact-head checks still need publication | Audit |
 
 ## External service contract
 
 | Profile | Required evidence | State |
 |---|---|---|
-| Live Business Central | One declared tenant/project must complete package upload/install, native DAP attach and control loop, an exact `liveBc`-routed test, and snapshot capture/validate/replay/diff through `make live-bc-contracts` | Blocked externally |
+| Live Business Central | One declared tenant/environment must complete repository-fixture package upload/install, native DAP attach and control loop, an exact `liveBc`-routed test, and snapshot capture/validate/replay/diff through `make live-bc-contracts` | Blocked externally |
 
-The live profile is implemented and strict. With no project, tenant, exact test,
-breakpoint, version, and bearer token supplied, it prints `UNAVAILABLE` and exits
-2 before Cargo starts. That is correct unavailability reporting, not successful
-deployment evidence.
+The live profile is implemented and strict. It owns a deterministic publishable
+test project and derives the exact test/breakpoint inputs; callers may still
+override it with a complete custom project contract. With no tenant,
+environment, version, and bearer token supplied, it prints `UNAVAILABLE` and
+exits 2 before Cargo starts. That is correct unavailability reporting, not
+successful deployment evidence.
 
 Independent crates.io publication is a separate distribution operation, not a
 Zed extension release gate. `make crates-publish-dryrun` remains strict and will
@@ -100,7 +102,7 @@ package manifest.
   definition, document symbols, and workspace symbols. Microsoft completed
   protocol shutdown but required the explicitly recorded forced-termination
   fallback.
-- Root workspace tests, root Clippy with `-D warnings`, 42 Zed extension host
+- Root workspace tests, root Clippy with `-D warnings`, 43 Zed extension host
   tests, release WASM build/component validation, CLI/TUI/MCP/archive smoke, and
   the isolated Zed/VS Code comparison passed on the clean implementation series
   ending at `dd757aff`.
@@ -112,11 +114,14 @@ package manifest.
   profile was byte-stable, and ShellCheck, root/grammar Actionlint and YAML
   parsing, cargo-deny advisories/bans/licenses/sources, the Criterion
   archive/index/query graph audit, and `make microsoft-contracts` also passed.
-- Grammar branch `agent/complete-grammar-corpus` and superproject branch
-  `agent/complete-project` are clean, pushed, remotely reachable through draft
-  PRs #2 and #26 respectively, and their required GitHub checks are green.
-- The strict live-BC target was invoked without credentials and returned exit 2
-  as designed. No live tenant check is recorded as passed.
+- Grammar branch `agent/complete-grammar-corpus` is clean, pushed, remotely
+  reachable through draft PR #2, and green. Superproject PR #26 is green at its
+  previous pushed head; the current completion candidate is not yet published.
+- The checked-in live fixture builds through the native emitter, its exact test
+  classifies as `liveBc`, generated-profile preflight passes without an external
+  project, unsafe tenant values fail before network access, and a missing live
+  tenant/token still returns exit 2. No live tenant check is recorded as passed.
 
-No repository-controlled completion gate remains open. The service-controlled
-live-BC gate remains unavailable until its explicit inputs are supplied.
+The repository-controlled clean-head and publication gates remain open for this
+candidate. The service-controlled live-BC gate remains unavailable until its
+explicit inputs are supplied.

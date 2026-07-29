@@ -62,9 +62,11 @@ live in [ROADMAP.md](../ROADMAP.md).
   stepping, and disconnect. Wire-contract tests cover the supported method
   family; deployment against a specific BC service tier is a live-environment
   integration profile. `make live-bc-contracts` is that strict profile:
-  absent tenant/test/breakpoint/token inputs report `UNAVAILABLE` with exit 2,
-  while a supplied environment must pass completed publish/install, the live
-  DAP control loop, a `liveBc`-routed test, and snapshot capture/replay.
+  absent tenant/environment/version/token inputs report `UNAVAILABLE` with exit
+  2, while the repository-owned fixture must pass completed publish/install,
+  the live DAP control loop, a `liveBc`-routed test, and snapshot
+  capture/replay. A complete caller-supplied project contract remains available
+  for app-specific validation.
 - Native `.app` output has current `alc` 17 differential coverage for the small
   through XL generated Base Application benchmark projects plus an env-gated fixture for
   base-page modification/customization bindings, a report layout, and an app
