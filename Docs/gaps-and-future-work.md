@@ -125,6 +125,17 @@ package manifest.
   project, unsafe tenant values fail before network access, and a missing live
   tenant/token still returns exit 2. No live tenant check is recorded as passed.
 
+- Reproducibility follow-up on the Microsoft profile: `make microsoft-contracts`
+  passed at `a4e7d5fe` but was not reproducible from an arbitrary environment.
+  It aborted at `check-record-methods` whenever `AL_TOOL_PATH` named the
+  `microsoft.dynamics.businesscentral.development.tools` dotnet tool rather than
+  the VS Code extension — provenance read as `unknown` and an identical 81-method
+  catalog was reported as drift — and `semantic_bridge` measured whichever
+  `al-lsp` an earlier `cargo test --workspace` had left resident, so it failed
+  from a warm working tree. Both are fixed and covered; the profile now passes
+  end to end, including the Base Application differential against `alc`
+  17.0.2273547 with an external BC 28.2 symbol set.
+
 The repository-controlled clean-head and publication gates are verified. The
 service-controlled live-BC gate remains unavailable until its explicit inputs
 are supplied.

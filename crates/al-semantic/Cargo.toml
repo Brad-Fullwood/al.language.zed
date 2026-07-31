@@ -25,3 +25,11 @@ semantic = ["dep:netcorehost"]
 [dev-dependencies]
 tempfile = "3"
 serial_test = "3"
+
+# The exporter's toolchain-version discovery decides whether
+# `make check-record-methods` reports real catalog drift or a spurious one, so
+# its unit tests must run in the ordinary (non-`semantic`) workspace test pass.
+# Cargo defaults examples to `test = false`.
+[[example]]
+name = "export_record_methods"
+test = true

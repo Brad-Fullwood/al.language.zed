@@ -112,6 +112,24 @@ pub fn al_explorer_binary() -> PathBuf {
     workspace_binary("al-explorer")
 }
 
+/// Stop any daemon already serving `project_dir`, so the next CLI call starts a
+/// fresh one from the current `target/debug/al-lsp`.
+///
+/// The daemon is a per-project singleton that outlives the test that started
+/// it. Without this, a test whose result depends on how `al-lsp` was *built* —
+/// for example the `semantic` feature — silently measures whichever binary an
+/// earlier run happened to leave resident, so the same command passes or fails
+/// depending on working-tree history. Returns whether the shutdown command
+/// succeeded; "no daemon was running" is a success.
+pub fn stop_project_daemon(project_dir: &Path) -> bool {
+    std::process::Command::new(al_explorer_binary())
+        .arg("daemon-shutdown")
+        .current_dir(project_dir)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 /// Stdio mode owns the language-server child process.
 enum Lifecycle {
     Stdio(Child),

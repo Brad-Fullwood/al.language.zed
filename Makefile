@@ -199,11 +199,18 @@ check-record-methods:
 		echo "ERROR: Record method catalog generation failed."; \
 		exit 1; \
 	fi; \
-	if cmp -s "$(ROOT)/crates/al-syntax/data/record_methods.json" "$$tmp_file"; then \
+	committed="$(ROOT)/crates/al-syntax/data/record_methods.json"; \
+	if cmp -s "$$committed" "$$tmp_file"; then \
 		echo "Record method catalog matches the Microsoft AL toolchain."; \
+	elif [ "$$(grep -v '"toolchainVersion"' "$$committed")" = "$$(grep -v '"toolchainVersion"' "$$tmp_file")" ]; then \
+		echo "PROVENANCE DRIFT: the Record method set is identical, but AL_TOOL_PATH is a different toolchain build."; \
+		echo "  committed toolchain: $$(sed -n 's/.*"toolchainVersion": "\(.*\)".*/\1/p' "$$committed")"; \
+		echo "  measured toolchain:  $$(sed -n 's/.*"toolchainVersion": "\(.*\)".*/\1/p' "$$tmp_file")"; \
+		echo "  Point AL_TOOL_PATH at the pinned toolchain, or run 'make record-methods' to move the pin deliberately."; \
+		exit 1; \
 	else \
 		echo "DRIFT: crates/al-syntax/data/record_methods.json does not match the Microsoft AL toolchain."; \
-		diff -u "$(ROOT)/crates/al-syntax/data/record_methods.json" "$$tmp_file" | head -120; \
+		diff -u "$$committed" "$$tmp_file" | head -120; \
 		exit 1; \
 	fi
 

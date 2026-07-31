@@ -137,6 +137,13 @@ AL_PACKAGE_CACHE_PATH=<project>/.alpackages \
   make microsoft-contracts
 ```
 
+`AL_TOOL_PATH` accepts either directory Microsoft ships the compiler in — the
+VS Code extension's `ms-dynamics-smb.al-<version>/bin/<platform>`, or the
+`tools/<tfm>/any` directory of the
+`microsoft.dynamics.businesscentral.development.tools` dotnet tool. Version
+provenance is read from the extension's `package.json` or the tool's `.nuspec`
+respectively.
+
 The profile builds the semantic-feature LSP, runs the live CodeAnalysis and CLI
 catalog contracts, both `pack-native --validate` cases, all native-versus-`alc`
 emitter differentials (including the Base Application/resource fixture), and
@@ -156,7 +163,12 @@ unknown-method verification. Generation fails if Microsoft returns fewer than
 methods that were absent from the former hand-written allowlists.
 `make check-record-methods` regenerates to a temporary file and requires an
 exact byte match without modifying the checkout; `make microsoft-contracts`
-runs that drift check before its live bridge and compiler contracts.
+runs that drift check before its live bridge and compiler contracts. Both
+mismatch kinds fail the gate, but they are reported apart: `DRIFT` means the
+method set itself changed, while `PROVENANCE DRIFT` means the methods are
+identical and only `AL_TOOL_PATH`'s build differs from the pinned one — point
+it at the pinned toolchain, or move the pin deliberately with
+`make record-methods`.
 
 Do not treat that external profile alone as complete. After bridge or lifecycle
 changes, also run the consumer finish gate:

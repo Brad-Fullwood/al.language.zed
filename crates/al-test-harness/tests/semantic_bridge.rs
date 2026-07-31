@@ -23,7 +23,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use al_test_harness::{al_explorer_binary, test_project_dir};
+use al_test_harness::{al_explorer_binary, stop_project_daemon, test_project_dir};
 
 /// Resolve the CodeAnalysis DLL the bridge would load, or `None` if the
 /// environment isn't set up for a live run.
@@ -52,8 +52,15 @@ fn error_codes_and_builtins_reflect_live_toolchain() {
     );
     eprintln!("live bridge against {}", dll.display());
 
+    // The per-project daemon outlives the run that started it, so an ordinary
+    // `cargo test --workspace` earlier in the same working tree leaves a
+    // *non-semantic* `al-lsp` resident and this test would measure that binary
+    // instead of the `--features semantic` one built for this profile. Retire it
+    // first so the assertions below describe the current build.
+    stop_project_daemon(&test_project_dir());
+
     let empty_hint = "got an empty catalog with a toolchain present — is `al-lsp` built with \
-         `--features semantic`, and any stale non-semantic daemon stopped?";
+         `--features semantic`?";
 
     let (ok, out) = al(&["error-codes"]);
     assert!(ok, "`al-explorer error-codes` failed:\n{out}");
