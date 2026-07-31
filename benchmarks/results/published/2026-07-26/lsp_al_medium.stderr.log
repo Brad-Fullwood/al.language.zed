@@ -1,0 +1,25 @@
+2026-07-26T23:22:20.665245Z  INFO al-lsp starting version="0.3.0" log_dir=/home/bradf/.local/share/al-lsp/logs pid=3222676 ppid=3222669
+2026-07-26T23:22:20.665836Z  INFO initialize: storing root URI root_uri=Some(Url { scheme: "file", cannot_be_a_base: false, username: "", password: None, host: None, port: None, path: "/home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/benchmarks/projects/medium", query: None, fragment: None })
+2026-07-26T23:22:20.665862Z  INFO Parsed initialization options into config
+2026-07-26T23:22:20.666183Z  INFO initialized: spawning workspace init in background root_uri=Some(Url { scheme: "file", cannot_be_a_base: false, username: "", password: None, host: None, port: None, path: "/home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/benchmarks/projects/medium", query: None, fragment: None })
+2026-07-26T23:22:20.666255Z  INFO did_open uri=file:///home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/benchmarks/projects/medium/src/Page_60000.al len=1530
+2026-07-26T23:22:20.666411Z  INFO Found AL toolchain version=17.0.34.45391
+2026-07-26T23:22:20.666602Z DEBUG publish_diagnostics: entry uri=file:///home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/benchmarks/projects/medium/src/Page_60000.al text_len=1530
+2026-07-26T23:22:20.666809Z  INFO dependency AL source index ready packages=0 source_files=0
+2026-07-26T23:22:20.666833Z  INFO insight_graph.build{entries=0}: insight_graph.build complete entries=0 nodes=0 edges=0 elapsed_ms=0
+2026-07-26T23:22:20.667183Z DEBUG publish_diagnostics: diagnostics from query uri=file:///home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/benchmarks/projects/medium/src/Page_60000.al error_count=1 parse_us=576
+2026-07-26T23:22:20.667188Z DEBUG publish_diagnostics: publishing phase 1 uri=file:///home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/benchmarks/projects/medium/src/Page_60000.al phase1_count=1
+2026-07-26T23:22:20.667574Z  INFO Loaded built-in types from disk cache count=250
+2026-07-26T23:22:20.668670Z  INFO Loaded error codes from disk cache count=899
+2026-07-26T23:22:20.668911Z  INFO Found AL project name=AL Bench medium packages=6
+2026-07-26T23:22:20.675221Z  INFO Scanned workspace .al files count=40
+2026-07-26T23:22:21.099629Z  INFO Staged symbol packages (pre-ready) loaded=6 total_symbols=11278
+2026-07-26T23:22:21.180494Z  INFO Loading .NET runtime bridge=/home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/target/release/build/al-semantic-bb37d68ad6f57ffc/out/bridge/AlBridge.dll config=/home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/target/release/build/al-semantic-bb37d68ad6f57ffc/out/bridge/AlBridge.runtimeconfig.json
+2026-07-26T23:22:21.206809Z  INFO Packages without embedded source — outlines will be rendered from symbol metadata packages=["Microsoft_Application_28.1.49838.50065", "System"]
+2026-07-26T23:22:21.232864Z  INFO Bridge initialized successfully
+2026-07-26T23:22:21.232978Z  INFO Semantic bridge initialized
+2026-07-26T23:22:22.130558Z  INFO Published project-scoped diagnostics generation
+2026-07-26T23:22:22.670879Z DEBUG semantic analysis complete uri=file:///home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/benchmarks/projects/medium/src/Page_60000.al count=17 elapsed_us=1437871
+2026-07-26T23:22:22.670924Z DEBUG publish_diagnostics: publishing phase 2 uri=file:///home/bradf/Projects/Personal/al.language.zed-worktrees/complete-project/benchmarks/projects/medium/src/Page_60000.al total_count=18
+2026-07-26T23:22:22.705008Z  INFO shutdown request received, shutting down
+2026-07-26T23:22:22.705266Z  INFO exit notification received, stopping

@@ -4,7 +4,7 @@
 //! Breaking changes are API surface removals or signature changes.
 
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use al_symbols::{MethodSymbol, SymbolEntry};
 
@@ -12,13 +12,23 @@ use al_symbols::{MethodSymbol, SymbolEntry};
 #[serde(rename_all = "camelCase")]
 pub enum BreakingChangeKind {
     ObjectRemoved,
+    ObjectIdChanged,
+    NamespaceChanged,
+    BaseObjectChanged,
+    InterfaceRemoved,
+    AccessReduced,
     ProcedureRemoved,
     /// Procedure signature changed (parameter added/removed/reordered).
     SignatureChanged,
     ReturnTypeChanged,
     /// Field was removed from a table/page.
     FieldRemoved,
+    FieldRenamed,
+    FieldIdChanged,
+    FieldTypeChanged,
     EnumValueRemoved,
+    EnumValueOrdinalChanged,
+    PermissionReduced,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,7 +53,34 @@ pub fn analyze_breaking_changes(
     let current_map = build_map(current);
 
     for (key, old_entry) in &baseline_map {
-        if !current_map.contains_key(key) {
+        let Some(new_entry) = current_map.get(key) else {
+            let same_name: Vec<_> = current
+                .iter()
+                .filter(|candidate| {
+                    !candidate.synthetic
+                        && candidate.kind == old_entry.kind
+                        && candidate.name.eq_ignore_ascii_case(&old_entry.name)
+                })
+                .collect();
+            if same_name.len() == 1
+                && !same_name[0]
+                    .namespace
+                    .eq_ignore_ascii_case(&old_entry.namespace)
+            {
+                changes.push(BreakingChange {
+                    kind: BreakingChangeKind::NamespaceChanged,
+                    object: old_entry.name.clone(),
+                    member: None,
+                    description: format!(
+                        "Object '{}' moved from namespace '{}' to '{}'",
+                        old_entry.name,
+                        namespace_label(&old_entry.namespace),
+                        namespace_label(&same_name[0].namespace)
+                    ),
+                    is_breaking: true,
+                });
+                continue;
+            }
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::ObjectRemoved,
                 object: old_entry.name.clone(),
@@ -55,54 +92,264 @@ pub fn analyze_breaking_changes(
                 is_breaking: true,
             });
             continue;
-        }
-
-        let new_entry = &current_map[key];
+        };
         diff_object(old_entry, new_entry, &mut changes);
     }
 
+    changes.sort_by(|left, right| {
+        left.object
+            .to_ascii_lowercase()
+            .cmp(&right.object.to_ascii_lowercase())
+            .then_with(|| left.member.cmp(&right.member))
+            .then_with(|| left.description.cmp(&right.description))
+    });
     changes
 }
 
-fn build_map(entries: &[SymbolEntry]) -> BTreeMap<(String, String), &SymbolEntry> {
+/// Checked entry point for user-provided/package-derived surfaces. Duplicate
+/// public identities would otherwise be overwritten by a map and could hide a
+/// removal, so callers at trust boundaries use this variant.
+pub fn analyze_breaking_changes_checked(
+    baseline: &[SymbolEntry],
+    current: &[SymbolEntry],
+) -> Result<Vec<BreakingChange>, String> {
+    validate_unique_surface("baseline", baseline)?;
+    validate_unique_surface("current", current)?;
+    Ok(analyze_breaking_changes(baseline, current))
+}
+
+fn validate_unique_surface(label: &str, entries: &[SymbolEntry]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for entry in entries.iter().filter(|entry| !entry.synthetic) {
+        let key = (
+            entry.kind.to_string().to_ascii_lowercase(),
+            entry.namespace.to_ascii_lowercase(),
+            entry.name.to_ascii_lowercase(),
+        );
+        if !seen.insert(key) {
+            return Err(format!(
+                "{label} contains duplicate public identity {} {}.{}",
+                entry.kind,
+                namespace_label(&entry.namespace),
+                entry.name
+            ));
+        }
+        validate_entry_surface(label, entry)?;
+    }
+    Ok(())
+}
+
+fn validate_entry_surface(label: &str, entry: &SymbolEntry) -> Result<(), String> {
+    let object = format!(
+        "{} {}.{}",
+        entry.kind,
+        namespace_label(&entry.namespace),
+        entry.name
+    );
+
+    let mut field_names = BTreeSet::new();
+    let mut field_ids = BTreeSet::new();
+    for field in &entry.fields {
+        if !field_names.insert(field.name.to_ascii_lowercase()) {
+            return Err(format!(
+                "{label} {object} contains duplicate field name '{}'",
+                field.name
+            ));
+        }
+        if !field_ids.insert(field.id) {
+            return Err(format!(
+                "{label} {object} contains duplicate field ID {}",
+                field.id
+            ));
+        }
+    }
+
+    let mut methods = BTreeSet::new();
+    for method in entry.methods.iter().filter(|method| !method.is_local) {
+        let signature = (
+            method.name.to_ascii_lowercase(),
+            method
+                .parameters
+                .iter()
+                .map(|parameter| (normalize_name(&parameter.type_name), parameter.is_var))
+                .collect::<Vec<_>>(),
+        );
+        if !methods.insert(signature) {
+            return Err(format!(
+                "{label} {object} contains duplicate public procedure contract '{}'",
+                method_label(method)
+            ));
+        }
+    }
+
+    let mut enum_names = BTreeSet::new();
+    let mut enum_ordinals = BTreeSet::new();
+    for value in &entry.enum_values {
+        if !enum_names.insert(value.name.to_ascii_lowercase()) {
+            return Err(format!(
+                "{label} {object} contains duplicate enum value name '{}'",
+                value.name
+            ));
+        }
+        if !enum_ordinals.insert(value.ordinal) {
+            return Err(format!(
+                "{label} {object} contains duplicate enum ordinal {}",
+                value.ordinal
+            ));
+        }
+    }
+
+    let mut permissions = BTreeSet::new();
+    for permission in &entry.permissions {
+        if !matches!(permission.permission_object, 0 | 1 | 3 | 5 | 6 | 8 | 9 | 10) {
+            return Err(format!(
+                "{label} {object} contains unknown permission object code {}",
+                permission.permission_object
+            ));
+        }
+        if !(0..=31).contains(&permission.value) {
+            return Err(format!(
+                "{label} {object} contains invalid permission mask {}",
+                permission.value
+            ));
+        }
+        if !permissions.insert((permission.permission_object, permission.object_id)) {
+            return Err(format!(
+                "{label} {object} contains duplicate permission target {}:{}",
+                permission.permission_object, permission.object_id
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn build_map(entries: &[SymbolEntry]) -> BTreeMap<(String, String, String), &SymbolEntry> {
     entries
         .iter()
-        .map(|e| ((e.kind.to_string(), e.name.to_lowercase()), e))
+        .filter(|entry| !entry.synthetic)
+        .map(|entry| {
+            (
+                (
+                    entry.kind.to_string().to_ascii_lowercase(),
+                    entry.namespace.to_ascii_lowercase(),
+                    entry.name.to_ascii_lowercase(),
+                ),
+                entry,
+            )
+        })
         .collect()
 }
 
+fn namespace_label(namespace: &str) -> &str {
+    if namespace.is_empty() {
+        "(global)"
+    } else {
+        namespace
+    }
+}
+
 fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingChange>) {
-    let old_methods: BTreeMap<String, &MethodSymbol> = old
+    if old.id != new.id {
+        changes.push(BreakingChange {
+            kind: BreakingChangeKind::ObjectIdChanged,
+            object: old.name.clone(),
+            member: None,
+            description: format!(
+                "Object '{}' ID changed from {} to {}",
+                old.name, old.id, new.id
+            ),
+            is_breaking: true,
+        });
+    }
+    if normalize_optional_name(old.extends.as_deref())
+        != normalize_optional_name(new.extends.as_deref())
+    {
+        changes.push(BreakingChange {
+            kind: BreakingChangeKind::BaseObjectChanged,
+            object: old.name.clone(),
+            member: None,
+            description: format!(
+                "Base object of '{}' changed from '{}' to '{}'",
+                old.name,
+                old.extends.as_deref().unwrap_or("(none)"),
+                new.extends.as_deref().unwrap_or("(none)")
+            ),
+            is_breaking: true,
+        });
+    }
+    let new_interfaces: BTreeSet<String> = new
+        .implements
+        .iter()
+        .map(|name| normalize_name(name))
+        .collect();
+    for interface in &old.implements {
+        if !new_interfaces.contains(&normalize_name(interface)) {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::InterfaceRemoved,
+                object: old.name.clone(),
+                member: Some(interface.clone()),
+                description: format!(
+                    "Object '{}' no longer implements interface '{}'",
+                    old.name, interface
+                ),
+                is_breaking: true,
+            });
+        }
+    }
+    if access_level(&old.properties) != "internal" && access_level(&new.properties) == "internal" {
+        changes.push(BreakingChange {
+            kind: BreakingChangeKind::AccessReduced,
+            object: old.name.clone(),
+            member: None,
+            description: format!("Object '{}' access changed to Internal", old.name),
+            is_breaking: true,
+        });
+    }
+
+    let current_public: Vec<&MethodSymbol> = new
         .methods
         .iter()
-        .filter(|m| !m.is_local)
-        .map(|m| (m.name.to_lowercase(), m))
+        .filter(|method| !method.is_local)
         .collect();
-
-    let new_methods: BTreeMap<String, &MethodSymbol> = new
-        .methods
-        .iter()
-        .filter(|m| !m.is_local)
-        .map(|m| (m.name.to_lowercase(), m))
-        .collect();
-
-    for (name_lower, old_method) in &old_methods {
-        match new_methods.get(name_lower) {
-            None => {
-                changes.push(BreakingChange {
-                    kind: BreakingChangeKind::ProcedureRemoved,
-                    object: old.name.clone(),
-                    member: Some(old_method.name.clone()),
-                    description: format!(
-                        "Public procedure '{}' was removed from '{}'",
-                        old_method.name, old.name
-                    ),
-                    is_breaking: true,
-                });
-            }
-            Some(new_method) => {
-                check_signature_change(&old.name, old_method, new_method, changes);
-            }
+    for old_method in old.methods.iter().filter(|method| !method.is_local) {
+        let same_name: Vec<_> = current_public
+            .iter()
+            .copied()
+            .filter(|method| method.name.eq_ignore_ascii_case(&old_method.name))
+            .collect();
+        let exact = same_name
+            .iter()
+            .copied()
+            .find(|method| parameter_contract_matches(old_method, method));
+        if let Some(new_method) = exact {
+            check_matching_signature(&old.name, old_method, new_method, changes);
+        } else if same_name.is_empty() {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::ProcedureRemoved,
+                object: old.name.clone(),
+                member: Some(old_method.name.clone()),
+                description: format!(
+                    "Public procedure '{}' was removed from '{}'",
+                    method_label(old_method),
+                    old.name
+                ),
+                is_breaking: true,
+            });
+        } else if same_name.len() == 1 {
+            check_incompatible_signature(&old.name, old_method, same_name[0], changes);
+        } else {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::SignatureChanged,
+                object: old.name.clone(),
+                member: Some(old_method.name.clone()),
+                description: format!(
+                    "No current overload of '{}' preserves baseline signature {}",
+                    old_method.name,
+                    method_label(old_method)
+                ),
+                is_breaking: true,
+            });
         }
     }
 
@@ -118,7 +365,20 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         .collect();
 
     for (name_lower, old_field) in &old_fields {
-        if !new_fields.contains_key(name_lower) {
+        let Some(new_field) = new_fields.get(name_lower) else {
+            if let Some(renamed) = new.fields.iter().find(|field| field.id == old_field.id) {
+                changes.push(BreakingChange {
+                    kind: BreakingChangeKind::FieldRenamed,
+                    object: old.name.clone(),
+                    member: Some(old_field.name.clone()),
+                    description: format!(
+                        "Field '{}' (ID {}) in '{}' was renamed to '{}'",
+                        old_field.name, old_field.id, old.name, renamed.name
+                    ),
+                    is_breaking: true,
+                });
+                continue;
+            }
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::FieldRemoved,
                 object: old.name.clone(),
@@ -126,16 +386,54 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
                 description: format!("Field '{}' was removed from '{}'", old_field.name, old.name),
                 is_breaking: true,
             });
+            continue;
+        };
+        if old_field.id != new_field.id {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::FieldIdChanged,
+                object: old.name.clone(),
+                member: Some(old_field.name.clone()),
+                description: format!(
+                    "Field '{}' in '{}' changed ID from {} to {}",
+                    old_field.name, old.name, old_field.id, new_field.id
+                ),
+                is_breaking: true,
+            });
+        }
+        if normalize_name(&old_field.type_name) != normalize_name(&new_field.type_name) {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::FieldTypeChanged,
+                object: old.name.clone(),
+                member: Some(old_field.name.clone()),
+                description: format!(
+                    "Field '{}' in '{}' changed type from '{}' to '{}'",
+                    old_field.name, old.name, old_field.type_name, new_field.type_name
+                ),
+                is_breaking: true,
+            });
+        }
+        if access_level(&old_field.properties) != "internal"
+            && access_level(&new_field.properties) == "internal"
+        {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::AccessReduced,
+                object: old.name.clone(),
+                member: Some(old_field.name.clone()),
+                description: format!(
+                    "Field '{}' in '{}' access changed to Internal",
+                    old_field.name, old.name
+                ),
+                is_breaking: true,
+            });
         }
     }
 
     for old_val in &old.enum_values {
-        let old_lower = old_val.name.to_lowercase();
-        if !new
+        let current_value = new
             .enum_values
             .iter()
-            .any(|n| n.name.to_lowercase() == old_lower)
-        {
+            .find(|value| value.name.eq_ignore_ascii_case(&old_val.name));
+        let Some(current_value) = current_value else {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::EnumValueRemoved,
                 object: old.name.clone(),
@@ -146,11 +444,117 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
                 ),
                 is_breaking: true,
             });
+            continue;
+        };
+        if old_val.ordinal != current_value.ordinal {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::EnumValueOrdinalChanged,
+                object: old.name.clone(),
+                member: Some(old_val.name.clone()),
+                description: format!(
+                    "Enum value '{}' in '{}' changed ordinal from {} to {}",
+                    old_val.name, old.name, old_val.ordinal, current_value.ordinal
+                ),
+                is_breaking: true,
+            });
+        }
+    }
+
+    for old_permission in &old.permissions {
+        let current = new.permissions.iter().find(|permission| {
+            permission.permission_object == old_permission.permission_object
+                && permission.object_id == old_permission.object_id
+        });
+        if current.is_none_or(|permission| {
+            permission.value & old_permission.value != old_permission.value
+        }) {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::PermissionReduced,
+                object: old.name.clone(),
+                member: Some(format!(
+                    "{}:{}",
+                    old_permission.permission_object, old_permission.object_id
+                )),
+                description: format!(
+                    "Permission grant {}:{} in '{}' was removed or reduced from mask {}",
+                    old_permission.permission_object,
+                    old_permission.object_id,
+                    old.name,
+                    old_permission.value
+                ),
+                is_breaking: true,
+            });
         }
     }
 }
 
-fn check_signature_change(
+fn check_incompatible_signature(
+    object_name: &str,
+    old: &MethodSymbol,
+    new: &MethodSymbol,
+    changes: &mut Vec<BreakingChange>,
+) {
+    if old.parameters.len() != new.parameters.len() {
+        changes.push(BreakingChange {
+            kind: BreakingChangeKind::SignatureChanged,
+            object: object_name.to_string(),
+            member: Some(old.name.clone()),
+            description: format!(
+                "Procedure '{}' parameter count changed from {} to {}",
+                old.name,
+                old.parameters.len(),
+                new.parameters.len()
+            ),
+            is_breaking: true,
+        });
+        return;
+    }
+    for (index, (old_parameter, new_parameter)) in
+        old.parameters.iter().zip(&new.parameters).enumerate()
+    {
+        if normalize_name(&old_parameter.type_name) != normalize_name(&new_parameter.type_name) {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::SignatureChanged,
+                object: object_name.to_string(),
+                member: Some(old.name.clone()),
+                description: format!(
+                    "Parameter {} type changed from '{}' to '{}' in '{}'",
+                    index + 1,
+                    old_parameter.type_name,
+                    new_parameter.type_name,
+                    old.name
+                ),
+                is_breaking: true,
+            });
+        }
+        if old_parameter.is_var != new_parameter.is_var {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::SignatureChanged,
+                object: object_name.to_string(),
+                member: Some(old.name.clone()),
+                description: format!(
+                    "Parameter {} '{}' modifier changed from {} to {} in '{}'",
+                    index + 1,
+                    old_parameter.name,
+                    if old_parameter.is_var {
+                        "var"
+                    } else {
+                        "non-var"
+                    },
+                    if new_parameter.is_var {
+                        "var"
+                    } else {
+                        "non-var"
+                    },
+                    old.name
+                ),
+                is_breaking: true,
+            });
+        }
+    }
+}
+
+fn check_matching_signature(
     object_name: &str,
     old: &MethodSymbol,
     new: &MethodSymbol,
@@ -175,70 +579,78 @@ fn check_signature_change(
         });
     }
 
-    // Required parameter count change (removing required parameters is breaking,
-    // adding required parameters is breaking, adding optional is non-breaking)
-    let old_count = old.parameters.len();
-    let new_count = new.parameters.len();
-
-    if old_count != new_count {
-        // Adding parameters to end is potentially non-breaking (caller can still compile)
-        // but removing is always breaking
-        let is_breaking = new_count < old_count;
-        changes.push(BreakingChange {
-            kind: BreakingChangeKind::SignatureChanged,
-            object: object_name.to_string(),
-            member: Some(old.name.clone()),
-            description: format!(
-                "Procedure '{}' parameter count changed from {} to {}",
-                old.name, old_count, new_count
-            ),
-            is_breaking,
-        });
-    } else {
-        for (i, (op, np)) in old.parameters.iter().zip(new.parameters.iter()).enumerate() {
-            if op.type_name.to_lowercase() != np.type_name.to_lowercase() {
-                changes.push(BreakingChange {
-                    kind: BreakingChangeKind::SignatureChanged,
-                    object: object_name.to_string(),
-                    member: Some(old.name.clone()),
-                    description: format!(
-                        "Parameter {} type changed from '{}' to '{}' in '{}'",
-                        i + 1,
-                        op.type_name,
-                        np.type_name,
-                        old.name
-                    ),
-                    is_breaking: true,
-                });
-            }
-
-            // A `var` (pass-by-reference) modifier change is breaking: callers
-            // passing a constant break if a parameter becomes `var`, and callers
-            // relying on reference semantics break if `var` is removed.
-            if op.is_var != np.is_var {
-                changes.push(BreakingChange {
-                    kind: BreakingChangeKind::SignatureChanged,
-                    object: object_name.to_string(),
-                    member: Some(old.name.clone()),
-                    description: format!(
-                        "Parameter {} '{}' modifier changed from {} to {} in '{}'",
-                        i + 1,
-                        op.name,
-                        if op.is_var { "var" } else { "non-var" },
-                        if np.is_var { "var" } else { "non-var" },
-                        old.name
-                    ),
-                    is_breaking: true,
-                });
-            }
+    for (index, (old_parameter, new_parameter)) in
+        old.parameters.iter().zip(&new.parameters).enumerate()
+    {
+        if !old_parameter.name.eq_ignore_ascii_case(&new_parameter.name) {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::SignatureChanged,
+                object: object_name.to_string(),
+                member: Some(old.name.clone()),
+                description: format!(
+                    "Parameter {} in '{}' was renamed from '{}' to '{}'",
+                    index + 1,
+                    old.name,
+                    old_parameter.name,
+                    new_parameter.name
+                ),
+                is_breaking: true,
+            });
         }
     }
+}
+
+fn parameter_contract_matches(old: &MethodSymbol, new: &MethodSymbol) -> bool {
+    old.parameters.len() == new.parameters.len()
+        && old
+            .parameters
+            .iter()
+            .zip(&new.parameters)
+            .all(|(old, new)| {
+                normalize_name(&old.type_name) == normalize_name(&new.type_name)
+                    && old.is_var == new.is_var
+            })
+}
+
+fn method_label(method: &MethodSymbol) -> String {
+    let parameters = method
+        .parameters
+        .iter()
+        .map(|parameter| {
+            format!(
+                "{}{}",
+                if parameter.is_var { "var " } else { "" },
+                parameter.type_name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}({parameters})", method.name)
+}
+
+fn normalize_name(value: &str) -> String {
+    value.trim().trim_matches('"').to_ascii_lowercase()
+}
+
+fn normalize_optional_name(value: Option<&str>) -> Option<String> {
+    value.map(normalize_name)
+}
+
+fn access_level(properties: &[al_symbols::PropertyValue]) -> String {
+    properties
+        .iter()
+        .find(|property| property.name.eq_ignore_ascii_case("Access"))
+        .map(|property| normalize_name(&property.value))
+        .unwrap_or_else(|| "public".to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_symbols::{FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry};
+    use al_symbols::{
+        EnumValueSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, PermissionSymbol,
+        PropertyValue, SymbolEntry,
+    };
 
     fn make_codeunit(name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
@@ -256,6 +668,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -284,6 +697,17 @@ mod tests {
             type_name: ty.to_string(),
             is_var,
         }
+    }
+
+    fn property(name: &str, value: &str) -> PropertyValue {
+        PropertyValue {
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn has_kind(changes: &[BreakingChange], kind: BreakingChangeKind) -> bool {
+        changes.iter().any(|change| change.kind == kind)
     }
 
     #[test]
@@ -392,6 +816,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         };
 
@@ -485,6 +910,7 @@ mod tests {
                 .collect(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         };
         let baseline = vec![make_enum(vec!["Open", "Pending", "Closed"])];
@@ -609,5 +1035,222 @@ mod tests {
             changes.is_empty(),
             "Adding a procedure is not a breaking change"
         );
+    }
+
+    #[test]
+    fn detects_object_identity_base_interface_and_access_contract_changes() {
+        let mut baseline = make_codeunit("Published API", Vec::new());
+        baseline.extends = Some("Old Base".to_string());
+        baseline.implements = vec!["IKeep".to_string(), "IRemoved".to_string()];
+        baseline.properties = vec![property("Access", "Public")];
+
+        let mut current = baseline.clone();
+        current.id = 50101;
+        current.extends = Some("New Base".to_string());
+        current.implements = vec!["IKeep".to_string()];
+        current.properties = vec![property("Access", "Internal")];
+
+        let changes = analyze_breaking_changes(&[baseline], &[current]);
+        for kind in [
+            BreakingChangeKind::ObjectIdChanged,
+            BreakingChangeKind::BaseObjectChanged,
+            BreakingChangeKind::InterfaceRemoved,
+            BreakingChangeKind::AccessReduced,
+        ] {
+            assert!(
+                has_kind(&changes, kind.clone()),
+                "missing {kind:?}: {changes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_namespace_move_without_reporting_removal() {
+        let mut baseline = make_codeunit("Published API", Vec::new());
+        baseline.namespace = "Contoso.Legacy".to_string();
+        let mut current = baseline.clone();
+        current.namespace = "Contoso.Current".to_string();
+
+        let changes = analyze_breaking_changes(&[baseline], &[current]);
+        assert!(has_kind(&changes, BreakingChangeKind::NamespaceChanged));
+        assert!(!has_kind(&changes, BreakingChangeKind::ObjectRemoved));
+    }
+
+    #[test]
+    fn detects_field_rename_id_type_and_access_changes() {
+        let baseline = SymbolEntry {
+            kind: ObjectKind::Table,
+            id: 50100,
+            name: "Published Table".to_string(),
+            fields: vec![
+                FieldSymbol {
+                    id: 1,
+                    name: "Legacy Name".to_string(),
+                    type_name: "Text[100]".to_string(),
+                    properties: Vec::new(),
+                },
+                FieldSymbol {
+                    id: 2,
+                    name: "Stable Name".to_string(),
+                    type_name: "Integer".to_string(),
+                    properties: vec![property("Access", "Public")],
+                },
+            ],
+            ..Default::default()
+        };
+        let current = SymbolEntry {
+            fields: vec![
+                FieldSymbol {
+                    id: 1,
+                    name: "Current Name".to_string(),
+                    type_name: "Text[100]".to_string(),
+                    properties: Vec::new(),
+                },
+                FieldSymbol {
+                    id: 20,
+                    name: "Stable Name".to_string(),
+                    type_name: "Decimal".to_string(),
+                    properties: vec![property("Access", "Internal")],
+                },
+            ],
+            ..baseline.clone()
+        };
+
+        let changes = analyze_breaking_changes(&[baseline], &[current]);
+        for kind in [
+            BreakingChangeKind::FieldRenamed,
+            BreakingChangeKind::FieldIdChanged,
+            BreakingChangeKind::FieldTypeChanged,
+            BreakingChangeKind::AccessReduced,
+        ] {
+            assert!(
+                has_kind(&changes, kind.clone()),
+                "missing {kind:?}: {changes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_enum_ordinal_and_permission_reductions() {
+        let baseline_enum = SymbolEntry {
+            kind: ObjectKind::Enum,
+            id: 50100,
+            name: "Published Status".to_string(),
+            enum_values: vec![EnumValueSymbol {
+                ordinal: 1,
+                name: "Open".to_string(),
+            }],
+            ..Default::default()
+        };
+        let current_enum = SymbolEntry {
+            enum_values: vec![EnumValueSymbol {
+                ordinal: 5,
+                name: "Open".to_string(),
+            }],
+            ..baseline_enum.clone()
+        };
+
+        let baseline_permissions = SymbolEntry {
+            kind: ObjectKind::PermissionSet,
+            id: 50101,
+            name: "Published Permissions".to_string(),
+            permissions: vec![PermissionSymbol {
+                permission_object: 5,
+                object_id: 80,
+                value: 17,
+            }],
+            ..Default::default()
+        };
+        let current_permissions = SymbolEntry {
+            permissions: vec![PermissionSymbol {
+                permission_object: 5,
+                object_id: 80,
+                value: 1,
+            }],
+            ..baseline_permissions.clone()
+        };
+
+        let changes = analyze_breaking_changes(
+            &[baseline_enum, baseline_permissions],
+            &[current_enum, current_permissions],
+        );
+        assert!(has_kind(
+            &changes,
+            BreakingChangeKind::EnumValueOrdinalChanged
+        ));
+        assert!(has_kind(&changes, BreakingChangeKind::PermissionReduced));
+    }
+
+    #[test]
+    fn detects_parameter_rename_in_preserved_overload() {
+        let baseline = make_codeunit(
+            "Published API",
+            vec![make_method(
+                "Process",
+                vec![make_param("OldName", "Text")],
+                None,
+            )],
+        );
+        let current = make_codeunit(
+            "Published API",
+            vec![make_method(
+                "Process",
+                vec![make_param("NewName", "Text")],
+                None,
+            )],
+        );
+
+        let changes = analyze_breaking_changes(&[baseline], &[current]);
+        assert!(changes.iter().any(|change| {
+            change.kind == BreakingChangeKind::SignatureChanged
+                && change.description.contains("renamed")
+        }));
+    }
+
+    #[test]
+    fn checked_analysis_rejects_ambiguous_or_invalid_surfaces() {
+        let duplicate = make_codeunit("Duplicate", Vec::new());
+        let error = analyze_breaking_changes_checked(&[duplicate.clone(), duplicate], &[])
+            .expect_err("duplicate object identity must fail");
+        assert!(error.contains("duplicate public identity"), "{error}");
+
+        let invalid_fields = SymbolEntry {
+            kind: ObjectKind::Table,
+            id: 50100,
+            name: "Invalid Fields".to_string(),
+            fields: vec![
+                FieldSymbol {
+                    id: 1,
+                    name: "First".to_string(),
+                    type_name: "Text".to_string(),
+                    properties: Vec::new(),
+                },
+                FieldSymbol {
+                    id: 1,
+                    name: "Second".to_string(),
+                    type_name: "Text".to_string(),
+                    properties: Vec::new(),
+                },
+            ],
+            ..Default::default()
+        };
+        let error = analyze_breaking_changes_checked(&[invalid_fields], &[])
+            .expect_err("duplicate field IDs must fail");
+        assert!(error.contains("duplicate field ID"), "{error}");
+
+        let invalid_permissions = SymbolEntry {
+            kind: ObjectKind::PermissionSet,
+            id: 50101,
+            name: "Invalid Permissions".to_string(),
+            permissions: vec![PermissionSymbol {
+                permission_object: 5,
+                object_id: 80,
+                value: 32,
+            }],
+            ..Default::default()
+        };
+        let error = analyze_breaking_changes_checked(&[invalid_permissions], &[])
+            .expect_err("unknown permission bits must fail");
+        assert!(error.contains("invalid permission mask"), "{error}");
     }
 }

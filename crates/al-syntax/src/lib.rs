@@ -5,6 +5,7 @@ pub mod context;
 pub mod folding;
 pub mod formatting;
 pub mod language_data;
+mod lexical;
 pub mod lint;
 pub mod navigation;
 pub mod parser;
@@ -22,7 +23,8 @@ pub use formatting::{
 };
 pub use lint::{lint, lint_rules, LintDiagnostic, LintRuleInfo, LintSeverity};
 pub use navigation::{
-    collect_call_site_names, find_call_references, find_event_subscriber_references,
+    collect_call_site_names, collect_call_sites, collect_member_access_names,
+    collect_primary_expression_names, find_call_references, find_event_subscriber_references,
     find_node_at_position, find_object_declaration, find_procedure_at, find_variable_references,
     ObjectInfo, ParameterInfo, ProcedureInfo,
 };
@@ -149,62 +151,17 @@ pub fn extract_object_name(node: tree_sitter::Node, source: &[u8]) -> Option<Str
 /// - `count_net_delimiters(line, '{', '}')` — net braces
 pub fn count_net_delimiters(line: &str, open: char, close: char) -> i32 {
     let mut depth = 0i32;
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let ch = bytes[i] as char;
-        // `//` — the rest of the line is a comment.
-        if ch == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            break;
-        }
-        // `/* … */` — skip to the terminator, or to end of line if unterminated.
-        if ch == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-            i += 2;
-            while i < bytes.len() {
-                if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                    i += 2;
-                    break;
-                }
-                i += 1;
-            }
+    for span in lexical::LineScanner::new(line, false) {
+        if span.kind != lexical::SpanKind::Code {
             continue;
         }
-        // `'…'` string literal — AL escapes an inner quote by doubling it.
-        if ch == '\'' {
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] == b'\'' {
-                    if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                        i += 2;
-                        continue;
-                    }
-                    i += 1;
-                    break;
-                }
-                i += 1;
+        for ch in span.text.chars() {
+            if ch == open {
+                depth += 1;
+            } else if ch == close {
+                depth -= 1;
             }
-            continue;
         }
-        // `"…"` quoted identifier — opaque. Without this, a name like
-        // `"Cust's Name"` left the scanner stuck in string state and swallowed
-        // the rest of the line's delimiters.
-        if ch == '"' {
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] == b'"' {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            continue;
-        }
-        if ch == open {
-            depth += 1;
-        } else if ch == close {
-            depth -= 1;
-        }
-        i += 1;
     }
     depth
 }

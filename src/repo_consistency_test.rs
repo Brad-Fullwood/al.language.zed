@@ -10,6 +10,7 @@
 //! drift independently.
 
 use crate::{release_lookup_failure_message, spawn_failure_message, GITHUB_REPO};
+use std::path::Path;
 use zed_extension_api as zed;
 
 /// Extract the `owner/repo` slug from a `https://github.com/owner/repo[.git]`
@@ -134,6 +135,68 @@ fn release_asset_names_match_workflow() {
     );
 }
 
+/// Current Zed instantiates Rust extensions as WebAssembly components. The
+/// `wasm32-wasip1` target produces a core module that builds successfully but
+/// is rejected by Zed before any LSP/DAP/MCP adapter code can run.
+#[test]
+fn extension_builds_and_releases_a_wasm_component() {
+    let makefile = include_str!("../Makefile");
+    let ci = include_str!("../.github/workflows/ci.yml");
+    let release = include_str!("../.github/workflows/release.yml");
+    let drive = include_str!("../crates/al-test-harness/editor-e2e/drive.sh");
+
+    for (name, source) in [
+        ("Makefile", makefile),
+        ("CI workflow", ci),
+        ("release workflow", release),
+    ] {
+        assert!(
+            source.contains("wasm32-wasip2"),
+            "{name} must build the Zed extension as a WASI Preview 2 component"
+        );
+        assert!(
+            !source.contains("wasm32-wasip1"),
+            "{name} still builds the unloadable WASI Preview 1 core module"
+        );
+    }
+    assert!(
+        makefile.contains("check-zed-wasm-component.sh")
+            && ci.contains("check-zed-wasm-component.sh")
+            && release.contains("check-zed-wasm-component.sh"),
+        "local, CI, and release builds must reject a non-component artifact"
+    );
+    assert!(
+        drive.contains("check-zed-wasm-component.sh"),
+        "the editor harness must reject a stale core-module extension.wasm before launching Zed"
+    );
+}
+
+/// Gallery installs download `al-lsp` into the extension work directory, which
+/// is not part of the user's shell PATH. LSP, DAP, and MCP therefore have to
+/// share the path-returning release resolver; a bare context-server command
+/// would work only in developer checkouts that ran `make install`.
+#[test]
+fn mcp_and_dap_do_not_depend_on_path_installed_sidecars() {
+    let lib = include_str!("lib.rs");
+    let dap = include_str!("dap.rs");
+    let manifest = include_str!("../extension.toml");
+
+    assert!(
+        lib.contains("self.find_or_download_binary(None, None, None)?")
+            && lib.contains("command: al_lsp_path"),
+        "MCP context_server_command must use the same resolved/downloaded al-lsp path as LSP/DAP"
+    );
+    assert!(
+        !manifest.contains("Spawns `al-lsp mcp` from PATH")
+            && !manifest.contains("PATH (`make install`)"),
+        "extension.toml still promises a developer-only PATH contract for MCP"
+    );
+    assert!(
+        !dap.contains("command: \"al-explorer\""),
+        "generated debug scenarios must not add a PATH-dependent al-explorer build task"
+    );
+}
+
 /// Windows support is only credible if CI runs the real daemon/client path on
 /// a Windows host. A cross-compile alone cannot catch named-pipe runtime bugs.
 #[test]
@@ -150,6 +213,57 @@ fn windows_ci_exercises_named_pipe_daemon_end_to_end() {
     assert!(
         workflow.contains("cargo test -p al-test-harness --test cli_smoke --test extension_smoke"),
         "Windows CI must run the daemon auto-start and CLI round-trip smoke tests"
+    );
+}
+
+/// `actions/checkout` persists the job token in `.git/config` unless explicitly
+/// disabled. Every workflow subsequently runs repository code, build scripts,
+/// or shell commands, so no checkout step may leave that credential behind.
+#[test]
+fn every_checkout_discards_persisted_credentials() {
+    let workflows = Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows");
+    let mut checkout_count = 0usize;
+
+    for entry in std::fs::read_dir(&workflows).expect("read .github/workflows") {
+        let path = entry.expect("workflow directory entry").path();
+        if !matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("yml" | "yaml")
+        ) {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let lines: Vec<&str> = source.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            if !line.trim().starts_with("uses: actions/checkout@") {
+                continue;
+            }
+            checkout_count += 1;
+            let step_indent = line.len() - line.trim_start().len();
+            let block_end = lines[index + 1..]
+                .iter()
+                .position(|candidate| {
+                    let indent = candidate.len() - candidate.trim_start().len();
+                    indent < step_indent
+                        || (indent == step_indent && candidate.trim_start().starts_with("- "))
+                })
+                .map_or(lines.len(), |offset| index + 1 + offset);
+            let block = &lines[index..block_end];
+            assert!(
+                block
+                    .iter()
+                    .any(|candidate| candidate.trim() == "persist-credentials: false"),
+                "{}:{} must set persist-credentials: false on actions/checkout",
+                path.display(),
+                index + 1
+            );
+        }
+    }
+
+    assert!(
+        checkout_count > 0,
+        "no actions/checkout steps were found; the guard is not exercising a workflow"
     );
 }
 
@@ -380,13 +494,18 @@ fn snake_to_camel(s: &str) -> String {
 /// al-project.
 fn al_config_camel_fields() -> Vec<String> {
     let src = include_str!("../crates/al-project/src/config.rs");
+    rust_struct_camel_fields(src, "AlConfig")
+}
+
+fn rust_struct_camel_fields(src: &str, struct_name: &str) -> Vec<String> {
+    let marker = format!("pub struct {struct_name} {{");
     let start = src
-        .find("pub struct AlConfig {")
-        .expect("al-core config.rs must define `pub struct AlConfig`");
+        .find(&marker)
+        .unwrap_or_else(|| panic!("config.rs must define `{marker}`"));
     let body = &src[start..];
     let end = body
         .find("\n}")
-        .expect("AlConfig struct must have a closing brace");
+        .unwrap_or_else(|| panic!("{struct_name} must have a closing brace"));
     body[..end]
         .lines()
         .map(str::trim)
@@ -405,22 +524,29 @@ fn al_config_camel_fields() -> Vec<String> {
 }
 
 /// The `al.*` keys `schemas/settings.json` is expected to declare: one per
-/// `AlConfig` field, with `inlayHints` expanded into its nested leaf keys and
-/// the launch-only backend toggles (`useOfficialLsp`/`useOfficialDap`, resolved
-/// in `settings.rs`, not `AlConfig` fields) added.
+/// `AlConfig` field, with structured settings expanded into their nested leaf keys and
+/// the extension-only launch settings (`useOfficialLsp`, `useOfficialDap`, and
+/// `dotnetPath`, resolved in `settings.rs`, not `AlConfig` fields) added.
 fn expected_schema_keys() -> std::collections::BTreeSet<String> {
+    let config_src = include_str!("../crates/al-project/src/config.rs");
     let mut keys = std::collections::BTreeSet::new();
     for field in al_config_camel_fields() {
-        if field == "inlayHints" {
-            // Nested InlayHintConfig — the schema models the leaves as dotted keys.
-            keys.insert("al.inlayHints.parameterNames".to_string());
-            keys.insert("al.inlayHints.returnTypes".to_string());
-        } else {
-            keys.insert(format!("al.{field}"));
+        let nested_struct = match field.as_str() {
+            "formatting" => Some("FormattingConfig"),
+            "inlayHints" => Some("InlayHintConfig"),
+            _ => None,
+        };
+        if let Some(nested_struct) = nested_struct {
+            for child in rust_struct_camel_fields(config_src, nested_struct) {
+                keys.insert(format!("al.{field}.{child}"));
+            }
+            continue;
         }
+        keys.insert(format!("al.{field}"));
     }
     keys.insert("al.useOfficialLsp".to_string());
     keys.insert("al.useOfficialDap".to_string());
+    keys.insert("al.dotnetPath".to_string());
     keys
 }
 
@@ -465,6 +591,7 @@ fn all_shipped_schemas_are_valid_json() {
         ("settings.json", include_str!("../schemas/settings.json")),
         ("app.json", include_str!("../schemas/app.json")),
         ("ruleset.json", include_str!("../schemas/ruleset.json")),
+        ("alarch.json", include_str!("../schemas/alarch.json")),
         (
             "appsourcecop.json",
             include_str!("../schemas/appsourcecop.json"),
@@ -499,4 +626,45 @@ fn al_settings_schema_parses() {
             .is_some(),
         "embedded settings schema must have a `properties` object"
     );
+}
+
+/// Debug snippets are user-facing launch configurations. Every property they
+/// insert must be accepted by the shipped debug schema; otherwise completion
+/// creates a configuration that validation immediately rejects.
+#[test]
+fn debug_snippet_fields_are_declared_by_debug_schema() {
+    let snippets: serde_json::Value = serde_json::from_str(include_str!("../snippets/json.json"))
+        .expect("snippets/json.json must be valid JSON");
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../debug_adapter_schemas/al.json"))
+            .expect("debug adapter schema must be valid JSON");
+    let schema_keys = schema["properties"]
+        .as_object()
+        .expect("debug adapter schema must expose properties")
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for (snippet_name, snippet) in snippets
+        .as_object()
+        .expect("snippets/json.json must contain a snippet object")
+    {
+        let body = snippet["body"]
+            .as_array()
+            .unwrap_or_else(|| panic!("debug snippet {snippet_name:?} must have a body array"));
+        for line in body.iter().filter_map(serde_json::Value::as_str) {
+            let trimmed = line.trim_start();
+            let Some(after_quote) = trimmed.strip_prefix('"') else {
+                continue;
+            };
+            let Some((field, _)) = after_quote.split_once('"') else {
+                continue;
+            };
+            assert!(
+                schema_keys.contains(field),
+                "debug snippet {snippet_name:?} emits field {field:?}, but \
+                 debug_adapter_schemas/al.json does not declare it"
+            );
+        }
+    }
 }

@@ -46,18 +46,28 @@ JSON
 # XWayland's DISPLAY instead. cage composites the XWayland surface into the same
 # Wayland output, so grim still captures it.
 echo "=== launch VS Code under cage (XWayland, headless) ==="
-cage -- bash -c "/opt/vscode/code --no-sandbox --disable-gpu --disable-workspace-trust \
-  --ozone-platform=x11 --user-data-dir=/tmp/vsuser --extensions-dir=$EXTDIR \
-  --disable-extension github.copilot --disable-extension github.copilot-chat \
-  /tmp/proj /tmp/proj/$OPEN_FILE; sleep 600" > /tmp/code.log 2>&1 &
+# Positional parameters are intentionally expanded by the isolated child shell.
+# shellcheck disable=SC2016
+cage -- bash -c '
+  /opt/vscode/code --no-sandbox --disable-gpu --disable-workspace-trust \
+    --ozone-platform=x11 --user-data-dir=/tmp/vsuser --extensions-dir="$1" \
+    --disable-extension github.copilot --disable-extension github.copilot-chat \
+    "$2" "$3"
+  sleep 600
+' _ "$EXTDIR" /tmp/proj "/tmp/proj/$OPEN_FILE" > /tmp/code.log 2>&1 &
 CAGE_PID=$!
 sock=""
-for i in $(seq 1 25); do
-  sock=$(ls "$XDG_RUNTIME_DIR"/wayland-* 2>/dev/null | grep -v lock | head -1)
+for _ in {1..25}; do
+  for candidate in "$XDG_RUNTIME_DIR"/wayland-*; do
+    [ -S "$candidate" ] || continue
+    sock="$candidate"
+    break
+  done
   [ -n "$sock" ] && break; sleep 1
 done
 [ -z "$sock" ] && { echo "NO COMPOSITOR"; cat /tmp/code.log; exit 1; }
-export WAYLAND_DISPLAY=$(basename "$sock")
+WAYLAND_DISPLAY=$(basename "$sock")
+export WAYLAND_DISPLAY
 export DISPLAY=:0
 echo "  WAYLAND_DISPLAY=$WAYLAND_DISPLAY DISPLAY=$DISPLAY; first-run render ($SETTLE s)..."
 sleep "$SETTLE"
@@ -66,7 +76,7 @@ sleep "$SETTLE"
 # cage headless output is a fixed 1280x720, so the X sits at a stable position.
 WID=$(xdotool search --class code 2>/dev/null | tail -1)
 [ -n "$WID" ] && xdotool windowactivate "$WID" 2>/dev/null
-for n in 1 2 3; do
+for _ in 1 2 3; do
   xdotool mousemove 1090 104 click 1 2>/dev/null   # walkthrough close (X)
   sleep 1
 done
@@ -81,5 +91,5 @@ sleep "$POST"
 grim "$OUT" 2>&1 && echo "SHOT: $OUT ($(stat -c%s "$OUT") bytes)" || echo "GRIM FAILED"
 echo "AL_EXT_PRESENT: $(code --extensions-dir="$EXTDIR" --list-extensions 2>/dev/null | grep -c ms-dynamics-smb.al)"
 echo "=== code.log tail ==="; grep -iE "extensionHost|ms-dynamics|error|al " /tmp/code.log | tail -8
-kill $CAGE_PID 2>/dev/null || true
+kill "$CAGE_PID" 2>/dev/null || true
 exit 0

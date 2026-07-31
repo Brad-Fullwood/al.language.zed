@@ -1,9 +1,12 @@
-# Roadmap
+# Completion Roadmap
 
-The maintained project roadmap is [ROADMAP.md](../ROADMAP.md). Confirmed current
-boundaries are listed separately in
-[Current Limitations](./gaps-and-future-work.md).
+The maintained completion roadmap is [ROADMAP.md](../ROADMAP.md). Its blocking
+implementation and verification checklist is
+[Completion Evidence Ledger](./gaps-and-future-work.md). Confirmed
+compatibility and external-service boundaries are listed separately in
+[Current Limitations](./current-limitations.md).
 
-Keeping one roadmap avoids completed work remaining open in a duplicate task
-list. Feature pages describe shipped behavior and link to the root roadmap only
-where additional work remains.
+No scope is considered shipped merely because it appears in a feature page or
+passes a focused crate test. The evidence ledger remains authoritative until
+the implementation, end-to-end, clean-checkout, release, and publication gates
+all pass.

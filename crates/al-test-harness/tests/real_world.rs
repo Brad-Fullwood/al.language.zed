@@ -713,11 +713,11 @@ async fn test_diagnostics_lint_empty_begin_end() {
         .filter_map(|d| d.get("code").and_then(|c| c.as_str()))
         .collect();
 
-    // Custom lint rules have been removed; AL-L001 is no longer emitted.
-    // Verify no AL-L001 code appears (rules are inactive, not just silent).
+    // AL-L001 belongs to the retired legacy native-lint catalog. Verify the
+    // server never resurrects that code now that native rules use AL-NL IDs.
     assert!(
         !all_codes.contains(&"AL-L001"),
-        "AL-L001 should not appear with custom lint rules removed. Got codes: {:?}",
+        "retired legacy code AL-L001 must not appear. Got codes: {:?}",
         all_codes
     );
 

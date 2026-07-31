@@ -8,6 +8,7 @@ use std::sync::Arc;
 use al_symbols::{ObjectKind, SymbolEntry};
 use serde::Serialize;
 
+use crate::workspace_sources::{self, WorkspaceSource};
 use al_workspace::Workspace;
 
 /// How a consumer references the symbol.
@@ -51,6 +52,12 @@ pub struct ImpactEntry {
     pub package: Option<String>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ImpactError {
+    #[error("impact analysis refused an incomplete workspace snapshot: {reason}")]
+    IncompleteWorkspace { reason: String },
+}
+
 /// Find all consumers of a symbol across the symbol index and workspace files.
 ///
 /// The `symbol` argument can be:
@@ -66,8 +73,12 @@ pub struct ImpactEntry {
 /// because no reverse-index exists from member-name to consumer; that scan is
 /// gated behind `member_part.is_some()` to avoid running it for object-only
 /// queries.
-#[must_use]
-pub fn impact(workspace: &Workspace, symbol: &str) -> Vec<ImpactEntry> {
+pub fn impact(workspace: &Workspace, symbol: &str) -> Result<Vec<ImpactEntry>, ImpactError> {
+    let workspace_sources = workspace_sources::snapshot(workspace).map_err(|error| {
+        ImpactError::IncompleteWorkspace {
+            reason: error.to_string(),
+        }
+    })?;
     let (object_part, member_part) = parse_symbol(symbol);
     let mut results = Vec::new();
 
@@ -106,12 +117,12 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Vec<ImpactEntry> {
     }
 
     if let Some(member) = &member_part {
-        search_workspace_files(workspace, member, &mut results);
+        search_workspace_files(&workspace_sources, member, &mut results);
     } else {
-        search_workspace_files(workspace, &object_part, &mut results);
+        search_workspace_files(&workspace_sources, &object_part, &mut results);
     }
 
-    results
+    Ok(results)
 }
 
 /// Parse a symbol specifier into (object_name, optional_member_name).
@@ -314,36 +325,24 @@ fn check_object_consumers(
 }
 
 fn search_workspace_files(
-    workspace: &Workspace,
+    workspace_sources: &[WorkspaceSource],
     search_name: &str,
     results: &mut Vec<ImpactEntry>,
 ) {
-    for entry in workspace.file_index.files.iter() {
-        let path = entry.key().clone();
-        drop(entry); // release dashmap lock before re-accessing the map
-        let Some((file_text, tree)) = workspace.file_index.get_cached_parse(&path) else {
-            continue;
-        };
-        let refs = al_syntax::find_variable_references(&tree, &file_text, search_name);
+    for source in workspace_sources {
+        let refs = al_syntax::find_variable_references(&source.tree, &source.text, search_name);
 
         if !refs.is_empty() {
-            if let Some(obj_info) = al_syntax::find_object_declaration(&tree, &file_text) {
-                let kind = obj_info
-                    .kind
-                    .parse::<ObjectKind>()
-                    .unwrap_or(ObjectKind::Codeunit);
-                let id = obj_info.id.unwrap_or(0) as i32;
-
-                results.push(ImpactEntry {
-                    kind,
-                    id,
-                    name: obj_info.name,
-                    proc: None,
-                    field: None,
-                    impact_type: ImpactType::Read,
-                    package: None,
-                });
-            }
+            let object = &source.object;
+            results.push(ImpactEntry {
+                kind: object.kind,
+                id: object.normalized_id,
+                name: object.info.name.clone(),
+                proc: None,
+                field: None,
+                impact_type: ImpactType::Read,
+                package: None,
+            });
         }
     }
 }
@@ -385,6 +384,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -408,6 +408,7 @@ mod tests {
                 name: "SourceTable".to_string(),
                 value: source_table.to_string(),
             }],
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -428,6 +429,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -440,7 +442,7 @@ mod tests {
             make_table_ext(50100, "Cust Ext", "Customer"),
         ]);
 
-        let results = impact(&ws, "Customer");
+        let results = impact(&ws, "Customer").unwrap();
 
         assert!(
             results
@@ -459,7 +461,7 @@ mod tests {
             make_page_for_table(21, "Customer Card", "Customer"),
         ]);
 
-        let results = impact(&ws, "Customer");
+        let results = impact(&ws, "Customer").unwrap();
 
         assert!(
             results
@@ -485,7 +487,7 @@ mod tests {
 }"#,
         )]);
 
-        let results = impact(&ws, "Customer");
+        let results = impact(&ws, "Customer").unwrap();
 
         assert!(
             results
@@ -501,8 +503,20 @@ mod tests {
         let ws = Workspace::new();
         ws.symbols.add_entries(&[make_table(18, "Customer")]);
 
-        let results = impact(&ws, "NonexistentObject");
+        let results = impact(&ws, "NonexistentObject").unwrap();
         assert!(results.is_empty(), "Expected no results for unknown symbol");
+    }
+
+    #[test]
+    fn impact_rejects_malformed_workspace_instead_of_returning_partial_results() {
+        let ws = workspace_with_files(vec![(
+            "/src/Broken.al",
+            "codeunit 50100 Broken { procedure Incomplete(",
+        )]);
+
+        let error = impact(&ws, "Customer").unwrap_err();
+        assert!(error.to_string().contains("incomplete workspace snapshot"));
+        assert!(error.to_string().contains("Broken.al"));
     }
 
     #[test]
@@ -529,7 +543,7 @@ mod tests {
             make_table_ext(50101, "Item Ext", "Item"),
         ]);
 
-        let results = impact(&ws, "Customer");
+        let results = impact(&ws, "Customer").unwrap();
 
         let extends_results: Vec<_> = results
             .iter()
@@ -560,7 +574,7 @@ mod tests {
         ws.symbols
             .add_entries(&[make_table(18, "Customer"), sales_header]);
 
-        let results = impact(&ws, "Customer");
+        let results = impact(&ws, "Customer").unwrap();
 
         assert!(
             results.iter().any(|r| r.name == "Sales Header"
@@ -587,7 +601,7 @@ mod tests {
         ws.symbols
             .add_entries(&[make_table(18, "Customer"), sales_header]);
 
-        let results = impact(&ws, "Customer");
+        let results = impact(&ws, "Customer").unwrap();
 
         assert!(
             !results.iter().any(|r| r.impact_type == ImpactType::Filter),
@@ -616,7 +630,7 @@ mod tests {
         ws.symbols
             .add_entries(&[make_table(18, "Customer"), codeunit]);
 
-        let results = impact(&ws, "Customer");
+        let results = impact(&ws, "Customer").unwrap();
 
         assert!(
             !results
@@ -641,7 +655,7 @@ mod tests {
         ws.symbols
             .add_entries(&[make_table(18, "Customer"), codeunit]);
 
-        let results = impact(&ws, "Customer");
+        let results = impact(&ws, "Customer").unwrap();
 
         assert!(
             results
@@ -666,7 +680,7 @@ mod tests {
         ws.symbols
             .add_entries(&[make_table(18, "Customer"), codeunit]);
 
-        let results = impact(&ws, "Customer");
+        let results = impact(&ws, "Customer").unwrap();
 
         assert!(
             !results.iter().any(|r| r.name == "My Codeunit"),
@@ -696,7 +710,7 @@ mod tests {
         ws.symbols
             .add_entries(&[make_table(18, "Customer"), codeunit]);
 
-        let results = impact(&ws, "Customer");
+        let results = impact(&ws, "Customer").unwrap();
 
         assert!(
             results
@@ -731,7 +745,7 @@ mod tests {
         ws.symbols
             .add_entries(&[make_table(18, "Customer"), subscriber]);
 
-        let results = impact(&ws, "Customer.OnBeforePost");
+        let results = impact(&ws, "Customer.OnBeforePost").unwrap();
 
         assert!(
             results
@@ -762,7 +776,7 @@ mod tests {
         ws.symbols
             .add_entries(&[make_table(18, "Customer"), codeunit]);
 
-        let results = impact(&ws, "Customer.OnBeforePost");
+        let results = impact(&ws, "Customer.OnBeforePost").unwrap();
 
         assert!(
             !results

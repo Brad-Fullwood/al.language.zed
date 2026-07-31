@@ -106,8 +106,14 @@ pub fn cmd_test_run(
         params["config"] = serde_json::Value::String(c.to_string());
     }
 
-    match client.request("tests.run", Some(params)) {
+    match request_checked(&mut client, "tests.run", Some(params)) {
         Ok(result) => {
+            let exit_code = match test_run_exit_code(&result) {
+                Ok(code) => code,
+                Err(error) => {
+                    return report_error(&error, json);
+                }
+            };
             if json {
                 print_json(&result);
             } else {
@@ -141,9 +147,24 @@ pub fn cmd_test_run(
                     println!("No test results returned");
                 }
             }
-            ExitCode::SUCCESS
+            exit_code
         }
         Err(e) => report_error(&e, json),
+    }
+}
+
+fn test_run_exit_code(result: &serde_json::Value) -> Result<ExitCode, String> {
+    let failed = result
+        .get("result")
+        .and_then(|run| run.get("failed"))
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| {
+            "validated test-run response has no non-negative integer failed count".to_string()
+        })?;
+    if failed > 0 {
+        Ok(ExitCode::FAILURE)
+    } else {
+        Ok(ExitCode::SUCCESS)
     }
 }
 
@@ -361,7 +382,7 @@ pub fn cmd_test_run_all(
     // A full test run (live BC or interpreter) can take many minutes.
     client.set_request_timeout(std::time::Duration::from_secs(1800));
 
-    match client.request("tests.run_auto", Some(params)) {
+    match request_checked(&mut client, "tests.run_auto", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -443,5 +464,23 @@ mod classify_note_tests {
     #[test]
     fn unknown_decision_has_no_note() {
         assert_eq!(classify_execution_note("???"), "");
+    }
+}
+
+#[cfg(test)]
+mod exit_status_tests {
+    use super::*;
+
+    #[test]
+    fn single_test_run_fails_when_any_method_failed() {
+        assert_eq!(
+            test_run_exit_code(&serde_json::json!({"result": {"failed": 0}})).unwrap(),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            test_run_exit_code(&serde_json::json!({"result": {"failed": 1}})).unwrap(),
+            ExitCode::FAILURE
+        );
+        assert!(test_run_exit_code(&serde_json::json!({"result": {}})).is_err());
     }
 }

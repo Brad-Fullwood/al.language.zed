@@ -20,4 +20,5 @@ pub mod lsp;
 pub mod mcp;
 pub mod workspace;
 
+pub(crate) use lsp::WorkspaceInitState;
 pub use lsp::{run_lsp, AlServer};

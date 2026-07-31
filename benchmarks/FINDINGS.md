@@ -1,199 +1,134 @@
-# Benchmark findings — engineering data
+# Benchmark findings — 2026-07-26
 
-Correctness observations from the head-to-head harness. **No performance ratios
-are published here.** Timing results taken during this work are superseded: they
-were measured against a build that predates the current native verification
-pipeline, and they do not satisfy the conditions listed in
-[`../BENCHMARKS.md`](../BENCHMARKS.md).
-
-The findings below are **correctness** results, which are machine-independent
-and were re-verified against a fresh build after the pipeline changes landed.
+This report is backed by clean-commit release runs and the versioned raw results
+in [`results/published/2026-07-26/`](results/published/2026-07-26/). It replaces
+the superseded dirty-worktree measurements.
 
 | | |
 |---|---|
-| Repository commit | `3c5fc81` (re-verified; initial run was ~`60b162e`) |
-| Build | `cargo build --release -p al-lsp -p al-explorer --features al-lsp/semantic` |
-| Microsoft toolchain | `ms-dynamics-smb.al` 17.0.2273547 — `alc` 17.0.34.45391, EditorServices Host 17.0.34.45391 |
-| Symbols | BC 28.1 set, 11,799 objects across 6 packages |
+| Host | 13th Gen Intel Core i5-1345U, 12 logical CPUs, 32 GiB RAM, Linux 7.1.4 |
+| Microsoft toolchain | `ms-dynamics-smb.al` 17.0.2273547; `alc` 17.0.34.45391 |
+| Symbols | six pinned BC 28.1 packages; names, sizes, and SHA-256 hashes are in each raw result |
+| Accuracy / emit / symbols commit | `d21d0475651bff5597d14ec5974e2f9610ab76aa`, clean |
+| LSP commit | `50d3bcc85614ee8fdd87ca2171e834181ad89d3b`, clean |
 
----
+## Planted-defect detection
 
-## 1. Planted-defect detection
+The harness scores an error or warning only when it is in the intended file and
+within ±2 lines of the planted defect. Each defect has its own project so parse
+failures cannot suppress later cases. The clean control uses `SetLoadFields`
+before its record read, making it a valid false-positive control for both the
+LSP native-lint configuration and the production verifier.
 
-Corpus: `scripts/gen_accuracy_corpus.py` — 14 files, each with exactly one
-planted defect, **each in its own project** so a parse error in one cannot
-suppress analysis of another. Plus a control that must stay clean.
+| Defect class | n | `alc` | LSP | native build | `nativeCheck` | combined local |
+|---|--:|--:|--:|--:|--:|--:|
+| syntax | 3 | 3 | 3 | 3 | 0 | 3 |
+| binding / name resolution | 5 | 5 | 0 | 5 | 0 | 5 |
+| type checking | 4 | 3 | 0 | 4 | 0 | 4 |
+| project rules | 2 | 2 | 1 | 2 | 2 | 2 |
+| **total** | **14** | **13** | **4** | **14** | **2** | **14** |
+| false positive on clean control | | none | none | none | none | none |
 
-Scoring requires a diagnostic (error *or* warning) in the defect file within ±2
-lines of the planted defect. Flagging the file for an unrelated reason does not
-count.
+`native build` is `al-explorer pack-native --json`, which exercises the
+production verifier used by native builds. It catches the three syntax/property
+cases; undeclared names, unknown Record subtypes, package-backed fields, local
+procedures, and Record methods; Record-to-Integer assignment, local argument
+count/type, and the elementary missing-return form; plus both project rules.
 
-| Defect class | n | `alc` | ours (al-lsp + native-check) |
-|---|--:|--:|--:|
-| syntax | 3 | 3 | 2 |
-| binding / name resolution | 5 | **5** | **0** |
-| type checking | 4 | **3** | **0** |
-| project rules | 2 | 2 | 2 |
-| **total** | **14** | **13** | **4** |
-| false positive on control | | none | none |
+This does not prove complete AL semantic compatibility. The verifier remains
+conservative outside the checked forms and leaves unknown non-literal return
+expressions unknown instead of inventing a type error. `alc` does not report
+the planted missing-return case in this corpus.
 
-Not detected on our side:
+Raw evidence:
+[`accuracy.json`](results/published/2026-07-26/accuracy.json) and
+[`accuracy_al_lsp.stderr.log`](results/published/2026-07-26/accuracy_al_lsp.stderr.log).
 
-- **Binding (0/5)** — undeclared identifiers; unknown object references;
-  unknown fields and unknown methods on a resolvable `Record Customer`; calls
-  to undefined procedures.
-- **Type checking (0/4)** — assigning a `Record` to an `Integer`; wrong
-  argument count; wrong argument type.
-- **Syntax (2/3)** — an invalid property name (`DataClassificationX`) is not
-  reported. Missing semicolons and unbalanced braces are.
+## Package emission
 
-Parity: **project rules 2/2**, and `native-check` produces these without any
-.NET at all.
+Six rounds ran for every project size, with round zero discarded. Every
+measured arm succeeded without error diagnostics or a missing artifact, and
+all 60 native/`alc` pairs were semantically equivalent.
 
-This is not a missing-bridge artifact. Server logs for these runs show
-`Bridge initialized successfully`, `Semantic bridge initialized`, and
-`Loaded symbol packages … loaded=6 total_symbols=11799` — the capability was
-present and loaded.
+| Project | Process cold, native / `alc` | Warm unchanged, native / `alc` | One-file edit, native / `alc` |
+|---|---:|---:|---:|
+| small | 445.833 / 4,812.852 ms | 16.637 / 4,994.220 ms | 18.363 / 4,842.070 ms |
+| medium | 454.177 / 4,787.268 ms | 29.532 / 4,733.969 ms | 31.071 / 4,556.994 ms |
+| large | 516.013 / 4,951.148 ms | 69.169 / 5,158.778 ms | 68.983 / 4,910.091 ms |
+| XL | 648.166 / 5,298.640 ms | 230.612 / 5,884.777 ms | 248.858 / 5,412.046 ms |
 
-`alc` misses one case (`typ_missing_return`: a function whose `if` has no
-`else` and can fall off the end).
+Those medians correspond to `alc ÷ native` ratios of 8.175×–10.795× for
+process-cold, 25.518×–300.188× for warm-unchanged, and 21.748×–263.686× for
+one-file-edit in this synthetic corpus on this machine. They are measurements,
+not a general workload promise.
 
-**Consistent with the position already stated in `../BENCHMARKS.md`:** the
-Microsoft compiler remains the authority for expression/type semantics. This
-table quantifies the size of that gap rather than contradicting it.
+The comparator parses package content rather than claiming whole-archive byte
+identity. It requires the exact entry set, JSON equality, manifest equality
+apart from build provenance, and navigation equality apart from random
+`ControlGUID` values and sibling `ActionDefinition` discovery order. Repeated
+`alc` runs proved that ordering nondeterministic; focused tests prove content
+changes still fail comparison. Native input parsing, dependency indexing,
+semantic verification, emission, artifact verification, and output-write phase
+telemetry are preserved in
+[`emit.json`](results/published/2026-07-26/emit.json).
 
-### Harness bugs found while producing this table
+The strict `make microsoft-contracts` profile separately covers the
+self-contained 19-object-kind differential, dependency and Base Application
+bindings/resources, both `pack-native --validate` contracts, the live semantic
+bridge, and receiver-sensitive built-in language services.
 
-Recorded because each produced a wrong result that flattered one side:
+## LSP lifecycle and latency
 
-1. **All cases in one project** → three syntax errors aborted compilation
-   before the binder ran; `alc` scored a spurious 3/13. A compiler that stops at
-   parse errors is behaving correctly — the benchmark was wrong.
-2. **`procedure Run()` on every codeunit** collides with the built-in
-   `Codeunit.Run`, raising `AL0440` in all 14 files; `alc` scored a spurious
-   8/14 *and* flagged the control case. Methods are now named `Execute`, and the
-   corpus is validated by confirming the control compiles clean before any score
-   is trusted.
-3. **Scoring only `error` severity** hid a case we do detect —
-   `native-check` reports findings as warnings (`AL-NC*`). Scoring now counts
-   errors and warnings alike.
+`lsp_bench.py` drives both servers through one stdio client, identical source
+and cursor positions, and 11 requests per operation (one discarded warmup and
+10 measured samples). All measured probes were non-empty and error-free.
 
----
+| Measure | Native `al-lsp` | Microsoft EditorServices |
+|---|---:|---:|
+| Initialize | 3.243 ms | 236.496 ms |
+| First diagnostic | 1.290 ms (1 diagnostic) | 292.608 ms (clean project event) |
+| Cold ready | 2,020.928 ms | 5,646.605 ms |
+| Completion | 0.567 ms (94 items) | 10.014 ms (94 items) |
+| Hover | 0.137 ms | 0.365 ms |
+| Definition | 0.070 ms | 0.241 ms |
+| Document symbols | 0.235 ms | 1.273 ms |
+| Workspace symbols | 0.473 ms (40 items) | 6.840 ms (40 items) |
+| Probe load average | 3.72 | 3.53 |
 
-## 2. `.app` output fidelity vs `alc`
+The native cold-ready gate waits for `semantic analysis complete` before any
+probe. Its 1.290 ms first diagnostic is explicitly only phase one; the
+2,020.928 ms metric includes bridge initialization and a successful semantic
+`CodeAnalysis` call. Microsoft cold-ready includes its real editor lifecycle:
+`al/setActiveWorkspace`, `al/projectReady`, active-document setup, and the
+first project diagnostic. Definition uses Microsoft's client-facing
+`al/gotodefinition` endpoint, which is recorded in the raw result.
 
-The synthetic fixture and the real-world project produce materially different
-results. The synthetic result is useful regression coverage, but it is not
-evidence of general package parity.
+Native shutdown completed the request, sent/received the normal exit sequence,
+closed stdio, and exited 0 without a kill. Microsoft's shutdown request also
+succeeded and the client sent `exit` then EOF, but the host did not terminate
+within three seconds. Only that leg permits and records a forced kill; the
+result does not mislabel it as a clean process exit.
 
-### Synthetic fixture
+Raw evidence:
+[`lsp_al_medium.json`](results/published/2026-07-26/lsp_al_medium.json),
+[`lsp_al_medium.stderr.log`](results/published/2026-07-26/lsp_al_medium.stderr.log),
+[`lsp_ms_medium.json`](results/published/2026-07-26/lsp_ms_medium.json), and
+[`lsp_ms_medium.stderr.log`](results/published/2026-07-26/lsp_ms_medium.stderr.log).
 
-Entry-by-entry hash comparison of the same project built both ways.
+## Symbol index
 
-| Archive entry | Native vs `alc` |
-|---|---|
-| `SymbolReference.json` | **byte-identical** (and stable across repeated native builds) |
-| `src/*.al` | byte-identical |
-| `DocComments.xml`, `MediaIdListing.xml`, `entitlement/*.xml` | byte-identical |
-| `NavxManifest.xml` | differs only in build timestamp + compiler-version string |
-| `navigation.xml` | differs only in freshly-generated `ControlGUID`s |
-| `[Content_Types].xml` | differs in step with the XLIFF finding below |
+The native diagnostic ingested six packages and 11,799 symbols in 692.546 ms
+cold. Seven fresh-daemon warm recalls ranged from 462.373 to 499.995 ms with a
+483.382 ms median. Six measured runs for each query returned non-empty results:
 
-The `navigation.xml` GUIDs are regenerated on every build by **both** tools —
-verified by diffing two consecutive native builds, which differ in exactly those
-bytes and nowhere else. That is intentional nondeterminism, not a divergence.
+| Query | Median | Results |
+|---|---:|---:|
+| `Customer` | 7.387 ms | 20 |
+| `Sales Post` | 4.977 ms | 4 |
+| `Item Ledger` | 6.114 ms | 17 |
+| `Bench` | 2.924 ms | 20 |
+| `Gen. Journal` | 11.488 ms | 20 |
 
-### Real-world project
-
-A separate 206-file application comparison did not reproduce the synthetic
-fixture's package parity:
-
-- `SymbolReference.json` differs between the native and Microsoft packages.
-- Some archive paths use different encoding.
-- The native package omits project resources that `alc` includes, including
-  report layouts, a logo, and `.res` resources.
-
-These gaps mean the native emitter should not be described as generally
-equivalent to `alc`. Its supported fixture remains valuable as a precise test
-of the implemented subset, while `pack-native --validate` or the official
-compiler remains the appropriate release gate for applications using broader
-artifact types.
-
-### XLIFF TextData is emitted, but for a narrower set of properties than `alc`
-
-The native emitter does write `TextData/*.xliff` and register the content type.
-Confirmed directly: a table carrying an object `Caption` and a field `Caption`
-produces `TextData/<app>.TextData.en-US.xliff`.
-
-**However**, `xliff_xml` in `crates/al-emit/src/assemble.rs` collects only:
-
-- object `Caption` (Table / Page / Report, subject to runtime version), and
-- table **field** `Caption`.
-
-For a project whose only translatable strings are **page control `ToolTip`s**
-and **page action `Caption`s**, `alc` emits five `trans-unit` entries and the
-native emitter emits **no XLIFF file at all**:
-
-```
-Page … - Action  … - Property …   "Refresh"
-Page … - Control … - Property …   "Specifies the code."
-Page … - Control … - Property …   "Specifies the description."
-Page … - Control … - Property …   "Specifies the amount."
-Page … - Control … - Property …   "Specifies whether the entry is active."
-```
-
-This matters in practice because a `ToolTip` on every page control is an
-AppSource requirement, so page tooltips are among the most common translatable
-strings in real AL. Reproduce with `benchmarks/projects/small` (generated by
-`scripts/gen_projects.py`), whose pages carry `ToolTip`s and one action
-`Caption` and no object captions.
-
----
-
-## 3. Microsoft EditorServices — standard-LSP coverage
-
-Observed while building the head-to-head client. Recorded as interop
-observations, not performance claims.
-
-Driving the Microsoft host over stdio with `initialize` → `initialized` →
-`al/setActiveWorkspace` → `didOpen`:
-
-| Request | Result |
-|---|---|
-| `initialize` | answered |
-| `al/setActiveWorkspace` | answered, `{"success": true}` |
-| `textDocument/publishDiagnostics` | published, **0 items** for a clean file |
-| `textDocument/completion` | answered (94 items) |
-| `textDocument/hover` | answered |
-| `textDocument/documentSymbol` | answered |
-| `textDocument/definition` | **no response** within 25 s, despite `definitionProvider` being advertised in its own `initialize` result |
-| `workspace/symbol` | **no response** within 25 s |
-| `al/gotodefinition` | no response — parameter shape not confirmed |
-| `al/symbolSearch` | no response — parameter shape not confirmed |
-
-The last two are AL-specific methods found as string literals in the
-extension's `dist/`; a plain `{textDocument, position}` / `{query}` payload is a
-guess and the real shapes were not determined, so their absence is **not**
-evidence of anything. The `textDocument/definition` and `workspace/symbol`
-results are more notable because both are standard LSP and the server
-advertises the corresponding capabilities.
-
-Caveat: a VS Code client sends a richer handshake than this harness does, so
-these may be conditional on capabilities or prior requests this client omits.
-Treat as "not reproduced from a minimal standard-LSP client", not "broken".
-
----
-
-## Reproducing
-
-```sh
-cp benchmarks/bench.env.example benchmarks/bench.env   # then edit paths
-cargo build --release -p al-lsp -p al-explorer --features al-lsp/semantic
-cd benchmarks && set -a && . ./bench.env && set +a
-python3 scripts/gen_projects.py
-python3 scripts/gen_accuracy_corpus.py
-python3 scripts/accuracy_bench.py          # section 1
-bash    scripts/lsp_headtohead.sh          # section 3
-```
-
-Harness design and methodology: [`README.md`](README.md).
+Microsoft exposes no equivalent isolated index API, so this section publishes
+no comparative ratio. Raw evidence:
+[`symbols.json`](results/published/2026-07-26/symbols.json).

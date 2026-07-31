@@ -11,7 +11,10 @@ permission sets — all natively, with consistent identifier escaping and atomic
 `create_project(dir, config)` writes a new project: `app.json` (with template-appropriate target,
 features, and analyzers), `.gitignore`, a `.zed/debug.json` launch config, and template source files.
 Writes are atomic (temp + rename) so a crash never leaves a half-written file. Project name,
-publisher, and template are supplied explicitly by the CLI or daemon request.
+publisher, template, and AL runtime are supplied by the CLI or daemon request. The minimum
+Business Central application version is derived from the runtime compatibility line (for example,
+runtime `17.0` produces application `28.0.0.0`), so generated manifests do not carry a stale
+calendar-based release constant.
 
 Templates:
 
@@ -72,7 +75,8 @@ deterministic output make these safe to run in scripts and CI.
 ## How to use
 
 ```
-al-explorer new <dir> --name <Name> --publisher <Pub> --template default|pte|appsource|library|test|copilot|agent|api
+al-explorer new <dir> --name <Name> --publisher <Pub> --runtime <major.minor> \
+    --template default|pte|appsource|library|test|copilot|agent|api
 al-explorer permissions --format al|xml --name <Name> --id <N> [--role-id <Id>]
 al-explorer generate <kind> --id <N> --name <Name> [--table <T>] [--page-type <T>] [--subject <S>]
 al-explorer sort-members [file] [--all] [--dry-run]
@@ -81,12 +85,12 @@ al-explorer organize-files [--dry-run]
 
 Test generation requires `--subject` so each emitted `[Test]` procedure targets a named codeunit method.
 
-Zed tasks: *AL: New Project*, *AL: Generate Permission Set*, *AL: Organize File Names*, *AL: Sort
-Members*. Scaffolding and permissions are also reachable via LSP `workspace/executeCommand`.
-MCP reaches the same dispatcher operations through `al_call`: `newProject`, `permissions`, `generate`,
-`sortMembers`, and `organizeFiles`.
+Scaffolding and permissions are reachable via LSP `workspace/executeCommand`. MCP reaches the same
+dispatcher operations through `al_call`: `newProject`, `permissions`, `generate`, `sortMembers`, and
+`organizeFiles`. Stable Zed cannot resolve the extension-private CLI sidecar from a static task, so
+the installed language package does not advertise shell tasks for these operations.
 
-## Limitations & roadmap
+## Compatibility boundaries
 
 - User templates are loaded from `AL_TEMPLATES_DIR`,
   `$XDG_CONFIG_HOME/al/templates`, or `~/.config/al/templates`. Each template directory contains

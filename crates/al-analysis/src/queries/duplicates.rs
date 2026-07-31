@@ -8,6 +8,20 @@ use std::collections::HashMap;
 
 use al_workspace::Workspace;
 
+/// Upper bound accepted by duplicate detection. Larger values cannot match a
+/// realistic AL procedure and usually indicate a client/configuration error.
+pub const MAX_MIN_TOKENS: usize = 10_000;
+
+#[derive(Debug, thiserror::Error)]
+pub enum DuplicateError {
+    #[error("'minTokens' must be from 0 to {max}; received {value}")]
+    InvalidMinTokens { value: usize, max: usize },
+    #[error("'minSimilarity' must be a finite number from 0.0 to 1.0; received {value}")]
+    InvalidMinSimilarity { value: f32 },
+    #[error(transparent)]
+    Workspace(#[from] super::WorkspaceQueryError),
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DuplicateBlock {
@@ -32,22 +46,31 @@ pub fn find_duplicates(
     workspace: &Workspace,
     min_tokens: usize,
     min_similarity: f32,
-) -> Vec<DuplicateBlock> {
+) -> Result<Vec<DuplicateBlock>, DuplicateError> {
+    if min_tokens > MAX_MIN_TOKENS {
+        return Err(DuplicateError::InvalidMinTokens {
+            value: min_tokens,
+            max: MAX_MIN_TOKENS,
+        });
+    }
+    if !min_similarity.is_finite() || !(0.0..=1.0).contains(&min_similarity) {
+        return Err(DuplicateError::InvalidMinSimilarity {
+            value: min_similarity,
+        });
+    }
+
+    let sources =
+        crate::workspace_sources::snapshot(workspace).map_err(super::WorkspaceQueryError::from)?;
     let mut procedures: Vec<ProcedureBody> = Vec::new();
 
-    for entry in workspace.file_index.files.iter() {
-        let path = entry.key().clone();
-        let file_path = path.to_string_lossy().to_string();
-        drop(entry);
-        let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) else {
-            continue;
-        };
-
-        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
-            continue;
-        };
-
-        collect_procedure_bodies(&file_path, &text, &obj_info.name, &tree, &mut procedures);
+    for source in sources {
+        collect_procedure_bodies(
+            &source.path.to_string_lossy(),
+            &source.text,
+            &source.object.info.name,
+            &source.tree,
+            &mut procedures,
+        );
     }
 
     let mut duplicates = Vec::new();
@@ -82,12 +105,8 @@ pub fn find_duplicates(
         }
     }
 
-    duplicates.sort_by(|a, b| {
-        b.similarity
-            .partial_cmp(&a.similarity)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    duplicates
+    duplicates.sort_by(|a, b| b.similarity.total_cmp(&a.similarity));
+    Ok(duplicates)
 }
 
 struct ProcedureBody {
@@ -282,7 +301,7 @@ mod tests {
             ),
         ]);
 
-        let dups = find_duplicates(&ws, 5, 0.8);
+        let dups = find_duplicates(&ws, 5, 0.8).unwrap();
         assert!(!dups.is_empty(), "Should find duplicate procedures");
         assert!(dups[0].similarity >= 0.8, "Similarity should be high");
     }
@@ -314,15 +333,30 @@ mod tests {
             ),
         ]);
 
-        let dups = find_duplicates(&ws, 10, 0.9);
+        let dups = find_duplicates(&ws, 10, 0.9).unwrap();
         assert!(dups.is_empty(), "Unique code should have no duplicates");
     }
 
     #[test]
     fn empty_workspace_no_duplicates() {
         let ws = Workspace::new();
-        let dups = find_duplicates(&ws, 5, 0.8);
+        let dups = find_duplicates(&ws, 5, 0.8).unwrap();
         assert!(dups.is_empty());
+    }
+
+    #[test]
+    fn invalid_thresholds_are_rejected_by_the_public_query() {
+        let ws = Workspace::new();
+        assert!(matches!(
+            find_duplicates(&ws, MAX_MIN_TOKENS + 1, 0.8),
+            Err(DuplicateError::InvalidMinTokens { .. })
+        ));
+        for similarity in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+            assert!(matches!(
+                find_duplicates(&ws, 20, similarity),
+                Err(DuplicateError::InvalidMinSimilarity { .. })
+            ));
+        }
     }
 
     #[test]

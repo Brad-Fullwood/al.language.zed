@@ -7,7 +7,7 @@ These are the static assets Zed loads to make AL feel native: the language confi
 files, snippets, themes, and JSON schemas for project files.
 
 > ⚠️ **Generated, do not hand-edit.** Everything in `languages/al/` is generated output (canonical
-> `.scm` queries are copied from `tree-sitter-al/queries`; Zed-specific config/tasks/runnables/etc.
+> `.scm` queries are copied from `tree-sitter-al/queries`; Zed-specific config and supplemental queries
 > come from generator templates), and `themes/bc-themes.json` is generated from Business Central VS
 > Code theme data. Edit the generators or templates. Run `make language` for `languages/al/`, and
 > run `make grammar` for grammar data or themes. The generator rejects unknown files under
@@ -21,7 +21,6 @@ files, snippets, themes, and JSON schemas for project files.
 | `highlights.scm` | syntax highlighting captures (keywords, types, functions, comments, strings, numbers, operators) derived for parity with the VS Code AL grammar |
 | `outline.scm` | document outline (objects, procedures/triggers, events, keys, enum values) |
 | `locals.scm` | local variable scope & resolution (scopes for blocks/case/events/loops/objects; definitions for objects/methods/vars/parameters) |
-| `runnables.scm` | detects `[Test]`, `[EventSubscriber]`, `[IntegrationEvent]`/`[BusinessEvent]`, `[HandlerFunctions]` — powers test discovery and event tooling |
 | `textobjects.scm` | text-object selection (objects, procedures, triggers, events, statements) |
 | `folds.scm` | folding regions (objects, procedures, blocks, control statements, attribute lists) |
 | `indents.scm` | auto-indentation rules |
@@ -30,14 +29,19 @@ files, snippets, themes, and JSON schemas for project files.
 | `injections.scm` | language injection points |
 | `overrides.scm` | tree-sitter quirk overrides |
 | `semantic_token_rules.json` | maps the LSP semantic token types (from `al-lsp`) to Zed theme classes (e.g. `builtinType→@type.builtin`, `tableField→@property`, `excludedCode→@comment.unused`) |
-| `tasks.json` | ~55 AL project tasks (see the generated [task catalog](../../languages/al/tasks.json)) |
+
+The installed language package intentionally has no `tasks.json`/`runnables.scm` pair. Stable Zed
+task JSON cannot refer to binaries in the extension work directory, so shipping bare
+`al-explorer` commands would make those buttons fail on a fresh gallery install. Editor-integrated
+operations are exposed through LSP commands and the resolved **AL Tools** MCP server instead.
 
 ## Snippets
 
 - `snippets/al.json` — 50+ AL code snippets with tab stops: procedures, triggers, events and event
   subscribers, control flow (if/case/for/foreach/while/repeat), assertions, `with…do`, error handling,
   test attributes, integration/business events, test setup/teardown.
-- `snippets/json.json` — JSON snippets for project files (e.g. `app.json` boilerplate).
+- `snippets/json.json` — launch/attach debug configurations for on-premises and cloud Business
+  Central environments; every emitted field is checked against `debug_adapter_schemas/al.json`.
 
 ## Themes
 
@@ -54,6 +58,7 @@ via `json.schemas`, see [`examples/zed-settings.jsonc`](../../examples/zed-setti
 | `app.json` | the app manifest | required id/name/publisher/version; runtime, target, dependencies, features, idRanges, resourceExposurePolicy, launch, marketplace metadata |
 | `settings.json` | `al.*` LSP settings | every setting (also drives in-editor autocomplete on Zed 0.8+) |
 | `ruleset.json` | `*.ruleset.json` | per-code severity overrides (Error/Warning/Hidden/Info/None) |
+| `alarch.json` | `.alarch.json` | native architecture lint rules, object-kind scopes, and literal/regex matching |
 | `appsourcecop.json` | `AppSourceCop.json` | AppSourceCop severity + per-rule config |
 | `migration.json` | `migration.json` | data-upgrade (table/field ownership) manifest |
 
@@ -80,10 +85,12 @@ add the `json.schemas` block from `examples/zed-settings.jsonc`. Use `make langu
 Zed templates or canonical queries. Use `make grammar` after changing grammar, extracted language
 data, or theme inputs; it requires the Microsoft AL extension and tree-sitter CLI.
 
-## Limitations & roadmap
+## Compatibility boundaries
 
 - Hand-editing `languages/al/` is unsupported and will be overwritten/rejected.
-- `ROADMAP.md` (Generated Assets): keep all of `languages/al` generated, document `al-gen` vs
-  `al-extract` ownership of `tree-sitter-al/data/*.json`, make theme generation reproducible and
-  validated, and keep `extension.toml` grammar rev / submodule gitlink / generated queries tied
-  together by CI.
+- Ordinary CI regenerates the self-contained `languages/al` package. Full grammar/data/theme
+  regeneration is intentionally a manual pinned-input workflow because it needs Microsoft's
+  proprietary AL extension: use **Verify generated assets** with an archive URL and SHA-256, or set
+  `AL_EXTENSION_PATH` locally and run `scripts/check-release-hygiene.sh --full-regenerate`.
+  This keeps `extension.toml` grammar rev, the submodule gitlink, generated queries, and the
+  external input boundary explicit.

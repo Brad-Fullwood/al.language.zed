@@ -12,7 +12,7 @@ use url::Url;
 
 use super::Position;
 use super::Range;
-use al_workspace::Workspace;
+use al_workspace::{Workspace, WorkspaceStateError};
 
 /// A location identity: `(uri_string, line, character)`. Two positions bind to
 /// the same symbol iff their [`decl_loc`] values are equal.
@@ -27,20 +27,24 @@ pub(crate) type BindKey = (String, u32, u32);
 /// fall through to an unrelated same-named procedure in another object.) For
 /// every other position (a usage) we defer to go-to-definition, which resolves
 /// a bare procedure call same-file-first and a qualified call to its true owner.
-pub(crate) fn decl_loc(workspace: &Workspace, uri: &Url, pos: Position) -> BindKey {
+pub(crate) fn decl_loc(
+    workspace: &Workspace,
+    uri: &Url,
+    pos: Position,
+) -> Result<BindKey, WorkspaceStateError> {
     if let Some(key) = enclosing_declaration_name(workspace, uri, pos) {
-        return key;
+        return Ok(key);
     }
     if let Some(loc) =
-        super::definition::definition(workspace, uri, pos).and_then(|locs| locs.into_iter().next())
+        super::definition::definition(workspace, uri, pos)?.and_then(|locs| locs.into_iter().next())
     {
-        return (
+        return Ok((
             loc.uri.to_string(),
             loc.range.start.line,
             loc.range.start.character,
-        );
+        ));
     }
-    (uri.to_string(), pos.line, pos.character)
+    Ok((uri.to_string(), pos.line, pos.character))
 }
 
 /// If `pos` falls on the *name* of a declaration (procedure, trigger, field, or
@@ -103,6 +107,10 @@ pub(crate) fn enclosing_declaration_name(
 mod tests {
     use super::*;
 
+    fn decl_loc(workspace: &Workspace, uri: &Url, position: Position) -> BindKey {
+        super::decl_loc(workspace, uri, position).unwrap()
+    }
+
     #[test]
     fn var_parameter_and_receiver_uses_share_one_binding() {
         let uri = Url::parse("file:///test/parameter_binding.al").unwrap();
@@ -115,8 +123,10 @@ mod tests {
     end;
 }"#;
         let workspace = Workspace::new();
-        workspace.documents.open(uri.clone(), source.to_string());
-
+        workspace
+            .documents
+            .open(uri.clone(), source.to_string())
+            .unwrap();
         let declaration = decl_loc(
             &workspace,
             &uri,

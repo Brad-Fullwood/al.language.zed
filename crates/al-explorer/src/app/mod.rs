@@ -132,19 +132,19 @@ impl App {
             if attempt > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
-            let result = client
-                .request(
-                    "search",
-                    Some(serde_json::json!({
-                        "query": "",
-                        "limit": 100_000,
-                        // slim entries (no member arrays) — a full
-                        // dump is ~60 MB JSON. Members hydrate lazily per
-                        // selected object (`hydrate_selected_object`).
-                        "summary": true
-                    })),
-                )
-                .map_err(|e| format!("search request failed: {e}"))?;
+            let result = crate::cli::commands::request_checked(
+                &mut client,
+                "search",
+                Some(serde_json::json!({
+                    "query": "",
+                    "limit": 100_000,
+                    // slim entries (no member arrays) — a full
+                    // dump is ~60 MB JSON. Members hydrate lazily per
+                    // selected object (`hydrate_selected_object`).
+                    "summary": true
+                })),
+            )
+            .map_err(|e| format!("search request failed: {e}"))?;
 
             let parsed: Vec<types::SymbolEntry> = serde_json::from_value(result)
                 .map_err(|e| format!("Failed to deserialize symbol entries from daemon: {e}"))?;

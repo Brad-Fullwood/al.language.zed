@@ -93,11 +93,6 @@ fn validate_overrides_query() {
 }
 
 #[test]
-fn validate_runnables_query() {
-    validate_query_file("runnables.scm");
-}
-
-#[test]
 fn validate_all_query_files() {
     let dir = languages_dir();
     let mut scm_files: Vec<_> = std::fs::read_dir(&dir)

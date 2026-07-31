@@ -47,7 +47,7 @@ pub const LENS_COMMAND_IDS: &[&str] = &["al.findReferences", "al.showProfiler", 
 pub enum TestLensStatus {
     NotRun,
     Running,
-    Pass { duration_ms: u64 },
+    Pass { duration_ms: Option<u64> },
     Fail { error: Option<String> },
     Skip,
 }
@@ -78,10 +78,9 @@ pub struct TestTarget {
 /// - **Profiler lenses** — shown only when a `.alcpuprofile` is loaded into the
 ///   workspace; display self-time and hit count for the procedure
 ///   (e.g. `"⏱ 42ms · 3 calls"`).
-#[must_use]
-pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
+pub fn code_lens(workspace: &Workspace, uri: &Url) -> Result<Vec<CodeLensEntry>, String> {
     let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
-        return vec![];
+        return Ok(vec![]);
     };
 
     let symbols = al_syntax::extract_document_symbols(&tree, &text);
@@ -101,28 +100,16 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
     }
 
     if proc_names.is_empty() {
-        let profiler_lenses = {
-            let guard = workspace
-                .profiler_session
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
-            match guard.as_ref() {
-                Some(session) if session.is_active() => {
-                    super::profiler_hints::profiler_code_lenses(&session.hints, uri, &text, &tree)
-                }
-                _ => vec![],
-            }
-        };
-        return profiler_lenses;
+        return profiler_lenses(workspace, uri, &text, &tree);
     }
 
-    let test_lens_ctx = build_test_lens_context(workspace, uri, &text, &tree);
+    let test_lens_ctx = build_test_lens_context(workspace, uri, &text, &tree)?;
 
     // Build a workspace-wide reference count map in a single pass over all
     // files: O(F + P) instead of O(P * F).
     //
     // Key: canonical declaration binding. Value: distinct call-site count.
-    let ref_counts = build_reference_counts(workspace, uri);
+    let ref_counts = build_reference_counts(workspace, uri)?;
 
     let mut lenses = Vec::new();
     for sym in &symbols {
@@ -135,7 +122,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
                         uri,
                         child.selection_range.start.into(),
                         &ref_counts,
-                    );
+                    )?;
                     lenses.push(CodeLensEntry {
                         range: child.selection_range.into(),
                         title: reference_label(count),
@@ -166,7 +153,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
                 uri,
                 sym.selection_range.start.into(),
                 &ref_counts,
-            );
+            )?;
             lenses.push(CodeLensEntry {
                 range: sym.selection_range.into(),
                 title: reference_label(count),
@@ -190,21 +177,27 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
         }
     }
 
-    let profiler_lenses = {
-        let guard = workspace
-            .profiler_session
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        match guard.as_ref() {
-            Some(session) if session.is_active() => {
-                super::profiler_hints::profiler_code_lenses(&session.hints, uri, &text, &tree)
-            }
-            _ => vec![],
-        }
-    };
-    lenses.extend(profiler_lenses);
+    lenses.extend(profiler_lenses(workspace, uri, &text, &tree)?);
 
-    lenses
+    Ok(lenses)
+}
+
+fn profiler_lenses(
+    workspace: &Workspace,
+    uri: &Url,
+    text: &str,
+    tree: &tree_sitter::Tree,
+) -> Result<Vec<CodeLensEntry>, String> {
+    let guard = workspace
+        .profiler_session
+        .read()
+        .map_err(|_| "profiler session lock is poisoned".to_string())?;
+    Ok(match guard.as_ref() {
+        Some(session) if session.is_active() => {
+            super::profiler_hints::profiler_code_lenses(&session.hints, uri, text, tree)
+        }
+        _ => vec![],
+    })
 }
 
 struct TestLensContext {
@@ -229,7 +222,7 @@ impl TestLensContext {
                     None => TestLensStatus::NotRun,
                     Some(r) => match r.status {
                         al_types::TestStatus::Pass => TestLensStatus::Pass {
-                            duration_ms: r.duration_ms.unwrap_or(0),
+                            duration_ms: r.duration_ms,
                         },
                         al_types::TestStatus::Fail => TestLensStatus::Fail {
                             error: r.error.clone(),
@@ -248,44 +241,55 @@ fn build_test_lens_context(
     uri: &Url,
     text: &str,
     tree: &tree_sitter::Tree,
-) -> Option<TestLensContext> {
+) -> Result<Option<TestLensContext>, String> {
     let source = text.as_bytes();
     let root = tree.root_node();
 
     if !crate::queries::tests::has_test_subtype(root, source)
         && crate::queries::tests::collect_test_procedures(root, source).is_empty()
     {
-        return None;
+        return Ok(None);
     }
 
-    let obj_info = al_syntax::find_object_declaration(tree, text)?;
+    let Some(obj_info) = al_syntax::find_object_declaration(tree, text) else {
+        return Ok(None);
+    };
     if !al_syntax::language_data::is_test_container_kind(&obj_info.kind) {
-        return None;
+        return Ok(None);
     }
-    let codeunit_id = obj_info.id.unwrap_or(0) as i32;
+    let Some(kind) = obj_info.kind.parse::<al_symbols::ObjectKind>().ok() else {
+        return Ok(None);
+    };
+    let Some(codeunit_id) = kind.normalize_declaration_id(obj_info.id).ok() else {
+        return Ok(None);
+    };
 
     let test_procs = crate::queries::tests::collect_test_procedures(root, source);
     let test_proc_names_lower: std::collections::HashSet<String> =
         test_procs.iter().map(|p| p.name.to_lowercase()).collect();
 
     if test_proc_names_lower.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let store_snapshot = {
         let guard = workspace
             .test_results
             .read()
-            .unwrap_or_else(|e| e.into_inner());
-        guard.as_ref().map(|store| store.all_records())
+            .map_err(|_| "test-result store lock is poisoned".to_string())?;
+        guard
+            .as_ref()
+            .map(|store| store.all_records())
+            .transpose()
+            .map_err(|error| format!("failed to read test-result history: {error}"))?
     };
 
     let _ = uri; // URI currently unused — codeunit_id identifies the codeunit.
-    Some(TestLensContext {
+    Ok(Some(TestLensContext {
         codeunit_id,
         test_proc_names_lower,
         store_snapshot,
-    })
+    }))
 }
 
 /// Maximum number of bytes of a test failure message to embed in a code lens
@@ -309,7 +313,10 @@ fn test_lens_title(status: &TestLensStatus) -> String {
     match status {
         TestLensStatus::NotRun => "○ Not run".to_string(),
         TestLensStatus::Running => "⟳ Running…".to_string(),
-        TestLensStatus::Pass { duration_ms } => format!("✓ Pass ({duration_ms}ms)"),
+        TestLensStatus::Pass {
+            duration_ms: Some(duration_ms),
+        } => format!("✓ Pass ({duration_ms}ms)"),
+        TestLensStatus::Pass { duration_ms: None } => "✓ Pass".to_string(),
         TestLensStatus::Fail { error: Some(e) } => {
             if e.len() > MAX_ERROR_DISPLAY_BYTES {
                 // Reserve 3 bytes for the "…" ellipsis (single 3-byte char).
@@ -337,9 +344,10 @@ fn reference_count_for_declaration(
     uri: &Url,
     position: super::Position,
     counts: &HashMap<super::binding::BindKey, usize>,
-) -> usize {
-    let declaration = super::binding::decl_loc(workspace, uri, position);
-    counts.get(&declaration).copied().unwrap_or(0)
+) -> Result<usize, String> {
+    let declaration =
+        super::binding::decl_loc(workspace, uri, position).map_err(|error| error.to_string())?;
+    Ok(counts.get(&declaration).copied().unwrap_or(0))
 }
 
 /// Build a map of canonical declaration binding → distinct reference count by
@@ -351,7 +359,7 @@ fn reference_count_for_declaration(
 fn build_reference_counts(
     workspace: &Workspace,
     current_uri: &Url,
-) -> HashMap<super::binding::BindKey, usize> {
+) -> Result<HashMap<super::binding::BindKey, usize>, String> {
     type MemberKey = (String, String, String);
 
     // canonical declaration → set of (uri_string, line, col) occurrences.
@@ -369,12 +377,16 @@ fn build_reference_counts(
         text: &str,
         tree: &tree_sitter::Tree,
         member_bindings: &mut HashMap<MemberKey, super::binding::BindKey>,
-    ) {
+    ) -> Result<(), String> {
         let Some(object) = al_syntax::find_object_declaration(tree, text) else {
-            return;
+            return Ok(());
         };
         let source = text.as_bytes();
+        let mut binding_error = None;
         al_syntax::walk_tree(tree.root_node(), &mut |node| {
+            if binding_error.is_some() {
+                return;
+            }
             if !matches!(
                 node.kind(),
                 "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
@@ -388,15 +400,21 @@ fn build_reference_counts(
                 return;
             };
             let range = al_syntax::ts_range_to_syntax(&name_node.range(), source);
-            member_bindings.insert(
-                (
-                    object.kind.to_lowercase(),
-                    object.name.to_lowercase(),
-                    name.trim_matches('"').to_lowercase(),
-                ),
-                super::binding::decl_loc(workspace, file_uri, range.start.into()),
-            );
+            match super::binding::decl_loc(workspace, file_uri, range.start.into()) {
+                Ok(declaration) => {
+                    member_bindings.insert(
+                        (
+                            object.kind.to_lowercase(),
+                            object.name.to_lowercase(),
+                            name.trim_matches('"').to_lowercase(),
+                        ),
+                        declaration,
+                    );
+                }
+                Err(error) => binding_error = Some(error.to_string()),
+            }
         });
+        binding_error.map_or(Ok(()), Err)
     }
 
     /// Walk a single file's parse tree once, recording the *name* of every
@@ -424,9 +442,13 @@ fn build_reference_counts(
         tree: &tree_sitter::Tree,
         member_bindings: &HashMap<MemberKey, super::binding::BindKey>,
         seen: &mut HashMap<super::binding::BindKey, std::collections::HashSet<(String, u32, u32)>>,
-    ) {
+    ) -> Result<(), String> {
         let source_bytes = text.as_bytes();
+        let mut binding_error = None;
         al_syntax::walk_tree(tree.root_node(), &mut |node| {
+            if binding_error.is_some() {
+                return;
+            }
             if node.kind() == "attribute" {
                 record_event_subscriber_reference(
                     node,
@@ -446,7 +468,13 @@ fn build_reference_counts(
             let ts_range = node.range();
             let lsp_range = al_syntax::ts_range_to_syntax(&ts_range, source_bytes);
             let position: super::Position = lsp_range.start.into();
-            let declaration = super::binding::decl_loc(workspace, file_uri, position);
+            let declaration = match super::binding::decl_loc(workspace, file_uri, position) {
+                Ok(declaration) => declaration,
+                Err(error) => {
+                    binding_error = Some(error.to_string());
+                    return;
+                }
+            };
             let key = (
                 uri_str.to_string(),
                 lsp_range.start.line,
@@ -454,6 +482,7 @@ fn build_reference_counts(
             );
             seen.entry(declaration).or_default().insert(key);
         });
+        binding_error.map_or(Ok(()), Err)
     }
 
     fn record_event_subscriber_reference(
@@ -565,7 +594,7 @@ fn build_reference_counts(
 
     if let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, current_uri)
     {
-        record_member_bindings(workspace, current_uri, &text, &tree, &mut member_bindings);
+        record_member_bindings(workspace, current_uri, &text, &tree, &mut member_bindings)?;
     }
 
     let current_path = current_uri.to_file_path().ok();
@@ -589,7 +618,7 @@ fn build_reference_counts(
                 &file_text,
                 &file_tree,
                 &mut member_bindings,
-            );
+            )?;
         }
     }
 
@@ -604,7 +633,7 @@ fn build_reference_counts(
             &tree,
             &member_bindings,
             &mut seen,
-        );
+        )?;
     }
 
     for file_path in file_paths {
@@ -624,11 +653,11 @@ fn build_reference_counts(
                 &file_tree,
                 &member_bindings,
                 &mut seen,
-            );
+            )?;
         }
     }
 
-    seen.into_iter().map(|(k, v)| (k, v.len())).collect()
+    Ok(seen.into_iter().map(|(k, v)| (k, v.len())).collect())
 }
 
 #[cfg(test)]
@@ -638,7 +667,7 @@ mod tests {
 
     fn workspace_with_doc(uri: &Url, content: &str) -> Workspace {
         let ws = Workspace::new();
-        ws.documents.open(uri.clone(), content.to_string());
+        ws.documents.open(uri.clone(), content.to_string()).unwrap();
         ws
     }
 
@@ -704,7 +733,7 @@ codeunit 50100 MyCodeunit
 }
 "#;
         let ws = workspace_with_doc(&uri, src);
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
 
         assert!(
             lenses.len() >= 2,
@@ -736,7 +765,7 @@ codeunit 50100 MyCodeunit
 }
 "#;
         let ws = workspace_with_doc(&uri, src);
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
 
         assert!(
             !lenses.is_empty(),
@@ -776,7 +805,7 @@ codeunit 50100 MyCodeunit
         ws.file_index
             .add_file(std::path::PathBuf::from("/project/B.al"), src_b.to_string());
 
-        let lenses = code_lens(&ws, &uri_a);
+        let lenses = code_lens(&ws, &uri_a).unwrap();
         let post = lenses
             .iter()
             .find(|lens| matches!(lens.kind, CodeLensKind::Reference(_)))
@@ -808,7 +837,7 @@ codeunit 50100 MyCodeunit
             subscriber.to_string(),
         );
 
-        let lenses = code_lens(&ws, &publisher_uri);
+        let lenses = code_lens(&ws, &publisher_uri).unwrap();
         let event = lenses
             .iter()
             .find(|lens| matches!(lens.kind, CodeLensKind::Reference(_)))
@@ -821,7 +850,7 @@ codeunit 50100 MyCodeunit
     fn test_code_lens_empty_file() {
         let uri = Url::parse("file:///empty.al").unwrap();
         let ws = workspace_with_doc(&uri, "");
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
         assert!(lenses.is_empty(), "empty file should produce no lenses");
     }
 
@@ -829,7 +858,7 @@ codeunit 50100 MyCodeunit
     fn test_code_lens_unknown_uri() {
         let uri = Url::parse("file:///does_not_exist.al").unwrap();
         let ws = Workspace::new();
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
         assert!(lenses.is_empty(), "unknown URI should produce no lenses");
     }
 
@@ -889,7 +918,7 @@ codeunit 50100 MyCodeunit
             line: None,
         };
         let ws = workspace_with_doc_and_profile(&uri, PROF_SRC, vec![hint]);
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
 
         let prof_lenses: Vec<&CodeLensEntry> =
             lenses.iter().filter(|l| l.title.contains('⏱')).collect();
@@ -916,7 +945,7 @@ codeunit 50100 MyCodeunit
             line: None,
         };
         let ws = workspace_with_doc_and_profile(&uri, PROF_SRC, vec![hint]);
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
         let prof_lenses: Vec<&CodeLensEntry> =
             lenses.iter().filter(|l| l.title.contains('⏱')).collect();
         assert_eq!(prof_lenses.len(), 1);
@@ -927,7 +956,7 @@ codeunit 50100 MyCodeunit
     fn test_no_profiler_lenses_without_session() {
         let uri = Url::parse("file:///test.al").unwrap();
         let ws = workspace_with_doc(&uri, PROF_SRC);
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
         let prof_lenses: Vec<&CodeLensEntry> =
             lenses.iter().filter(|l| l.title.contains('⏱')).collect();
         assert!(
@@ -953,7 +982,7 @@ codeunit 50100 MyCodeunit
         *ws.profiler_session
             .write()
             .unwrap_or_else(|e| e.into_inner()) = Some(ProfilerSession::new(file_path, vec![hint]));
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
         let prof_lenses: Vec<&CodeLensEntry> =
             lenses.iter().filter(|l| l.title.contains('⏱')).collect();
         assert!(
@@ -1022,7 +1051,7 @@ codeunit 50100 MyCodeunit
     fn test_lens_not_run_when_no_history() {
         let uri = Url::parse("file:///my_tests.al").unwrap();
         let ws = workspace_with_doc(&uri, TEST_CODEUNIT_SRC);
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
         let tl = test_lenses(&lenses);
         assert_eq!(tl.len(), 2, "expected 2 test lenses (one per [Test] proc)");
         for l in &tl {
@@ -1048,7 +1077,7 @@ codeunit 50100 MyCodeunit
             codeunit_name: "MyCodeunit".into(),
         };
         let ws = workspace_with_test_results(&uri, TEST_CODEUNIT_SRC, vec![record]);
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
         let tl = test_lenses(&lenses);
         let alpha_lens = tl
             .iter()
@@ -1056,7 +1085,34 @@ codeunit 50100 MyCodeunit
             .expect("expected a Pass lens for TestAlpha");
         assert_eq!(
             alpha_lens.kind,
-            CodeLensKind::Test(TestLensStatus::Pass { duration_ms: 123 })
+            CodeLensKind::Test(TestLensStatus::Pass {
+                duration_ms: Some(123)
+            })
+        );
+    }
+
+    #[test]
+    fn test_lens_pass_without_duration_does_not_invent_zero_ms() {
+        let uri = Url::parse("file:///my_tests.al").unwrap();
+        let record = TestRunRecord {
+            codeunit_id: 50200,
+            method_name: "TestAlpha".to_string(),
+            status: TestStatus::Pass,
+            duration_ms: None,
+            error: None,
+            timestamp: 1000,
+            codeunit_name: "MyCodeunit".into(),
+        };
+        let ws = workspace_with_test_results(&uri, TEST_CODEUNIT_SRC, vec![record]);
+        let lenses = code_lens(&ws, &uri).unwrap();
+        let alpha_lens = test_lenses(&lenses)
+            .into_iter()
+            .find(|lens| matches!(lens.kind, CodeLensKind::Test(TestLensStatus::Pass { .. })))
+            .expect("expected a Pass lens for TestAlpha");
+        assert_eq!(alpha_lens.title, "✓ Pass");
+        assert_eq!(
+            alpha_lens.kind,
+            CodeLensKind::Test(TestLensStatus::Pass { duration_ms: None })
         );
     }
 
@@ -1073,7 +1129,7 @@ codeunit 50100 MyCodeunit
             codeunit_name: "MyCodeunit".into(),
         };
         let ws = workspace_with_test_results(&uri, TEST_CODEUNIT_SRC, vec![record]);
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
         let tl = test_lenses(&lenses);
         let beta_lens = tl
             .iter()
@@ -1134,7 +1190,7 @@ codeunit 50100 MyCodeunit
             codeunit_name: "MyCodeunit".into(),
         };
         let ws = workspace_with_test_results(&uri, TEST_CODEUNIT_SRC, vec![record]);
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
         let tl = test_lenses(&lenses);
         assert_eq!(tl.len(), 2);
         for l in &tl {
@@ -1150,7 +1206,7 @@ codeunit 50100 MyCodeunit
     fn test_lens_non_test_proc_gets_no_test_lens() {
         let uri = Url::parse("file:///my_tests.al").unwrap();
         let ws = workspace_with_doc(&uri, TEST_CODEUNIT_SRC);
-        let lenses = code_lens(&ws, &uri);
+        let lenses = code_lens(&ws, &uri).unwrap();
         let helper_test_lenses: Vec<&CodeLensEntry> = lenses
             .iter()
             .filter(|l| matches!(l.kind, CodeLensKind::Test(_)) && l.title.contains("Helper"))
@@ -1159,5 +1215,70 @@ codeunit 50100 MyCodeunit
             helper_test_lenses.is_empty(),
             "HelperProc should not have a test lens"
         );
+    }
+
+    #[test]
+    fn code_lens_reports_poisoned_profiler_state() {
+        let uri = Url::parse("file:///profile_poison.al").unwrap();
+        let ws = std::sync::Arc::new(workspace_with_doc(&uri, "codeunit 50100 Empty { }"));
+        let poison_target = std::sync::Arc::clone(&ws);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target.profiler_session.write().unwrap();
+            panic!("poison profiler session for test");
+        })
+        .join();
+
+        let error = match code_lens(&ws, &uri) {
+            Err(error) => error,
+            Ok(_) => panic!("poisoned profiler state must not produce code lenses"),
+        };
+        assert!(
+            error.contains("profiler session lock is poisoned"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn code_lens_reports_poisoned_test_result_state() {
+        let uri = Url::parse("file:///test_results_poison.al").unwrap();
+        let ws = std::sync::Arc::new(workspace_with_doc(&uri, TEST_CODEUNIT_SRC));
+        let poison_target = std::sync::Arc::clone(&ws);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target.test_results.write().unwrap();
+            panic!("poison test-result store for test");
+        })
+        .join();
+
+        let error = match code_lens(&ws, &uri) {
+            Err(error) => error,
+            Ok(_) => panic!("poisoned test-result state must not produce code lenses"),
+        };
+        assert!(
+            error.contains("test-result store lock is poisoned"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn code_lens_reports_corrupt_test_result_history() {
+        let uri = Url::parse("file:///test_results_corrupt.al").unwrap();
+        let ws = workspace_with_doc(&uri, TEST_CODEUNIT_SRC);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test-results.json");
+        std::fs::write(&path, "not json\n").expect("write corrupt history");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let store = runtime
+            .block_on(al_workspace::TestResultStore::open(path))
+            .expect("open");
+        *ws.test_results
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = Some(std::sync::Arc::new(store));
+
+        let error = match code_lens(&ws, &uri) {
+            Err(error) => error,
+            Ok(_) => panic!("corrupt history must fail code lenses"),
+        };
+        assert!(error.contains("malformed test result record"), "{error}");
+        assert!(error.contains("line 1"), "{error}");
     }
 }

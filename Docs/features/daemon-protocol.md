@@ -3,9 +3,9 @@
 **Modules:** `crates/al-lsp/src/server/daemon/` + `crates/al-protocol/` · **Status:** ✅ shipped
 (Linux, macOS, and Windows)
 
-`al-lsp daemon --project <path>` is the shared backend whose dispatcher is reused by the CLI, the MCP
-bridge, and Zed tasks. Daemon mode serves JSON-RPC 2.0 over a Unix-domain socket on Linux/macOS and a
-named pipe on Windows; MCP mode calls that same dispatcher in-process over stdio. (The editor LSP
+`al-lsp daemon --project <path>` is the shared backend whose dispatcher is reused by the CLI,
+contributor tasks, and the MCP bridge. Daemon mode serves JSON-RPC 2.0 over a Unix-domain socket on
+Linux/macOS and a named pipe on Windows; MCP mode calls that same dispatcher in-process over stdio. (The editor LSP
 path does **not** use the daemon — it uses LSP handlers directly. See
 [architecture](../architecture.md).)
 
@@ -48,9 +48,10 @@ serialized explicitly.
 
 ## One dispatcher, three front ends
 
-This is the architectural point of the daemon: **CLI, MCP, and Zed tasks converge here.** `al-explorer`
-sends these methods directly; MCP's `al_call` forwards any method and parameter object to the same
-dispatcher, with named aliases for common agent workflows; Zed tasks shell out to `al-explorer`.
+This is the architectural point of the daemon: **CLI, MCP, and contributor tasks converge here.**
+`al-explorer` sends these methods directly; MCP's `al_call` forwards any method and parameter object
+to the same dispatcher, with named aliases for common agent workflows; checkout-local `.zed` tasks
+shell out to `al-explorer`.
 There is therefore exactly one implementation of each operation, and its answer is identical
 regardless of who asked. The generic MCP bridge also prevents a new dispatcher method from becoming
 CLI-only because somebody forgot a second registration.
@@ -97,11 +98,12 @@ Cross-platform support is covered at three levels:
 See the [testing guide](../testing-guide.md#daemon-ipc-on-linux-macos-and-windows) for the exact
 commands and platform matrix.
 
-## Limitations & roadmap
+## Compatibility boundaries
 
 - Local-only transport on every supported platform: Unix-domain sockets on Linux/macOS and named
   pipes on Windows.
-- `ROADMAP.md` (Architecture Unification) calls for deciding whether LSP execute commands should call
-  the daemon dispatcher, a shared service layer, or remain direct LSP handlers — and documenting/
-  testing that boundary — plus unifying compile behavior across daemon `compile`/`package`, LSP
-  `al.compile`, publish, and DAP launch.
+- Build boundary: daemon `compile` and `package` are JSON-RPC transport aliases over the shared
+  `al_compile` service and return the same normalized build envelope. LSP `al.compile` stays a
+  direct handler because it must publish and clear editor diagnostics; it calls the same service
+  and backend selection rather than forwarding through daemon IPC. Publish and native DAP use the
+  returned artifact path from that service, never a newest-file scan.

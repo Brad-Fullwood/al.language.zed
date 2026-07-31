@@ -122,11 +122,41 @@ impl Default for ScaffoldConfig {
             publisher: "Default Publisher".to_string(),
             id: "00000000-0000-0000-0000-000000000000".to_string(),
             version: "1.0.0.0".to_string(),
-            runtime: "14.0".to_string(),
+            // Runtime 17.0 is the stable AL runtime shipped with BC 28. The
+            // generated application minimum is derived from this value rather
+            // than carrying a second, independently stale release constant.
+            runtime: "17.0".to_string(),
             target: "Cloud".to_string(),
             template: ProjectTemplate::Default,
         }
     }
+}
+
+/// Map an AL runtime version to the Business Central application version that
+/// introduced it. Runtime 1.0 shipped with BC 12.0, and subsequent major
+/// runtime lines retain the `+ 11` relationship; runtime minors map directly
+/// (for example 6.3 -> 17.3).
+pub fn application_version_for_runtime(runtime: &str) -> Result<String, String> {
+    let mut parts = runtime.trim().split('.');
+    let major = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .filter(|major| *major > 0)
+        .ok_or_else(|| {
+            format!("Invalid AL runtime '{runtime}': expected a positive major.minor version")
+        })?;
+    let minor = parts.next().unwrap_or("0").parse::<u32>().map_err(|_| {
+        format!("Invalid AL runtime '{runtime}': expected a positive major.minor version")
+    })?;
+    if parts.next().is_some() {
+        return Err(format!(
+            "Invalid AL runtime '{runtime}': expected major.minor, for example 17.0"
+        ));
+    }
+    let application_major = major
+        .checked_add(11)
+        .ok_or_else(|| format!("Invalid AL runtime '{runtime}': major version is too large"))?;
+    Ok(format!("{application_major}.{minor}.0.0"))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -607,6 +637,7 @@ fn splitmix64(seed: u64) -> u64 {
 }
 
 fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
+    let application = application_version_for_runtime(&config.runtime)?;
     let (target, features, analyzers) = match &config.template {
         ProjectTemplate::AppSourceApp => (
             "Cloud",
@@ -640,7 +671,7 @@ fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
         "dependencies": [],
         "screenshots": [],
         "platform": "1.0.0.0",
-        "application": "26.0.0.0",
+        "application": application,
         "idRanges": [{"from": 50100, "to": 50149}],
         "resourceExposurePolicy": {
             "allowDebugging": true,
@@ -693,7 +724,7 @@ fn generate_debug_json() -> Result<String, String> {
             "environmentType": "OnPrem",
             "server": "http://bcserver",
             "serverInstance": "BC",
-            "authentication": "UserPassword",
+            "authentication": "MicrosoftEntraID",
             "startupObjectId": 22,
             "breakOnError": "All",
             "breakOnRecordWrite": "None",
@@ -702,9 +733,7 @@ fn generate_debug_json() -> Result<String, String> {
             "enableLongRunningSqlStatements": true,
             "longRunningSqlStatementsThreshold": 500,
             "numberOfSqlStatements": 10,
-            "tenant": "default",
-            "usePublicURLFromServer": true,
-            "build": {"command": "al", "args": ["compile"]}
+            "tenant": "default"
         },
         {
             "adapter": "al",
@@ -719,8 +748,7 @@ fn generate_debug_json() -> Result<String, String> {
             "enableSqlInformationDebugger": true,
             "enableLongRunningSqlStatements": true,
             "longRunningSqlStatementsThreshold": 500,
-            "numberOfSqlStatements": 10,
-            "build": {"command": "al", "args": ["compile"]}
+            "numberOfSqlStatements": 10
         },
         {
             "adapter": "al",
@@ -729,7 +757,7 @@ fn generate_debug_json() -> Result<String, String> {
             "environmentType": "OnPrem",
             "server": "http://bcserver",
             "serverInstance": "BC",
-            "authentication": "UserPassword",
+            "authentication": "MicrosoftEntraID",
             "breakOnError": "All",
             "breakOnRecordWrite": "None",
             "enableSqlInformationDebugger": true,
@@ -795,16 +823,8 @@ fn generate_test_codeunit(config: &ScaffoldConfig) -> String {
     [Test]
     procedure TestSomething()
     begin
-        // Arrange
-
-        // Act
-
-        // Assert
-        Assert.IsTrue(true, 'Placeholder test');
+        Error('Placeholder test: implementation required');
     end;
-
-    var
-        Assert: Codeunit "Library Assert";
 }}
 "#
     )
@@ -993,6 +1013,37 @@ mod tests {
     }
 
     #[test]
+    fn scaffold_application_version_is_derived_from_runtime() {
+        for (runtime, application) in [
+            ("1.0", "12.0.0.0"),
+            ("6.3", "17.3.0.0"),
+            ("14.0", "25.0.0.0"),
+            ("17.0", "28.0.0.0"),
+        ] {
+            let config = ScaffoldConfig {
+                runtime: runtime.to_string(),
+                ..Default::default()
+            };
+            let json = generate_app_json(&config).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed["runtime"], runtime);
+            assert_eq!(parsed["application"], application);
+        }
+    }
+
+    #[test]
+    fn scaffold_rejects_invalid_runtime_instead_of_emitting_stale_application() {
+        for runtime in ["", "latest", "0.0", "17.0.1"] {
+            let config = ScaffoldConfig {
+                runtime: runtime.to_string(),
+                ..Default::default()
+            };
+            let error = generate_app_json(&config).expect_err("invalid runtime must fail");
+            assert!(error.contains(runtime), "error was: {error}");
+        }
+    }
+
+    #[test]
     fn gitignore_excludes_app_files() {
         let content = generate_gitignore();
         assert!(content.contains("*.app"));
@@ -1042,7 +1093,24 @@ mod tests {
     #[test]
     fn generate_debug_json_returns_valid_json() {
         let json = generate_debug_json().expect("serialization should not fail");
-        let _: serde_json::Value = serde_json::from_str(&json).expect("should be valid JSON");
+        let configs: Vec<serde_json::Value> =
+            serde_json::from_str(&json).expect("should be valid JSON");
+        assert_eq!(configs.len(), 4);
+        for config in &configs {
+            assert!(
+                config.get("build").is_none(),
+                "native launch performs its own build"
+            );
+            assert!(config.get("usePublicURLFromServer").is_none());
+        }
+        for config in configs.iter().filter(|config| {
+            config.get("environmentType").and_then(|v| v.as_str()) == Some("OnPrem")
+        }) {
+            assert_eq!(
+                config.get("authentication").and_then(|v| v.as_str()),
+                Some("MicrosoftEntraID")
+            );
+        }
     }
 
     #[test]
@@ -1236,6 +1304,8 @@ mod tests {
         let config = ScaffoldConfig::default();
         let src = generate_test_codeunit(&config);
         assert_al_parses("test codeunit", &src);
+        assert!(src.contains("Error('Placeholder test: implementation required')"));
+        assert!(!src.contains("Assert.IsTrue(true"));
     }
 
     #[test]

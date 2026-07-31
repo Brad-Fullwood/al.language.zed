@@ -14,7 +14,7 @@ and Business Central behavior.
 | Tests | Local pure-logic/workspace-record subset plus live BC routing | Live Business Central test runtime |
 | Debugging | Native Zed DAP adapter backed by Business Central services | Microsoft VS Code debug adapter |
 | Project analysis | Impact, call/event graph, dead code, SQL patterns, architecture rules, upgrade and permission audits | Primarily compiler/analyzer workflows |
-| Automation | CLI/TUI, local daemon, Zed tasks, and MCP share core services | VS Code commands, tasks, and AL tooling |
+| Automation | CLI/TUI, local daemon, MCP, editor commands, and contributor tasks share core services | VS Code commands, tasks, and AL tooling |
 
 ## Compatibility boundary
 
@@ -22,7 +22,7 @@ Native implementations are intended to provide fast local workflows, not to
 redefine AL semantics. Use the official compiler, CodeAnalysis bridge, and live
 Business Central when exact Microsoft analyzer, package, or runtime behavior is
 required. See [Microsoft comparison](./microsoft-comparison.md) and
-[current limitations](./gaps-and-future-work.md) for details.
+[current limitations](./current-limitations.md) for details.
 
 ## Validation
 

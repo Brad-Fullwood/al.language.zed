@@ -4,14 +4,23 @@
     "kind": "request",
     "timeout": 300,
     "params": {
-      "currentWorkspaceFolderPath": "__ROOT_PATH__",
+      "currentWorkspaceFolderPath": {
+        "uri": {
+          "$mid": 1,
+          "fsPath": "__ROOT_PATH__",
+          "path": "__ROOT_PATH__",
+          "scheme": "file"
+        },
+        "name": "__ROOT_NAME__",
+        "index": 0
+      },
       "settings": {
         "workspacePath": "__ROOT_PATH__",
         "alResourceConfigurationSettings": {
           "assemblyProbingPaths": [],
           "codeAnalyzers": [],
           "enableCodeAnalysis": false,
-          "backgroundCodeAnalysis": true,
+          "backgroundCodeAnalysis": "File",
           "packageCachePaths": ["__ALPACKAGES__"],
           "ruleSetPath": null,
           "enableCodeActions": true,
@@ -19,12 +28,18 @@
           "outputAnalyzerStatistics": false,
           "enableExternalRulesets": false
         },
-        "setActiveWorkspaceOptions": {
-          "activeWorkspaceFolderPath": "__ROOT_PATH__",
-          "workspaceFolders": ["__ROOT_PATH__"]
-        },
-        "expectedProjectReferenceDefinitions": []
+        "setActiveWorkspace": true,
+        "expectedProjectReferenceDefinitions": [],
+        "activeWorkspaceClosure": ["__ROOT_PATH__"]
       }
+    }
+  },
+  {
+    "method": "al/progressNotification",
+    "kind": "wait_notification",
+    "timeout": 300,
+    "match": {
+      "percent": 100
     }
   }
 ]

@@ -153,37 +153,26 @@ pub fn sort_members(text: &str) -> Option<String> {
 /// literal. Word boundaries stop `Begins`/`MyBegin` from matching, and the
 /// literal skip stops `Message('begin')` from doing so.
 fn contains_begin_keyword(code: &str) -> bool {
-    let bytes = code.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'\'' || b == b'"' {
-            let quote = b;
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] == quote {
-                    if quote == b'\'' && i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                        i += 2;
-                        continue;
-                    }
+    for span in crate::lexical::LineScanner::new(code, false) {
+        if span.kind != crate::lexical::SpanKind::Code {
+            continue;
+        }
+        let bytes = span.text.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b.is_ascii_alphabetic() || b == b'_' {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                     i += 1;
-                    break;
                 }
-                i += 1;
+                if span.text[start..i].eq_ignore_ascii_case("begin") {
+                    return true;
+                }
+                continue;
             }
-            continue;
+            i += 1;
         }
-        if b.is_ascii_alphabetic() || b == b'_' {
-            let start = i;
-            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                i += 1;
-            }
-            if code[start..i].eq_ignore_ascii_case("begin") {
-                return true;
-            }
-            continue;
-        }
-        i += 1;
     }
     false
 }

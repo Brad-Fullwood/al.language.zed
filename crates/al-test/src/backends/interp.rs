@@ -24,7 +24,7 @@ use tree_sitter::Node;
 
 use crate::error::TestRunnerError;
 use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
-use crate::session::{RunOptions, TestEvent, TestId, TestSession};
+use crate::session::{method_name_matches, RunOptions, TestEvent, TestId, TestSession};
 use al_analysis::queries::tests::{discover_tests, TestCodeunit};
 use al_runtime::interpreter::coverage::{Coverage, DynamicCoverageReport};
 use al_runtime::interpreter::dispatch::{DispatchCtx, DispatchMode, TestHandlers};
@@ -119,8 +119,15 @@ impl InterpMode {
     /// The aggregated per-file dynamic-coverage report gathered during the last
     /// `run`. Empty when coverage collection is disabled or `run` has not been
     /// called.
-    pub fn coverage_report(&self) -> DynamicCoverageReport {
-        self.coverage.lock().map(|c| c.report()).unwrap_or_default()
+    pub fn coverage_report(&self) -> Result<DynamicCoverageReport, TestRunnerError> {
+        self.coverage
+            .lock()
+            .map_err(|_| {
+                TestRunnerError::WorkerFailed(
+                    "interpreter coverage accumulator lock is poisoned".to_string(),
+                )
+            })
+            .map(|coverage| coverage.report())
     }
 }
 
@@ -153,7 +160,7 @@ impl TestSession for InterpMode {
         let ws_for_discover = Arc::clone(&self.workspace);
         let codeunits = tokio::task::spawn_blocking(move || discover_tests(&ws_for_discover))
             .await
-            .unwrap_or_default();
+            .map_err(worker_join_error)??;
 
         // Group TestIds by codeunit_id, deduplicating identical
         // (codeunit_id, method_name) targets. A malformed RPC call can repeat
@@ -163,13 +170,27 @@ impl TestSession for InterpMode {
         let mut seen: HashSet<(i32, Option<String>)> = HashSet::new();
         let mut grouped: HashMap<i32, Vec<Option<String>>> = HashMap::new();
         for test_id in &tests {
-            if !seen.insert((test_id.codeunit_id, test_id.method_name.clone())) {
-                continue;
+            let methods = match (&test_id.method_name, opts.filter.as_deref()) {
+                (Some(method), Some(pattern)) if !method_name_matches(method, pattern) => {
+                    Vec::new()
+                }
+                (Some(method), _) => vec![Some(method.clone())],
+                (None, Some(pattern)) => codeunits
+                    .iter()
+                    .find(|codeunit| codeunit.id == test_id.codeunit_id)
+                    .into_iter()
+                    .flat_map(|codeunit| &codeunit.tests)
+                    .filter(|test| method_name_matches(&test.name, pattern))
+                    .map(|test| Some(test.name.clone()))
+                    .collect(),
+                (None, None) => vec![None],
+            };
+            for method in methods {
+                if !seen.insert((test_id.codeunit_id, method.clone())) {
+                    continue;
+                }
+                grouped.entry(test_id.codeunit_id).or_default().push(method);
             }
-            grouped
-                .entry(test_id.codeunit_id)
-                .or_default()
-                .push(test_id.method_name.clone());
         }
 
         let mut all_summaries: Vec<TestCodeunitResult> = Vec::new();
@@ -187,7 +208,7 @@ impl TestSession for InterpMode {
             .collect();
 
         if opts.parallel {
-            let mut join_set: JoinSet<Vec<TestEvent>> = JoinSet::new();
+            let mut join_set: JoinSet<Result<Vec<TestEvent>, TestRunnerError>> = JoinSet::new();
 
             for (codeunit_id, codeunit_name, methods) in work {
                 let ws = Arc::clone(&self.workspace);
@@ -211,10 +232,7 @@ impl TestSession for InterpMode {
             }
 
             while let Some(join_result) = join_set.join_next().await {
-                let events = match join_result {
-                    Ok(inner) => inner,
-                    Err(_) => continue,
-                };
+                let events = join_result.map_err(worker_join_error)??;
                 for event in events {
                     if let TestEvent::SuiteComplete { ref summary, .. } = event {
                         all_summaries.push(summary.clone());
@@ -244,7 +262,7 @@ impl TestSession for InterpMode {
                     )
                 })
                 .await
-                .unwrap_or_default();
+                .map_err(worker_join_error)??;
 
                 for event in events {
                     if let TestEvent::SuiteComplete { ref summary, .. } = event {
@@ -274,6 +292,16 @@ impl TestSession for InterpMode {
     }
 }
 
+fn worker_join_error(error: tokio::task::JoinError) -> TestRunnerError {
+    TestRunnerError::WorkerFailed(if error.is_panic() {
+        format!("interpreter worker panicked: {error}")
+    } else if error.is_cancelled() {
+        format!("interpreter worker was cancelled: {error}")
+    } else {
+        error.to_string()
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_codeunit_interp(
     workspace: &Workspace,
@@ -285,7 +313,7 @@ fn run_codeunit_interp(
     dispatch_mode: DispatchMode,
     collect_coverage: bool,
     coverage: &Arc<Mutex<Coverage>>,
-) -> Vec<TestEvent> {
+) -> Result<Vec<TestEvent>, TestRunnerError> {
     let mut events = Vec::new();
     let mut method_results: Vec<TestMethodResult> = Vec::new();
 
@@ -308,7 +336,7 @@ fn run_codeunit_interp(
                 vec![],
             ),
         });
-        return events;
+        return Ok(events);
     }
 
     for proc_name in &proc_list {
@@ -337,9 +365,14 @@ fn run_codeunit_interp(
         // Merge this test's dynamic coverage into the run-wide aggregate (gap
         // Only present when coverage collection is enabled.
         if let Some(test_cov) = test_coverage {
-            if let Ok(mut agg) = coverage.lock() {
-                agg.merge(&test_cov);
-            }
+            coverage
+                .lock()
+                .map_err(|_| {
+                    TestRunnerError::WorkerFailed(
+                        "interpreter coverage accumulator lock is poisoned".to_string(),
+                    )
+                })?
+                .merge(&test_cov);
         }
 
         let method_result = TestMethodResult {
@@ -372,7 +405,7 @@ fn run_codeunit_interp(
         summary,
     });
 
-    events
+    Ok(events)
 }
 
 /// Run one test procedure. Returns its `Eval` result plus, when
@@ -416,6 +449,19 @@ fn run_procedure_interp(
 
     let source = text.as_bytes();
     let root = tree.root_node();
+    let test_handlers = match configured_handlers(cu, root, source, proc_name, codeunit_name) {
+        Ok(handlers) => handlers,
+        Err(message) => {
+            return (
+                Eval::Error(al_runtime::interpreter::value::ErrorInfo {
+                    message,
+                    error_type: Some("UnsupportedLocalTestHandler".to_string()),
+                    source: None,
+                }),
+                None,
+            );
+        }
+    };
 
     let proc_source: Arc<dyn al_types::ProcedureSource> = workspace.file_index.clone();
     // Thread the timeout down to the interpreter so a runaway
@@ -437,8 +483,9 @@ fn run_procedure_interp(
             cov.set_current_file(&cu.file);
             cov
         }),
+        condition_trace_stack: Vec::new(),
         var_writebacks: Vec::new(),
-        test_handlers: configured_handlers(cu, root, source, proc_name, codeunit_name),
+        test_handlers,
     };
 
     // One context (especially one record store and deadline) spans the full BC
@@ -492,26 +539,66 @@ fn configured_handlers(
     source: &[u8],
     proc_name: &str,
     codeunit_name: &str,
-) -> TestHandlers {
+) -> Result<TestHandlers, String> {
     let mut handlers = TestHandlers::default();
     let Some(test) = cu
         .tests
         .iter()
         .find(|test| test.name.eq_ignore_ascii_case(proc_name))
     else {
-        return handlers;
+        return Err(format!(
+            "test procedure '{proc_name}' is absent from discovered codeunit '{codeunit_name}'"
+        ));
     };
     for handler_name in &test.handler_functions {
         let Some(handler) = find_procedure_node(root, source, handler_name) else {
-            continue;
+            return Err(format!(
+                "configured handler procedure '{handler_name}' was not found in '{codeunit_name}'"
+            ));
         };
-        if procedure_has_attribute(handler, source, "MessageHandler") {
-            handlers.message = Some((codeunit_name.to_string(), handler_name.clone()));
-        } else if procedure_has_attribute(handler, source, "ConfirmHandler") {
-            handlers.confirm = Some((codeunit_name.to_string(), handler_name.clone()));
+        let kinds = [
+            (
+                "MessageHandler",
+                procedure_has_attribute(handler, source, "MessageHandler"),
+            ),
+            (
+                "ConfirmHandler",
+                procedure_has_attribute(handler, source, "ConfirmHandler"),
+            ),
+            (
+                "StrMenuHandler",
+                procedure_has_attribute(handler, source, "StrMenuHandler"),
+            ),
+            (
+                "HyperlinkHandler",
+                procedure_has_attribute(handler, source, "HyperlinkHandler"),
+            ),
+        ];
+        let matched: Vec<_> = kinds
+            .into_iter()
+            .filter_map(|(kind, present)| present.then_some(kind))
+            .collect();
+        let [kind] = matched.as_slice() else {
+            return Err(format!(
+                "configured handler '{handler_name}' in '{codeunit_name}' must declare exactly one supported local handler attribute; found {}",
+                matched.len()
+            ));
+        };
+        let target = match *kind {
+            "MessageHandler" => &mut handlers.message,
+            "ConfirmHandler" => &mut handlers.confirm,
+            "StrMenuHandler" => &mut handlers.str_menu,
+            "HyperlinkHandler" => &mut handlers.hyperlink,
+            _ => unreachable!("matched from the fixed supported handler set"),
+        };
+        if target.is_some() {
+            return Err(format!(
+                "test '{proc_name}' configures more than one {kind} in '{codeunit_name}'"
+            ));
         }
+        *target = Some((codeunit_name.to_string(), handler_name.clone()));
     }
-    handlers
+    Ok(handlers)
 }
 
 fn procedure_has_attribute(node: Node<'_>, source: &[u8], wanted: &str) -> bool {
@@ -670,6 +757,25 @@ mod tests {
             .unwrap_or_else(|| panic!("needle {needle:?} not found in source"))
     }
 
+    #[test]
+    fn coverage_report_rejects_poisoned_accumulator() {
+        let session = InterpMode::with_coverage(Arc::new(Workspace::new()));
+        let poison_target = Arc::clone(&session.coverage);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target.lock().unwrap();
+            panic!("poison coverage accumulator for test");
+        })
+        .join();
+
+        let error = session.coverage_report().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("coverage accumulator lock is poisoned"),
+            "{error}"
+        );
+    }
+
     #[tokio::test]
     async fn dynamic_mode_reports_executed_lines_and_branches() {
         let source = r#"codeunit 50110 "Cov Tests"
@@ -711,7 +817,7 @@ mod tests {
         });
         assert!(passed, "TestBranch should pass; events: {events:?}");
 
-        let report = session.coverage_report();
+        let report = session.coverage_report().unwrap();
         assert_eq!(report.files.len(), 1, "exactly one file should be reported");
         let file = &report.files[0];
 
@@ -891,7 +997,7 @@ mod tests {
         let _events = collect_events(&session, tests, RunOptions::default()).await;
 
         assert!(
-            session.coverage_report().is_empty(),
+            session.coverage_report().unwrap().is_empty(),
             "static mode must not produce dynamic coverage"
         );
     }
@@ -920,6 +1026,72 @@ mod tests {
             }
             other => panic!("expected SessionComplete, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn whole_codeunit_filter_expands_and_runs_only_matching_methods() {
+        let source = r#"codeunit 50111 "Filtered Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure KeepThis()
+    begin
+    end;
+
+    [Test]
+    procedure SkipThisFailure()
+    begin
+        Error('filter did not exclude this method');
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/FilteredTests.Codeunit.al"),
+            source.to_string(),
+        );
+        let events = collect_events(
+            &InterpMode::new(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50111,
+                codeunit_name: "Filtered Tests".to_string(),
+                method_name: None,
+            }],
+            RunOptions {
+                filter: Some("Keep*".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                TestEvent::CaseResult { id, result }
+                    if id.method_name.as_deref() == Some("KeepThis")
+                        && result.status == TestStatus::Pass
+            )
+        }));
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event,
+                TestEvent::CaseResult { id, .. }
+                    if id.method_name.as_deref() == Some("SkipThisFailure")
+            )
+        }));
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    TestEvent::SessionComplete {
+                        total: 1,
+                        passed: 1,
+                        failed: 0,
+                        ..
+                    }
+                )
+            }),
+            "filtered totals must describe only the selected method: {events:?}"
+        );
     }
 
     #[tokio::test]
@@ -1251,5 +1423,145 @@ mod tests {
         assert!(events.iter().any(|event| {
             matches!(event, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
         }), "dialog handlers should execute and validate calls: {events:?}");
+    }
+
+    #[tokio::test]
+    async fn unhandled_dialog_fails_instead_of_becoming_a_noop() {
+        let source = r#"codeunit 50145 "Unhandled Dialog Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure OpensMessage()
+    begin
+        Message('must not disappear');
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/UnhandledDialogTests.Codeunit.al"),
+            source.to_string(),
+        );
+        let events = collect_events(
+            &InterpMode::new(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50145,
+                codeunit_name: "Unhandled Dialog Tests".to_string(),
+                method_name: Some("OpensMessage".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    TestEvent::CaseResult { result, .. }
+                        if result.status == TestStatus::Fail
+                            && result.error.as_deref().is_some_and(|error| error.contains("MessageHandler"))
+                )
+            }),
+            "unhandled dialog must fail explicitly: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_handler_without_supported_attribute_fails_closed() {
+        let source = r#"codeunit 50146 "Invalid Handler Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    [HandlerFunctions('NotAHandler')]
+    procedure Dialogs()
+    begin
+        Message('must not disappear');
+    end;
+
+    procedure NotAHandler(MessageText: Text[1024])
+    begin
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/InvalidHandlerTests.Codeunit.al"),
+            source.to_string(),
+        );
+        let events = collect_events(
+            &InterpMode::new(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50146,
+                codeunit_name: "Invalid Handler Tests".to_string(),
+                method_name: Some("Dialogs".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    TestEvent::CaseResult { result, .. }
+                        if result.status == TestStatus::Fail
+                            && result.error.as_deref().is_some_and(|error| error.contains("exactly one supported"))
+                )
+            }),
+            "invalid handler must fail explicitly: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn strmenu_and_hyperlink_handlers_execute_locally() {
+        let source = r#"codeunit 50144 "Deterministic Handler Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    [HandlerFunctions('HandleMenu,HandleLink')]
+    procedure DeterministicDialogs()
+    var
+        Choice: Integer;
+    begin
+        Choice := StrMenu('First,Second', 1, 'Pick one');
+        if Choice <> 2 then
+            Error('menu handler did not select the second item');
+        Hyperlink('https://example.test/item');
+    end;
+
+    [StrMenuHandler]
+    procedure HandleMenu(MenuOptions: Text[1024]; var Choice: Integer; Instruction: Text[1024])
+    begin
+        if MenuOptions <> 'First,Second' then
+            Error('wrong options: %1', MenuOptions);
+        if Instruction <> 'Pick one' then
+            Error('wrong instruction: %1', Instruction);
+        Choice := 2;
+    end;
+
+    [HyperlinkHandler]
+    procedure HandleLink(Link: Text[1024])
+    begin
+        if Link <> 'https://example.test/item' then
+            Error('wrong link: %1', Link);
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/DeterministicHandlerTests.Codeunit.al"),
+            source.to_string(),
+        );
+        let events = collect_events(
+            &InterpMode::new(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50144,
+                codeunit_name: "Deterministic Handler Tests".to_string(),
+                method_name: Some("DeterministicDialogs".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(events.iter().any(|event| {
+            matches!(event, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
+        }), "deterministic handlers should execute and write back Choice: {events:?}");
     }
 }

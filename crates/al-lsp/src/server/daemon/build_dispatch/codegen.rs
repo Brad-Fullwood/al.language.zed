@@ -1,6 +1,7 @@
 //! Code-generation dispatchers — permissions, new-project, generate, error-codes, types.
 
 use super::super::{extract_i32, invalid_params, rpc_error};
+use super::serialized_response;
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 use al_workspace::Workspace;
 
@@ -9,16 +10,33 @@ pub(in crate::server::daemon) fn dispatch_permissions(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let entries = al_analysis::permissions::collect_permissions(workspace);
-    let format = params
-        .get("format")
-        .and_then(|v| v.as_str())
-        .unwrap_or("al");
+    let format = match params.get("format") {
+        None => "al",
+        Some(value) => match value.as_str() {
+            Some(format @ ("al" | "xml")) => format,
+            _ => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'format' must be 'al' or 'xml'",
+                );
+            }
+        },
+    };
 
-    let name = params
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Generated Permissions");
+    let name = match params.get("name") {
+        None => "Generated Permissions",
+        Some(value) => match value.as_str().filter(|name| !name.trim().is_empty()) {
+            Some(name) => name,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'name' must be a non-empty string",
+                );
+            }
+        },
+    };
     // AL object IDs are i32 in BC metadata; reject out-of-range values rather
     // than letting render_al emit an ID that BC would silently truncate/wrap.
     let perm_id: i64 = match params.get("id") {
@@ -30,10 +48,29 @@ pub(in crate::server::daemon) fn dispatch_permissions(
         },
         None => 50100,
     };
-    let role_id = params
-        .get("roleId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("GENERATED");
+    let role_id = match params.get("roleId") {
+        None => "GENERATED",
+        Some(value) => match value.as_str().filter(|role_id| !role_id.trim().is_empty()) {
+            Some(role_id) => role_id,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'roleId' must be a non-empty string",
+                );
+            }
+        },
+    };
+    let entries = match al_analysis::permissions::collect_permissions(workspace) {
+        Ok(entries) => entries,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("permission generation refused incomplete workspace input: {error}"),
+            );
+        }
+    };
 
     match format {
         "xml" => {
@@ -96,19 +133,29 @@ pub(in crate::server::daemon) fn dispatch_new_project(
         };
     }
 
+    let invalid = |message: String| Response {
+        id,
+        result: None,
+        error: Some(RpcError {
+            code: error_codes::INVALID_PARAMS,
+            message,
+        }),
+        ..Default::default()
+    };
+    let optional_string = |key: &str, default: &str| -> Result<String, String> {
+        match params.get(key) {
+            Some(value) => value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("'{key}' must be a string")),
+            None => Ok(default.to_string()),
+        }
+    };
+
     let template = match params.get("template") {
         // Present but not a string is a malformed request, not an absent
         // field — reject it rather than silently falling back to the default.
         Some(v) => {
-            let invalid = |message: String| Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INVALID_PARAMS,
-                    message,
-                }),
-                ..Default::default()
-            };
             let Some(t) = v.as_str() else {
                 return invalid("'template' must be a string".to_string());
             };
@@ -120,29 +167,32 @@ pub(in crate::server::daemon) fn dispatch_new_project(
         None => al_analysis::scaffold::ProjectTemplate::default(),
     };
 
+    let name = match optional_string("name", "MyApp") {
+        Ok(value) => value,
+        Err(message) => return invalid(message),
+    };
+    let publisher = match optional_string("publisher", "Default Publisher") {
+        Ok(value) => value,
+        Err(message) => return invalid(message),
+    };
+    let runtime = match optional_string("runtime", "17.0") {
+        Ok(value) => value,
+        Err(message) => return invalid(message),
+    };
+    if let Err(message) = al_analysis::scaffold::application_version_for_runtime(&runtime) {
+        return invalid(message);
+    }
+
     let config = al_analysis::scaffold::ScaffoldConfig {
-        name: params
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("MyApp")
-            .to_string(),
-        publisher: params
-            .get("publisher")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Default Publisher")
-            .to_string(),
+        name,
+        publisher,
+        runtime,
         template,
         ..al_analysis::scaffold::ScaffoldConfig::default()
     };
 
     match al_analysis::scaffold::create_project(&dir, &config) {
-        Ok(result) => Response {
-            id,
-            // Serialization is infallible for valid values.
-            result: Some(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)),
-            error: None,
-            ..Default::default()
-        },
+        Ok(result) => serialized_response(id, "new-project result", &result),
         Err(e) => Response {
             id,
             result: None,
@@ -181,16 +231,21 @@ pub(in crate::server::daemon) async fn dispatch_builtin_types(
     workspace: &Workspace,
     id: u64,
 ) -> Response {
-    crate::semantic::ensure_builtins_loaded(workspace).await;
+    if let Err(error) = crate::semantic::ensure_builtins_loaded(workspace).await {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("built-in type catalog is unavailable: {error}"),
+        );
+    }
     let builtins = match workspace.builtins.read() {
         Ok(guard) => guard,
-        Err(_) => {
-            return Response {
+        Err(error) => {
+            return rpc_error(
                 id,
-                result: Some(serde_json::json!([])),
-                error: None,
-                ..Default::default()
-            };
+                error_codes::INTERNAL_ERROR,
+                &format!("built-in type catalog lock is poisoned: {error}"),
+            );
         }
     };
     let value: Vec<serde_json::Value> = builtins
@@ -220,12 +275,7 @@ pub(in crate::server::daemon) async fn dispatch_builtin_types(
 }
 pub(in crate::server::daemon) fn dispatch_setup(workspace: &Workspace, id: u64) -> Response {
     let report = crate::toolchain::doctor(workspace);
-    Response {
-        id,
-        result: Some(serde_json::to_value(&report).unwrap_or(serde_json::Value::Null)),
-        error: None,
-        ..Default::default()
-    }
+    serialized_response(id, "setup report", &report)
 }
 pub(in crate::server::daemon) fn dispatch_generate(
     workspace: &Workspace,
@@ -279,7 +329,13 @@ pub(in crate::server::daemon) fn dispatch_generate(
     // SymbolIndex via the call-graph enrichment pass — trigger the cached
     // build first so scaffolding works against the user's own tables.
     let table_entry = if !table_name.is_empty() {
-        let _ = workspace.get_or_build_call_graph();
+        if let Err(error) = workspace.get_or_build_call_graph() {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("code generation could not build a complete workspace graph: {error}"),
+            );
+        }
         workspace
             .symbols
             .search(table_name, 10)
@@ -370,7 +426,13 @@ pub(in crate::server::daemon) fn dispatch_generate(
                     "Test generation requires a subject codeunit",
                 );
             };
-            let _ = workspace.get_or_build_call_graph();
+            if let Err(error) = workspace.get_or_build_call_graph() {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("test generation could not build a complete workspace graph: {error}"),
+                );
+            }
             let Some(subject) =
                 workspace
                     .symbols
@@ -645,6 +707,23 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_permissions_rejects_malformed_workspace_source() {
+        let ws = empty_ws();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/project/Broken.al"),
+            "codeunit 50100 Broken { procedure Incomplete(".to_string(),
+        );
+
+        let resp = dispatch_permissions(&ws, 3, &serde_json::json!({}));
+        let error = resp
+            .error
+            .expect("incomplete permission input must return an error");
+        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
+        assert!(error.message.contains("refused incomplete workspace input"));
+        assert!(resp.result.is_none());
+    }
+
+    #[test]
     fn new_project_missing_dir_is_invalid_params() {
         let resp = dispatch_new_project(1, &serde_json::json!({}));
         assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
@@ -668,10 +747,33 @@ mod tests {
                 "dir": dir.to_string_lossy(),
                 "name": "MyApp",
                 "publisher": "Acme",
+                "runtime": "16.0",
             }),
         );
         assert!(resp.error.is_none(), "scaffold failed: {:?}", resp.error);
         assert!(dir.join("app.json").exists(), "app.json must be created");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("app.json")).unwrap()).unwrap();
+        assert_eq!(manifest["runtime"], "16.0");
+        assert_eq!(manifest["application"], "27.0.0.0");
+    }
+
+    #[test]
+    fn new_project_rejects_invalid_or_non_string_runtime() {
+        for runtime in [serde_json::json!("latest"), serde_json::json!(17)] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let dir = tmp.path().join("MyApp");
+            let resp = dispatch_new_project(
+                4,
+                &serde_json::json!({
+                    "dir": dir.to_string_lossy(),
+                    "runtime": runtime,
+                }),
+            );
+            let error = resp.error.expect("bad runtime must be rejected");
+            assert_eq!(error.code, error_codes::INVALID_PARAMS);
+            assert!(!dir.exists(), "invalid request must not create a project");
+        }
     }
 
     #[test]
@@ -862,10 +964,11 @@ mod tests {
     }
 
     #[test]
-    fn permissions_default_format_is_al() {
+    fn permissions_rejects_unknown_format() {
         let ws = empty_ws();
         let resp = dispatch_permissions(&ws, 2, &serde_json::json!({ "format": "totally-bogus" }));
-        let r = resp.result.expect("result");
-        assert_eq!(r.get("format").and_then(|v| v.as_str()), Some("al"));
+        let error = resp.error.expect("unknown format must be rejected");
+        assert_eq!(error.code, error_codes::INVALID_PARAMS);
+        assert!(resp.result.is_none());
     }
 }

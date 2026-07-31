@@ -7,9 +7,19 @@ errors as `{ "error": "…" }`). Run with no subcommand to open the TUI. See
 > `al-explorer` runs on Linux, macOS, and Windows. Most commands auto-start the daemon for the
 > current project using the platform's local IPC transport.
 
-Daemon-backed commands use the same dispatcher as MCP and Zed tasks. From MCP, call the corresponding
-daemon method through `al_call` with the same parameter object; frequently used workflows also have
-named aliases documented in the [MCP tool reference](./mcp-tools.md).
+Exit status is part of the command contract and is identical in human and
+`--json` modes: `0` means the requested gate passed, `1` means a request error
+or a completed gate with blocking findings, and `75` means the result is
+temporarily incomplete (for example, workspace initialization or a partial
+analysis). Finding-producing commands such as `metrics`, `dead-code`,
+`sql-scan`, `duplicates`, `arch-lint`, `breaking`, `upgrade`, `audit-data`, and
+`permission-audit` therefore print their findings and exit non-zero. A
+non-empty report is not silently treated as success.
+
+Daemon-backed commands use the same dispatcher as MCP and checkout-local contributor tasks. From
+MCP, call the corresponding daemon method through `al_call` with the same parameter object;
+frequently used workflows also have named aliases documented in the
+[MCP tool reference](./mcp-tools.md).
 
 ## Setup & diagnostics
 
@@ -20,6 +30,7 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | `doctor` | — | Green/red setup checklist + symbol/file counts |
 | `diag` | — | Workspace diagnostics (memory, object counts) |
 | `clear-cache` | — | Delete the symbol index cache |
+| `daemon-shutdown` | — | Stop the existing daemon for this project without spawning one; `--json` reports whether one was running |
 | `init-debug` | — | Scaffold `.zed/debug.json` |
 
 ## Symbols & objects
@@ -40,7 +51,7 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | `builtins` | — | Built-in types + method counts |
 | `rules` | — | Registered native file, project-semantic, and transaction-stack lint rules |
 | `error-codes` | — | AL compiler error codes |
-| `generate-completions <shell>` | — | Generate shell completions for bash, zsh, fish, elvish, or PowerShell |
+| `generate-completions <shell>` | — | Generate shell completions for bash, zsh, fish, elvish, or PowerShell; `--json` returns `{ shell, script }` |
 
 ## LSP-style queries
 
@@ -74,9 +85,9 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | --- | --- | --- |
 | `format [file]` | `--check --stdin --all` | Format (check exits non-zero if changes needed) |
 | `lint [file]` | `--all --analyzers <list>` | Lint via native + Microsoft analyzers |
-| `fix [file]` | `--dry-run --rule <code>` | Apply fixable diagnostics |
+| `fix [file]` | `--dry-run --rule <code>` | Apply registered safe diagnostic fixes to one file or the loaded project; report unfixable findings separately |
 | `permissions` | `--format al\|xml --name <n> --id <N> --role-id <id>` | Generate permission set |
-| `new <dir>` | `--name --publisher --template <t>` | New project from a built-in or configured user template |
+| `new <dir>` | `--name --publisher --template <t> --runtime <major.minor>` | New project from a built-in or configured user template; application minimum derives from runtime |
 | `generate <kind>` | `--id --name --table --page-type --subject` | Generate page/report/test (`test` requires `--subject`) |
 | `sort-members [file]` | `--all --dry-run` | Canonical member order |
 | `organize-files` | `--dry-run` | Rename `.al` files to `<Type><Id>.<Name>.al` |
@@ -123,12 +134,12 @@ named aliases documented in the [MCP tool reference](./mcp-tools.md).
 | `tests` | — | Discover `[Test]` codeunits/methods |
 | `test-run <id>` | `--name --method --config` | Run one codeunit/method using the selected native or live-BC backend |
 | `test-run-all` | `--parallel --timeout-ms N --junit-out P --cobertura-out P --filter G --coverage` | Run all (router decides backend) |
-| `test-coverage` | — | Static coverage summary |
+| `test-coverage` | — | Qualified/transitive static coverage summary; ambiguous overloads remain uncredited and explicit |
 | `test-classify` | — | Routing decision per test |
 | `test-affected <files…>` | — | Tests affected by changed files |
 | `test-results` | `--codeunit --method` | Persisted result history |
 | `test-mutate` | `--files … --parallel --timeout-ms N` | Mutation testing |
-| `test-snapshot` | `validate <path> · diff <a> <b>` | Validate or compare snapshot files |
+| `test-snapshot` | `capture <id> <codeunit-name> <method> … · validate <path> · replay <path> --bc-version V · diff <a> <b>` | Capture, validate, live-replay, or compare test snapshots |
 
 ## Translation
 

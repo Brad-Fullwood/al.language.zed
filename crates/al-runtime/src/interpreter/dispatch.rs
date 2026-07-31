@@ -48,6 +48,8 @@ pub enum DispatchMode {
 pub struct TestHandlers {
     pub message: Option<(String, String)>,
     pub confirm: Option<(String, String)>,
+    pub str_menu: Option<(String, String)>,
+    pub hyperlink: Option<(String, String)>,
 }
 
 /// Shared context threaded through `eval_stmt` and `dispatch_call`.
@@ -95,6 +97,14 @@ pub struct DispatchCtx {
     /// statement's line and `eval_if`/`eval_case` record the branch decision.
     /// See [`crate::interpreter::coverage`].
     pub coverage: Option<crate::interpreter::coverage::Coverage>,
+    /// Transient expression traces used while evaluating a covered Boolean
+    /// decision. Each nested decision gets its own map so a Boolean helper
+    /// procedure containing another IF cannot overwrite its caller's trace.
+    ///
+    /// This is public only because `DispatchCtx` is constructed by the
+    /// sibling `al-test` crate; callers must leave it empty.
+    #[doc(hidden)]
+    pub condition_trace_stack: Vec<HashMap<(usize, usize), Vec<bool>>>,
     /// Write-back channel for `var` (by-reference) parameters. After a
     /// workspace procedure runs, `dispatch_workspace_procedure` records
     /// `(arg_index, final_value)` here for each `var` parameter; the caller in
@@ -117,6 +127,7 @@ impl DispatchCtx {
             deadline: None,
             cancel: None,
             coverage: None,
+            condition_trace_stack: Vec::new(),
             var_writebacks: Vec::new(),
             test_handlers: TestHandlers::default(),
         }
@@ -135,6 +146,7 @@ impl DispatchCtx {
             deadline: None,
             cancel: None,
             coverage: None,
+            condition_trace_stack: Vec::new(),
             var_writebacks: Vec::new(),
             test_handlers: TestHandlers::default(),
         }
@@ -192,6 +204,82 @@ impl DispatchCtx {
             c.record_decision(node.start_position().row as u32 + 1, taken);
         }
     }
+
+    /// Start tracing the atomic Boolean conditions that contribute to one
+    /// covered decision. Disabled coverage allocates nothing.
+    pub fn cov_begin_condition_trace(&mut self) {
+        if self.coverage.is_some() {
+            self.condition_trace_stack.push(HashMap::new());
+        }
+    }
+
+    /// Finish the innermost condition trace and return the source-ordered
+    /// atomic condition outcomes associated with `condition`.
+    pub fn cov_finish_condition_trace(
+        &mut self,
+        condition: tree_sitter::Node<'_>,
+    ) -> Option<Vec<bool>> {
+        self.coverage.as_ref()?;
+        let traces = self.condition_trace_stack.pop()?;
+        traces
+            .get(&(condition.start_byte(), condition.end_byte()))
+            .cloned()
+    }
+
+    /// Record one complete condition vector and decision outcome for MC/DC.
+    pub fn cov_record_condition_observation(
+        &mut self,
+        node: tree_sitter::Node<'_>,
+        conditions: Option<Vec<bool>>,
+        outcome: bool,
+    ) {
+        let Some(conditions) = conditions.filter(|conditions| !conditions.is_empty()) else {
+            return;
+        };
+        if let Some(c) = self.coverage.as_mut() {
+            c.record_condition_observation(
+                node.start_position().row as u32 + 1,
+                conditions,
+                outcome,
+            );
+        }
+    }
+
+    pub(crate) fn cov_set_expression_trace(
+        &mut self,
+        node: tree_sitter::Node<'_>,
+        conditions: Vec<bool>,
+    ) {
+        if let Some(traces) = self.condition_trace_stack.last_mut() {
+            traces.insert((node.start_byte(), node.end_byte()), conditions);
+        }
+    }
+
+    pub(crate) fn cov_expression_trace(&self, node: tree_sitter::Node<'_>) -> Option<Vec<bool>> {
+        self.condition_trace_stack
+            .last()
+            .and_then(|traces| traces.get(&(node.start_byte(), node.end_byte())))
+            .cloned()
+    }
+
+    pub(crate) fn cov_condition_trace_active(&self) -> bool {
+        !self.condition_trace_stack.is_empty()
+    }
+
+    /// Register a named path at a multi-way decision site without marking it
+    /// taken. Used to preserve the denominator for untouched `case` arms.
+    pub fn cov_ensure_path(&mut self, node: tree_sitter::Node<'_>, path: impl Into<String>) {
+        if let Some(c) = self.coverage.as_mut() {
+            c.ensure_path(node.start_position().row as u32 + 1, path);
+        }
+    }
+
+    /// Record a named path through a multi-way decision.
+    pub fn cov_record_path(&mut self, node: tree_sitter::Node<'_>, path: impl Into<String>) {
+        if let Some(c) = self.coverage.as_mut() {
+            c.record_path(node.start_position().row as u32 + 1, path);
+        }
+    }
 }
 
 /// Resolve and execute a procedure call.
@@ -205,6 +293,23 @@ pub fn dispatch_call(
     receiver: Option<&str>,
     procedure: &str,
     args: Vec<Value>,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let mut stack = ScopeStack::new();
+    dispatch_call_scoped(receiver, procedure, args, &mut stack, ctx)
+}
+
+/// Resolve a call against the active interpreter scope.
+///
+/// Preserving the stack is required for same-codeunit procedure calls and test
+/// handlers to observe the codeunit's object-level globals. The public
+/// [`dispatch_call`] wrapper intentionally starts an empty scope for isolated
+/// builtin/stub tests.
+pub(crate) fn dispatch_call_scoped(
+    receiver: Option<&str>,
+    procedure: &str,
+    args: Vec<Value>,
+    stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
     // Clear any var-parameter write-backs left over from a previous call so
@@ -224,80 +329,151 @@ pub fn dispatch_call(
         }
     }
 
-    match procedure.to_ascii_lowercase().as_str() {
-        "error" => return builtin_error(&args),
-        "message" => {
-            if let Some((object, handler)) = ctx.test_handlers.message.clone() {
-                let message = formatted_dialog_text(&args);
-                let result = dispatch_workspace_procedure(
-                    Some(&object),
-                    &handler,
-                    vec![Value::Text(message)],
-                    ctx,
-                );
-                ctx.var_writebacks.clear();
-                return result;
-            }
-            return builtin_message(&args);
-        }
-        "confirm" => {
-            if let Some((object, handler)) = ctx.test_handlers.confirm.clone() {
-                let question = formatted_dialog_text(&args);
-                let result = dispatch_workspace_procedure(
-                    Some(&object),
-                    &handler,
-                    vec![Value::Text(question), Value::Boolean(false)],
-                    ctx,
-                );
-                if result.is_error() {
+    // Global builtins must never hijack an explicitly-qualified workspace
+    // method with the same name (for example `Helper.Format(...)`).
+    if receiver.is_none() {
+        match procedure.to_ascii_lowercase().as_str() {
+            "error" => return builtin_error(&args),
+            "message" => {
+                if let Some((object, handler)) = ctx.test_handlers.message.clone() {
+                    if args.is_empty() {
+                        return simple_error("Message requires a message argument");
+                    }
+                    let message = formatted_dialog_text(&args);
+                    let result = dispatch_workspace_procedure(
+                        Some(&object),
+                        &handler,
+                        vec![Value::Text(message)],
+                        stack,
+                        ctx,
+                    );
+                    ctx.var_writebacks.clear();
                     return result;
                 }
-                let reply = ctx
-                    .var_writebacks
-                    .iter()
-                    .find(|(index, _)| *index == 1)
-                    .and_then(|(_, value)| match value {
-                        Value::Boolean(reply) => Some(*reply),
-                        _ => None,
-                    })
-                    .unwrap_or(false);
-                ctx.var_writebacks.clear();
-                return Eval::Normal(Value::Boolean(reply));
+                return simple_error(
+                    "Message requires a configured [MessageHandler] in the local test runtime",
+                );
             }
-            return Eval::Normal(Value::Boolean(
-                args.get(1)
+            "confirm" => {
+                if let Some((object, handler)) = ctx.test_handlers.confirm.clone() {
+                    if args.is_empty() {
+                        return simple_error("Confirm requires a question argument");
+                    }
+                    let question = formatted_dialog_text(&args);
+                    let result = dispatch_workspace_procedure(
+                        Some(&object),
+                        &handler,
+                        vec![Value::Text(question), Value::Boolean(false)],
+                        stack,
+                        ctx,
+                    );
+                    if result.is_error() {
+                        return result;
+                    }
+                    let reply = ctx
+                        .var_writebacks
+                        .iter()
+                        .find(|(index, _)| *index == 1)
+                        .and_then(|(_, value)| match value {
+                            Value::Boolean(reply) => Some(*reply),
+                            _ => None,
+                        })
+                        .unwrap_or(false);
+                    ctx.var_writebacks.clear();
+                    return Eval::Normal(Value::Boolean(reply));
+                }
+                return simple_error(
+                    "Confirm requires a configured [ConfirmHandler] in the local test runtime",
+                );
+            }
+            "strmenu" => {
+                if args.is_empty() {
+                    return simple_error("StrMenu requires a menu-options argument");
+                }
+                let default_choice = args
+                    .get(1)
                     .and_then(|value| match value {
-                        Value::Boolean(default) => Some(*default),
+                        Value::Integer(choice) => Some(*choice),
                         _ => None,
                     })
-                    .unwrap_or(false),
-            ));
+                    .unwrap_or(0);
+                if let Some((object, handler)) = ctx.test_handlers.str_menu.clone() {
+                    let options = args.first().map(render_value).unwrap_or_default();
+                    let instruction = args.get(2).map(render_value).unwrap_or_default();
+                    let result = dispatch_workspace_procedure(
+                        Some(&object),
+                        &handler,
+                        vec![
+                            Value::Text(options),
+                            Value::Integer(default_choice),
+                            Value::Text(instruction),
+                        ],
+                        stack,
+                        ctx,
+                    );
+                    if result.is_error() {
+                        return result;
+                    }
+                    let choice = ctx
+                        .var_writebacks
+                        .iter()
+                        .find(|(index, _)| *index == 1)
+                        .and_then(|(_, value)| match value {
+                            Value::Integer(choice) => Some(*choice),
+                            _ => None,
+                        })
+                        .unwrap_or(default_choice);
+                    ctx.var_writebacks.clear();
+                    return Eval::Normal(Value::Integer(choice));
+                }
+                return simple_error(
+                    "StrMenu requires a configured [StrMenuHandler] in the local test runtime",
+                );
+            }
+            "hyperlink" => {
+                if let Some((object, handler)) = ctx.test_handlers.hyperlink.clone() {
+                    if args.is_empty() {
+                        return simple_error("Hyperlink requires a link argument");
+                    }
+                    let link = args.first().map(render_value).unwrap_or_default();
+                    let result = dispatch_workspace_procedure(
+                        Some(&object),
+                        &handler,
+                        vec![Value::Text(link)],
+                        stack,
+                        ctx,
+                    );
+                    ctx.var_writebacks.clear();
+                    return result;
+                }
+                return simple_error(
+                    "Hyperlink requires a configured [HyperlinkHandler] in the local test runtime",
+                );
+            }
+            "strsubstno" => return builtin_strsubstno(&args),
+            "format" => return builtin_format(&args),
+            "strlen" => return builtin_strlen(&args),
+            "copystr" => return builtin_copystr(&args),
+            "lowercase" => return builtin_lowercase(&args),
+            "uppercase" => return builtin_uppercase(&args),
+            "indexof" => return builtin_indexof(&args),
+            "maxstrlen" => return builtin_maxstrlen(&args),
+            "createdatetime" => return builtin_createdatetime(&args),
+            "currentdatetime" => return Eval::Normal(Value::DateTime(clock_current_datetime())),
+            "today" => return Eval::Normal(Value::Date(clock_today())),
+            "time" => return Eval::Normal(Value::Time(clock_time())),
+            _ => {}
         }
-        "strsubstno" => return builtin_strsubstno(&args),
-        "format" => return builtin_format(&args),
-        "strlen" => return builtin_strlen(&args),
-        "copystr" => return builtin_copystr(&args),
-        "lowercase" => return builtin_lowercase(&args),
-        "uppercase" => return builtin_uppercase(&args),
-        "indexof" => return builtin_indexof(&args),
-        "maxstrlen" => return builtin_maxstrlen(&args),
-        "createdatetime" => return builtin_createdatetime(&args),
-        "currentdatetime" => return Eval::Normal(Value::DateTime(clock_current_datetime())),
-        "today" => return Eval::Normal(Value::Date(clock_today())),
-        "time" => return Eval::Normal(Value::Time(clock_time())),
-        _ => {}
     }
 
-    dispatch_workspace_procedure(receiver, procedure, args, ctx)
+    dispatch_workspace_procedure(receiver, procedure, args, stack, ctx)
 }
 
 /// Look up a procedure in the workspace and execute it.
 ///
-/// Search order:
-/// 1. If `receiver` is `Some(name)`, search the `file_index` for a codeunit
-///    object whose name matches `name` (case-insensitive).
-/// 2. If `receiver` is `None`, search every file in the index (same as all
-///    visible procedures in the current object).
+/// The explicit receiver wins. An unqualified call resolves only against the
+/// active frame's object; searching every workspace object would make duplicate
+/// procedure names execute whichever file happened to be indexed first.
 ///
 /// When the procedure node is found:
 /// - Parse parameter declarations; type-check each arg.
@@ -307,6 +483,7 @@ fn dispatch_workspace_procedure(
     receiver: Option<&str>,
     procedure: &str,
     args: Vec<Value>,
+    stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
     // Recursion guard. Use `>=` (not `>`) so MAX_RECURSION_DEPTH is the
@@ -316,26 +493,47 @@ fn dispatch_workspace_procedure(
         return simple_error("recursion depth exceeded");
     }
 
-    let candidate_paths: Vec<std::path::PathBuf> = if let Some(recv) = receiver {
-        match ctx.source.find_by_object_name(recv) {
+    let target_object = receiver
+        .map(str::to_string)
+        .or_else(|| stack.top().map(|frame| frame.object.clone()));
+    let candidate_paths: Vec<std::path::PathBuf> = if let Some(target_object) = target_object {
+        match ctx.source.find_by_object_name(&target_object) {
             Some(path) => vec![path],
             None => {
-                return simple_error(format!("object '{}' not found in workspace", recv));
+                return simple_error(format!("object '{}' not found in workspace", target_object));
             }
         }
     } else {
-        ctx.source.iter_paths()
+        return simple_error(format!(
+            "procedure not found: workspace call '{procedure}' has no current object context"
+        ));
     };
 
     for path in &candidate_paths {
         let Some((text, tree)) = ctx.source.get_cached_parse(path) else {
-            continue;
+            return simple_error(format!(
+                "object source '{}' has no coherent cached parse",
+                path.display()
+            ));
         };
 
         let source = text.as_bytes();
         let root = tree.root_node();
 
-        let object_name = ctx.source.object_name(path).unwrap_or_default();
+        let Some(object_name) = ctx.source.object_name(path) else {
+            return simple_error(format!(
+                "object source '{}' has no indexed object identity",
+                path.display()
+            ));
+        };
+        let needs_object_globals = object_has_global_declarations(root);
+        let install_root_globals = needs_object_globals && !stack.has_object_globals(&object_name);
+        if install_root_globals && stack.depth() != 0 {
+            return simple_error(format!(
+                "stateful codeunit '{}' requires live BC execution",
+                object_name
+            ));
+        }
 
         // Walk the tree to find a procedure_declaration with the matching name.
         // Iterative traversal (rule: no recursion).
@@ -428,13 +626,17 @@ fn dispatch_workspace_procedure(
         bind_structured_locals(proc_node, source, &mut frame);
 
         ctx.recursion_depth += 1;
-        let mut scope = ScopeStack::new();
-        scope.push(frame);
+        if install_root_globals {
+            let mut globals = CallFrame::new(&object_name, "<globals>");
+            bind_object_globals(root, source, &mut globals);
+            stack.push(globals);
+        }
+        stack.push(frame);
         // Attribute this procedure's statements to the file
         // it is defined in (which may differ from the caller's file), then
         // restore the caller's file when the call returns.
         let cov_prev_file = ctx.cov_enter_file(&path.to_string_lossy());
-        let result = crate::interpreter::eval_stmt::eval_stmt(body, source, &mut scope, ctx);
+        let result = crate::interpreter::eval_stmt::eval_stmt(body, source, stack, ctx);
         ctx.cov_restore_file(cov_prev_file);
         ctx.recursion_depth -= 1;
 
@@ -446,10 +648,14 @@ fn dispatch_workspace_procedure(
         ctx.var_writebacks.clear();
         for (i, param) in params.iter().enumerate() {
             if param.is_var {
-                if let Some(val) = scope.top().and_then(|f| f.get(&param.name)).cloned() {
+                if let Some(val) = stack.top().and_then(|f| f.get(&param.name)).cloned() {
                     ctx.var_writebacks.push((i, val));
                 }
             }
+        }
+        stack.pop();
+        if install_root_globals {
+            stack.pop();
         }
 
         // Unwrap Exit into Normal (exit only unwinds the current procedure).
@@ -468,6 +674,27 @@ fn dispatch_workspace_procedure(
         receiver.map(|r| format!("{r}.")).unwrap_or_default(),
         procedure
     ))
+}
+
+fn object_has_global_declarations(root: tree_sitter::Node<'_>) -> bool {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "object_var_section" {
+            let mut cursor = node.walk();
+            return node
+                .named_children(&mut cursor)
+                .any(|child| child.kind() == "object_variable_declaration");
+        }
+        if matches!(
+            node.kind(),
+            "procedure_declaration" | "trigger_declaration" | "event_declaration"
+        ) {
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    false
 }
 
 /// Bind a procedure's local variables into `frame` exactly as workspace
@@ -862,22 +1089,6 @@ fn builtin_error(args: &[Value]) -> Eval {
     })
 }
 
-/// `Message(msg[, arg1, …])` — display a message (no-op in the interpreter;
-/// returns Normal so execution continues).
-fn builtin_message(args: &[Value]) -> Eval {
-    let msg = match args.first() {
-        Some(Value::Text(s)) | Some(Value::Code(s)) => s.clone(),
-        Some(v) => render_value(v),
-        None => return Eval::Normal(Value::Empty),
-    };
-    let _formatted = if args.len() > 1 {
-        substitute_placeholders(&msg, &args[1..])
-    } else {
-        msg
-    };
-    Eval::Normal(Value::Empty)
-}
-
 fn formatted_dialog_text(args: &[Value]) -> String {
     let message = match args.first() {
         Some(Value::Text(text)) | Some(Value::Code(text)) => text.clone(),
@@ -1189,6 +1400,28 @@ mod tests {
     }
 
     #[test]
+    fn dialog_builtins_without_handlers_fail_closed() {
+        let cases = [
+            ("Message", vec![Value::Text("hello".into())]),
+            ("Confirm", vec![Value::Text("continue?".into())]),
+            ("StrMenu", vec![Value::Text("One,Two".into())]),
+            (
+                "Hyperlink",
+                vec![Value::Text("https://example.test".into())],
+            ),
+        ];
+        for (procedure, args) in cases {
+            let mut ctx = ctx();
+            let error = err(dispatch_call(None, procedure, args, &mut ctx));
+            assert!(
+                error.message.contains("configured"),
+                "{procedure}: {}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
     fn strsubstno_formats_correctly() {
         let mut ctx = ctx();
         let result = dispatch_call(
@@ -1471,6 +1704,26 @@ mod tests {
             Value::Integer(5),
             "Helper.Add(2, 3) should return 5"
         );
+    }
+
+    #[test]
+    fn explicit_workspace_receiver_is_not_hijacked_by_builtin_name() {
+        let ws = Arc::new(Workspace::new());
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/test/BuiltinCollision.al"),
+            r#"codeunit 50998 "Builtin Collision"
+{
+    procedure Format(): Text
+    begin
+        exit('workspace method');
+    end;
+}"#
+            .to_string(),
+        );
+        let mut ctx = DispatchCtx::new_pure(ws);
+
+        let result = dispatch_call(Some("Builtin Collision"), "Format", vec![], &mut ctx);
+        assert_eq!(ok(result), Value::Text("workspace method".to_string()));
     }
 
     #[test]

@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn enum_scope_qualifier_evaluates() {
+    fn source_free_option_scope_fails_closed() {
         let wrapper = r#"codeunit 50100 "Regression"
 {
     procedure Test()
@@ -227,11 +227,10 @@ mod tests {
         stack.push(frame);
         let mut ctx = ctx();
         let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
-        assert!(
-            matches!(eval, Eval::Normal(_)),
-            "Expected Normal after enum assignment, got: {:?}",
-            eval
-        );
+        let Eval::Error(error) = eval else {
+            panic!("source-free option scope must fail closed");
+        };
+        assert!(error.message.contains("live BC"), "{}", error.message);
     }
 
     #[test]
@@ -646,36 +645,22 @@ mod tests {
         );
     }
 
-    /// `"Enum Type"::Member` evaluates to a `Value::Option` carrying the type and
-    /// member names (ordinal unresolved → 0, the interpreter is BC-free).
     #[test]
-    fn enum_scope_simple_produces_option() {
-        let (eval, stack) = run_stmt("x := \"Risk Level\"::High;");
-        assert!(matches!(eval, Eval::Normal(_)), "got: {:?}", eval);
-        assert_eq!(
-            stack.lookup("x"),
-            Some(&Value::Option {
-                type_name: "Risk Level".into(),
-                member: "High".into(),
-                ordinal: 0,
-            })
-        );
+    fn unresolved_enum_scope_does_not_invent_zero_ordinal() {
+        let (eval, _stack) = run_stmt("x := \"Risk Level\"::High;");
+        let Eval::Error(error) = eval else {
+            panic!("unresolved enum must fail closed");
+        };
+        assert!(error.message.contains("live BC"), "{}", error.message);
     }
 
-    /// `Enum::"Type"::"Value"` — the `Enum` keyword prefix form. The first scope
-    /// member is the type, the last is the value.
     #[test]
-    fn enum_scope_enum_prefix_form_produces_option() {
-        let (eval, stack) = run_stmt("x := Enum::\"Risk Level\"::\"App Name\";");
-        assert!(matches!(eval, Eval::Normal(_)), "got: {:?}", eval);
-        assert_eq!(
-            stack.lookup("x"),
-            Some(&Value::Option {
-                type_name: "Risk Level".into(),
-                member: "App Name".into(),
-                ordinal: 0,
-            })
-        );
+    fn unresolved_enum_prefix_form_does_not_invent_zero_ordinal() {
+        let (eval, _stack) = run_stmt("x := Enum::\"Risk Level\"::\"App Name\";");
+        let Eval::Error(error) = eval else {
+            panic!("unresolved enum must fail closed");
+        };
+        assert!(error.message.contains("live BC"), "{}", error.message);
     }
 
     #[test]

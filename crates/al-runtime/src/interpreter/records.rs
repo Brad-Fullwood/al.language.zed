@@ -20,8 +20,9 @@
 //! `CalcFormula` is evaluated against the referenced table's in-memory store,
 //! applying the `WHERE` clause (`CONST` / `FIELD` / `FILTER`), both on
 //! `CalcFields(<field>)` and on a direct read of the field. `Linked` is not an
-//! aggregation and is not modelled (a read of such a field returns an error);
-//! a FlowField whose formula fails to parse falls back to its buffer value.
+//! aggregation and is not modelled (a read of such a field returns an error).
+//! Invalid table metadata or FlowField formulas fail explicitly instead of
+//! fabricating field IDs, primary keys, or plain-buffer fallbacks.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -49,23 +50,19 @@ pub struct RecordStore {
     /// `FieldClass = FlowField` *and* a parseable formula appear here; reads and
     /// `CalcFields` of these are computed from the referenced table's store.
     flowfields: HashMap<FieldNo, CalcFormula>,
-    /// Next synthetic field number for a field name that wasn't in the parsed
-    /// schema (keeps get/set self-consistent for partially-known tables).
-    next_synthetic: FieldNo,
 }
 
 impl RecordStore {
-    /// Resolve a field name to its number, synthesising a stable number for any
-    /// name not present in the parsed schema so repeated get/set stay consistent.
-    fn resolve_field(&mut self, name: &str) -> FieldNo {
+    /// Resolve a field name through the parsed workspace schema.
+    fn resolve_field(&self, name: &str) -> Result<FieldNo, String> {
         let key = name.trim().trim_matches('"').to_ascii_lowercase();
-        if let Some(&no) = self.field_by_name.get(&key) {
-            return no;
-        }
-        let no = self.next_synthetic;
-        self.next_synthetic += 1;
-        self.field_by_name.insert(key, no);
-        no
+        self.field_by_name.get(&key).copied().ok_or_else(|| {
+            format!(
+                "field '{}' is not declared on workspace table '{}'",
+                name.trim().trim_matches('"'),
+                self.record.table_name
+            )
+        })
     }
 }
 
@@ -107,84 +104,119 @@ fn ensure_store(ctx: &mut DispatchCtx, table_name: &str) -> Result<String, Strin
         return Ok(key);
     }
     let source = Arc::clone(&ctx.source);
-    let meta = load_table_meta(&*source, table_name).ok_or_else(|| {
-        format!(
-            "record table '{}' not found in workspace (native record ops require a workspace \
-             table definition; base-app tables are not modelled)",
-            table_name.trim().trim_matches('"')
-        )
-    })?;
-    let mut pk = meta.pk_fields;
-    if pk.is_empty() {
-        // No usable key parsed — fall back to the lowest field number so Insert
-        // / Get still have a deterministic key.
-        if let Some(min) = meta.field_by_name.values().min().copied() {
-            pk.push(min);
-        }
-    }
+    let meta = load_table_meta(&*source, table_name)?;
     let store = RecordStore {
-        record: MockRecord::new(meta.table_id, meta.table_name, pk),
+        record: MockRecord::new(meta.table_id, meta.table_name, meta.pk_fields),
         field_by_name: meta.field_by_name,
         flowfields: meta.flowfields,
-        next_synthetic: 1_000_000,
     };
     ctx.records.insert(key.clone(), store);
     Ok(key)
 }
 
 /// Locate and parse a workspace table object's metadata by name.
-fn load_table_meta(source: &dyn al_types::ProcedureSource, table_name: &str) -> Option<TableMeta> {
+fn load_table_meta(
+    source: &dyn al_types::ProcedureSource,
+    table_name: &str,
+) -> Result<TableMeta, String> {
     let want = table_name.trim().trim_matches('"');
-    let path = source.find_by_object_name(want)?;
-    let (text, tree) = source.get_cached_parse(&path)?;
+    let path = source.find_by_object_name(want).ok_or_else(|| {
+        format!(
+            "record table '{want}' not found in workspace (native record ops require a workspace \
+             table definition; base-app tables are not modelled)"
+        )
+    })?;
+    let (text, tree) = source.get_cached_parse(&path).ok_or_else(|| {
+        format!(
+            "record table '{want}' at {} has no cached syntax tree",
+            path.display()
+        )
+    })?;
+    if tree.root_node().has_error() {
+        return Err(format!(
+            "record table '{want}' at {} contains syntax errors",
+            path.display()
+        ));
+    }
     let bytes = text.as_bytes();
     parse_table_meta(tree.root_node(), bytes, want)
+        .map_err(|reason| format!("invalid metadata for record table '{want}': {reason}"))
 }
 
 /// Parse a table `object_declaration` (matching `want`) into [`TableMeta`].
-fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Option<TableMeta> {
-    let obj = find_table_object(root, source, want)?;
+fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMeta, String> {
+    let obj = find_table_object(root, source, want)
+        .ok_or_else(|| "matching table object declaration was not found".to_string())?;
 
-    let table_id = obj
+    let id_text = obj
         .child_by_field_name("id")
-        .and_then(|n| n.utf8_text(source).ok())
-        .and_then(|t| t.trim().parse::<i32>().ok())
-        .unwrap_or(0);
-    let table_name = object_name_of(obj, source).unwrap_or_else(|| want.to_string());
+        .ok_or_else(|| "table object ID is missing".to_string())?
+        .utf8_text(source)
+        .map_err(|error| format!("table object ID is not UTF-8: {error}"))?;
+    let table_id = id_text
+        .trim()
+        .parse::<i32>()
+        .map_err(|error| format!("table object ID '{id_text}' is invalid: {error}"))?;
+    if table_id <= 0 {
+        return Err(format!("table object ID must be positive, got {table_id}"));
+    }
+    let table_name =
+        object_name_of(obj, source).ok_or_else(|| "table object name is missing".to_string())?;
 
-    let body = obj.child_by_field_name("body")?;
+    let body = obj
+        .child_by_field_name("body")
+        .ok_or_else(|| "table object body is missing".to_string())?;
 
     let mut field_by_name: HashMap<String, FieldNo> = HashMap::new();
     let mut flowfields: HashMap<FieldNo, CalcFormula> = HashMap::new();
-    let mut pk_field_names: Vec<String> = Vec::new();
 
-    if let Some(fields_body) = section_body(body, "fields", source) {
-        for fdef in sections_with_keyword(fields_body, "field", source) {
-            if let Some((no, name, calc)) = parse_field_def(fdef, source) {
-                field_by_name.insert(name.to_ascii_lowercase(), no);
-                if let Some(formula) = calc {
-                    flowfields.insert(no, formula);
-                }
+    let fields_body = section_body(body, "fields", source)
+        .ok_or_else(|| "fields section is missing".to_string())?;
+    let mut field_numbers = std::collections::HashSet::new();
+    for fdef in sections_with_keyword(fields_body, "field", source) {
+        let (no, name, calc) = parse_field_def(fdef, source)?;
+        if no <= 0 {
+            return Err(format!("field '{name}' has non-positive number {no}"));
+        }
+        if !field_numbers.insert(no) {
+            return Err(format!("duplicate field number {no}"));
+        }
+        let normalized_name = name.to_ascii_lowercase();
+        if field_by_name.insert(normalized_name, no).is_some() {
+            return Err(format!("duplicate field name '{name}'"));
+        }
+        if let Some(formula) = calc {
+            if flowfields.insert(no, formula).is_some() {
+                return Err(format!("duplicate FlowField metadata for field '{name}'"));
             }
         }
     }
+    if field_by_name.is_empty() {
+        return Err("fields section contains no usable field definitions".to_string());
+    }
 
-    if let Some(keys_body) = section_body(body, "keys", source) {
-        // The first `key(...)` is the primary key.
-        if let Some(key_def) = sections_with_keyword(keys_body, "key", source)
-            .into_iter()
-            .next()
-        {
-            pk_field_names = parse_key_fields(key_def, source);
-        }
+    let keys_body =
+        section_body(body, "keys", source).ok_or_else(|| "keys section is missing".to_string())?;
+    let key_def = sections_with_keyword(keys_body, "key", source)
+        .into_iter()
+        .next()
+        .ok_or_else(|| "keys section contains no primary key".to_string())?;
+    let pk_field_names = parse_key_fields(key_def, source)?;
+    if pk_field_names.is_empty() {
+        return Err("primary key contains no fields".to_string());
     }
 
     let pk_fields: Vec<FieldNo> = pk_field_names
         .iter()
-        .filter_map(|n| field_by_name.get(&n.to_ascii_lowercase()).copied())
-        .collect();
+        .map(|name| {
+            field_by_name
+                .get(&name.to_ascii_lowercase())
+                .copied()
+                .ok_or_else(|| format!("primary-key field '{name}' is not declared"))
+        })
+        .collect::<Result<_, _>>()?;
 
-    Some(TableMeta {
+    Ok(TableMeta {
         table_id,
         table_name,
         field_by_name,
@@ -277,48 +309,71 @@ fn section_keyword(section: Node<'_>, source: &[u8]) -> Option<String> {
 }
 
 /// Parse `field(N; Name; Type) { ... }` → (field_no, name, flow_calc_formula).
-/// The third element is `Some(formula)` only when the field is a FlowField with
-/// a parseable `CalcFormula`.
+/// The third element is `Some(formula)` only when the field is a FlowField.
+/// Malformed FlowField metadata is an error.
 fn parse_field_def(
     section: Node<'_>,
     source: &[u8],
-) -> Option<(FieldNo, String, Option<CalcFormula>)> {
+) -> Result<(FieldNo, String, Option<CalcFormula>), String> {
     let mut cursor = section.walk();
     let pblock = section
         .named_children(&mut cursor)
-        .find(|n| n.kind() == "parenthesized_block")?;
+        .find(|n| n.kind() == "parenthesized_block")
+        .ok_or_else(|| "field definition is missing its parameter list".to_string())?;
 
     let mut number: Option<FieldNo> = None;
     let mut name: Option<String> = None;
+    let mut segment = 0_u8;
     let mut bc = pblock.walk();
-    for child in pblock.named_children(&mut bc) {
-        match child.kind() {
-            "integer" if number.is_none() => {
-                number = child
+    for child in pblock.children(&mut bc) {
+        if child.kind() == "semicolon" {
+            segment = segment.saturating_add(1);
+            continue;
+        }
+        if !child.is_named() {
+            continue;
+        }
+        match segment {
+            0 if child.kind() == "integer" && number.is_none() => {
+                let text = child
                     .utf8_text(source)
-                    .ok()
-                    .and_then(|t| t.trim().parse().ok());
+                    .map_err(|error| format!("field number is not UTF-8: {error}"))?;
+                number = Some(
+                    text.trim()
+                        .parse()
+                        .map_err(|error| format!("field number '{text}' is invalid: {error}"))?,
+                );
             }
-            "identifier" | "quoted_identifier" if number.is_some() && name.is_none() => {
-                name = child
-                    .utf8_text(source)
-                    .ok()
-                    .map(|t| t.trim_matches('"').to_string());
+            1 if name.is_none() => {
+                name = Some(
+                    child
+                        .utf8_text(source)
+                        .map_err(|error| format!("field name is not UTF-8: {error}"))?
+                        .trim_matches('"')
+                        .to_string(),
+                );
             }
             _ => {}
         }
     }
 
-    let calc = parse_field_calcformula(section, source);
-    Some((number?, name?, calc))
+    let number = number.ok_or_else(|| "field number is missing".to_string())?;
+    let name = name.ok_or_else(|| format!("field {number} name is missing"))?;
+    let calc = parse_field_calcformula(section, source, &name)?;
+    Ok((number, name, calc))
 }
 
 /// If a field's body declares `FieldClass = FlowField;` *and* a parseable
 /// `CalcFormula = …;`, return the parsed [`CalcFormula`]. Returns `None` for a
-/// non-FlowField, a FlowField without a formula, or an unparseable formula
-/// (which then falls back to a plain buffer read).
-fn parse_field_calcformula(section: Node<'_>, source: &[u8]) -> Option<CalcFormula> {
-    let body = section.child_by_field_name("body")?;
+/// non-FlowField; missing or unparseable FlowField formulas are errors.
+fn parse_field_calcformula(
+    section: Node<'_>,
+    source: &[u8],
+    field_name: &str,
+) -> Result<Option<CalcFormula>, String> {
+    let Some(body) = section.child_by_field_name("body") else {
+        return Ok(None);
+    };
     let mut is_flow = false;
     let mut formula_text: Option<String> = None;
     let mut cursor = body.walk();
@@ -328,13 +383,19 @@ fn parse_field_calcformula(section: Node<'_>, source: &[u8]) -> Option<CalcFormu
         }
         let name = child
             .child_by_field_name("name")
-            .and_then(|n| n.utf8_text(source).ok())
-            .unwrap_or("");
+            .ok_or_else(|| format!("property on field '{field_name}' has no name"))?
+            .utf8_text(source)
+            .map_err(|error| {
+                format!("property name on field '{field_name}' is invalid: {error}")
+            })?;
         if name.eq_ignore_ascii_case("FieldClass") {
             let val = child
                 .child_by_field_name("value")
-                .and_then(|n| n.utf8_text(source).ok())
-                .unwrap_or("");
+                .ok_or_else(|| format!("FieldClass on field '{field_name}' has no value"))?
+                .utf8_text(source)
+                .map_err(|error| {
+                    format!("FieldClass value on field '{field_name}' is invalid: {error}")
+                })?;
             if val.trim().eq_ignore_ascii_case("FlowField") {
                 is_flow = true;
             }
@@ -343,9 +404,13 @@ fn parse_field_calcformula(section: Node<'_>, source: &[u8]) -> Option<CalcFormu
         }
     }
     if !is_flow {
-        return None;
+        return Ok(None);
     }
-    calcformula_parser::parse(&formula_text?).ok()
+    let formula_text =
+        formula_text.ok_or_else(|| format!("FlowField '{field_name}' has no CalcFormula"))?;
+    calcformula_parser::parse(&formula_text)
+        .map(Some)
+        .map_err(|error| format!("FlowField '{field_name}' CalcFormula is invalid: {error}"))
 }
 
 /// Reconstruct the full text of a `property_assignment`'s value. The grammar
@@ -364,33 +429,35 @@ fn property_value_text(prop: Node<'_>, source: &[u8]) -> Option<String> {
 }
 
 /// Parse `key(Name; F1, F2, …)` → the field names (excluding the key name).
-fn parse_key_fields(section: Node<'_>, source: &[u8]) -> Vec<String> {
+fn parse_key_fields(section: Node<'_>, source: &[u8]) -> Result<Vec<String>, String> {
     let mut cursor = section.walk();
-    let Some(pblock) = section
+    let pblock = section
         .named_children(&mut cursor)
         .find(|n| n.kind() == "parenthesized_block")
-    else {
-        return Vec::new();
-    };
+        .ok_or_else(|| "primary key definition is missing its parameter list".to_string())?;
     let mut names: Vec<String> = Vec::new();
+    let mut after_key_name = false;
     let mut bc = pblock.walk();
-    for child in pblock.named_children(&mut bc) {
-        if matches!(child.kind(), "identifier" | "quoted_identifier") {
-            if let Ok(t) = child.utf8_text(source) {
-                names.push(t.trim_matches('"').to_string());
-            }
+    for child in pblock.children(&mut bc) {
+        if child.kind() == "semicolon" {
+            after_key_name = true;
+            continue;
+        }
+        if after_key_name && child.is_named() && child.kind() != "comma" {
+            let text = child
+                .utf8_text(source)
+                .map_err(|error| format!("primary-key name is not UTF-8: {error}"))?;
+            names.push(text.trim_matches('"').to_string());
         }
     }
-    // The first name is the key's own name (e.g. `PK`); the rest are fields.
-    if names.is_empty() {
-        names
-    } else {
-        names[1..].to_vec()
-    }
+    Ok(names)
 }
 
-/// True if `method` is a record API method handled by [`dispatch_record_method`].
-pub(crate) fn is_record_method(method: &str) -> bool {
+/// True if `method` is a record API method implemented by the local runtime.
+///
+/// The test router consumes this same capability predicate so classification
+/// cannot drift from execution support.
+pub fn supports_record_method(method: &str) -> bool {
     matches!(
         method.to_ascii_lowercase().as_str(),
         "init"
@@ -443,8 +510,34 @@ pub(crate) fn dispatch_record_method(
         return dispatch_calcfields(table_name, &nodes, source, ctx);
     }
 
+    // SetCurrentKey takes only field references. Handle it before the general
+    // expression loop so later field arguments are not evaluated as variables.
+    if lower == "setcurrentkey" {
+        if nodes.is_empty() {
+            return err("SetCurrentKey: requires at least one field");
+        }
+        let key = match ensure_store(ctx, table_name) {
+            Ok(key) => key,
+            Err(error) => return err(error),
+        };
+        let store = ctx.records.get_mut(&key).expect("store just ensured");
+        let mut field_nos = Vec::with_capacity(nodes.len());
+        for node in &nodes {
+            let name = node_text(*node, source);
+            if name.is_empty() {
+                return err("SetCurrentKey: field name is empty");
+            }
+            match store.resolve_field(&name) {
+                Ok(field_no) => field_nos.push(field_no),
+                Err(error) => return err(format!("SetCurrentKey: {error}")),
+            }
+        }
+        store.record.set_current_key(field_nos);
+        return Eval::Normal(Value::Boolean(true));
+    }
+
     // Field-reference methods: arg 0 is a field name (raw text), the rest values.
-    let field_methods = matches!(lower.as_str(), "setrange" | "setfilter" | "setcurrentkey");
+    let field_methods = matches!(lower.as_str(), "setrange" | "setfilter");
 
     // Evaluate the value-bearing argument nodes up front (records store is
     // touched afterwards, so the two mutable borrows of ctx don't overlap).
@@ -465,18 +558,6 @@ pub(crate) fn dispatch_record_method(
         Err(e) => return err(e),
     };
 
-    // setcurrentkey takes any number of field-name args (no value args).
-    if lower == "setcurrentkey" {
-        let store = ctx.records.get_mut(&key).expect("store just ensured");
-        let mut field_nos = Vec::new();
-        for n in &nodes {
-            let fname = node_text(*n, source);
-            field_nos.push(store.resolve_field(&fname));
-        }
-        store.record.set_current_key(field_nos);
-        return Eval::Normal(Value::Empty);
-    }
-
     // Resolve the field-name argument for field-reference methods.
     let field_no = if field_methods {
         let fname = nodes
@@ -487,7 +568,10 @@ pub(crate) fn dispatch_record_method(
             return err(format!("{method}: missing field name argument"));
         }
         let store = ctx.records.get_mut(&key).expect("store just ensured");
-        Some(store.resolve_field(&fname))
+        match store.resolve_field(&fname) {
+            Ok(field_no) => Some(field_no),
+            Err(error) => return err(format!("{method}: {error}")),
+        }
     } else {
         None
     };
@@ -496,30 +580,33 @@ pub(crate) fn dispatch_record_method(
 
     match lower.as_str() {
         "init" => {
+            if let Err(error) = require_no_args("Init", &values) {
+                return err(error);
+            }
             store.record.init();
             Eval::Normal(Value::Empty)
         }
         "reset" => {
+            if let Err(error) = require_no_args("Reset", &values) {
+                return err(error);
+            }
             store.record.reset();
             Eval::Normal(Value::Empty)
         }
-        "insert" => match store
-            .record
-            .insert(values.first().map(truthy).unwrap_or(false))
+        "insert" => match optional_boolean("Insert", &values)
+            .and_then(|run_trigger| store.record.insert(run_trigger).map_err(|e| e.to_string()))
         {
             Ok(()) => Eval::Normal(Value::Boolean(true)),
             Err(e) => err(format!("Insert: {e}")),
         },
-        "modify" => match store
-            .record
-            .modify(values.first().map(truthy).unwrap_or(false))
+        "modify" => match optional_boolean("Modify", &values)
+            .and_then(|run_trigger| store.record.modify(run_trigger).map_err(|e| e.to_string()))
         {
             Ok(()) => Eval::Normal(Value::Boolean(true)),
             Err(e) => err(format!("Modify: {e}")),
         },
-        "delete" => match store
-            .record
-            .delete(values.first().map(truthy).unwrap_or(false))
+        "delete" => match optional_boolean("Delete", &values)
+            .and_then(|run_trigger| store.record.delete(run_trigger).map_err(|e| e.to_string()))
         {
             Ok(()) => Eval::Normal(Value::Boolean(true)),
             Err(e) => err(format!("Delete: {e}")),
@@ -527,6 +614,14 @@ pub(crate) fn dispatch_record_method(
         "get" => {
             if values.is_empty() {
                 return err("Get: requires at least one primary-key value");
+            }
+            if values.len() != store.record.primary_key_len() {
+                return err(format!(
+                    "Get: local record runtime requires all {} primary-key values (got {}); \
+                     partial composite-key lookup requires live Business Central",
+                    store.record.primary_key_len(),
+                    values.len()
+                ));
             }
             match store.record.get(values.clone()) {
                 Ok(()) => Eval::Normal(Value::Boolean(true)),
@@ -546,61 +641,133 @@ pub(crate) fn dispatch_record_method(
                         .set_range(f, values[0].clone(), values[0].clone());
                     Eval::Normal(Value::Empty)
                 }
-                _ => {
+                2 => {
                     store
                         .record
                         .set_range(f, values[0].clone(), values[1].clone());
                     Eval::Normal(Value::Empty)
                 }
+                count => err(format!(
+                    "SetRange: expected at most two values after the field, got {count}"
+                )),
             }
         }
         "setfilter" => {
             let f = field_no.unwrap();
-            let expr = match values.first() {
+            let mut expr = match values.first() {
                 Some(Value::Text(s)) | Some(Value::Code(s)) => s.clone(),
-                Some(v) => render_simple(v),
+                Some(value) => {
+                    return err(format!(
+                        "SetFilter: filter expression must be Text or Code, got {}",
+                        value.type_name()
+                    ))
+                }
                 None => return err("SetFilter: missing filter expression"),
             };
+            for (index, value) in values.iter().skip(1).enumerate() {
+                let rendered = match render_filter_value(value) {
+                    Ok(rendered) => rendered,
+                    Err(error) => return err(format!("SetFilter: {error}")),
+                };
+                expr = expr.replace(&format!("%{}", index + 1), &rendered);
+            }
             match store.record.set_filter(f, &expr) {
                 Ok(()) => Eval::Normal(Value::Empty),
                 Err(e) => err(format!("SetFilter: {e}")),
             }
         }
-        "findset" | "findfirst" => match store.record.find_first() {
-            Ok(found) => Eval::Normal(Value::Boolean(found)),
-            Err(e) => err(format!("{method}: {e}")),
-        },
-        "findlast" => match store.record.find_last() {
-            Ok(found) => Eval::Normal(Value::Boolean(found)),
-            Err(e) => err(format!("FindLast: {e}")),
-        },
+        "findset" => {
+            if values.len() > 2
+                || values
+                    .iter()
+                    .any(|value| !matches!(value, Value::Boolean(_)))
+            {
+                return err("FindSet: expects up to two optional Boolean arguments");
+            }
+            match store.record.find_first() {
+                Ok(found) => Eval::Normal(Value::Boolean(found)),
+                Err(e) => err(format!("FindSet: {e}")),
+            }
+        }
+        "findfirst" => {
+            if let Err(error) = require_no_args("FindFirst", &values) {
+                return err(error);
+            }
+            match store.record.find_first() {
+                Ok(found) => Eval::Normal(Value::Boolean(found)),
+                Err(e) => err(format!("FindFirst: {e}")),
+            }
+        }
+        "findlast" => {
+            if let Err(error) = require_no_args("FindLast", &values) {
+                return err(error);
+            }
+            match store.record.find_last() {
+                Ok(found) => Eval::Normal(Value::Boolean(found)),
+                Err(e) => err(format!("FindLast: {e}")),
+            }
+        }
         "find" => {
-            let dir = match values.first() {
-                Some(Value::Text(s)) | Some(Value::Code(s)) => s.chars().next().unwrap_or('-'),
-                _ => '-',
+            let direction = match values.as_slice() {
+                [Value::Text(direction)] | [Value::Code(direction)] => direction,
+                _ => return err("Find: expects exactly one Text or Code direction argument"),
             };
-            match store.record.find(dir) {
+            let mut chars = direction.chars();
+            let Some(direction) = chars.next() else {
+                return err("Find: direction cannot be empty");
+            };
+            if chars.next().is_some() {
+                return err(
+                    "Find: local record runtime supports only the single-character '-' and '+' directions",
+                );
+            }
+            match store.record.find(direction) {
                 Ok(found) => Eval::Normal(Value::Boolean(found)),
                 Err(e) => err(format!("Find: {e}")),
             }
         }
         "next" => {
-            let steps = match values.first() {
-                Some(Value::Integer(n)) => *n as i32,
-                _ => 1,
+            let steps = match values.as_slice() {
+                [] => 1,
+                [Value::Integer(steps)] => match i32::try_from(*steps) {
+                    Ok(steps) => steps,
+                    Err(_) => {
+                        return err(format!("Next: step count {steps} is outside Integer range"))
+                    }
+                },
+                _ => return err("Next: expects one optional Integer step count"),
             };
             match store.record.next(steps) {
                 Ok(moved) => Eval::Normal(Value::Integer(moved as i64)),
                 Err(e) => err(format!("Next: {e}")),
             }
         }
-        "count" | "countapprox" => Eval::Normal(Value::Integer(store.record.count() as i64)),
-        "isempty" => Eval::Normal(Value::Boolean(store.record.is_empty())),
+        "count" | "countapprox" => {
+            if let Err(error) = require_no_args(method, &values) {
+                return err(error);
+            }
+            Eval::Normal(Value::Integer(store.record.count() as i64))
+        }
+        "isempty" => {
+            if let Err(error) = require_no_args("IsEmpty", &values) {
+                return err(error);
+            }
+            Eval::Normal(Value::Boolean(store.record.is_empty()))
+        }
         "deleteall" => {
-            // Delete every row matching the current filters.
-            while store.record.find_first().unwrap_or(false) {
-                if store.record.delete(false).is_err() {
-                    break;
+            let run_trigger = match optional_boolean("DeleteAll", &values) {
+                Ok(run_trigger) => run_trigger,
+                Err(error) => return err(error),
+            };
+            loop {
+                match store.record.find_first() {
+                    Ok(true) => {
+                        if let Err(error) = store.record.delete(run_trigger) {
+                            return err(format!("DeleteAll: {error}"));
+                        }
+                    }
+                    Ok(false) => break,
+                    Err(error) => return err(format!("DeleteAll: {error}")),
                 }
             }
             Eval::Normal(Value::Empty)
@@ -623,7 +790,10 @@ pub(crate) fn field_get(table_name: &str, field_name: &str, ctx: &mut DispatchCt
     };
     let (f, formula) = {
         let store = ctx.records.get_mut(&key).expect("store just ensured");
-        let f = store.resolve_field(field_name);
+        let f = match store.resolve_field(field_name) {
+            Ok(field_no) => field_no,
+            Err(error) => return err(error),
+        };
         (f, store.flowfields.get(&f).cloned())
     };
     if let Some(formula) = formula {
@@ -645,6 +815,9 @@ fn dispatch_calcfields(
     source: &[u8],
     ctx: &mut DispatchCtx,
 ) -> Eval {
+    if nodes.is_empty() {
+        return err("CalcFields: requires at least one FlowField");
+    }
     let key = match ensure_store(ctx, table_name) {
         Ok(k) => k,
         Err(e) => return err(e),
@@ -652,16 +825,23 @@ fn dispatch_calcfields(
     // Resolve each field name to its number + formula up front (one borrow).
     let targets: Vec<(FieldNo, Option<CalcFormula>)> = {
         let store = ctx.records.get_mut(&key).expect("store just ensured");
-        nodes
-            .iter()
-            .map(|n| {
-                let f = store.resolve_field(&node_text(*n, source));
-                (f, store.flowfields.get(&f).cloned())
-            })
-            .collect()
+        let mut targets = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let name = node_text(*node, source);
+            let field_no = match store.resolve_field(&name) {
+                Ok(field_no) => field_no,
+                Err(error) => return err(format!("CalcFields: {error}")),
+            };
+            targets.push((field_no, store.flowfields.get(&field_no).cloned()));
+        }
+        targets
     };
     for (field_no, formula) in targets {
-        let Some(formula) = formula else { continue };
+        let Some(formula) = formula else {
+            return err(format!(
+                "CalcFields: field number {field_no} is not a supported FlowField"
+            ));
+        };
         match eval_flowfield(ctx, &key, &formula) {
             Eval::Normal(v) => {
                 let store = ctx.records.get_mut(&key).expect("store just ensured");
@@ -688,17 +868,21 @@ fn eval_flowfield(ctx: &mut DispatchCtx, current_key: &str, formula: &CalcFormul
             .records
             .get_mut(current_key)
             .expect("store just ensured");
-        formula
-            .where_clause
-            .iter()
-            .map(|cond| match &cond.value {
+        let mut values = Vec::with_capacity(formula.where_clause.len());
+        for condition in &formula.where_clause {
+            let value = match &condition.value {
                 WhereValue::Field(name) => {
-                    let f = store.resolve_field(name);
+                    let f = match store.resolve_field(name) {
+                        Ok(field_no) => field_no,
+                        Err(error) => return err(format!("FlowField: {error}")),
+                    };
                     Some(store.record.field_get(f).cloned().unwrap_or(Value::Empty))
                 }
                 _ => None,
-            })
-            .collect()
+            };
+            values.push(value);
+        }
+        values
     };
 
     // 2. Ensure the referenced table's store exists.
@@ -726,14 +910,20 @@ fn eval_flowfield(ctx: &mut DispatchCtx, current_key: &str, formula: &CalcFormul
     // 3. Resolve the target + condition fields against the referenced table and
     //    build the resolved conditions.
     let store = ctx.records.get_mut(&ref_key).expect("store just ensured");
-    let target = formula
-        .field_name
-        .as_deref()
-        .map(|n| store.resolve_field(n));
+    let target = match formula.field_name.as_deref() {
+        Some(name) => match store.resolve_field(name) {
+            Ok(field_no) => Some(field_no),
+            Err(error) => return err(format!("FlowField target: {error}")),
+        },
+        None => None,
+    };
 
     let mut conditions: Vec<(FieldNo, FlowFilter)> = Vec::new();
     for (i, cond) in formula.where_clause.iter().enumerate() {
-        let field_no = store.resolve_field(&cond.field);
+        let field_no = match store.resolve_field(&cond.field) {
+            Ok(field_no) => field_no,
+            Err(error) => return err(format!("FlowField condition: {error}")),
+        };
         let filt = match &cond.value {
             WhereValue::Const(s) => FlowFilter::Eq(parse_scalar(s)),
             WhereValue::Field(_) => FlowFilter::Eq(field_values[i].clone().unwrap_or(Value::Empty)),
@@ -745,7 +935,10 @@ fn eval_flowfield(ctx: &mut DispatchCtx, current_key: &str, formula: &CalcFormul
         conditions.push((field_no, filt));
     }
 
-    Eval::Normal(store.record.calc_flow(&conditions, target, agg))
+    match store.record.calc_flow(&conditions, target, agg) {
+        Ok(value) => Eval::Normal(value),
+        Err(error) => err(format!("FlowField calculation failed: {error}")),
+    }
 }
 
 /// Parse a `CONST(...)` literal into the most specific scalar `Value`. Matching
@@ -785,7 +978,10 @@ pub(crate) fn try_field_assign(
         Err(e) => return Some(err(e)),
     };
     let store = ctx.records.get_mut(&key).expect("store just ensured");
-    let f = store.resolve_field(&field_name);
+    let f = match store.resolve_field(&field_name) {
+        Ok(field_no) => field_no,
+        Err(error) => return Some(err(error)),
+    };
     store.record.field_set(f, rhs_val.clone());
     Some(Eval::Normal(Value::Empty))
 }
@@ -841,8 +1037,8 @@ fn descend_to_postfix(node: Node<'_>) -> Option<Node<'_>> {
     }
 }
 
-/// True if `method` is a `List of [T]` method handled by [`dispatch_list_method`].
-pub(crate) fn is_list_method(method: &str) -> bool {
+/// True if `method` is a `List of [T]` method implemented by the local runtime.
+pub fn supports_list_method(method: &str) -> bool {
     matches!(
         method.to_ascii_lowercase().as_str(),
         "add" | "get" | "count" | "contains" | "indexof" | "remove" | "removeat" | "set"
@@ -864,64 +1060,78 @@ pub(crate) fn dispatch_list_method(
         return err(format!("'{recv}' is not a List"));
     };
     match lower.as_str() {
-        "add" => {
-            for v in args {
-                items.push(v);
-            }
+        "add" if args.len() == 1 => {
+            items.push(args[0].clone());
             Eval::Normal(Value::Boolean(true))
         }
-        "count" => Eval::Normal(Value::Integer(items.len() as i64)),
-        "get" => {
-            // 1-based index.
-            match args.first() {
-                Some(Value::Integer(i)) if *i >= 1 && (*i as usize) <= items.len() => {
-                    Eval::Normal(items[(*i as usize) - 1].clone())
+        "add" => err("List.Add expects exactly one value"),
+        "count" if args.is_empty() => match i64::try_from(items.len()) {
+            Ok(count) => Eval::Normal(Value::Integer(count)),
+            Err(_) => err("List.Count exceeds the supported Integer range"),
+        },
+        "count" => err("List.Count expects no arguments"),
+        "get" => match list_index("List.Get", &args, items.len()) {
+            Ok(index) => Eval::Normal(items[index].clone()),
+            Err(error) => err(error),
+        },
+        "contains" => match args.as_slice() {
+            [needle] => Eval::Normal(Value::Boolean(items.iter().any(|item| item == needle))),
+            _ => err("List.Contains expects exactly one value"),
+        },
+        "indexof" => match args.as_slice() {
+            [needle] => {
+                let position = items.iter().position(|item| item == needle);
+                match position {
+                    Some(position) => match i64::try_from(position + 1) {
+                        Ok(position) => Eval::Normal(Value::Integer(position)),
+                        Err(_) => err("List.IndexOf result exceeds the supported Integer range"),
+                    },
+                    None => Eval::Normal(Value::Integer(0)),
                 }
-                Some(Value::Integer(i)) => err(format!(
-                    "List.Get: index {i} out of range 1..{}",
-                    items.len()
-                )),
-                _ => err("List.Get expects an Integer index"),
             }
-        }
-        "contains" => {
-            let needle = args.first();
-            let found = needle.is_some_and(|n| items.iter().any(|it| it == n));
-            Eval::Normal(Value::Boolean(found))
-        }
-        "indexof" => {
-            let needle = args.first();
-            let idx = needle
-                .and_then(|n| items.iter().position(|it| it == n))
-                .map(|p| p as i64 + 1)
-                .unwrap_or(0);
-            Eval::Normal(Value::Integer(idx))
-        }
-        "removeat" => match args.first() {
-            Some(Value::Integer(i)) if *i >= 1 && (*i as usize) <= items.len() => {
-                items.remove((*i as usize) - 1);
+            _ => err("List.IndexOf expects exactly one value"),
+        },
+        "removeat" => match list_index("List.RemoveAt", &args, items.len()) {
+            Ok(index) => {
+                items.remove(index);
                 Eval::Normal(Value::Boolean(true))
             }
-            _ => err("List.RemoveAt expects a valid 1-based Integer index"),
+            Err(error) => err(error),
         },
-        "remove" => {
-            if let Some(n) = args.first() {
-                if let Some(pos) = items.iter().position(|it| it == n) {
+        "remove" => match args.as_slice() {
+            [needle] => {
+                if let Some(pos) = items.iter().position(|item| item == needle) {
                     items.remove(pos);
-                    return Eval::Normal(Value::Boolean(true));
+                    Eval::Normal(Value::Boolean(true))
+                } else {
+                    Eval::Normal(Value::Boolean(false))
                 }
             }
-            Eval::Normal(Value::Boolean(false))
-        }
-        "set" => match (args.first(), args.get(1)) {
-            (Some(Value::Integer(i)), Some(v)) if *i >= 1 && (*i as usize) <= items.len() => {
-                items[(*i as usize) - 1] = v.clone();
+            _ => err("List.Remove expects exactly one value"),
+        },
+        "set" if args.len() == 2 => match list_index("List.Set", &args[..1], items.len()) {
+            Ok(index) => {
+                items[index] = args[1].clone();
                 Eval::Normal(Value::Boolean(true))
             }
-            _ => err("List.Set expects (Integer index, value)"),
+            Err(error) => err(error),
         },
+        "set" => err("List.Set expects exactly an Integer index and one value"),
         other => err(format!("unsupported List method: {other}")),
     }
+}
+
+fn list_index(method: &str, args: &[Value], len: usize) -> Result<usize, String> {
+    let index = match args {
+        [Value::Integer(index)] => *index,
+        _ => return Err(format!("{method} expects exactly one Integer index")),
+    };
+    let zero_based = index
+        .checked_sub(1)
+        .and_then(|index| usize::try_from(index).ok())
+        .filter(|index| *index < len)
+        .ok_or_else(|| format!("{method}: index {index} out of range 1..{len}"))?;
+    Ok(zero_based)
 }
 
 /// Build a default `Value` for a structured local variable type the scalar
@@ -970,16 +1180,37 @@ fn node_text(node: Node<'_>, source: &[u8]) -> String {
         .to_string()
 }
 
-fn truthy(v: &Value) -> bool {
-    matches!(v, Value::Boolean(true))
+fn require_no_args(method: &str, values: &[Value]) -> Result<(), String> {
+    if values.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{method}: expects no arguments"))
+    }
 }
 
-fn render_simple(v: &Value) -> String {
+fn optional_boolean(method: &str, values: &[Value]) -> Result<bool, String> {
+    match values {
+        [] => Ok(false),
+        [Value::Boolean(value)] => Ok(*value),
+        [value] => Err(format!(
+            "{method}: optional RunTrigger argument must be Boolean, got {}",
+            value.type_name()
+        )),
+        _ => Err(format!(
+            "{method}: expects at most one optional Boolean argument"
+        )),
+    }
+}
+
+fn render_filter_value(v: &Value) -> Result<String, String> {
     match v {
-        Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
-        Value::Decimal(d) => d.normalize().to_string(),
-        Value::Text(s) | Value::Code(s) => s.clone(),
-        Value::Boolean(b) => b.to_string(),
-        _ => String::new(),
+        Value::Integer(n) | Value::BigInteger(n) => Ok(n.to_string()),
+        Value::Decimal(d) => Ok(d.normalize().to_string()),
+        Value::Text(s) | Value::Code(s) => Ok(s.clone()),
+        Value::Boolean(b) => Ok(b.to_string()),
+        value => Err(format!(
+            "placeholder value type {} is not supported by the local record runtime",
+            value.type_name()
+        )),
     }
 }

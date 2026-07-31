@@ -9,10 +9,48 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum TestSnapshotCommands {
+    /// Capture breakpoint-sampled state while a test runs on live BC.
+    Capture {
+        /// Test codeunit object ID
+        codeunit: i32,
+        /// Test codeunit object name
+        codeunit_name: String,
+        /// Exact [Test] method name
+        method: String,
+        /// BC runtime version recorded in snapshot metadata
+        #[arg(long)]
+        bc_version: String,
+        /// Breakpoint as FILE:LINE; repeat for multiple capture points
+        #[arg(long = "breakpoint", required = true)]
+        breakpoints: Vec<String>,
+        /// Snapshot output path (must stay inside the project)
+        #[arg(long)]
+        output: String,
+        /// Named launch configuration (uses first config if omitted)
+        #[arg(long)]
+        config: Option<String>,
+        /// Capture timeout in milliseconds
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+    },
     /// Validate a snapshot file and show its metadata.
     Validate {
         /// Path to the .snap.json file
         path: String,
+    },
+    /// Re-run the captured test on live BC and compare sampled state.
+    Replay {
+        /// Path to the baseline .snap.json file
+        path: String,
+        /// Current BC runtime version; compared with the baseline metadata
+        #[arg(long)]
+        bc_version: String,
+        /// Named launch configuration (uses first config if omitted)
+        #[arg(long)]
+        config: Option<String>,
+        /// Replay timeout in milliseconds
+        #[arg(long)]
+        timeout_ms: Option<u64>,
     },
     /// Compare two snapshot files and show field-level divergences.
     Diff {

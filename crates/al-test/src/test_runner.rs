@@ -29,27 +29,27 @@ use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DevTestListResponse {
-    pub value: Option<Vec<DevTestMethod>>,
+    pub value: Vec<DevTestMethod>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DevTestMethod {
-    pub name: Option<String>,
+    pub name: String,
 }
 
 /// Response from `POST /dev/tests/{codeunit}/run` — test results.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DevTestRunResponse {
-    pub value: Option<Vec<DevTestResult>>,
+    pub value: Vec<DevTestResult>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DevTestResult {
-    pub name: Option<String>,
-    pub result: Option<String>,
+    pub name: String,
+    pub result: String,
     pub message: Option<String>,
     pub duration: Option<f64>,
 }
@@ -63,10 +63,20 @@ pub struct TestRunnerClient {
     base_url: String,
     auth: AuthMethod,
     tenant: Option<String>,
+    /// Request-scoped OAuth token supplied by daemon/MCP authentication.
+    /// Falls back to `BC_TOKEN` for existing standalone callers.
+    bearer_token: Option<String>,
 }
 
 impl TestRunnerClient {
-    pub fn new(config: &BcServerConfig) -> Self {
+    pub fn new(config: &BcServerConfig) -> Result<Self, TestRunnerError> {
+        Self::with_access_token(config, None)
+    }
+
+    pub fn with_access_token(
+        config: &BcServerConfig,
+        access_token: Option<&str>,
+    ) -> Result<Self, TestRunnerError> {
         if config.accept_invalid_certs {
             // Parity with bc_server / bc_debug / native_dap / http_auth so
             // an operator watching daemon logs sees the same "TLS disabled"
@@ -76,17 +86,20 @@ impl TestRunnerClient {
         let client = Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)
             .timeout(Duration::from_secs(300))
-            .build()
-            .expect("failed to construct BC test-runner HTTP client");
+            .build()?;
 
         let base_url = build_base_url(config);
 
-        Self {
+        Ok(Self {
             client,
             base_url,
             auth: config.authentication.clone(),
             tenant: config.tenant.clone(),
-        }
+            bearer_token: access_token
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+                .map(str::to_string),
+        })
     }
 
     /// Run all [Test] procedures in the specified codeunit.
@@ -145,10 +158,25 @@ impl TestRunnerClient {
             })?;
         let methods = raw
             .value
-            .unwrap_or_default()
             .into_iter()
             .map(map_dev_result)
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
+        if methods.is_empty() {
+            return Err(TestRunnerError::InvalidResponse(format!(
+                "test run for codeunit {codeunit_id} returned no method results"
+            )));
+        }
+        if let Some(expected) = method {
+            if methods.len() != 1 || !methods[0].name.eq_ignore_ascii_case(expected) {
+                let returned = methods
+                    .iter()
+                    .map(|result| result.name.as_str())
+                    .collect::<Vec<_>>();
+                return Err(TestRunnerError::InvalidResponse(format!(
+                    "requested test method '{expected}', but Business Central returned {returned:?}"
+                )));
+            }
+        }
 
         Ok(TestCodeunitResult::from_methods(
             codeunit_name.to_string(),
@@ -188,13 +216,18 @@ impl TestRunnerClient {
             })?;
         let names = raw
             .value
-            .unwrap_or_default()
             .into_iter()
-            .filter_map(|m| {
-                let name = m.name?;
-                Some(name)
+            .map(|method| {
+                let name = method.name.trim();
+                if name.is_empty() {
+                    Err(TestRunnerError::InvalidResponse(
+                        "test method name is empty".to_string(),
+                    ))
+                } else {
+                    Ok(name.to_string())
+                }
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(names)
     }
@@ -220,8 +253,16 @@ impl TestRunnerClient {
                 }
             }
             AuthMethod::AAD => {
-                let token = std::env::var("BC_TOKEN").unwrap_or_default();
-                let token = token.trim();
+                let environment_token = if self.bearer_token.is_none() {
+                    al_bc::http_auth::access_token_from_env()?
+                } else {
+                    None
+                };
+                let token = self
+                    .bearer_token
+                    .as_deref()
+                    .or(environment_token.as_deref())
+                    .unwrap_or_default();
                 if token.is_empty() {
                     return Err(TestRunnerError::MissingCredentials);
                 }
@@ -239,27 +280,51 @@ impl TestRunnerClient {
     }
 }
 
-fn map_dev_result(r: DevTestResult) -> TestMethodResult {
-    let name = r.name.unwrap_or_default();
-    let status = match r.result.as_deref() {
-        Some(s) if s.eq_ignore_ascii_case("pass") || s.eq_ignore_ascii_case("success") => {
+fn map_dev_result(r: DevTestResult) -> Result<TestMethodResult, TestRunnerError> {
+    let name = r.name.trim();
+    if name.is_empty() {
+        return Err(TestRunnerError::InvalidResponse(
+            "test result method name is empty".to_string(),
+        ));
+    }
+    let raw_status = r.result.trim();
+    let status = match raw_status {
+        s if s.eq_ignore_ascii_case("pass") || s.eq_ignore_ascii_case("success") => {
             TestStatus::Pass
         }
-        Some(s) if s.eq_ignore_ascii_case("fail") || s.eq_ignore_ascii_case("failure") => {
+        s if s.eq_ignore_ascii_case("fail") || s.eq_ignore_ascii_case("failure") => {
             TestStatus::Fail
         }
-        Some(s) if s.eq_ignore_ascii_case("skip") || s.eq_ignore_ascii_case("skipped") => {
+        s if s.eq_ignore_ascii_case("skip") || s.eq_ignore_ascii_case("skipped") => {
             TestStatus::Skip
         }
-        _ => TestStatus::Skip,
+        _ => {
+            return Err(TestRunnerError::InvalidResponse(format!(
+                "test result for '{name}' has unknown status '{raw_status}'"
+            )));
+        }
     };
-    let duration_ms = r.duration.map(|d| (d * 1000.0) as u64);
-    TestMethodResult {
-        name,
+    let duration_ms = r
+        .duration
+        .map(|seconds| {
+            let duration = Duration::try_from_secs_f64(seconds).map_err(|_| {
+                TestRunnerError::InvalidResponse(format!(
+                    "test result for '{name}' has invalid duration {seconds}"
+                ))
+            })?;
+            u64::try_from(duration.as_millis()).map_err(|_| {
+                TestRunnerError::InvalidResponse(format!(
+                    "test result for '{name}' duration exceeds the supported range"
+                ))
+            })
+        })
+        .transpose()?;
+    Ok(TestMethodResult {
+        name: name.to_string(),
         status,
         error: r.message.filter(|m| !m.is_empty()),
         duration_ms,
-    }
+    })
 }
 
 fn build_base_url(config: &BcServerConfig) -> String {
@@ -309,13 +374,14 @@ mod tests {
             tenant: None,
             authentication: AuthMethod::UserPassword,
             accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
         }
     }
 
     #[test]
     fn test_runner_constructs_from_config() {
         let config = on_prem_config();
-        let _client = TestRunnerClient::new(&config);
+        let _client = TestRunnerClient::new(&config).expect("valid HTTP client");
     }
 
     #[test]
@@ -338,20 +404,51 @@ mod tests {
             tenant: Some("mycompany.onmicrosoft.com".to_string()),
             authentication: AuthMethod::AAD,
             accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
         };
         let url = build_base_url(&config);
         assert!(url.contains("MySandbox"), "URL should contain env: {url}");
     }
 
     #[test]
+    fn request_scoped_oauth_token_is_used_without_bc_token_environment() {
+        let config = BcServerConfig {
+            name: "cloud".to_string(),
+            environment_type: EnvironmentType::Sandbox,
+            server: None,
+            server_instance: None,
+            port: None,
+            environment_name: Some("Sandbox".to_string()),
+            tenant: Some("tenant".to_string()),
+            authentication: AuthMethod::AAD,
+            accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
+        };
+        let client =
+            TestRunnerClient::with_access_token(&config, Some("request-token")).expect("client");
+        let request = client
+            .apply_auth(client.client.get("https://example.test"))
+            .expect("auth")
+            .build()
+            .expect("request");
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer request-token")
+        );
+    }
+
+    #[test]
     fn map_dev_result_pass() {
         let r = DevTestResult {
-            name: Some("TestSomething".to_string()),
-            result: Some("pass".to_string()),
+            name: "TestSomething".to_string(),
+            result: "pass".to_string(),
             message: None,
             duration: Some(0.123),
         };
-        let result = map_dev_result(r);
+        let result = map_dev_result(r).unwrap();
         assert_eq!(result.name, "TestSomething");
         assert_eq!(result.status, TestStatus::Pass);
         assert_eq!(result.duration_ms, Some(123));
@@ -361,12 +458,12 @@ mod tests {
     #[test]
     fn map_dev_result_fail_with_message() {
         let r = DevTestResult {
-            name: Some("TestFailing".to_string()),
-            result: Some("fail".to_string()),
+            name: "TestFailing".to_string(),
+            result: "fail".to_string(),
             message: Some("Assert.AreEqual failed: expected 1, got 2".to_string()),
             duration: Some(0.05),
         };
-        let result = map_dev_result(r);
+        let result = map_dev_result(r).unwrap();
         assert_eq!(result.status, TestStatus::Fail);
         assert_eq!(
             result.error,
@@ -375,15 +472,50 @@ mod tests {
     }
 
     #[test]
-    fn map_dev_result_skip_on_unknown_status() {
+    fn map_dev_result_rejects_unknown_status() {
         let r = DevTestResult {
-            name: Some("TestSkipped".to_string()),
-            result: Some("unknown".to_string()),
+            name: "TestSkipped".to_string(),
+            result: "unknown".to_string(),
             message: None,
             duration: None,
         };
-        let result = map_dev_result(r);
-        assert_eq!(result.status, TestStatus::Skip);
+        assert!(matches!(
+            map_dev_result(r),
+            Err(TestRunnerError::InvalidResponse(message))
+                if message.contains("unknown status")
+        ));
+    }
+
+    #[test]
+    fn map_dev_result_rejects_empty_name() {
+        let r = DevTestResult {
+            name: "  ".to_string(),
+            result: "pass".to_string(),
+            message: None,
+            duration: None,
+        };
+        assert!(matches!(
+            map_dev_result(r),
+            Err(TestRunnerError::InvalidResponse(message))
+                if message.contains("name is empty")
+        ));
+    }
+
+    #[test]
+    fn map_dev_result_rejects_invalid_duration() {
+        for duration in [f64::NAN, f64::INFINITY, -0.1] {
+            let r = DevTestResult {
+                name: "TestDuration".to_string(),
+                result: "pass".to_string(),
+                message: None,
+                duration: Some(duration),
+            };
+            assert!(matches!(
+                map_dev_result(r),
+                Err(TestRunnerError::InvalidResponse(message))
+                    if message.contains("invalid duration")
+            ));
+        }
     }
 
     #[test]
@@ -434,6 +566,7 @@ mod url_tests {
             tenant: None,
             authentication: AuthMethod::UserPassword,
             accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
         };
         let url = build_base_url(&config);
         assert!(
@@ -457,6 +590,7 @@ mod url_tests {
             tenant: None,
             authentication: AuthMethod::UserPassword,
             accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
         };
         let url = build_base_url(&config);
         assert!(

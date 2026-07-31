@@ -610,12 +610,20 @@ impl SemanticBridge {
             tracing::warn!("Ignoring invalid semantic builtins cache");
         }
 
+        let types = self.builtin_types_fresh().await?;
+        super::cache::write_builtins(&self.version, &types);
+
+        Ok(types)
+    }
+
+    /// Extract built-in types directly from the loaded CodeAnalysis assembly.
+    ///
+    /// This bypasses the disk cache for generators and live contract checks
+    /// that must prove the current Microsoft DLL is the source of the result.
+    pub async fn builtin_types_fresh(&self) -> Result<Vec<BuiltinType>, SemanticError> {
         let result = self.call("builtins", serde_json::Value::Null).await?;
         let types: Vec<BuiltinType> = Self::parse_response(result)?;
         validate_builtins(&types)?;
-
-        super::cache::write_builtins(&self.version, &types);
-
         Ok(types)
     }
 

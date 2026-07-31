@@ -1,6 +1,6 @@
 //! Test-runner and coverage dispatchers.
 
-use super::super::rpc_error;
+use super::super::{optional_bool_param, optional_bounded_usize_param, rpc_error};
 use super::ERR_NO_PROJECT;
 use al_protocol::jsonrpc::{error_codes, Response};
 use al_workspace::Workspace;
@@ -8,9 +8,231 @@ use std::path::PathBuf;
 
 const MAX_TIMEOUT_MS: u64 = 60 * 60 * 1000;
 
-fn clamp_timeout_ms(t: Option<u64>) -> Option<u64> {
-    t.map(|ms| ms.min(MAX_TIMEOUT_MS))
+fn optional_timeout_ms(params: &serde_json::Value) -> Result<Option<u64>, String> {
+    if params.get("timeoutMs").is_none() {
+        return Ok(None);
+    }
+    optional_bounded_usize_param(params, "timeoutMs", 0, MAX_TIMEOUT_MS as usize)
+        .map(|value| Some(value as u64))
 }
+
+fn optional_non_empty_string<'a>(
+    params: &'a serde_json::Value,
+    key: &str,
+) -> Result<Option<&'a str>, String> {
+    match params.get(key) {
+        None => Ok(None),
+        Some(value) => {
+            let value = value
+                .as_str()
+                .ok_or_else(|| format!("'{key}' must be a string when supplied"))?
+                .trim();
+            if value.is_empty() {
+                Err(format!("'{key}' must not be empty"))
+            } else {
+                Ok(Some(value))
+            }
+        }
+    }
+}
+
+fn optional_array<'a>(
+    params: &'a serde_json::Value,
+    key: &str,
+) -> Result<Option<&'a Vec<serde_json::Value>>, String> {
+    match params.get(key) {
+        None => Ok(None),
+        Some(value) => value
+            .as_array()
+            .map(Some)
+            .ok_or_else(|| format!("'{key}' must be an array when supplied")),
+    }
+}
+
+/// Resolve a mutation-file allowlist against the loaded project and translate
+/// every entry to the exact path spelling held by `FileIndex`.
+///
+/// The CLI accepts workspace-relative paths, while the index normally contains
+/// absolute paths. Comparing those strings directly made a valid selection
+/// look empty and produced the misleading "no discoverable tests" error. This
+/// boundary is also the right place to reject missing, out-of-project, and
+/// non-indexed files before the mutation engine starts an expensive run.
+fn resolve_mutation_file_allowlist(
+    workspace: &Workspace,
+    project_root: &std::path::Path,
+    files: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let canonical_root = project_root
+        .canonicalize()
+        .map_err(|error| format!("resolve loaded project root failed: {error}"))?;
+    let mut resolved = Vec::with_capacity(files.len());
+    let mut seen = std::collections::HashSet::with_capacity(files.len());
+
+    for (index, file) in files.into_iter().enumerate() {
+        let requested = std::path::Path::new(&file);
+        let candidate = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            canonical_root.join(requested)
+        };
+        let canonical = candidate.canonicalize().map_err(|error| {
+            format!(
+                "files[{index}] '{}' cannot be resolved: {error}",
+                candidate.display()
+            )
+        })?;
+        if !canonical.is_file() {
+            return Err(format!(
+                "files[{index}] '{}' is not a regular file",
+                canonical.display()
+            ));
+        }
+        if !canonical.starts_with(&canonical_root) {
+            return Err(format!(
+                "files[{index}] '{}' is outside the loaded project",
+                canonical.display()
+            ));
+        }
+        if !seen.insert(canonical.clone()) {
+            return Err(format!(
+                "files[{index}] resolves to the same file as an earlier entry: '{}'",
+                canonical.display()
+            ));
+        }
+
+        let indexed_path = workspace.file_index.files.iter().find_map(|entry| {
+            let indexed = entry.key();
+            if indexed == &canonical
+                || indexed
+                    .canonicalize()
+                    .ok()
+                    .is_some_and(|path| path == canonical)
+            {
+                Some(indexed.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        });
+        let Some(indexed_path) = indexed_path else {
+            return Err(format!(
+                "files[{index}] '{}' is not an indexed AL workspace file",
+                canonical.display()
+            ));
+        };
+        resolved.push(indexed_path);
+    }
+
+    Ok(resolved)
+}
+
+fn test_routing_details(
+    classifications: &[al_test::router::ClassifyResult],
+    requested: &[al_test::session::TestId],
+) -> Vec<serde_json::Value> {
+    use al_test::router::RoutingDecision;
+    use std::collections::HashMap;
+
+    let mut codeunit_route: HashMap<i32, RoutingDecision> = HashMap::new();
+    for classification in classifications {
+        codeunit_route
+            .entry(classification.codeunit_id)
+            .and_modify(|decision| {
+                *decision = match (*decision, classification.decision) {
+                    (RoutingDecision::LiveBc, _) | (_, RoutingDecision::LiveBc) => {
+                        RoutingDecision::LiveBc
+                    }
+                    (RoutingDecision::InterpRecord, _) | (_, RoutingDecision::InterpRecord) => {
+                        RoutingDecision::InterpRecord
+                    }
+                    _ => RoutingDecision::Interp,
+                };
+            })
+            .or_insert(classification.decision);
+    }
+
+    let mut details = Vec::new();
+    for test in requested {
+        let matching = classifications.iter().filter(|classification| {
+            classification.codeunit_id == test.codeunit_id
+                && test
+                    .method_name
+                    .as_ref()
+                    .is_none_or(|method| classification.method_name.eq_ignore_ascii_case(method))
+        });
+        let mut matched = false;
+        for classification in matching {
+            matched = true;
+            let actual = codeunit_route
+                .get(&classification.codeunit_id)
+                .copied()
+                .unwrap_or(RoutingDecision::LiveBc);
+            let mut reasons = classification
+                .reasons
+                .iter()
+                .map(|reason| {
+                    serde_json::json!({
+                        "message": reason.message,
+                        "file": reason.file,
+                        "line": reason.line,
+                    })
+                })
+                .collect::<Vec<_>>();
+            if reasons.is_empty() {
+                reasons.push(serde_json::json!({
+                    "message": "no unsupported runtime behavior was detected",
+                    "file": serde_json::Value::Null,
+                    "line": serde_json::Value::Null,
+                }));
+            }
+            if actual != classification.decision {
+                let message = match actual {
+                    RoutingDecision::InterpRecord => {
+                        "this codeunit also contains a record-backed test, so its shared lifecycle runs on the local record runtime"
+                    }
+                    RoutingDecision::LiveBc => {
+                        "this codeunit also contains a test that requires live BC; codeunit lifecycle and shared state keep every method on one backend"
+                    }
+                    RoutingDecision::Interp => {
+                        "the complete codeunit is supported by the local interpreter"
+                    }
+                };
+                reasons.push(serde_json::json!({
+                    "message": message,
+                    "file": serde_json::Value::Null,
+                    "line": serde_json::Value::Null,
+                }));
+            }
+            details.push(serde_json::json!({
+                "codeunitId": classification.codeunit_id,
+                "codeunitName": classification.codeunit_name,
+                "methodName": classification.method_name,
+                "classifiedDecision": classification.decision.as_str(),
+                "decision": actual.as_str(),
+                "runsLocally": actual.runs_locally(),
+                "execution": actual.execution_note(),
+                "reasons": reasons,
+            }));
+        }
+        if !matched {
+            details.push(serde_json::json!({
+                "codeunitId": test.codeunit_id,
+                "codeunitName": test.codeunit_name,
+                "methodName": test.method_name,
+                "classifiedDecision": serde_json::Value::Null,
+                "decision": RoutingDecision::LiveBc.as_str(),
+                "runsLocally": false,
+                "execution": RoutingDecision::LiveBc.execution_note(),
+                "reasons": [{
+                    "message": "the requested test was not present in the workspace test index, so the router cannot prove local execution is safe",
+                    "file": serde_json::Value::Null,
+                    "line": serde_json::Value::Null,
+                }],
+            }));
+        }
+    }
+    details
+}
+
 /// Resolve a user-provided output-file path against `project_root` and reject
 /// anything that escapes it (path traversal). Used for JUnit / Cobertura
 /// output paths in `dispatch_tests_run_batch`, where a malicious or
@@ -100,8 +322,26 @@ pub(in crate::server::daemon) fn dispatch_tests_discover(
     workspace: &Workspace,
     id: u64,
 ) -> Response {
-    let tests = al_analysis::queries::tests::discover_tests(workspace);
-    let value = serde_json::to_value(&tests).unwrap_or(serde_json::Value::Null);
+    let tests = match al_analysis::queries::tests::discover_tests(workspace) {
+        Ok(tests) => tests,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test discovery failed: {error}"),
+            );
+        }
+    };
+    let value = match serde_json::to_value(&tests) {
+        Ok(value) => value,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test discovery response serialization failed: {error}"),
+            );
+        }
+    };
     Response {
         id,
         result: Some(value),
@@ -113,8 +353,26 @@ pub(in crate::server::daemon) fn dispatch_tests_coverage(
     workspace: &Workspace,
     id: u64,
 ) -> Response {
-    let report = al_analysis::queries::test_coverage::test_coverage(workspace);
-    let value = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
+    let report = match al_analysis::queries::test_coverage::test_coverage(workspace) {
+        Ok(report) => report,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test coverage analysis failed: {error}"),
+            );
+        }
+    };
+    let value = match serde_json::to_value(&report) {
+        Ok(value) => value,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test coverage response serialization failed: {error}"),
+            );
+        }
+    };
     Response {
         id,
         result: Some(value),
@@ -151,7 +409,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
                 return rpc_error(id, error_codes::INVALID_PARAMS, "codeunit ID out of range");
             }
         },
-        None => {
+        _ => {
             return rpc_error(
                 id,
                 error_codes::INVALID_PARAMS,
@@ -159,16 +417,26 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
             );
         }
     };
-    let codeunit_name = params
-        .get("codeunitName")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| codeunit_id.to_string());
-    let method = params
-        .get("method")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let config_name = params.get("config").and_then(|v| v.as_str());
+    if codeunit_id <= 0 {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "'codeunit' must be a positive AL object ID",
+        );
+    }
+    let codeunit_name = match optional_non_empty_string(params, "codeunitName") {
+        Ok(Some(name)) => name.to_string(),
+        Ok(None) => codeunit_id.to_string(),
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let method = match optional_non_empty_string(params, "method") {
+        Ok(method) => method.map(str::to_string),
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let config_name = match optional_non_empty_string(params, "config") {
+        Ok(config) => config,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
 
     // Reuse the batch orchestrator so single-codeunit runs obey exactly the
     // same Interp / InterpRecord / LiveBc routing contract. This also keeps
@@ -206,10 +474,37 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
         }
     };
 
-    let diagnostics = results_to_diagnostics(std::slice::from_ref(&result), workspace);
+    let diagnostics = match results_to_diagnostics(std::slice::from_ref(&result), workspace) {
+        Ok(diagnostics) => diagnostics,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test diagnostic mapping failed: {error}"),
+            );
+        }
+    };
 
-    let result_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
-    let diag_json = serde_json::to_value(&diagnostics).unwrap_or(serde_json::json!([]));
+    let result_json = match serde_json::to_value(&result) {
+        Ok(value) => value,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test result serialization failed: {error}"),
+            );
+        }
+    };
+    let diag_json = match serde_json::to_value(&diagnostics) {
+        Ok(value) => value,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test diagnostics serialization failed: {error}"),
+            );
+        }
+    };
 
     Response {
         id,
@@ -233,7 +528,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
 /// - `timeoutMs`: u64 (default 30_000)
 /// - `junitOut`: str (path to write JUnit XML)
 /// - `coberturaOut`: str (path to write Cobertura XML)
-/// - `filter`: str (forwarded; currently logged only)
+/// - `filter`: str (case-insensitive method glob; `*` wildcard)
 /// - `coverage`: bool (default false) — collect *dynamic* executed-line
 ///   coverage on interp-routed tests. Adds a `coverage` object to the result
 ///   (per-file executed lines + branch decisions) and, when `coberturaOut` is
@@ -251,82 +546,147 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     use al_test::session::{RunOptions, TestEvent, TestId, TestSession};
     use tokio::sync::mpsc;
 
-    let project_root = match workspace
-        .project
-        .read()
-        .await
-        .as_ref()
-        .map(|p| p.root.clone())
-    {
-        Some(root) => root,
-        None => return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT),
-    };
-
-    let codeunit_ids = match params.get("codeunitIds").and_then(|v| v.as_array()) {
-        Some(arr) => arr,
-        None => {
+    let codeunit_ids = match optional_array(params, "codeunitIds") {
+        Ok(Some(codeunit_ids)) => codeunit_ids,
+        Ok(None) => {
             return rpc_error(
                 id,
                 error_codes::INVALID_PARAMS,
                 "Missing 'codeunitIds' (array of i32)",
             );
         }
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
-    let names_arr = params
-        .get("codeunitNames")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let methods_arr = params
-        .get("methodNames")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let names_arr = match optional_array(params, "codeunitNames") {
+        Ok(names) => names,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let methods_arr = match optional_array(params, "methodNames") {
+        Ok(methods) => methods,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    if names_arr.is_some_and(|names| names.len() != codeunit_ids.len()) {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "'codeunitNames' must contain one entry for every codeunit ID",
+        );
+    }
+    if methods_arr.is_some_and(|methods| methods.len() != codeunit_ids.len()) {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "'methodNames' must contain one string or null for every codeunit ID",
+        );
+    }
+    let parallel = match optional_bool_param(params, "parallel", false) {
+        Ok(parallel) => parallel,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let coverage = match optional_bool_param(params, "coverage", false) {
+        Ok(coverage) => coverage,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let timeout_ms = match optional_timeout_ms(params) {
+        Ok(timeout) => timeout,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let config_name = match optional_non_empty_string(params, "config") {
+        Ok(config) => config,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let junit_out = match optional_non_empty_string(params, "junitOut") {
+        Ok(path) => path,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let cobertura_out = match optional_non_empty_string(params, "coberturaOut") {
+        Ok(path) => path,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let filter = match optional_non_empty_string(params, "filter") {
+        Ok(filter) => filter.map(str::to_string),
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+
     let mut tests: Vec<TestId> = Vec::with_capacity(codeunit_ids.len());
-    for (i, v) in codeunit_ids.iter().enumerate() {
-        let cu_id = match v.as_i64() {
-            Some(n) => match i32::try_from(n) {
-                Ok(v) => v,
-                Err(_) => {
-                    return rpc_error(
-                        id,
-                        error_codes::INVALID_PARAMS,
-                        &format!("codeunitIds[{i}] out of range"),
-                    );
-                }
-            },
-            None => {
+    let mut requested = std::collections::HashSet::new();
+    for (index, value) in codeunit_ids.iter().enumerate() {
+        let codeunit_id = match value.as_i64().and_then(|value| i32::try_from(value).ok()) {
+            Some(codeunit_id) if codeunit_id > 0 => codeunit_id,
+            _ => {
                 return rpc_error(
                     id,
                     error_codes::INVALID_PARAMS,
-                    "Each codeunitIds entry must be an integer",
+                    &format!(
+                        "codeunitIds[{index}] is out of range (must be a positive i32 AL object ID)"
+                    ),
                 );
             }
         };
-        let cu_name = names_arr
-            .get(i)
-            .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| cu_id.to_string());
+        let codeunit_name = match names_arr.and_then(|names| names.get(index)) {
+            None => codeunit_id.to_string(),
+            Some(value) => match value.as_str().filter(|name| !name.trim().is_empty()) {
+                Some(name) => name.to_string(),
+                None => {
+                    return rpc_error(
+                        id,
+                        error_codes::INVALID_PARAMS,
+                        &format!("codeunitNames[{index}] must be a non-empty string"),
+                    );
+                }
+            },
+        };
+        let method_name = match methods_arr.and_then(|methods| methods.get(index)) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => match value.as_str().filter(|method| !method.trim().is_empty()) {
+                Some(method) => Some(method.to_string()),
+                None => {
+                    return rpc_error(
+                        id,
+                        error_codes::INVALID_PARAMS,
+                        &format!("methodNames[{index}] must be a non-empty string or null"),
+                    );
+                }
+            },
+        };
+        let request_key = (
+            codeunit_id,
+            method_name
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+        );
+        if !requested.insert(request_key) {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!("duplicate test request at codeunitIds[{index}]"),
+            );
+        }
         tests.push(TestId {
-            codeunit_id: cu_id,
-            codeunit_name: cu_name,
-            method_name: methods_arr
-                .get(i)
-                .and_then(|v| v.as_str())
-                .map(String::from),
+            codeunit_id,
+            codeunit_name,
+            method_name,
         });
     }
+
+    let project_root = match workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone())
+    {
+        Some(root) => root,
+        None => return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT),
+    };
     let opts = RunOptions {
-        timeout_ms: clamp_timeout_ms(params.get("timeoutMs").and_then(|v| v.as_u64())),
-        parallel: params
-            .get("parallel")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
+        timeout_ms,
+        parallel,
         // Validate output paths against project_root — a malicious client
         // could otherwise ask the daemon to overwrite arbitrary files
         // (cron tabs, ssh keys) as the daemon's user.
-        junit_out: match params.get("junitOut").and_then(|v| v.as_str()) {
+        junit_out: match junit_out {
             Some(s) => {
                 match resolve_output_path_within_project(std::path::Path::new(s), &project_root) {
                     Some(p) => Some(p),
@@ -341,7 +701,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
             }
             None => None,
         },
-        cobertura_out: match params.get("coberturaOut").and_then(|v| v.as_str()) {
+        cobertura_out: match cobertura_out {
             Some(s) => {
                 match resolve_output_path_within_project(std::path::Path::new(s), &project_root) {
                     Some(p) => Some(p),
@@ -356,21 +716,82 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
             }
             None => None,
         },
-        filter: params
-            .get("filter")
-            .and_then(|v| v.as_str())
-            .map(String::from),
+        filter,
         // Opt-in dynamic (executed-line) coverage. When set, interp-routed
         // tests run with a collector and we surface the per-file executed lines in
         // the RPC result + emit a dynamic-mode Cobertura doc to `coberturaOut`.
-        coverage: params
-            .get("coverage")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
+        coverage,
     };
 
-    let discovered = al_analysis::queries::tests::discover_tests(workspace);
-    let classifications = al_test::router::classify_codeunits(workspace, &discovered);
+    let discovered = match al_analysis::queries::tests::discover_tests(workspace) {
+        Ok(discovered) => discovered,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test discovery failed: {error}"),
+            );
+        }
+    };
+    if let Some(pattern) = opts.filter.as_deref() {
+        let mut filtered = Vec::new();
+        for test in tests {
+            match test.method_name.as_deref() {
+                Some(method) if al_test::session::method_name_matches(method, pattern) => {
+                    filtered.push(test);
+                }
+                Some(_) => {}
+                None => {
+                    if let Some(codeunit) = discovered
+                        .iter()
+                        .find(|codeunit| codeunit.id == test.codeunit_id)
+                    {
+                        filtered.extend(
+                            codeunit
+                                .tests
+                                .iter()
+                                .filter(|method| {
+                                    al_test::session::method_name_matches(&method.name, pattern)
+                                })
+                                .map(|method| al_test::session::TestId {
+                                    codeunit_id: test.codeunit_id,
+                                    codeunit_name: test.codeunit_name.clone(),
+                                    method_name: Some(method.name.clone()),
+                                }),
+                        );
+                    } else {
+                        // Preserve conservative behavior for a caller-supplied
+                        // codeunit absent from workspace discovery; the live
+                        // backend can list and filter its methods.
+                        filtered.push(test);
+                    }
+                }
+            }
+        }
+        tests = filtered;
+        if tests.is_empty() && !codeunit_ids.is_empty() {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!("test filter '{pattern}' matched no requested test methods"),
+            );
+        }
+    }
+    let expected_summary_ids = tests
+        .iter()
+        .map(|test| test.codeunit_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let classifications = match al_test::router::classify_codeunits(workspace, &discovered) {
+        Ok(classifications) => classifications,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test routing analysis failed: {error}"),
+            );
+        }
+    };
+    let routing = test_routing_details(&classifications, &tests);
     // A codeunit is executed locally only when every discovered [Test] method
     // fits one of the native capability tiers. Mixed pure/record codeunits use
     // the record-enabled interpreter; any LiveBc method keeps the
@@ -408,16 +829,19 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         None
     } else {
         let launch_cfg = match find_launch_config(&project_root) {
-            Some(cfg) => cfg,
-            None => {
+            Ok(Some(cfg)) => cfg,
+            Ok(None) => {
                 return rpc_error(
                     id,
                     error_codes::INTERNAL_ERROR,
                     "No launch config found — create .vscode/launch.json or .zed/debug.json",
                 );
             }
+            Err(error) => {
+                return rpc_error(id, error_codes::INVALID_PARAMS, &error.to_string());
+            }
         };
-        let selected = match params.get("config").and_then(|value| value.as_str()) {
+        let selected = match config_name {
             Some(name) => launch_cfg
                 .configs
                 .iter()
@@ -427,10 +851,25 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         match selected {
             Some(c) => Some(c.clone()),
             None => {
+                let message = match config_name {
+                    Some(name) => {
+                        let known = launch_cfg
+                            .configs
+                            .iter()
+                            .map(|config| config.name.as_str())
+                            .collect::<Vec<_>>();
+                        format!("BC server config '{name}' not found; known configs: {known:?}")
+                    }
+                    None => "No BC server config found in launch config".to_string(),
+                };
                 return rpc_error(
                     id,
-                    error_codes::INTERNAL_ERROR,
-                    "No BC server config found in launch config",
+                    if config_name.is_some() {
+                        error_codes::INVALID_PARAMS
+                    } else {
+                        error_codes::INTERNAL_ERROR
+                    },
+                    &message,
                 );
             }
         }
@@ -497,52 +936,159 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         events.push(ev);
     }
     for run_handle in run_handles {
-        if let Err(e) = run_handle.await {
-            return rpc_error(
-                id,
-                error_codes::INTERNAL_ERROR,
-                &format!("test run task panicked: {e}"),
-            );
+        match run_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("test backend failed: {error}"),
+                );
+            }
+            Err(error) => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("test run task panicked: {error}"),
+                );
+            }
         }
+    }
+    let backend_errors = events
+        .iter()
+        .filter_map(|event| match event {
+            TestEvent::Error { message } => Some(message.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !backend_errors.is_empty() {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!(
+                "test backends reported errors: {}",
+                backend_errors.join("; ")
+            ),
+        );
+    }
+    let actual_summary_ids = summaries
+        .iter()
+        .map(|summary| summary.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let missing_summaries = expected_summary_ids
+        .difference(&actual_summary_ids)
+        .copied()
+        .collect::<Vec<_>>();
+    if !missing_summaries.is_empty() {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!(
+                "test backends completed without summaries for codeunits {missing_summaries:?}"
+            ),
+        );
+    }
+    let unexpected_summaries = actual_summary_ids
+        .difference(&expected_summary_ids)
+        .copied()
+        .collect::<Vec<_>>();
+    if !unexpected_summaries.is_empty() || actual_summary_ids.len() != summaries.len() {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!(
+                "test backends returned duplicate or unexpected summaries: {unexpected_summaries:?}"
+            ),
+        );
     }
 
     // Once every backend has finished, read the interpreter's aggregated
     // dynamic (executed-line) coverage. `None` unless coverage was requested; an
     // empty report when requested but no interp tests ran (e.g. all-live run).
     let dynamic_coverage = if opts.coverage {
-        Some(merge_dynamic_coverage_reports(
-            interp_modes_for_report
-                .iter()
-                .map(|mode| mode.coverage_report()),
-        ))
+        let reports = match interp_modes_for_report
+            .iter()
+            .map(|mode| mode.coverage_report())
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(reports) => reports,
+            Err(error) => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("dynamic test coverage is unavailable: {error}"),
+                );
+            }
+        };
+        Some(merge_dynamic_coverage_reports(reports))
     } else {
         None
     };
 
-    if let Err(e) = ensure_result_store(workspace, &project_root).await {
-        tracing::warn!(error = %e, "test_results store init failed; persistence skipped");
-    } else if let Some(store_arc) = workspace.test_results.read().ok().and_then(|g| g.clone()) {
-        for summary in &summaries {
-            for m in &summary.methods {
-                let rec = al_test::persistence::TestRunRecord {
-                    timestamp: al_test::persistence::now_secs(),
-                    codeunit_id: summary.id,
-                    codeunit_name: summary.name.clone(),
-                    method_name: m.name.clone(),
-                    status: m.status.clone(),
-                    duration_ms: m.duration_ms,
-                    error: m.error.clone(),
-                };
-                if let Err(e) = store_arc.append(rec).await {
-                    tracing::warn!(error = %e, "failed to persist test result");
-                }
+    if let Err(error) = ensure_result_store(workspace, &project_root).await {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("test results store initialization failed: {error}"),
+        );
+    }
+    let store = match workspace.test_results.read() {
+        Ok(guard) => match guard.clone() {
+            Some(store) => store,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    "test results store initialization completed without a store",
+                );
+            }
+        },
+        Err(_) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                "test results store lock is poisoned",
+            );
+        }
+    };
+    let timestamp = match al_test::persistence::now_secs() {
+        Ok(timestamp) => timestamp,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("could not timestamp test results: {error}"),
+            );
+        }
+    };
+    for summary in &summaries {
+        for method in &summary.methods {
+            let record = al_test::persistence::TestRunRecord {
+                timestamp,
+                codeunit_id: summary.id,
+                codeunit_name: summary.name.clone(),
+                method_name: method.name.clone(),
+                status: method.status.clone(),
+                duration_ms: method.duration_ms,
+                error: method.error.clone(),
+            };
+            if let Err(error) = store.append(record).await {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("failed to persist test result: {error}"),
+                );
             }
         }
     }
 
     if let Some(path) = &opts.junit_out {
         if let Err(e) = write_junit_to_path(&summaries, path).await {
-            tracing::warn!(error = %e, path = %path.display(), "junit write failed");
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("failed to write JUnit output '{}': {e}", path.display()),
+            );
         }
     }
     if let Some(path) = &opts.cobertura_out {
@@ -551,12 +1097,32 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         // distinguished in the emitted XML (coverage-mode attribute + comment).
         if let Some(report) = &dynamic_coverage {
             if let Err(e) = write_cobertura_dynamic_to_path(report, path).await {
-                tracing::warn!(error = %e, path = %path.display(), "dynamic cobertura write failed");
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!(
+                        "failed to write dynamic Cobertura output '{}': {e}",
+                        path.display()
+                    ),
+                );
             }
         } else {
-            let coverage = al_analysis::queries::test_coverage::test_coverage(workspace);
+            let coverage = match al_analysis::queries::test_coverage::test_coverage(workspace) {
+                Ok(coverage) => coverage,
+                Err(error) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("static coverage analysis failed: {error}"),
+                    );
+                }
+            };
             if let Err(e) = write_cobertura_to_path(&coverage, path).await {
-                tracing::warn!(error = %e, path = %path.display(), "cobertura write failed");
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("failed to write Cobertura output '{}': {e}", path.display()),
+                );
             }
         }
     }
@@ -565,7 +1131,16 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     let passed: usize = summaries.iter().map(|s| s.passed).sum();
     let failed: usize = summaries.iter().map(|s| s.failed).sum();
     let skipped: usize = summaries.iter().map(|s| s.skipped).sum();
-    let summaries_json = serde_json::to_value(&summaries).unwrap_or(serde_json::Value::Null);
+    let summaries_json = match serde_json::to_value(&summaries) {
+        Ok(value) => value,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("serialize test summaries failed: {error}"),
+            );
+        }
+    };
 
     // Suppress unused warning on imports until junit/cobertura helpers below.
     let _ = (
@@ -575,6 +1150,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
 
     let mut result_obj = serde_json::json!({
         "summaries": summaries_json,
+        "routing": routing,
         "totals": {
             "total": total,
             "passed": passed,
@@ -605,10 +1181,19 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
 fn merge_dynamic_coverage_reports(
     reports: impl IntoIterator<Item = al_runtime::interpreter::coverage::DynamicCoverageReport>,
 ) -> al_runtime::interpreter::coverage::DynamicCoverageReport {
-    use al_runtime::interpreter::coverage::{BranchCoverage, FileCoverage};
+    use al_runtime::interpreter::coverage::{
+        BranchCoverage, ConditionObservationCoverage, FileCoverage, McdcCoverage, PathCoverage,
+    };
     use std::collections::{BTreeMap, BTreeSet};
 
-    type BranchTallies = BTreeMap<u32, (u64, u64)>;
+    #[derive(Default)]
+    struct BranchTally {
+        then_taken: u64,
+        else_taken: u64,
+        paths: BTreeMap<String, u64>,
+        condition_observations: BTreeMap<(Vec<bool>, bool), u64>,
+    }
+    type BranchTallies = BTreeMap<u32, BranchTally>;
     type FileTallies = (BTreeSet<u32>, BranchTallies);
     let mut files: BTreeMap<String, FileTallies> = BTreeMap::new();
     for report in reports {
@@ -617,8 +1202,19 @@ fn merge_dynamic_coverage_reports(
             entry.0.extend(file.executed_lines);
             for branch in file.branches {
                 let tally = entry.1.entry(branch.line).or_default();
-                tally.0 += branch.then_taken;
-                tally.1 += branch.else_taken;
+                tally.then_taken += branch.then_taken;
+                tally.else_taken += branch.else_taken;
+                for path in branch.paths {
+                    *tally.paths.entry(path.path).or_insert(0) += path.hits;
+                }
+                if let Some(mcdc) = branch.mcdc {
+                    for observation in mcdc.observations {
+                        *tally
+                            .condition_observations
+                            .entry((observation.conditions, observation.outcome))
+                            .or_insert(0) += observation.hits;
+                    }
+                }
             }
         }
     }
@@ -631,10 +1227,24 @@ fn merge_dynamic_coverage_reports(
                 executed_lines: executed_lines.into_iter().collect(),
                 branches: branches
                     .into_iter()
-                    .map(|(line, (then_taken, else_taken))| BranchCoverage {
+                    .map(|(line, tally)| BranchCoverage {
                         line,
-                        then_taken,
-                        else_taken,
+                        then_taken: tally.then_taken,
+                        else_taken: tally.else_taken,
+                        paths: tally
+                            .paths
+                            .into_iter()
+                            .map(|(path, hits)| PathCoverage { path, hits })
+                            .collect(),
+                        mcdc: McdcCoverage::from_observations(
+                            tally.condition_observations.into_iter().map(
+                                |((conditions, outcome), hits)| ConditionObservationCoverage {
+                                    conditions,
+                                    outcome,
+                                    hits,
+                                },
+                            ),
+                        ),
                     })
                     .collect(),
             })
@@ -644,7 +1254,7 @@ fn merge_dynamic_coverage_reports(
 
 /// Serialize a [`DynamicCoverageReport`] into the `tests.run_batch`
 /// result shape: `{ mode, files: [{ file, executedLines, branches: [{ line,
-/// thenTaken, elseTaken }] }] }`. Built here rather than via `Serialize` on the
+/// thenTaken, elseTaken, paths }] }] }`. Built here rather than via `Serialize` on the
 /// al-runtime type so the runtime crate stays free of a wire-format commitment.
 fn dynamic_coverage_to_json(
     report: &al_runtime::interpreter::coverage::DynamicCoverageReport,
@@ -661,6 +1271,23 @@ fn dynamic_coverage_to_json(
                         "line": b.line,
                         "thenTaken": b.then_taken,
                         "elseTaken": b.else_taken,
+                        "paths": b.paths.iter().map(|path| serde_json::json!({
+                            "path": path.path,
+                            "hits": path.hits,
+                        })).collect::<Vec<_>>(),
+                        "mcdc": b.mcdc.as_ref().map(|mcdc| serde_json::json!({
+                            "covered": mcdc.covered_count(),
+                            "total": mcdc.conditions.len(),
+                            "conditions": mcdc.conditions.iter().map(|condition| serde_json::json!({
+                                "index": condition.index,
+                                "covered": condition.covered,
+                            })).collect::<Vec<_>>(),
+                            "observations": mcdc.observations.iter().map(|observation| serde_json::json!({
+                                "conditions": observation.conditions,
+                                "outcome": observation.outcome,
+                                "hits": observation.hits,
+                            })).collect::<Vec<_>>(),
+                        })),
                     })
                 })
                 .collect();
@@ -693,7 +1320,16 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_auto(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let discovered = al_analysis::queries::tests::discover_tests(workspace);
+    let discovered = match al_analysis::queries::tests::discover_tests(workspace) {
+        Ok(discovered) => discovered,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test discovery failed: {error}"),
+            );
+        }
+    };
     let mut codeunit_ids: Vec<serde_json::Value> = Vec::with_capacity(discovered.len());
     let mut codeunit_names: Vec<serde_json::Value> = Vec::with_capacity(discovered.len());
     for cu in &discovered {
@@ -718,6 +1354,31 @@ pub(in crate::server::daemon) async fn dispatch_tests_last_results(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
+    let codeunit_filter = match params.get("codeunitId") {
+        None => None,
+        Some(value) => match value.as_i64().and_then(|value| i32::try_from(value).ok()) {
+            Some(codeunit_id) if codeunit_id > 0 => Some(codeunit_id),
+            _ => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'codeunitId' is out of range (must be a positive i32 AL object ID)",
+                );
+            }
+        },
+    };
+    let method_filter = match optional_non_empty_string(params, "methodName") {
+        Ok(method) => method,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    if method_filter.is_some() && codeunit_filter.is_none() {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "'methodName' requires 'codeunitId'",
+        );
+    }
+
     let project_root = match workspace
         .project
         .read()
@@ -747,17 +1408,8 @@ pub(in crate::server::daemon) async fn dispatch_tests_last_results(
         }
     };
 
-    if let (Some(cu), Some(method)) = (
-        params.get("codeunitId").and_then(|v| v.as_i64()),
-        params.get("methodName").and_then(|v| v.as_str()),
-    ) {
-        let cu_id = match i32::try_from(cu) {
-            Ok(v) => v,
-            Err(_) => {
-                return rpc_error(id, error_codes::INVALID_PARAMS, "codeunitId out of range");
-            }
-        };
-        return match store.last_for(cu_id, method).await {
+    if let (Some(codeunit_id), Some(method)) = (codeunit_filter, method_filter) {
+        return match store.last_for(codeunit_id, method).await {
             Ok(opt) => Response {
                 id,
                 result: Some(serde_json::json!({ "lastResult": opt })),
@@ -782,16 +1434,11 @@ pub(in crate::server::daemon) async fn dispatch_tests_last_results(
             );
         }
     };
-    let filtered: Vec<_> = match params.get("codeunitId").and_then(|v| v.as_i64()) {
-        Some(cu) => {
-            let cu_id = match i32::try_from(cu) {
-                Ok(v) => v,
-                Err(_) => {
-                    return rpc_error(id, error_codes::INVALID_PARAMS, "codeunitId out of range");
-                }
-            };
-            all.into_iter().filter(|r| r.codeunit_id == cu_id).collect()
-        }
+    let filtered: Vec<_> = match codeunit_filter {
+        Some(codeunit_id) => all
+            .into_iter()
+            .filter(|result| result.codeunit_id == codeunit_id)
+            .collect(),
         None => all,
     };
     Response {
@@ -847,18 +1494,46 @@ pub(in crate::server::daemon) fn dispatch_tests_affected(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(arr) = params.get("changedFiles").and_then(|v| v.as_array()) else {
-        return rpc_error(
-            id,
-            error_codes::INVALID_PARAMS,
-            "Missing 'changedFiles' (array of paths)",
-        );
+    let changed_files = match optional_array(params, "changedFiles") {
+        Ok(Some(files)) => files,
+        Ok(None) => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "Missing 'changedFiles' (array of paths)",
+            );
+        }
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
-    let paths: Vec<String> = arr
-        .iter()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect();
-    let affected = al_analysis::queries::tests::affected_tests(workspace, &paths);
+    let mut paths = Vec::with_capacity(changed_files.len());
+    let mut seen = std::collections::HashSet::new();
+    for (index, value) in changed_files.iter().enumerate() {
+        let Some(path) = value.as_str().filter(|path| !path.trim().is_empty()) else {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!("changedFiles[{index}] must be a non-empty string path"),
+            );
+        };
+        if !seen.insert(path.to_string()) {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!("changedFiles[{index}] duplicates an earlier path"),
+            );
+        }
+        paths.push(path.to_string());
+    }
+    let affected = match al_analysis::queries::tests::affected_tests(workspace, &paths) {
+        Ok(affected) => affected,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("affected-test analysis failed: {error}"),
+            );
+        }
+    };
     Response {
         id,
         result: Some(serde_json::json!({ "affected": affected })),
@@ -871,7 +1546,16 @@ pub(in crate::server::daemon) fn dispatch_tests_classify(
     id: u64,
 ) -> Response {
     use al_test::router;
-    let results = router::classify_all(workspace);
+    let results = match router::classify_all(workspace) {
+        Ok(results) => results,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test routing analysis failed: {error}"),
+            );
+        }
+    };
     let json: Vec<serde_json::Value> = results
         .into_iter()
         .map(|r| {
@@ -880,6 +1564,8 @@ pub(in crate::server::daemon) fn dispatch_tests_classify(
                 "codeunitName": r.codeunit_name,
                 "methodName": r.method_name,
                 "decision": r.decision.as_str(),
+                "runsLocally": r.decision.runs_locally(),
+                "execution": r.decision.execution_note(),
                 "reasons": r
                     .reasons
                     .into_iter()
@@ -901,14 +1587,24 @@ pub(in crate::server::daemon) fn dispatch_tests_classify(
 }
 
 pub(in crate::server::daemon) async fn dispatch_tests_snapshot_validate(
+    workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let path = match params.get("snapshotPath").and_then(|value| value.as_str()) {
-        Some(path) => path,
-        None => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'snapshotPath'"),
+    let path = match optional_non_empty_string(params, "snapshotPath") {
+        Ok(Some(path)) => path,
+        Ok(None) => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'snapshotPath'"),
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
-    let bytes = match tokio::fs::read(path).await {
+    let project_root = match snapshot_project_root(workspace).await {
+        Ok(root) => root,
+        Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
+    };
+    let path = match resolve_existing_snapshot_path(path, &project_root) {
+        Ok(path) => path,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let bytes = match tokio::fs::read(&path).await {
         Ok(bytes) => bytes,
         Err(error) => {
             return rpc_error(
@@ -918,7 +1614,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_validate(
             );
         }
     };
-    let snapshot = match al_snapshot::deserialize_snapshot(&bytes) {
+    let mut snapshot = match al_snapshot::deserialize_snapshot(&bytes) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             return rpc_error(
@@ -928,6 +1624,9 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_validate(
             );
         }
     };
+    if let Err(message) = normalize_snapshot_sample_paths(&mut snapshot, &project_root) {
+        return rpc_error(id, error_codes::INVALID_PARAMS, &message);
+    }
 
     Response {
         id,
@@ -942,21 +1641,810 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_validate(
         ..Default::default()
     }
 }
-pub(in crate::server::daemon) async fn dispatch_tests_snapshot_diff(
+
+async fn snapshot_project_root(workspace: &Workspace) -> Result<PathBuf, String> {
+    let root = workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone())
+        .ok_or_else(|| ERR_NO_PROJECT.to_string())?;
+    root.canonicalize()
+        .map_err(|error| format!("resolve project root failed: {error}"))
+}
+
+fn resolve_existing_snapshot_path(
+    requested: &str,
+    project_root: &std::path::Path,
+) -> Result<PathBuf, String> {
+    let path = std::path::Path::new(requested);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    };
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("resolve snapshot path failed: {error}"))?;
+    if !canonical.starts_with(project_root) {
+        return Err("snapshot path escapes the project root".to_string());
+    }
+    if !canonical.is_file() {
+        return Err("snapshot path is not a regular file".to_string());
+    }
+    Ok(canonical)
+}
+
+fn normalize_snapshot_sample_paths(
+    snapshot: &mut al_snapshot::Snapshot,
+    project_root: &std::path::Path,
+) -> Result<(), String> {
+    for sample in &mut snapshot.samples {
+        let path = std::path::Path::new(&sample.file);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            project_root.join(path)
+        };
+        let canonical = path.canonicalize().map_err(|error| {
+            format!(
+                "snapshot breakpoint source '{}' cannot be resolved: {error}",
+                sample.file
+            )
+        })?;
+        let relative = canonical.strip_prefix(project_root).map_err(|_| {
+            format!(
+                "snapshot breakpoint source '{}' escapes the project root",
+                sample.file
+            )
+        })?;
+        if !canonical.is_file() {
+            return Err(format!(
+                "snapshot breakpoint source '{}' is not a regular file",
+                sample.file
+            ));
+        }
+        sample.file = relative.to_string_lossy().replace('\\', "/");
+    }
+    al_snapshot::validate_snapshot(snapshot).map_err(|error| error.to_string())
+}
+
+pub(in crate::server::daemon) async fn dispatch_tests_snapshot_capture(
+    workspace: &std::sync::Arc<Workspace>,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let path_a = match params.get("pathA").and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'pathA'"),
+    use al_bc::launch::find_launch_config;
+    use al_test::backends::snapshot::{
+        capture_live_snapshot, LiveSnapshotRequest, SnapshotBreakpoint,
     };
-    let path_b = match params.get("pathB").and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'pathB'"),
+    use sha2::{Digest, Sha256};
+
+    let codeunit_id = match params
+        .get("codeunitId")
+        .and_then(|value| value.as_i64())
+        .and_then(|value| i32::try_from(value).ok())
+    {
+        Some(value) if value > 0 => value,
+        _ => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "Missing or invalid 'codeunitId'",
+            );
+        }
+    };
+    let codeunit_name = match optional_non_empty_string(params, "codeunitName") {
+        Ok(Some(value)) => value.to_string(),
+        Ok(None) => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'codeunitName'"),
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let method_name = match optional_non_empty_string(params, "methodName") {
+        Ok(Some(value)) => value.to_string(),
+        Ok(None) => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'methodName'"),
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let bc_version = match optional_non_empty_string(params, "bcVersion") {
+        Ok(Some(value)) => value.to_string(),
+        Ok(None) => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "Missing 'bcVersion'; capture metadata must identify the live BC runtime",
+            );
+        }
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let raw_breakpoints = match optional_array(params, "breakpoints") {
+        Ok(Some(values)) if !values.is_empty() && values.len() <= 10_000 => values,
+        Ok(Some(values)) if values.len() > 10_000 => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "'breakpoints' must contain no more than 10000 entries",
+            );
+        }
+        Ok(_) => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "Missing 'breakpoints' (non-empty array of {file,line})",
+            );
+        }
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let output_path = match optional_non_empty_string(params, "outputPath") {
+        Ok(Some(path)) => path,
+        Ok(None) => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'outputPath'"),
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    if !output_path.to_ascii_lowercase().ends_with(".snap.json") {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "'outputPath' must end with .snap.json",
+        );
+    }
+    let config_name = match optional_non_empty_string(params, "config") {
+        Ok(config) => config,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let supplied_token = match params.get("accessToken") {
+        None => "",
+        Some(value) => match value.as_str() {
+            Some(token) => token,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'accessToken' must be a string when supplied",
+                );
+            }
+        },
+    };
+    let timeout_ms = match optional_timeout_ms(params) {
+        Ok(timeout) => timeout.unwrap_or(300_000),
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+
+    let project_root = match workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone())
+    {
+        Some(root) => root,
+        None => return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT),
+    };
+    let project_root = match project_root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("resolve project root failed: {error}"),
+            );
+        }
+    };
+    let output = match resolve_output_path_within_project(
+        std::path::Path::new(output_path),
+        &project_root,
+    ) {
+        Some(path) => path,
+        None => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "'outputPath' path escapes the project root",
+            );
+        }
+    };
+
+    let discovered = match al_analysis::queries::tests::discover_tests(workspace) {
+        Ok(discovered) => discovered,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test discovery failed: {error}"),
+            );
+        }
+    };
+    let matching_codeunits = discovered
+        .iter()
+        .filter(|codeunit| codeunit.id == codeunit_id)
+        .collect::<Vec<_>>();
+    let codeunit = match matching_codeunits.as_slice() {
+        [codeunit] => codeunit,
+        [] => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "snapshot codeunit is not present in the workspace test index",
+            );
+        }
+        _ => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "snapshot codeunit ID is ambiguous in the workspace test index",
+            );
+        }
+    };
+    if !codeunit.name.eq_ignore_ascii_case(&codeunit_name) {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            &format!(
+                "codeunitName '{codeunit_name}' does not match indexed codeunit '{}'",
+                codeunit.name
+            ),
+        );
+    }
+    if !codeunit
+        .tests
+        .iter()
+        .any(|test| test.name.eq_ignore_ascii_case(&method_name))
+    {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            &format!(
+                "test method '{method_name}' is not present in codeunit '{}'",
+                codeunit.name
+            ),
+        );
+    }
+
+    let mut breakpoints = Vec::with_capacity(raw_breakpoints.len());
+    let mut source_files = Vec::new();
+    let mut seen_breakpoints = std::collections::HashSet::new();
+    for raw in raw_breakpoints {
+        let file = match raw
+            .get("file")
+            .and_then(|value| value.as_str())
+            .filter(|file| !file.trim().is_empty())
+        {
+            Some(file) => file,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "Each breakpoint requires 'file'",
+                );
+            }
+        };
+        let line = match raw
+            .get("line")
+            .and_then(|value| value.as_u64())
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|line| *line > 0)
+        {
+            Some(line) => line,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "Each breakpoint requires a positive 1-based 'line'",
+                );
+            }
+        };
+        let file_path = if std::path::Path::new(file).is_absolute() {
+            PathBuf::from(file)
+        } else {
+            project_root.join(file)
+        };
+        let file_path = match file_path.canonicalize() {
+            Ok(path) if path.starts_with(&project_root) => path,
+            _ => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "Breakpoint file must exist inside the project root",
+                );
+            }
+        };
+        let Some(info) = workspace.file_index.object_info.get(&file_path) else {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "Breakpoint file is not an indexed AL object",
+            );
+        };
+        let Some(source) = workspace.file_index.files.get(&file_path) else {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                "Breakpoint object metadata has no matching indexed source",
+            );
+        };
+        if usize::try_from(line)
+            .ok()
+            .is_none_or(|line| line > source.lines().count())
+        {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "Breakpoint line is outside the indexed source file",
+            );
+        }
+        let Some(object_id) = info.value().id.and_then(|value| i32::try_from(value).ok()) else {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "Breakpoint file has no valid AL object ID",
+            );
+        };
+        let object_type = al_dap::dap::native_dap::kind_to_object_type(&info.value().kind);
+        if !seen_breakpoints.insert((file_path.clone(), line)) {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "Duplicate breakpoint file/line",
+            );
+        }
+        source_files.push(file_path.clone());
+        let condition = match raw.get("condition") {
+            None => None,
+            Some(value) => match value
+                .as_str()
+                .filter(|condition| !condition.trim().is_empty())
+            {
+                Some(condition) => Some(condition.to_string()),
+                None => {
+                    return rpc_error(
+                        id,
+                        error_codes::INVALID_PARAMS,
+                        "Breakpoint 'condition' must be a non-empty string when supplied",
+                    );
+                }
+            },
+        };
+        breakpoints.push(SnapshotBreakpoint {
+            file: file_path.to_string_lossy().into_owned(),
+            line,
+            object_type,
+            object_id,
+            condition,
+        });
+    }
+    source_files.sort();
+    source_files.dedup();
+    let mut source_hasher = Sha256::new();
+    for file in &source_files {
+        let stable_path = match file.strip_prefix(&project_root) {
+            Ok(path) => path,
+            Err(_) => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    "validated breakpoint path no longer belongs to the project",
+                );
+            }
+        };
+        source_hasher.update(stable_path.to_string_lossy().replace('\\', "/").as_bytes());
+        source_hasher.update([0]);
+        let bytes = match tokio::fs::read(file).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("read breakpoint source failed: {error}"),
+                );
+            }
+        };
+        source_hasher.update(bytes);
+        source_hasher.update([0]);
+    }
+    let source_hash = format!("{:x}", source_hasher.finalize());
+
+    let launch = match find_launch_config(&project_root) {
+        Ok(Some(launch)) => launch,
+        Ok(None) => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "No debug configuration found in project (.zed/debug.json or .vscode/launch.json)",
+            );
+        }
+        Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error.to_string()),
+    };
+    let server = match crate::server::daemon::debug_dispatch::pick_named_config(
+        &launch.configs,
+        config_name,
+    ) {
+        Ok(config) => config.clone(),
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let mut debug =
+        match crate::server::daemon::debug_dispatch::resolve_debug_config(workspace, params) {
+            Ok(config) => config,
+            Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+        };
+    debug.break_on_next = Some("WebServiceClient".to_string());
+    debug.launch_browser = false;
+    if let Err(message) = debug.validate_native() {
+        return rpc_error(id, error_codes::INVALID_PARAMS, &message);
+    }
+
+    let access_token = if supplied_token.is_empty()
+        && crate::server::daemon::debug_dispatch::debug_uses_oauth(&debug)
+    {
+        match al_bc::http_auth::access_token_from_env() {
+            Ok(Some(token)) => token,
+            Ok(None) => {
+                let client = reqwest::Client::new();
+                match al_symbols::oauth::acquire_token(&client, &debug.tenant, |message| {
+                    tracing::info!("snapshot authentication: {message}");
+                })
+                .await
+                {
+                    Ok(token) => token,
+                    Err(error) => {
+                        return rpc_error(
+                            id,
+                            error_codes::INTERNAL_ERROR,
+                            &format!("snapshot authentication failed: {error}"),
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    &format!("Invalid bearer-token environment: {error}"),
+                );
+            }
+        }
+    } else {
+        supplied_token.to_string()
+    };
+
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+    let (mut snapshot, test_result) = match capture_live_snapshot(LiveSnapshotRequest {
+        server,
+        debug,
+        access_token,
+        codeunit_id,
+        codeunit_name,
+        method_name,
+        bc_version,
+        source_hash,
+        breakpoints,
+        timeout,
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("snapshot capture failed: {error}"),
+            );
+        }
+    };
+    for sample in &mut snapshot.samples {
+        let path = std::path::Path::new(&sample.file);
+        if let Ok(relative) = path.strip_prefix(&project_root) {
+            sample.file = relative.to_string_lossy().replace('\\', "/");
+        }
+    }
+    let bytes = match al_snapshot::serialize_snapshot(&snapshot) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("snapshot serialization failed: {error}"),
+            );
+        }
+    };
+    if let Some(parent) = output.parent() {
+        if let Err(error) = tokio::fs::create_dir_all(parent).await {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("create snapshot output directory failed: {error}"),
+            );
+        }
+    }
+    if let Err(error) = tokio::fs::write(&output, bytes).await {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("write snapshot failed: {error}"),
+        );
+    }
+
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "captured": true,
+            "snapshotPath": output,
+            "sampleCount": snapshot.samples.len(),
+            "runId": snapshot.run_id,
+            "codeunitId": snapshot.codeunit_id,
+            "methodName": snapshot.method_name,
+            "bcVersion": snapshot.bc_version,
+            "sourceHash": snapshot.source_hash,
+            "testResult": test_result,
+        })),
+        error: None,
+        ..Default::default()
+    }
+}
+
+pub(in crate::server::daemon) async fn dispatch_tests_snapshot_replay(
+    workspace: &std::sync::Arc<Workspace>,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let snapshot_path = match optional_non_empty_string(params, "snapshotPath") {
+        Ok(Some(path)) => path,
+        Ok(None) => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'snapshotPath'"),
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let bc_version = match optional_non_empty_string(params, "bcVersion") {
+        Ok(Some(version)) => version,
+        Ok(None) => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "Missing 'bcVersion'; replay metadata must identify the live BC runtime",
+            );
+        }
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let project_root = match snapshot_project_root(workspace).await {
+        Ok(root) => root,
+        Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
+    };
+    let snapshot_path = match resolve_existing_snapshot_path(snapshot_path, &project_root) {
+        Ok(path) => path,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let bytes = match tokio::fs::read(&snapshot_path).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("read baseline snapshot failed: {error}"),
+            );
+        }
+    };
+    let mut baseline = match al_snapshot::deserialize_snapshot(&bytes) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!("baseline snapshot parse failed: {error}"),
+            );
+        }
+    };
+    if baseline.samples.is_empty() {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "baseline snapshot has no samples to replay",
+        );
+    }
+    if let Err(message) = normalize_snapshot_sample_paths(&mut baseline, &project_root) {
+        return rpc_error(id, error_codes::INVALID_PARAMS, &message);
+    }
+
+    let discovered = match al_analysis::queries::tests::discover_tests(workspace) {
+        Ok(discovered) => discovered,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test discovery failed: {error}"),
+            );
+        }
+    };
+    let matching_tests = discovered
+        .into_iter()
+        .filter(|codeunit| {
+            codeunit.id == baseline.codeunit_id
+                && codeunit
+                    .tests
+                    .iter()
+                    .any(|test| test.name.eq_ignore_ascii_case(&baseline.method_name))
+        })
+        .collect::<Vec<_>>();
+    let codeunit = match matching_tests.as_slice() {
+        [codeunit] => codeunit,
+        [] => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "baseline test codeunit/method is not present in the current workspace index",
+            );
+        }
+        _ => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "baseline test codeunit ID is ambiguous in the current workspace",
+            );
+        }
+    };
+
+    let mut unique_breakpoints = std::collections::BTreeMap::<(String, u32), Option<String>>::new();
+    for sample in &baseline.samples {
+        unique_breakpoints
+            .entry((sample.file.clone(), sample.line))
+            .or_insert_with(|| sample.condition.clone());
+    }
+    let breakpoints = unique_breakpoints
+        .into_iter()
+        .map(|((file, line), condition)| {
+            let mut value = serde_json::json!({ "file": file, "line": line });
+            if let Some(condition) = condition {
+                value["condition"] = serde_json::Value::String(condition);
+            }
+            value
+        })
+        .collect::<Vec<_>>();
+
+    let replay_nonce = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => duration.as_nanos(),
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("system clock cannot create replay nonce: {error}"),
+            );
+        }
+    };
+    let replay_output = project_root
+        .join("target/al-snapshot-replay")
+        .join(format!("{}-{replay_nonce}.snap.json", std::process::id()));
+    let mut capture_params = serde_json::json!({
+        "codeunitId": baseline.codeunit_id,
+        "codeunitName": codeunit.name,
+        "methodName": baseline.method_name,
+        "bcVersion": bc_version,
+        "breakpoints": breakpoints,
+        "outputPath": replay_output,
+    });
+    for name in ["config", "timeoutMs", "accessToken"] {
+        if let Some(value) = params.get(name) {
+            capture_params[name] = value.clone();
+        }
+    }
+
+    let capture = dispatch_tests_snapshot_capture(workspace, id, &capture_params).await;
+    if capture.error.is_some() {
+        if let Err(error) = tokio::fs::remove_file(&replay_output).await {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    path = %replay_output.display(),
+                    %error,
+                    "failed to remove unsuccessful replay output"
+                );
+            }
+        }
+        return capture;
+    }
+    let test_result = match capture
+        .result
+        .as_ref()
+        .and_then(|result| result.get("testResult"))
+        .cloned()
+    {
+        Some(result) => result,
+        None => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                "snapshot capture succeeded without a testResult",
+            );
+        }
+    };
+    let observed_bytes = match tokio::fs::read(&replay_output).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("read replay snapshot failed: {error}"),
+            );
+        }
+    };
+    if let Err(error) = tokio::fs::remove_file(&replay_output).await {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("remove temporary replay snapshot failed: {error}"),
+        );
+    }
+    if let Some(parent) = replay_output.parent() {
+        if let Err(error) = tokio::fs::remove_dir(parent).await {
+            if !matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+            ) {
+                tracing::warn!(
+                    path = %parent.display(),
+                    %error,
+                    "failed to remove replay temporary directory"
+                );
+            }
+        }
+    }
+    let mut observed = match al_snapshot::deserialize_snapshot(&observed_bytes) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("replay snapshot parse failed: {error}"),
+            );
+        }
+    };
+    if let Err(message) = normalize_snapshot_sample_paths(&mut observed, &project_root) {
+        return rpc_error(id, error_codes::INTERNAL_ERROR, &message);
+    }
+    let divergences = al_snapshot::diff_snapshots(&baseline, &observed);
+
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "replayed": true,
+            "matched": divergences.is_empty(),
+            "divergences": divergences,
+            "baseline": {
+                "snapshotPath": snapshot_path,
+                "sampleCount": baseline.samples.len(),
+                "bcVersion": baseline.bc_version,
+                "sourceHash": baseline.source_hash,
+            },
+            "observed": {
+                "sampleCount": observed.samples.len(),
+                "bcVersion": observed.bc_version,
+                "sourceHash": observed.source_hash,
+                "testResult": test_result,
+            },
+        })),
+        error: None,
+        ..Default::default()
+    }
+}
+
+pub(in crate::server::daemon) async fn dispatch_tests_snapshot_diff(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let path_a = match optional_non_empty_string(params, "pathA") {
+        Ok(Some(path)) => path,
+        Ok(None) => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'pathA'"),
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let path_b = match optional_non_empty_string(params, "pathB") {
+        Ok(Some(path)) => path,
+        Ok(None) => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'pathB'"),
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let project_root = match snapshot_project_root(workspace).await {
+        Ok(root) => root,
+        Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
     };
     let read = async |p: &str| -> Result<al_snapshot::format::Snapshot, String> {
-        let bytes = tokio::fs::read(p).await.map_err(|e| e.to_string())?;
-        al_snapshot::format::deserialize_snapshot(&bytes).map_err(|e| e.to_string())
+        let path = resolve_existing_snapshot_path(p, &project_root)?;
+        let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
+        let mut snapshot =
+            al_snapshot::format::deserialize_snapshot(&bytes).map_err(|e| e.to_string())?;
+        normalize_snapshot_sample_paths(&mut snapshot, &project_root)?;
+        Ok(snapshot)
     };
     let a = match read(path_a).await {
         Ok(s) => s,
@@ -985,28 +2473,65 @@ pub(in crate::server::daemon) async fn dispatch_tests_mutate(
     use al_protocol::jsonrpc::error_codes;
     use al_test::mutate::MutationOptions;
 
-    let _project_root = match workspace
-        .project
-        .try_read()
-        .ok()
-        .and_then(|g| g.as_ref().map(|p| p.root.clone()))
-    {
-        Some(root) => root,
-        None => {
-            return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT);
-        }
+    let parallel = match optional_bool_param(params, "parallel", false) {
+        Ok(parallel) => parallel,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
-
-    let parallel = params
-        .get("parallel")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let timeout_ms = clamp_timeout_ms(params.get("timeoutMs").and_then(|v| v.as_u64()));
-    let files = params.get("files").and_then(|v| v.as_array()).map(|arr| {
-        arr.iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect::<Vec<String>>()
-    });
+    let timeout_ms = match optional_timeout_ms(params) {
+        Ok(timeout) => timeout,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let requested_files = match optional_array(params, "files") {
+        Ok(None) => None,
+        Ok(Some(values)) => {
+            if values.is_empty() {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'files' must not be empty when supplied",
+                );
+            }
+            let mut files = Vec::with_capacity(values.len());
+            let mut seen = std::collections::HashSet::new();
+            for (index, value) in values.iter().enumerate() {
+                let Some(file) = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|file| !file.is_empty())
+                else {
+                    return rpc_error(
+                        id,
+                        error_codes::INVALID_PARAMS,
+                        &format!("files[{index}] must be a non-empty string path"),
+                    );
+                };
+                if !seen.insert(file.to_string()) {
+                    return rpc_error(
+                        id,
+                        error_codes::INVALID_PARAMS,
+                        &format!("files[{index}] duplicates an earlier path"),
+                    );
+                }
+                files.push(file.to_string());
+            }
+            Some(files)
+        }
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let project_root = {
+        let project = workspace.project.read().await;
+        let Some(project) = project.as_ref() else {
+            return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT);
+        };
+        project.root.clone()
+    };
+    let files = match requested_files {
+        Some(files) => match resolve_mutation_file_allowlist(workspace, &project_root, files) {
+            Ok(files) => Some(files),
+            Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+        },
+        None => None,
+    };
 
     let opts = MutationOptions {
         affected_only: true,
@@ -1017,15 +2542,25 @@ pub(in crate::server::daemon) async fn dispatch_tests_mutate(
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let report = match al_test::mutate::run_mutation_testing(workspace, opts, tx).await {
+    let report = al_test::mutate::run_mutation_testing(workspace, opts, tx).await;
+    if let Err(error) = drain.await {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("mutation event worker failed: {error}"),
+        );
+    }
+    let report = match report {
         Ok(report) => report,
-        Err(al_test::mutate::MutationError::NoTestFiles) => al_test::mutate::MutationReport {
-            variants: vec![],
-            killed: 0,
-            survived: 0,
-            errored: 0,
-            executor_phase: al_test::mutate::MutationExecutorPhase::Interpreter,
-        },
+        Err(
+            e @ (al_test::mutate::MutationError::NoTestFiles
+            | al_test::mutate::MutationError::NoSelectedReachableFiles { .. }
+            | al_test::mutate::MutationError::NoMutationFiles
+            | al_test::mutate::MutationError::NoMutationVariants
+            | al_test::mutate::MutationError::ParseError { .. }),
+        ) => {
+            return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &e.to_string());
+        }
         Err(e) => {
             return rpc_error(
                 id,
@@ -1034,15 +2569,30 @@ pub(in crate::server::daemon) async fn dispatch_tests_mutate(
             );
         }
     };
-    let _ = drain.await;
 
     match serde_json::to_value(&report) {
-        Ok(value) => Response {
-            id,
-            result: Some(value),
-            error: None,
-            ..Default::default()
-        },
+        Ok(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert(
+                    "mutationScore".to_string(),
+                    report
+                        .mutation_score()
+                        .and_then(serde_json::Number::from_f64)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                object.insert(
+                    "unscored".to_string(),
+                    serde_json::json!(report.unscored_count()),
+                );
+            }
+            Response {
+                id,
+                result: Some(value),
+                error: None,
+                ..Default::default()
+            }
+        }
         Err(e) => rpc_error(
             id,
             error_codes::INTERNAL_ERROR,
@@ -1061,6 +2611,35 @@ mod tests {
         Workspace::new()
     }
 
+    fn assert_invalid_params(response: Response, expected_message: &str) {
+        let error = response.error.expect("expected INVALID_PARAMS response");
+        assert_eq!(error.code, error_codes::INVALID_PARAMS);
+        assert!(
+            error.message.contains(expected_message),
+            "expected error containing {expected_message:?}, got: {}",
+            error.message
+        );
+    }
+
+    async fn install_empty_project(ws: &Workspace, root: &std::path::Path) {
+        *ws.project.write().await = Some(al_project::project::AlProject {
+            root: root.to_path_buf(),
+            app_json: al_project::project::AppManifest {
+                id: "00000000-0000-0000-0000-000000000001".to_string(),
+                name: "Snapshot Tests".to_string(),
+                publisher: "Tests".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: Vec::new(),
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: root.join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: Vec::new(),
+        });
+    }
+
     async fn install_test_result_store(ws: &Workspace, tmp: &tempfile::TempDir) {
         let store = al_test::TestResultStore::open(tmp.path().join("test-results.json"))
             .await
@@ -1071,29 +2650,32 @@ mod tests {
     }
 
     #[test]
-    fn clamp_timeout_ms_passes_through_sensible_values() {
-        assert_eq!(clamp_timeout_ms(Some(0)), Some(0));
-        assert_eq!(clamp_timeout_ms(Some(30_000)), Some(30_000));
-        assert_eq!(clamp_timeout_ms(Some(15 * 60 * 1000)), Some(900_000));
+    fn timeout_param_passes_through_sensible_values_and_absence() {
+        assert_eq!(
+            optional_timeout_ms(&serde_json::json!({"timeoutMs": 0})).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            optional_timeout_ms(&serde_json::json!({"timeoutMs": 30_000})).unwrap(),
+            Some(30_000)
+        );
+        assert_eq!(optional_timeout_ms(&serde_json::json!({})).unwrap(), None);
     }
 
     #[test]
-    fn clamp_timeout_ms_caps_at_max() {
-        // Negative: a hostile or fat-fingered client could send u64::MAX —
-        // we must cap at the documented upper bound (1 hour) so the
-        // daemon doesn't get pinned to a multi-day test run.
-        let huge = u64::MAX;
-        assert_eq!(clamp_timeout_ms(Some(huge)), Some(MAX_TIMEOUT_MS));
+    fn timeout_param_rejects_values_over_max_and_wrong_types() {
         assert_eq!(
-            clamp_timeout_ms(Some(MAX_TIMEOUT_MS + 1)),
+            optional_timeout_ms(&serde_json::json!({"timeoutMs": MAX_TIMEOUT_MS})).unwrap(),
             Some(MAX_TIMEOUT_MS)
         );
-        assert_eq!(clamp_timeout_ms(Some(MAX_TIMEOUT_MS)), Some(MAX_TIMEOUT_MS));
-    }
-
-    #[test]
-    fn clamp_timeout_ms_propagates_none() {
-        assert_eq!(clamp_timeout_ms(None), None);
+        for value in [
+            serde_json::json!(MAX_TIMEOUT_MS + 1),
+            serde_json::json!(u64::MAX),
+            serde_json::json!(-1),
+            serde_json::json!("30000"),
+        ] {
+            assert!(optional_timeout_ms(&serde_json::json!({"timeoutMs": value})).is_err());
+        }
     }
 
     #[test]
@@ -1332,6 +2914,42 @@ mod tests {
             Some(1),
             "TestFails must fail: {result}"
         );
+        let routing = result["routing"].as_array().expect("routing details");
+        assert_eq!(routing.len(), 2, "{result}");
+        for route in routing {
+            assert_eq!(route["decision"], "interp", "{route}");
+            assert_eq!(route["classifiedDecision"], "interp", "{route}");
+            assert_eq!(route["runsLocally"], true, "{route}");
+            assert_eq!(
+                route["execution"], "runs locally on the Rust interpreter",
+                "{route}"
+            );
+            assert!(
+                route["reasons"]
+                    .as_array()
+                    .is_some_and(|reasons| !reasons.is_empty()),
+                "{route}"
+            );
+        }
+
+        let filtered = dispatch_tests_run_batch(
+            &ws,
+            8,
+            &serde_json::json!({
+                "codeunitIds": [50110],
+                "codeunitNames": ["Pure Logic Test"],
+                "filter": "TestAdd*",
+            }),
+        )
+        .await;
+        assert!(filtered.error.is_none(), "{:?}", filtered.error);
+        let filtered = filtered.result.expect("filtered result");
+        assert_eq!(filtered["totals"]["total"], 1, "{filtered}");
+        assert_eq!(filtered["totals"]["passed"], 1, "{filtered}");
+        assert_eq!(filtered["totals"]["failed"], 0, "{filtered}");
+        let routing = filtered["routing"].as_array().expect("filtered routing");
+        assert_eq!(routing.len(), 1, "{filtered}");
+        assert_eq!(routing[0]["methodName"], "TestAddition", "{filtered}");
     }
 
     /// Workspace-table tests classified as InterpRecord must execute on the
@@ -1403,7 +3021,7 @@ mod tests {
         std::fs::write(&test_path, test_source).unwrap();
         ws.file_index.add_file(test_path, test_source.to_string());
 
-        let classifications = al_test::router::classify_all(&ws);
+        let classifications = al_test::router::classify_all(&ws).unwrap();
         assert_eq!(
             classifications.len(),
             1,
@@ -1433,6 +3051,14 @@ mod tests {
         assert_eq!(result["totals"]["total"].as_u64(), Some(1), "{result}");
         assert_eq!(result["totals"]["passed"].as_u64(), Some(1), "{result}");
         assert_eq!(result["totals"]["failed"].as_u64(), Some(0), "{result}");
+        assert_eq!(result["routing"][0]["decision"], "interpRecord", "{result}");
+        assert_eq!(result["routing"][0]["runsLocally"], true, "{result}");
+        assert!(
+            result["routing"][0]["reasons"]
+                .as_array()
+                .is_some_and(|reasons| !reasons.is_empty()),
+            "{result}"
+        );
 
         let single = dispatch_tests_run(
             &ws,
@@ -1719,6 +3345,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_batch_rejects_malformed_parallel_arrays_and_options_before_project_access() {
+        let ws = std::sync::Arc::new(empty_ws());
+        let malformed = [
+            (serde_json::json!({"codeunitIds": "50100"}), "codeunitIds"),
+            (
+                serde_json::json!({"codeunitIds": [50100], "codeunitNames": "Tests"}),
+                "codeunitNames",
+            ),
+            (
+                serde_json::json!({"codeunitIds": [50100], "codeunitNames": []}),
+                "one entry",
+            ),
+            (
+                serde_json::json!({"codeunitIds": [50100], "codeunitNames": [null]}),
+                "non-empty string",
+            ),
+            (
+                serde_json::json!({"codeunitIds": [50100], "methodNames": "TestOne"}),
+                "methodNames",
+            ),
+            (
+                serde_json::json!({"codeunitIds": [50100], "methodNames": []}),
+                "string or null",
+            ),
+            (
+                serde_json::json!({"codeunitIds": [50100], "methodNames": [false]}),
+                "non-empty string or null",
+            ),
+            (
+                serde_json::json!({"codeunitIds": [50100], "parallel": "true"}),
+                "parallel",
+            ),
+            (
+                serde_json::json!({"codeunitIds": [50100], "coverage": 1}),
+                "coverage",
+            ),
+            (
+                serde_json::json!({"codeunitIds": [50100], "timeoutMs": "30000"}),
+                "timeoutMs",
+            ),
+            (
+                serde_json::json!({"codeunitIds": [50100], "filter": false}),
+                "filter",
+            ),
+            (
+                serde_json::json!({"codeunitIds": [50100], "junitOut": []}),
+                "junitOut",
+            ),
+            (
+                serde_json::json!({"codeunitIds": [50100], "coberturaOut": {}}),
+                "coberturaOut",
+            ),
+            (
+                serde_json::json!({"codeunitIds": [50100], "config": 7}),
+                "config",
+            ),
+            (
+                serde_json::json!({
+                    "codeunitIds": [50100, 50100],
+                    "methodNames": ["TestOne", "testone"]
+                }),
+                "duplicate test request",
+            ),
+        ];
+
+        for (index, (params, expected_message)) in malformed.into_iter().enumerate() {
+            let response = dispatch_tests_run_batch(&ws, index as u64, &params).await;
+            assert_invalid_params(response, expected_message);
+        }
+    }
+
+    #[tokio::test]
     async fn last_results_returns_empty_when_no_history() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -1821,6 +3519,32 @@ mod tests {
         assert!(err.message.contains("out of range"), "got: {}", err.message);
     }
 
+    #[tokio::test]
+    async fn last_results_rejects_malformed_lookup_parameters_before_project_access() {
+        let ws = empty_ws();
+        for (index, (params, expected_message)) in [
+            (serde_json::json!({"codeunitId": "50100"}), "codeunitId"),
+            (
+                serde_json::json!({"codeunitId": 50100, "methodName": false}),
+                "methodName",
+            ),
+            (
+                serde_json::json!({"codeunitId": 50100, "methodName": "  "}),
+                "methodName",
+            ),
+            (
+                serde_json::json!({"methodName": "TestOne"}),
+                "requires 'codeunitId'",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let response = dispatch_tests_last_results(&ws, index as u64, &params).await;
+            assert_invalid_params(response, expected_message);
+        }
+    }
+
     #[test]
     fn freeze_test_codeunit_result_wire_format() {
         use al_test::result::{TestCodeunitResult, TestMethodResult, TestStatus};
@@ -1865,6 +3589,7 @@ mod tests {
                     file: "src/MyCU.al".to_string(),
                     line: 10,
                 }],
+                unresolved_calls: Vec::new(),
             }],
             untested: Vec::new(),
         };
@@ -1876,7 +3601,7 @@ mod tests {
             );
         }
         let entry = &json["coverage"][0];
-        for key in ["codeunit", "testProcedure", "covers"] {
+        for key in ["codeunit", "testProcedure", "covers", "unresolvedCalls"] {
             assert!(
                 entry.get(key).is_some(),
                 "TestCoverageEntry key `{key}` missing"
@@ -2004,6 +3729,33 @@ mod tests {
     }
 
     #[test]
+    fn affected_rejects_malformed_or_duplicate_paths() {
+        let ws = empty_ws();
+        for (index, (params, expected_message)) in [
+            (
+                serde_json::json!({"changedFiles": "src/Test.al"}),
+                "changedFiles",
+            ),
+            (
+                serde_json::json!({"changedFiles": ["src/Test.al", 7]}),
+                "changedFiles[1]",
+            ),
+            (
+                serde_json::json!({"changedFiles": ["src/Test.al", "src/Test.al"]}),
+                "duplicates",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_invalid_params(
+                dispatch_tests_affected(&ws, index as u64, &params),
+                expected_message,
+            );
+        }
+    }
+
+    #[test]
     fn classify_empty_workspace_returns_empty_classifications() {
         let ws = empty_ws();
         let resp = dispatch_tests_classify(&ws, 3);
@@ -2025,6 +3777,54 @@ mod tests {
         assert_eq!(RoutingDecision::Interp.as_str(), "interp");
         assert_eq!(RoutingDecision::InterpRecord.as_str(), "interpRecord");
         assert_eq!(RoutingDecision::LiveBc.as_str(), "liveBc");
+    }
+
+    #[test]
+    fn routing_details_report_actual_codeunit_backend_and_aggregation_reason() {
+        use al_test::router::{ClassifyResult, RoutingDecision, RoutingReason};
+        use al_test::session::TestId;
+
+        let classifications = vec![
+            ClassifyResult {
+                codeunit_id: 50100,
+                codeunit_name: "Mixed Tests".to_string(),
+                method_name: "PureMethod".to_string(),
+                decision: RoutingDecision::Interp,
+                reasons: Vec::new(),
+            },
+            ClassifyResult {
+                codeunit_id: 50100,
+                codeunit_name: "Mixed Tests".to_string(),
+                method_name: "HttpMethod".to_string(),
+                decision: RoutingDecision::LiveBc,
+                reasons: vec![RoutingReason {
+                    message: "uses HttpClient".to_string(),
+                    file: Some("Mixed.Codeunit.al".to_string()),
+                    line: Some(20),
+                }],
+            },
+        ];
+        let requested = vec![TestId {
+            codeunit_id: 50100,
+            codeunit_name: "Mixed Tests".to_string(),
+            method_name: None,
+        }];
+
+        let routing = test_routing_details(&classifications, &requested);
+        assert_eq!(routing.len(), 2);
+        assert_eq!(routing[0]["classifiedDecision"], "interp");
+        assert_eq!(routing[0]["decision"], "liveBc");
+        assert_eq!(routing[0]["runsLocally"], false);
+        assert!(routing[0]["reasons"]
+            .as_array()
+            .is_some_and(|reasons| reasons.iter().any(|reason| {
+                reason["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("shared state"))
+            })));
+        assert_eq!(routing[1]["classifiedDecision"], "liveBc");
+        assert_eq!(routing[1]["decision"], "liveBc");
+        assert_eq!(routing[1]["reasons"][0]["message"], "uses HttpClient");
     }
 
     #[test]
@@ -2051,9 +3851,10 @@ mod tests {
         let summaries_json = serde_json::to_value(&[summary]).unwrap();
         let response = serde_json::json!({
             "summaries": summaries_json,
+            "routing": [],
             "totals": { "total": 0_u64, "passed": 0_u64, "failed": 0_u64, "skipped": 0_u64 },
         });
-        for key in ["summaries", "totals"] {
+        for key in ["summaries", "routing", "totals"] {
             assert!(response.get(key).is_some(), "run_batch key `{key}` missing");
         }
         for key in ["total", "passed", "failed", "skipped"] {
@@ -2124,6 +3925,8 @@ mod tests {
             "codeunitName": "X",
             "methodName": "M",
             "decision": "interp",
+            "runsLocally": true,
+            "execution": "runs locally on the Rust interpreter",
             "reasons": [{ "message": "", "file": null, "line": null }],
         });
         for key in [
@@ -2131,6 +3934,8 @@ mod tests {
             "codeunitName",
             "methodName",
             "decision",
+            "runsLocally",
+            "execution",
             "reasons",
         ] {
             assert!(
@@ -2163,31 +3968,85 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_validate_missing_path_is_invalid_params() {
-        let resp = dispatch_tests_snapshot_validate(1, &serde_json::json!({})).await;
+        let ws = empty_ws();
+        let resp = dispatch_tests_snapshot_validate(&ws, 1, &serde_json::json!({})).await;
         let err = resp.error.expect("err");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("snapshotPath"));
     }
 
     #[tokio::test]
-    async fn snapshot_validate_unreadable_path_is_internal_error() {
-        let resp = dispatch_tests_snapshot_validate(
+    async fn snapshot_capture_requires_explicit_live_metadata_before_network_io() {
+        let ws = std::sync::Arc::new(empty_ws());
+        let resp = dispatch_tests_snapshot_capture(&ws, 1, &serde_json::json!({})).await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("codeunitId"));
+
+        let resp = dispatch_tests_snapshot_capture(
+            &ws,
             2,
-            &serde_json::json!({ "snapshotPath": "/nonexistent/snap.bin" }),
+            &serde_json::json!({
+                "codeunitId": 50100,
+                "codeunitName": "Snapshot Tests",
+                "methodName": "Captures",
+            }),
         )
         .await;
         let err = resp.error.expect("err");
-        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(
+            err.message.contains("bcVersion"),
+            "capture must not invent runtime version metadata: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_validate_unreadable_path_is_invalid_params() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        install_empty_project(&ws, tmp.path()).await;
+        let resp = dispatch_tests_snapshot_validate(
+            &ws,
+            2,
+            &serde_json::json!({ "snapshotPath": "missing.snap.json" }),
+        )
+        .await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("resolve snapshot path"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_replay_requires_baseline_and_runtime_metadata() {
+        let ws = std::sync::Arc::new(empty_ws());
+        let missing_path = dispatch_tests_snapshot_replay(&ws, 1, &serde_json::json!({})).await;
+        let err = missing_path.error.expect("missing path must fail");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("snapshotPath"));
+
+        let missing_version = dispatch_tests_snapshot_replay(
+            &ws,
+            2,
+            &serde_json::json!({ "snapshotPath": "baseline.snap.json" }),
+        )
+        .await;
+        let err = missing_version.error.expect("missing version must fail");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("bcVersion"));
     }
 
     #[tokio::test]
     async fn snapshot_diff_missing_paths_is_invalid_params() {
-        let only_a = dispatch_tests_snapshot_diff(1, &serde_json::json!({ "pathA": "/x" })).await;
+        let ws = empty_ws();
+        let only_a =
+            dispatch_tests_snapshot_diff(&ws, 1, &serde_json::json!({ "pathA": "/x" })).await;
         let err = only_a.error.expect("missing pathB must error");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("pathB"));
 
-        let none = dispatch_tests_snapshot_diff(2, &serde_json::json!({})).await;
+        let none = dispatch_tests_snapshot_diff(&ws, 2, &serde_json::json!({})).await;
         let err = none.error.expect("missing pathA must error");
         assert!(err.message.contains("pathA"));
     }
@@ -2203,5 +4062,155 @@ mod tests {
             "error must reference the missing project: {}",
             err.message
         );
+    }
+
+    #[tokio::test]
+    async fn tests_mutate_rejects_malformed_options_before_project_access() {
+        let ws = std::sync::Arc::new(empty_ws());
+        for (index, (params, expected_message)) in [
+            (serde_json::json!({"parallel": 1}), "parallel"),
+            (serde_json::json!({"timeoutMs": -1}), "timeoutMs"),
+            (serde_json::json!({"files": "src"}), "files"),
+            (serde_json::json!({"files": []}), "must not be empty"),
+            (
+                serde_json::json!({"files": ["src/Test.al", null]}),
+                "files[1]",
+            ),
+            (
+                serde_json::json!({"files": ["src/Test.al", "src/Test.al"]}),
+                "duplicates",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let response = dispatch_tests_mutate(&ws, index as u64, &params).await;
+            assert_invalid_params(response, expected_message);
+        }
+    }
+
+    #[test]
+    fn mutation_allowlist_resolves_relative_and_absolute_paths_to_index_keys() {
+        let project = tempfile::tempdir().unwrap();
+        let src = project.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let file = src.join("Mutation.Codeunit.al");
+        std::fs::write(&file, "codeunit 50100 Mutation { }").unwrap();
+
+        let ws = empty_ws();
+        ws.file_index
+            .add_file(file.clone(), "codeunit 50100 Mutation { }".to_string());
+
+        let relative = resolve_mutation_file_allowlist(
+            &ws,
+            project.path(),
+            vec!["src/Mutation.Codeunit.al".to_string()],
+        )
+        .expect("relative workspace path");
+        assert_eq!(relative, vec![file.to_string_lossy().into_owned()]);
+
+        let absolute = resolve_mutation_file_allowlist(
+            &ws,
+            project.path(),
+            vec![file.to_string_lossy().into_owned()],
+        )
+        .expect("absolute workspace path");
+        assert_eq!(absolute, vec![file.to_string_lossy().into_owned()]);
+    }
+
+    #[test]
+    fn mutation_allowlist_rejects_alias_duplicates_outside_and_unindexed_files() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let src = project.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let indexed = src.join("Mutation.Codeunit.al");
+        let unindexed = src.join("Unindexed.Codeunit.al");
+        let outside_file = outside.path().join("Outside.Codeunit.al");
+        std::fs::write(&indexed, "codeunit 50100 Mutation { }").unwrap();
+        std::fs::write(&unindexed, "codeunit 50101 Unindexed { }").unwrap();
+        std::fs::write(&outside_file, "codeunit 50102 Outside { }").unwrap();
+
+        let ws = empty_ws();
+        ws.file_index
+            .add_file(indexed, "codeunit 50100 Mutation { }".to_string());
+
+        let duplicate = resolve_mutation_file_allowlist(
+            &ws,
+            project.path(),
+            vec![
+                "src/Mutation.Codeunit.al".to_string(),
+                "src/./Mutation.Codeunit.al".to_string(),
+            ],
+        )
+        .expect_err("path aliases must not select one file twice");
+        assert!(duplicate.contains("same file"), "{duplicate}");
+
+        let not_indexed = resolve_mutation_file_allowlist(
+            &ws,
+            project.path(),
+            vec!["src/Unindexed.Codeunit.al".to_string()],
+        )
+        .expect_err("existing non-indexed files must be rejected");
+        assert!(not_indexed.contains("not an indexed AL workspace file"));
+
+        let escaped = resolve_mutation_file_allowlist(
+            &ws,
+            project.path(),
+            vec![outside_file.to_string_lossy().into_owned()],
+        )
+        .expect_err("out-of-project files must be rejected");
+        assert!(escaped.contains("outside the loaded project"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tests_mutate_accepts_relative_workspace_file_selection() {
+        let project = tempfile::tempdir().unwrap();
+        let src = project.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let file = src.join("PureLogicTest.Codeunit.al");
+        let source = r#"codeunit 50110 "Pure Logic Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestAddition()
+    var
+        Result: Integer;
+    begin
+        Result := 2 + 2;
+        if Result <> 4 then
+            Error('Expected 4, got %1', Result);
+    end;
+}
+"#;
+        std::fs::write(&file, source).unwrap();
+
+        let ws = std::sync::Arc::new(empty_ws());
+        install_empty_project(&ws, project.path()).await;
+        ws.file_index.add_file(file, source.to_string());
+
+        let response = dispatch_tests_mutate(
+            &ws,
+            1,
+            &serde_json::json!({
+                "files": ["src/PureLogicTest.Codeunit.al"],
+                "timeoutMs": 10_000,
+            }),
+        )
+        .await;
+        assert!(
+            response.error.is_none(),
+            "relative selection must run: {:?}",
+            response.error
+        );
+        let result = response.result.expect("mutation report");
+        assert!(
+            result["variants"]
+                .as_array()
+                .is_some_and(|variants| !variants.is_empty()),
+            "{result}"
+        );
+        assert_eq!(result["executorPhase"], "interpreter", "{result}");
     }
 }

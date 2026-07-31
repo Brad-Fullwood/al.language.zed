@@ -6,12 +6,13 @@ pub(crate) async fn handle_completion(
     server: &AlServer,
     uri: &Url,
     position: Position,
-) -> Option<CompletionResponse> {
+) -> Result<Option<CompletionResponse>, String> {
     let core_pos = position.into();
     let entries =
-        al_analysis::queries::completions::completions_full(&server.workspace, uri, core_pos).await;
+        al_analysis::queries::completions::completions_full(&server.workspace, uri, core_pos)
+            .await?;
     if entries.is_empty() {
-        return None;
+        return Ok(None);
     }
     let items: Vec<CompletionItem> = entries
         .into_iter()
@@ -71,5 +72,5 @@ pub(crate) async fn handle_completion(
             }
         })
         .collect();
-    Some(CompletionResponse::Array(items))
+    Ok(Some(CompletionResponse::Array(items)))
 }

@@ -261,12 +261,12 @@ impl<'a> TypeResolver<'a> {
                         // that appear directly in the object body (parsed as
                         // variable_declaration instead of inside object_var_section)
                         if body_child.kind() == "variable_declaration" {
-                            if let Some(decl) = self.parse_regular_var_decl_from_container(
-                                body_child,
-                                VariableScope::Global,
-                            ) {
-                                result.push(decl);
-                            }
+                            result.extend(
+                                self.parse_var_decls_from_container(
+                                    body_child,
+                                    VariableScope::Global,
+                                ),
+                            );
                         }
                     }
                 }
@@ -289,9 +289,7 @@ impl<'a> TypeResolver<'a> {
         let mut cursor = section.walk();
         for child in section.children(&mut cursor) {
             if child.kind() == child_kind {
-                if let Some(decl) = self.parse_regular_var_decl_from_container(child, scope) {
-                    result.push(decl);
-                }
+                result.extend(self.parse_var_decls_from_container(child, scope));
             }
         }
     }
@@ -299,45 +297,52 @@ impl<'a> TypeResolver<'a> {
     /// Parse a variable declaration from a container node (variable_declaration
     /// or object_variable_declaration), which wraps a regular_variable_declaration
     /// or label_declaration.
-    fn parse_regular_var_decl_from_container(
+    fn parse_var_decls_from_container(
         &self,
         container: Node<'a>,
         scope: VariableScope,
-    ) -> Option<VariableDecl> {
+    ) -> Vec<VariableDecl> {
         let mut cursor = container.walk();
         for child in container.children(&mut cursor) {
             if child.kind() == "regular_variable_declaration" {
-                return self.parse_regular_var_decl(child, scope);
+                return self.parse_regular_var_decls(child, scope);
             }
             if child.kind() == "label_declaration" {
-                return self.parse_label_decl(child, scope);
+                return self.parse_label_decl(child, scope).into_iter().collect();
             }
         }
         // The container itself might be a regular_variable_declaration
         if container.kind() == "regular_variable_declaration" {
-            return self.parse_regular_var_decl(container, scope);
+            return self.parse_regular_var_decls(container, scope);
         }
         if container.kind() == "label_declaration" {
-            return self.parse_label_decl(container, scope);
+            return self
+                .parse_label_decl(container, scope)
+                .into_iter()
+                .collect();
         }
-        None
+        Vec::new()
     }
 
-    fn parse_regular_var_decl(&self, node: Node<'a>, scope: VariableScope) -> Option<VariableDecl> {
-        let name_node = node.child_by_field_name("name")?;
-        let name = self.node_text_clean(name_node)?;
-
-        let type_node = node.child_by_field_name("type")?;
+    fn parse_regular_var_decls(&self, node: Node<'a>, scope: VariableScope) -> Vec<VariableDecl> {
+        let Some(type_node) = node.child_by_field_name("type") else {
+            return Vec::new();
+        };
         let (type_name, type_subtype) = self.parse_type_reference(type_node);
 
-        Some(VariableDecl {
-            name,
-            type_name,
-            type_subtype,
-            is_var: false,
-            scope,
-            range: name_node.range(),
-        })
+        let mut cursor = node.walk();
+        node.children_by_field_name("name", &mut cursor)
+            .filter_map(|name_node| {
+                self.node_text_clean(name_node).map(|name| VariableDecl {
+                    name,
+                    type_name: type_name.clone(),
+                    type_subtype: type_subtype.clone(),
+                    is_var: false,
+                    scope,
+                    range: name_node.range(),
+                })
+            })
+            .collect()
     }
 
     /// Parse a label_declaration node into a VariableDecl.
@@ -875,6 +880,50 @@ mod tests {
         assert_eq!(decl.type_subtype, None);
         assert_eq!(decl.scope, VariableScope::Global);
         assert_eq!(decl.range.start_point.row, 3);
+    }
+
+    #[test]
+    fn resolves_every_name_in_multi_name_local_and_global_declarations() {
+        let src = r#"codeunit 50100 Test
+{
+    var
+        GlobalFirst, GlobalSecond: Record Customer;
+
+    procedure DoSomething()
+    var
+        LocalFirst, "Local Second": Integer;
+    begin
+        GlobalSecond.FindFirst();
+        "Local Second" := 1;
+    end;
+}"#;
+        let (tree, text) = parse(src);
+        let resolver = TypeResolver::new(&tree, &text);
+        let position = Position {
+            line: 10,
+            character: 8,
+        };
+
+        let global = resolver
+            .resolve_type("GlobalSecond", position)
+            .expect("second global name must resolve");
+        assert_eq!(global.type_name, "Record");
+        assert_eq!(global.type_subtype.as_deref(), Some("Customer"));
+        assert_eq!(global.scope, VariableScope::Global);
+        assert_eq!(
+            &text[global.range.start_byte..global.range.end_byte],
+            "GlobalSecond"
+        );
+
+        let local = resolver
+            .resolve_type("Local Second", position)
+            .expect("second quoted local name must resolve");
+        assert_eq!(local.type_name, "Integer");
+        assert_eq!(local.scope, VariableScope::Local);
+        assert_eq!(
+            &text[local.range.start_byte..local.range.end_byte],
+            "\"Local Second\""
+        );
     }
 
     #[test]

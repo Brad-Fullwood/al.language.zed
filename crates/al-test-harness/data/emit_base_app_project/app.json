@@ -1,0 +1,18 @@
+{
+  "id": "3f239b73-22c6-44da-b2f7-a22839ad944c",
+  "name": "Emitter Base App Differential",
+  "publisher": "AL Language Zed Tests",
+  "version": "1.0.0.0",
+  "brief": "Non-proprietary differential fixture compiled against external BC symbols",
+  "platform": "28.0.0.0",
+  "application": "28.0.0.0",
+  "runtime": "17.0",
+  "target": "Cloud",
+  "logo": "res/logo.png",
+  "idRanges": [
+    {
+      "from": 50120,
+      "to": 50129
+    }
+  ]
+}

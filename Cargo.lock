@@ -64,9 +64,11 @@ dependencies = [
  "al-workspace",
  "petgraph",
  "rayon",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tower-lsp",
  "tracing",
@@ -133,12 +135,14 @@ version = "0.1.0"
 dependencies = [
  "al-symbols",
  "al-syntax",
+ "al-types",
  "getrandom 0.2.17",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
  "tree-sitter",
  "zip 2.4.2",
 ]
@@ -156,6 +160,7 @@ dependencies = [
  "clap_complete",
  "crossterm",
  "dirs",
+ "libc",
  "ratatui",
  "serde",
  "serde_json",
@@ -174,6 +179,7 @@ dependencies = [
  "petgraph",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tracing",
  "tree-sitter",
 ]
@@ -227,7 +233,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
- "tree-sitter-al",
+ "tree-sitter-al-bc",
  "url",
  "urlencoding",
  "wiremock",
@@ -324,7 +330,9 @@ dependencies = [
  "al-types",
  "dashmap 6.2.1",
  "ropey",
+ "serde",
  "tempfile",
+ "thiserror 2.0.18",
  "tracing",
  "tree-sitter",
  "url",
@@ -353,6 +361,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
  "wiremock",
  "zeroize",
  "zip 2.4.2",
@@ -367,7 +376,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "tree-sitter",
- "tree-sitter-al",
+ "tree-sitter-al-bc",
 ]
 
 [[package]]
@@ -376,8 +385,10 @@ version = "0.1.0"
 dependencies = [
  "al-analysis",
  "al-bc",
+ "al-dap",
  "al-insight",
  "al-runtime",
+ "al-snapshot",
  "al-symbols",
  "al-syntax",
  "al-types",
@@ -400,8 +411,15 @@ dependencies = [
 name = "al-test-harness"
 version = "0.3.0"
 dependencies = [
+ "al-bc",
+ "al-compile",
+ "al-project",
+ "al-publish",
+ "al-test",
+ "al-workspace",
  "portable-pty",
  "serde_json",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",
@@ -435,6 +453,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "url",
@@ -5050,7 +5069,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tree-sitter-al"
+name = "tree-sitter-al-bc"
 version = "0.1.0"
 dependencies = [
  "cc",

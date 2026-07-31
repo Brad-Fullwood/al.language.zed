@@ -2,10 +2,13 @@
 //! within a file, and rename files to match the `<Kind><Id>.<Name>.al`
 //! convention.
 
-use al_protocol::jsonrpc::{error_codes, Response, RpcError};
+use al_protocol::jsonrpc::{error_codes, Response};
 use al_workspace::Workspace;
 
-use crate::server::daemon::{ensure_document, file_uri_from_params, invalid_params};
+use crate::server::daemon::{
+    ensure_document, file_uri_from_params, invalid_params, optional_bool_param,
+    require_project_root, rpc_error,
+};
 
 use super::file_refresh::{rename_al_file_and_refresh, write_al_file_and_refresh};
 
@@ -16,105 +19,328 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let raw_content = params.get("content").and_then(|v| v.as_str());
-    let file_uri = file_uri_from_params(params);
-    if raw_content.is_some() && file_uri.is_some() {
-        // Mutually exclusive: sorting would run on `content` but write the
-        // result back to `file`, silently replacing unrelated source if the
-        // two don't actually correspond to the same text.
-        return invalid_params(id);
-    }
-    let content = if let Some(text) = raw_content {
-        text.to_string()
-    } else if let Some(uri) = &file_uri {
-        ensure_document(workspace, uri);
-        match workspace.documents.get_text(uri) {
-            Some(t) => t,
-            None => return invalid_params(id),
-        }
-    } else {
-        return invalid_params(id);
+    let raw_content = match params.get("content") {
+        None => None,
+        Some(value) => match value.as_str() {
+            Some(content) => Some(content),
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'content' must be a string when supplied",
+                );
+            }
+        },
     };
+    let file_uri = match file_uri_from_params(params) {
+        Ok(file_uri) => file_uri,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let all = match optional_bool_param(params, "all", false) {
+        Ok(all) => all,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let dry_run = match optional_bool_param(params, "dryRun", false) {
+        Ok(dry_run) => dry_run,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let selected_inputs =
+        usize::from(raw_content.is_some()) + usize::from(file_uri.is_some()) + usize::from(all);
+    if selected_inputs != 1 {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "select exactly one of 'content', 'uri'/'file', or 'all': true",
+        );
+    }
 
-    let sorted = match al_syntax::sort_members(&content) {
-        Some(s) => s,
-        None => content.clone(),
+    if all {
+        let root = match require_project_root(workspace, id) {
+            Ok(root) => root,
+            Err(response) => return response,
+        };
+        let files = match al_analysis::queries::bulk_fix::collect_al_files(&root) {
+            Ok(files) => files,
+            Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
+        };
+        let revision = workspace.generation_revision();
+        let mut pending = Vec::new();
+        let mut results = Vec::with_capacity(files.len());
+        for path in files {
+            let indexed = match workspace.file_index.files.get(&path) {
+                Some(source) => source.clone(),
+                None => {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!(
+                            "workspace sort cannot prove completeness: '{}' is on disk but not indexed",
+                            path.display()
+                        ),
+                    );
+                }
+            };
+            let disk = match al_source::file_index::read_source_file(&path) {
+                Ok(Some(source)) => source,
+                Ok(None) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("workspace source disappeared: {}", path.display()),
+                    );
+                }
+                Err(error) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("read {} failed: {error}", path.display()),
+                    );
+                }
+            };
+            if disk != indexed {
+                return rpc_error(
+                    id,
+                    error_codes::CODE_ANALYSIS_ERROR,
+                    &format!(
+                        "workspace source changed outside the index: {}; refresh before sorting",
+                        path.display()
+                    ),
+                );
+            }
+            let sorted = match sort_members_strict(&indexed, &path.display().to_string()) {
+                Ok(sorted) => sorted,
+                Err(message) => {
+                    return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &message);
+                }
+            };
+            let changed = sorted != indexed;
+            results.push(serde_json::json!({
+                "file": path,
+                "changed": changed,
+            }));
+            if changed {
+                pending.push((path, indexed, sorted));
+            }
+        }
+        if workspace.generation_revision() != revision {
+            return rpc_error(
+                id,
+                error_codes::CODE_ANALYSIS_ERROR,
+                "workspace changed while member-sort inputs were collected; retry",
+            );
+        }
+        if !dry_run {
+            let mut applied: Vec<(std::path::PathBuf, String)> = Vec::new();
+            for (path, original, sorted) in &pending {
+                if let Err(error) = write_al_file_and_refresh(workspace, path, sorted.to_string()) {
+                    let rollback_errors = rollback_sorted_files(workspace, &applied);
+                    let suffix = if rollback_errors.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; rollback also failed: {}", rollback_errors.join("; "))
+                    };
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("failed to sort {}: {error}{suffix}", path.display()),
+                    );
+                }
+                applied.push((path.clone(), original.clone()));
+            }
+        }
+        return Response {
+            id,
+            result: Some(serde_json::json!({
+                "changed": !pending.is_empty(),
+                "modifiedFiles": pending.len(),
+                "dryRun": dry_run,
+                "files": results,
+            })),
+            error: None,
+            ..Default::default()
+        };
+    }
+
+    let (content, path) = if let Some(content) = raw_content {
+        (content.to_string(), None)
+    } else {
+        let Some(uri) = file_uri.as_ref() else {
+            return invalid_params(id);
+        };
+        if let Err(response) = ensure_document(workspace, uri, id) {
+            return response;
+        }
+        let content = match workspace.documents.get_text(uri) {
+            Some(content) => content,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    "document loader completed without publishing the source",
+                );
+            }
+        };
+        let path = match uri.to_file_path() {
+            Ok(path) => path,
+            Err(()) => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    "validated file URI could not be converted back to a path",
+                );
+            }
+        };
+        (content, Some(path))
+    };
+    let label = path.as_deref().map_or_else(
+        || "supplied content".to_string(),
+        |path| path.display().to_string(),
+    );
+    let sorted = match sort_members_strict(&content, &label) {
+        Ok(sorted) => sorted,
+        Err(message) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &message),
     };
     let changed = sorted != content;
-
-    let dry_run = params
-        .get("dryRun")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     if changed && !dry_run {
-        if let Some(uri) = &file_uri {
-            if let Ok(path) = uri.to_file_path() {
-                // refresh document store + file index + insight graph
-                // so subsequent daemon queries observe the sorted content.
-                if let Err(e) = tokio::task::block_in_place(|| {
-                    write_al_file_and_refresh(workspace, &path, sorted.clone())
-                }) {
-                    return Response {
-                        id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INTERNAL_ERROR,
-                            message: format!("Failed to write sorted file: {e}"),
-                        }),
-                        ..Default::default()
-                    };
-                }
+        if let Some(path) = path {
+            if let Err(error) = write_al_file_and_refresh(workspace, &path, sorted.clone()) {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("failed to write sorted file: {error}"),
+                );
             }
         }
     }
 
     Response {
         id,
-        result: Some(serde_json::json!({ "sorted": sorted, "changed": changed })),
+        result: Some(serde_json::json!({
+            "sorted": sorted,
+            "changed": changed,
+            "dryRun": dry_run,
+        })),
         error: None,
         ..Default::default()
     }
+}
+
+fn sort_members_strict(source: &str, label: &str) -> Result<String, String> {
+    let parsed = al_syntax::AlParser::parse_quick(source);
+    if parsed.tree.root_node().has_error() {
+        let details = parsed
+            .errors
+            .iter()
+            .take(3)
+            .map(|error| {
+                format!(
+                    "{} at {}:{}",
+                    error.message,
+                    error.range.start_point.row + 1,
+                    error.range.start_point.column + 1
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!(
+            "cannot sort members in {label}: AL syntax errors{}",
+            if details.is_empty() {
+                String::new()
+            } else {
+                format!(": {details}")
+            }
+        ));
+    }
+    al_syntax::sort_members(source)
+        .ok_or_else(|| format!("cannot sort members in {label}: no complete AL object was found"))
+}
+
+fn rollback_sorted_files(
+    workspace: &Workspace,
+    applied: &[(std::path::PathBuf, String)],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (path, original) in applied.iter().rev() {
+        if let Err(error) = write_al_file_and_refresh(workspace, path, original.clone()) {
+            errors.push(format!("{}: {error}", path.display()));
+        }
+    }
+    errors
 }
 pub(in crate::server::daemon) fn dispatch_organize_files(
     workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let dry_run = params
-        .get("dryRun")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let dry_run = match optional_bool_param(params, "dryRun", false) {
+        Ok(dry_run) => dry_run,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
 
-    let root: std::path::PathBuf = match crate::server::daemon::require_project_root(workspace, id)
-    {
+    let root: std::path::PathBuf = match require_project_root(workspace, id) {
         Ok(r) => r,
         Err(e) => return e,
     };
 
-    let mut results = Vec::new();
-
-    // Snapshot (path, text) pairs BEFORE the rename loop:
-    // `rename_al_file_and_refresh` mutates `file_index.files`, and holding
-    // the DashMap iter guard across those writes deadlocked the daemon —
-    // clients sat in their 30s read timeout and surfaced a raw EAGAIN.
-    let snapshot: Vec<(std::path::PathBuf, String)> = workspace
-        .file_index
-        .files
-        .iter()
-        .filter(|e| e.key().starts_with(&root))
-        .map(|e| (e.key().clone(), e.value().clone()))
-        .collect();
-
-    for (path, text) in snapshot {
+    let files = match al_analysis::queries::bulk_fix::collect_al_files(&root) {
+        Ok(files) => files,
+        Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
+    };
+    let revision = workspace.generation_revision();
+    let mut plan = Vec::new();
+    let mut destinations = std::collections::HashSet::new();
+    for path in files {
+        let text = match workspace.file_index.files.get(&path) {
+            Some(text) => text.clone(),
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!(
+                        "workspace organization cannot prove completeness: '{}' is on disk but not indexed",
+                        path.display()
+                    ),
+                );
+            }
+        };
         let parsed = al_syntax::AlParser::parse_quick(&text);
+        if parsed.tree.root_node().has_error() {
+            return rpc_error(
+                id,
+                error_codes::CODE_ANALYSIS_ERROR,
+                &format!(
+                    "cannot organize '{}': source contains AL syntax errors",
+                    path.display()
+                ),
+            );
+        }
         let obj = match al_syntax::find_object_declaration(&parsed.tree, &text) {
             Some(o) => o,
-            None => continue,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::CODE_ANALYSIS_ERROR,
+                    &format!(
+                        "cannot organize '{}': no AL object declaration was found",
+                        path.display()
+                    ),
+                );
+            }
         };
 
         let kind_cap = capitalize_first(&obj.kind);
         let id_part = obj.id.map(|i| i.to_string()).unwrap_or_default();
         let name_clean = sanitize_filename(&obj.name);
+        if kind_cap.is_empty() || name_clean.trim().is_empty() {
+            return rpc_error(
+                id,
+                error_codes::CODE_ANALYSIS_ERROR,
+                &format!(
+                    "cannot derive a safe object filename for '{}'",
+                    path.display()
+                ),
+            );
+        }
 
         let expected_name = if id_part.is_empty() {
             format!("{}.{}.al", kind_cap, name_clean)
@@ -132,28 +358,116 @@ pub(in crate::server::daemon) fn dispatch_organize_files(
             continue;
         }
 
-        let new_path = path.parent().unwrap_or(&root).join(&expected_name);
-
-        // route the rename through rename_al_file_and_refresh so
-        // file_index + insight_graph are kept in sync. Without it, the
-        // old path stayed in file_index after the disk rename.
-        let renamed = if !dry_run {
-            tokio::task::block_in_place(|| rename_al_file_and_refresh(workspace, &path, &new_path))
-                .is_ok()
-        } else {
-            false
+        let Some(parent) = path.parent() else {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("cannot derive parent directory for '{}'", path.display()),
+            );
         };
-
-        results.push(serde_json::json!({
-            "from": path.display().to_string(),
-            "to": new_path.display().to_string(),
-            "renamed": renamed,
-        }));
+        let new_path = parent.join(&expected_name);
+        if !destinations.insert(new_path.clone()) {
+            return rpc_error(
+                id,
+                error_codes::CODE_ANALYSIS_ERROR,
+                &format!(
+                    "multiple AL objects would be renamed to '{}'",
+                    new_path.display()
+                ),
+            );
+        }
+        if new_path.exists() {
+            let old_canonical = match path.canonicalize() {
+                Ok(path) => path,
+                Err(error) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("resolve '{}' failed: {error}", path.display()),
+                    );
+                }
+            };
+            let new_canonical = match new_path.canonicalize() {
+                Ok(path) => path,
+                Err(error) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("resolve '{}' failed: {error}", new_path.display()),
+                    );
+                }
+            };
+            if old_canonical != new_canonical {
+                return rpc_error(
+                    id,
+                    error_codes::CODE_ANALYSIS_ERROR,
+                    &format!("rename destination already exists: {}", new_path.display()),
+                );
+            }
+        }
+        plan.push((path, new_path));
+    }
+    if workspace.generation_revision() != revision {
+        return rpc_error(
+            id,
+            error_codes::CODE_ANALYSIS_ERROR,
+            "workspace changed while file-organization inputs were collected; retry",
+        );
     }
 
+    if !dry_run {
+        let mut applied: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+        for (old, new) in &plan {
+            if let Err(error) = rename_al_file_and_refresh(workspace, old, new) {
+                let mut rollback_errors = Vec::new();
+                for (previous_old, previous_new) in applied.iter().rev() {
+                    if let Err(rollback_error) =
+                        rename_al_file_and_refresh(workspace, previous_new, previous_old)
+                    {
+                        rollback_errors.push(format!(
+                            "{} -> {}: {rollback_error}",
+                            previous_new.display(),
+                            previous_old.display()
+                        ));
+                    }
+                }
+                let suffix = if rollback_errors.is_empty() {
+                    String::new()
+                } else {
+                    format!("; rollback also failed: {}", rollback_errors.join("; "))
+                };
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!(
+                        "failed to rename '{}' to '{}': {error}{suffix}",
+                        old.display(),
+                        new.display()
+                    ),
+                );
+            }
+            applied.push((old.to_path_buf(), new.to_path_buf()));
+        }
+    }
+
+    let results = plan
+        .iter()
+        .map(|(old, new)| {
+            serde_json::json!({
+                "from": old,
+                "to": new,
+                "renamed": !dry_run,
+                "wouldRename": true,
+            })
+        })
+        .collect::<Vec<_>>();
     Response {
         id,
-        result: Some(serde_json::json!({ "files": results })),
+        result: Some(serde_json::json!({
+            "files": results,
+            "renamedFiles": if dry_run { 0 } else { plan.len() },
+            "dryRun": dry_run,
+        })),
         error: None,
         ..Default::default()
     }
@@ -214,7 +528,17 @@ mod tests {
     #[test]
     fn sort_members_with_content_returns_sorted_and_changed_flags() {
         let ws = empty_ws();
-        let src = r#"codeunit 50100 "X" { procedure B() begin end; procedure A() begin end; }"#;
+        let src = r#"codeunit 50100 "X"
+{
+    procedure B()
+    begin
+    end;
+
+    procedure A()
+    begin
+    end;
+}
+"#;
         let resp = dispatch_sort_members(&ws, 1, &serde_json::json!({ "content": src }));
         assert!(resp.error.is_none(), "got error: {:?}", resp.error);
         let r = resp.result.expect("result");
@@ -226,6 +550,23 @@ mod tests {
             r.get("changed").and_then(|v| v.as_bool()).is_some(),
             "must return a changed flag"
         );
+    }
+
+    #[test]
+    fn sort_members_rejects_malformed_option_types_and_source() {
+        let ws = empty_ws();
+        for params in [
+            serde_json::json!({"content": 7}),
+            serde_json::json!({"content": "codeunit 1 Broken {", "dryRun": true}),
+            serde_json::json!({"content": "codeunit 1 X {}", "dryRun": "true"}),
+            serde_json::json!({"content": "codeunit 1 X {}", "all": 1}),
+        ] {
+            let response = dispatch_sort_members(&ws, 4, &params);
+            assert!(
+                response.error.is_some(),
+                "malformed request must fail: {params}"
+            );
+        }
     }
 
     #[test]

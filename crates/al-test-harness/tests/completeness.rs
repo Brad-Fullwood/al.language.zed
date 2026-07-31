@@ -158,15 +158,15 @@ async fn test_completeness_a02_diagnostic_codes_are_strings() {
     let uri = client.file_uri("src/diag_code.al");
 
     // The server must publish a diagnostics notification for the opened file.
-    // Native lint rules have been removed, so the array will be empty, but the
-    // notification itself must still arrive.
+    // This fixture has no construct covered by the native rule catalog, so the
+    // array may be empty, but the notification itself must still arrive.
     assert!(
         diags.contains_key(&uri),
         "server must publish diagnostics notification for opened file (even if empty): keys={:?}",
         diags.keys().collect::<Vec<_>>()
     );
 
-    // If any diagnostics are present (e.g. from future rules or .NET bridge),
+    // If any diagnostics are present (for example from the .NET bridge),
     // every code field must be a string starting with "AL-".
     let file_diags = diags.get(&uri).map(Vec::as_slice).unwrap_or_default();
     for diag in file_diags {

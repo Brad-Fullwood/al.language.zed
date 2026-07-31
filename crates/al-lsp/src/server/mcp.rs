@@ -22,7 +22,16 @@ use tokio::sync::Notify;
 
 use al_workspace::Workspace;
 
-const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+const LEGACY_MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum McpLifecycle {
+    #[default]
+    Uninitialized,
+    AwaitingInitializedNotification,
+    Ready,
+}
 
 /// One exposed MCP tool: its public name, the daemon method it forwards to,
 /// a description for the agent, and a JSON Schema for its arguments.
@@ -35,10 +44,355 @@ struct ToolDef {
 
 fn obj_schema(props: serde_json::Value, required: &[&str]) -> serde_json::Value {
     serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": props,
         "required": required,
+        "additionalProperties": false,
     })
+}
+
+fn object_result_schema(properties: serde_json::Value, required: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": true,
+    })
+}
+
+fn array_result_schema(item: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "type": "array",
+        "items": item,
+    })
+}
+
+fn result_schema(tool_name: &str) -> serde_json::Value {
+    let object_array = || array_result_schema(serde_json::json!({"type": "object"}));
+    match tool_name {
+        // `al_call` deliberately has no narrower result schema: it forwards
+        // the complete daemon catalog, whose methods return heterogeneous JSON.
+        "al_call" => serde_json::json!({}),
+        "al_debug" => object_result_schema(
+            serde_json::json!({
+                "cmd": {"type": "string"},
+                "status": {"type": "string"},
+            }),
+            &["cmd"],
+        ),
+        "al_build" => object_result_schema(
+            serde_json::json!({
+                "success": {"type": "boolean"},
+                "diagnostics": {"type": "array", "items": {"type": "object"}},
+                "appPath": {"type": ["string", "null"]},
+                "output": {"type": "string"},
+                "backend": {"type": "string"},
+                "validated": {"type": "boolean"},
+                "verificationLevel": {"type": "string"},
+            }),
+            &["success", "diagnostics", "appPath", "output"],
+        ),
+        "al_downloadsymbols" => object_result_schema(
+            serde_json::json!({
+                "source": {"type": "string"},
+                "downloaded": {"type": "integer"},
+                "failed": {"type": "integer"},
+                "skipped": {"type": "integer"},
+                "loaded_into_index": {"type": "integer"},
+                "results": {"type": "array", "items": {"type": "object"}},
+            }),
+            &["source", "downloaded", "failed", "results"],
+        ),
+        "al_symbolsearch" | "al_getdiagnostics" | "al_deadcode" | "al_sqlscan"
+        | "al_entrypoints" | "al_trace_event" => object_array(),
+        "al_runtests" => object_result_schema(
+            serde_json::json!({
+                "summaries": {"type": "array", "items": {"type": "object"}},
+                "routing": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "codeunitId": {"type": "integer"},
+                            "codeunitName": {"type": "string"},
+                            "methodName": {"type": ["string", "null"]},
+                            "classifiedDecision": {"type": ["string", "null"]},
+                            "decision": {"type": "string", "enum": ["interp", "interpRecord", "liveBc"]},
+                            "runsLocally": {"type": "boolean"},
+                            "execution": {"type": "string"},
+                            "reasons": {"type": "array", "items": {"type": "object"}},
+                        },
+                        "required": ["codeunitId", "codeunitName", "methodName", "decision", "runsLocally", "execution", "reasons"],
+                    }
+                },
+                "totals": {
+                    "type": "object",
+                    "properties": {
+                        "total": {"type": "integer"},
+                        "passed": {"type": "integer"},
+                        "failed": {"type": "integer"},
+                        "skipped": {"type": "integer"},
+                    },
+                    "required": ["total", "passed", "failed", "skipped"],
+                },
+                "coverage": {"type": "object"},
+            }),
+            &["summaries", "routing", "totals"],
+        ),
+        "al_impact" => object_result_schema(
+            serde_json::json!({
+                "symbol": {"type": "string"},
+                "impacted": {"type": "array", "items": {"type": "object"}},
+            }),
+            &["symbol", "impacted"],
+        ),
+        "al_suggestevent" => object_result_schema(
+            serde_json::json!({
+                "integrationPoints": {"type": "array", "items": {"type": "object"}},
+                "partial": {"type": "boolean"},
+            }),
+            &["integrationPoints", "partial"],
+        ),
+        "al_testclassify" => object_result_schema(
+            serde_json::json!({
+                "classifications": {"type": "array", "items": {"type": "object"}},
+            }),
+            &["classifications"],
+        ),
+        "al_testcoverage" => object_result_schema(
+            serde_json::json!({
+                "coverage": {"type": "array", "items": {"type": "object"}},
+                "untested": {"type": "array", "items": {"type": "object"}},
+            }),
+            &["coverage", "untested"],
+        ),
+        "al_testsnapshot" => object_result_schema(
+            serde_json::json!({
+                "captured": {"type": "boolean"},
+                "snapshotPath": {"type": "string"},
+                "sampleCount": {"type": "integer"},
+                "runId": {"type": "string"},
+                "codeunitId": {"type": "integer"},
+                "methodName": {"type": "string"},
+                "bcVersion": {"type": "string"},
+                "sourceHash": {"type": "string"},
+                "testResult": {"type": "object"},
+            }),
+            &[
+                "captured",
+                "snapshotPath",
+                "sampleCount",
+                "runId",
+                "codeunitId",
+                "methodName",
+                "bcVersion",
+                "sourceHash",
+                "testResult",
+            ],
+        ),
+        "al_testsnapshotreplay" => object_result_schema(
+            serde_json::json!({
+                "replayed": {"type": "boolean"},
+                "matched": {"type": "boolean"},
+                "divergences": {"type": "array", "items": {"type": "object"}},
+                "baseline": {"type": "object"},
+                "observed": {"type": "object"},
+            }),
+            &["replayed", "matched", "divergences", "baseline", "observed"],
+        ),
+        "al_depgraph" => serde_json::json!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "rootApp": {"type": "object"},
+                        "nodes": {"type": "array"},
+                        "edges": {"type": "array"},
+                        "transitive": {"type": "array"},
+                        "conflicts": {"type": "array"},
+                        "missing": {"type": "array"},
+                    },
+                    "required": ["rootApp", "nodes", "edges", "transitive", "conflicts", "missing"],
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "format": {"const": "dot"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["format", "content"],
+                }
+            ]
+        }),
+        _ => serde_json::json!({}),
+    }
+}
+
+fn agent_diagnostic_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "code": {"type": "string"},
+            "severity": {"type": "string", "enum": ["information", "warning", "error"]},
+            "summary": {"type": "string"},
+            "reason": {"type": "string"},
+            "actions": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["code", "severity", "summary", "reason", "actions"],
+        "additionalProperties": false,
+    })
+}
+
+fn output_schema(tool_name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "success": {"type": "boolean"},
+            "tool": {"type": "string"},
+            "method": {"type": "string"},
+            "result": result_schema(tool_name),
+            "error": {
+                "type": "string",
+                "description": "Daemon error message when success is false."
+            },
+            "diagnostics": {
+                "type": "array",
+                "items": agent_diagnostic_schema(),
+                "description": "Agent-oriented explanations and concrete recovery actions for incomplete or blocked results."
+            },
+            "routing": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Per-test routing context retained when al_runtests is blocked before execution."
+            },
+        },
+        "required": ["success", "tool", "method"],
+        "additionalProperties": false,
+        "oneOf": [
+            {"required": ["result"], "not": {"required": ["error"]}},
+            {"required": ["error"], "not": {"required": ["result"]}}
+        ]
+    })
+}
+
+fn value_matches_type(value: &serde_json::Value, expected: &str) -> bool {
+    match expected {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "number" => value.is_number(),
+        "null" => value.is_null(),
+        _ => false,
+    }
+}
+
+fn validate_schema_value(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+    path: &str,
+) -> Result<(), String> {
+    if let Some(alternatives) = schema.get("oneOf").and_then(serde_json::Value::as_array) {
+        let errors = alternatives
+            .iter()
+            .map(|alternative| {
+                validate_schema_value(value, alternative, path)
+                    .err()
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let matches = errors.iter().filter(|error| error.is_empty()).count();
+        if matches != 1 {
+            let details = errors
+                .into_iter()
+                .filter(|error| !error.is_empty())
+                .collect::<Vec<_>>()
+                .join(" or ");
+            return Err(format!(
+                "{path} must match exactly one supported shape: {details}"
+            ));
+        }
+    }
+
+    if let Some(expected) = schema.get("type") {
+        let matches = match expected {
+            serde_json::Value::String(expected) => value_matches_type(value, expected),
+            serde_json::Value::Array(expected) => expected
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|expected| value_matches_type(value, expected)),
+            _ => false,
+        };
+        if !matches {
+            return Err(format!(
+                "{path} has the wrong JSON type; expected {}",
+                expected
+            ));
+        }
+    }
+
+    if let Some(values) = schema.get("enum").and_then(serde_json::Value::as_array) {
+        if !values.contains(value) {
+            return Err(format!(
+                "{path} must be one of {}",
+                serde_json::Value::Array(values.clone())
+            ));
+        }
+    }
+
+    if value.is_number() {
+        if let Some(minimum) = schema.get("minimum").and_then(serde_json::Value::as_f64) {
+            if value.as_f64().is_some_and(|number| number < minimum) {
+                return Err(format!("{path} must be at least {minimum}"));
+            }
+        }
+        if let Some(maximum) = schema.get("maximum").and_then(serde_json::Value::as_f64) {
+            if value.as_f64().is_some_and(|number| number > maximum) {
+                return Err(format!("{path} must be at most {maximum}"));
+            }
+        }
+    }
+
+    if let Some(object) = value.as_object() {
+        let properties = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object);
+        if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
+            for required in required.iter().filter_map(serde_json::Value::as_str) {
+                if !object.contains_key(required) {
+                    return Err(format!("{path}.{required} is required"));
+                }
+            }
+        }
+        if let Some(properties) = properties {
+            for (key, child) in object {
+                if let Some(child_schema) = properties.get(key) {
+                    validate_schema_value(child, child_schema, &format!("{path}.{key}"))?;
+                } else if schema.get("additionalProperties")
+                    == Some(&serde_json::Value::Bool(false))
+                {
+                    return Err(format!("{path}.{key} is not a supported argument"));
+                }
+            }
+        }
+    }
+    if let (Some(array), Some(item_schema)) = (
+        value.as_array(),
+        schema.get("items").filter(|schema| schema.is_object()),
+    ) {
+        for (index, item) in array.iter().enumerate() {
+            validate_schema_value(item, item_schema, &format!("{path}[{index}]"))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_tool_arguments(tool: &ToolDef, arguments: &serde_json::Value) -> Result<(), String> {
+    validate_schema_value(arguments, &(tool.schema)(), "arguments")
 }
 
 fn tools() -> &'static [ToolDef] {
@@ -121,19 +475,26 @@ fn tools() -> &'static [ToolDef] {
                         },
                         "authentication": {
                             "type": "string",
-                            "enum": ["AAD", "MicrosoftEntraID", "UserPassword", "Windows"],
-                            "description": "For an inline start: authentication mode. BC online and AAD targets use the shared OAuth cache when accessToken is omitted."
+                            "enum": ["AAD", "MicrosoftEntraID"],
+                            "description": "For an inline start: native debugging supports OAuth bearer authentication. The shared OAuth cache is used when accessToken is omitted."
                         },
                         "breakOnError": {
-                            "type": ["boolean", "string"],
+                            "oneOf": [
+                                {"type": "boolean"},
+                                {"type": "string", "enum": ["False", "True", "None", "All", "ExcludeTry"]}
+                            ],
                             "description": "For start: configure breaking on AL errors."
                         },
                         "breakOnRecordWrite": {
-                            "type": ["boolean", "string"],
+                            "oneOf": [
+                                {"type": "boolean"},
+                                {"type": "string", "enum": ["False", "True", "None", "All", "ExcludeTemporary"]}
+                            ],
                             "description": "For start: configure breaking before record writes."
                         },
                         "breakOnNext": {
                             "type": "string",
+                            "enum": ["WebServiceClient", "WebClient", "Background", "ClientService", "Agent"],
                             "description": "For start: attach to the next matching BC client session type, for example WebClient."
                         },
                         "sessionId": {
@@ -143,12 +504,46 @@ fn tools() -> &'static [ToolDef] {
                         },
                         "startupObjectType": {
                             "type": "string",
+                            "enum": ["Page", "Table", "Report", "Query"],
                             "description": "For an inline start: startup object type used in the returned debug browser URL; defaults to Page."
                         },
                         "startupObjectId": {
                             "type": "integer",
                             "minimum": 0,
                             "description": "For an inline start: startup object ID used in the returned debug browser URL; defaults to 22."
+                        },
+                        "startupCompany": {
+                            "type": "string",
+                            "description": "For an inline start: company opened in the returned debug browser URL."
+                        },
+                        "launchBrowser": {
+                            "type": "boolean",
+                            "description": "For an inline start: whether browser launch is requested."
+                        },
+                        "schemaUpdateMode": {
+                            "type": "string",
+                            "enum": ["Synchronize", "Recreate", "ForceSync"]
+                        },
+                        "dependencyPublishingOption": {
+                            "type": "string",
+                            "enum": ["Default", "Ignore", "Strict"]
+                        },
+                        "enableSqlInformationDebugger": {
+                            "type": "boolean"
+                        },
+                        "enableLongRunningSqlStatements": {
+                            "type": "boolean"
+                        },
+                        "longRunningSqlStatementsThreshold": {
+                            "type": "integer",
+                            "minimum": 0
+                        },
+                        "numberOfSqlStatements": {
+                            "type": "integer",
+                            "minimum": 0
+                        },
+                        "validateServerCertificate": {
+                            "type": "boolean"
                         },
                         "file": {
                             "type": "string",
@@ -218,12 +613,17 @@ fn tools() -> &'static [ToolDef] {
             name: "al_symbolsearch",
             method: "search",
             description: "Fuzzy-search AL objects across loaded packages AND workspace \
-                          source. Args: query (string), limit (number, default 20).",
+                          source. Args: query (string), limit (integer, default 20, maximum 500000).",
             schema: || {
                 obj_schema(
                     serde_json::json!({
                         "query": {"type": "string"},
-                        "limit": {"type": "number"}
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 500000,
+                            "default": 20
+                        }
                     }),
                     &["query"],
                 )
@@ -269,12 +669,17 @@ fn tools() -> &'static [ToolDef] {
             name: "al_trace_event",
             method: "trace",
             description: "Trace an event's propagation chain (publishers to subscribers). \
-                          Args: event (string), depth (number, default 10).",
+                          Args: event (string), depth (integer, default 10, maximum 50).",
             schema: || {
                 obj_schema(
                     serde_json::json!({
                         "event": {"type": "string"},
-                        "depth": {"type": "number"}
+                        "depth": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
+                            "default": 10
+                        }
                     }),
                     &["event"],
                 )
@@ -360,10 +765,74 @@ fn tools() -> &'static [ToolDef] {
             schema: || obj_schema(serde_json::json!({}), &[]),
         },
         ToolDef {
+            name: "al_testsnapshot",
+            method: "tests.snapshot_capture",
+            description: "Capture breakpoint-sampled variables while one exact [Test] method \
+                          runs on live Business Central. This is a live mutation and requires \
+                          a launch configuration; snapshot validation and file-to-file diff \
+                          remain separate daemon methods available through al_call.",
+            schema: || {
+                obj_schema(
+                    serde_json::json!({
+                        "codeunitId": {"type": "integer"},
+                        "codeunitName": {"type": "string"},
+                        "methodName": {"type": "string"},
+                        "bcVersion": {"type": "string"},
+                        "breakpoints": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "file": {"type": "string"},
+                                    "line": {"type": "integer", "minimum": 1},
+                                    "condition": {"type": "string"}
+                                },
+                                "required": ["file", "line"],
+                                "additionalProperties": false
+                            }
+                        },
+                        "outputPath": {"type": "string"},
+                        "config": {"type": "string"},
+                        "timeoutMs": {"type": "integer", "minimum": 1}
+                    }),
+                    &[
+                        "codeunitId",
+                        "codeunitName",
+                        "methodName",
+                        "bcVersion",
+                        "breakpoints",
+                        "outputPath",
+                    ],
+                )
+            },
+        },
+        ToolDef {
+            name: "al_testsnapshotreplay",
+            method: "tests.snapshot_replay",
+            description: "Re-run the exact test recorded by a baseline snapshot on live \
+                          Business Central, recapture the same source breakpoints, and return \
+                          field-level divergences. The baseline must be inside the project and \
+                          the current BC runtime version is required explicitly.",
+            schema: || {
+                obj_schema(
+                    serde_json::json!({
+                        "snapshotPath": {"type": "string"},
+                        "bcVersion": {"type": "string"},
+                        "config": {"type": "string"},
+                        "timeoutMs": {"type": "integer", "minimum": 1}
+                    }),
+                    &["snapshotPath", "bcVersion"],
+                )
+            },
+        },
+        ToolDef {
             name: "al_depgraph",
             method: "deps.graph",
-            description: "Build the project's dependency graph from app.json (this app plus \
-                          its declared dependencies). Args: format (string) — 'json' \
+            description: "Build the GUID-keyed project dependency graph from the current typed \
+                          app.json and every loaded .app manifest, including implicit BC \
+                          dependencies, transitive edges, unsatisfied minimum versions, duplicate \
+                          loaded versions, and missing packages. Args: format (string) — 'json' \
                           (default, structured nodes/edges) or 'dot' (Graphviz source).",
             schema: || {
                 obj_schema(
@@ -379,6 +848,157 @@ fn tools() -> &'static [ToolDef] {
             },
         },
     ]
+}
+
+fn agent_diagnostic(
+    code: &str,
+    severity: &str,
+    summary: &str,
+    reason: impl Into<String>,
+    actions: &[&str],
+) -> serde_json::Value {
+    serde_json::json!({
+        "code": code,
+        "severity": severity,
+        "summary": summary,
+        "reason": reason.into(),
+        "actions": actions,
+    })
+}
+
+fn result_is_empty(result: &serde_json::Value) -> bool {
+    result.is_null()
+        || result.as_array().is_some_and(Vec::is_empty)
+        || result.as_object().is_some_and(serde_json::Map::is_empty)
+}
+
+async fn agent_diagnostics(
+    workspace: &Workspace,
+    method: &str,
+    result: Option<&serde_json::Value>,
+    error: Option<&str>,
+) -> Vec<serde_json::Value> {
+    let mut diagnostics = Vec::new();
+
+    let missing_bc_config = error.is_some_and(|message| {
+        message.contains("No launch config found")
+            || message.contains("No BC server config found")
+            || message.contains("No tenant found")
+            || message.contains("No debug configuration found")
+            || message.contains("debug configuration file has no configs")
+    });
+    if missing_bc_config {
+        diagnostics.push(agent_diagnostic(
+            "AL_AGENT_MISSING_BC_CONFIGURATION",
+            "error",
+            "Business Central configuration is required for this operation",
+            error.unwrap_or_default(),
+            &[
+                "Create .zed/debug.json or .vscode/launch.json with an AL configuration.",
+                "Choose a configuration containing the target tenant/environment or on-premises server.",
+                "For tests, call al_testclassify first to see which methods can run locally.",
+            ],
+        ));
+    }
+
+    let has_declared_dependencies = workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .is_some_and(|project| !project.all_dependencies().is_empty());
+    let missing_symbol_result = match method {
+        "search" => result.is_some_and(result_is_empty),
+        "source" | "location" => error
+            .is_some_and(|message| message.contains("not found in workspace or symbol packages")),
+        _ => false,
+    };
+    if missing_symbol_result && has_declared_dependencies && workspace.symbols.is_empty() {
+        diagnostics.push(agent_diagnostic(
+            "AL_AGENT_MISSING_SYMBOLS",
+            "warning",
+            "Declared package symbols are not loaded",
+            "The project declares Business Central or extension dependencies, but the package symbol index is empty; package objects and members cannot be resolved.",
+            &[
+                "Call al_downloadsymbols, then retry the query.",
+                "Check packageCachePath/appLocalFolderPaths when symbols already exist on disk.",
+                "Inspect the download result's failed entries before treating an empty search as authoritative.",
+            ],
+        ));
+    }
+
+    if matches!(method, "lint" | "hover" | "completions" | "signatureHelp") {
+        let bridge_enabled = workspace.config.read().await.enable_code_analysis;
+        let bridge_available =
+            bridge_enabled && al_workspace::get_or_init_bridge(workspace).await.is_some();
+        if !bridge_available {
+            let reason = if !bridge_enabled {
+                "The optional Microsoft CodeAnalysis semantic bridge is disabled by al.enableCodeAnalysis. Native syntax and workspace diagnostics still run, but bridge-only semantic enrichment is absent."
+            } else if workspace.toolchain.read().await.is_none() {
+                "The Microsoft AL toolchain was not discovered, so the optional semantic bridge cannot initialize. Native syntax and workspace diagnostics still run, but Microsoft CodeAnalysis enrichment is absent."
+            } else {
+                "The optional Microsoft CodeAnalysis semantic bridge could not initialize or exhausted its bounded restart attempts. Native results remain available but may lack bridge-only semantic detail."
+            };
+            diagnostics.push(agent_diagnostic(
+                "AL_AGENT_SEMANTIC_BRIDGE_UNAVAILABLE",
+                "warning",
+                "Semantic bridge enrichment is unavailable",
+                reason,
+                &[
+                    "Enable al.enableCodeAnalysis when bridge enrichment is desired.",
+                    "Install or configure a compatible Microsoft AL toolchain.",
+                    "Check AL semantic bridge initialization logs for the first failure.",
+                ],
+            ));
+        }
+    }
+
+    if matches!(method, "source" | "location") {
+        let availability = result
+            .and_then(|value| value.get("source_availability"))
+            .and_then(serde_json::Value::as_str);
+        if matches!(availability, Some("metadata_only" | "generated_outline")) {
+            let (summary, reason) = if availability == Some("metadata_only") {
+                (
+                    "Package navigation reached metadata only",
+                    "The package exposes object identity but no extractable AL source or rich public API metadata; the returned declaration is a stable navigation target, not the implementation.",
+                )
+            } else {
+                (
+                    "Package navigation returned a generated outline",
+                    "Original AL source was unavailable. The result was reconstructed from SymbolReference.json and contains public signatures/fields but no implementation bodies.",
+                )
+            };
+            diagnostics.push(agent_diagnostic(
+                "AL_AGENT_PACKAGE_SOURCE_UNAVAILABLE",
+                "warning",
+                summary,
+                reason,
+                &[
+                    "Use source_availability before relying on implementation details.",
+                    "Install a package containing embedded source when implementation navigation is required.",
+                    "Treat generated outlines as public API metadata, not executable source.",
+                ],
+            ));
+        } else if error.is_some_and(|message| {
+            message.contains("source could not be materialised")
+                || message.contains(" is unavailable:")
+        }) {
+            diagnostics.push(agent_diagnostic(
+                "AL_AGENT_PACKAGE_SOURCE_UNAVAILABLE",
+                "error",
+                "Package source could not be opened",
+                error.unwrap_or_default(),
+                &[
+                    "Inspect the package path and verify the .app is readable.",
+                    "Download or replace the package, then retry navigation.",
+                    "Use symbol search/API metadata when implementation source is not shipped.",
+                ],
+            ));
+        }
+    }
+
+    diagnostics
 }
 
 /// Handle one parsed MCP message. Returns the response to write, or `None`
@@ -410,14 +1030,27 @@ pub(crate) async fn handle_mcp_message(
     };
 
     match method {
-        "initialize" => respond(serde_json::json!({
-            "protocolVersion": MCP_PROTOCOL_VERSION,
-            "capabilities": {"tools": {}},
-            "serverInfo": {
-                "name": "al-lsp",
-                "version": env!("CARGO_PKG_VERSION"),
-            },
-        })),
+        "initialize" => {
+            let requested = msg
+                .pointer("/params/protocolVersion")
+                .and_then(serde_json::Value::as_str);
+            let negotiated = match requested {
+                Some(MCP_PROTOCOL_VERSION) => MCP_PROTOCOL_VERSION,
+                Some(LEGACY_MCP_PROTOCOL_VERSION) => LEGACY_MCP_PROTOCOL_VERSION,
+                _ => MCP_PROTOCOL_VERSION,
+            };
+            respond(serde_json::json!({
+                "protocolVersion": negotiated,
+                "capabilities": {"tools": {"listChanged": false}},
+                "serverInfo": {
+                    "name": "al-lsp",
+                    "title": "AL Language Tools",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "description": "Business Central AL analysis, build, test, and debug tools."
+                },
+                "instructions": "Use the named tools for validated common operations. Use al_call only for daemon methods without a named tool."
+            }))
+        }
         "ping" => respond(serde_json::json!({})),
         "tools/list" => {
             let list: Vec<serde_json::Value> = tools()
@@ -427,6 +1060,7 @@ pub(crate) async fn handle_mcp_message(
                         "name": t.name,
                         "description": t.description,
                         "inputSchema": (t.schema)(),
+                        "outputSchema": output_schema(t.name),
                     })
                 })
                 .collect();
@@ -442,6 +1076,12 @@ pub(crate) async fn handle_mcp_message(
                 .get("arguments")
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
+            if let Err(error) = validate_tool_arguments(tool, &arguments) {
+                return respond_err(
+                    -32602,
+                    format!("Invalid arguments for {tool_name}: {error}"),
+                );
+            }
 
             let (daemon_method, daemon_params) = if tool.name == "al_call" {
                 let Some(method) = arguments.get("method").and_then(|v| v.as_str()) else {
@@ -468,17 +1108,70 @@ pub(crate) async fn handle_mcp_message(
             // Forward to the daemon dispatcher — same logic, different wire.
             let req = Request::new(0, daemon_method, Some(daemon_params));
             let resp = super::daemon::dispatch_request(workspace, req, shutdown).await;
-
-            let (text, is_error) = match (resp.result, resp.error) {
-                (_, Some(err)) => (err.message, true),
-                (Some(result), None) => (
-                    serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
-                    false,
-                ),
-                (None, None) => ("null".to_string(), false),
+            let error_message = resp.error.as_ref().map(|error| error.message.as_str());
+            let diagnostics = agent_diagnostics(
+                workspace,
+                daemon_method,
+                resp.result.as_ref(),
+                error_message,
+            )
+            .await;
+            let blocked_routing = if tool.name == "al_runtests"
+                && error_message.is_some_and(|message| {
+                    message.contains("No launch config found")
+                        || message.contains("No BC server config found")
+                }) {
+                let classify = super::daemon::dispatch_request(
+                    workspace,
+                    Request::new(0, "tests.classify", Some(serde_json::json!({}))),
+                    shutdown,
+                )
+                .await;
+                classify
+                    .result
+                    .and_then(|result| result.get("classifications").cloned())
+            } else {
+                None
             };
+
+            let (text, is_error, mut structured_content) = match (resp.result, resp.error) {
+                (_, Some(err)) => {
+                    let message = err.message;
+                    (
+                        message.clone(),
+                        true,
+                        serde_json::json!({
+                            "success": false,
+                            "tool": tool.name,
+                            "method": daemon_method,
+                            "error": message,
+                        }),
+                    )
+                }
+                (result, None) => {
+                    let result = result.unwrap_or(serde_json::Value::Null);
+                    (
+                        serde_json::to_string_pretty(&result)
+                            .unwrap_or_else(|_| result.to_string()),
+                        false,
+                        serde_json::json!({
+                            "success": true,
+                            "tool": tool.name,
+                            "method": daemon_method,
+                            "result": result,
+                        }),
+                    )
+                }
+            };
+            if !diagnostics.is_empty() {
+                structured_content["diagnostics"] = serde_json::Value::Array(diagnostics);
+            }
+            if let Some(routing) = blocked_routing {
+                structured_content["routing"] = routing;
+            }
             respond(serde_json::json!({
                 "content": [{"type": "text", "text": text}],
+                "structuredContent": structured_content,
                 "isError": is_error,
             }))
         }
@@ -486,13 +1179,115 @@ pub(crate) async fn handle_mcp_message(
     }
 }
 
+/// Enforce the MCP connection lifecycle around the stateless request
+/// dispatcher. Keeping this state at the stdio-session boundary ensures the
+/// first interaction is capability negotiation and normal operations cannot
+/// start until the client sends `notifications/initialized`.
+async fn handle_mcp_session_message(
+    workspace: &Arc<Workspace>,
+    shutdown: &Notify,
+    lifecycle: &mut McpLifecycle,
+    msg: serde_json::Value,
+) -> Option<serde_json::Value> {
+    let id = msg
+        .get("id")
+        .filter(|id| !id.is_null())
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let error = |code: i64, message: &str| {
+        Some(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id.clone(),
+            "error": {"code": code, "message": message}
+        }))
+    };
+
+    let Some(object) = msg.as_object() else {
+        return error(-32600, "Invalid Request: MCP messages must be JSON objects");
+    };
+    if object.get("jsonrpc").and_then(serde_json::Value::as_str) != Some("2.0") {
+        return error(-32600, "Invalid Request: jsonrpc must be \"2.0\"");
+    }
+    let Some(method) = object.get("method").and_then(serde_json::Value::as_str) else {
+        return error(-32600, "Invalid Request: method must be a string");
+    };
+
+    if object.get("id").is_none() {
+        if method == "notifications/initialized" {
+            if *lifecycle == McpLifecycle::AwaitingInitializedNotification {
+                *lifecycle = McpLifecycle::Ready;
+            } else {
+                tracing::warn!(
+                    state = ?lifecycle,
+                    "mcp: ignored initialized notification in the wrong lifecycle phase"
+                );
+            }
+        }
+        // Notifications never receive JSON-RPC responses. Other notifications
+        // (including cancellation) are currently informational for this
+        // sequential stdio dispatcher.
+        return None;
+    }
+
+    if method == "ping" {
+        return handle_mcp_message(workspace, shutdown, msg).await;
+    }
+
+    if method == "initialize" {
+        if *lifecycle != McpLifecycle::Uninitialized {
+            return error(
+                -32600,
+                "Invalid Request: MCP session is already initialized",
+            );
+        }
+        let params = object.get("params");
+        let valid_params = params
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|params| {
+                params
+                    .get("protocolVersion")
+                    .is_some_and(serde_json::Value::is_string)
+                    && params
+                        .get("capabilities")
+                        .is_some_and(serde_json::Value::is_object)
+                    && params
+                        .get("clientInfo")
+                        .is_some_and(serde_json::Value::is_object)
+            });
+        if !valid_params {
+            return error(
+                -32602,
+                "Invalid initialize params: protocolVersion, capabilities, and clientInfo are required",
+            );
+        }
+        let response = handle_mcp_message(workspace, shutdown, msg).await;
+        if response
+            .as_ref()
+            .is_some_and(|response| response.get("result").is_some())
+        {
+            *lifecycle = McpLifecycle::AwaitingInitializedNotification;
+        }
+        return response;
+    }
+
+    if *lifecycle != McpLifecycle::Ready {
+        return error(
+            -32002,
+            "MCP session is not initialized; send initialize then notifications/initialized",
+        );
+    }
+
+    handle_mcp_message(workspace, shutdown, msg).await
+}
+
 /// Run the MCP server on stdio: newline-delimited JSON-RPC 2.0.
 pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let workspace = Arc::new(Workspace::new());
+    *workspace.config.write().await = al_project::config::AlConfig::load_effective(&project_root)?;
     let _ = workspace.notify_sink.set(Arc::new(|msg: &str| {
         tracing::warn!("mcp: {msg}");
     }));
-    super::daemon::initialize_daemon_workspace(&workspace, &project_root).await;
+    super::daemon::initialize_daemon_workspace(&workspace, &project_root).await?;
     tracing::info!(project = %project_root.display(), tools = tools().len(), "MCP server ready");
 
     // Never triggered in MCP mode — exists because the shared dispatcher's
@@ -503,6 +1298,7 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
     let mut reader = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
     let mut line = String::new();
+    let mut lifecycle = McpLifecycle::default();
     loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
@@ -528,7 +1324,9 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
                 continue;
             }
         };
-        if let Some(resp) = handle_mcp_message(&workspace, &shutdown, msg).await {
+        if let Some(resp) =
+            handle_mcp_session_message(&workspace, &shutdown, &mut lifecycle, msg).await
+        {
             stdout.write_all(resp.to_string().as_bytes()).await?;
             stdout.write_all(b"\n").await?;
             stdout.flush().await?;
@@ -544,6 +1342,25 @@ mod tests {
         Arc::new(Workspace::new())
     }
 
+    async fn install_project(ws: &Workspace, root: &std::path::Path, application: Option<&str>) {
+        *ws.project.write().await = Some(al_project::project::AlProject {
+            root: root.to_path_buf(),
+            app_json: al_project::project::AppManifest {
+                id: "00000000-0000-0000-0000-000000000001".to_string(),
+                name: "MCP Test".to_string(),
+                publisher: "Test".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: Vec::new(),
+                application: application.map(str::to_string),
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: root.join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: Vec::new(),
+        });
+    }
+
     #[tokio::test]
     async fn initialize_reports_tools_capability_and_server_info() {
         let resp = handle_mcp_message(
@@ -556,6 +1373,29 @@ mod tests {
         assert_eq!(resp["result"]["protocolVersion"], MCP_PROTOCOL_VERSION);
         assert_eq!(resp["result"]["serverInfo"]["name"], "al-lsp");
         assert!(resp["result"]["capabilities"]["tools"].is_object());
+        assert!(resp["result"]["instructions"]
+            .as_str()
+            .is_some_and(|instructions| instructions.contains("named tools")));
+    }
+
+    #[tokio::test]
+    async fn initialize_honors_the_supported_legacy_protocol_version() {
+        let resp = handle_mcp_message(
+            &ws(),
+            &Notify::new(),
+            serde_json::json!({
+                "jsonrpc":"2.0",
+                "id":1,
+                "method":"initialize",
+                "params":{"protocolVersion": LEGACY_MCP_PROTOCOL_VERSION}
+            }),
+        )
+        .await
+        .expect("response");
+        assert_eq!(
+            resp["result"]["protocolVersion"],
+            LEGACY_MCP_PROTOCOL_VERSION
+        );
     }
 
     #[tokio::test]
@@ -630,7 +1470,24 @@ mod tests {
                 "schema for {}",
                 t["name"]
             );
+            assert_eq!(t["outputSchema"]["type"], "object");
         }
+        let runtests = resp["result"]["tools"]
+            .as_array()
+            .and_then(|tools| tools.iter().find(|tool| tool["name"] == "al_runtests"))
+            .expect("al_runtests definition");
+        assert!(
+            runtests["outputSchema"]["properties"]["result"]["properties"]["routing"].is_object(),
+            "al_runtests must advertise its per-test routing result: {runtests}"
+        );
+        let search = resp["result"]["tools"]
+            .as_array()
+            .and_then(|tools| tools.iter().find(|tool| tool["name"] == "al_symbolsearch"))
+            .expect("al_symbolsearch definition");
+        assert_eq!(
+            search["outputSchema"]["properties"]["result"]["type"],
+            "array"
+        );
     }
 
     /// End-to-end through the shared dispatcher: a workspace object must be
@@ -653,10 +1510,141 @@ mod tests {
         .await
         .expect("response");
         assert_eq!(resp["result"]["isError"], false, "resp: {resp}");
+        assert_eq!(resp["result"]["structuredContent"]["success"], true);
+        assert_eq!(
+            resp["result"]["structuredContent"]["tool"],
+            "al_symbolsearch"
+        );
+        assert!(
+            resp["result"]["structuredContent"]["result"].is_array(),
+            "structured result must preserve the daemon JSON: {resp}"
+        );
+        validate_schema_value(
+            &resp["result"]["structuredContent"]["result"],
+            &result_schema("al_symbolsearch"),
+            "result",
+        )
+        .expect("symbol search output must match its advertised result schema");
         let text = resp["result"]["content"][0]["text"]
             .as_str()
             .expect("text content");
         assert!(text.contains("Hello World"), "search must find it: {text}");
+    }
+
+    #[tokio::test]
+    async fn agent_diagnostics_explain_all_four_actionable_environment_gaps() {
+        let workspace = ws();
+        let temp = tempfile::tempdir().expect("temp project");
+        install_project(&workspace, temp.path(), Some("26.0.0.0")).await;
+
+        let missing_symbols =
+            agent_diagnostics(&workspace, "search", Some(&serde_json::json!([])), None).await;
+        assert_eq!(missing_symbols[0]["code"], "AL_AGENT_MISSING_SYMBOLS");
+        assert!(missing_symbols[0]["actions"]
+            .as_array()
+            .is_some_and(|actions| !actions.is_empty()));
+
+        let missing_bc = agent_diagnostics(
+            &workspace,
+            "tests.run_auto",
+            None,
+            Some("No launch config found — create .vscode/launch.json or .zed/debug.json"),
+        )
+        .await;
+        assert_eq!(missing_bc[0]["code"], "AL_AGENT_MISSING_BC_CONFIGURATION");
+
+        let missing_bridge =
+            agent_diagnostics(&workspace, "lint", Some(&serde_json::json!([])), None).await;
+        assert!(missing_bridge
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "AL_AGENT_SEMANTIC_BRIDGE_UNAVAILABLE"));
+
+        let unavailable_source = agent_diagnostics(
+            &workspace,
+            "source",
+            Some(&serde_json::json!({"source_availability": "metadata_only"})),
+            None,
+        )
+        .await;
+        assert!(unavailable_source
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "AL_AGENT_PACKAGE_SOURCE_UNAVAILABLE"));
+    }
+
+    #[tokio::test]
+    async fn symbolsearch_surfaces_missing_symbol_recovery_in_structured_content() {
+        let workspace = ws();
+        let temp = tempfile::tempdir().expect("temp project");
+        install_project(&workspace, temp.path(), Some("26.0.0.0")).await;
+        let response = handle_mcp_message(
+            &workspace,
+            &Notify::new(),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 87,
+                "method": "tools/call",
+                "params": {
+                    "name": "al_symbolsearch",
+                    "arguments": {"query": "Customer"}
+                }
+            }),
+        )
+        .await
+        .expect("response");
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        assert!(response["result"]["structuredContent"]["diagnostics"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| item["code"] == "AL_AGENT_MISSING_SYMBOLS")));
+    }
+
+    #[tokio::test]
+    async fn al_runtests_blocked_by_bc_config_keeps_routing_and_diagnostic_context() {
+        let workspace = ws();
+        let temp = tempfile::tempdir().expect("temp project");
+        install_project(&workspace, temp.path(), None).await;
+        let path = temp.path().join("LiveOnly.Codeunit.al");
+        let source = r#"codeunit 50100 "Live Only"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure CallsHttp()
+    var
+        Client: HttpClient;
+    begin
+    end;
+}
+"#;
+        workspace.file_index.add_file(path, source.to_string());
+
+        let response = handle_mcp_message(
+            &workspace,
+            &Notify::new(),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 88,
+                "method": "tools/call",
+                "params": {"name": "al_runtests", "arguments": {}}
+            }),
+        )
+        .await
+        .expect("response");
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        let structured = &response["result"]["structuredContent"];
+        assert!(structured["diagnostics"].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item["code"] == "AL_AGENT_MISSING_BC_CONFIGURATION")
+        }));
+        let routing = structured["routing"].as_array().expect("routing context");
+        assert_eq!(routing.len(), 1, "{response}");
+        assert_eq!(routing[0]["decision"], "liveBc");
+        assert_eq!(routing[0]["runsLocally"], false);
+        assert!(routing[0]["reasons"]
+            .as_array()
+            .is_some_and(|reasons| !reasons.is_empty()));
     }
 
     #[tokio::test]
@@ -708,6 +1696,57 @@ mod tests {
         .await
         .expect("response");
         assert_eq!(resp["error"]["code"], -32602, "resp: {resp}");
+    }
+
+    #[tokio::test]
+    async fn named_tools_reject_fractional_out_of_range_and_unknown_arguments() {
+        for (name, arguments, expected) in [
+            (
+                "al_symbolsearch",
+                serde_json::json!({"query": "Customer", "limit": 1.5}),
+                "wrong JSON type",
+            ),
+            (
+                "al_trace_event",
+                serde_json::json!({"event": "OnPost", "depth": 0}),
+                "at least 1",
+            ),
+            (
+                "al_symbolsearch",
+                serde_json::json!({"query": "Customer", "limt": 20}),
+                "not a supported argument",
+            ),
+            (
+                "al_debug",
+                serde_json::json!({"cmd": "start", "breakOnError": "Sometimes"}),
+                "supported shape",
+            ),
+            (
+                "al_debug",
+                serde_json::json!({"cmd": "start", "authentication": "UserPassword"}),
+                "must be one of",
+            ),
+        ] {
+            let resp = handle_mcp_message(
+                &ws(),
+                &Notify::new(),
+                serde_json::json!({
+                    "jsonrpc":"2.0",
+                    "id":8,
+                    "method":"tools/call",
+                    "params":{"name":name, "arguments":arguments}
+                }),
+            )
+            .await
+            .expect("response");
+            assert_eq!(resp["error"]["code"], -32602, "{resp}");
+            assert!(
+                resp["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(expected)),
+                "{resp}"
+            );
+        }
     }
 
     /// `al_debug` must reach the stateful shared debug dispatcher rather than
@@ -763,6 +1802,11 @@ mod tests {
                 "{}: input schema must be an object",
                 t.name
             );
+            assert_eq!(
+                schema["additionalProperties"], false,
+                "{}: unknown top-level arguments must fail closed",
+                t.name
+            );
             let props = schema["properties"]
                 .as_object()
                 .unwrap_or_else(|| panic!("{}: schema must declare `properties`", t.name));
@@ -779,11 +1823,45 @@ mod tests {
                     t.name
                 );
             }
+
+            let result = result_schema(t.name);
+            if t.name == "al_call" {
+                assert_eq!(
+                    result,
+                    serde_json::json!({}),
+                    "al_call must retain its heterogeneous generic result"
+                );
+            } else {
+                assert!(
+                    result.get("type").is_some() || result.get("oneOf").is_some(),
+                    "{}: named tools need a materially useful result schema",
+                    t.name
+                );
+            }
         }
     }
 
+    #[test]
+    fn mcp_reference_lists_exactly_the_named_tool_registry() {
+        let registered = tools()
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        let reference = include_str!("../../../../Docs/reference/mcp-tools.md");
+        let documented = reference
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `"))
+            .filter_map(|line| line.split_once('`').map(|(tool, _)| tool))
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            documented, registered,
+            "Docs/reference/mcp-tools.md must list exactly every named MCP tool"
+        );
+    }
+
     /// The agent surface (suggest-event, test-classify,
-    /// test-coverage, dependency-graph) is registered and listed.
+    /// test-coverage, live test snapshots, dependency-graph) is registered and listed.
     #[tokio::test]
     async fn tools_list_includes_the_broadened_agent_surface() {
         let resp = handle_mcp_message(
@@ -799,6 +1877,8 @@ mod tests {
             "al_suggestevent",
             "al_testclassify",
             "al_testcoverage",
+            "al_testsnapshot",
+            "al_testsnapshotreplay",
             "al_depgraph",
         ] {
             assert!(names.contains(&expected), "missing {expected}: {names:?}");
@@ -814,5 +1894,125 @@ mod tests {
         )
         .await;
         assert!(resp.is_none());
+    }
+
+    fn initialize_message(id: u64) -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "test-client", "version": "1.0.0"}
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn session_enforces_initialize_then_initialized_notification() {
+        let ws = ws();
+        let shutdown = Notify::new();
+        let mut lifecycle = McpLifecycle::default();
+
+        let before = handle_mcp_session_message(
+            &ws,
+            &shutdown,
+            &mut lifecycle,
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        )
+        .await
+        .expect("pre-initialize request must receive an error");
+        assert_eq!(before["error"]["code"], -32002);
+
+        let initialized =
+            handle_mcp_session_message(&ws, &shutdown, &mut lifecycle, initialize_message(2))
+                .await
+                .expect("initialize response");
+        assert!(initialized["result"].is_object());
+        assert_eq!(lifecycle, McpLifecycle::AwaitingInitializedNotification);
+
+        let too_early = handle_mcp_session_message(
+            &ws,
+            &shutdown,
+            &mut lifecycle,
+            serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
+        )
+        .await
+        .expect("request before initialized notification must error");
+        assert_eq!(too_early["error"]["code"], -32002);
+
+        assert!(handle_mcp_session_message(
+            &ws,
+            &shutdown,
+            &mut lifecycle,
+            serde_json::json!({
+                "jsonrpc":"2.0",
+                "method":"notifications/initialized"
+            }),
+        )
+        .await
+        .is_none());
+        assert_eq!(lifecycle, McpLifecycle::Ready);
+
+        let list = handle_mcp_session_message(
+            &ws,
+            &shutdown,
+            &mut lifecycle,
+            serde_json::json!({"jsonrpc":"2.0","id":4,"method":"tools/list"}),
+        )
+        .await
+        .expect("ready request");
+        assert!(list["result"]["tools"].is_array());
+    }
+
+    #[tokio::test]
+    async fn session_rejects_incomplete_or_duplicate_initialization() {
+        let ws = ws();
+        let shutdown = Notify::new();
+        let mut lifecycle = McpLifecycle::default();
+        let incomplete = handle_mcp_session_message(
+            &ws,
+            &shutdown,
+            &mut lifecycle,
+            serde_json::json!({
+                "jsonrpc":"2.0",
+                "id":1,
+                "method":"initialize",
+                "params":{"protocolVersion": MCP_PROTOCOL_VERSION}
+            }),
+        )
+        .await
+        .expect("invalid params response");
+        assert_eq!(incomplete["error"]["code"], -32602);
+        assert_eq!(lifecycle, McpLifecycle::Uninitialized);
+
+        handle_mcp_session_message(&ws, &shutdown, &mut lifecycle, initialize_message(2))
+            .await
+            .expect("first initialize");
+        let duplicate =
+            handle_mcp_session_message(&ws, &shutdown, &mut lifecycle, initialize_message(3))
+                .await
+                .expect("duplicate response");
+        assert_eq!(duplicate["error"]["code"], -32600);
+    }
+
+    #[tokio::test]
+    async fn session_rejects_malformed_json_rpc_envelopes() {
+        for message in [
+            serde_json::json!([]),
+            serde_json::json!({"jsonrpc":"1.0","id":1,"method":"initialize"}),
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":42}),
+        ] {
+            let response = handle_mcp_session_message(
+                &ws(),
+                &Notify::new(),
+                &mut McpLifecycle::default(),
+                message,
+            )
+            .await
+            .expect("invalid request response");
+            assert_eq!(response["error"]["code"], -32600, "{response}");
+        }
     }
 }

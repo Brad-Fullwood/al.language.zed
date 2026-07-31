@@ -1,8 +1,8 @@
 # Daemon Method Reference
 
-JSON-RPC methods handled by `server/daemon/dispatch_request`. The daemon transport, CLI, and Zed tasks
-route here; MCP calls the same dispatcher in-process. Every method below is available through MCP's
-`al_call`, whether or not it also has a named MCP alias. Transport and lifecycle:
+JSON-RPC methods handled by `server/daemon/dispatch_request`. The daemon transport, CLI, and
+checkout-local contributor tasks route here; MCP calls the same dispatcher in-process. Every method
+below is available through MCP's `al_call`, whether or not it also has a named MCP alias. Transport and lifecycle:
 [daemon-protocol](../features/daemon-protocol.md).
 
 ## LSP-style (`lsp_dispatch.rs`)
@@ -31,7 +31,7 @@ silent fallback from native to Microsoft tooling.
 
 Tests: `tests.discover`, `tests.run`, `tests.coverage`, `tests.run_batch`, `tests.run_auto`,
 `tests.last_results`, `tests.affected`, `tests.classify`, `tests.snapshot_validate`,
-`tests.snapshot_diff`, `tests.mutate`.
+`tests.snapshot_capture`, `tests.snapshot_replay`, `tests.snapshot_diff`, `tests.mutate`.
 
 ## Insight (`insight_dispatch.rs`)
 
@@ -59,10 +59,16 @@ calls.
   runtime-directory fallbacks) on Linux/macOS; per-user named pipe on Windows.
 
 Common parameter shapes: position queries accept `uri` plus `{line, character}`; `breaking` and
-`upgrade` accept `baselineSymbols`; `tests.snapshot_validate` accepts `snapshotPath`; and
-`tests.snapshot_diff` accepts `pathA` and `pathB`. `source` requires `name` and accepts the
+`upgrade` accept `baselineSymbols`; `tests.snapshot_validate` accepts `snapshotPath`;
+`tests.snapshot_replay` accepts `snapshotPath`, `bcVersion`, and optional `config`/`timeoutMs`; and
+`tests.snapshot_diff` accepts `pathA` and `pathB`. Snapshot paths must resolve inside the current
+project. `source` requires `name` and accepts the
 disambiguators `kind`, `package`, `proc`, or `trigger` (`proc` and `trigger` are mutually exclusive);
 it returns `source_availability` as `workspace_source`, `embedded_source`, `generated_outline`, or
 `metadata_only`. `location` accepts the same object identity selectors (`name`, `kind`, `package`,
 and `id`) and rejects ambiguous matches. Other method shapes are defined beside their dispatcher and
 mirrored by `al-explorer`; MCP passes the same object through `al_call`.
+
+`deps.graph` rereads and validates the current `app.json`, reads dependency metadata from every
+configured `.app` package, and fails explicitly on an unreadable/malformed manifest. Identity is the
+app GUID; minimum versions are treated as compatible when a loaded version satisfies them.

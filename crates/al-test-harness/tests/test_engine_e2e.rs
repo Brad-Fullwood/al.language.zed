@@ -16,7 +16,6 @@ const PURE_LOGIC_REL: &str = "src/PureLogicTest.Codeunit.al";
 /// Positive: opening the Pure-Logic fixture produces no diagnostics
 /// (the file is syntactically valid).
 #[tokio::test]
-#[ignore = "requires al-lsp binary + the fixture project to be on disk"]
 async fn pure_logic_fixture_parses_without_diagnostics() {
     let mut client = LspClient::spawn(test_project_dir())
         .await
@@ -45,7 +44,6 @@ async fn pure_logic_fixture_parses_without_diagnostics() {
 /// Positive: document symbols for the fixture include both `[Test]`
 /// procedure names plus the helper procedure.
 #[tokio::test]
-#[ignore = "requires al-lsp binary + the fixture project to be on disk"]
 async fn document_symbols_lists_test_procedures() {
     let mut client = LspClient::spawn(test_project_dir())
         .await
@@ -66,7 +64,6 @@ async fn document_symbols_lists_test_procedures() {
 /// Negative: a non-existent file in the fixture project returns empty
 /// document symbols (or an LSP error), not a panic.
 #[tokio::test]
-#[ignore = "requires al-lsp binary + the fixture project to be on disk"]
 async fn test_document_symbols_missing_file_returns_empty() {
     let mut client = LspClient::spawn(test_project_dir())
         .await
@@ -136,7 +133,6 @@ fn code_lens_test_kind_wire_format_is_recognised() {
 /// Unlike the wire-format checks above, this exercises the real document store,
 /// parser, and LSP transport.
 #[tokio::test]
-#[ignore = "requires al-lsp binary + the fixture project to be on disk"]
 async fn code_lens_e2e_returns_test_lenses_for_test_procedures() {
     let mut client = LspClient::spawn(test_project_dir())
         .await
@@ -189,7 +185,6 @@ async fn code_lens_e2e_returns_test_lenses_for_test_procedures() {
 /// Code lenses for a nonexistent, closed file produce an
 /// empty response without panic.
 #[tokio::test]
-#[ignore = "requires al-lsp binary + the fixture project to be on disk"]
 async fn code_lens_e2e_missing_file_returns_empty() {
     let mut client = LspClient::spawn(test_project_dir())
         .await

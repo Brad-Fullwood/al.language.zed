@@ -30,7 +30,7 @@ A complete list lives in the [CLI command reference](../reference/cli-commands.m
 - **Debug/profiling:** `debug {start|breakpoint|state|eval|continue|step|history|stop}`,
   `snapshot {start|list|download}`, `profile {start|stop|analyze}`.
 - **Tests:** `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`,
-  `test-classify`, `test-snapshot {validate|diff}`, `test-results`.
+  `test-classify`, `test-snapshot {capture|validate|replay|diff}`, `test-results`.
 - **Translation:** `xlf {generate|refresh|untranslated|suggest}`.
 
 ### `--json` mode
@@ -39,6 +39,14 @@ Every command accepts the global `--json` flag. Human mode prints tables/indente
 stderr); JSON mode prints structured results to stdout, with errors as `{ "error": "…" }`. This is the
 contract that makes the whole toolchain CI- and agent-friendly. Example error when the daemon is
 unreachable: `{ "error": "Cannot connect to al-lsp daemon… Hint: al-lsp daemon --project ." }`.
+
+Human and JSON modes also share exit semantics. Exit `0` means the requested
+gate passed, exit `1` means an error or blocking findings, and exit `75` means
+the result is temporarily incomplete. Quality commands do not return success
+merely because they successfully produced a report: complexity hotspots,
+high-confidence dead code, SQL anti-patterns, duplicate/architecture/breaking
+findings, unclassified data, and permission-audit failures make the process
+non-zero in both output modes.
 
 ## TUI views
 
@@ -58,12 +66,18 @@ object. Single-line inputs are capped at 4096 bytes.
 Navigation is consistent: arrows or `j`/`k`, Tab/Enter to move between panes, `Esc` to back out. The
 TUI renders immediately with a "Loading workspace…" status while symbols load on a background thread.
 
-## Zed task mapping
+## Zed integration
 
-`languages/al/tasks.json` exposes ~55 tasks that shell out to these commands, using `$ZED_FILE`,
-`$ZED_SYMBOL`, and `$ZED_ROW` substitutions. The *AL: Open Object Explorer* task launches the TUI in a
-new terminal. The generated task definitions are in [languages/al/tasks.json](../../languages/al/tasks.json),
-with their underlying commands documented in the [CLI reference](../reference/cli-commands.md).
+The CLI is not exposed as static language tasks. Stable Zed task JSON cannot address the
+`al-explorer` binary inside an extension download directory, and the gallery installer does not add
+that directory to the user's shell `PATH`. Shipping bare CLI commands would therefore produce
+non-working actions for fresh installs.
+
+Editor-integrated equivalents run through the resolved `al-lsp` binary: LSP execute commands provide
+editor actions, while the **AL Tools** MCP server exposes named operations and the complete shared
+dispatcher through `al_call`. The standalone CLI/TUI remains available when `al-explorer` is
+installed or invoked directly; its commands are documented in the
+[CLI reference](../reference/cli-commands.md).
 
 ## Microsoft comparison
 
@@ -76,11 +90,11 @@ and in any terminal.
 
 A long-lived daemon plus a thin CLI means the expensive work (indexing packages, building graphs) is
 paid once and reused across many fast commands — ideal for both interactive terminal use and CI loops.
-Sharing the daemon dispatcher with MCP and Zed tasks guarantees one set of answers everywhere. MCP's
-`al_call` exposes that complete dispatcher, so named aliases improve discovery without defining a
-smaller agent-only feature set. The TUI exists because some questions (browsing objects, following
-event chains) are inherently interactive and benefit from a fast, keyboard-driven UI that doesn't
-need the editor open.
+Sharing the daemon dispatcher with MCP and contributor tasks guarantees one set of answers
+everywhere. MCP's `al_call` exposes that complete dispatcher, so named aliases improve discovery
+without defining a smaller agent-only feature set. The TUI exists because some questions (browsing
+objects, following event chains) are inherently interactive and benefit from a fast,
+keyboard-driven UI that doesn't need the editor open.
 
 ## How to use
 
@@ -100,10 +114,13 @@ that `al-explorer` auto-starts `al-lsp` and completes a JSON-RPC request. CI run
 native Windows host, where they exercise the named-pipe implementation rather than merely
 cross-compiling it. See [Testing guide — daemon IPC](../testing-guide.md#daemon-ipc-on-linux-macos-and-windows).
 
-## Limitations & roadmap
+## Compatibility boundaries
 
 - Windows uses a per-user named pipe; Linux and macOS use owner-only Unix-domain sockets.
-- Some CLI workflows aren't yet Zed tasks (affected tests, snapshot diff/validation, `deps-graph`, XLIFF
-  refresh/untranslated/suggest, table impact) — see `ROADMAP.md` (Zed UX).
+- Static language tasks remain unavailable because stable Zed task JSON cannot resolve the
+  extension-private `al-explorer` sidecar. The checkout's contributor-only `.zed/tasks.json`
+  includes affected tests, snapshot diff/validation/live replay, `deps-graph`, XLIFF
+  refresh/untranslated/suggestions, and table impact; smoke tests validate their complete clap
+  argument contracts. The replay task reads the required runtime identity from `AL_BC_VERSION`.
 - Event-subscriber/call-site coverage in the CLI/TUI is workspace-source-only (package `.app` symbols
   have no method bodies).

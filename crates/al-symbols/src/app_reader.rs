@@ -91,6 +91,22 @@ pub fn read_app_file(path: &std::path::Path) -> Result<SymbolPackage, AppReaderE
     read_archive(ZipArchive::new(file)?)
 }
 
+/// Parse a standalone `SymbolReference.json` payload into the same normalized
+/// symbols returned by [`read_app_file`].
+///
+/// This is used when a caller has generated the public surface in memory and
+/// needs to compare it with a packaged baseline without writing a temporary
+/// `.app`. The same size, BOM, padding, and JSON validation applies.
+pub fn read_symbol_reference_bytes(
+    json_bytes: &[u8],
+    package_name: &str,
+) -> Result<Vec<super::model::SymbolEntry>, AppReaderError> {
+    if json_bytes.len() as u64 > MAX_APP_FILE_SIZE {
+        return Err(AppReaderError::TooLarge(json_bytes.len() as u64));
+    }
+    Ok(parse_symbol_reference_json(json_bytes)?.into_entries(package_name))
+}
+
 fn read_archive<R: Read + Seek>(
     mut archive: ZipArchive<R>,
 ) -> Result<SymbolPackage, AppReaderError> {

@@ -7,6 +7,25 @@ use url::Url;
 
 use crate::documents::DocumentStore;
 
+/// Acquire a payload-free parse coordination lock.
+///
+/// A panic while this mutex is held cannot leave data inside the mutex: all
+/// document text and cached trees live in `DocumentStore` and are re-read after
+/// acquisition below. Discard the poisoned guard without inspecting it, clear
+/// the flag, and reacquire before continuing.
+fn lock_parse_coordination(lock: &std::sync::Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
+    loop {
+        match lock.lock() {
+            Ok(guard) => return guard,
+            Err(poisoned) => {
+                drop(poisoned);
+                lock.clear_poison();
+                tracing::warn!("discarded poisoned payload-free parse coordination lock");
+            }
+        }
+    }
+}
+
 /// Get the text and parse tree for a document, using the cache when possible.
 ///
 /// If the document's version matches a cached tree, returns the cached
@@ -36,7 +55,7 @@ pub fn get_or_parse(
     // Serialize cache misses per URI so concurrent LSP requests do not all
     // parse the same document version.
     let lock = documents.parse_lock(uri);
-    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock_parse_coordination(&lock);
 
     // The document may have changed while this request waited for the lock.
     let (text, version) = documents.get_text_and_version(uri)?;
@@ -88,7 +107,9 @@ mod tests {
     fn test_get_or_parse_parses_and_caches() {
         let store = DocumentStore::new();
         let uri = test_uri("cached");
-        store.open(uri.clone(), "codeunit 50100 Test { }".to_string());
+        store
+            .open(uri.clone(), "codeunit 50100 Test { }".to_string())
+            .unwrap();
 
         let result = get_or_parse(&store, &uri);
         assert!(result.is_some());
@@ -104,7 +125,7 @@ mod tests {
         let store = std::sync::Arc::new(DocumentStore::new());
         let uri = test_uri("concurrent");
         let src = "codeunit 50100 Concurrent { procedure Foo() begin end; }\n".repeat(50);
-        store.open(uri.clone(), src);
+        store.open(uri.clone(), src).unwrap();
 
         let threads: Vec<_> = (0..16)
             .map(|_| {
@@ -126,18 +147,22 @@ mod tests {
     fn test_cache_at_version_rejects_version_skew() {
         let store = DocumentStore::new();
         let uri = test_uri("skew");
-        store.open(uri.clone(), "codeunit 50100 A { }".to_string());
+        store
+            .open(uri.clone(), "codeunit 50100 A { }".to_string())
+            .unwrap();
 
         let (_old_text, captured_version) = store.get_text_and_version(&uri).unwrap();
         assert_eq!(captured_version, 0);
 
-        store.apply_changes(
-            &uri,
-            &[crate::documents::TextChange {
-                range: None,
-                text: "codeunit 50100 B { } // longer".to_string(),
-            }],
-        );
+        store
+            .apply_changes(
+                &uri,
+                &[crate::documents::TextChange {
+                    range: None,
+                    text: "codeunit 50100 B { } // longer".to_string(),
+                }],
+            )
+            .unwrap();
         let new_version = store.get_version(&uri).unwrap();
         assert_eq!(new_version, 1);
         let new_tree = AlParser::parse_quick("codeunit 50100 B { } // longer").tree;
@@ -161,18 +186,22 @@ mod tests {
     fn test_cache_invalidated_after_change() {
         let store = DocumentStore::new();
         let uri = test_uri("change");
-        store.open(uri.clone(), "codeunit 50100 A { }".to_string());
+        store
+            .open(uri.clone(), "codeunit 50100 A { }".to_string())
+            .unwrap();
 
         let _ = get_or_parse(&store, &uri);
         assert!(store.get_cached_tree(&uri).is_some());
 
-        store.apply_changes(
-            &uri,
-            &[crate::documents::TextChange {
-                range: None,
-                text: "codeunit 50100 B { }".to_string(),
-            }],
-        );
+        store
+            .apply_changes(
+                &uri,
+                &[crate::documents::TextChange {
+                    range: None,
+                    text: "codeunit 50100 B { }".to_string(),
+                }],
+            )
+            .unwrap();
 
         assert!(store.get_cached_tree(&uri).is_none());
 

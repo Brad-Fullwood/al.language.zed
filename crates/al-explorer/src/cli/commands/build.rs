@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::super::XlfCommands;
 
-use super::{connect, print_json, project_root, report_error, run_command};
+use super::{connect, print_json, project_root, report_error, request_checked, run_command};
 
 /// Print a build/package result in human-readable form and return the exit code.
 ///
@@ -80,7 +80,7 @@ pub fn cmd_compile(project_dir: Option<&str>, json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
     client.set_request_timeout(BUILD_TIMEOUT);
-    match client.request("compile", None) {
+    match request_checked(&mut client, "compile", None) {
         Ok(result) => print_build_result(&result, json),
         Err(e) => report_error(&e, json),
     }
@@ -92,7 +92,7 @@ pub fn cmd_package(json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
     client.set_request_timeout(BUILD_TIMEOUT);
-    match client.request("package", None) {
+    match request_checked(&mut client, "package", None) {
         Ok(result) => print_build_result(&result, json),
         Err(e) => report_error(&e, json),
     }
@@ -125,12 +125,35 @@ pub fn cmd_pack_native(
     // Our native compiler identifies itself in the manifest's <Build>.
     let compiler_version = concat!("al-explorer/", env!("CARGO_PKG_VERSION"));
     let timestamp = al_emit::now_timestamp();
+    let config = match al_project::config::AlConfig::load_effective(&dir) {
+        Ok(config) => config,
+        Err(error) => {
+            return report_error(&format!("cannot load AL project settings: {error}"), json);
+        }
+    };
+    // Discover dependency packages independently of app.json parsing. The
+    // native verifier owns the manifest contract and must be allowed to return
+    // its structured ALN010x diagnostics for malformed manifests.
+    let dependency_packages = match al_project::project::configured_symbol_packages(&dir, &config) {
+        Ok(selection) => selection.packages,
+        Err(error) => {
+            return report_error(
+                &format!("cannot scan configured symbol package folders: {error}"),
+                json,
+            );
+        }
+    };
 
-    let verified =
-        match al_emit::build_verified_app_from_project(&dir, compiler_version, &timestamp) {
-            Ok(result) => result,
-            Err(e) => return report_error(&format!("native pack failed: {e}"), json),
-        };
+    let verified = match al_emit::build_verified_app_from_project_with_packages(
+        &dir,
+        compiler_version,
+        &timestamp,
+        Some(dependency_packages.as_slice()),
+    ) {
+        Ok(result) => result,
+        Err(e) => return report_error(&format!("native pack failed: {e}"), json),
+    };
+    let mut timings = verified.timings;
     let diagnostic_values = verified
         .diagnostics
         .iter()
@@ -146,6 +169,7 @@ pub fn cmd_pack_native(
                 "validated": true,
                 "verificationLevel": "native-syntax-project-binding",
                 "diagnostics": diagnostic_values,
+                "timings": timings,
             }));
         } else {
             eprintln!("Native verification failed");
@@ -184,6 +208,7 @@ pub fn cmd_pack_native(
     if let Err(e) = std::fs::create_dir_all(parent) {
         return report_error(&format!("creating {}: {e}", parent.display()), json);
     }
+    let write_started = std::time::Instant::now();
     let write_result = tempfile::NamedTempFile::new_in(parent).and_then(|mut temp| {
         temp.write_all(&built.bytes)?;
         temp.as_file_mut().sync_all()?;
@@ -191,6 +216,8 @@ pub fn cmd_pack_native(
             .map(|_| ())
             .map_err(|error| error.error)
     });
+    timings.output_write_ns = u64::try_from(write_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    timings.total_ns = timings.total_ns.saturating_add(timings.output_write_ns);
     if let Err(e) = write_result {
         return report_error(
             &format!("atomically writing {}: {e}", out_path.display()),
@@ -208,6 +235,7 @@ pub fn cmd_pack_native(
             "verificationLevel": "native-syntax-project-binding",
             "microsoftCompatibilityValidated": validate,
             "diagnostics": diagnostic_values,
+            "timings": timings,
         }));
     } else {
         let compatibility = if validate {
@@ -299,11 +327,15 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
             return Some(report_error(&format!("starting async runtime: {e}"), json));
         }
     };
-    let result = runtime.block_on(al_compile::compile_project(
-        &toolchain,
-        &tmp,
-        Some(&pkg_cache),
-    ));
+    let result = runtime.block_on(al_compile::build(al_compile::BuildRequest {
+        project_root: &tmp,
+        backend: al_compile::BuildBackend::Alc,
+        toolchain: Some(&toolchain),
+        dependency_packages: None,
+        package_cache: Some(&pkg_cache),
+        analyzers: None,
+        config: al_compile::CompilationConfigOptions::default(),
+    }));
     let _ = std::fs::remove_dir_all(&tmp);
 
     let result = match result {
@@ -374,7 +406,10 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
 pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
     match subcmd {
         XlfCommands::Generate { project } => {
-            let proj_root = project_root(project.as_deref());
+            let proj_root = match project_root(project.as_deref()) {
+                Ok(root) => root,
+                Err(error) => return report_error(&error, json),
+            };
             let params = serde_json::json!({ "project": proj_root.to_string_lossy().as_ref() });
             run_command(
                 "xlf.generate",

@@ -1,0 +1,16 @@
+{
+    "id": "8cbac399-e7b0-46d8-8ad5-46f079b09904",
+    "name": "AL Live Contract",
+    "publisher": "al.language.zed",
+    "version": "1.0.0.0",
+    "application": "24.0.0.0",
+    "platform": "24.0.0.0",
+    "runtime": "13.0",
+    "target": "Cloud",
+    "idRanges": [
+        {
+            "from": 50100,
+            "to": 50100
+        }
+    ]
+}

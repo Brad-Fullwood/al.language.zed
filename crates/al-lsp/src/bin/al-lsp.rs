@@ -92,10 +92,25 @@ fn spawn_signal_handlers() {
     });
 }
 
+/// A thread that has hosted the in-process CLR can remain attached after the
+/// last semantic call and prevent Tokio's default, unbounded Runtime::drop
+/// from returning. The LSP shutdown handler has already cancelled/joined its
+/// owned work and dropped the bridge before `run` returns, so this timeout is
+/// solely a final process-teardown bound for runtime/CLR implementation
+/// threads, not a deadline on user work.
+const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 #[cfg(not(windows))]
-#[tokio::main]
-async fn main() {
-    run().await;
+fn main() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap_or_else(|error| {
+            eprintln!("al-lsp: failed to create async runtime: {error}");
+            std::process::exit(1);
+        });
+    runtime.block_on(run());
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
 }
 
 #[cfg(windows)]
@@ -123,6 +138,7 @@ fn main() {
                     std::process::exit(1);
                 });
             runtime.block_on(run());
+            runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
         }) {
         Ok(handle) => handle,
         Err(error) => {
@@ -291,17 +307,24 @@ async fn run() {
             }
         }
     } else if args.iter().any(|a| a == "--dap") {
-        let project_root = env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
-
-        let alc_path = al_lsp::toolchain::find_toolchain().ok().map(|tc| tc.alc);
+        let project_root = match env::current_dir() {
+            Ok(path) => path.display().to_string(),
+            Err(error) => {
+                tracing::error!(%error, "DAP: failed to resolve current project directory");
+                eprintln!("al-lsp: DAP could not resolve the current project directory: {error}");
+                std::process::exit(1);
+            }
+        };
 
         let file_index = std::sync::Arc::new(al_source::file_index::FileIndex::new());
         {
             let root = PathBuf::from(&project_root);
             if root.join("app.json").is_file() {
-                file_index.scan(&root);
+                if let Err(error) = file_index.scan(&root) {
+                    tracing::error!(%error, "DAP: workspace source scan failed");
+                    eprintln!("al-lsp: DAP workspace source scan failed: {error}");
+                    std::process::exit(1);
+                }
                 tracing::info!(
                     files = file_index.files.len(),
                     "DAP: indexed workspace files"
@@ -313,23 +336,32 @@ async fn run() {
 
         if let Err(e) = al_dap::dap::native_dap::run_native_dap(
             &project_root,
-            alc_path.as_deref(),
             |tenant| async move {
-                let client = reqwest::Client::new();
-                al_symbols::oauth::acquire_token(&client, &tenant, |msg| {
-                    tracing::info!("{msg}");
-                })
-                .await
-                .map_err(|e| e.to_string())
+                match al_bc::http_auth::access_token_from_env().map_err(|e| e.to_string())? {
+                    Some(token) => Ok(token),
+                    None => {
+                        let client = reqwest::Client::new();
+                        al_symbols::oauth::acquire_token(&client, &tenant, |msg| {
+                            tracing::info!("{msg}");
+                        })
+                        .await
+                        .map_err(|e| e.to_string())
+                    }
+                }
             },
             move |file_path| {
                 let path = PathBuf::from(file_path);
-                fi.object_info
-                    .get(&path)
-                    .map(|info| al_dap::dap::native_dap::ResolvedObject {
-                        object_type: al_dap::dap::native_dap::kind_to_object_type(&info.kind),
-                        object_id: info.id.unwrap_or(-1) as i32,
-                    })
+                fi.object_info.get(&path).and_then(|info| {
+                    let kind = info.kind.parse::<al_symbols::ObjectKind>().ok()?;
+                    let object_id = kind.normalize_declaration_id(info.id).ok()?;
+                    let object_type = al_dap::dap::native_dap::kind_to_object_type(&info.kind);
+                    (object_type != al_dap::dap::native_dap::bc_object_type::UNKNOWN).then_some(
+                        al_dap::dap::native_dap::ResolvedObject {
+                            object_type,
+                            object_id,
+                        },
+                    )
+                })
             },
             move |object_type, object_id| {
                 fi2.object_info
@@ -340,15 +372,67 @@ async fn run() {
                     })
                     .map(|entry| entry.key().clone())
             },
-            |project_root: &std::path::Path| {
-                let cr = al_compile::native_compile(project_root);
-                if cr.success {
-                    Ok(cr.output)
+            |project_root: PathBuf| async move {
+                // Native DAP is a separate process, so it cannot borrow the
+                // LSP workspace lock.  Load the persisted project policy here
+                // and still delegate artifact choice, timeout/cancellation,
+                // diagnostics, and handoff to `al_compile::build`.
+                let mut config = al_project::config::AlConfig::load_effective(&project_root)
+                    .map_err(|error| error.to_string())?;
+                match std::env::var("AL_DAP_SETTINGS_JSON") {
+                    Ok(settings) => {
+                        let unknown =
+                            config
+                                .merge_editor_settings_json(&settings)
+                                .map_err(|error| {
+                                    format!("invalid AL_DAP_SETTINGS_JSON from extension: {error}")
+                                })?;
+                        if !unknown.is_empty() {
+                            return Err(format!(
+                                "unknown AL_DAP_SETTINGS_JSON keys: {}",
+                                unknown.join(", ")
+                            ));
+                        }
+                    }
+                    Err(std::env::VarError::NotPresent) => {}
+                    Err(error) => {
+                        return Err(format!("cannot read AL_DAP_SETTINGS_JSON: {error}"));
+                    }
+                }
+                let mut project = al_project::project::find_project(&project_root)
+                    .map_err(|error| error.to_string())?;
+                project
+                    .apply_symbol_settings(&config)
+                    .map_err(|error| error.to_string())?;
+                let backend = al_compile::BuildBackend::from_use_official_compiler(
+                    config.use_official_compiler,
+                );
+                let toolchain = if backend == al_compile::BuildBackend::Alc {
+                    Some(al_lsp::toolchain::find_toolchain().map_err(|error| error.to_string())?)
                 } else {
-                    Err(cr.output)
+                    None
+                };
+                let result = al_compile::build(al_compile::BuildRequest {
+                    project_root: &project_root,
+                    backend,
+                    toolchain: toolchain.as_ref(),
+                    dependency_packages: Some(project.packages.as_slice()),
+                    package_cache: Some(project.packages_dir.as_path()),
+                    analyzers: (!config.code_analyzers.is_empty())
+                        .then_some(config.code_analyzers.as_slice()),
+                    config: al_compile::CompilationConfigOptions::from(&config),
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                if result.success {
+                    Ok(result.output)
+                } else {
+                    Err(result.output)
                 }
             },
-            |project_root: &std::path::Path| al_compile::find_app_file(project_root),
+            |project_root: &std::path::Path| {
+                al_compile::find_app_file(project_root).map_err(|error| error.to_string())
+            },
         )
         .await
         {

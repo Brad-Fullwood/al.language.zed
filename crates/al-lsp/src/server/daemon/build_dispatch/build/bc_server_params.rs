@@ -15,47 +15,49 @@ pub(super) struct BcServerParams {
 pub(super) fn parse_bc_server_params(
     params: &serde_json::Value,
     output_subdir: &str,
-) -> BcServerParams {
-    let server_url = params
-        .get("serverUrl")
-        .and_then(|v| v.as_str())
-        .unwrap_or("http://localhost:7049/BC")
-        .to_string();
-    let company = params
-        .get("company")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let output_dir = params
-        .get("outputDir")
-        .and_then(|v| v.as_str())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::data_local_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                .join("al-lsp")
-                .join(output_subdir)
-        });
-    let username = params
-        .get("username")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let password = params
-        .get("password")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let accept_invalid_certs = params
-        .get("acceptInvalidCerts")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    BcServerParams {
+) -> Result<BcServerParams, String> {
+    fn optional_string(params: &serde_json::Value, key: &str) -> Result<Option<String>, String> {
+        match params.get(key) {
+            None => Ok(None),
+            Some(value) => value
+                .as_str()
+                .map(|value| Some(value.to_string()))
+                .ok_or_else(|| format!("'{key}' must be a string when supplied")),
+        }
+    }
+
+    let server_url = optional_string(params, "serverUrl")?
+        .unwrap_or_else(|| "http://localhost:7049/BC".to_string());
+    let company = optional_string(params, "company")?.unwrap_or_default();
+    let output_dir = match optional_string(params, "outputDir")? {
+        Some(output_dir) => {
+            let output_dir = std::path::PathBuf::from(output_dir);
+            if !output_dir.is_absolute() {
+                return Err("'outputDir' must be an absolute path".to_string());
+            }
+            output_dir
+        }
+        None => dirs::data_local_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("al-lsp")
+            .join(output_subdir),
+    };
+    let username = optional_string(params, "username")?;
+    let password = optional_string(params, "password")?;
+    let accept_invalid_certs = match params.get("acceptInvalidCerts") {
+        None => false,
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| "'acceptInvalidCerts' must be a boolean when supplied".to_string())?,
+    };
+    Ok(BcServerParams {
         server_url,
         company,
         output_dir,
         username,
         password,
         accept_invalid_certs,
-    }
+    })
 }
 
 /// SSRF guard: reject a `serverUrl` whose scheme is not http(s) before any
@@ -111,7 +113,7 @@ mod tests {
     fn bc_server_params_apply_documented_defaults_when_absent() {
         // Empty params: every field must fall back to its documented default
         // and the output dir must end in the supplied subdir.
-        let bc = parse_bc_server_params(&serde_json::json!({}), "snapshots");
+        let bc = parse_bc_server_params(&serde_json::json!({}), "snapshots").unwrap();
         assert_eq!(bc.server_url, "http://localhost:7049/BC");
         assert_eq!(bc.company, "");
         assert!(bc.username.is_none());
@@ -138,7 +140,8 @@ mod tests {
                 "acceptInvalidCerts": true,
             }),
             "profiles",
-        );
+        )
+        .unwrap();
         assert_eq!(bc.server_url, "https://bc.example/inst");
         assert_eq!(bc.company, "CRONUS");
         assert_eq!(bc.output_dir, std::path::PathBuf::from("/data/out"));
@@ -148,21 +151,19 @@ mod tests {
     }
 
     #[test]
-    fn bc_server_params_ignore_wrong_typed_fields() {
-        // Negative: a client sending the wrong JSON type (number where a
-        // string is expected) must not poison the value — it falls back to
-        // the default rather than e.g. stringifying the number.
-        let bc = parse_bc_server_params(
-            &serde_json::json!({
-                "serverUrl": 7049,
-                "acceptInvalidCerts": "yes",
-            }),
-            "snapshots",
-        );
-        assert_eq!(bc.server_url, "http://localhost:7049/BC");
-        assert!(
-            !bc.accept_invalid_certs,
-            "non-bool acceptInvalidCerts must default to false, not be coerced true"
-        );
+    fn bc_server_params_reject_wrong_typed_or_relative_fields() {
+        for params in [
+            serde_json::json!({ "serverUrl": 7049 }),
+            serde_json::json!({ "company": false }),
+            serde_json::json!({ "username": 1 }),
+            serde_json::json!({ "password": [] }),
+            serde_json::json!({ "acceptInvalidCerts": "yes" }),
+            serde_json::json!({ "outputDir": "relative/path" }),
+        ] {
+            assert!(
+                parse_bc_server_params(&params, "snapshots").is_err(),
+                "malformed BC params must be rejected: {params}"
+            );
+        }
     }
 }

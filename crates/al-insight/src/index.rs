@@ -123,9 +123,48 @@ pub struct CallGraph {
     resolution: HashMap<NodeId, EdgeResolutionState>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallGraphMemoryStats {
+    pub node_bytes: usize,
+    pub edge_bytes: usize,
+    pub resolution_bytes: usize,
+    pub tracked_bytes: usize,
+}
+
 impl CallGraph {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn memory_stats(&self) -> CallGraphMemoryStats {
+        let node_bytes = self
+            .nodes
+            .values()
+            .map(|node| {
+                std::mem::size_of::<NodeInfo>()
+                    + node.node_type.capacity()
+                    + node.name.capacity()
+                    + node.object.capacity()
+            })
+            .sum::<usize>();
+        let edge_bytes = self
+            .outgoing
+            .values()
+            .chain(self.incoming.values())
+            .map(|edges| {
+                std::mem::size_of::<Vec<CallEdge>>()
+                    + edges.capacity() * std::mem::size_of::<CallEdge>()
+            })
+            .sum::<usize>();
+        let resolution_bytes =
+            self.resolution.len() * std::mem::size_of::<(NodeId, EdgeResolutionState)>();
+        CallGraphMemoryStats {
+            node_bytes,
+            edge_bytes,
+            resolution_bytes,
+            tracked_bytes: node_bytes + edge_bytes + resolution_bytes,
+        }
     }
 
     /// Populate the call graph from an already-built [`InsightGraph`].
@@ -381,6 +420,7 @@ mod tests {
             enum_values: vec![],
             keys: vec![],
             properties: vec![],
+            permissions: Vec::new(),
             variables: vec![],
         }
     }

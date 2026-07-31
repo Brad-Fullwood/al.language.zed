@@ -12,6 +12,8 @@ use tree_sitter::{Node, Tree};
 /// Produces a hierarchical symbol tree:
 /// - Top-level object (table, page, codeunit, etc.)
 ///   - Procedures and triggers
+///     - Local variables
+///     - Executable scopes (`begin`, `if`, `case`, loops, and `with`)
 ///   - Fields (for tables)
 ///   - Controls and actions (for pages)
 ///   - Data items (for reports)
@@ -234,6 +236,98 @@ fn extract_named_symbol(
     })
 }
 
+fn extract_callable_symbol(
+    node: Node,
+    source: &[u8],
+    kind: SymbolKind,
+    detail: Option<String>,
+) -> Option<DocumentSymbol> {
+    let mut symbol = extract_named_symbol(node, source, kind, detail)?;
+    let mut children = Vec::new();
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "var_section" | "empty_var_section" => {
+                extract_var_section_children(child, source, &mut children);
+            }
+            "begin_end_block" => {
+                children.push(extract_executable_scope(child, source));
+            }
+            _ => {}
+        }
+    }
+
+    symbol.children = (!children.is_empty()).then_some(children);
+    Some(symbol)
+}
+
+fn executable_scope_metadata(kind: &str) -> Option<(&'static str, &'static str, SymbolKind)> {
+    match kind {
+        "begin_end_block" => Some(("begin", "kw_begin", SymbolKind::Struct)),
+        "if_statement" => Some(("if", "kw_if", SymbolKind::Operator)),
+        "case_statement" => Some(("case", "kw_case", SymbolKind::Operator)),
+        "for_statement" => Some(("for", "kw_for", SymbolKind::Operator)),
+        "foreach_statement" => Some(("foreach", "kw_foreach", SymbolKind::Operator)),
+        "while_statement" => Some(("while", "kw_while", SymbolKind::Operator)),
+        "repeat_statement" => Some(("repeat", "kw_repeat", SymbolKind::Operator)),
+        "with_statement" => Some(("with", "kw_with", SymbolKind::Operator)),
+        _ => None,
+    }
+}
+
+fn extract_executable_scope(node: Node, source: &[u8]) -> DocumentSymbol {
+    let (name, keyword_kind, kind) = executable_scope_metadata(node.kind())
+        .expect("extract_executable_scope must receive a supported executable scope");
+    let range = ts_range_to_lsp(&node.range(), source);
+    let selection_range = {
+        let mut cursor = node.walk();
+        let selected = node
+            .children(&mut cursor)
+            .find(|child| child.kind() == keyword_kind)
+            .map(|child| ts_range_to_lsp(&child.range(), source))
+            .unwrap_or(range);
+        selected
+    };
+    let mut children = Vec::new();
+    collect_immediate_executable_scopes(node, source, &mut children);
+
+    DocumentSymbol {
+        name: name.to_string(),
+        detail: Some("executable scope".to_string()),
+        kind,
+        range,
+        selection_range,
+        children: (!children.is_empty()).then_some(children),
+    }
+}
+
+/// Find the first executable scopes below `root`.
+///
+/// Once a scope is found, that scope owns its descendants. This preserves the
+/// syntax tree's nesting instead of flattening every control statement under
+/// the callable's outer `begin` block.
+fn collect_immediate_executable_scopes(
+    root: Node,
+    source: &[u8],
+    symbols: &mut Vec<DocumentSymbol>,
+) {
+    let mut cursor = root.walk();
+    let mut stack: Vec<Node> = root.children(&mut cursor).collect();
+    stack.reverse();
+
+    while let Some(node) = stack.pop() {
+        if executable_scope_metadata(node.kind()).is_some() {
+            symbols.push(extract_executable_scope(node, source));
+            continue;
+        }
+
+        let mut child_cursor = node.walk();
+        let children: Vec<_> = node.children(&mut child_cursor).collect();
+        stack.extend(children.into_iter().rev());
+    }
+}
+
 fn extract_procedure_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let name = node
         .child_by_field_name("name")
@@ -264,15 +358,15 @@ fn extract_procedure_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol>
         Some(params.to_string())
     };
 
-    extract_named_symbol(node, source, SymbolKind::Function, detail)
+    extract_callable_symbol(node, source, SymbolKind::Function, detail)
 }
 
 fn extract_trigger_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
-    extract_named_symbol(node, source, SymbolKind::Event, Some("trigger".to_string()))
+    extract_callable_symbol(node, source, SymbolKind::Event, Some("trigger".to_string()))
 }
 
 fn extract_event_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
-    extract_named_symbol(node, source, SymbolKind::Event, Some("event".to_string()))
+    extract_callable_symbol(node, source, SymbolKind::Event, Some("event".to_string()))
 }
 
 fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
@@ -1200,6 +1294,75 @@ mod tests {
             "Should have at least 2 procedures, got {}",
             children.len()
         );
+    }
+
+    #[test]
+    fn test_callable_symbols_include_local_variables_and_nested_executable_scopes() {
+        let src = r#"codeunit 50100 "Breadcrumbs"
+{
+    procedure Walk(Value: Integer)
+    var
+        Counter: Integer;
+    begin
+        if Value > 0 then begin
+            while Counter < Value do begin
+                Counter += 1;
+            end;
+        end;
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "fixture must parse cleanly: {:?}",
+            result.errors
+        );
+
+        let symbols = extract_document_symbols(&result.tree, src);
+        let object_children = symbols[0].children.as_ref().expect("object children");
+        let procedure = object_children
+            .iter()
+            .find(|symbol| symbol.name == "Walk")
+            .expect("procedure symbol");
+        let procedure_children = procedure.children.as_ref().expect("callable children");
+        assert!(
+            procedure_children
+                .iter()
+                .any(|symbol| symbol.name == "Counter" && symbol.kind == SymbolKind::Variable),
+            "local variable should be nested under the procedure"
+        );
+
+        let begin = procedure_children
+            .iter()
+            .find(|symbol| symbol.name == "begin")
+            .expect("procedure begin scope");
+        let if_scope = begin
+            .children
+            .as_ref()
+            .and_then(|children| children.iter().find(|symbol| symbol.name == "if"))
+            .expect("if scope");
+        let if_begin = if_scope
+            .children
+            .as_ref()
+            .and_then(|children| children.iter().find(|symbol| symbol.name == "begin"))
+            .expect("if begin scope");
+        let while_scope = if_begin
+            .children
+            .as_ref()
+            .and_then(|children| children.iter().find(|symbol| symbol.name == "while"))
+            .expect("while scope");
+        assert!(
+            while_scope
+                .children
+                .as_ref()
+                .is_some_and(|children| children.iter().any(|symbol| symbol.name == "begin")),
+            "while body should retain its nested begin scope"
+        );
+
+        assert_eq!(begin.selection_range.start.line, 5);
+        assert_eq!(if_scope.selection_range.start.line, 6);
+        assert_eq!(while_scope.selection_range.start.line, 7);
     }
 
     #[test]

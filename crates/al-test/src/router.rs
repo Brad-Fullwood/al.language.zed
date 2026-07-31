@@ -47,6 +47,20 @@ pub use al_analysis::queries::tests::{
     affected_tests, affected_tests_detailed, AffectedMode, AffectedTest, AffectedTestsResult,
 };
 
+#[derive(Debug, thiserror::Error)]
+pub enum RoutingError {
+    #[error(transparent)]
+    TestQuery(#[from] al_analysis::queries::tests::TestQueryError),
+    #[error(transparent)]
+    CallGraph(#[from] al_workspace::CallGraphBuildError),
+    #[error(transparent)]
+    SourceGraph(#[from] al_insight::calls::SourceGraphError),
+    #[error("test codeunit source '{}' is absent from the workspace object index", path.display())]
+    MissingObjectInfo { path: PathBuf },
+    #[error("test codeunit source '{}' has unsupported object kind '{kind}'", path.display())]
+    InvalidObjectKind { path: PathBuf, kind: String },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutingDecision {
     /// Pure-logic — runs on the Rust interpreter alone.
@@ -119,32 +133,32 @@ pub struct ClassifyResult {
 #[derive(Debug, Clone)]
 struct ProcedureLocation {
     file: PathBuf,
+    object: String,
     name: String,
+    has_object_globals: bool,
 }
 
 type ProcedureCatalog = HashMap<(String, String), ProcedureLocation>;
 
-const LOCAL_RECORD_METHODS: &[&str] = &[
-    "init",
-    "get",
-    "insert",
-    "modify",
-    "delete",
-    "find",
-    "findset",
-    "findfirst",
-    "findlast",
-    "next",
-    "setrange",
-    "setfilter",
-    "count",
-    "countapprox",
-    "isempty",
-    "reset",
-    "setcurrentkey",
-    "deleteall",
-    "calcfields",
-];
+#[derive(Debug, Clone, Copy, Default)]
+struct LocalHandlerSupport {
+    message: bool,
+    confirm: bool,
+    str_menu: bool,
+    hyperlink: bool,
+}
+
+impl LocalHandlerSupport {
+    fn supports(self, operation: &str) -> bool {
+        match operation.to_ascii_lowercase().as_str() {
+            "message" => self.message,
+            "confirm" => self.confirm,
+            "strmenu" => self.str_menu,
+            "hyperlink" => self.hyperlink,
+            _ => false,
+        }
+    }
+}
 
 const PLATFORM_TYPES: &[&str] = &[
     "httpclient",
@@ -170,8 +184,8 @@ const PLATFORM_GLOBALS: &[&str] = &[
 
 /// Classify every discovered test in the workspace using the fully-resolved
 /// workspace call/event graph and syntax nodes from every reachable body.
-pub fn classify_all(workspace: &Workspace) -> Vec<ClassifyResult> {
-    let codeunits = al_analysis::queries::tests::discover_tests(workspace);
+pub fn classify_all(workspace: &Workspace) -> Result<Vec<ClassifyResult>, RoutingError> {
+    let codeunits = al_analysis::queries::tests::discover_tests(workspace)?;
     classify_codeunits(workspace, &codeunits)
 }
 
@@ -180,8 +194,8 @@ pub fn classify_all(workspace: &Workspace) -> Vec<ClassifyResult> {
 pub fn classify_codeunits(
     workspace: &Workspace,
     codeunits: &[TestCodeunit],
-) -> Vec<ClassifyResult> {
-    let (insight, cached_graph) = workspace.get_or_build_call_graph();
+) -> Result<Vec<ClassifyResult>, RoutingError> {
+    let (insight, cached_graph) = workspace.get_or_build_call_graph()?;
     drop(cached_graph);
     let mut graph = CallGraph::build_from_insight(&insight);
     al_insight::calls::resolve_all_workspace_call_edges(
@@ -189,17 +203,26 @@ pub fn classify_codeunits(
         &workspace.symbols,
         &insight,
         &mut graph,
-    );
+    )?;
     let catalog = build_procedure_catalog(workspace);
     let mut out = Vec::new();
     for cu in codeunits {
-        let kind = workspace
-            .file_index
-            .object_info
-            .get(std::path::Path::new(&cu.file))
-            .and_then(|info| info.kind.parse::<ObjectKind>().ok())
-            .unwrap_or(ObjectKind::Codeunit);
+        let codeunit_start = out.len();
+        let path = std::path::Path::new(&cu.file);
+        let info = workspace.file_index.object_info.get(path).ok_or_else(|| {
+            RoutingError::MissingObjectInfo {
+                path: path.to_path_buf(),
+            }
+        })?;
+        let kind =
+            info.kind
+                .parse::<ObjectKind>()
+                .map_err(|_| RoutingError::InvalidObjectKind {
+                    path: path.to_path_buf(),
+                    kind: info.kind.clone(),
+                })?;
         for proc in &cu.tests {
+            let (handler_support, handler_reasons) = local_handler_support(workspace, cu, proc);
             let key = NodeKey::Procedure(
                 kind,
                 cu.name.to_ascii_lowercase(),
@@ -213,7 +236,12 @@ pub fn classify_codeunits(
                 ));
                 continue;
             };
-            let (mut decision, mut reasons) = classify_reachable(workspace, &graph, &catalog, root);
+            let (mut decision, mut reasons) =
+                classify_reachable(workspace, &graph, &catalog, root, handler_support);
+            for reason in handler_reasons {
+                decision = RoutingDecision::LiveBc;
+                push_reason(&mut reasons, reason);
+            }
             for lifecycle in cu.test_initializers.iter().chain(&cu.test_cleanups) {
                 let lifecycle_key = NodeKey::Procedure(
                     kind,
@@ -235,8 +263,13 @@ pub fn classify_codeunits(
                     );
                     continue;
                 };
-                let (lifecycle_decision, lifecycle_reasons) =
-                    classify_reachable(workspace, &graph, &catalog, lifecycle_root);
+                let (lifecycle_decision, lifecycle_reasons) = classify_reachable(
+                    workspace,
+                    &graph,
+                    &catalog,
+                    lifecycle_root,
+                    handler_support,
+                );
                 decision = decision.max(lifecycle_decision);
                 for reason in lifecycle_reasons {
                     push_reason(&mut reasons, reason);
@@ -263,7 +296,7 @@ pub fn classify_codeunits(
                     continue;
                 };
                 let (handler_decision, handler_reasons) =
-                    classify_reachable(workspace, &graph, &catalog, handler_root);
+                    classify_reachable(workspace, &graph, &catalog, handler_root, handler_support);
                 decision = decision.max(handler_decision);
                 for reason in handler_reasons {
                     push_reason(&mut reasons, reason);
@@ -277,8 +310,34 @@ pub fn classify_codeunits(
                 reasons,
             });
         }
+        let codeunit_decision = out[codeunit_start..]
+            .iter()
+            .fold(RoutingDecision::Interp, |decision, result| {
+                decision.max(result.decision)
+            });
+        for result in &mut out[codeunit_start..] {
+            if result.decision != codeunit_decision {
+                result.decision = codeunit_decision;
+                push_reason(
+                    &mut result.reasons,
+                    RoutingReason {
+                        message: format!(
+                            "another test in codeunit '{}' requires {}; shared globals and codeunit lifecycle keep every method on one backend",
+                            cu.name,
+                            codeunit_decision.as_str()
+                        ),
+                        file: Some(cu.file.clone()),
+                        line: cu
+                            .tests
+                            .iter()
+                            .find(|test| test.name.eq_ignore_ascii_case(&result.method_name))
+                            .map(|test| test.line),
+                    },
+                );
+            }
+        }
     }
-    out
+    Ok(out)
 }
 
 fn conservative_result(
@@ -308,6 +367,7 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
             continue;
         };
         let bytes = text.as_bytes();
+        let has_object_globals = has_object_global_declarations(tree.root_node());
         let mut stack = vec![tree.root_node()];
         while let Some(node) = stack.pop() {
             if matches!(
@@ -323,7 +383,9 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
                         (object.clone(), clean.to_ascii_lowercase()),
                         ProcedureLocation {
                             file: path.clone(),
+                            object: entry.value().name.clone(),
                             name: clean,
+                            has_object_globals,
                         },
                     );
                 }
@@ -341,13 +403,29 @@ fn classify_reachable(
     graph: &CallGraph,
     catalog: &ProcedureCatalog,
     root: NodeId,
+    handler_support: LocalHandlerSupport,
 ) -> (RoutingDecision, Vec<RoutingReason>) {
     let mut decision = RoutingDecision::Interp;
     let mut reasons = Vec::new();
     let mut visited = HashSet::from([root]);
     let mut queue = VecDeque::from([root]);
+    let root_object = graph
+        .node_info(root)
+        .map(|info| info.object.to_ascii_lowercase());
     while let Some(node) = queue.pop_front() {
         let Some(info) = graph.node_info(node) else {
+            decision = RoutingDecision::LiveBc;
+            push_reason(
+                &mut reasons,
+                RoutingReason {
+                    message: format!(
+                        "reachable call-graph node {} has no metadata; routing conservatively",
+                        node.0
+                    ),
+                    file: None,
+                    line: None,
+                },
+            );
             continue;
         };
         let key = (
@@ -355,12 +433,31 @@ fn classify_reachable(
             info.name.to_ascii_lowercase(),
         );
         if let Some(location) = catalog.get(&key) {
+            if location.has_object_globals
+                && !root_object
+                    .as_deref()
+                    .is_some_and(|root| root.eq_ignore_ascii_case(&location.object))
+            {
+                decision = RoutingDecision::LiveBc;
+                push_reason(
+                    &mut reasons,
+                    RoutingReason {
+                        message: format!(
+                            "reachable helper codeunit '{}' has object-level state that requires live BC execution",
+                            location.object
+                        ),
+                        file: Some(location.file.to_string_lossy().into_owned()),
+                        line: None,
+                    },
+                );
+            }
             classify_procedure_ast(
                 workspace,
                 location,
                 &mut decision,
                 &mut reasons,
                 node != root,
+                handler_support,
             );
         } else if !matches!(info.node_type.as_str(), "event" | "object")
             && al_runtime::stubs::resolve(&info.object, &info.name).is_none()
@@ -391,12 +488,150 @@ fn classify_reachable(
     (decision, reasons)
 }
 
+fn local_handler_support(
+    workspace: &Workspace,
+    codeunit: &TestCodeunit,
+    procedure: &al_analysis::queries::tests::TestProcedure,
+) -> (LocalHandlerSupport, Vec<RoutingReason>) {
+    let mut support = LocalHandlerSupport::default();
+    let mut reasons = Vec::new();
+    if procedure.handler_functions.is_empty() {
+        return (support, reasons);
+    }
+
+    let path = std::path::Path::new(&codeunit.file);
+    let Some((text, tree)) = workspace.file_index.get_cached_parse(path) else {
+        reasons.push(RoutingReason {
+            message:
+                "cannot inspect configured test handlers because the codeunit parse is unavailable"
+                    .to_string(),
+            file: Some(codeunit.file.clone()),
+            line: Some(procedure.line),
+        });
+        return (support, reasons);
+    };
+    let source = text.as_bytes();
+    for handler_name in &procedure.handler_functions {
+        let Some(handler) = find_callable_node(tree.root_node(), source, handler_name) else {
+            reasons.push(RoutingReason {
+                message: format!(
+                    "configured handler procedure '{handler_name}' is missing from the test codeunit"
+                ),
+                file: Some(codeunit.file.clone()),
+                line: Some(procedure.line),
+            });
+            continue;
+        };
+        let matches = [
+            (
+                "MessageHandler",
+                callable_has_attribute(handler, source, "MessageHandler"),
+            ),
+            (
+                "ConfirmHandler",
+                callable_has_attribute(handler, source, "ConfirmHandler"),
+            ),
+            (
+                "StrMenuHandler",
+                callable_has_attribute(handler, source, "StrMenuHandler"),
+            ),
+            (
+                "HyperlinkHandler",
+                callable_has_attribute(handler, source, "HyperlinkHandler"),
+            ),
+        ];
+        let matched: Vec<_> = matches
+            .into_iter()
+            .filter_map(|(kind, present)| present.then_some(kind))
+            .collect();
+        let [kind] = matched.as_slice() else {
+            reasons.push(RoutingReason {
+                message: format!(
+                    "configured handler '{handler_name}' must declare exactly one supported local handler attribute; found {}",
+                    matched.len()
+                ),
+                file: Some(codeunit.file.clone()),
+                line: Some(handler.start_position().row as u32 + 1),
+            });
+            continue;
+        };
+        let slot = match *kind {
+            "MessageHandler" => &mut support.message,
+            "ConfirmHandler" => &mut support.confirm,
+            "StrMenuHandler" => &mut support.str_menu,
+            "HyperlinkHandler" => &mut support.hyperlink,
+            _ => unreachable!("matched from the fixed supported handler set"),
+        };
+        if *slot {
+            reasons.push(RoutingReason {
+                message: format!(
+                    "test configures more than one {kind}; the local runtime cannot choose one deterministically"
+                ),
+                file: Some(codeunit.file.clone()),
+                line: Some(handler.start_position().row as u32 + 1),
+            });
+        } else {
+            *slot = true;
+        }
+    }
+    (support, reasons)
+}
+
+fn callable_has_attribute(callable: tree_sitter::Node<'_>, source: &[u8], wanted: &str) -> bool {
+    let matches = |attribute: tree_sitter::Node<'_>| {
+        attribute.utf8_text(source).ok().is_some_and(|text| {
+            text.trim()
+                .trim_start_matches('[')
+                .split(['(', ';', ']'])
+                .next()
+                .is_some_and(|name| name.trim().eq_ignore_ascii_case(wanted))
+        })
+    };
+    let mut cursor = callable.walk();
+    if callable
+        .children(&mut cursor)
+        .any(|child| matches!(child.kind(), "attribute" | "attribute_list") && matches(child))
+    {
+        return true;
+    }
+    let mut sibling = callable.prev_sibling();
+    while let Some(node) = sibling {
+        match node.kind() {
+            "attribute" | "attribute_list" if matches(node) => return true,
+            "attribute" | "attribute_list" | "comment" => {}
+            _ => break,
+        }
+        sibling = node.prev_sibling();
+    }
+    false
+}
+
+fn has_object_global_declarations(root: tree_sitter::Node<'_>) -> bool {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "object_var_section" {
+            let mut cursor = node.walk();
+            return node.named_children(&mut cursor).next().is_some();
+        }
+        if matches!(
+            node.kind(),
+            "procedure_declaration" | "trigger_declaration" | "event_declaration"
+        ) {
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    false
+}
+
 fn classify_procedure_ast(
     workspace: &Workspace,
     location: &ProcedureLocation,
     decision: &mut RoutingDecision,
     reasons: &mut Vec<RoutingReason>,
     reachable: bool,
+    handler_support: LocalHandlerSupport,
 ) {
     let Some((text, tree)) = workspace.file_index.get_cached_parse(&location.file) else {
         *decision = RoutingDecision::LiveBc;
@@ -460,7 +695,10 @@ fn classify_procedure_ast(
                 bytes,
                 &location.file,
                 (decision, reasons),
-                reachable,
+                CallRoutingContext {
+                    reachable,
+                    handler_support,
+                },
             );
         } else if node.kind() == "attribute" || node.kind() == "attribute_list" {
             let attr = node.utf8_text(bytes).unwrap_or("");
@@ -479,6 +717,8 @@ fn classify_procedure_ast(
                 && !attr_lower.contains("handlerfunctions")
                 && !attr_lower.contains("messagehandler")
                 && !attr_lower.contains("confirmhandler")
+                && !attr_lower.contains("strmenuhandler")
+                && !attr_lower.contains("hyperlinkhandler")
             {
                 promote(
                     decision,
@@ -623,6 +863,12 @@ fn table_platform_capability(
     None
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CallRoutingContext {
+    reachable: bool,
+    handler_support: LocalHandlerSupport,
+}
+
 fn classify_call(
     workspace: &Workspace,
     resolver: &al_syntax::TypeResolver<'_>,
@@ -630,9 +876,13 @@ fn classify_call(
     source: &[u8],
     file: &std::path::Path,
     outcome: (&mut RoutingDecision, &mut Vec<RoutingReason>),
-    reachable: bool,
+    context: CallRoutingContext,
 ) {
     let (decision, reasons) = outcome;
+    let CallRoutingContext {
+        reachable,
+        handler_support,
+    } = context;
     let mut cursor = node.walk();
     let children: Vec<_> = node.named_children(&mut cursor).collect();
     let (Some(primary), Some(suffix)) = (children.first().copied(), children.last().copied())
@@ -665,6 +915,23 @@ fn classify_call(
     }
 
     if suffix.kind() == "call_suffix" {
+        if matches!(
+            receiver.to_ascii_lowercase().as_str(),
+            "message" | "confirm" | "strmenu" | "hyperlink"
+        ) {
+            if !handler_support.supports(receiver) {
+                promote(
+                    decision,
+                    reasons,
+                    RoutingDecision::LiveBc,
+                    &format!("calls {receiver} without its required configured local test handler"),
+                    file,
+                    primary,
+                    reachable,
+                );
+            }
+            return;
+        }
         if PLATFORM_GLOBALS
             .iter()
             .any(|global| receiver.eq_ignore_ascii_case(global))
@@ -751,13 +1018,22 @@ fn classify_call(
         character: al_syntax::byte_col_to_utf16_col(line, point.column),
     };
     let Some(decl) = resolver.resolve_type(receiver, position) else {
+        promote(
+            decision,
+            reasons,
+            RoutingDecision::LiveBc,
+            &format!(
+                "cannot resolve receiver '{receiver}' for call '{method}'; routing conservatively"
+            ),
+            file,
+            member_node,
+            reachable,
+        );
         return;
     };
     let type_name = decl.type_name.to_ascii_lowercase();
     if type_name == "record" {
-        let local = LOCAL_RECORD_METHODS
-            .iter()
-            .any(|candidate| method.eq_ignore_ascii_case(candidate));
+        let local = al_runtime::interpreter::records::supports_record_method(method);
         let (floor, message) = if local {
             (
                 RoutingDecision::InterpRecord,
@@ -778,6 +1054,50 @@ fn classify_call(
             member_node,
             reachable,
         );
+    } else if type_name == "list" {
+        if !al_runtime::interpreter::records::supports_list_method(method) {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!("calls unsupported List.{method} (requires BC semantics)"),
+                file,
+                member_node,
+                reachable,
+            );
+        }
+    } else if type_name == "codeunit" {
+        let subtype = decl.type_subtype.as_deref().unwrap_or("").trim();
+        let has_local_body = (!subtype.is_empty())
+            .then(|| {
+                workspace
+                    .file_index
+                    .object_path_of_kind(subtype, &["codeunit"])
+            })
+            .flatten()
+            .and_then(|path| workspace.file_index.get_cached_parse(&path))
+            .is_some_and(|(text, tree)| {
+                find_callable_node(tree.root_node(), text.as_bytes(), method).is_some()
+            });
+        let has_stub = !subtype.is_empty() && al_runtime::stubs::resolve(subtype, method).is_some();
+        if !has_local_body && !has_stub {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!(
+                    "calls Codeunit '{}'.{method} without an executable workspace body or native stub",
+                    if subtype.is_empty() {
+                        "<unspecified>"
+                    } else {
+                        subtype
+                    }
+                ),
+                file,
+                member_node,
+                reachable,
+            );
+        }
     } else if PLATFORM_TYPES
         .iter()
         .any(|platform| type_name.eq_ignore_ascii_case(platform))
@@ -789,6 +1109,19 @@ fn classify_call(
             RoutingDecision::LiveBc,
             &format!(
                 "calls {receiver}.{method} on platform type {}",
+                decl.type_name
+            ),
+            file,
+            member_node,
+            reachable,
+        );
+    } else {
+        promote(
+            decision,
+            reasons,
+            RoutingDecision::LiveBc,
+            &format!(
+                "calls {receiver}.{method} on type '{}' outside the verified local runtime capability set",
                 decl.type_name
             ),
             file,
@@ -915,10 +1248,7 @@ fn classify_body(body: &str) -> (RoutingDecision, Vec<RoutingReason>) {
                     _ => None,
                 };
                 if let Some(method) = method.map(str::trim) {
-                    if LOCAL_RECORD_METHODS
-                        .iter()
-                        .any(|candidate| method.eq_ignore_ascii_case(candidate))
-                    {
+                    if al_runtime::interpreter::records::supports_record_method(method) {
                         decision = decision.max(RoutingDecision::InterpRecord);
                         reasons.push(RoutingReason {
                             message: format!("calls {method}"),
@@ -1069,7 +1399,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_pattern_stays_interp() {
+    fn pure_arithmetic_stays_interp() {
         let body = "procedure T() var x: Integer; begin x := 1 + 2; end;";
         let (decision, _reasons) = classify_body(body);
         assert_eq!(decision, RoutingDecision::Interp);
@@ -1162,7 +1492,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_record_table_is_local_but_package_table_requires_live_bc() {
+    fn package_record_promotes_the_whole_shared_codeunit_to_live_bc() {
         let workspace = Workspace::new();
         workspace.file_index.add_file(
             std::path::PathBuf::from("/tmp/NativeEntry.Table.al"),
@@ -1199,12 +1529,24 @@ mod tests {
             .to_string(),
         );
 
-        let classified = classify_all(&workspace);
+        let classified = classify_all(&workspace).unwrap();
         let local = classified
             .iter()
             .find(|result| result.method_name == "WorkspaceRecord")
             .expect("workspace record classification");
-        assert_eq!(local.decision, RoutingDecision::InterpRecord);
+        assert_eq!(
+            local.decision,
+            RoutingDecision::LiveBc,
+            "shared codeunit state must not split workspace-record and live methods"
+        );
+        assert!(
+            local
+                .reasons
+                .iter()
+                .any(|reason| reason.message.contains("shared globals")),
+            "local-capable method must explain codeunit promotion: {:?}",
+            local.reasons
+        );
 
         let package = classified
             .iter()
@@ -1272,7 +1614,7 @@ mod tests {
             .to_string(),
         );
 
-        let result = classify_all(&workspace).remove(0);
+        let result = classify_all(&workspace).unwrap().remove(0);
         assert_eq!(result.decision, RoutingDecision::InterpRecord);
         assert!(
             result
@@ -1312,8 +1654,94 @@ mod tests {
             .to_string(),
         );
         assert_eq!(
-            classify_all(&workspace)[0].decision,
+            classify_all(&workspace).unwrap()[0].decision,
             RoutingDecision::Interp
+        );
+    }
+
+    #[test]
+    fn unsupported_list_method_routes_to_live_bc() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/ListRoutingTests.Codeunit.al"),
+            r#"codeunit 50166 "List Routing Tests"
+{
+    Subtype = Test;
+    [Test]
+    procedure UsesUnsupportedListMethod()
+    var Values: List of [Integer];
+    begin
+        Values.Reverse();
+    end;
+}"#
+            .to_string(),
+        );
+        let result = classify_all(&workspace).unwrap().remove(0);
+        assert_eq!(result.decision, RoutingDecision::LiveBc);
+        assert!(
+            result
+                .reasons
+                .iter()
+                .any(|reason| reason.message.contains("unsupported List.Reverse")),
+            "unexpected reasons: {:?}",
+            result.reasons
+        );
+    }
+
+    #[test]
+    fn unsupported_structured_type_method_routes_to_live_bc() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/JsonRoutingTests.Codeunit.al"),
+            r#"codeunit 50167 "JSON Routing Tests"
+{
+    Subtype = Test;
+    [Test]
+    procedure ReadsJson()
+    var Payload: JsonObject;
+    begin
+        Payload.ReadFrom('{}');
+    end;
+}"#
+            .to_string(),
+        );
+        let result = classify_all(&workspace).unwrap().remove(0);
+        assert_eq!(result.decision, RoutingDecision::LiveBc);
+        assert!(
+            result.reasons.iter().any(|reason| reason
+                .message
+                .contains("outside the verified local runtime")),
+            "unexpected reasons: {:?}",
+            result.reasons
+        );
+    }
+
+    #[test]
+    fn unresolved_member_receiver_routes_to_live_bc() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/UnresolvedTests.Codeunit.al"),
+            r#"codeunit 50161 "Unresolved Tests"
+{
+    Subtype = Test;
+    [Test]
+    procedure CallsUnknownReceiver()
+    begin
+        Mystery.DoSomething();
+    end;
+}"#
+            .to_string(),
+        );
+
+        let result = classify_all(&workspace).unwrap().remove(0);
+        assert_eq!(result.decision, RoutingDecision::LiveBc);
+        assert!(
+            result
+                .reasons
+                .iter()
+                .any(|reason| reason.message.contains("cannot resolve receiver")),
+            "unexpected routing reasons: {:?}",
+            result.reasons
         );
     }
 
@@ -1344,12 +1772,260 @@ mod tests {
 }"#
             .to_string(),
         );
-        let result = &classify_all(&workspace)[0];
+        let results = classify_all(&workspace).unwrap();
+        let result = &results[0];
         assert_eq!(result.decision, RoutingDecision::LiveBc);
         assert!(result
             .reasons
             .iter()
             .any(|reason| reason.message.contains("triggers")));
+    }
+
+    #[test]
+    fn shared_codeunit_state_promotes_every_method_to_one_backend() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/SharedEntry.Table.al"),
+            r#"table 50157 "Shared Entry"
+{
+    fields { field(1; "No."; Code[20]) { } }
+    keys { key(PK; "No.") { } }
+}"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/SharedTests.Codeunit.al"),
+            r#"codeunit 50158 "Shared Tests"
+{
+    Subtype = Test;
+    var SharedFlag: Boolean;
+
+    [Test]
+    procedure PureMethod()
+    begin
+        SharedFlag := true;
+    end;
+
+    [Test]
+    procedure RecordMethod()
+    var Entry: Record "Shared Entry";
+    begin
+        Entry.Insert();
+    end;
+}"#
+            .to_string(),
+        );
+
+        let results = classify_all(&workspace).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results
+            .iter()
+            .all(|result| result.decision == RoutingDecision::InterpRecord));
+        let pure = results
+            .iter()
+            .find(|result| result.method_name == "PureMethod")
+            .expect("pure method");
+        assert!(
+            pure.reasons
+                .iter()
+                .any(|reason| reason.message.contains("shared globals")),
+            "promotion must explain the shared-state reason: {:?}",
+            pure.reasons
+        );
+    }
+
+    #[test]
+    fn platform_handler_promotes_other_methods_through_shared_codeunit_state() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/PlatformHandlerTests.Codeunit.al"),
+            r#"codeunit 50159 "Platform Handler Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    [HandlerFunctions('HandleNotification')]
+    procedure PlatformMethod()
+    begin
+    end;
+
+    [Test]
+    procedure OtherwisePure()
+    begin
+    end;
+
+    [SendNotificationHandler]
+    procedure HandleNotification(var Notification: Notification): Boolean
+    begin
+        exit(true);
+    end;
+}"#
+            .to_string(),
+        );
+
+        let results = classify_all(&workspace).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results
+            .iter()
+            .all(|result| result.decision == RoutingDecision::LiveBc));
+        let pure = results
+            .iter()
+            .find(|result| result.method_name == "OtherwisePure")
+            .expect("pure method");
+        assert!(
+            pure.reasons
+                .iter()
+                .any(|reason| reason.message.contains("shared globals")),
+            "platform handler must promote the other method: {:?}",
+            pure.reasons
+        );
+    }
+
+    #[test]
+    fn deterministic_handler_attributes_remain_local() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/LocalHandlerRouting.Codeunit.al"),
+            r#"codeunit 50160 "Local Handler Routing"
+{
+    Subtype = Test;
+
+    [Test]
+    [HandlerFunctions('HandleMenu,HandleLink')]
+    procedure Dialogs()
+    begin
+        StrMenu('First,Second', 1, 'Pick');
+        Hyperlink('https://example.test');
+    end;
+
+    [StrMenuHandler]
+    procedure HandleMenu(MenuOptions: Text[1024]; var Choice: Integer; Instruction: Text[1024])
+    begin
+        Choice := 2;
+    end;
+
+    [HyperlinkHandler]
+    procedure HandleLink(Link: Text[1024])
+    begin
+    end;
+}"#
+            .to_string(),
+        );
+        let result = classify_all(&workspace).unwrap().remove(0);
+        assert_eq!(
+            result.decision,
+            RoutingDecision::Interp,
+            "deterministic handler attributes must not create a false live fallback: {:?}",
+            result.reasons
+        );
+    }
+
+    #[test]
+    fn dialog_without_matching_handler_routes_to_live_bc() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/UnhandledRouting.Codeunit.al"),
+            r#"codeunit 50162 "Unhandled Routing"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure OpensMessage()
+    begin
+        Message('must not disappear');
+    end;
+}"#
+            .to_string(),
+        );
+
+        let result = classify_all(&workspace).unwrap().remove(0);
+        assert_eq!(result.decision, RoutingDecision::LiveBc);
+        assert!(
+            result.reasons.iter().any(|reason| reason
+                .message
+                .contains("required configured local test handler")),
+            "unexpected reasons: {:?}",
+            result.reasons
+        );
+    }
+
+    #[test]
+    fn handler_function_without_supported_attribute_routes_to_live_bc() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/InvalidHandlerRouting.Codeunit.al"),
+            r#"codeunit 50163 "Invalid Handler Routing"
+{
+    Subtype = Test;
+
+    [Test]
+    [HandlerFunctions('NotAHandler')]
+    procedure OpensMessage()
+    begin
+        Message('must not disappear');
+    end;
+
+    procedure NotAHandler(MessageText: Text[1024])
+    begin
+    end;
+}"#
+            .to_string(),
+        );
+
+        let result = classify_all(&workspace).unwrap().remove(0);
+        assert_eq!(result.decision, RoutingDecision::LiveBc);
+        assert!(
+            result.reasons.iter().any(|reason| reason
+                .message
+                .contains("exactly one supported local handler")),
+            "unexpected reasons: {:?}",
+            result.reasons
+        );
+    }
+
+    #[test]
+    fn stateful_helper_codeunit_routes_to_live_bc() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/StatefulHelper.Codeunit.al"),
+            r#"codeunit 50164 "Stateful Helper"
+{
+    var Counter: Integer;
+
+    procedure Next(): Integer
+    begin
+        Counter := Counter + 1;
+        exit(Counter);
+    end;
+}"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/StatefulHelperTests.Codeunit.al"),
+            r#"codeunit 50165 "Stateful Helper Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure UsesStatefulHelper()
+    var Helper: Codeunit "Stateful Helper";
+    begin
+        Helper.Next();
+    end;
+}"#
+            .to_string(),
+        );
+
+        let result = classify_all(&workspace).unwrap().remove(0);
+        assert_eq!(result.decision, RoutingDecision::LiveBc);
+        assert!(
+            result
+                .reasons
+                .iter()
+                .any(|reason| reason.message.contains("object-level state")),
+            "unexpected reasons: {:?}",
+            result.reasons
+        );
     }
 }
 
@@ -1382,7 +2058,7 @@ mod affected_smoke {
         );
 
         let changed = vec!["/ws/helper.al".to_string()];
-        let result = affected_tests_detailed(&ws, &changed);
+        let result = affected_tests_detailed(&ws, &changed).unwrap();
 
         assert_eq!(result.mode, AffectedMode::CallGraph);
         assert_eq!(result.tests.len(), 1, "got {:?}", result.tests);

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Full benchmark sweep. Everything runs SERIALLY on purpose: concurrent runs
 # contend for CPU and invalidate the timings.
-set -uo pipefail
+set -euo pipefail
 
 BENCH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(dirname "$BENCH")"
@@ -16,7 +16,7 @@ settle() {
   while [ "$waited" -lt "$limit" ]; do
     # pgrep -c prints 0 AND exits non-zero when nothing matches, so a
     # `|| echo 0` fallback would emit two lines. Take the first line instead.
-    rustc_n=$(pgrep -c rustc 2>/dev/null | head -1)
+    rustc_n=$(pgrep -c rustc 2>/dev/null || true)
     rustc_n=${rustc_n:-0}
     load=$(awk '{print int($1)}' /proc/loadavg)
     if [ "$rustc_n" -eq 0 ] && [ "$load" -lt 5 ]; then

@@ -9,6 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
+use crate::cli::commands::request_checked;
 use crate::{
     App, MAX_INPUT_LEN, advance_list_selection, ensure_daemon_client, input_focused_style,
 };
@@ -71,27 +72,16 @@ impl EventChainView {
         let Some(client) = self.client.as_mut() else {
             return;
         };
-        match client.request("events", Some(serde_json::json!({ "name": q }))) {
+        match request_checked(client, "events", Some(serde_json::json!({ "name": q }))) {
             Ok(val) => {
-                if let Some(arr) = val.as_array() {
-                    let mut seen = std::collections::HashSet::new();
-                    for item in arr {
-                        let obj = item
-                            .get("objectName")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        let method = item
-                            .get("methodName")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        if seen.insert((obj.to_string(), method.to_string())) {
-                            self.suggestions.push(format!("{obj}::{method}"));
-                        }
-                        if self.suggestions.len() >= 100 {
-                            break;
-                        }
+                self.suggestions = match parse_event_suggestions(&val) {
+                    Ok(suggestions) => suggestions,
+                    Err(error) => {
+                        self.client = None;
+                        self.status = format!("Invalid daemon event response: {error}");
+                        return;
                     }
-                }
+                };
                 self.status = format!(
                     "{} matching events — ↓ to select, Enter to trace",
                     self.suggestions.len()
@@ -114,47 +104,27 @@ impl EventChainView {
             return;
         };
         let params = serde_json::json!({ "event": self.query.trim(), "depth": 10 });
-        match client.request("trace", Some(params)) {
+        self.rows.clear();
+        self.list_state.select(None);
+        match request_checked(client, "trace", Some(params)) {
             Ok(val) => {
-                self.rows.clear();
-                if let Some(arr) = val.as_array() {
-                    for item in arr {
-                        self.rows.push(TraceRow {
-                            depth: item.get("depth").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                            edge_type: item
-                                .get("edgeType")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            node_type: item
-                                .get("nodeType")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            name: item
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            object: item
-                                .get("object")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                        });
+                self.rows = match parse_trace_rows(&val) {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        self.client = None;
+                        self.status = format!("Invalid daemon trace response: {error}");
+                        return;
                     }
-                    if self.rows.is_empty() {
-                        self.status = format!("No event chain found for '{}'", self.query.trim());
-                    } else {
-                        self.status = format!(
-                            "{} steps in event chain for '{}'",
-                            self.rows.len(),
-                            self.query.trim()
-                        );
-                        self.list_state.select(Some(0));
-                    }
+                };
+                if self.rows.is_empty() {
+                    self.status = format!("No event chain found for '{}'", self.query.trim());
                 } else {
-                    self.status = "Unexpected response format from daemon".to_string();
+                    self.status = format!(
+                        "{} steps in event chain for '{}'",
+                        self.rows.len(),
+                        self.query.trim()
+                    );
+                    self.list_state.select(Some(0));
                 }
             }
             Err(e) => {
@@ -172,6 +142,62 @@ impl EventChainView {
     fn prev_row(&mut self) {
         advance_list_selection(&mut self.list_state, self.rows.len(), false);
     }
+}
+
+fn parse_event_suggestions(value: &serde_json::Value) -> Result<Vec<String>, String> {
+    let events = value
+        .as_array()
+        .ok_or_else(|| "expected an array".to_string())?;
+    let mut suggestions = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (index, item) in events.iter().enumerate() {
+        let object = item
+            .get("objectName")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("events[{index}].objectName is not a string"))?;
+        let method = item
+            .get("methodName")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("events[{index}].methodName is not a string"))?;
+        if seen.insert((object.to_string(), method.to_string())) {
+            suggestions.push(format!("{object}::{method}"));
+        }
+        if suggestions.len() >= 100 {
+            break;
+        }
+    }
+    Ok(suggestions)
+}
+
+fn parse_trace_rows(value: &serde_json::Value) -> Result<Vec<TraceRow>, String> {
+    let trace = value
+        .as_array()
+        .ok_or_else(|| "expected an array".to_string())?;
+    let mut rows = Vec::with_capacity(trace.len());
+    for (index, item) in trace.iter().enumerate() {
+        let required_string = |field: &str| {
+            item.get(field)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("trace[{index}].{field} is not a string"))
+        };
+        let depth = item
+            .get("depth")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| format!("trace[{index}].depth is not a non-negative integer"))
+            .and_then(|depth| {
+                usize::try_from(depth)
+                    .map_err(|_| format!("trace[{index}].depth exceeds this platform's limits"))
+            })?;
+        rows.push(TraceRow {
+            depth,
+            edge_type: required_string("edgeType")?,
+            node_type: required_string("nodeType")?,
+            name: required_string("name")?,
+            object: required_string("object")?,
+        });
+    }
+    Ok(rows)
 }
 
 pub(crate) fn handle_event_chain_key(app: &mut App, key: crossterm::event::KeyEvent) {

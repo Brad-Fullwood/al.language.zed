@@ -40,6 +40,16 @@ pub enum ObjectKind {
     DotNet,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DeclarationIdError {
+    #[error("{kind} declarations require a numeric object ID")]
+    Missing { kind: ObjectKind },
+    #[error("{kind} object ID {id} is outside the supported 32-bit range")]
+    OutOfRange { kind: ObjectKind, id: i64 },
+    #[error("{kind} declarations are name-scoped and must not declare numeric object ID {id}")]
+    Unexpected { kind: ObjectKind, id: i64 },
+}
+
 impl fmt::Display for ObjectKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
@@ -153,6 +163,56 @@ impl ObjectKind {
         self.base_kind().is_some()
     }
 
+    /// Whether AL requires this object kind to declare a numeric object ID.
+    ///
+    /// Interfaces, profiles, page customizations, control add-ins,
+    /// entitlements, profile extensions, and `dotnet` declarations are
+    /// name-scoped language objects. They legitimately have no numeric ID and
+    /// use `0` in normalized symbol/graph identities. Every other supported
+    /// object kind is ID-bearing; a missing ID for one of those is malformed
+    /// source rather than an implicit zero.
+    pub fn requires_numeric_id(self) -> bool {
+        match self {
+            ObjectKind::Table
+            | ObjectKind::TableExtension
+            | ObjectKind::Page
+            | ObjectKind::PageExtension
+            | ObjectKind::Codeunit
+            | ObjectKind::Report
+            | ObjectKind::ReportExtension
+            | ObjectKind::XmlPort
+            | ObjectKind::Query
+            | ObjectKind::Enum
+            | ObjectKind::EnumExtension
+            | ObjectKind::PermissionSet
+            | ObjectKind::PermissionSetExtension => true,
+            ObjectKind::Interface
+            | ObjectKind::Profile
+            | ObjectKind::PageCustomization
+            | ObjectKind::ControlAddIn
+            | ObjectKind::Entitlement
+            | ObjectKind::ProfileExtension
+            | ObjectKind::DotNet => false,
+        }
+    }
+
+    /// Normalize the optional ID parsed from an AL source declaration.
+    ///
+    /// Package symbols always carry an `i32`, but source declarations do not:
+    /// seven AL object kinds are legitimately name-scoped. Keeping this rule
+    /// here prevents callers from independently treating every missing ID as
+    /// zero or truncating an out-of-range `i64`.
+    pub fn normalize_declaration_id(self, id: Option<i64>) -> Result<i32, DeclarationIdError> {
+        match (self.requires_numeric_id(), id) {
+            (true, None) => Err(DeclarationIdError::Missing { kind: self }),
+            (true, Some(id)) => {
+                i32::try_from(id).map_err(|_| DeclarationIdError::OutOfRange { kind: self, id })
+            }
+            (false, None) => Ok(0),
+            (false, Some(id)) => Err(DeclarationIdError::Unexpected { kind: self, id }),
+        }
+    }
+
     /// The lowercase AL keyword used to declare this object kind.
     pub fn al_keyword(&self) -> &'static str {
         match self {
@@ -238,6 +298,19 @@ pub struct PropertyValue {
     pub value: String,
 }
 
+/// One permission-set grant in the normalized `SymbolReference.json` form.
+///
+/// `permission_object` is Microsoft's object-kind code, `object_id` is the
+/// referenced object ID, and `value` is the R/I/M/D/X bitmask. Numeric identity
+/// lets baselines and current sources compare grants without depending on
+/// localized or renamed display text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionSymbol {
+    pub permission_object: i32,
+    pub object_id: i32,
+    pub value: i32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeySymbol {
     pub name: String,
@@ -317,6 +390,8 @@ pub struct SymbolEntry {
     pub keys: Vec<KeySymbol>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub properties: Vec<PropertyValue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<PermissionSymbol>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variables: Vec<VariableSymbol>,
 }
@@ -419,6 +494,7 @@ impl SymbolEntry {
                 .sum::<usize>()
             + keys
             + properties(&self.properties, self.properties.capacity())
+            + self.permissions.capacity() * std::mem::size_of::<PermissionSymbol>()
             + self.variables.capacity() * std::mem::size_of::<VariableSymbol>()
             + self
                 .variables
@@ -496,6 +572,12 @@ pub struct ComposedObject {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct SymbolReferenceJson {
+    /// One namespace path segment for nested namespace containers. The root
+    /// document also has a `Name` (the app name), so callers deliberately
+    /// ignore this field on the root and consume it only while descending
+    /// `Namespaces`.
+    #[serde(alias = "Name", default)]
+    pub namespace_segment: String,
     #[serde(alias = "Tables")]
     pub tables: Vec<ObjectJson>,
     #[serde(alias = "TableExtensions")]
@@ -562,8 +644,20 @@ pub(crate) struct ObjectJson {
     pub keys: Vec<KeyJson>,
     #[serde(alias = "Properties", default)]
     pub properties: Vec<PropertyJson>,
+    #[serde(alias = "Permissions", default)]
+    pub permissions: Vec<PermissionJson>,
     #[serde(alias = "Variables", default)]
     pub variables: Vec<VariableJson>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PermissionJson {
+    #[serde(alias = "PermissionObject", default)]
+    pub permission_object: i32,
+    #[serde(alias = "Id", default)]
+    pub object_id: i32,
+    #[serde(alias = "Value", default)]
+    pub value: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -742,19 +836,38 @@ pub(crate) struct EnumValueJson {
 impl SymbolReferenceJson {
     pub fn into_entries(self, package_name: &str) -> Vec<SymbolEntry> {
         let mut entries = Vec::new();
-        let mut stack = vec![self];
-        while let Some(mut current) = stack.pop() {
+        let mut root = self;
+        let nested = std::mem::take(&mut root.namespaces);
+        root.collect_entries_at_level(package_name, "", &mut entries);
+
+        let mut stack: Vec<(SymbolReferenceJson, String)> = nested
+            .into_iter()
+            .map(|namespace| (namespace, String::new()))
+            .collect();
+        while let Some((mut current, parent)) = stack.pop() {
+            let namespace = if parent.is_empty() {
+                current.namespace_segment.clone()
+            } else if current.namespace_segment.is_empty() {
+                parent.clone()
+            } else {
+                format!("{parent}.{}", current.namespace_segment)
+            };
             let nested = std::mem::take(&mut current.namespaces);
-            for ns in nested {
-                stack.push(ns);
+            for child in nested {
+                stack.push((child, namespace.clone()));
             }
-            current.collect_entries_at_level(package_name, &mut entries);
+            current.collect_entries_at_level(package_name, &namespace, &mut entries);
         }
         entries
     }
 
     /// Collect entries from this level only (namespaces field must be empty).
-    fn collect_entries_at_level(self, package_name: &str, entries: &mut Vec<SymbolEntry>) {
+    fn collect_entries_at_level(
+        self,
+        package_name: &str,
+        namespace: &str,
+        entries: &mut Vec<SymbolEntry>,
+    ) {
         let pkg = package_name.to_string();
 
         let collections: Vec<(ObjectKind, Vec<ObjectJson>)> = vec![
@@ -827,7 +940,7 @@ impl SymbolReferenceJson {
 
         for (kind, objects) in collections {
             for obj in objects {
-                entries.push(obj.into_entry(kind, &pkg));
+                entries.push(obj.into_entry(kind, &pkg, namespace));
             }
         }
 
@@ -865,7 +978,7 @@ impl SymbolReferenceJson {
 }
 
 impl ObjectJson {
-    fn into_entry(self, kind: ObjectKind, package: &str) -> SymbolEntry {
+    fn into_entry(self, kind: ObjectKind, package: &str, namespace: &str) -> SymbolEntry {
         SymbolEntry {
             kind,
             id: self.id,
@@ -894,9 +1007,18 @@ impl ObjectJson {
                     value: p.value,
                 })
                 .collect(),
+            permissions: self
+                .permissions
+                .into_iter()
+                .map(|permission| PermissionSymbol {
+                    permission_object: permission.permission_object,
+                    object_id: permission.object_id,
+                    value: permission.value,
+                })
+                .collect(),
             variables: self.variables.into_iter().map(|v| v.into_var()).collect(),
             implements: self.implements,
-            namespace: String::new(),
+            namespace: namespace.to_string(),
         }
     }
 }
@@ -1211,6 +1333,7 @@ mod tests {
             enum_values: vec![],
             keys: vec![],
             properties: vec![],
+            permissions: vec![],
             variables: vec![],
         };
         assert!(entry.extends.is_none());
@@ -1332,15 +1455,69 @@ mod tests {
     }
 
     #[test]
+    fn numeric_id_requirement_matches_al_object_headers() {
+        let numbered = [
+            ObjectKind::Table,
+            ObjectKind::TableExtension,
+            ObjectKind::Page,
+            ObjectKind::PageExtension,
+            ObjectKind::Codeunit,
+            ObjectKind::Report,
+            ObjectKind::ReportExtension,
+            ObjectKind::XmlPort,
+            ObjectKind::Query,
+            ObjectKind::Enum,
+            ObjectKind::EnumExtension,
+            ObjectKind::PermissionSet,
+            ObjectKind::PermissionSetExtension,
+        ];
+        let named = [
+            ObjectKind::Interface,
+            ObjectKind::Profile,
+            ObjectKind::PageCustomization,
+            ObjectKind::ControlAddIn,
+            ObjectKind::Entitlement,
+            ObjectKind::ProfileExtension,
+            ObjectKind::DotNet,
+        ];
+
+        assert!(numbered.into_iter().all(ObjectKind::requires_numeric_id));
+        assert!(named.into_iter().all(|kind| !kind.requires_numeric_id()));
+    }
+
+    #[test]
+    fn declaration_id_normalization_is_explicit_and_lossless() {
+        assert_eq!(
+            ObjectKind::Codeunit.normalize_declaration_id(Some(50100)),
+            Ok(50100)
+        );
+        assert!(matches!(
+            ObjectKind::Codeunit.normalize_declaration_id(None),
+            Err(DeclarationIdError::Missing { .. })
+        ));
+        assert!(matches!(
+            ObjectKind::Codeunit.normalize_declaration_id(Some(i64::from(i32::MAX) + 1)),
+            Err(DeclarationIdError::OutOfRange { .. })
+        ));
+        assert_eq!(ObjectKind::Interface.normalize_declaration_id(None), Ok(0));
+        assert!(matches!(
+            ObjectKind::Interface.normalize_declaration_id(Some(50100)),
+            Err(DeclarationIdError::Unexpected { .. })
+        ));
+    }
+
+    #[test]
     fn test_nested_namespaces_deserialization() {
         let json = r#"{
             "Namespaces": [
                 {
+                    "Name": "Contoso",
                     "Tables": [
                         { "Id": 1, "Name": "NestedTable" }
                     ],
                     "Namespaces": [
                         {
+                            "Name": "Sales",
                             "Codeunits": [
                                 { "Id": 2, "Name": "DeeplyNested" }
                             ]
@@ -1352,12 +1529,12 @@ mod tests {
         let sr: SymbolReferenceJson = serde_json::from_str(json).unwrap();
         let entries = sr.into_entries("Nested");
         assert_eq!(entries.len(), 2);
-        assert!(entries
-            .iter()
-            .any(|e| e.name == "NestedTable" && e.kind == ObjectKind::Table));
-        assert!(entries
-            .iter()
-            .any(|e| e.name == "DeeplyNested" && e.kind == ObjectKind::Codeunit));
+        assert!(entries.iter().any(|e| e.name == "NestedTable"
+            && e.kind == ObjectKind::Table
+            && e.namespace == "Contoso"));
+        assert!(entries.iter().any(|e| e.name == "DeeplyNested"
+            && e.kind == ObjectKind::Codeunit
+            && e.namespace == "Contoso.Sales"));
     }
 
     #[test]
@@ -1399,6 +1576,7 @@ mod tests {
             ],
             keys: vec![],
             properties: vec![],
+            permissions: vec![],
             variables: vec![],
         };
         let json = serde_json::to_string(&entry).unwrap();

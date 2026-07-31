@@ -1,0 +1,182 @@
+{
+  "schemaVersion": 3,
+  "generatedAtUtc": "2026-07-26T23:22:22.830514+00:00",
+  "repository": {
+    "commit": "50d3bcc85614ee8fdd87ca2171e834181ad89d3b",
+    "dirty": false,
+    "trackedDiffSha256": null
+  },
+  "machine": {
+    "os": "Linux-7.1.4-1-cachyos-bore-lto-x86_64-with-glibc2.43",
+    "kernel": "7.1.4-1-cachyos-bore-lto",
+    "architecture": "x86_64",
+    "cpu": "13th Gen Intel(R) Core(TM) i5-1345U",
+    "logicalCpus": 12
+  },
+  "label": "MS AL (medium)",
+  "serverCommand": [
+    "start_ms_lsp.sh"
+  ],
+  "serverArtifacts": [
+    {
+      "name": "start_ms_lsp.sh",
+      "bytes": 1011,
+      "sha256": "9416a7f76f6993549ad39a16506ca2108d708600a0c63703377e25294377d684"
+    },
+    {
+      "name": "Microsoft.Dynamics.Nav.EditorServices.Host",
+      "bytes": 72568,
+      "sha256": "3b7d6439c1d15c434b114f6fbf4cf7a43cf2aaf5cdc4ed995d3d357d36e2bd58"
+    },
+    {
+      "name": "Microsoft.Dynamics.Nav.EditorServices.Host.dll",
+      "bytes": 23584,
+      "sha256": "51ced3836b9f0d77aaf7cfc916c08bafcbebeafff5ab3f031e05f3bcb0cf2b0e"
+    },
+    {
+      "name": "alc.dll",
+      "bytes": 17952,
+      "sha256": "2bc0ffaf0a7ff92ce227301f71cfa9f2ac5b0fa6316347892ae22372f60bea45"
+    }
+  ],
+  "root": "benchmarks/projects/medium",
+  "openFile": "src/Page_60000.al",
+  "iterations": 11,
+  "discardedIterations": [
+    0
+  ],
+  "pre_requests": [
+    {
+      "method": "al/setActiveWorkspace",
+      "kind": "request",
+      "ms": 294.3457,
+      "ok": true,
+      "error": null
+    },
+    {
+      "method": "al/progressNotification",
+      "kind": "wait_notification",
+      "ms": 5103.0145,
+      "ok": true,
+      "match": {
+        "percent": 100
+      }
+    }
+  ],
+  "post_open_requests": [
+    {
+      "method": "al/didChangeActiveDocument",
+      "kind": "request",
+      "ms": 12.3159,
+      "ok": true,
+      "error": null
+    }
+  ],
+  "requests": {
+    "completion": {
+      "n": 10,
+      "min_ms": 8.8246,
+      "median_ms": 10.0142,
+      "mean_ms": 12.3813,
+      "max_ms": 27.2839,
+      "method": "textDocument/completion",
+      "result_size": 94,
+      "errors": 0
+    },
+    "hover": {
+      "n": 10,
+      "min_ms": 0.2662,
+      "median_ms": 0.3653,
+      "mean_ms": 0.4115,
+      "max_ms": 0.7838,
+      "method": "textDocument/hover",
+      "result_size": 1,
+      "errors": 0
+    },
+    "definition": {
+      "n": 10,
+      "min_ms": 0.1921,
+      "median_ms": 0.2408,
+      "mean_ms": 0.2638,
+      "max_ms": 0.4041,
+      "method": "al/gotodefinition",
+      "result_size": 1,
+      "errors": 0
+    },
+    "documentSymbol": {
+      "n": 10,
+      "min_ms": 1.0532,
+      "median_ms": 1.2729,
+      "mean_ms": 1.2685,
+      "max_ms": 1.4993,
+      "method": "textDocument/documentSymbol",
+      "result_size": 1,
+      "errors": 0
+    },
+    "workspaceSymbol": {
+      "n": 10,
+      "min_ms": 5.4545,
+      "median_ms": 6.8398,
+      "mean_ms": 8.0337,
+      "max_ms": 14.9622,
+      "method": "workspace/symbol",
+      "result_size": 40,
+      "errors": 0
+    }
+  },
+  "notes": [
+    "server completed standard LSP shutdown/exit but did not terminate; the client applied the explicitly allowed forced-termination fallback"
+  ],
+  "load_start": 3.58,
+  "spawn_to_init_ms": 236.9756,
+  "initialize_ms": 236.4957,
+  "server_capabilities": [
+    "codeActionProvider",
+    "codeLensProvider",
+    "completionProvider",
+    "definitionProvider",
+    "documentFormattingProvider",
+    "documentHighlightProvider",
+    "documentRangeFormattingProvider",
+    "documentSymbolProvider",
+    "executeCommandProvider",
+    "foldingRangeProvider",
+    "hoverProvider",
+    "implementationProvider",
+    "inlayHintProvider",
+    "referencesProvider",
+    "renameProvider",
+    "semanticTokensProvider",
+    "signatureHelpProvider",
+    "textDocumentSync",
+    "typeHierarchyProvider",
+    "workspace",
+    "workspaceSymbolProvider"
+  ],
+  "pre_requests_total_ms": 5397.3602,
+  "post_open_requests_total_ms": 12.3159,
+  "first_diagnostic_ms": 292.6081,
+  "first_diagnostic_count": 0,
+  "first_diagnostic_file": "app.json",
+  "first_diagnostic_phase": "pre_open",
+  "cold_ready_ms": 5646.6052,
+  "shutdown": {
+    "requestOk": true,
+    "requestError": null,
+    "exitSent": true,
+    "stdinClosed": true,
+    "forcedKill": true,
+    "processExitCode": -9,
+    "elapsedMs": 3064.6083,
+    "forcedKillAllowed": true
+  },
+  "stderrContract": {
+    "required": [],
+    "forbidden": [],
+    "terminal": null
+  },
+  "load_end": 3.41,
+  "load_mean_during_probes": 3.53,
+  "valid": true,
+  "invalidReasons": []
+}

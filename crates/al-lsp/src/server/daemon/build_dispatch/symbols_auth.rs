@@ -1,5 +1,6 @@
 //! Symbol download, authentication, and cache-clear dispatchers.
 
+use super::super::rpc_error;
 use super::{ERR_INITIALIZING, ERR_NO_PROJECT};
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 use al_workspace::Workspace;
@@ -9,42 +10,74 @@ pub(in crate::server::daemon) async fn dispatch_clear_cache(id: u64) -> Response
     let cache_dir = dirs::cache_dir()
         .map(|d| d.join("al-lsp").join("index"))
         .unwrap_or_else(|| PathBuf::from("/tmp/al-lsp/index"));
+    clear_cache_dir(id, cache_dir).await
+}
 
+async fn clear_cache_dir(id: u64, cache_dir: PathBuf) -> Response {
     // Use tokio::fs to keep the daemon dispatch task on its async runtime
     // instead of parking the worker on synchronous std::fs. On a large index
     // this can involve many MB of
     // file handles; doing it synchronously held the worker thread for
     // the duration and starved other dispatch handlers.
-    let existed = tokio::fs::try_exists(&cache_dir).await.unwrap_or(false);
-    let mut error: Option<String> = None;
+    let existed = match tokio::fs::try_exists(&cache_dir).await {
+        Ok(existed) => existed,
+        Err(error) => {
+            tracing::error!(
+                path = %cache_dir.display(),
+                error = %error,
+                "clearCache: could not inspect index directory"
+            );
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!(
+                        "Could not inspect cache directory {}: {error}",
+                        cache_dir.display()
+                    ),
+                }),
+                ..Default::default()
+            };
+        }
+    };
     let mut deleted = false;
     if existed {
-        match tokio::fs::remove_dir_all(&cache_dir).await {
-            Ok(()) => deleted = true,
-            Err(e) => {
-                tracing::warn!(path = %cache_dir.display(), error = %e,
-                    "clearCache: failed to remove index dir");
-                error = Some(format!("{e}"));
-            }
+        if let Err(error) = tokio::fs::remove_dir_all(&cache_dir).await {
+            tracing::warn!(
+                path = %cache_dir.display(),
+                error = %error,
+                "clearCache: failed to remove index dir"
+            );
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!(
+                        "Could not remove cache directory {}: {error}",
+                        cache_dir.display()
+                    ),
+                }),
+                ..Default::default()
+            };
         }
+        deleted = true;
     }
 
-    // `deleted` reflects whether the dir was both present AND successfully
-    // removed. `error` is populated only on failure so callers can detect a
-    // partial-clear; a previous implementation reported success even when
-    // remove failed.
     Response {
         id,
         result: Some(serde_json::json!({
             "deleted": deleted,
             "existed": existed,
             "path": cache_dir.display().to_string(),
-            "error": error,
+            "error": null,
         })),
         error: None,
         ..Default::default()
     }
 }
+
 pub(in crate::server::daemon) async fn dispatch_authenticate(
     workspace: &Workspace,
     id: u64,
@@ -152,7 +185,21 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
             .await
             {
                 Ok(_token) => {
-                    let msgs = messages.lock().unwrap_or_else(|e| e.into_inner());
+                    let msgs = match messages.lock() {
+                        Ok(messages) => messages,
+                        Err(_) => {
+                            return Response {
+                                id,
+                                result: None,
+                                error: Some(RpcError {
+                                    code: error_codes::INTERNAL_ERROR,
+                                    message: "Authentication progress state became unavailable"
+                                        .to_string(),
+                                }),
+                                ..Default::default()
+                            };
+                        }
+                    };
                     Response {
                         id,
                         result: Some(serde_json::json!({
@@ -197,10 +244,26 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let source = params
-        .get("source")
-        .and_then(|v| v.as_str())
-        .unwrap_or("nuget");
+    let source = match params.get("source") {
+        None => "nuget",
+        Some(value) => {
+            let Some(source) = value.as_str() else {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'source' must be 'nuget' or 'server'",
+                );
+            };
+            if !matches!(source, "nuget" | "server") {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    &format!("invalid symbol source '{source}'; expected 'nuget' or 'server'"),
+                );
+            }
+            source
+        }
+    };
 
     let project = match workspace.project.try_read() {
         Ok(guard) => guard,
@@ -337,7 +400,15 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
                         cfg.symbols_country_region.clone(),
                     )
                 };
-                let client = al_symbols::nuget::NuGetClient::new(nuget_feeds).with_country(country);
+                let client = match al_symbols::nuget::NuGetClient::new(nuget_feeds) {
+                    Ok(client) => client.with_country(country),
+                    Err(error) => {
+                        return vec![serde_json::json!({
+                            "status": "error",
+                            "error": format!("could not initialize NuGet client: {error}"),
+                        })];
+                    }
+                };
                 let nuget_results = client.download_all(&all_deps, &dest).await;
                 nuget_results
                     .into_iter()
@@ -380,11 +451,36 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
     // requiring a daemon restart. Mirrors the LSP-side
     // `download_symbols_command` reload sequence in
     // `crate::server::workspace::download_symbols_command`.
-    let loaded = refresh_workspace_after_download(workspace, &result);
+    let loaded = match refresh_workspace_after_download(workspace, &result) {
+        Ok(count) => count,
+        Err(error) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("Downloaded symbol package batch was not indexed: {error}"),
+                }),
+                ..Default::default()
+            };
+        }
+    };
     if success > 0 {
         let config = workspace.config.read().await.clone();
         if let Some(project) = workspace.project.write().await.as_mut() {
-            project.apply_symbol_settings(&config);
+            if let Err(error) = project.apply_symbol_settings(&config) {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!(
+                            "Downloaded packages were indexed, but configured package folders could not be refreshed: {error}"
+                        ),
+                    }),
+                    ..Default::default()
+                };
+            }
         }
     }
 
@@ -417,7 +513,10 @@ fn find_satisfied_package(
     }
     None
 }
-fn refresh_workspace_after_download(workspace: &Workspace, result: &[serde_json::Value]) -> usize {
+fn refresh_workspace_after_download(
+    workspace: &Workspace,
+    result: &[serde_json::Value],
+) -> Result<usize, String> {
     let downloaded_paths: Vec<std::path::PathBuf> = result
         .iter()
         .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("ok"))
@@ -428,8 +527,16 @@ fn refresh_workspace_after_download(workspace: &Workspace, result: &[serde_json:
         })
         .collect();
     if downloaded_paths.is_empty() {
-        return 0;
+        return Ok(0);
     }
+    // Refuse to mutate the live symbol index when its paired package
+    // inventory is inaccessible. Holding this guard through the atomic package
+    // load also prevents a successful symbol update from being published
+    // without the matching inventory update.
+    let mut package_info = workspace
+        .package_info
+        .write()
+        .map_err(|_| "package inventory lock is poisoned".to_string())?;
     let cache = al_symbols::cache::SymbolCache::default_location();
     let load = || {
         workspace
@@ -441,13 +548,9 @@ fn refresh_workspace_after_download(workspace: &Workspace, result: &[serde_json:
             tokio::task::block_in_place(load)
         }
         _ => load(),
-    };
+    }
+    .map_err(|error| error.to_string())?;
     workspace.symbols.load_runtime_enums();
-    workspace.invalidate_insight_graph();
-    let mut package_info = workspace
-        .package_info
-        .write()
-        .unwrap_or_else(|error| error.into_inner());
     for package in &loaded {
         package_info.retain(|existing| {
             !(existing.name.eq_ignore_ascii_case(&package.name)
@@ -460,7 +563,9 @@ fn refresh_workspace_after_download(workspace: &Workspace, result: &[serde_json:
             object_count: package.object_count,
         });
     }
-    loaded.len()
+    drop(package_info);
+    workspace.invalidate_insight_graph();
+    Ok(loaded.len())
 }
 
 #[cfg(test)]
@@ -476,7 +581,7 @@ mod tests {
     fn refresh_after_download_returns_zero_for_empty_result() {
         let ws = empty_ws();
         let before = ws.symbols.len();
-        let loaded = refresh_workspace_after_download(&ws, &[]);
+        let loaded = refresh_workspace_after_download(&ws, &[]).unwrap();
         assert_eq!(loaded, 0);
         assert_eq!(
             ws.symbols.len(),
@@ -493,7 +598,7 @@ mod tests {
             serde_json::json!({"name":"pkg1","status":"error","error":"network"}),
             serde_json::json!({"name":"pkg2","status":"error","error":"403"}),
         ];
-        let loaded = refresh_workspace_after_download(&ws, &result);
+        let loaded = refresh_workspace_after_download(&ws, &result).unwrap();
         assert_eq!(loaded, 0);
         assert_eq!(
             ws.symbols.len(),
@@ -512,8 +617,64 @@ mod tests {
             "status": "ok",
             "path": bogus.display().to_string()
         })];
-        let loaded = refresh_workspace_after_download(&ws, &result);
-        assert_eq!(loaded, 0, "unreadable path should yield 0 loaded");
+        let error = refresh_workspace_after_download(&ws, &result)
+            .expect_err("unreadable successful-download path must fail");
+        assert!(error.contains(&bogus.display().to_string()), "{error}");
+    }
+
+    #[test]
+    fn refresh_after_download_rejects_poisoned_inventory_before_symbol_mutation() {
+        let ws = std::sync::Arc::new(empty_ws());
+        let poison_target = std::sync::Arc::clone(&ws);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target.package_info.write().unwrap();
+            panic!("poison package inventory for test");
+        })
+        .join();
+        let before = ws.symbols.len();
+        let result = vec![serde_json::json!({
+            "name": "pkg",
+            "status": "ok",
+            "path": "/definitely/not/readable.app"
+        })];
+
+        let error = refresh_workspace_after_download(&ws, &result)
+            .expect_err("poisoned inventory must reject the refresh");
+        assert!(
+            error.contains("package inventory lock is poisoned"),
+            "{error}"
+        );
+        assert_eq!(ws.symbols.len(), before);
+    }
+
+    #[tokio::test]
+    async fn clear_cache_reports_inspection_errors_instead_of_missing_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent_file = temp.path().join("not-a-directory");
+        std::fs::write(&parent_file, b"x").unwrap();
+        let response = clear_cache_dir(9, parent_file.join("index")).await;
+        assert!(response.result.is_none());
+        let error = response.error.expect("inspection failure must be explicit");
+        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
+        assert!(error.message.contains("Could not inspect cache directory"));
+    }
+
+    #[tokio::test]
+    async fn clear_cache_deletes_existing_directory_and_reports_missing_as_noop() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("index");
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::write(cache.join("entry"), b"x").unwrap();
+        let removed = clear_cache_dir(10, cache.clone()).await;
+        assert!(removed.error.is_none(), "{:?}", removed.error);
+        assert_eq!(removed.result.as_ref().unwrap()["existed"], true);
+        assert_eq!(removed.result.as_ref().unwrap()["deleted"], true);
+        assert!(!cache.exists());
+
+        let missing = clear_cache_dir(11, cache).await;
+        assert!(missing.error.is_none(), "{:?}", missing.error);
+        assert_eq!(missing.result.as_ref().unwrap()["existed"], false);
+        assert_eq!(missing.result.as_ref().unwrap()["deleted"], false);
     }
 
     #[tokio::test]
@@ -543,6 +704,23 @@ mod tests {
             Some(0),
             "no tenants → cleared count of 0"
         );
+    }
+
+    #[tokio::test]
+    async fn download_symbols_rejects_unknown_source_before_project_or_network_access() {
+        let ws = empty_ws();
+        for source in [
+            serde_json::json!("definitely-invalid"),
+            serde_json::json!("NuGet"),
+            serde_json::Value::Null,
+            serde_json::json!(1),
+        ] {
+            let response =
+                dispatch_download_symbols(&ws, 1, &serde_json::json!({"source": source})).await;
+            let error = response.error.expect("invalid source must fail");
+            assert_eq!(error.code, error_codes::INVALID_PARAMS);
+            assert!(error.message.contains("source"), "{}", error.message);
+        }
     }
 
     #[tokio::test]

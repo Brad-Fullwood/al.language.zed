@@ -28,6 +28,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -41,7 +42,14 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y shellcheck
           fi
-          shellcheck scripts/*.sh
+          shellcheck \
+            scripts/*.sh \
+            crates/al-test-harness/editor-e2e/*.sh \
+            crates/al-test-harness/editor-e2e/container/*.sh \
+            tree-sitter-al/tests/*.sh
+
+      - name: Test cross-platform shell helper contracts
+        run: bash scripts/test-use-api.sh
 
       - name: Cache cargo registry and build artifacts
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -57,17 +65,32 @@ jobs:
       - name: Check (compile without building)
         run: cargo check --workspace --exclude zed-al
 
+      # al-test-harness starts these exact executables from target/debug. A
+      # workspace `cargo test` only guarantees hashed test-harness binaries
+      # under target/debug/deps, so build the production entrypoints explicitly
+      # instead of relying on a warm CI cache.
+      - name: Build binaries used by end-to-end tests
+        run: cargo build -p al-lsp -p al-explorer
+
       - name: Test
         run: cargo test --workspace --exclude zed-al
-        env:
-          # Optional real-project tests treat an empty value as unset.
-          AL_TEST_PROJECT_PATH: ""
 
       - name: Clippy
         run: cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
 
       - name: Formatting check
         run: cargo fmt --all -- --check
+
+      - name: Benchmark harness contract tests
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 -m unittest discover -s benchmarks/scripts -p 'test_*_bench.py'
+
+      # Native-only, fixed-fixture Criterion run. This prints measured cold/warm
+      # package/index/query timings and owned-cache byte totals, but deliberately
+      # makes no Microsoft comparison or threshold claim on shared CI hardware.
+      - name: Deterministic symbol and insight performance audit
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo bench -p al-lsp --bench perf -- --warm-up-time 0.1 --measurement-time 0.2 --sample-size 10
 
   semantic:
     # The `semantic` feature gates al-semantic's in-process CLR host — every
@@ -128,6 +151,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
+          persist-credentials: false
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
@@ -142,11 +166,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
+          persist-credentials: false
 
-      - name: Install Rust stable + wasm32-wasip1
+      - name: Install Rust stable + wasm32-wasip2
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip1
+          targets: wasm32-wasip2
 
       - name: Cache cargo registry and build artifacts
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -160,7 +185,9 @@ jobs:
             wasm-cargo-
 
       - name: Build zed-al WASM extension
-        run: cargo build -p zed-al --target wasm32-wasip1 --release
+        run: |
+          cargo build -p zed-al --target wasm32-wasip2 --release
+          scripts/check-zed-wasm-component.sh target/wasm32-wasip2/release/zed_al.wasm
 
       # zed-al is excluded from the native workspace job, so run its host tests here.
       - name: Test zed-al (host)
@@ -184,6 +211,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

@@ -638,6 +638,7 @@ impl BcDebugSession {
             "webserviceclient" => 0,
             "background" => 2,
             "clientservice" => 3,
+            "agent" => 4,
             _ => 1, // WebClient
         };
         let session_id = config
@@ -661,19 +662,19 @@ impl BcDebugSession {
         // .NET DebugOptions properties. PascalCase looks plausible from the
         // CLR types but is rejected by current BC online hubs.
         let debug_options = serde_json::json!({
-            "breakOnError": config.break_on_error,
+            "breakOnError": config.break_on_error.enabled(),
             // Current EditorServices enum values are Unspecified=0, None=1,
             // All=2, ExcludeTry=3. Sending the old 0/1 assumption causes
             // configurationDone to be rejected (or interpreted incorrectly)
             // by current Business Central online tenants.
-            "breakOnErrorBehaviour": if config.break_on_error { 2 } else { 1 },
-            "breakOnRecordWrite": config.break_on_record_write,
-            "breakOnRecordWriteBehaviour": if config.break_on_record_write { 2 } else { 1 },
+            "breakOnErrorBehaviour": config.break_on_error.wire_value(),
+            "breakOnRecordWrite": config.break_on_record_write.enabled(),
+            "breakOnRecordWriteBehaviour": config.break_on_record_write.wire_value(),
             "skipSystemTriggers": true,
-            "enableSqlInformationDebugger": true,
-            "enableLongRunningSqlStatements": true,
-            "longRunningSqlStatementsThreshold": 500,
-            "numberOfSqlStatements": 10,
+            "enableSqlInformationDebugger": config.enable_sql_information_debugger,
+            "enableLongRunningSqlStatements": config.enable_long_running_sql_statements,
+            "longRunningSqlStatementsThreshold": config.long_running_sql_statements_threshold,
+            "numberOfSqlStatements": config.number_of_sql_statements,
         });
         // Try with debug options first (newer BC >=2.0), fall back to empty args
         match self
@@ -1393,8 +1394,12 @@ mod tests {
             .await
             .unwrap();
         let cfg = BcDebugConfig {
-            break_on_error: true,
-            break_on_record_write: false,
+            break_on_error: crate::dap::bc_debug::BreakOnError::ExcludeTry,
+            break_on_record_write: crate::dap::bc_debug::BreakOnRecordWrite::ExcludeTemporary,
+            enable_sql_information_debugger: false,
+            enable_long_running_sql_statements: false,
+            long_running_sql_statements_threshold: 900,
+            number_of_sql_statements: 37,
             ..BcDebugConfig::default()
         };
         session
@@ -1407,8 +1412,13 @@ mod tests {
         let args = frame["arguments"].as_array().unwrap();
         assert_eq!(args.len(), 1, "debug options arg present on first attempt");
         assert_eq!(args[0]["breakOnError"], true);
-        assert_eq!(args[0]["breakOnErrorBehaviour"], 2);
-        assert_eq!(args[0]["breakOnRecordWriteBehaviour"], 1);
+        assert_eq!(args[0]["breakOnErrorBehaviour"], 3);
+        assert_eq!(args[0]["breakOnRecordWrite"], true);
+        assert_eq!(args[0]["breakOnRecordWriteBehaviour"], 3);
+        assert_eq!(args[0]["enableSqlInformationDebugger"], false);
+        assert_eq!(args[0]["enableLongRunningSqlStatements"], false);
+        assert_eq!(args[0]["longRunningSqlStatementsThreshold"], 900);
+        assert_eq!(args[0]["numberOfSqlStatements"], 37);
         // A successful first attempt must NOT send the no-args fallback frame.
         assert!(
             ws_rx.try_recv().is_err(),

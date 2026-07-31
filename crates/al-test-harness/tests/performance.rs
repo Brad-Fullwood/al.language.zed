@@ -1,200 +1,139 @@
-//! Performance tests — measure latency of key LSP queries against the real
-//! AL test project to verify they meet latency budgets.
+//! Binary LSP latency smoke test against the checked-in AL fixture.
 //!
-//! Latency budgets:
-//! - hover: <10ms
-//! - completions: <20ms
-//! - definition: <10ms
-//! - document symbols: <5ms
-//! - semantic tokens: <15ms
-//!
-//! These tests are `#[ignore]` by default. To run them you must:
-//!   1. Point `AL_TEST_PROJECT_PATH` at a real AL project on disk
-//!      (the inline fixture under `data/test_al_project/` does NOT
-//!      contain the deep-codebase files referenced below).
-//!   2. Pass `-- --ignored` to cargo:
-//!      `AL_TEST_PROJECT_PATH=/path/to/project \
-//!         cargo test -p al-test-harness --test performance -- --ignored`
-//!
-//! Both the environment variable and `--ignored` flag are required.
+//! This is intentionally an always-on hang/regression guard, not a shared-host
+//! microbenchmark or a cross-machine SLA. Criterion owns deterministic timing
+//! reports for parser, symbol/index, completion, impact, event, and memory hot
+//! paths. The previous file was permanently ignored and named files from an
+//! unavailable private project, so it produced no CI or release evidence.
 
-use al_test_harness::*;
-use std::path::PathBuf;
-use std::time::Instant;
+use al_test_harness::{test_project_dir, LspClient};
+use std::time::{Duration, Instant};
 
-fn test_project_dir() -> PathBuf {
-    test_project_from_env().expect("AL_TEST_PROJECT_PATH must be set to run fixture tests")
+const ITERATIONS: usize = 7;
+const MAX_MEDIAN: Duration = Duration::from_millis(250);
+
+fn fixture(path: &str) -> String {
+    let absolute = test_project_dir().join(path);
+    std::fs::read_to_string(&absolute)
+        .unwrap_or_else(|error| panic!("fixture {} must be readable: {error}", absolute.display()))
 }
 
-async fn open_test_files(client: &mut LspClient) {
-    let files = [
-        "objects/API/ItemJournalStaging.Table.al",
-        "objects/Codeunit/IJLEventSubscribers.Codeunit.al",
-        "objects/Page/IJLItemJournalStagingLine.Page.al",
-    ];
-    let project = test_project_dir();
-    for f in &files {
-        let path = project.join(f);
-        if path.exists() {
-            let content = std::fs::read_to_string(&path).unwrap();
-            client.open_file(f, &content).await;
+fn position(source: &str, needle: &str, within: &str) -> (u32, u32) {
+    for (line_index, line) in source.lines().enumerate() {
+        if let Some(start) = line.find(needle) {
+            let within = line[start..]
+                .find(within)
+                .unwrap_or_else(|| panic!("{within:?} is not inside {needle:?}"));
+            return (
+                u32::try_from(line_index).expect("fixture line fits u32"),
+                u32::try_from(start + within).expect("fixture column fits u32"),
+            );
         }
     }
+    panic!("fixture does not contain {needle:?}");
 }
 
-fn median(durations: &mut [u64]) -> u64 {
-    durations.sort();
-    durations[durations.len() / 2]
+fn median(samples: &mut [Duration]) -> Duration {
+    samples.sort_unstable();
+    samples[samples.len() / 2]
 }
 
-const ITERATIONS: usize = 5;
+macro_rules! measure {
+    ($label:literal, $operation:block) => {{
+        $operation
+        let mut samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            let started = Instant::now();
+            $operation
+            samples.push(started.elapsed());
+        }
+        let measured = median(&mut samples);
+        eprintln!(
+            "{} median={measured:?} samples={samples:?}",
+            $label
+        );
+        assert!(
+            measured < MAX_MEDIAN,
+            "{} median {measured:?} exceeded the {MAX_MEDIAN:?} binary smoke budget",
+            $label
+        );
+    }};
+}
 
-#[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
 #[tokio::test]
-async fn test_hover_latency() {
-    let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
-    open_test_files(&mut client).await;
+async fn checked_in_fixture_lsp_queries_complete_within_binary_smoke_budget() {
+    let mut client = LspClient::spawn(test_project_dir())
+        .await
+        .expect("start al-lsp");
 
-    let _ = client
-        .hover("objects/API/ItemJournalStaging.Table.al", 10, 10)
-        .await;
+    let table_path = "src/WorkOrderStaging.Table.al";
+    let helper_path = "src/WorkOrderHelper.Codeunit.al";
+    let page_path = "src/WorkOrderStagingList.Page.al";
+    let table = fixture(table_path);
+    let helper = fixture(helper_path);
+    let page = fixture(page_path);
+    client.open_file(table_path, &table).await;
+    client.open_file(helper_path, &helper).await;
+    client.open_file(page_path, &page).await;
 
-    let mut durations = Vec::with_capacity(ITERATIONS);
-    for _ in 0..ITERATIONS {
-        let start = Instant::now();
-        let _ = client
-            .hover("objects/API/ItemJournalStaging.Table.al", 15, 20)
-            .await;
-        durations.push(start.elapsed().as_micros() as u64);
-    }
+    let (hover_line, hover_column) =
+        position(&helper, "procedure PrecheckRecord", "PrecheckRecord");
+    measure!("hover", {
+        assert!(
+            client
+                .hover(helper_path, hover_line, hover_column + 2)
+                .await
+                .is_some(),
+            "hover unexpectedly returned null"
+        );
+    });
 
-    let median_ms = median(&mut durations) as f64 / 1000.0;
-    eprintln!("hover median: {median_ms:.2}ms ({durations:?})");
-    assert!(
-        median_ms < 10.0,
-        "hover must be <10ms, got {median_ms:.2}ms"
+    let (completion_line, completion_column) =
+        position(&page, "this.ProcessReport.SetAction", "this.");
+    measure!("completion", {
+        assert!(
+            !client
+                .completion(page_path, completion_line, completion_column + 5)
+                .await
+                .is_empty(),
+            "completion unexpectedly returned no items"
+        );
+    });
+
+    let (definition_line, definition_column) = position(
+        &helper,
+        "Staging: Record \"Work Order Staging\"",
+        "Work Order Staging",
     );
+    measure!("definition", {
+        assert!(
+            client
+                .definition(helper_path, definition_line, definition_column + 2)
+                .await
+                .is_some(),
+            "definition unexpectedly returned null"
+        );
+    });
 
-    client.shutdown().await;
-}
+    measure!("document symbols", {
+        assert!(
+            !client.document_symbols(table_path).await.is_empty(),
+            "document symbols unexpectedly returned no items"
+        );
+    });
 
-#[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
-#[tokio::test]
-async fn test_completion_latency() {
-    let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
-    open_test_files(&mut client).await;
-
-    let _ = client
-        .completion("objects/Codeunit/IJLEventSubscribers.Codeunit.al", 10, 10)
-        .await;
-
-    let mut durations = Vec::with_capacity(ITERATIONS);
-    for _ in 0..ITERATIONS {
-        let start = Instant::now();
-        let _ = client
-            .completion("objects/Codeunit/IJLEventSubscribers.Codeunit.al", 20, 15)
-            .await;
-        durations.push(start.elapsed().as_micros() as u64);
-    }
-
-    let median_ms = median(&mut durations) as f64 / 1000.0;
-    eprintln!("completion median: {median_ms:.2}ms ({durations:?})");
-    assert!(
-        median_ms < 20.0,
-        "completion must be <20ms, got {median_ms:.2}ms"
-    );
-
-    client.shutdown().await;
-}
-
-#[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
-#[tokio::test]
-async fn test_definition_latency() {
-    let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
-    open_test_files(&mut client).await;
-
-    // Warm up — use a position that triggers package symbol lookup to warm caches
-    let _ = client
-        .definition("objects/API/ItemJournalStaging.Table.al", 10, 10)
-        .await;
-
-    // Test at procedure declaration name (line 120, col 30 = "SetJournalData")
-    // This tests workspace-local definition resolution
-    let mut durations = Vec::with_capacity(ITERATIONS);
-    for _ in 0..ITERATIONS {
-        let start = Instant::now();
-        let _ = client
-            .definition("objects/API/ItemJournalStaging.Table.al", 120, 30)
-            .await;
-        durations.push(start.elapsed().as_micros() as u64);
-    }
-
-    let median_ms = median(&mut durations) as f64 / 1000.0;
-    eprintln!("definition median: {median_ms:.2}ms ({durations:?})");
-    // Note: definition includes stdio IPC round-trip. Budget is handler-side <10ms,
-    // but we allow 2x for IPC overhead in end-to-end measurement.
-    assert!(
-        median_ms < 20.0,
-        "definition must be <20ms end-to-end, got {median_ms:.2}ms"
-    );
-
-    client.shutdown().await;
-}
-
-#[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
-#[tokio::test]
-async fn test_document_symbols_latency() {
-    let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
-    open_test_files(&mut client).await;
-
-    let _ = client
-        .document_symbols("objects/API/ItemJournalStaging.Table.al")
-        .await;
-
-    let mut durations = Vec::with_capacity(ITERATIONS);
-    for _ in 0..ITERATIONS {
-        let start = Instant::now();
-        let _ = client
-            .document_symbols("objects/API/ItemJournalStaging.Table.al")
-            .await;
-        durations.push(start.elapsed().as_micros() as u64);
-    }
-
-    let median_ms = median(&mut durations) as f64 / 1000.0;
-    eprintln!("document_symbols median: {median_ms:.2}ms ({durations:?})");
-    assert!(
-        median_ms < 5.0,
-        "document_symbols must be <5ms, got {median_ms:.2}ms"
-    );
-
-    client.shutdown().await;
-}
-
-#[ignore = "requires AL_TEST_PROJECT_PATH environment variable"]
-#[tokio::test]
-async fn test_semantic_tokens_latency() {
-    let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
-    open_test_files(&mut client).await;
-
-    let _ = client
-        .semantic_tokens("objects/API/ItemJournalStaging.Table.al")
-        .await;
-
-    let mut durations = Vec::with_capacity(ITERATIONS);
-    for _ in 0..ITERATIONS {
-        let start = Instant::now();
-        let _ = client
-            .semantic_tokens("objects/API/ItemJournalStaging.Table.al")
-            .await;
-        durations.push(start.elapsed().as_micros() as u64);
-    }
-
-    let median_ms = median(&mut durations) as f64 / 1000.0;
-    eprintln!("semantic_tokens median: {median_ms:.2}ms ({durations:?})");
-    assert!(
-        median_ms < 15.0,
-        "semantic_tokens must be <15ms, got {median_ms:.2}ms"
-    );
+    measure!("semantic tokens", {
+        let result = client
+            .semantic_tokens(page_path)
+            .await
+            .expect("semantic tokens unexpectedly returned null");
+        assert!(
+            result["data"]
+                .as_array()
+                .is_some_and(|data| !data.is_empty()),
+            "semantic token data unexpectedly empty"
+        );
+    });
 
     client.shutdown().await;
 }

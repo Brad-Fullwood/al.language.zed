@@ -256,7 +256,7 @@ mod tests {
     use url::Url;
 
     fn open_doc(ws: &Workspace, uri: &Url, al_code: &str) {
-        ws.documents.open(uri.clone(), al_code.to_string());
+        ws.documents.open(uri.clone(), al_code.to_string()).unwrap();
     }
 
     fn make_entry_with_namespace(kind: ObjectKind, id: i32, name: &str, ns: &str) -> SymbolEntry {
@@ -275,6 +275,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }

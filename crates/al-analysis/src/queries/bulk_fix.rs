@@ -20,6 +20,34 @@ pub struct BulkFixResult {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct BulkFixChange {
+    pub path: PathBuf,
+    pub original: String,
+    pub updated: String,
+    pub changes_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct BulkFixPlan {
+    pub changes: Vec<BulkFixChange>,
+}
+
+impl BulkFixPlan {
+    #[must_use]
+    pub fn result(&self, dry_run: bool) -> BulkFixResult {
+        BulkFixResult {
+            modified_files: self
+                .changes
+                .iter()
+                .map(|change| change.path.display().to_string())
+                .collect(),
+            changes_count: self.changes.iter().map(|change| change.changes_count).sum(),
+            dry_run,
+        }
+    }
+}
+
 /// Add `ApplicationArea = <value>;` to all page fields and page action items that
 /// are missing it across all AL files under `project_dir`.
 ///
@@ -29,33 +57,20 @@ pub fn add_application_area(
     value: &str,
     dry_run: bool,
 ) -> Result<BulkFixResult, String> {
-    let files = collect_al_files(project_dir);
-    let mut modified_files = Vec::new();
-    let mut total_changes = 0;
-
-    for path in &files {
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-
-        if !is_page_file(&source) {
-            continue;
-        }
-
-        let (new_source, changes) = inject_application_area(&source, value);
-        if changes > 0 {
-            total_changes += changes;
-            modified_files.push(path.display().to_string());
-            if !dry_run {
-                std::fs::write(path, &new_source)
-                    .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-            }
-        }
+    let plan = plan_application_area(project_dir, value)?;
+    if !dry_run {
+        apply_plan_to_disk(&plan)?;
     }
+    Ok(plan.result(dry_run))
+}
 
-    Ok(BulkFixResult {
-        modified_files,
-        changes_count: total_changes,
-        dry_run,
+pub fn plan_application_area(project_dir: &Path, value: &str) -> Result<BulkFixPlan, String> {
+    validate_property_value(value, "ApplicationArea")?;
+    build_plan(project_dir, |source, tree, object_kind| {
+        if !is_page_kind(object_kind) {
+            return Ok((source.to_string(), 0));
+        }
+        inject_application_area(source, tree, value)
     })
 }
 
@@ -69,33 +84,38 @@ pub fn add_tooltips(
     tooltips: &[(String, String)],
     dry_run: bool,
 ) -> Result<BulkFixResult, String> {
-    let files = collect_al_files(project_dir);
-    let mut modified_files = Vec::new();
-    let mut total_changes = 0;
+    let plan = plan_tooltips(project_dir, tooltips)?;
+    if !dry_run {
+        apply_plan_to_disk(&plan)?;
+    }
+    Ok(plan.result(dry_run))
+}
 
-    for path in &files {
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-
-        if !is_page_file(&source) {
-            continue;
+pub fn plan_tooltips(
+    project_dir: &Path,
+    tooltips: &[(String, String)],
+) -> Result<BulkFixPlan, String> {
+    let mut normalized = std::collections::BTreeMap::new();
+    for (field, tooltip) in tooltips {
+        let field = field.trim();
+        if field.is_empty() {
+            return Err("Tooltip source field name must not be empty".to_string());
         }
-
-        let (new_source, changes) = inject_tooltips(&source, tooltips);
-        if changes > 0 {
-            total_changes += changes;
-            modified_files.push(path.display().to_string());
-            if !dry_run {
-                std::fs::write(path, &new_source)
-                    .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-            }
+        if tooltip.trim().is_empty() {
+            return Err(format!("Tooltip for field '{field}' must not be empty"));
+        }
+        let key = field.to_ascii_lowercase();
+        if normalized.insert(key, tooltip.clone()).is_some() {
+            return Err(format!(
+                "Tooltip source contains duplicate field name '{field}'"
+            ));
         }
     }
-
-    Ok(BulkFixResult {
-        modified_files,
-        changes_count: total_changes,
-        dry_run,
+    build_plan(project_dir, |source, tree, object_kind| {
+        if !is_page_kind(object_kind) {
+            return Ok((source.to_string(), 0));
+        }
+        inject_tooltips(source, tree, &normalized)
     })
 }
 
@@ -108,405 +128,612 @@ pub fn add_data_classification(
     value: &str,
     dry_run: bool,
 ) -> Result<BulkFixResult, String> {
-    let files = collect_al_files(project_dir);
-    let mut modified_files = Vec::new();
-    let mut total_changes = 0;
-
-    for path in &files {
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-
-        if !is_table_file(&source) {
-            continue;
-        }
-
-        let (new_source, changes) = inject_data_classification(&source, value);
-        if changes > 0 {
-            total_changes += changes;
-            modified_files.push(path.display().to_string());
-            if !dry_run {
-                std::fs::write(path, &new_source)
-                    .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-            }
-        }
+    let plan = plan_data_classification(project_dir, value)?;
+    if !dry_run {
+        apply_plan_to_disk(&plan)?;
     }
+    Ok(plan.result(dry_run))
+}
 
-    Ok(BulkFixResult {
-        modified_files,
-        changes_count: total_changes,
-        dry_run,
+pub fn plan_data_classification(project_dir: &Path, value: &str) -> Result<BulkFixPlan, String> {
+    validate_property_value(value, "DataClassification")?;
+    build_plan(project_dir, |source, tree, object_kind| {
+        if !is_table_kind(object_kind) {
+            return Ok((source.to_string(), 0));
+        }
+        inject_data_classification(source, tree, value)
     })
 }
 
-fn collect_al_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    // Iterative directory walk via an explicit stack. Avoids stack overflow on
-    // deeply nested directory trees and the (real-world rare but possible)
-    // pathological symlink junction cycles, both of which would overflow a
-    // recursive walker.
-    let mut stack: Vec<PathBuf> = vec![dir.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&current) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                if !name.starts_with('.') && name != "target" {
-                    stack.push(path);
-                }
-            } else if path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("al"))
-            {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    files
-}
-
-/// Read the first whitespace-delimited token of `source`'s first non-blank,
-/// non-comment line and resolve it via `LanguageData`. Returns the canonical
-/// lowercase keyword.
-fn detect_object_keyword(source: &str) -> Option<&'static str> {
-    let first = source
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with("//"))?;
-    let token = first.split(|c: char| c.is_whitespace()).next()?;
-    al_syntax::language_data::object_type_by_keyword(token).map(|ot| ot.keyword.as_str())
-}
-
-fn is_page_file(source: &str) -> bool {
-    matches!(
-        detect_object_keyword(source),
-        Some("page")
-            | Some("pageextension")
-            | Some("report")
-            | Some("reportextension")
-            | Some("requestpage")
-            | Some("pagecustomization")
-    )
-}
-
-fn is_table_file(source: &str) -> bool {
-    matches!(
-        detect_object_keyword(source),
-        Some("table") | Some("tableextension")
-    )
-}
-
-/// Inject `ApplicationArea = <value>;` after field/action blocks that lack it.
+/// Collect project AL files without following symlinks out of the project.
 ///
-/// Strategy: line-by-line state machine. When inside a `field(...)` or `action(...)`
-/// block, track brace depth. Before the closing `}`, if no `ApplicationArea` was
-/// seen, insert the property.
-fn inject_application_area(source: &str, value: &str) -> (String, usize) {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut output = Vec::with_capacity(lines.len() + 16);
-    let mut changes = 0;
-
-    // Stack of (is_field_or_action, has_application_area, indent)
-    let mut stack: Vec<(bool, bool, String)> = Vec::new();
-    // Track if the previous non-empty line was a bare field/action declaration
-    // (without a `{` on the same line), so the next standalone `{` is for it.
-    let mut pending_control_start = false;
-
-    for line in &lines {
-        let trimmed = line.trim();
-        let lower = trimmed.to_ascii_lowercase();
-
-        let is_control_decl = lower.starts_with("field(") || lower.starts_with("action(");
-        let is_control_start = is_control_decl && trimmed.contains('{');
-
-        let brace_open_count = trimmed.chars().filter(|&c| c == '{').count();
-        let brace_close_count = trimmed.chars().filter(|&c| c == '}').count();
-
-        // If a standalone `{` appears after a field/action line, treat it as a control start
-        let effective_control_start = if !is_control_start
-            && pending_control_start
-            && brace_open_count > 0
-            && brace_close_count == 0
-        {
-            true
-        } else {
-            is_control_start
-        };
-
-        let has_area = lower.contains("applicationarea");
-
-        if brace_close_count > 0 && !stack.is_empty() {
-            let closes = brace_close_count.saturating_sub(brace_open_count);
-            for _ in 0..closes {
-                if let Some((is_field_action, had_area, indent)) = stack.pop() {
-                    if is_field_action && !had_area {
-                        output.push(format!("{indent}    ApplicationArea = {value};"));
-                        changes += 1;
-                    }
-                }
-            }
-        }
-
-        output.push(line.to_string());
-
-        if has_area {
-            if let Some(top) = stack.last_mut() {
-                top.1 = true;
-            }
-        }
-
-        if brace_open_count > 0 {
-            let opens = brace_open_count.saturating_sub(brace_close_count);
-            for _ in 0..opens {
-                let indent = leading_whitespace(line);
-                stack.push((effective_control_start, false, indent.to_string()));
-            }
-        }
-
-        if !trimmed.is_empty() {
-            pending_control_start = is_control_decl && !trimmed.contains('{');
-        }
-    }
-
-    let result = if source.ends_with('\n') {
-        output.join("\n") + "\n"
-    } else {
-        output.join("\n")
-    };
-
-    (result, changes)
+/// Project-wide mutations must not quietly skip unreadable directories or
+/// disagree with the workspace index about which paths belong to the project.
+/// Discovery is therefore delegated to the source index's authoritative
+/// walker rather than maintaining a second set of path and exclusion rules.
+pub fn collect_al_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    al_source::file_index::collect_al_files(dir).map_err(|error| error.to_string())
 }
 
-fn inject_tooltips(source: &str, tooltips: &[(String, String)]) -> (String, usize) {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut output = Vec::with_capacity(lines.len() + 16);
-    let mut changes = 0;
+fn is_page_kind(kind: &str) -> bool {
+    matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "page"
+            | "pageextension"
+            | "report"
+            | "reportextension"
+            | "requestpage"
+            | "pagecustomization"
+    )
+}
 
-    struct FieldCtx {
-        field_name: String,
-        has_tooltip: bool,
-        indent: String,
+fn is_table_kind(kind: &str) -> bool {
+    matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "table" | "tableextension"
+    )
+}
+
+fn validate_property_value(value: &str, property: &str) -> Result<(), String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{property} value must not be empty"));
+    }
+    if trimmed
+        .chars()
+        .any(|character| matches!(character, ';' | '{' | '}' | '=' | '\r' | '\n'))
+        || trimmed.contains("//")
+        || trimmed.contains("/*")
+        || trimmed.contains("*/")
+    {
+        return Err(format!(
+            "{property} value contains characters that cannot appear in an AL property value"
+        ));
+    }
+    Ok(())
+}
+
+fn build_plan<F>(project_dir: &Path, transform: F) -> Result<BulkFixPlan, String>
+where
+    F: Fn(&str, &tree_sitter::Tree, &str) -> Result<(String, usize), String>,
+{
+    let files = collect_al_files(project_dir)?;
+    let mut changes = Vec::new();
+    for path in files {
+        let source = al_source::file_index::read_source_file(&path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?
+            .ok_or_else(|| format!("Workspace source disappeared: {}", path.display()))?;
+        let parsed = al_syntax::AlParser::parse_quick(&source);
+        if parsed.tree.root_node().has_error() {
+            let details = parsed
+                .errors
+                .iter()
+                .take(3)
+                .map(|error| {
+                    format!(
+                        "{} at {}:{}",
+                        error.message,
+                        error.range.start_point.row + 1,
+                        error.range.start_point.column + 1
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(format!(
+                "Bulk fix refused malformed AL source '{}': {}",
+                path.display(),
+                if details.is_empty() {
+                    "tree-sitter reported an error node"
+                } else {
+                    &details
+                }
+            ));
+        }
+        let object =
+            al_syntax::find_object_declaration(&parsed.tree, &source).ok_or_else(|| {
+                format!(
+                    "Bulk fix refused '{}': no complete AL object declaration was found",
+                    path.display()
+                )
+            })?;
+        let (updated, changes_count) = transform(&source, &parsed.tree, &object.kind)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if (changes_count == 0) != (updated == source) {
+            return Err(format!(
+                "Bulk-fix transformation integrity mismatch for '{}'",
+                path.display()
+            ));
+        }
+        if changes_count > 0 {
+            let verification = al_syntax::AlParser::parse_quick(&updated);
+            if verification.tree.root_node().has_error()
+                || al_syntax::find_object_declaration(&verification.tree, &updated).is_none()
+            {
+                return Err(format!(
+                    "Bulk fix generated invalid AL for '{}'; no files were changed",
+                    path.display()
+                ));
+            }
+            changes.push(BulkFixChange {
+                path,
+                original: source,
+                updated,
+                changes_count,
+            });
+        }
+    }
+    Ok(BulkFixPlan { changes })
+}
+
+fn apply_plan_to_disk(plan: &BulkFixPlan) -> Result<(), String> {
+    for change in &plan.changes {
+        let current = al_source::file_index::read_source_file(&change.path)
+            .map_err(|error| format!("Failed to re-read {}: {error}", change.path.display()))?
+            .ok_or_else(|| {
+                format!(
+                    "Source disappeared before bulk fix: {}",
+                    change.path.display()
+                )
+            })?;
+        if current != change.original {
+            return Err(format!(
+                "Source changed after bulk-fix planning: {}; no files were changed",
+                change.path.display()
+            ));
+        }
     }
 
-    let mut stack: Vec<FieldCtx> = Vec::new();
-    // Name of a field/action that was declared on the previous line without `{`
-    let mut pending_field_name: Option<String> = None;
-
-    for line in &lines {
-        let trimmed = line.trim();
-        let lower = trimmed.to_ascii_lowercase();
-
-        let brace_open = trimmed.chars().filter(|&c| c == '{').count();
-        let brace_close = trimmed.chars().filter(|&c| c == '}').count();
-
-        // Detect `field(<var>; Rec."<Name>")` or `field(<var>; "<Name>")`
-        let field_name = if lower.starts_with("field(") {
-            extract_field_source_name(trimmed)
-        } else {
-            None
-        };
-
-        // Determine effective field name for block pushes: inline `{` on field line,
-        // or a standalone `{` line following a bare field declaration.
-        let effective_field_name = if field_name.is_some() && trimmed.contains('{') {
-            field_name.clone()
-        } else if field_name.is_none()
-            && brace_open > 0
-            && brace_close == 0
-            && pending_field_name.is_some()
-        {
-            pending_field_name.clone()
-        } else {
-            None
-        };
-
-        if brace_close > 0 && !stack.is_empty() {
-            let closes = brace_close.saturating_sub(brace_open);
-            for _ in 0..closes {
-                if let Some(ctx) = stack.pop() {
-                    if !ctx.has_tooltip && !ctx.field_name.is_empty() {
-                        if let Some(tooltip) = find_tooltip(&ctx.field_name, tooltips) {
-                            let escaped = tooltip.replace('\'', "''");
-                            output.push(format!(
-                                "{}    ToolTip = 'Specifies {}';",
-                                ctx.indent, escaped
-                            ));
-                            changes += 1;
-                        }
-                    }
+    let mut applied: Vec<&BulkFixChange> = Vec::new();
+    for change in &plan.changes {
+        if let Err(error) = atomic_replace(&change.path, &change.updated) {
+            let mut rollback_errors = Vec::new();
+            for previous in applied.into_iter().rev() {
+                if let Err(rollback_error) = atomic_replace(&previous.path, &previous.original) {
+                    rollback_errors.push(format!("{}: {rollback_error}", previous.path.display()));
                 }
             }
-        }
-
-        output.push(line.to_string());
-
-        if lower.contains("tooltip") {
-            if let Some(top) = stack.last_mut() {
-                top.has_tooltip = true;
-            }
-        }
-
-        if brace_open > 0 {
-            let opens = brace_open.saturating_sub(brace_close);
-            for i in 0..opens {
-                let is_field_block = i == 0 && effective_field_name.is_some();
-                let indent = leading_whitespace(line).to_string();
-                stack.push(FieldCtx {
-                    field_name: if is_field_block {
-                        effective_field_name.clone().unwrap_or_default()
-                    } else {
-                        String::new()
-                    },
-                    has_tooltip: false,
-                    indent,
-                });
-            }
-        }
-
-        if !trimmed.is_empty() {
-            pending_field_name = if lower.starts_with("field(") && !trimmed.contains('{') {
-                field_name.clone()
+            let suffix = if rollback_errors.is_empty() {
+                String::new()
             } else {
-                None
+                format!("; rollback also failed: {}", rollback_errors.join("; "))
             };
+            return Err(format!(
+                "Failed to update {}: {error}{suffix}",
+                change.path.display()
+            ));
         }
+        applied.push(change);
     }
-
-    let result = if source.ends_with('\n') {
-        output.join("\n") + "\n"
-    } else {
-        output.join("\n")
-    };
-
-    (result, changes)
+    Ok(())
 }
 
-/// Skips fields that have `FieldClass = FlowField` or `FieldClass = FlowFilter`.
-fn inject_data_classification(source: &str, value: &str) -> (String, usize) {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut output = Vec::with_capacity(lines.len() + 16);
-    let mut changes = 0;
+fn atomic_replace(path: &Path, content: &str) -> Result<(), String> {
+    use std::io::Write;
 
-    struct FieldCtx {
-        is_field: bool,
-        is_flow: bool,
-        has_classification: bool,
-        indent: String,
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    let permissions = std::fs::metadata(path)
+        .map_err(|error| format!("inspect {} failed: {error}", path.display()))?
+        .permissions();
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
+        format!(
+            "create temporary file beside {} failed: {error}",
+            path.display()
+        )
+    })?;
+    temporary
+        .as_file()
+        .set_permissions(permissions)
+        .map_err(|error| {
+            format!(
+                "set temporary permissions for {} failed: {error}",
+                path.display()
+            )
+        })?;
+    temporary.write_all(content.as_bytes()).map_err(|error| {
+        format!(
+            "write temporary file for {} failed: {error}",
+            path.display()
+        )
+    })?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("sync temporary file for {} failed: {error}", path.display()))?;
+    temporary
+        .persist(path)
+        .map_err(|error| format!("replace {} failed: {}", path.display(), error.error))?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("sync directory {} failed: {error}", parent.display()))?;
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AstObjectSection {
+    pub header_segments: Vec<String>,
+    pub properties: std::collections::BTreeMap<String, String>,
+    pub line: u32,
+    close_byte: usize,
+    section_indent: String,
+    child_indent_suffix: String,
+}
+
+pub(crate) fn collect_ast_sections(
+    tree: &tree_sitter::Tree,
+    source: &str,
+    target_keywords: &[&str],
+) -> Result<Vec<AstObjectSection>, String> {
+    if tree.root_node().has_error() {
+        return Err("cannot inspect sections in malformed AL source".to_string());
     }
+    let mut sections = Vec::new();
+    collect_ast_sections_from_node(tree.root_node(), source, target_keywords, &mut sections)?;
+    Ok(sections)
+}
 
-    let mut stack: Vec<FieldCtx> = Vec::new();
-    let mut pending_field_block = false;
-
-    for line in &lines {
-        let trimmed = line.trim();
-        let lower = trimmed.to_ascii_lowercase();
-
-        let brace_open = trimmed.chars().filter(|&c| c == '{').count();
-        let brace_close = trimmed.chars().filter(|&c| c == '}').count();
-
-        let is_field_decl = lower.starts_with("field(");
-        let is_field_start_inline = is_field_decl && trimmed.contains('{');
-
-        if brace_close > 0 && !stack.is_empty() {
-            let closes = brace_close.saturating_sub(brace_open);
-            for _ in 0..closes {
-                if let Some(ctx) = stack.pop() {
-                    if ctx.is_field && !ctx.is_flow && !ctx.has_classification {
-                        output.push(format!("{}    DataClassification = {value};", ctx.indent));
-                        changes += 1;
-                    }
-                }
-            }
-        }
-
-        output.push(line.to_string());
-
-        if lower.contains("dataclassification") {
-            if let Some(top) = stack.last_mut() {
-                top.has_classification = true;
-            }
-        }
-        if lower.contains("fieldclass")
-            && (lower.contains("flowfield") || lower.contains("flowfilter"))
+fn collect_ast_sections_from_node(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    target_keywords: &[&str],
+    sections: &mut Vec<AstObjectSection>,
+) -> Result<(), String> {
+    if node.kind() == "object_section" {
+        let keyword_node = node
+            .child_by_field_name("keyword")
+            .ok_or_else(|| "object section has no keyword node".to_string())?;
+        let keyword = keyword_node
+            .utf8_text(source.as_bytes())
+            .map_err(|error| format!("object-section keyword is not UTF-8: {error}"))?
+            .trim()
+            .to_ascii_lowercase();
+        if target_keywords
+            .iter()
+            .any(|target| keyword.eq_ignore_ascii_case(target))
         {
-            if let Some(top) = stack.last_mut() {
-                top.is_flow = true;
-            }
-        }
-
-        if brace_open > 0 {
-            let opens = brace_open.saturating_sub(brace_close);
-            for i in 0..opens {
-                // A field block starts either inline or when we see a standalone `{`
-                // after a bare field declaration on the previous line.
-                let is_field = i == 0
-                    && (is_field_start_inline
-                        || (!is_field_decl && brace_close == 0 && pending_field_block));
-                let indent = leading_whitespace(line).to_string();
-                stack.push(FieldCtx {
-                    is_field,
-                    is_flow: false,
-                    has_classification: false,
-                    indent,
-                });
-            }
-        }
-
-        if !trimmed.is_empty() {
-            pending_field_block = is_field_decl && !trimmed.contains('{');
+            sections.push(parse_ast_section(node, source, keyword)?);
         }
     }
 
-    let result = if source.ends_with('\n') {
-        output.join("\n") + "\n"
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_ast_sections_from_node(child, source, target_keywords, sections)?;
+    }
+    Ok(())
+}
+
+fn parse_ast_section(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    keyword: String,
+) -> Result<AstObjectSection, String> {
+    let body = node
+        .child_by_field_name("body")
+        .ok_or_else(|| format!("{keyword} section has no body"))?;
+    let close = (0..body.child_count())
+        .rev()
+        .filter_map(|index| body.child(index))
+        .find(|child| child.kind() == "}")
+        .ok_or_else(|| format!("{keyword} section body has no closing brace"))?;
+    let close_byte = close.start_byte();
+    let section_indent = line_indentation(source, node.start_byte())?;
+    let closing_indent = line_indentation(source, close_byte)?;
+    let mut child_indent_suffix = None;
+    let mut properties = std::collections::BTreeMap::new();
+    let mut body_cursor = body.walk();
+    for child in body.named_children(&mut body_cursor) {
+        let child_indent = line_indentation(source, child.start_byte())?;
+        if child_indent.starts_with(&closing_indent) && child_indent.len() > closing_indent.len() {
+            child_indent_suffix
+                .get_or_insert_with(|| child_indent[closing_indent.len()..].to_string());
+        }
+        if child.kind() != "property_assignment" {
+            continue;
+        }
+        let name_node = child
+            .child_by_field_name("name")
+            .ok_or_else(|| format!("{keyword} property has no name node"))?;
+        let name = name_node
+            .utf8_text(source.as_bytes())
+            .map_err(|error| format!("{keyword} property name is not UTF-8: {error}"))?
+            .trim()
+            .to_string();
+        let value = child
+            .child_by_field_name("value")
+            .map(|value| {
+                value
+                    .utf8_text(source.as_bytes())
+                    .map(str::trim)
+                    .map(str::to_string)
+                    .map_err(|error| format!("{keyword} property value is not UTF-8: {error}"))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let normalized = name.to_ascii_lowercase();
+        if properties.insert(normalized, value).is_some() {
+            return Err(format!(
+                "{keyword} section contains duplicate property '{name}'"
+            ));
+        }
+    }
+
+    let mut node_cursor = node.walk();
+    let header_segments = node
+        .named_children(&mut node_cursor)
+        .find(|child| child.kind() == "parenthesized_block")
+        .map(|header| split_header_segments(header, source))
+        .transpose()?
+        .unwrap_or_default();
+    Ok(AstObjectSection {
+        header_segments,
+        properties,
+        line: u32::try_from(node.start_position().row + 1)
+            .map_err(|_| "section line exceeds u32".to_string())?,
+        close_byte,
+        section_indent,
+        child_indent_suffix: child_indent_suffix.unwrap_or_else(|| "    ".to_string()),
+    })
+}
+
+fn split_header_segments(
+    header: tree_sitter::Node<'_>,
+    source: &str,
+) -> Result<Vec<String>, String> {
+    let open = header
+        .child(0)
+        .filter(|node| node.kind() == "(")
+        .ok_or_else(|| "section header has no opening parenthesis".to_string())?;
+    let close = (0..header.child_count())
+        .rev()
+        .filter_map(|index| header.child(index))
+        .find(|node| node.kind() == ")")
+        .ok_or_else(|| "section header has no closing parenthesis".to_string())?;
+    let mut start = open.end_byte();
+    let mut segments = Vec::new();
+    for index in 0..header.child_count() {
+        let child = header
+            .child(index)
+            .ok_or_else(|| "section header child disappeared".to_string())?;
+        if child.kind() == "semicolon" {
+            segments.push(
+                source
+                    .get(start..child.start_byte())
+                    .ok_or_else(|| "section header byte range is invalid".to_string())?
+                    .trim()
+                    .to_string(),
+            );
+            start = child.end_byte();
+        }
+    }
+    segments.push(
+        source
+            .get(start..close.start_byte())
+            .ok_or_else(|| "section header byte range is invalid".to_string())?
+            .trim()
+            .to_string(),
+    );
+    Ok(segments)
+}
+
+fn line_indentation(source: &str, byte: usize) -> Result<String, String> {
+    if byte > source.len() || !source.is_char_boundary(byte) {
+        return Err("AST byte offset is outside the UTF-8 source".to_string());
+    }
+    let line_start = source[..byte].rfind('\n').map_or(0, |index| index + 1);
+    let prefix = &source[line_start..byte];
+    Ok(prefix
+        .chars()
+        .take_while(|character| matches!(character, ' ' | '\t'))
+        .collect())
+}
+
+#[derive(Debug)]
+struct Insertion {
+    offset: usize,
+    text: String,
+}
+
+fn property_insertion(
+    source: &str,
+    section: &AstObjectSection,
+    property: &str,
+) -> Result<Insertion, String> {
+    let line_start = source[..section.close_byte]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let before_close = source
+        .get(line_start..section.close_byte)
+        .ok_or_else(|| "section closing-brace byte range is invalid".to_string())?;
+    let newline = if source.contains("\r\n") {
+        "\r\n"
     } else {
-        output.join("\n")
+        "\n"
     };
-
-    (result, changes)
+    let text = if before_close.trim().is_empty() {
+        format!(
+            "{}{property}{newline}{}",
+            section.child_indent_suffix, before_close
+        )
+    } else {
+        format!(
+            "{newline}{}{}{property}{newline}{}",
+            section.section_indent, section.child_indent_suffix, section.section_indent
+        )
+    };
+    Ok(Insertion {
+        offset: section.close_byte,
+        text,
+    })
 }
 
-fn leading_whitespace(line: &str) -> &str {
-    let len = line.len() - line.trim_start().len();
-    &line[..len]
+fn apply_insertions(source: &str, mut insertions: Vec<Insertion>) -> Result<String, String> {
+    insertions.sort_by_key(|insertion| std::cmp::Reverse(insertion.offset));
+    for pair in insertions.windows(2) {
+        if pair[0].offset == pair[1].offset {
+            return Err("multiple properties target the same section insertion point".to_string());
+        }
+    }
+    let mut output = source.to_string();
+    for insertion in insertions {
+        if insertion.offset > output.len() || !output.is_char_boundary(insertion.offset) {
+            return Err("property insertion byte offset is invalid".to_string());
+        }
+        output.insert_str(insertion.offset, &insertion.text);
+    }
+    Ok(output)
 }
 
-/// Extract the source field name from `field(varName; Rec."FieldName")` or `field(varName; "FieldName")`.
-fn extract_field_source_name(line: &str) -> Option<String> {
-    let s = line.trim_start();
-    let after_field = s.strip_prefix("field(")?;
-    let close_paren = after_field.rfind(')')?;
-    let inner = after_field[..close_paren].trim();
+fn normalize_property_atom(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches(['\'', '"'])
+        .trim()
+        .to_ascii_lowercase()
+}
 
-    let parts: Vec<&str> = inner.splitn(2, ';').collect();
-    if parts.len() < 2 {
+fn normalize_tooltip_text(value: &str) -> String {
+    let value = value.trim();
+    if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
+        value[1..value.len() - 1].replace("''", "'")
+    } else {
+        value.to_string()
+    }
+}
+
+fn parse_record_field_source(expression: &str) -> Option<String> {
+    let (receiver, field) = expression.split_once('.')?;
+    if !receiver.trim().eq_ignore_ascii_case("rec") {
         return None;
     }
-    let source = parts[1].trim();
-    let source = source.strip_prefix("Rec.").unwrap_or(source);
-    let source = source.strip_prefix("rec.").unwrap_or(source);
-    let source = source.trim_matches('"').trim();
-    if source.is_empty() {
-        None
-    } else {
+    parse_identifier(field)
+}
+
+pub(crate) fn parse_identifier(source: &str) -> Option<String> {
+    let source = source.trim();
+    if source.len() >= 2 && source.starts_with('"') && source.ends_with('"') {
+        let inner = &source[1..source.len() - 1];
+        if inner.is_empty() {
+            None
+        } else {
+            Some(inner.replace("\"\"", "\""))
+        }
+    } else if !source.is_empty()
+        && source
+            .chars()
+            .all(|character| character == '_' || character.is_alphanumeric())
+    {
         Some(source.to_string())
+    } else {
+        None
     }
 }
 
-fn find_tooltip<'a>(field_name: &str, tooltips: &'a [(String, String)]) -> Option<&'a str> {
-    let lower = field_name.to_ascii_lowercase();
-    tooltips
-        .iter()
-        .find(|(name, _)| name.to_ascii_lowercase() == lower)
-        .map(|(_, tip)| tip.as_str())
+fn inject_application_area(
+    source: &str,
+    tree: &tree_sitter::Tree,
+    value: &str,
+) -> Result<(String, usize), String> {
+    let sections = collect_ast_sections(tree, source, &["field", "action"])?;
+    let mut insertions = Vec::new();
+    for section in sections {
+        if !section.properties.contains_key("applicationarea") {
+            insertions.push(property_insertion(
+                source,
+                &section,
+                &format!("ApplicationArea = {value};"),
+            )?);
+        }
+    }
+    let count = insertions.len();
+    Ok((apply_insertions(source, insertions)?, count))
+}
+
+fn inject_tooltips(
+    source: &str,
+    tree: &tree_sitter::Tree,
+    tooltips: &std::collections::BTreeMap<String, String>,
+) -> Result<(String, usize), String> {
+    let sections = collect_ast_sections(tree, source, &["field"])?;
+    let mut insertions = Vec::new();
+    for section in sections {
+        if section.properties.contains_key("tooltip") {
+            continue;
+        }
+        let source_expression = section
+            .header_segments
+            .get(1)
+            .ok_or_else(|| format!("field on line {} has no source expression", section.line))?;
+        let Some(field_name) = parse_record_field_source(source_expression) else {
+            continue;
+        };
+        let Some(tooltip) = tooltips.get(&field_name.to_ascii_lowercase()) else {
+            continue;
+        };
+        let escaped = normalize_tooltip_text(tooltip).replace('\'', "''");
+        insertions.push(property_insertion(
+            source,
+            &section,
+            &format!("ToolTip = 'Specifies {escaped}';"),
+        )?);
+    }
+    let count = insertions.len();
+    Ok((apply_insertions(source, insertions)?, count))
+}
+
+fn inject_data_classification(
+    source: &str,
+    tree: &tree_sitter::Tree,
+    value: &str,
+) -> Result<(String, usize), String> {
+    let sections = collect_ast_sections(tree, source, &["field"])?;
+    let mut insertions = Vec::new();
+    for section in sections {
+        if section.properties.contains_key("dataclassification") {
+            continue;
+        }
+        if section
+            .properties
+            .get("fieldclass")
+            .is_some_and(|field_class| {
+                matches!(
+                    normalize_property_atom(field_class).as_str(),
+                    "flowfield" | "flowfilter"
+                )
+            })
+        {
+            continue;
+        }
+        insertions.push(property_insertion(
+            source,
+            &section,
+            &format!("DataClassification = {value};"),
+        )?);
+    }
+    let count = insertions.len();
+    Ok((apply_insertions(source, insertions)?, count))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(source: &str) -> tree_sitter::Tree {
+        let parsed = al_syntax::AlParser::parse_quick(source);
+        assert!(
+            !parsed.tree.root_node().has_error(),
+            "fixture must parse: {:?}",
+            parsed.errors
+        );
+        parsed.tree
+    }
+
+    fn tooltip_map(field: &str, value: &str) -> std::collections::BTreeMap<String, String> {
+        [(field.to_ascii_lowercase(), value.to_string())]
+            .into_iter()
+            .collect()
+    }
 
     #[test]
     fn add_application_area_to_page_fields() {
@@ -524,7 +751,7 @@ mod tests {
     }
 }
 "#;
-        let (result, changes) = inject_application_area(source, "All");
+        let (result, changes) = inject_application_area(source, &parse(source), "All").unwrap();
         assert_eq!(changes, 1);
         assert!(result.contains("ApplicationArea = All;"));
     }
@@ -546,8 +773,75 @@ mod tests {
     }
 }
 "#;
-        let (_result, changes) = inject_application_area(source, "All");
+        let (_result, changes) = inject_application_area(source, &parse(source), "All").unwrap();
         assert_eq!(changes, 0);
+    }
+
+    #[test]
+    fn application_area_uses_only_the_target_sections_direct_properties() {
+        let source = r#"page 50100 "Test Page"
+{
+    layout
+    {
+        area(Content)
+        {
+            group(General)
+            {
+                ApplicationArea = Basic;
+                field(myField; Rec."No.")
+                {
+                    Caption = 'ApplicationArea = All; { not a brace }';
+                    // ApplicationArea = Suite;
+                    trigger OnValidate()
+                    begin
+                        Message('ApplicationArea');
+                    end;
+                }
+            }
+        }
+    }
+}
+"#;
+        let (result, changes) = inject_application_area(source, &parse(source), "All").unwrap();
+        assert_eq!(changes, 1);
+        let result_tree = parse(&result);
+        let fields = collect_ast_sections(&result_tree, &result, &["field"]).unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(
+            fields[0].properties.get("applicationarea"),
+            Some(&"All".to_string())
+        );
+    }
+
+    #[test]
+    fn application_area_handles_inline_sections() {
+        let source = r#"page 50100 "Test Page"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(myField; Rec."No.") { Caption = 'No.'; }
+        }
+    }
+}
+"#;
+        let (result, changes) = inject_application_area(source, &parse(source), "All").unwrap();
+        assert_eq!(changes, 1);
+        assert!(result.contains("ApplicationArea = All;"));
+        assert!(!parse(&result).root_node().has_error());
+    }
+
+    #[test]
+    fn application_area_preserves_crlf_line_endings() {
+        let source = "page 50100 \"Test Page\"\r\n{\r\n    layout\r\n    {\r\n        area(Content)\r\n        {\r\n            field(myField; Rec.\"No.\")\r\n            {\r\n            }\r\n        }\r\n    }\r\n}\r\n";
+        let (result, changes) = inject_application_area(source, &parse(source), "All").unwrap();
+        assert_eq!(changes, 1);
+        assert!(
+            !result.replace("\r\n", "").contains('\n'),
+            "insertion introduced a bare LF"
+        );
+        assert!(!parse(&result).root_node().has_error());
     }
 
     #[test]
@@ -563,7 +857,8 @@ mod tests {
     }
 }
 "#;
-        let (result, changes) = inject_data_classification(source, "CustomerContent");
+        let (result, changes) =
+            inject_data_classification(source, &parse(source), "CustomerContent").unwrap();
         assert_eq!(changes, 1);
         assert!(result.contains("DataClassification = CustomerContent;"));
     }
@@ -581,7 +876,8 @@ mod tests {
     }
 }
 "#;
-        let (_result, changes) = inject_data_classification(source, "CustomerContent");
+        let (_result, changes) =
+            inject_data_classification(source, &parse(source), "CustomerContent").unwrap();
         assert_eq!(changes, 0);
     }
 
@@ -599,37 +895,61 @@ mod tests {
     }
 }
 "#;
-        let (_result, changes) = inject_data_classification(source, "CustomerContent");
+        let (_result, changes) =
+            inject_data_classification(source, &parse(source), "CustomerContent").unwrap();
         assert_eq!(changes, 0);
     }
 
     #[test]
-    fn is_page_file_detects_page() {
-        assert!(is_page_file("page 50100 \"Test\"\n{"));
-        assert!(is_page_file(
-            "pageextension 50100 extends \"Customer List\"\n{"
-        ));
-        assert!(!is_page_file("table 50100 \"Test\"\n{"));
-        assert!(!is_page_file("codeunit 50100 \"Test\"\n{"));
+    fn data_classification_ignores_property_text_in_comments_and_strings() {
+        let source = r#"table 50100 "My Table"
+{
+    fields
+    {
+        field(1; "No."; Code[20])
+        {
+            Caption = 'DataClassification = SystemMetadata; { literal }';
+            // DataClassification = CustomerContent;
+        }
     }
-
-    #[test]
-    fn is_table_file_detects_table() {
-        assert!(is_table_file("table 50100 \"Test\"\n{"));
-        assert!(is_table_file("tableextension 50100 extends Customer\n{"));
-        assert!(!is_table_file("page 50100 \"Test\"\n{"));
-    }
-
-    #[test]
-    fn extract_field_source_name_parses_rec_prefix() {
+}
+"#;
+        let (result, changes) =
+            inject_data_classification(source, &parse(source), "CustomerContent").unwrap();
+        assert_eq!(changes, 1);
         assert_eq!(
-            extract_field_source_name("field(no; Rec.\"No.\")"),
+            result
+                .matches("DataClassification = CustomerContent;")
+                .count(),
+            2,
+            "the comment plus one inserted property should remain"
+        );
+        assert!(!parse(&result).root_node().has_error());
+    }
+
+    #[test]
+    fn object_kind_filters_are_exact() {
+        assert!(is_page_kind("page"));
+        assert!(is_page_kind("PageExtension"));
+        assert!(!is_page_kind("table"));
+        assert!(is_table_kind("table"));
+        assert!(is_table_kind("TableExtension"));
+        assert!(!is_table_kind("page"));
+    }
+
+    #[test]
+    fn record_field_source_requires_a_simple_rec_member() {
+        assert_eq!(
+            parse_record_field_source("Rec.\"No.\""),
             Some("No.".to_string())
         );
         assert_eq!(
-            extract_field_source_name("field(name; Rec.\"Name\") {"),
+            parse_record_field_source("rec.Name"),
             Some("Name".to_string())
         );
+        assert_eq!(parse_record_field_source("SomeVariable"), None);
+        assert_eq!(parse_record_field_source("Other.Name"), None);
+        assert_eq!(parse_record_field_source("Rec.Name.ToString()"), None);
     }
 
     #[test]
@@ -648,8 +968,8 @@ mod tests {
     }
 }
 "#;
-        let tooltips = vec![("No.".to_string(), "the item number".to_string())];
-        let (result, changes) = inject_tooltips(source, &tooltips);
+        let tooltips = tooltip_map("No.", "the item number");
+        let (result, changes) = inject_tooltips(source, &parse(source), &tooltips).unwrap();
         assert_eq!(changes, 1);
         assert!(result.contains("ToolTip"));
     }
@@ -670,8 +990,8 @@ mod tests {
     }
 }
 "#;
-        let tooltips = vec![("No.".to_string(), "the item number".to_string())];
-        let (_result, changes) = inject_tooltips(source, &tooltips);
+        let tooltips = tooltip_map("No.", "the item number");
+        let (_result, changes) = inject_tooltips(source, &parse(source), &tooltips).unwrap();
         assert_eq!(changes, 0);
     }
 
@@ -687,5 +1007,97 @@ mod tests {
         assert!(result.changes_count > 0);
         let content = std::fs::read_to_string(&page_path).unwrap();
         assert!(!content.contains("ApplicationArea"));
+    }
+
+    #[test]
+    fn malformed_file_blocks_the_entire_bulk_fix_before_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = "page 50100 \"Good\"\n{\n    layout\n    {\n        area(Content)\n        {\n            field(f; Rec.\"No.\") { }\n        }\n    }\n}\n";
+        let good_path = dir.path().join("A.Good.al");
+        std::fs::write(&good_path, good).unwrap();
+        std::fs::write(
+            dir.path().join("Z.Broken.al"),
+            "page 50101 Broken { layout { area(Content) { field(",
+        )
+        .unwrap();
+
+        let error = add_application_area(dir.path(), "All", false).unwrap_err();
+        assert!(error.contains("malformed AL source"), "{error}");
+        assert_eq!(std::fs::read_to_string(good_path).unwrap(), good);
+    }
+
+    #[test]
+    fn non_dry_run_writes_a_complete_parseable_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let first_path = dir.path().join("First.al");
+        let second_path = dir.path().join("Second.al");
+        std::fs::write(
+            &first_path,
+            "page 50100 First { layout { area(Content) { field(a; Rec.A) { } } } }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &second_path,
+            "page 50101 Second { layout { area(Content) { field(b; Rec.B) { } } } }\n",
+        )
+        .unwrap();
+
+        let result = add_application_area(dir.path(), "All", false).unwrap();
+        assert!(!result.dry_run);
+        assert_eq!(result.changes_count, 2);
+        assert_eq!(result.modified_files.len(), 2);
+        for path in [&first_path, &second_path] {
+            let updated = std::fs::read_to_string(path).unwrap();
+            assert!(updated.contains("ApplicationArea = All;"));
+            assert!(!parse(&updated).root_node().has_error());
+        }
+    }
+
+    #[test]
+    fn duplicate_direct_properties_are_rejected() {
+        let source = r#"page 50100 Duplicate
+{
+    layout
+    {
+        area(Content)
+        {
+            field(a; Rec.A)
+            {
+                ApplicationArea = All;
+                ApplicationArea = Basic;
+            }
+        }
+    }
+}
+"#;
+        let error = inject_application_area(source, &parse(source), "All").unwrap_err();
+        assert!(
+            error.contains("duplicate property 'ApplicationArea'"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_walk_does_not_follow_directory_symlinks() {
+        let project = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join("Inside.al"),
+            "codeunit 50100 Inside { }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            external.path().join("Outside.al"),
+            "codeunit 50101 Outside { }\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(external.path(), project.path().join("linked")).unwrap();
+
+        let files = collect_al_files(project.path()).unwrap();
+        let expected = project.path().join("Inside.al");
+        let outside = external.path().join("Outside.al");
+        assert_eq!(files, vec![expected]);
+        assert!(!files.contains(&outside));
     }
 }

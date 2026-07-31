@@ -12,13 +12,14 @@
 //! * **Statement coverage — complete.** Every statement node the interpreter
 //!   evaluates is recorded by its 1-based source line. A line that is never
 //!   reached (e.g. the body of a not-taken `if` branch) is never recorded.
-//! * **Branch coverage — two-way decision coverage for `if`/`case`.** For each
-//!   `if`/`case` head we record whether the THEN/ELSE side was taken
-//!   (`if`-then vs `if`-else; `case` arm-matched vs `case`-else / no-arm). This
-//!   is *decision* coverage, not per-`case`-arm path coverage and not
-//!   condition/MC-DC coverage. Loops (`while`/`for`/`repeat`/`foreach`) are
-//!   captured at statement level only (the header line plus each executed body
-//!   line), not as a separate "loop entered / skipped" branch.
+//! * **Branch coverage — executable control-flow paths.** `if` records
+//!   THEN/ELSE, every `case` arm is a distinct path (plus ELSE/no-match), and
+//!   `while`/`for`/`repeat`/`foreach` record entered/exited decisions.
+//! * **Condition coverage — MC/DC.** For compound IF/WHILE/REPEAT Boolean
+//!   decisions, the interpreter records the source-ordered atomic condition
+//!   vector and decision outcome from the same evaluation. A condition is
+//!   covered only when two observed evaluations differ solely in that condition
+//!   and the overall decision changes.
 //!
 //! ## Cost
 //!
@@ -38,6 +39,13 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct BranchTally {
     pub then_taken: u64,
     pub else_taken: u64,
+    /// Named paths for multi-way decisions. Empty for ordinary two-way
+    /// decisions, whose compatibility counters above remain authoritative.
+    pub paths: BTreeMap<String, u64>,
+    /// Complete `(atomic conditions, decision outcome)` observations. The key
+    /// makes identical executions cheap to aggregate while preserving the
+    /// evidence needed to calculate MC/DC without guessing.
+    condition_observations: BTreeMap<(Vec<bool>, bool), u64>,
 }
 
 /// Live collector threaded through interpreter execution via `DispatchCtx`.
@@ -95,6 +103,53 @@ impl Coverage {
         }
     }
 
+    /// Record one source-ordered atomic-condition vector and its overall
+    /// decision outcome. Vectors are captured during the original expression
+    /// evaluation; expressions are never re-run for coverage.
+    pub fn record_condition_observation(
+        &mut self,
+        line: u32,
+        conditions: Vec<bool>,
+        outcome: bool,
+    ) {
+        if conditions.is_empty() {
+            return;
+        }
+        let per_file = self.branches.entry(self.current_file.clone()).or_default();
+        *per_file
+            .entry(line)
+            .or_default()
+            .condition_observations
+            .entry((conditions, outcome))
+            .or_insert(0) += 1;
+    }
+
+    /// Register a named control-flow path even when it has not been taken.
+    ///
+    /// This gives report consumers the correct denominator for multi-way
+    /// decisions such as `case`, instead of reporting only paths observed at
+    /// runtime.
+    pub fn ensure_path(&mut self, line: u32, path: impl Into<String>) {
+        let per_file = self.branches.entry(self.current_file.clone()).or_default();
+        per_file
+            .entry(line)
+            .or_default()
+            .paths
+            .entry(path.into())
+            .or_insert(0);
+    }
+
+    /// Record one named path through a multi-way decision.
+    pub fn record_path(&mut self, line: u32, path: impl Into<String>) {
+        let per_file = self.branches.entry(self.current_file.clone()).or_default();
+        *per_file
+            .entry(line)
+            .or_default()
+            .paths
+            .entry(path.into())
+            .or_insert(0) += 1;
+    }
+
     /// True if `line` (1-based) in `file` executed at least once.
     pub fn is_line_executed(&self, file: &str, line: u32) -> bool {
         self.files.get(file).is_some_and(|s| s.contains(&line))
@@ -134,6 +189,14 @@ impl Coverage {
                 let agg = dst.entry(*line).or_default();
                 agg.then_taken += tally.then_taken;
                 agg.else_taken += tally.else_taken;
+                for (path, hits) in &tally.paths {
+                    *agg.paths.entry(path.clone()).or_insert(0) += hits;
+                }
+                for (observation, hits) in &tally.condition_observations {
+                    *agg.condition_observations
+                        .entry(observation.clone())
+                        .or_insert(0) += hits;
+                }
             }
         }
     }
@@ -161,6 +224,15 @@ impl Coverage {
                                 line: *line,
                                 then_taken: t.then_taken,
                                 else_taken: t.else_taken,
+                                paths: t
+                                    .paths
+                                    .iter()
+                                    .map(|(path, hits)| PathCoverage {
+                                        path: path.clone(),
+                                        hits: *hits,
+                                    })
+                                    .collect(),
+                                mcdc: mcdc_coverage(&t.condition_observations),
                             })
                             .collect()
                     })
@@ -208,8 +280,113 @@ pub struct FileCoverage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchCoverage {
     pub line: u32,
+    /// Compatibility counters for two-way decisions and the historical
+    /// matched/no-match summary of `case`.
     pub then_taken: u64,
     pub else_taken: u64,
+    /// Named paths for multi-way decisions. Sorted by `path`.
+    pub paths: Vec<PathCoverage>,
+    /// Modified condition/decision coverage for a compound Boolean decision.
+    /// `None` for non-compound decisions and multi-way CASE paths.
+    pub mcdc: Option<McdcCoverage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathCoverage {
+    pub path: String,
+    pub hits: u64,
+}
+
+/// MC/DC result for one compound decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McdcCoverage {
+    pub conditions: Vec<ConditionMcdcCoverage>,
+    /// Distinct observed condition vectors and outcomes, retained as auditable
+    /// evidence for why an individual condition is or is not covered.
+    pub observations: Vec<ConditionObservationCoverage>,
+}
+
+impl McdcCoverage {
+    pub fn covered_count(&self) -> usize {
+        self.conditions
+            .iter()
+            .filter(|condition| condition.covered)
+            .count()
+    }
+
+    /// Recalculate MC/DC after an external report aggregator merges observation
+    /// counts from multiple interpreter sessions.
+    pub fn from_observations(
+        observations: impl IntoIterator<Item = ConditionObservationCoverage>,
+    ) -> Option<Self> {
+        let mut aggregated = BTreeMap::new();
+        for observation in observations {
+            *aggregated
+                .entry((observation.conditions, observation.outcome))
+                .or_insert(0) += observation.hits;
+        }
+        mcdc_coverage(&aggregated)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionMcdcCoverage {
+    /// Zero-based source order within the compound Boolean expression.
+    pub index: usize,
+    pub covered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionObservationCoverage {
+    pub conditions: Vec<bool>,
+    pub outcome: bool,
+    pub hits: u64,
+}
+
+fn mcdc_coverage(observations: &BTreeMap<(Vec<bool>, bool), u64>) -> Option<McdcCoverage> {
+    let condition_count = observations
+        .keys()
+        .map(|(conditions, _)| conditions.len())
+        .max()
+        .unwrap_or(0);
+    if condition_count < 2 {
+        return None;
+    }
+
+    let compatible: Vec<_> = observations
+        .iter()
+        .filter(|((conditions, _), _)| conditions.len() == condition_count)
+        .collect();
+    let conditions = (0..condition_count)
+        .map(|index| {
+            let covered = compatible.iter().enumerate().any(|(left_index, left)| {
+                compatible.iter().skip(left_index + 1).any(|right| {
+                    let ((left_values, left_outcome), _) = left;
+                    let ((right_values, right_outcome), _) = right;
+                    left_outcome != right_outcome
+                        && left_values[index] != right_values[index]
+                        && left_values.iter().zip(right_values.iter()).enumerate().all(
+                            |(other_index, (left, right))| other_index == index || left == right,
+                        )
+                })
+            });
+            ConditionMcdcCoverage { index, covered }
+        })
+        .collect();
+
+    Some(McdcCoverage {
+        conditions,
+        observations: compatible
+            .into_iter()
+            .map(
+                |((conditions, outcome), hits)| ConditionObservationCoverage {
+                    conditions: conditions.clone(),
+                    outcome: *outcome,
+                    hits: *hits,
+                },
+            )
+            .collect(),
+    })
 }
 
 #[cfg(test)]
@@ -261,6 +438,79 @@ mod tests {
     }
 
     #[test]
+    fn mcdc_requires_independent_effect_for_each_condition() {
+        let mut cov = Coverage::new();
+        cov.set_current_file("mcdc.al");
+        // Truth table evidence for A AND B. These three observations are
+        // sufficient to show that each condition independently changes the
+        // decision while the other condition is held fixed.
+        cov.record_condition_observation(7, vec![false, true], false);
+        cov.record_condition_observation(7, vec![true, false], false);
+        cov.record_condition_observation(7, vec![true, true], true);
+
+        let report = cov.report();
+        let mcdc = report.files[0].branches[0]
+            .mcdc
+            .as_ref()
+            .expect("compound decision has MC/DC");
+        assert_eq!(mcdc.covered_count(), 2);
+        assert!(mcdc.conditions.iter().all(|condition| condition.covered));
+        assert_eq!(mcdc.observations.len(), 3);
+    }
+
+    #[test]
+    fn mcdc_does_not_credit_masked_condition_changes() {
+        let mut cov = Coverage::new();
+        cov.set_current_file("mcdc.al");
+        // A changes while B is false, but the A AND B outcome stays false.
+        cov.record_condition_observation(7, vec![false, false], false);
+        cov.record_condition_observation(7, vec![true, false], false);
+
+        let report = cov.report();
+        let mcdc = report.files[0].branches[0]
+            .mcdc
+            .as_ref()
+            .expect("compound decision has MC/DC");
+        assert_eq!(mcdc.covered_count(), 0);
+    }
+
+    #[test]
+    fn named_paths_preserve_untaken_case_arms() {
+        let mut cov = Coverage::new();
+        cov.set_current_file("case.al");
+        cov.ensure_path(4, "arm:1");
+        cov.ensure_path(4, "arm:2");
+        cov.ensure_path(4, "else");
+        cov.record_path(4, "arm:2");
+        cov.record_path(4, "arm:2");
+
+        let tally = cov.branch("case.al", 4).expect("case branch");
+        assert_eq!(tally.paths["arm:1"], 0);
+        assert_eq!(tally.paths["arm:2"], 2);
+        assert_eq!(tally.paths["else"], 0);
+
+        let report = cov.report();
+        let paths = &report.files[0].branches[0].paths;
+        assert_eq!(
+            paths,
+            &[
+                PathCoverage {
+                    path: "arm:1".into(),
+                    hits: 0,
+                },
+                PathCoverage {
+                    path: "arm:2".into(),
+                    hits: 2,
+                },
+                PathCoverage {
+                    path: "else".into(),
+                    hits: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn merge_unions_lines_and_sums_branches() {
         let mut a = Coverage::new();
         a.set_current_file("f.al");
@@ -272,6 +522,10 @@ mod tests {
         b.record_statement(1); // overlap
         b.record_statement(2);
         b.record_decision(2, false);
+        b.ensure_path(3, "arm:1");
+        b.record_path(3, "arm:1");
+        a.ensure_path(3, "arm:1");
+        a.ensure_path(3, "arm:2");
 
         a.merge(&b);
         assert!(a.is_line_executed("f.al", 1));
@@ -279,6 +533,9 @@ mod tests {
         let tally = a.branch("f.al", 2).unwrap();
         assert_eq!(tally.then_taken, 1);
         assert_eq!(tally.else_taken, 1);
+        let paths = &a.branch("f.al", 3).unwrap().paths;
+        assert_eq!(paths["arm:1"], 1);
+        assert_eq!(paths["arm:2"], 0);
     }
 
     #[test]

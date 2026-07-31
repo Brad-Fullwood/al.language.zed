@@ -66,69 +66,54 @@ pub struct UnusedSymbol {
     pub note: Option<String>,
 }
 
-#[must_use]
-pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
+pub fn dead_code(workspace: &Workspace) -> Result<Vec<UnusedSymbol>, super::WorkspaceQueryError> {
+    let sources = crate::workspace_sources::snapshot(workspace)?;
     let mut results = Vec::new();
 
     // The owned, sorted collection keeps borrows stable and output deterministic.
-    let mut parsed_files: Vec<(String, String, tree_sitter::Tree)> = workspace
-        .file_index
-        .iter_parsed()
+    let mut parsed_files: Vec<(String, String, tree_sitter::Tree, al_syntax::ObjectInfo)> = sources
         .into_iter()
-        .map(|(path, text, tree)| (path.to_string_lossy().to_string(), text, tree))
+        .map(|source| {
+            (
+                source.path.to_string_lossy().to_string(),
+                source.text,
+                source.tree,
+                source.object.info,
+            )
+        })
         .collect();
     parsed_files.sort_by(|a, b| a.0.cmp(&b.0));
 
     let all_files: Vec<(&str, &str, &tree_sitter::Tree)> = parsed_files
         .iter()
-        .map(|(p, t, tree)| (p.as_str(), t.as_str(), tree))
+        .map(|(p, t, tree, _)| (p.as_str(), t.as_str(), tree))
         .collect();
 
-    // Action-trigger bodies need a text scan because the grammar does not
-    // expose them as braced blocks.
     let mut all_call_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 32);
-    let mut all_text_call_names: std::collections::HashSet<String> =
-        std::collections::HashSet::with_capacity(parsed_files.len() * 16);
     // Build member-access names once for constant-time field lookups.
     let mut all_member_access_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 16);
     for (_, text, tree) in &all_files {
         all_call_names.extend(al_syntax::collect_call_site_names(tree, text));
-        for line in text.lines() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//") {
-                continue;
-            }
-            for tok in extract_text_call_names(line) {
-                all_text_call_names.insert(tok);
-            }
-            for tok in extract_member_access_names(line) {
-                all_member_access_names.insert(tok);
-            }
-        }
+        all_member_access_names.extend(al_syntax::collect_member_access_names(tree, text));
     }
 
     // Keep the query on the daemon dispatch thread. Rayon worker startup made
     // this small, latency-sensitive request hang indefinitely on Windows even
     // though the same parsed inputs complete immediately in serial. The
     // path-sorted input still makes output deterministic.
-    let per_file_results: Vec<Vec<UnusedSymbol>> = all_files
+    let per_file_results: Vec<Vec<UnusedSymbol>> = parsed_files
         .iter()
-        .map(|(file_path, file_text, file_tree)| {
+        .map(|(file_path, file_text, file_tree, obj_info)| {
             let mut local = Vec::new();
-            let Some(obj_info) = al_syntax::find_object_declaration(file_tree, file_text) else {
-                return local;
-            };
 
             find_unused_procedures(
                 file_path,
                 file_text,
                 file_tree,
                 &obj_info.name,
-                &all_files,
                 &all_call_names,
-                &all_text_call_names,
                 &mut local,
             );
 
@@ -163,7 +148,7 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
         results.extend(v);
     }
 
-    results
+    Ok(results)
 }
 
 // Four pre-built lookup sets are distinct membership targets; bundling into one struct would obscure intent.
@@ -173,9 +158,7 @@ fn find_unused_procedures(
     file_text: &str,
     file_tree: &tree_sitter::Tree,
     object_name: &str,
-    _all_files: &[(&str, &str, &tree_sitter::Tree)],
     all_call_names: &std::collections::HashSet<String>,
-    all_text_call_names: &std::collections::HashSet<String>,
     results: &mut Vec<UnusedSymbol>,
 ) {
     let root = file_tree.root_node();
@@ -191,7 +174,7 @@ fn find_unused_procedures(
         }
 
         let lname = proc_name.to_ascii_lowercase();
-        let referenced = all_call_names.contains(&lname) || all_text_call_names.contains(&lname);
+        let referenced = all_call_names.contains(&lname);
 
         if !referenced {
             // Locality decides confidence. A `local` procedure with
@@ -221,117 +204,6 @@ fn find_unused_procedures(
             });
         }
     }
-}
-
-fn extract_text_call_names(line: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let lower = line.to_ascii_lowercase();
-    let bytes = lower.as_bytes();
-    let mut i = 0;
-    // `(` inside `'...'` or `"..."` must not register as a call site.
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'"' && !in_single_quote {
-            in_double_quote = !in_double_quote;
-            i += 1;
-            continue;
-        }
-        if b == b'\'' && !in_double_quote {
-            in_single_quote = !in_single_quote;
-            i += 1;
-            continue;
-        }
-        if in_single_quote || in_double_quote {
-            i += 1;
-            continue;
-        }
-        if b == b'(' && i > 0 {
-            let mut start = i;
-            while start > 0 {
-                let prev = bytes[start - 1];
-                let is_ident = prev.is_ascii_alphanumeric() || prev == b'_';
-                if !is_ident {
-                    break;
-                }
-                start -= 1;
-            }
-            if start < i {
-                let name = &lower[start..i];
-                let preceding = lower[..start].trim_end();
-                if !preceding.ends_with("procedure") {
-                    out.push(name.to_string());
-                }
-            }
-        }
-        i += 1;
-    }
-    out
-}
-
-fn extract_member_access_names(line: &str) -> Vec<String> {
-    let trimmed = line.trim_start();
-    if trimmed.starts_with("//") {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let lower = line.to_ascii_lowercase();
-    let bytes = lower.as_bytes();
-    let mut i = 0;
-    let mut in_double_quote = false;
-    let mut in_single_quote = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'"' && !in_single_quote {
-            in_double_quote = !in_double_quote;
-            i += 1;
-            continue;
-        }
-        if b == b'\'' && !in_double_quote {
-            in_single_quote = !in_single_quote;
-            i += 1;
-            continue;
-        }
-        if in_double_quote || in_single_quote {
-            i += 1;
-            continue;
-        }
-        if b != b'.' {
-            i += 1;
-            continue;
-        }
-        let after_dot = i + 1;
-        if after_dot >= bytes.len() {
-            break;
-        }
-        if bytes[after_dot] == b'"' {
-            let start = after_dot + 1;
-            let mut end = start;
-            while end < bytes.len() && bytes[end] != b'"' {
-                end += 1;
-            }
-            if end > start {
-                out.push(lower[start..end].to_string());
-            }
-            i = end + 1;
-            continue;
-        }
-        if bytes[after_dot].is_ascii_alphabetic() || bytes[after_dot] == b'_' {
-            let start = after_dot;
-            let mut end = start;
-            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
-                end += 1;
-            }
-            if end > start {
-                out.push(lower[start..end].to_string());
-            }
-            i = end;
-            continue;
-        }
-        i += 1;
-    }
-    out
 }
 
 fn collect_procedures(
@@ -448,17 +320,18 @@ fn is_framework_invoked_procedure(node: tree_sitter::Node, source: &[u8]) -> boo
 fn find_unused_fields(
     file_path: &str,
     file_text: &str,
-    _file_tree: &tree_sitter::Tree,
+    file_tree: &tree_sitter::Tree,
     object_name: &str,
     all_member_access_names: &std::collections::HashSet<String>,
     results: &mut Vec<UnusedSymbol>,
 ) {
-    let mut fields = Vec::new();
-
-    collect_fields_from_text(file_text, &mut fields);
+    let fields = collect_table_fields(file_tree, file_text);
+    let local_primary_names = al_syntax::collect_primary_expression_names(file_tree, file_text);
 
     for (field_name, line) in &fields {
-        let referenced = all_member_access_names.contains(&field_name.to_lowercase());
+        let field_key = field_name.to_ascii_lowercase();
+        let referenced = all_member_access_names.contains(&field_key)
+            || local_primary_names.contains(&field_key);
 
         if !referenced {
             // FieldRef/RecordRef, report layouts, and dependent extensions are
@@ -482,66 +355,24 @@ fn find_unused_fields(
     }
 }
 
-// The grammar has no field-declaration node, so this scanner ignores comments.
-fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
-    let mut in_block_comment = false;
-    for (line_idx, line) in text.lines().enumerate() {
-        let mut search_from = 0;
-        if in_block_comment {
-            if let Some(end) = line.find("*/") {
-                search_from = end + 2;
-                in_block_comment = false;
-            } else {
-                continue;
+fn collect_table_fields(tree: &tree_sitter::Tree, text: &str) -> Vec<(String, u32)> {
+    fn collect(symbols: &[al_syntax::SyntaxDocumentSymbol], fields: &mut Vec<(String, u32)>) {
+        for symbol in symbols {
+            if symbol.kind == al_syntax::SyntaxSymbolKind::Field
+                && symbol.detail.as_deref() == Some("field")
+            {
+                fields.push((symbol.name.clone(), symbol.range.start.line + 1));
             }
-        }
-        // A delimiter inside a string may cause a false negative, never a
-        // field-removal recommendation based on a false positive.
-        let after_initial = &line[search_from..];
-        if let Some(open) = after_initial.find("/*") {
-            in_block_comment = true;
-            if let Some(close_rel) = after_initial[open + 2..].find("*/") {
-                in_block_comment = false;
-                let tail = &after_initial[open + 2 + close_rel + 2..];
-                let trimmed = tail.trim();
-                if let Some(rest) = crate::queries::strip_field_prefix(trimmed) {
-                    extract_field_name_from_args(rest, line_idx, fields);
-                }
-                continue;
+            if let Some(children) = symbol.children.as_deref() {
+                collect(children, fields);
             }
-            let head = &after_initial[..open];
-            let trimmed = head.trim();
-            if let Some(rest) = crate::queries::strip_field_prefix(trimmed) {
-                extract_field_name_from_args(rest, line_idx, fields);
-            }
-            continue;
-        }
-        let trimmed = after_initial.trim();
-        // Match: field(id; "Name"; ...) or field(id; Name; ...)
-        if let Some(rest) = crate::queries::strip_field_prefix(trimmed) {
-            extract_field_name_from_args(rest, line_idx, fields);
         }
     }
-}
 
-/// Helper: parse `<id>; "Name"; ...)` and push the field name + 1-based line.
-/// Refactored out of `collect_fields_from_text` so the block-comment
-/// state machine and the inline-on-same-line cases share the same parser.
-fn extract_field_name_from_args(rest: &str, line_idx: usize, fields: &mut Vec<(String, u32)>) {
-    if let Some(after_semi) = rest.find(';').map(|i| &rest[i + 1..]) {
-        let name_part = after_semi.trim();
-        let name = if let Some(stripped) = name_part.strip_prefix('"') {
-            stripped.find('"').map(|i| &stripped[..i])
-        } else {
-            let end = name_part.find([';', ')']).unwrap_or(name_part.len());
-            Some(name_part[..end].trim())
-        };
-        if let Some(name) = name {
-            if !name.is_empty() {
-                fields.push((name.to_string(), line_idx as u32 + 1));
-            }
-        }
-    }
+    let symbols = al_syntax::extract_document_symbols(tree, text);
+    let mut fields = Vec::new();
+    collect(&symbols, &mut fields);
+    fields
 }
 
 fn find_orphaned_subscribers(
@@ -757,7 +588,7 @@ mod tests {
             ),
         ]);
 
-        let unused = dead_code(&ws);
+        let unused = dead_code(&ws).unwrap();
 
         assert!(
             unused.iter().any(|u| u.name == "UnusedHelper"
@@ -818,7 +649,7 @@ mod tests {
             ),
         ]);
 
-        let unused = dead_code(&ws);
+        let unused = dead_code(&ws).unwrap();
         for name in ["HandleFoo", "TestSomething", "HandleConfirm"] {
             assert!(
                 !unused.iter().any(|u| u.name == name),
@@ -863,7 +694,7 @@ mod tests {
             ),
         ]);
 
-        let unused = dead_code(&ws);
+        let unused = dead_code(&ws).unwrap();
 
         assert!(
             unused.iter().any(|u| u.name == "Legacy Flag"
@@ -888,53 +719,27 @@ mod tests {
     }
 
     #[test]
-    fn collect_fields_skips_block_comments() {
-        let mut fields = Vec::new();
+    fn collect_fields_uses_ast_and_ignores_comments() {
         let text = r#"table 50100 "T"
 {
     fields {
-        field(1; "Real"; Integer) { }
+        field(
+            1;
+            "Real";
+            Integer)
+        { }
         /*
         field(2; "Phantom"; Integer) { }
         */
-        field(3; "AlsoReal"; Integer) { }
+        /* old: field(99; "Removed"; Integer) */ field(3; "AlsoReal"; Integer) { }
     }
 }"#;
-        super::collect_fields_from_text(text, &mut fields);
+        let mut parser = al_syntax::AlParser::new();
+        let parsed = parser.parse(text);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let fields = collect_table_fields(&parsed.tree, text);
         let names: Vec<_> = fields.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(
-            names.contains(&"Real"),
-            "Real field should be collected: {names:?}"
-        );
-        assert!(
-            names.contains(&"AlsoReal"),
-            "AlsoReal should be collected: {names:?}"
-        );
-        assert!(
-            !names.contains(&"Phantom"),
-            "Phantom inside /* */ must NOT be collected: {names:?}"
-        );
-    }
-
-    #[test]
-    fn collect_fields_handles_inline_block_comment() {
-        // Same-line /* ... */ around the `field(` token — the scanner
-        // treats the post-closer tail as scannable, so a real field
-        // declaration after an inline block comment is still picked up.
-        let mut fields = Vec::new();
-        let text = r#"table 50100 "T"
-{
-    fields {
-        /* old: field(99; "Removed"; Integer) */ field(1; "Kept"; Integer) { }
-    }
-}"#;
-        super::collect_fields_from_text(text, &mut fields);
-        let names: Vec<_> = fields.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(
-            names,
-            vec!["Kept"],
-            "only Kept should be collected: {names:?}"
-        );
+        assert_eq!(names, vec!["Real", "AlsoReal"]);
     }
 
     #[test]
@@ -950,7 +755,7 @@ mod tests {
 }"#,
         )]);
 
-        let unused = dead_code(&ws);
+        let unused = dead_code(&ws).unwrap();
 
         assert!(
             unused.iter().any(|u| u.name == "HandleOldEvent"
@@ -978,7 +783,7 @@ mod tests {
 }"#,
         )]);
 
-        let unused = dead_code(&ws);
+        let unused = dead_code(&ws).unwrap();
 
         assert!(
             !unused.iter().any(|u| u.name == "InternalHelper"),
@@ -989,7 +794,7 @@ mod tests {
     #[test]
     fn empty_workspace_returns_empty() {
         let ws = Workspace::new();
-        let unused = dead_code(&ws);
+        let unused = dead_code(&ws).unwrap();
         assert!(unused.is_empty());
     }
 
@@ -1006,7 +811,7 @@ mod tests {
 }"#,
         )]);
 
-        let unused = dead_code(&ws);
+        let unused = dead_code(&ws).unwrap();
 
         assert!(
             !unused.iter().any(|u| u.name == "OnAfterPost"),
@@ -1043,7 +848,7 @@ mod tests {
             ),
         ]);
 
-        let unused = dead_code(&ws);
+        let unused = dead_code(&ws).unwrap();
 
         assert!(
             unused
@@ -1080,7 +885,7 @@ mod tests {
             ),
         ]);
 
-        let unused = dead_code(&ws);
+        let unused = dead_code(&ws).unwrap();
         assert!(
             unused
                 .iter()
@@ -1120,13 +925,82 @@ mod tests {
             ),
         ]);
 
-        let unused = dead_code(&ws);
+        let unused = dead_code(&ws).unwrap();
         assert!(
             unused.iter().any(|u| u.name == "Description"
                 && u.kind == UnusedKind::Field
                 && u.object == "My Table"),
             "Field 'Description' must be flagged as unused when only a bare identifier appears elsewhere. Got: {:?}",
             unused
+        );
+    }
+
+    #[test]
+    fn unqualified_field_reference_in_own_table_counts_as_use() {
+        let ws = workspace_with_files(vec![(
+            "/src/MyTable.al",
+            r#"table 50302 "My Table"
+{
+    fields
+    {
+        field(1; Amount; Decimal) { }
+        field(2; Unused; Decimal) { }
+    }
+
+    procedure SetAmount()
+    begin
+        Amount := 1;
+    end;
+}"#,
+        )]);
+
+        let unused = dead_code(&ws).unwrap();
+        assert!(
+            !unused
+                .iter()
+                .any(|item| item.kind == UnusedKind::Field && item.name == "Amount"),
+            "own-table bare field reference must count as use: {unused:?}"
+        );
+        assert!(
+            unused
+                .iter()
+                .any(|item| item.kind == UnusedKind::Field && item.name == "Unused"),
+            "unreferenced field must still be found: {unused:?}"
+        );
+    }
+
+    #[test]
+    fn action_trigger_call_is_found_by_the_ast() {
+        let ws = workspace_with_files(vec![(
+            "/src/MyPage.al",
+            r#"page 50303 "My Page"
+{
+    actions
+    {
+        area(Processing)
+        {
+            action(Run)
+            {
+                trigger OnAction()
+                begin
+                    Helper();
+                end;
+            }
+        }
+    }
+
+    local procedure Helper()
+    begin
+    end;
+}"#,
+        )]);
+
+        let unused = dead_code(&ws).unwrap();
+        assert!(
+            !unused
+                .iter()
+                .any(|item| item.kind == UnusedKind::Procedure && item.name == "Helper"),
+            "action trigger call must keep Helper live: {unused:?}"
         );
     }
 
@@ -1156,7 +1030,7 @@ mod tests {
             ),
         ]);
 
-        let unused = dead_code(&ws);
+        let unused = dead_code(&ws).unwrap();
 
         assert!(
             !unused
@@ -1165,65 +1039,6 @@ mod tests {
             "Procedure 'Post' is called from another file; must NOT be flagged unused. Got: {:?}",
             unused
         );
-    }
-
-    #[test]
-    fn extract_text_call_names_basic() {
-        let names = extract_text_call_names("    DoStuff(Rec);");
-        assert!(names.contains(&"dostuff".to_string()), "got: {names:?}");
-    }
-
-    #[test]
-    fn extract_text_call_names_skips_procedure_declaration() {
-        // `procedure Foo(` is a declaration, not a call site.
-        let names = extract_text_call_names("    procedure Foo(x: Integer)");
-        assert!(!names.contains(&"foo".to_string()), "got: {names:?}");
-    }
-
-    #[test]
-    fn extract_text_call_names_skips_single_quoted_literal() {
-        let names = extract_text_call_names("Message('DoStuff(');");
-        assert!(!names.contains(&"dostuff".to_string()), "got: {names:?}");
-        assert!(names.contains(&"message".to_string()), "got: {names:?}");
-    }
-
-    #[test]
-    fn extract_text_call_names_skips_double_quoted_literal() {
-        let names = extract_text_call_names("Foo := \"Bar(\";");
-        assert!(!names.contains(&"bar".to_string()), "got: {names:?}");
-    }
-
-    #[test]
-    fn extract_text_call_names_multiple_per_line() {
-        let names = extract_text_call_names("A() + B() + C()");
-        assert!(names.contains(&"a".to_string()));
-        assert!(names.contains(&"b".to_string()));
-        assert!(names.contains(&"c".to_string()));
-    }
-
-    #[test]
-    fn extract_member_access_names_plain() {
-        let names = extract_member_access_names("Rec.Amount := 5;");
-        assert!(names.contains(&"amount".to_string()), "got: {names:?}");
-    }
-
-    #[test]
-    fn extract_member_access_names_quoted_field() {
-        let names = extract_member_access_names("Rec.\"No. Series\" := '';");
-        assert!(names.contains(&"no. series".to_string()), "got: {names:?}");
-    }
-
-    #[test]
-    fn extract_member_access_names_skips_comment_line() {
-        let names = extract_member_access_names("    // Rec.Amount is set later");
-        assert!(names.is_empty(), "got: {names:?}");
-    }
-
-    #[test]
-    fn extract_member_access_names_skips_dot_inside_literal() {
-        // A `.ident` inside a string literal must not register.
-        let names = extract_member_access_names("Msg := 'see Rec.Hidden field';");
-        assert!(!names.contains(&"hidden".to_string()), "got: {names:?}");
     }
 
     #[test]
@@ -1261,24 +1076,5 @@ mod tests {
         let (obj, _) =
             parse_subscriber_args("[EventSubscriber(ObjectType::Table, Table::\"Item\", 'OnX')]");
         assert_eq!(obj, "Item");
-    }
-
-    #[test]
-    fn collect_fields_handles_unclosed_quoted_name() {
-        // Malformed AL: the field name opens a quote but never closes it. The
-        // helper must drop it gracefully (no panic, no garbage name).
-        let mut fields: Vec<(String, u32)> = Vec::new();
-        extract_field_name_from_args("(1; \"UnclosedName; Integer)", 0, &mut fields);
-        assert!(
-            fields.is_empty(),
-            "unclosed quoted field name should be dropped, got: {fields:?}"
-        );
-    }
-
-    #[test]
-    fn collect_fields_extracts_quoted_name() {
-        let mut fields: Vec<(String, u32)> = Vec::new();
-        extract_field_name_from_args("(1; \"My Field\"; Integer)", 4, &mut fields);
-        assert_eq!(fields, vec![("My Field".to_string(), 5)]);
     }
 }

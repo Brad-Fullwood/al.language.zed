@@ -10,6 +10,8 @@ al-syntax = { path = "../al-syntax", version = "0.1.0" }
 al-types = { path = "../al-types", version = "0.1.0" }
 dashmap = { workspace = true }
 ropey = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
 tree-sitter = "0.25"
 tracing = { workspace = true }
 url = "2"

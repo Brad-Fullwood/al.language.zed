@@ -4,4 +4,6 @@ pub mod diff;
 pub mod format;
 
 pub use diff::{diff_snapshots, Divergence};
-pub use format::{deserialize_snapshot, serialize_snapshot, FormatError, Sample, Snapshot};
+pub use format::{
+    deserialize_snapshot, serialize_snapshot, validate_snapshot, FormatError, Sample, Snapshot,
+};

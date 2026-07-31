@@ -41,18 +41,31 @@ case "$MODE" in
   compare) SCRIPT=/opt/al/compare.sh;     RESULT=compare.png; : "${OUT:=$ROOT/target/al-editor-compare.png}" ;;
 esac
 
-# 0. The extension's compiled artifacts are Zed-built and gitignored. Require them
-#    (Zed/compare modes need them; VS-Code-only does not).
+# 0. Build fresh gitignored extension artifacts from the current source. Zed
+#    compiles Rust extensions for wasm32-wasip2; using a stale artifact (or a
+#    wasm32-wasip1 core module) can make a screenshot look highlighted while
+#    the extension code and every LSP/DAP/MCP adapter actually failed to load.
 if [[ "$MODE" != "vscode" ]]; then
-  for f in extension.wasm grammars/al.wasm; do
-    if [[ ! -f "$ROOT/$f" ]]; then
-      echo "ERROR: missing $f (a gitignored, Zed-compiled artifact)."
-      echo "Build the extension once on the host: 'make install', then in Zed run the"
-      echo "command palette action 'zed: install dev extension' on this repo. That"
-      echo "produces extension.wasm and grammars/al.wasm, which this container reuses."
-      exit 1
-    fi
-  done
+  command -v tree-sitter >/dev/null 2>&1 || {
+    echo "ERROR: tree-sitter CLI is required to build the current grammar WASM."
+    exit 1
+  }
+  echo "=== building current Zed extension + grammar WASM artifacts ==="
+  (
+    cd "$ROOT" &&
+      rustup target add wasm32-wasip2 >/dev/null &&
+      cargo build -q -p zed-al --target wasm32-wasip2 --release &&
+      install -m 0644 target/wasm32-wasip2/release/zed_al.wasm extension.wasm
+  ) || { echo "Zed extension component build failed"; exit 1; }
+  mkdir -p "$ROOT/grammars"
+  (
+    cd "$ROOT/tree-sitter-al" &&
+      tree-sitter build --wasm --output "$ROOT/grammars/al.wasm"
+  ) || { echo "Zed grammar WASM build failed"; exit 1; }
+  "$ROOT/scripts/check-zed-wasm-component.sh" "$ROOT/extension.wasm" || {
+    echo "The freshly built Rust extension is not loadable by current Zed."
+    exit 1
+  }
   # al-lsp native binary (runs inside the container; the extension spawns it).
   if [[ ! -x "$ROOT/target/debug/al-lsp" ]]; then
     echo "=== building al-lsp (needed by the extension inside Zed) ==="
@@ -88,6 +101,8 @@ podman run --rm --userns=keep-id \
 # 3. Collect screenshot(s).
 mkdir -p "$(dirname "$OUT")"
 [[ -f "$OUTDIR/$RESULT" ]] && cp "$OUTDIR/$RESULT" "$OUT"
+[[ -f "$OUTDIR/zed.log" ]] && cp "$OUTDIR/zed.log" "$(dirname "$OUT")/zed-editor.log"
+[[ -f "$OUTDIR/zed-app.log" ]] && cp "$OUTDIR/zed-app.log" "$(dirname "$OUT")/zed-app.log"
 if [[ "$MODE" == "compare" ]]; then
   [[ -f "$OUTDIR/zed.png" ]]    && cp "$OUTDIR/zed.png"    "$(dirname "$OUT")/zed.png"
   [[ -f "$OUTDIR/vscode.png" ]] && cp "$OUTDIR/vscode.png" "$(dirname "$OUT")/vscode.png"

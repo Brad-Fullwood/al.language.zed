@@ -25,7 +25,22 @@ use al_insight::calls::{extract_call_sites, extract_procedure_var_types, CallSit
 
 use serde::Serialize;
 
+use crate::workspace_sources::{self, WorkspaceSource};
 use al_workspace::Workspace;
+
+#[derive(Debug, thiserror::Error)]
+pub enum AuditError {
+    #[error("audit refused an incomplete workspace snapshot: {reason}")]
+    IncompleteWorkspace { reason: String },
+    #[error("audit could not inspect '{}': {reason}", path.display())]
+    InvalidSource { path: PathBuf, reason: String },
+}
+
+fn workspace_snapshot(workspace: &Workspace) -> Result<Vec<WorkspaceSource>, AuditError> {
+    workspace_sources::snapshot(workspace).map_err(|error| AuditError::IncompleteWorkspace {
+        reason: error.to_string(),
+    })
+}
 
 /// The GDPR risk level of a DataClassification value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -50,140 +65,87 @@ pub struct DataClassificationEntry {
     /// DataClassification value found (or "(none)" if missing).
     pub classification: String,
     pub risk: GdprRisk,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file: Option<String>,
+    pub file: String,
     /// Line number (1-based).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub line: Option<u32>,
+    pub line: u32,
 }
 
-#[must_use]
-pub fn data_classification_audit(workspace: &Workspace) -> Vec<DataClassificationEntry> {
+pub fn data_classification_audit(
+    workspace: &Workspace,
+) -> Result<Vec<DataClassificationEntry>, AuditError> {
+    let sources = workspace_snapshot(workspace)?;
     let mut results = Vec::new();
 
-    for entry in workspace.file_index.files.iter() {
-        let path = entry.key();
-        let file_path = path.to_string_lossy().to_string();
-        let Some((file_text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {
-            continue;
-        };
-
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &file_text) else {
-            continue;
-        };
-
+    for source in sources {
         if !matches!(
-            obj_info.kind.to_lowercase().as_str(),
-            "table" | "tableextension"
+            source.object.kind,
+            al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension
         ) {
             continue;
         }
 
-        scan_table_fields(&file_path, &file_text, &obj_info.name, &mut results);
+        scan_table_fields(&source, &mut results)?;
     }
 
-    results
+    Ok(results)
 }
 
 fn scan_table_fields(
-    file_path: &str,
-    text: &str,
-    table_name: &str,
+    source: &WorkspaceSource,
     results: &mut Vec<DataClassificationEntry>,
-) {
-    // Text-based scan: the AL grammar has no dedicated field_declaration node.
-    // We track `field(id; Name; Type) { ... }` blocks and their DataClassification property.
-    struct FieldCtx {
-        name: String,
-        line: u32,
-        classification: Option<String>,
-        brace_depth: i32,
-    }
-
-    let mut stack: Vec<FieldCtx> = Vec::new();
-
-    for (line_idx, line) in text.lines().enumerate() {
-        let trimmed = line.trim();
-        let lower = trimmed.to_lowercase();
-        let open = line.chars().filter(|&c| c == '{').count() as i32;
-        let close = line.chars().filter(|&c| c == '}').count() as i32;
-
-        if lower.starts_with("field(") || lower.starts_with("field (") {
-            let field_name = extract_field_name_from_line(trimmed);
-            stack.push(FieldCtx {
-                name: field_name,
-                line: line_idx as u32 + 1,
-                classification: None,
-                brace_depth: open - close,
-            });
+) -> Result<(), AuditError> {
+    let sections = super::bulk_fix::collect_ast_sections(&source.tree, &source.text, &["field"])
+        .map_err(|reason| AuditError::InvalidSource {
+            path: source.path.clone(),
+            reason,
+        })?;
+    for section in sections {
+        let field = section
+            .header_segments
+            .get(1)
+            .and_then(|value| super::bulk_fix::parse_identifier(value))
+            .ok_or_else(|| AuditError::InvalidSource {
+                path: source.path.clone(),
+                reason: format!(
+                    "table field on line {} has no unambiguous AST field name",
+                    section.line
+                ),
+            })?;
+        if section.properties.get("fieldclass").is_some_and(|value| {
+            matches!(
+                value
+                    .trim()
+                    .trim_matches(['\'', '"'])
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "flowfield" | "flowfilter"
+            )
+        }) {
             continue;
         }
-
-        if let Some(ctx) = stack.last_mut() {
-            ctx.brace_depth += open - close;
-
-            if lower.contains("dataclassification") {
-                let classification =
-                    extract_property_value_from_line(trimmed, "DataClassification");
-                if let Some(c) = classification {
-                    ctx.classification = Some(c);
-                }
+        let classification = match section.properties.get("dataclassification") {
+            Some(value) if !value.trim().is_empty() => {
+                value.trim().trim_matches(['\'', '"']).trim().to_string()
             }
-
-            if ctx.brace_depth <= 0 {
-                let Some(ctx) = stack.pop() else {
-                    continue;
-                };
-                let classification = ctx
-                    .classification
-                    .clone()
-                    .unwrap_or_else(|| "(none)".to_string());
-                let risk = classify_gdpr_risk(&classification);
-
-                results.push(DataClassificationEntry {
-                    table: table_name.to_string(),
-                    field: ctx.name,
-                    classification,
-                    risk,
-                    file: Some(file_path.to_string()),
-                    line: Some(ctx.line),
+            Some(_) => {
+                return Err(AuditError::InvalidSource {
+                    path: source.path.clone(),
+                    reason: format!("DataClassification on field '{field}' has no value"),
                 });
             }
-        }
+            None => "(none)".to_string(),
+        };
+        let risk = classify_gdpr_risk(&classification);
+        results.push(DataClassificationEntry {
+            table: source.object.info.name.clone(),
+            field,
+            classification,
+            risk,
+            file: source.path.display().to_string(),
+            line: section.line,
+        });
     }
-}
-
-fn extract_field_name_from_line(line: &str) -> String {
-    // field(id; "Name"; ...) or field(id; Name; ...)
-    if let Some(rest) = crate::queries::strip_field_prefix(line) {
-        if let Some(after_semi) = rest.find(';').map(|i| rest[i + 1..].trim()) {
-            if let Some(stripped) = after_semi.strip_prefix('"') {
-                if let Some(end) = stripped.find('"') {
-                    return stripped[..end].to_string();
-                }
-            }
-            let end = after_semi.find([';', ')']).unwrap_or(after_semi.len());
-            return after_semi[..end].trim().to_string();
-        }
-    }
-    String::new()
-}
-
-fn extract_property_value_from_line(line: &str, prop: &str) -> Option<String> {
-    let lower = line.to_lowercase();
-    let prop_lower = prop.to_lowercase();
-    let pos = lower.find(&prop_lower)?;
-    let after = line[pos + prop_lower.len()..].trim_start_matches([' ', '=', ':']);
-    let after = after.trim_start_matches(['"', '\'']);
-    let end = after
-        .find(['"', '\'', ';', '\n', ' '])
-        .unwrap_or(after.len().min(100));
-    let val = after[..end].trim().to_string();
-    if val.is_empty() {
-        None
-    } else {
-        Some(val)
-    }
+    Ok(())
 }
 
 fn classify_gdpr_risk(classification: &str) -> GdprRisk {
@@ -206,7 +168,7 @@ fn classify_gdpr_risk(classification: &str) -> GdprRisk {
 #[serde(rename_all = "camelCase")]
 pub struct PermissionCoverageEntry {
     pub kind: String,
-    pub id: u32,
+    pub id: i32,
     pub name: String,
     pub covered: bool,
     pub covered_by: Vec<String>,
@@ -214,14 +176,12 @@ pub struct PermissionCoverageEntry {
 
 /// A granted permission that exceeds what the workspace actually uses.
 ///
-/// **Precision: object-level only.** An entry is produced when the granted
+/// **Precision: object-level entry.** An entry is produced when the granted
 /// object is never referenced by any workspace object (i.e. an entirely unused
-/// grant). The `rights` field reports the RIMDX letters as written in the
-/// permission set, but they are **not** verified against actual access patterns:
-/// a table granted `RIMD` that is only ever read (so `IMD` is over-broad) is
-/// *not* flagged as long as the table is referenced somewhere. Right-level
-/// (RIMDX) over-grant detection needs per-table record-access analysis that the
-/// workspace does not yet expose.
+/// grant). Right-level table-data results are represented separately by
+/// [`OverGrantedRightsEntry`], using the workspace record-access scan below; this
+/// object-level shape remains useful for non-table grants and entirely unused
+/// objects.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverBroadGrantEntry {
@@ -297,7 +257,8 @@ struct PermissionGrant {
     rights: String,
 }
 
-pub fn permission_set_audit(workspace: &Workspace) -> PermissionAuditReport {
+pub fn permission_set_audit(workspace: &Workspace) -> Result<PermissionAuditReport, AuditError> {
+    let sources = workspace_snapshot(workspace)?;
     let mut perm_sets: Vec<(String, Vec<PermissionGrant>)> = Vec::new();
     // Files that *define* a permission set — excluded from the usage scan so a
     // grant clause is never counted as "usage" of the object it grants.
@@ -306,34 +267,29 @@ pub fn permission_set_audit(workspace: &Workspace) -> PermissionAuditReport {
     // reference baseline: an object's own declaration counts as one reference.
     let mut declared_names: HashSet<String> = HashSet::new();
 
-    for entry in workspace.file_index.files.iter() {
-        let path = entry.key();
-        let Some((text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {
-            continue;
-        };
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &text) else {
-            continue;
-        };
-
-        if obj_info.kind.to_lowercase() == "permissionset" {
-            perm_sets.push((obj_info.name.clone(), extract_permission_grants(&text)));
-            perm_set_paths.insert(path.clone());
+    for source in &sources {
+        if matches!(
+            source.object.kind,
+            al_symbols::ObjectKind::PermissionSet | al_symbols::ObjectKind::PermissionSetExtension
+        ) {
+            perm_sets.push((
+                source.object.info.name.clone(),
+                extract_permission_grants(source)?,
+            ));
+            perm_set_paths.insert(source.path.clone());
         } else {
-            declared_names.insert(obj_info.name.to_lowercase());
+            declared_names.insert(source.object.info.name.to_lowercase());
         }
     }
 
-    let coverage = compute_coverage(workspace, &perm_sets);
+    let coverage = compute_coverage(&sources, &perm_sets);
 
     // Snapshot non-permissionset parsed files once; both the object-level scan
     // and the right-level write-site scan reuse it.
-    let scan_files: Vec<(String, tree_sitter::Tree)> = workspace
-        .file_index
-        .files
+    let scan_files: Vec<(String, tree_sitter::Tree)> = sources
         .iter()
-        .map(|e| e.key().clone())
-        .filter(|path| !perm_set_paths.contains(path))
-        .filter_map(|path| workspace.file_index.get_cached_parse(&path))
+        .filter(|source| !perm_set_paths.contains(&source.path))
+        .map(|source| (source.text.clone(), source.tree.clone()))
         .collect();
 
     let over_broad = compute_over_broad(&scan_files, &perm_sets, &declared_names);
@@ -342,52 +298,70 @@ pub fn permission_set_audit(workspace: &Workspace) -> PermissionAuditReport {
     let over_granted_rights =
         compute_over_granted_rights(&scan_files, &perm_sets, &declared_names, &observed_writes);
 
-    PermissionAuditReport {
+    Ok(PermissionAuditReport {
         coverage,
         over_broad,
         over_granted_rights,
-    }
+    })
 }
 
 fn compute_coverage(
-    workspace: &Workspace,
+    sources: &[WorkspaceSource],
     perm_sets: &[(String, Vec<PermissionGrant>)],
 ) -> Vec<PermissionCoverageEntry> {
     let mut results = Vec::new();
 
-    for entry in workspace.file_index.files.iter() {
-        let path = entry.key();
-        let Some((text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {
-            continue;
-        };
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &text) else {
-            continue;
-        };
-
-        let kind = obj_info.kind.to_lowercase();
+    for source in sources {
+        let kind = source.object.info.kind.to_lowercase();
         // Only audit tables, pages, codeunits, reports (primary access objects)
         if !matches!(kind.as_str(), "table" | "page" | "codeunit" | "report") {
             continue;
         }
 
-        let name_lower = obj_info.name.to_lowercase();
         let covered_by: Vec<String> = perm_sets
             .iter()
-            .filter(|(_, grants)| grants.iter().any(|g| g.object.to_lowercase() == name_lower))
+            .filter(|(_, grants)| {
+                grants.iter().any(|grant| {
+                    grant_covers_object(
+                        grant,
+                        &kind,
+                        source.object.normalized_id,
+                        &source.object.info.name,
+                    )
+                })
+            })
             .map(|(n, _)| n.clone())
             .collect();
 
-        let id = obj_info.id.unwrap_or(0) as u32;
         results.push(PermissionCoverageEntry {
-            kind: obj_info.kind,
-            id,
-            name: obj_info.name,
+            kind: source.object.info.kind.clone(),
+            id: source.object.normalized_id,
+            name: source.object.info.name.clone(),
             covered: !covered_by.is_empty(),
             covered_by,
         });
     }
 
     results
+}
+
+fn grant_covers_object(
+    grant: &PermissionGrant,
+    object_kind: &str,
+    object_id: i32,
+    object_name: &str,
+) -> bool {
+    let expected_grant_type = match object_kind {
+        "table" => "TableData",
+        "page" => "Page",
+        "codeunit" => "Codeunit",
+        "report" => "Report",
+        _ => return false,
+    };
+    grant.object_type.eq_ignore_ascii_case(expected_grant_type)
+        && (grant.object == "*"
+            || grant.object.eq_ignore_ascii_case(object_name)
+            || grant.object.parse::<i32>() == Ok(object_id))
 }
 
 /// Object-level over-broad / unused grant detection.
@@ -416,6 +390,36 @@ fn compute_over_broad(
                 continue;
             }
 
+            if grant.object == "*" {
+                out.push(OverBroadGrantEntry {
+                    permission_set: set_name.clone(),
+                    object_type: grant.object_type.clone(),
+                    object: grant.object.clone(),
+                    rights: grant.rights.clone(),
+                    reason: "wildcard grant applies to every object of this type; Microsoft \
+                             documents that wildcard permissions require caution and the static \
+                             audit cannot prove that complete scope is required"
+                        .to_string(),
+                });
+                continue;
+            }
+            if grant
+                .object
+                .chars()
+                .all(|character| character.is_ascii_digit())
+            {
+                out.push(OverBroadGrantEntry {
+                    permission_set: set_name.clone(),
+                    object_type: grant.object_type.clone(),
+                    object: grant.object.clone(),
+                    rights: grant.rights.clone(),
+                    reason: "numeric grant target cannot be matched to name-based static \
+                             references without authoritative package identity resolution; manual \
+                             review is required"
+                        .to_string(),
+                });
+                continue;
+            }
             let total_refs = count_object_refs(scan_files, &grant.object);
 
             let baseline = usize::from(declared_names.contains(&grant.object.to_lowercase()));
@@ -446,7 +450,7 @@ fn count_object_refs(scan_files: &[(String, tree_sitter::Tree)], object: &str) -
         .sum()
 }
 
-/// Right-level / RIMDX over-grant detection ().
+/// Right-level / RIMDX over-grant detection.
 ///
 /// For each `tabledata` grant whose table **is** referenced in the workspace
 /// (so it is not already an object-level over-broad finding), compare the
@@ -470,6 +474,14 @@ fn compute_over_granted_rights(
             if !grant.object_type.eq_ignore_ascii_case("tabledata") {
                 continue;
             }
+            if grant.object == "*"
+                || grant
+                    .object
+                    .chars()
+                    .all(|character| character.is_ascii_digit())
+            {
+                continue;
+            }
             let object_lower = grant.object.to_lowercase();
             if !seen.insert(object_lower.clone()) {
                 continue;
@@ -478,7 +490,12 @@ fn compute_over_granted_rights(
             // Which of I/M/D were granted (R/X are out of scope here).
             let granted_imd: BTreeSet<char> = ['I', 'M', 'D']
                 .into_iter()
-                .filter(|c| grant.rights.contains(*c))
+                .filter(|right| {
+                    grant
+                        .rights
+                        .chars()
+                        .any(|granted| granted.eq_ignore_ascii_case(right))
+                })
                 .collect();
             if granted_imd.is_empty() {
                 continue;
@@ -639,62 +656,161 @@ fn collect_procedure_names(tree: &tree_sitter::Tree, text: &str) -> Vec<String> 
     names
 }
 
-fn extract_permission_grants(text: &str) -> Vec<PermissionGrant> {
-    // Look for patterns like: TableData "Sales Header" = RIMD
-    // or: Table "Sales Header" = R; or: Codeunit "My CU" = X
-    const PREFIXES: &[(&str, &str)] = &[
-        ("tabledata ", "TableData"),
-        ("table ", "Table"),
-        ("page ", "Page"),
-        ("codeunit ", "Codeunit"),
-        ("report ", "Report"),
-    ];
+fn extract_permission_grants(source: &WorkspaceSource) -> Result<Vec<PermissionGrant>, AuditError> {
+    let mut permission_properties = Vec::new();
+    let mut stack = vec![source.tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "property_assignment" {
+            let name = node
+                .child_by_field_name("name")
+                .and_then(|name| name.utf8_text(source.text.as_bytes()).ok())
+                .map(str::trim);
+            if name.is_some_and(|name| name.eq_ignore_ascii_case("Permissions")) {
+                permission_properties.push(node);
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    let property = match permission_properties.as_slice() {
+        [] => return Ok(Vec::new()),
+        [property] => *property,
+        _ => {
+            return Err(AuditError::InvalidSource {
+                path: source.path.clone(),
+                reason: "permission-set object contains multiple Permissions properties"
+                    .to_string(),
+            });
+        }
+    };
 
-    let mut grants = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") {
+    let mut rhs_started = false;
+    let mut clauses: Vec<Vec<String>> = vec![Vec::new()];
+    for index in 0..property.child_count() {
+        let child = property
+            .child(index)
+            .ok_or_else(|| AuditError::InvalidSource {
+                path: source.path.clone(),
+                reason: "Permissions AST child disappeared".to_string(),
+            })?;
+        let token = child
+            .utf8_text(source.text.as_bytes())
+            .map_err(|error| AuditError::InvalidSource {
+                path: source.path.clone(),
+                reason: format!("Permissions token is not UTF-8: {error}"),
+            })?
+            .trim();
+        if !rhs_started {
+            if child.kind() == "=" {
+                rhs_started = true;
+            }
             continue;
         }
-
-        let lower = trimmed.to_lowercase();
-        for (prefix, canon) in PREFIXES {
-            if !lower.starts_with(prefix) {
-                continue;
-            }
-            let rest = &trimmed[prefix.len()..];
-            let (name, after_name) = if let Some(stripped) = rest.strip_prefix('"') {
-                match stripped.find('"') {
-                    Some(i) => (stripped[..i].to_string(), &stripped[i + 1..]),
-                    None => (String::new(), ""),
-                }
-            } else {
-                let end = rest.find(['=', ' ']).unwrap_or(rest.len());
-                (rest[..end].trim().to_string(), &rest[end..])
-            };
-            if name.is_empty() {
-                break;
-            }
-            // Rights are whatever follows `=`, restricted to RIMDX letters.
-            let rights = after_name
-                .split('=')
-                .nth(1)
-                .map(|r| {
-                    r.chars()
-                        .filter(|c| "rimdxRIMDX".contains(*c))
-                        .collect::<String>()
-                        .to_uppercase()
-                })
-                .unwrap_or_default();
-            grants.push(PermissionGrant {
-                object_type: (*canon).to_string(),
-                object: name,
-                rights,
-            });
+        if matches!(child.kind(), "comment" | "line_comment" | "block_comment") {
+            continue;
+        }
+        if child.kind() == "semicolon" || token == ";" {
             break;
         }
+        if child.kind() == "comma" || token == "," {
+            if clauses.last().is_some_and(Vec::is_empty) {
+                return Err(AuditError::InvalidSource {
+                    path: source.path.clone(),
+                    reason: "Permissions property contains an empty grant clause".to_string(),
+                });
+            }
+            clauses.push(Vec::new());
+            continue;
+        }
+        let clause = clauses
+            .last_mut()
+            .ok_or_else(|| AuditError::InvalidSource {
+                path: source.path.clone(),
+                reason: "Permissions clause accumulator became empty".to_string(),
+            })?;
+        clause.push(token.to_string());
     }
-    grants
+    if !rhs_started {
+        return Err(AuditError::InvalidSource {
+            path: source.path.clone(),
+            reason: "Permissions property has no assignment operator".to_string(),
+        });
+    }
+    if clauses.len() == 1 && clauses[0].is_empty() {
+        return Ok(Vec::new());
+    }
+    if clauses.last().is_some_and(Vec::is_empty) {
+        return Err(AuditError::InvalidSource {
+            path: source.path.clone(),
+            reason: "Permissions property ends with an empty grant clause".to_string(),
+        });
+    }
+
+    clauses
+        .into_iter()
+        .enumerate()
+        .map(|(index, clause)| {
+            parse_permission_clause(&clause).map_err(|reason| AuditError::InvalidSource {
+                path: source.path.clone(),
+                reason: format!("Permissions clause {} is invalid: {reason}", index + 1),
+            })
+        })
+        .collect()
+}
+
+fn parse_permission_clause(tokens: &[String]) -> Result<PermissionGrant, String> {
+    if tokens.len() != 4 || tokens[2] != "=" {
+        return Err(format!(
+            "expected ObjectType ObjectIdentifier = Rights, got '{}'",
+            tokens.join(" ")
+        ));
+    }
+    let object_type = match tokens[0].to_ascii_lowercase().as_str() {
+        "tabledata" => "TableData",
+        "table" => "Table",
+        "report" => "Report",
+        "codeunit" => "Codeunit",
+        "xmlport" => "XmlPort",
+        "page" => "Page",
+        "query" => "Query",
+        other => return Err(format!("unsupported permission object type '{other}'")),
+    };
+    let object = if tokens[1] == "*" {
+        "*".to_string()
+    } else {
+        super::bulk_fix::parse_identifier(&tokens[1])
+            .or_else(|| {
+                tokens[1]
+                    .chars()
+                    .all(|character| character.is_ascii_digit())
+                    .then(|| tokens[1].clone())
+            })
+            .ok_or_else(|| format!("invalid object identifier '{}'", tokens[1]))?
+    };
+    let rights = tokens[3].trim().to_string();
+    if rights.is_empty()
+        || !rights.chars().all(|right| match object_type {
+            "TableData" => "RrIiMmDd".contains(right),
+            _ => matches!(right, 'X' | 'x'),
+        })
+    {
+        return Err(format!(
+            "rights '{rights}' are invalid for {object_type}; tabledata accepts R/r/I/i/M/m/D/d and executable objects accept X/x"
+        ));
+    }
+    let mut seen = HashSet::new();
+    if !rights
+        .chars()
+        .map(|right| right.to_ascii_uppercase())
+        .all(|right| seen.insert(right))
+    {
+        return Err(format!("rights '{rights}' contain a duplicate permission"));
+    }
+    Ok(PermissionGrant {
+        object_type: object_type.to_string(),
+        object,
+        rights,
+    })
 }
 
 #[cfg(test)]
@@ -731,7 +847,7 @@ mod tests {
 }"#,
         )]);
 
-        let entries = data_classification_audit(&ws);
+        let entries = data_classification_audit(&ws).unwrap();
         let no_field = entries.iter().find(|e| e.field == "No.");
         assert!(no_field.is_some(), "Should find 'No.' field");
         assert_eq!(
@@ -761,8 +877,60 @@ mod tests {
 }"#,
         )]);
 
-        let entries = data_classification_audit(&ws);
+        let entries = data_classification_audit(&ws).unwrap();
         assert!(entries.is_empty(), "Should not audit codeunit fields");
+    }
+
+    #[test]
+    fn data_classification_skips_flow_fields_and_flow_filters() {
+        let ws = workspace_with(vec![(
+            "/src/Calculated.al",
+            r#"table 50100 Calculated
+{
+    fields
+    {
+        field(1; Balance; Decimal)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Sum("Ledger Entry".Amount);
+        }
+        field(2; Filter; Text[20])
+        {
+            FieldClass = FlowFilter;
+        }
+        field(3; Stored; Text[20])
+        {
+        }
+    }
+}"#,
+        )]);
+
+        let entries = data_classification_audit(&ws).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].field, "Stored");
+    }
+
+    #[test]
+    fn data_classification_ignores_mentions_in_comments_and_strings() {
+        let ws = workspace_with(vec![(
+            "/src/Literal.al",
+            r#"table 50100 Literal
+{
+    fields
+    {
+        field(1; Stored; Text[100])
+        {
+            Caption = 'DataClassification = SystemMetadata; { literal }';
+            // DataClassification = CustomerContent;
+        }
+    }
+}"#,
+        )]);
+
+        let entries = data_classification_audit(&ws).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].classification, "(none)");
+        assert_eq!(entries[0].risk, GdprRisk::Unclassified);
     }
 
     #[test]
@@ -775,7 +943,7 @@ mod tests {
 }"#,
         )]);
 
-        let report = permission_set_audit(&ws);
+        let report = permission_set_audit(&ws).unwrap();
         let my_table = report.coverage.iter().find(|e| e.name == "My Table");
         assert!(my_table.is_some(), "Should find My Table");
         assert!(!my_table.unwrap().covered, "My Table has no permission set");
@@ -801,20 +969,163 @@ mod tests {
             ),
         ]);
 
-        let report = permission_set_audit(&ws);
+        let report = permission_set_audit(&ws).unwrap();
         let my_table = report.coverage.iter().find(|e| e.name == "My Table");
         assert!(my_table.is_some(), "Should find My Table");
         assert!(my_table.unwrap().covered, "My Table should be covered");
     }
 
     #[test]
+    fn permission_audit_parses_multiline_comments_and_indirect_rights() {
+        let ws = workspace_with(vec![
+            (
+                "/src/MyTable.al",
+                r#"table 50100 "My Table"
+{
+    fields { field(1; "No."; Code[20]) { } }
+}"#,
+            ),
+            (
+                "/src/MyPermSet.al",
+                r#"permissionset 50100 "My Perms"
+{
+    Permissions =
+        // The lower-case letters are indirect permissions.
+        TableData
+            "My Table"
+            =
+            rimd,
+        /* executable object */
+        XmlPort "My XmlPort" = x,
+        Query "My Query" = X;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).unwrap();
+        let table = report
+            .coverage
+            .iter()
+            .find(|entry| entry.name == "My Table")
+            .unwrap();
+        assert!(table.covered);
+        let table_finding = report
+            .over_broad
+            .iter()
+            .find(|entry| entry.object == "My Table")
+            .unwrap();
+        assert_eq!(table_finding.rights, "rimd");
+        assert!(report
+            .over_broad
+            .iter()
+            .any(|entry| { entry.object_type == "XmlPort" && entry.object == "My XmlPort" }));
+        assert!(report
+            .over_broad
+            .iter()
+            .any(|entry| entry.object_type == "Query" && entry.object == "My Query"));
+    }
+
+    #[test]
+    fn wildcard_and_numeric_grants_cover_matching_workspace_objects() {
+        let ws = workspace_with(vec![
+            (
+                "/src/First.al",
+                r#"table 50100 First
+{
+    fields { field(1; Value; Text[20]) { } }
+}"#,
+            ),
+            (
+                "/src/Second.al",
+                r#"table 50101 Second
+{
+    fields { field(1; Value; Text[20]) { } }
+}"#,
+            ),
+            (
+                "/src/Perms.al",
+                r#"permissionset 50102 Perms
+{
+    Permissions =
+        TableData * = R,
+        TableData 50101 = r;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).unwrap();
+        assert!(
+            report.coverage.iter().all(|entry| entry.covered),
+            "{:?}",
+            report.coverage
+        );
+        assert!(report
+            .over_broad
+            .iter()
+            .any(|entry| entry.object == "*" && entry.reason.contains("wildcard")));
+        assert!(report.over_broad.iter().any(|entry| {
+            entry.object == "50101" && entry.reason.contains("numeric grant target")
+        }));
+    }
+
+    #[test]
+    fn malformed_permission_clause_is_an_explicit_audit_error() {
+        let ws = workspace_with(vec![(
+            "/src/Perms.al",
+            r#"permissionset 50100 Perms
+{
+    Permissions = TableData Customer = RX;
+}"#,
+        )]);
+
+        let error = permission_set_audit(&ws).unwrap_err();
+        assert!(matches!(error, AuditError::InvalidSource { .. }));
+        assert!(error.to_string().contains("rights 'RX' are invalid"));
+    }
+
+    #[test]
+    fn duplicate_permissions_properties_are_rejected() {
+        let ws = workspace_with(vec![(
+            "/src/Perms.al",
+            r#"permissionset 50100 Perms
+{
+    Permissions = TableData Customer = R;
+    Permissions = TableData Vendor = R;
+}"#,
+        )]);
+
+        let error = permission_set_audit(&ws).unwrap_err();
+        assert!(matches!(error, AuditError::InvalidSource { .. }));
+        assert!(error
+            .to_string()
+            .contains("multiple Permissions properties"));
+    }
+
+    #[test]
     fn empty_workspace_returns_empty() {
         let ws = Workspace::new();
-        assert!(data_classification_audit(&ws).is_empty());
-        let report = permission_set_audit(&ws);
+        assert!(data_classification_audit(&ws).unwrap().is_empty());
+        let report = permission_set_audit(&ws).unwrap();
         assert!(report.coverage.is_empty());
         assert!(report.over_broad.is_empty());
         assert!(report.over_granted_rights.is_empty());
+    }
+
+    #[test]
+    fn whole_workspace_audits_reject_malformed_source() {
+        let ws = workspace_with(vec![(
+            "/src/Broken.al",
+            "codeunit 50100 Broken { procedure Incomplete(",
+        )]);
+
+        assert!(matches!(
+            data_classification_audit(&ws),
+            Err(AuditError::IncompleteWorkspace { .. })
+        ));
+        assert!(matches!(
+            permission_set_audit(&ws),
+            Err(AuditError::IncompleteWorkspace { .. })
+        ));
     }
 
     /// A permission set grants an object that no workspace object ever uses →
@@ -840,7 +1151,7 @@ mod tests {
             ),
         ]);
 
-        let report = permission_set_audit(&ws);
+        let report = permission_set_audit(&ws).unwrap();
 
         // "My Table" is declared but never referenced elsewhere → unused.
         let my_table = report.over_broad.iter().find(|e| e.object == "My Table");
@@ -895,7 +1206,7 @@ mod tests {
             ),
         ]);
 
-        let report = permission_set_audit(&ws);
+        let report = permission_set_audit(&ws).unwrap();
         assert!(
             report.over_broad.iter().all(|e| e.object != "My Table"),
             "My Table is used by Consumer → must NOT be flagged. Got: {:?}",
@@ -919,7 +1230,7 @@ mod tests {
 }"#,
         )]);
 
-        let report = permission_set_audit(&ws);
+        let report = permission_set_audit(&ws).unwrap();
         let some_page = report.over_broad.iter().find(|e| e.object == "Some Page");
         assert!(
             some_page.is_some(),
@@ -968,7 +1279,7 @@ mod tests {
             ),
         ]);
 
-        let report = permission_set_audit(&ws);
+        let report = permission_set_audit(&ws).unwrap();
 
         // Read-only table is referenced, so NOT object-level over-broad.
         assert!(
@@ -1029,7 +1340,7 @@ mod tests {
             ),
         ]);
 
-        let report = permission_set_audit(&ws);
+        let report = permission_set_audit(&ws).unwrap();
         assert!(
             report
                 .over_granted_rights
@@ -1076,7 +1387,7 @@ mod tests {
             ),
         ]);
 
-        let report = permission_set_audit(&ws);
+        let report = permission_set_audit(&ws).unwrap();
         let entry = report
             .over_granted_rights
             .iter()
@@ -1103,7 +1414,7 @@ mod tests {
 }"#,
         )]);
 
-        let report = permission_set_audit(&ws);
+        let report = permission_set_audit(&ws).unwrap();
         assert!(
             report.over_broad.iter().any(|e| e.object == "Ghost Table"),
             "unreferenced table is object-level over-broad"

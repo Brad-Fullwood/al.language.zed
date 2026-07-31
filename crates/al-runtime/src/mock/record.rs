@@ -62,6 +62,12 @@ pub enum RecordError {
     EndOfSet,
     #[error("filter parse error for field {0}: {1}")]
     FilterParse(FieldNo, String),
+    #[error("{0} trigger execution requires live Business Central")]
+    TriggerExecutionUnsupported(&'static str),
+    #[error("arithmetic overflow while calculating FlowField {0}")]
+    FlowArithmeticOverflow(&'static str),
+    #[error("invalid FIND direction '{0}' (expected '-' or '+')")]
+    InvalidFindDirection(char),
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +189,10 @@ impl MockRecord {
         self.current.get(&field)
     }
 
+    pub fn primary_key_len(&self) -> usize {
+        self.primary_key_fields.len()
+    }
+
     fn current_primary_key(&self) -> Result<PrimaryKey, RecordError> {
         self.primary_key_fields
             .iter()
@@ -231,8 +241,12 @@ impl MockRecord {
 
     /// `INSERT` — insert the current buffer as a new row.
     ///
-    /// `run_trigger` is accepted for API parity; triggers are no-ops in the mock.
-    pub fn insert(&mut self, _run_trigger: bool) -> Result<(), RecordError> {
+    /// The local store cannot execute table triggers. A caller that explicitly
+    /// requests trigger execution must be routed to live Business Central.
+    pub fn insert(&mut self, run_trigger: bool) -> Result<(), RecordError> {
+        if run_trigger {
+            return Err(RecordError::TriggerExecutionUnsupported("Insert"));
+        }
         let key = self.current_primary_key()?;
         if self.rows.contains_key(&key) {
             return Err(RecordError::DuplicateKey);
@@ -246,7 +260,10 @@ impl MockRecord {
     /// `MODIFY` — overwrite the existing row with the current buffer.
     ///
     /// Saves the prior row as `xRec`.
-    pub fn modify(&mut self, _run_trigger: bool) -> Result<(), RecordError> {
+    pub fn modify(&mut self, run_trigger: bool) -> Result<(), RecordError> {
+        if run_trigger {
+            return Err(RecordError::TriggerExecutionUnsupported("Modify"));
+        }
         let key = self.current_primary_key()?;
         let old_row = self.rows.get_mut(&key).ok_or(RecordError::NotFound)?;
         self.x_rec = old_row.clone();
@@ -255,7 +272,10 @@ impl MockRecord {
     }
 
     /// `DELETE` — remove the row matching the current buffer's primary key.
-    pub fn delete(&mut self, _run_trigger: bool) -> Result<(), RecordError> {
+    pub fn delete(&mut self, run_trigger: bool) -> Result<(), RecordError> {
+        if run_trigger {
+            return Err(RecordError::TriggerExecutionUnsupported("Delete"));
+        }
         let key = self.current_primary_key()?;
         self.rows.remove(&key).ok_or(RecordError::NotFound)?;
         // Keep `iter_pos` intact: BC's canonical delete loop
@@ -397,7 +417,7 @@ impl MockRecord {
         match direction {
             '-' => self.find_first(),
             '+' => self.find_last(),
-            _ => Ok(false),
+            _ => Err(RecordError::InvalidFindDirection(direction)),
         }
     }
 
@@ -466,7 +486,7 @@ impl MockRecord {
         conditions: &[(FieldNo, FlowFilter)],
         target: Option<FieldNo>,
         agg: FlowAgg,
-    ) -> Value {
+    ) -> Result<Value, RecordError> {
         let matching: Vec<&Row> = self
             .rows
             .values()
@@ -485,8 +505,11 @@ impl MockRecord {
         };
 
         match agg {
-            FlowAgg::Count => Value::Integer(matching.len() as i64),
-            FlowAgg::Exist => Value::Boolean(!matching.is_empty()),
+            FlowAgg::Count => Ok(Value::Integer(
+                i64::try_from(matching.len())
+                    .map_err(|_| RecordError::FlowArithmeticOverflow("Count"))?,
+            )),
+            FlowAgg::Exist => Ok(Value::Boolean(!matching.is_empty())),
             FlowAgg::Sum => {
                 let mut int_sum: i64 = 0;
                 let mut dec_sum = Decimal::ZERO;
@@ -494,29 +517,42 @@ impl MockRecord {
                 for cell in target_cells() {
                     match cell {
                         Value::Integer(n) | Value::BigInteger(n) => {
-                            int_sum = int_sum.saturating_add(*n);
-                            dec_sum = dec_sum.checked_add(Decimal::from(*n)).unwrap_or(dec_sum);
+                            int_sum = int_sum
+                                .checked_add(*n)
+                                .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
+                            dec_sum = dec_sum
+                                .checked_add(Decimal::from(*n))
+                                .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
                         }
                         Value::Decimal(d) => {
                             any_decimal = true;
-                            dec_sum = dec_sum.checked_add(*d).unwrap_or(dec_sum);
+                            dec_sum = dec_sum
+                                .checked_add(*d)
+                                .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
                         }
                         _ => {}
                     }
                 }
                 if any_decimal {
-                    Value::Decimal(dec_sum)
+                    Ok(Value::Decimal(dec_sum))
                 } else {
-                    Value::Integer(int_sum)
+                    Ok(Value::Integer(int_sum))
                 }
             }
             FlowAgg::Average => {
                 let nums: Vec<Decimal> = target_cells().filter_map(as_number).collect();
                 if nums.is_empty() {
-                    Value::Decimal(Decimal::ZERO)
+                    Ok(Value::Decimal(Decimal::ZERO))
                 } else {
-                    let sum: Decimal = nums.iter().copied().sum();
-                    Value::Decimal(sum.checked_div(Decimal::from(nums.len())).unwrap_or(sum))
+                    let sum = nums.iter().copied().try_fold(Decimal::ZERO, |sum, value| {
+                        sum.checked_add(value)
+                            .ok_or(RecordError::FlowArithmeticOverflow("Average"))
+                    })?;
+                    let divisor = Decimal::from(nums.len());
+                    Ok(Value::Decimal(
+                        sum.checked_div(divisor)
+                            .ok_or(RecordError::FlowArithmeticOverflow("Average"))?,
+                    ))
                 }
             }
             FlowAgg::Min | FlowAgg::Max => {
@@ -539,9 +575,9 @@ impl MockRecord {
                         }
                     };
                 }
-                best.cloned().unwrap_or(Value::Integer(0))
+                Ok(best.cloned().unwrap_or(Value::Integer(0)))
             }
-            FlowAgg::Lookup => target_cells().next().cloned().unwrap_or(Value::Empty),
+            FlowAgg::Lookup => Ok(target_cells().next().cloned().unwrap_or(Value::Empty)),
         }
     }
 }
@@ -1212,7 +1248,7 @@ mod tests {
         let conds = [(1, FlowFilter::Eq(Value::Code("ORD1".into())))];
         assert_eq!(
             rec.calc_flow(&conds, Some(3), FlowAgg::Sum),
-            Value::Integer(60)
+            Ok(Value::Integer(60))
         );
     }
 
@@ -1222,20 +1258,20 @@ mod tests {
         let conds = [(1, FlowFilter::Eq(Value::Code("ORD1".into())))];
         assert_eq!(
             rec.calc_flow(&conds, None, FlowAgg::Count),
-            Value::Integer(3)
+            Ok(Value::Integer(3))
         );
         assert_eq!(
             rec.calc_flow(&conds, None, FlowAgg::Exist),
-            Value::Boolean(true)
+            Ok(Value::Boolean(true))
         );
         let none = [(1, FlowFilter::Eq(Value::Code("ZZZ".into())))];
         assert_eq!(
             rec.calc_flow(&none, None, FlowAgg::Count),
-            Value::Integer(0)
+            Ok(Value::Integer(0))
         );
         assert_eq!(
             rec.calc_flow(&none, None, FlowAgg::Exist),
-            Value::Boolean(false)
+            Ok(Value::Boolean(false))
         );
     }
 
@@ -1248,7 +1284,7 @@ mod tests {
         ];
         assert_eq!(
             rec.calc_flow(&const_conds, Some(3), FlowAgg::Sum),
-            Value::Integer(40)
+            Ok(Value::Integer(40))
         );
 
         let expr = filter::parse(">15").unwrap();
@@ -1258,7 +1294,7 @@ mod tests {
         ];
         assert_eq!(
             rec.calc_flow(&filter_conds, Some(3), FlowAgg::Sum),
-            Value::Integer(50)
+            Ok(Value::Integer(50))
         );
     }
 
@@ -1268,15 +1304,15 @@ mod tests {
         let conds = [(1, FlowFilter::Eq(Value::Code("ORD1".into())))];
         assert_eq!(
             rec.calc_flow(&conds, Some(3), FlowAgg::Min),
-            Value::Integer(10)
+            Ok(Value::Integer(10))
         );
         assert_eq!(
             rec.calc_flow(&conds, Some(3), FlowAgg::Max),
-            Value::Integer(30)
+            Ok(Value::Integer(30))
         );
         assert_eq!(
             rec.calc_flow(&conds, Some(3), FlowAgg::Average),
-            Value::Decimal(dec!(20.0))
+            Ok(Value::Decimal(dec!(20.0)))
         );
     }
 
@@ -1286,21 +1322,24 @@ mod tests {
         let none = [(1, FlowFilter::Eq(Value::Code("ZZZ".into())))];
         assert_eq!(
             rec.calc_flow(&none, Some(3), FlowAgg::Sum),
-            Value::Integer(0)
+            Ok(Value::Integer(0))
         );
         assert_eq!(
             rec.calc_flow(&none, Some(3), FlowAgg::Min),
-            Value::Integer(0)
+            Ok(Value::Integer(0))
         );
         assert_eq!(
             rec.calc_flow(&none, Some(3), FlowAgg::Max),
-            Value::Integer(0)
+            Ok(Value::Integer(0))
         );
         assert_eq!(
             rec.calc_flow(&none, Some(3), FlowAgg::Average),
-            Value::Decimal(dec!(0.0))
+            Ok(Value::Decimal(dec!(0.0)))
         );
-        assert_eq!(rec.calc_flow(&none, Some(3), FlowAgg::Lookup), Value::Empty);
+        assert_eq!(
+            rec.calc_flow(&none, Some(3), FlowAgg::Lookup),
+            Ok(Value::Empty)
+        );
     }
 
     #[test]
@@ -1314,7 +1353,52 @@ mod tests {
         rec.insert(false).unwrap();
         assert_eq!(
             rec.calc_flow(&[], Some(2), FlowAgg::Sum),
-            Value::Decimal(dec!(12.5))
+            Ok(Value::Decimal(dec!(12.5)))
         );
+    }
+
+    #[test]
+    fn calc_flow_integer_overflow_is_an_error() {
+        let mut rec = MockRecord::new(1, "Overflow", vec![1]);
+        rec.field_set(1, Value::Integer(1));
+        rec.field_set(2, Value::Integer(i64::MAX));
+        rec.insert(false).unwrap();
+        rec.field_set(1, Value::Integer(2));
+        rec.field_set(2, Value::Integer(1));
+        rec.insert(false).unwrap();
+
+        assert_eq!(
+            rec.calc_flow(&[], Some(2), FlowAgg::Sum),
+            Err(RecordError::FlowArithmeticOverflow("Sum"))
+        );
+    }
+
+    #[test]
+    fn requested_trigger_execution_is_rejected_before_mutation() {
+        let mut rec = MockRecord::new(1, "Triggered", vec![1]);
+        rec.field_set(1, Value::Integer(1));
+        assert_eq!(
+            rec.insert(true),
+            Err(RecordError::TriggerExecutionUnsupported("Insert"))
+        );
+        assert_eq!(rec.count(), 0);
+
+        rec.insert(false).unwrap();
+        rec.field_set(2, Value::Text("changed".into()));
+        assert_eq!(
+            rec.modify(true),
+            Err(RecordError::TriggerExecutionUnsupported("Modify"))
+        );
+        assert_eq!(
+            rec.delete(true),
+            Err(RecordError::TriggerExecutionUnsupported("Delete"))
+        );
+        assert_eq!(rec.count(), 1);
+    }
+
+    #[test]
+    fn invalid_find_direction_is_rejected() {
+        let mut rec = detail_table();
+        assert_eq!(rec.find('?'), Err(RecordError::InvalidFindDirection('?')));
     }
 }

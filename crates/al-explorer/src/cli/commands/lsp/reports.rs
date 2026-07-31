@@ -27,7 +27,7 @@ pub fn cmd_generate(
     if let Some(s) = subject {
         params["subject"] = serde_json::Value::String(s.to_string());
     }
-    match client.request("generate", Some(params)) {
+    match request_checked(&mut client, "generate", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -67,7 +67,7 @@ pub fn cmd_obsolete(json: bool) -> ExitCode {
 }
 
 pub fn cmd_audit_data_classification(json: bool) -> ExitCode {
-    run_command(
+    run_command_with_exit(
         "audit.dataClassification",
         Some(serde_json::json!({})),
         json,
@@ -75,25 +75,45 @@ pub fn cmd_audit_data_classification(json: bool) -> ExitCode {
         |result| {
             let entries = result.as_array().cloned().unwrap_or_default();
             if entries.is_empty() {
-                println!("All table fields have DataClassification set.");
+                println!("No table fields found to audit.");
             } else {
+                let mut unclassified = 0usize;
                 for e in &entries {
                     let table = e.get("table").and_then(|v| v.as_str()).unwrap_or("?");
                     let field = e.get("field").and_then(|v| v.as_str()).unwrap_or("?");
-                    let dc = e
-                        .get("dataClassification")
+                    let classification = e
+                        .get("classification")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("missing");
-                    println!("{table}.{field}: {dc}");
+                        .unwrap_or("?");
+                    let risk = e.get("risk").and_then(|v| v.as_str()).unwrap_or("?");
+                    if risk == "unclassified" {
+                        unclassified += 1;
+                    }
+                    println!("{table}.{field}: {classification} [{risk}]");
                 }
-                eprintln!("\n{} field(s) missing DataClassification", entries.len());
+                eprintln!(
+                    "\n{} field(s) audited; {} unclassified",
+                    entries.len(),
+                    unclassified
+                );
+            }
+        },
+        |result| {
+            if result.as_array().is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    entry.get("risk").and_then(|value| value.as_str()) == Some("unclassified")
+                })
+            }) {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
             }
         },
     )
 }
 
 pub fn cmd_permission_audit(json: bool) -> ExitCode {
-    run_command(
+    run_command_with_exit(
         "permissions.audit",
         Some(serde_json::json!({})),
         json,
@@ -178,6 +198,29 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
                 eprintln!("\n{} over-granted right(s)", over_granted.len());
             }
         },
+        |result| {
+            let missing = result
+                .get("coverage")
+                .and_then(|value| value.as_array())
+                .is_some_and(|entries| {
+                    entries.iter().any(|entry| {
+                        entry.get("covered").and_then(|value| value.as_bool()) == Some(false)
+                    })
+                });
+            let over_broad = result
+                .get("overBroad")
+                .and_then(|value| value.as_array())
+                .is_some_and(|entries| !entries.is_empty());
+            let over_granted = result
+                .get("overGrantedRights")
+                .and_then(|value| value.as_array())
+                .is_some_and(|entries| !entries.is_empty());
+            if missing || over_broad || over_granted {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        },
     )
 }
 
@@ -187,7 +230,8 @@ pub fn cmd_deps_graph(format: &str, json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
     let include_dot = format == "dot";
-    match client.request(
+    match request_checked(
+        &mut client,
         "deps.graph",
         Some(serde_json::json!({ "format": format, "dot": include_dot })),
     ) {
@@ -220,47 +264,49 @@ fn baseline_params_from_app(baseline_app: &str) -> Result<serde_json::Value, Str
 }
 
 pub fn cmd_breaking_changes(baseline_app: Option<&str>, json: bool) -> ExitCode {
-    let params = match baseline_app {
-        Some(path) => match baseline_params_from_app(path) {
-            Ok(p) => p,
-            Err(e) => return report_error(&e, json),
-        },
-        None => serde_json::json!({}),
-    };
-    let baseline_provided = baseline_app.is_some();
-    run_command("breaking", Some(params), json, None, |result| {
-        let changes = result.as_array().cloned().unwrap_or_default();
-        if !baseline_provided {
-            eprintln!(
-                "warning: no --baseline-app supplied — this result is NOT evaluated against \
-                 a previous version, it only reflects the current workspace in isolation."
-            );
-        }
-        if changes.is_empty() {
-            if baseline_provided {
-                println!(
-                    "No breaking changes detected (against {}).",
-                    baseline_app.unwrap()
-                );
-            } else {
-                println!(
-                    "Not evaluated: no baseline supplied, so no breaking changes could be detected."
-                );
-            }
+    let Some(baseline_app) = baseline_app else {
+        let reason = "No --baseline-app supplied; breaking-change analysis was not evaluated";
+        if json {
+            print_json(&serde_json::json!({
+                "analysis": "breaking",
+                "evaluated": false,
+                "reason": reason,
+                "changes": [],
+            }));
         } else {
-            for c in &changes {
-                let kind = c.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                let object = c.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                let description = c.get("description").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("[{kind}] \"{object}\": {description}");
-            }
-            eprintln!("\n{} breaking change(s)", changes.len());
+            println!("Not evaluated: {reason}.");
         }
-    })
+        return ExitCode::FAILURE;
+    };
+    let params = match baseline_params_from_app(baseline_app) {
+        Ok(params) => params,
+        Err(error) => return report_error(&error, json),
+    };
+    run_command_with_exit(
+        "breaking",
+        Some(params),
+        json,
+        None,
+        |result| {
+            let changes = result.as_array().cloned().unwrap_or_default();
+            if changes.is_empty() {
+                println!("No breaking changes detected (against {baseline_app}).");
+            } else {
+                for c in &changes {
+                    let kind = c.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                    let object = c.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                    let description = c.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+                    println!("[{kind}] \"{object}\": {description}");
+                }
+                eprintln!("\n{} breaking change(s)", changes.len());
+            }
+        },
+        array_findings_exit_code,
+    )
 }
 
 pub fn cmd_arch_lint(json: bool) -> ExitCode {
-    run_command(
+    run_command_with_exit(
         "arch.lint",
         Some(serde_json::json!({})),
         json,
@@ -279,11 +325,12 @@ pub fn cmd_arch_lint(json: bool) -> ExitCode {
                 eprintln!("\n{} architecture violation(s)", violations.len());
             }
         },
+        array_findings_exit_code,
     )
 }
 
 pub fn cmd_native_check(json: bool) -> ExitCode {
-    run_command(
+    run_command_with_exit(
         "nativeCheck",
         Some(serde_json::json!({})),
         json,
@@ -308,6 +355,20 @@ pub fn cmd_native_check(json: bool) -> ExitCode {
                 eprintln!("\n{} native semantic finding(s)", findings.len());
             }
         },
+        |result| {
+            if result.as_array().is_some_and(|findings| {
+                findings.iter().any(|finding| {
+                    finding
+                        .get("severity")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|severity| severity.eq_ignore_ascii_case("error"))
+                })
+            }) {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        },
     )
 }
 
@@ -326,7 +387,8 @@ pub fn cmd_duplicates(min_tokens: usize, min_similarity: f32, json: bool) -> Exi
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    match client.request(
+    match request_checked(
+        &mut client,
         "duplicates",
         Some(serde_json::json!({
             "minTokens": min_tokens,
@@ -334,6 +396,9 @@ pub fn cmd_duplicates(min_tokens: usize, min_similarity: f32, json: bool) -> Exi
         })),
     ) {
         Ok(result) => {
+            let has_duplicates = result
+                .as_array()
+                .is_some_and(|duplicates| !duplicates.is_empty());
             if json {
                 print_json(&result);
             } else {
@@ -350,55 +415,95 @@ pub fn cmd_duplicates(min_tokens: usize, min_similarity: f32, json: bool) -> Exi
                     eprintln!("\n{} duplicate block(s)", dups.len());
                 }
             }
-            ExitCode::SUCCESS
+            if has_duplicates {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(e) => report_error(&e, json),
     }
 }
 
 pub fn cmd_upgrade_report(baseline_app: Option<&str>, json: bool) -> ExitCode {
-    let params = match baseline_app {
-        Some(path) => match baseline_params_from_app(path) {
-            Ok(p) => p,
-            Err(e) => return report_error(&e, json),
-        },
-        None => serde_json::json!({}),
-    };
-    let baseline_provided = baseline_app.is_some();
-    run_command("upgrade", Some(params), json, None, |result| {
-        let issues = result.as_array().cloned().unwrap_or_default();
-        if !baseline_provided {
-            eprintln!(
-                "warning: no --baseline-app supplied — this result is NOT evaluated against \
-                 a previous version, it only reflects the current workspace in isolation."
-            );
-        }
-        if issues.is_empty() {
-            if baseline_provided {
-                println!(
-                    "No upgrade issues found (against {}).",
-                    baseline_app.unwrap()
-                );
-            } else {
-                println!(
-                    "Not evaluated: no baseline supplied, so no upgrade issues could be detected."
-                );
-            }
+    let Some(baseline_app) = baseline_app else {
+        let reason = "No --baseline-app supplied; upgrade analysis was not evaluated";
+        if json {
+            print_json(&serde_json::json!({
+                "analysis": "upgrade",
+                "evaluated": false,
+                "reason": reason,
+                "issues": [],
+            }));
         } else {
-            for i in &issues {
-                let kind = i.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                let object = i.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                let description = i.get("description").and_then(|v| v.as_str()).unwrap_or("?");
-                let hint = i
-                    .get("migrationHint")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                println!("[{kind}] \"{object}\": {description}");
-                if !hint.is_empty() {
-                    println!("  Migration: {hint}");
-                }
-            }
-            eprintln!("\n{} upgrade issue(s)", issues.len());
+            println!("Not evaluated: {reason}.");
         }
-    })
+        return ExitCode::FAILURE;
+    };
+    let params = match baseline_params_from_app(baseline_app) {
+        Ok(params) => params,
+        Err(error) => return report_error(&error, json),
+    };
+    run_command_with_exit(
+        "upgrade",
+        Some(params),
+        json,
+        None,
+        |result| {
+            let issues = result.as_array().cloned().unwrap_or_default();
+            if issues.is_empty() {
+                println!("No upgrade issues found (against {baseline_app}).");
+            } else {
+                for i in &issues {
+                    let kind = i.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                    let object = i.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                    let description = i.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+                    let hint = i
+                        .get("migrationHint")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    println!("[{kind}] \"{object}\": {description}");
+                    if !hint.is_empty() {
+                        println!("  Migration: {hint}");
+                    }
+                }
+                eprintln!("\n{} upgrade issue(s)", issues.len());
+            }
+        },
+        array_findings_exit_code,
+    )
+}
+
+fn array_findings_exit_code(result: &serde_json::Value) -> ExitCode {
+    if result
+        .as_array()
+        .is_some_and(|findings| !findings.is_empty())
+    {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod exit_status_tests {
+    use super::*;
+
+    #[test]
+    fn array_quality_gates_fail_on_findings() {
+        assert_eq!(
+            array_findings_exit_code(&serde_json::json!([])),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            array_findings_exit_code(&serde_json::json!([{"kind": "finding"}])),
+            ExitCode::FAILURE
+        );
+    }
+
+    #[test]
+    fn cross_version_checks_without_a_baseline_are_not_green() {
+        assert_eq!(cmd_breaking_changes(None, true), ExitCode::FAILURE);
+        assert_eq!(cmd_upgrade_report(None, true), ExitCode::FAILURE);
+    }
 }

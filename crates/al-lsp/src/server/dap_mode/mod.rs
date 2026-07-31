@@ -186,9 +186,21 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
                         Ok(_) => {
                             eprint!("{}", line);
                             if let Some(ref log) = capture_stderr {
-                                let mut f = log.lock().unwrap_or_else(|e| e.into_inner());
-                                use std::io::Write as _;
-                                let _ = write!(f, "### ES-STDERR: {}", line);
+                                match log.lock() {
+                                    Ok(mut file) => {
+                                        use std::io::Write as _;
+                                        if let Err(error) =
+                                            write!(file, "### ES-STDERR: {}", line)
+                                        {
+                                            warn!("DAP stderr capture write failed: {error}");
+                                            break;
+                                        }
+                                    }
+                                    Err(_) => {
+                                        warn!("DAP capture log state is poisoned; disabling stderr capture");
+                                        break;
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
@@ -393,57 +405,25 @@ fn patch_launch_args(args: &mut serde_json::Map<String, serde_json::Value>) {
 
 async fn compile_project(toolchain: &AlToolchain, project_root: &str) -> Result<String, DapError> {
     let project_path = Path::new(project_root);
-    if !project_path.join("app.json").is_file() {
-        return Err(DapError::CompilationFailed(format!(
-            "No app.json found in {project_root}"
-        )));
-    }
-
-    let alc = &toolchain.alc;
     info!("Compiling AL project: {project_root}");
-
-    // Roll net8.0 `alc.dll` forward onto a newer .NET major (DOTNET_ROLL_FORWARD).
-    let mut cmd = crate::toolchain::dotnet_command_async(alc);
-    cmd.arg(format!("/project:{project_root}"));
-    // Don't pass /out: — alc defaults to the project directory with auto-generated .app name
-
     let packages_dir = project_path.join(".alpackages");
-    if packages_dir.is_dir() {
-        cmd.arg(format!("/packagecachepath:{}", packages_dir.display()));
-    }
+    let result = al_compile::build(al_compile::BuildRequest {
+        project_root: project_path,
+        backend: al_compile::BuildBackend::Alc,
+        toolchain: Some(toolchain),
+        dependency_packages: None,
+        package_cache: packages_dir.is_dir().then_some(packages_dir.as_path()),
+        analyzers: None,
+        config: al_compile::CompilationConfigOptions::default(),
+    })
+    .await
+    .map_err(|error| DapError::CompilationFailed(error.to_string()))?;
 
-    let mut analyzer_paths = Vec::new();
-    for analyzer in [
-        &toolchain.analyzers.code_cop,
-        &toolchain.analyzers.app_source_cop,
-        &toolchain.analyzers.ui_cop,
-        &toolchain.analyzers.per_tenant_cop,
-    ] {
-        if analyzer.is_file() {
-            analyzer_paths.push(analyzer.display().to_string());
-        }
-    }
-    if !analyzer_paths.is_empty() {
-        cmd.arg(format!("/analyzer:{}", analyzer_paths.join(",")));
-    }
-
-    cmd.stderr(std::process::Stdio::piped());
-    cmd.stdout(std::process::Stdio::piped());
-
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| DapError::CompilationFailed(format!("Failed to run alc: {e}")))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{stdout}{stderr}");
-
-    if output.status.success() {
+    if result.success {
         info!("AL compilation succeeded");
-        Ok(combined)
+        Ok(result.output)
     } else {
-        Err(DapError::CompilationFailed(combined))
+        Err(DapError::CompilationFailed(result.output))
     }
 }
 

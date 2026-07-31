@@ -253,6 +253,152 @@ fn case_else_taken_when_no_arm_matches() {
 }
 
 #[test]
+fn case_range_label_matches_inclusively() {
+    let src = r#"codeunit 50100 "Cov"
+{
+    procedure Test()
+    var
+        x: Integer;
+    begin
+        x := 10;
+        case x of
+            10 .. 20:
+                x := 99;
+            else
+                x := 0;
+        end;
+    end;
+}
+"#;
+    let (eval, cov) = run_with_coverage(src, "Test");
+    assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+    assert!(cov.is_line_executed(COV_FILE, line_of(src, "x := 99")));
+    assert!(!cov.is_line_executed(COV_FILE, line_of(src, "x := 0")));
+}
+
+#[test]
+fn case_reports_each_arm_as_a_distinct_path() {
+    let src = r#"codeunit 50100 "Cov"
+{
+    procedure Test()
+    var
+        x: Integer;
+    begin
+        x := 2;
+        case x of
+            1:
+                x := 10;
+            2:
+                x := 20;
+            else
+                x := 99;
+        end;
+    end;
+}
+"#;
+    let (eval, cov) = run_with_coverage(src, "Test");
+    assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+
+    let branch = cov
+        .branch(COV_FILE, line_of(src, "case x of"))
+        .expect("case branch");
+    assert_eq!(branch.paths.len(), 3, "two arms plus else: {branch:?}");
+    let selected = branch
+        .paths
+        .iter()
+        .find(|(path, _)| path.starts_with("arm:2:"))
+        .expect("second arm registered");
+    assert_eq!(*selected.1, 1);
+    assert_eq!(
+        branch.paths.iter().filter(|(_, hits)| **hits > 0).count(),
+        1,
+        "only one case path can execute per evaluation"
+    );
+}
+
+#[test]
+fn loop_decisions_record_entry_and_natural_exit() {
+    let src = r#"codeunit 50100 "Cov"
+{
+    procedure Test()
+    var
+        x: Integer;
+    begin
+        x := 0;
+        while x < 2 do
+            x += 1;
+        for x := 1 to 2 do
+            x := x;
+        repeat
+            x -= 1;
+        until x = 0;
+    end;
+}
+"#;
+    let (eval, cov) = run_with_coverage(src, "Test");
+    assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+
+    let while_tally = cov
+        .branch(COV_FILE, line_of(src, "while x < 2"))
+        .expect("while decision");
+    assert_eq!((while_tally.then_taken, while_tally.else_taken), (2, 1));
+
+    let for_tally = cov
+        .branch(COV_FILE, line_of(src, "for x := 1"))
+        .expect("for decision");
+    assert_eq!((for_tally.then_taken, for_tally.else_taken), (2, 1));
+
+    let repeat_tally = cov
+        .branch(COV_FILE, line_of(src, "repeat"))
+        .expect("repeat decision");
+    assert_eq!((repeat_tally.then_taken, repeat_tally.else_taken), (1, 1));
+}
+
+#[test]
+fn compound_decision_records_real_mcdc_condition_vectors() {
+    let src = r#"codeunit 50100 "Cov"
+{
+    procedure Test()
+    var
+        x: Integer;
+        a: Boolean;
+        b: Boolean;
+    begin
+        for x := 0 to 2 do begin
+            a := x <> 0;
+            b := x <> 1;
+            if a and b then
+                x := x;
+        end;
+    end;
+}
+"#;
+    let (eval, cov) = run_with_coverage(src, "Test");
+    assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+
+    let report = cov.report();
+    let branch = report.files[0]
+        .branches
+        .iter()
+        .find(|branch| branch.line == line_of(src, "if a and b"))
+        .expect("compound IF branch");
+    let mcdc = branch.mcdc.as_ref().expect("MC/DC detail");
+    assert_eq!(mcdc.conditions.len(), 2);
+    assert_eq!(mcdc.covered_count(), 2, "{mcdc:?}");
+    assert_eq!(
+        mcdc.observations
+            .iter()
+            .map(|observation| (observation.conditions.clone(), observation.outcome))
+            .collect::<Vec<_>>(),
+        vec![
+            (vec![false, true], false),
+            (vec![true, false], false),
+            (vec![true, true], true),
+        ]
+    );
+}
+
+#[test]
 fn disabled_coverage_records_nothing() {
     // Opt-in / zero-cost: with no collector attached the run produces no
     // coverage at all (`ctx.coverage` stays `None`).

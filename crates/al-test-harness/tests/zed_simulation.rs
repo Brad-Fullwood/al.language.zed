@@ -386,28 +386,6 @@ async fn test_fixture_exact_navigation_and_hover_regressions() {
         "Work Order Staging definition should point to WorkOrderStaging.Table.al"
     );
 
-    // Builtin RecordRef.FieldCount hover. Resolves through downloaded BC symbol
-    // packages, which aren't available in a bridge-free/no-NuGet CI
-    // environment — best-effort only.
-    let (field_count_line, field_count_col) =
-        find_position(helper, "RecRef.FieldCount").expect("FieldCount usage should exist");
-    let field_count_hover = client
-        .hover(
-            "src/WorkOrderHelper.Codeunit.al",
-            field_count_line,
-            field_count_col + 7,
-        )
-        .await;
-    if let Some(ref hover) = field_count_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("FieldCount hover: {}", text);
-        assert!(text.contains("FieldCount"));
-    } else {
-        eprintln!(
-            "NOTE: FieldCount hover returned None — builtin symbol packages may not be loaded"
-        );
-    }
-
     client.shutdown().await;
 }
 
@@ -695,27 +673,6 @@ async fn test_fixture_member_navigation_hover_and_completion_regressions() {
         enum_labels
     );
 
-    // Resolves through downloaded BC symbol packages, which aren't available
-    // in a bridge-free/no-NuGet CI environment — best-effort only.
-    let (field_count_line, field_count_col) =
-        find_position(&helper, "RecRef.FieldCount").expect("FieldCount usage");
-    let field_count_hover = client
-        .hover(helper_rel, field_count_line, field_count_col + 8)
-        .await;
-    if let Some(ref hover) = field_count_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("FieldCount hover: {}", text);
-        assert!(
-            text.contains("FieldCount"),
-            "Built-in method hover should include FieldCount details. Got: {:?}",
-            text
-        );
-    } else {
-        eprintln!(
-            "NOTE: FieldCount hover returned None — builtin symbol packages may not be loaded"
-        );
-    }
-
     client.shutdown().await;
 }
 
@@ -855,15 +812,17 @@ async fn test_fixture_multilevel_member_chain() {
     }
 
     let run_col = run_line_text.find("Run(").expect("Run( in line") as u32;
-    let run_hover = client.hover(report_rel, run_line, run_col + 1).await;
-    // Run() resolves through PostTask (Codeunit "Work Order Post Task") — may or
-    // may not have hover depending on whether the server resolves through the
-    // variable type to the codeunit's procedure. This is an aspirational test —
-    // we just verify no crash for now.
-    if let Some(ref hover) = run_hover {
-        let run_text = hover_content(hover).unwrap_or("");
-        eprintln!("Run() hover: {}", run_text);
-    }
+    let run_hover = client
+        .hover(report_rel, run_line, run_col + 1)
+        .await
+        .expect("Run() must resolve through the PostTask codeunit variable");
+    let run_text = hover_content(&run_hover).unwrap_or("");
+    assert!(
+        run_text.contains("procedure Run")
+            && run_text.contains("Record")
+            && run_text.contains("Work Order Staging"),
+        "Run() hover should show the resolved codeunit procedure. Got: {run_text:?}"
+    );
 
     client.shutdown().await;
 }
@@ -884,37 +843,31 @@ async fn test_fixture_codeunit_scope_access() {
     let name_col = scope_line_text
         .find("\"Work Order Post Task\"")
         .expect("quoted name") as u32;
-    let name_hover = client.hover(post_task_rel, scope_line, name_col + 2).await;
-    if let Some(ref hover) = name_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("Codeunit::\"Work Order Post Task\" hover: {}", text);
-        assert!(
-            text.contains("Codeunit") || text.contains("Work Order Post Task"),
-            "Hover should reference the codeunit. Got: {:?}",
-            text
-        );
-    }
+    let name_hover = client
+        .hover(post_task_rel, scope_line, name_col + 2)
+        .await
+        .expect("Codeunit:: scope target must have hover information");
+    let text = hover_content(&name_hover).unwrap_or("");
+    assert!(
+        text.contains("Codeunit") && text.contains("Work Order Post Task"),
+        "Hover should reference the codeunit. Got: {text:?}"
+    );
 
     let name_def = client
         .definition(post_task_rel, scope_line, name_col + 2)
-        .await;
-    if let Some(ref def) = name_def {
-        assert!(
-            definition_uri(def)
-                .map(|uri| uri.contains("WorkOrderPostTask.Codeunit.al")
-                    || uri.contains("Work Order"))
-                .unwrap_or(false),
-            "Codeunit:: scope should resolve to the codeunit file. Got: {:?}",
-            def
-        );
-    }
+        .await
+        .expect("Codeunit:: scope target must resolve to a definition");
+    assert!(
+        definition_uri(&name_def)
+            .map(|uri| uri.contains("WorkOrderPostTask.Codeunit.al"))
+            .unwrap_or(false),
+        "Codeunit:: scope should resolve to the codeunit file. Got: {name_def:?}"
+    );
 
     client.shutdown().await;
 }
 
-/// Test Rec.SystemId hover — SystemId is a built-in system field on all records.
-/// Built-in system fields resolve through downloaded BC symbol packages, which
-/// aren't available in a bridge-free/no-NuGet CI environment — best-effort only.
+/// Test Rec.SystemId hover — SystemId is a native platform field on all records.
 #[tokio::test]
 async fn test_fixture_builtin_system_field_hover() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -927,18 +880,16 @@ async fn test_fixture_builtin_system_field_hover() {
     let sysid_line_text = page.lines().nth(sysid_line as usize).unwrap();
     let sysid_col = sysid_line_text.find("SystemId").expect("SystemId in line") as u32;
 
-    let sysid_hover = client.hover(page_rel, sysid_line, sysid_col + 2).await;
-    if let Some(ref hover) = sysid_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("SystemId hover: {}", text);
-        assert!(
-            text.contains("SystemId"),
-            "SystemId hover should mention SystemId. Got: {:?}",
-            text
-        );
-    } else {
-        eprintln!("NOTE: SystemId hover returned None — builtin symbol packages may not be loaded");
-    }
+    let sysid_hover = client
+        .hover(page_rel, sysid_line, sysid_col + 2)
+        .await
+        .expect("SystemId must resolve without package symbols or the semantic bridge");
+    let text = hover_content(&sysid_hover).unwrap_or("");
+    eprintln!("SystemId hover: {}", text);
+    assert!(
+        text.contains("SystemId") && text.contains("Guid") && text.contains("field"),
+        "SystemId hover should identify the native Guid field. Got: {text:?}"
+    );
 
     client.shutdown().await;
 }
@@ -960,28 +911,23 @@ async fn test_fixture_builtin_global_function_hover() {
         .find("GetLastErrorText")
         .expect("GetLastErrorText in line") as u32;
 
-    let gle_hover = client.hover(post_task_rel, gle_line, gle_col + 2).await;
-    // GetLastErrorText is a built-in function — may resolve through builtins or not
-    // (depends on whether semantic bridge is running). Record the result.
-    if let Some(ref hover) = gle_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("GetLastErrorText hover: {}", text);
-        assert!(
-            text.contains("GetLastErrorText") || text.contains("Error"),
-            "GetLastErrorText hover should be relevant. Got: {:?}",
-            text
-        );
-    } else {
-        eprintln!(
-            "NOTE: GetLastErrorText hover returned None — semantic bridge may not be running"
-        );
-    }
+    let gle_hover = client
+        .hover(post_task_rel, gle_line, gle_col + 2)
+        .await
+        .expect("generated native built-in function hover must be available");
+    let text = hover_content(&gle_hover).unwrap_or("");
+    eprintln!("GetLastErrorText hover: {}", text);
+    assert!(
+        text.contains("GetLastErrorText") && text.contains("Text"),
+        "GetLastErrorText hover should include its native signature. Got: {text:?}"
+    );
 
     client.shutdown().await;
 }
 
 /// Test TaskScheduler.CreateTask() hover — built-in type method.
 #[tokio::test]
+#[ignore = "requires the Microsoft built-in catalog; run via make microsoft-contracts"]
 async fn test_fixture_builtin_type_method_hover() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
@@ -996,32 +942,28 @@ async fn test_fixture_builtin_type_method_hover() {
     let ts_col = ts_line_text
         .find("TaskScheduler")
         .expect("TaskScheduler in line") as u32;
-    let ts_hover = client.hover(post_task_rel, ts_line, ts_col + 2).await;
-    if let Some(ref hover) = ts_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("TaskScheduler hover: {}", text);
-        assert!(
-            text.contains("TaskScheduler"),
-            "TaskScheduler hover should mention the type. Got: {:?}",
-            text
-        );
-    } else {
-        eprintln!("NOTE: TaskScheduler hover returned None — built-in type may not be loaded");
-    }
+    let ts_hover = client
+        .hover(post_task_rel, ts_line, ts_col + 2)
+        .await
+        .expect("TaskScheduler must resolve from the live built-in catalog");
+    let text = hover_content(&ts_hover).unwrap_or("");
+    eprintln!("TaskScheduler hover: {}", text);
+    assert!(
+        text.contains("TaskSchedulerClass") && text.contains("CreateTask"),
+        "TaskScheduler hover should show its owning class and methods. Got: {text:?}"
+    );
 
     let ct_col = ts_line_text.find("CreateTask").expect("CreateTask in line") as u32;
-    let ct_hover = client.hover(post_task_rel, ts_line, ct_col + 2).await;
-    if let Some(ref hover) = ct_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("CreateTask hover: {}", text);
-        assert!(
-            text.contains("CreateTask"),
-            "CreateTask hover should mention the method. Got: {:?}",
-            text
-        );
-    } else {
-        eprintln!("NOTE: CreateTask hover returned None — semantic bridge may not be running");
-    }
+    let ct_hover = client
+        .hover(post_task_rel, ts_line, ct_col + 2)
+        .await
+        .expect("TaskScheduler.CreateTask must resolve from TaskSchedulerClass");
+    let text = hover_content(&ct_hover).unwrap_or("");
+    eprintln!("CreateTask hover: {}", text);
+    assert!(
+        text.contains("CreateTask") && text.contains("CodeunitId") && text.contains("Guid"),
+        "CreateTask hover should show the live method signature. Got: {text:?}"
+    );
 
     client.shutdown().await;
 }
@@ -1062,10 +1004,9 @@ async fn test_fixture_report_semantic_tokens() {
     client.shutdown().await;
 }
 
-/// Test built-in type method hover (Record.FindSet, JsonObject.ReadFrom).
-/// Builtin-method hover resolves through downloaded BC symbol packages, which
-/// aren't available in a bridge-free/no-NuGet CI environment — best-effort only.
+/// Test live built-in class method hover (Record.FindSet, JsonObject.ReadFrom).
 #[tokio::test]
+#[ignore = "requires the Microsoft built-in catalog; run via make microsoft-contracts"]
 async fn test_fixture_builtin_method_hover() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
@@ -1083,18 +1024,14 @@ async fn test_fixture_builtin_method_hover() {
 
     let findset_hover = client
         .hover(helper_rel, findset_line, findset_col + 2)
-        .await;
-    if let Some(ref hover) = findset_hover {
-        let text = hover_content(hover).unwrap_or("");
-        eprintln!("FindSet hover: {}", text);
-        assert!(
-            text.contains("FindSet"),
-            "FindSet hover should mention FindSet. Got: {:?}",
-            text
-        );
-    } else {
-        eprintln!("NOTE: FindSet hover returned None — builtin symbol packages may not be loaded");
-    }
+        .await
+        .expect("Record.FindSet must resolve from TableClass");
+    let text = hover_content(&findset_hover).unwrap_or("");
+    eprintln!("FindSet hover: {}", text);
+    assert!(
+        text.contains("FindSet") && text.contains("ForUpdate"),
+        "FindSet hover should show its receiver-specific overloads. Got: {text:?}"
+    );
 
     let table_rel = "src/WorkOrderStaging.Table.al";
     let table = std::fs::read_to_string(test_project_dir().join(table_rel)).unwrap();
@@ -1109,12 +1046,14 @@ async fn test_fixture_builtin_method_hover() {
 
     let readfrom_hover = client
         .hover(table_rel, readfrom_line, readfrom_col + 2)
-        .await;
-    if let Some(ref hover) = readfrom_hover {
-        eprintln!("ReadFrom hover: {}", hover_content(hover).unwrap_or(""));
-    } else {
-        eprintln!("NOTE: ReadFrom hover returned None — builtin symbol packages may not be loaded");
-    }
+        .await
+        .expect("JsonObject.ReadFrom must resolve from JsonObjectClass");
+    let text = hover_content(&readfrom_hover).unwrap_or("");
+    eprintln!("ReadFrom hover: {}", text);
+    assert!(
+        text.contains("ReadFrom") && text.contains("String: Text"),
+        "ReadFrom hover should show the JsonObject method signature. Got: {text:?}"
+    );
 
     client.shutdown().await;
 }
@@ -1140,16 +1079,14 @@ async fn test_fixture_field_definition_navigates() {
 
     let status_def = client
         .definition(report_rel, status_line, status_col + 2)
-        .await;
-    if let Some(ref def) = status_def {
-        assert!(
-            definition_uri(def)
-                .map(|uri| uri.contains("WorkOrderStaging.Table.al"))
-                .unwrap_or(false),
-            "Status field should resolve to the table file. Got: {:?}",
-            def
-        );
-    }
+        .await
+        .expect("Status field must resolve to a definition");
+    assert!(
+        definition_uri(&status_def)
+            .map(|uri| uri.contains("WorkOrderStaging.Table.al"))
+            .unwrap_or(false),
+        "Status field should resolve to the table file. Got: {status_def:?}"
+    );
 
     client.shutdown().await;
 }
@@ -1174,15 +1111,13 @@ async fn test_fixture_enum_value_definition_navigates() {
 
     let posting_def = client
         .definition(report_rel, posting_line, posting_col + 2)
-        .await;
-    if let Some(ref def) = posting_def {
-        let def_uri = definition_uri(def).unwrap_or("");
-        assert!(
-            def_uri.contains("WorkOrderStatus.Enum.al") || def_uri.contains("Status"),
-            "Posting enum value should resolve to the enum file. Got: {:?}",
-            def
-        );
-    }
+        .await
+        .expect("Posting enum value must resolve to a definition");
+    let def_uri = definition_uri(&posting_def).unwrap_or("");
+    assert!(
+        def_uri.contains("WorkOrderStatus.Enum.al"),
+        "Posting enum value should resolve to the enum file. Got: {posting_def:?}"
+    );
 
     client.shutdown().await;
 }
@@ -1228,6 +1163,7 @@ async fn test_fixture_signature_help_local_procedure() {
 
 /// Signature help for a built-in Record method: Staging.SetRange(Status, ...).
 #[tokio::test]
+#[ignore = "requires the Microsoft built-in catalog; run via make microsoft-contracts"]
 async fn test_fixture_signature_help_builtin_method() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
@@ -1243,15 +1179,21 @@ async fn test_fixture_signature_help_builtin_method() {
         .expect("SetRange( position") as u32
         + 9; // after the (
 
-    // Builtin-method signature help resolves through downloaded BC symbol
-    // packages, which aren't available in a bridge-free/no-NuGet CI
-    // environment — best-effort only.
-    let sig = client.signature_help(post_task_rel, line, col).await;
-    if sig.is_none() {
-        eprintln!(
-            "NOTE: SetRange signature help returned None — builtin symbol packages may not be loaded"
-        );
-    }
+    let sig = client
+        .signature_help(post_task_rel, line, col)
+        .await
+        .expect("Record.SetRange signature help must resolve from TableClass");
+    let labels: Vec<&str> = sig
+        .get("signatures")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|signature| signature.get("label").and_then(|value| value.as_str()))
+        .collect();
+    assert!(
+        labels.iter().any(|label| label.contains("SetRange")),
+        "SetRange signature help should include a matching overload. Got: {labels:?}"
+    );
 
     client.shutdown().await;
 }

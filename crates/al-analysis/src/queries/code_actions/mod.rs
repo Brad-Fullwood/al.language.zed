@@ -208,13 +208,285 @@ pub fn namespace_quick_fix_for_diagnostic(
 
 /// Generate a quick-fix action for a specific diagnostic code.
 ///
-/// Currently no custom lint rules are registered, so this always returns None.
-/// Add rule-specific quick fixes here when new lint rules are added.
+/// Only edits with a deterministic, semantics-preserving default are offered.
+/// Rules such as N+1-query detection and missing `SetLoadFields` need developer
+/// intent and therefore remain diagnostics rather than receiving a guessed edit.
 pub fn quick_fix_for_diagnostic(
-    _uri: &Url,
-    _text: &str,
-    _diag: &DiagnosticInfo,
+    workspace: &Workspace,
+    uri: &Url,
+    text: &str,
+    diag: &DiagnosticInfo,
 ) -> Option<CodeActionEntry> {
+    if !code_actions_enabled(workspace) {
+        return None;
+    }
+
+    if matches!(
+        diag.code.as_deref(),
+        Some("AL-NL010" | "AL-L005" | "AA0206")
+    ) {
+        let (name, edit) = unused_local_removal_edit(text, diag)?;
+        return Some(CodeActionEntry {
+            title: format!("Remove unused variable '{name}'"),
+            kind: CodeActionKind::QuickFix,
+            edit: Some(single_edit_ws(uri, vec![edit])),
+            is_preferred: true,
+        });
+    }
+
+    let (title, property) = match diag.code.as_deref()? {
+        "AL-NL002" => (
+            "Add DataClassification = CustomerContent",
+            "DataClassification = CustomerContent;",
+        ),
+        "AL-NL006" => ("Add ApplicationArea = All", "ApplicationArea = All;"),
+        _ => return None,
+    };
+    let edit = annotation_edit(text, diag.range.start.line, property)?;
+    Some(CodeActionEntry {
+        title: title.to_string(),
+        kind: CodeActionKind::QuickFix,
+        edit: Some(single_edit_ws(uri, vec![edit])),
+        is_preferred: true,
+    })
+}
+
+/// Return a semantics-preserving removal for an unused local declaration.
+///
+/// Native AL-NL010 diagnostics point at the declaration name. The historical
+/// AL-L005 spelling and CodeCop AA0206 are accepted for compatibility, but an
+/// edit is emitted only when the current native AST analysis independently
+/// proves that exact local has no references. This prevents a stale or broad
+/// external diagnostic from deleting a still-used declaration.
+fn unused_local_removal_edit(text: &str, diag: &DiagnosticInfo) -> Option<(String, TextEdit)> {
+    let parsed = al_syntax::AlParser::parse_quick(text);
+    let syntax_position = al_syntax::types::SyntaxPosition {
+        line: diag.range.start.line,
+        character: diag.range.start.character,
+    };
+    let mut node = al_syntax::find_node_at_position(&parsed.tree, text, syntax_position)?;
+    while !matches!(
+        node.kind(),
+        "regular_variable_declaration" | "label_declaration"
+    ) {
+        node = node.parent()?;
+    }
+    let declaration = node;
+
+    let mut names_cursor = declaration.walk();
+    let names: Vec<_> = declaration
+        .children_by_field_name("name", &mut names_cursor)
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+
+    let point = tree_sitter::Point {
+        row: diag.range.start.line as usize,
+        column: text
+            .lines()
+            .nth(diag.range.start.line as usize)
+            .map(|line| {
+                al_syntax::utf16_col_to_byte_offset(line, diag.range.start.character as usize)
+            })
+            .unwrap_or(0),
+    };
+    let target_index = names
+        .iter()
+        .position(|name| node_contains_point(*name, point))
+        .or_else(|| (names.len() == 1).then_some(0))?;
+    let target = names[target_index];
+    let name = al_syntax::node_text_clean(target, text.as_bytes())?;
+
+    let independently_unused =
+        al_syntax::lint::lint(&parsed.tree, text)
+            .into_iter()
+            .any(|diagnostic| {
+                diagnostic.code == "AL-NL010"
+                    && diagnostic.range.start_byte == target.start_byte()
+                    && diagnostic.range.end_byte == target.end_byte()
+            });
+    if !independently_unused {
+        return None;
+    }
+
+    if names.len() > 1 {
+        let range = if let Some(next) = names.get(target_index + 1) {
+            tree_sitter::Range {
+                start_byte: target.start_byte(),
+                end_byte: next.start_byte(),
+                start_point: target.start_position(),
+                end_point: next.start_position(),
+            }
+        } else {
+            let previous = names.get(target_index.checked_sub(1)?)?;
+            tree_sitter::Range {
+                start_byte: previous.end_byte(),
+                end_byte: target.end_byte(),
+                start_point: previous.end_position(),
+                end_point: target.end_position(),
+            }
+        };
+        return Some((
+            name,
+            TextEdit {
+                range: al_syntax::ts_range_to_syntax(&range, text.as_bytes()).into(),
+                new_text: String::new(),
+            },
+        ));
+    }
+
+    // Removing the sole declaration would also discard an initializer, whose
+    // expression may have side effects even when the resulting value is never
+    // referenced. Leave that case diagnostic-only.
+    if declaration.kind() == "regular_variable_declaration"
+        && declaration.child_by_field_name("value").is_some()
+    {
+        return None;
+    }
+
+    let mut container = declaration;
+    while let Some(parent) = container.parent() {
+        if parent.kind() == "var_section" {
+            break;
+        }
+        container = parent;
+    }
+    if container.parent().map(|parent| parent.kind()) != Some("var_section") {
+        return None;
+    }
+
+    Some((
+        name,
+        TextEdit {
+            range: whole_declaration_range(text, container.range()),
+            new_text: String::new(),
+        },
+    ))
+}
+
+fn node_contains_point(node: tree_sitter::Node<'_>, point: tree_sitter::Point) -> bool {
+    let start = node.start_position();
+    let end = node.end_position();
+    (point.row > start.row || (point.row == start.row && point.column >= start.column))
+        && (point.row < end.row || (point.row == end.row && point.column <= end.column))
+}
+
+fn whole_declaration_range(text: &str, range: tree_sitter::Range) -> Range {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let start_line = lines.get(range.start_point.row).copied().unwrap_or("");
+    let end_line = lines.get(range.end_point.row).copied().unwrap_or("");
+    let start_col = range.start_point.column.min(start_line.len());
+    let end_col = range.end_point.column.min(end_line.len());
+
+    if start_line[..start_col].trim().is_empty() && end_line[end_col..].trim().is_empty() {
+        let end = if range.end_point.row + 1 < lines.len() {
+            Position {
+                line: (range.end_point.row + 1) as u32,
+                character: 0,
+            }
+        } else {
+            Position {
+                line: range.end_point.row as u32,
+                character: al_syntax::byte_col_to_utf16_col(end_line, end_line.len()),
+            }
+        };
+        return Range {
+            start: Position {
+                line: range.start_point.row as u32,
+                character: 0,
+            },
+            end,
+        };
+    }
+
+    al_syntax::ts_range_to_syntax(&range, text.as_bytes()).into()
+}
+
+/// Insert an annotation immediately inside the declaration block that starts
+/// at `declaration_line`. Quotes and line comments are skipped while locating
+/// the opening brace, so names such as `"Value { old }"` cannot redirect the
+/// edit. The returned columns are UTF-16 LSP columns.
+fn annotation_edit(text: &str, declaration_line: u32, property: &str) -> Option<TextEdit> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let declaration = *lines.get(declaration_line as usize)?;
+    let declaration_indent = declaration
+        .get(..declaration.len() - declaration.trim_start().len())?
+        .to_string();
+
+    for (line_index, line) in lines
+        .iter()
+        .enumerate()
+        .skip(declaration_line as usize)
+        .take(16)
+    {
+        let Some(brace_byte) = unquoted_open_brace(line) else {
+            continue;
+        };
+        let after_brace = &line[brace_byte + 1..];
+        let leading_whitespace_bytes = after_brace.len() - after_brace.trim_start().len();
+        let start_byte = brace_byte + 1;
+        let end_byte = start_byte + leading_whitespace_bytes;
+        let property_indent = format!("{declaration_indent}    ");
+        let next_indent = if after_brace.trim_start().starts_with('}') {
+            &declaration_indent
+        } else {
+            &property_indent
+        };
+        let new_text = if after_brace.trim().is_empty() {
+            format!("\n{property_indent}{property}")
+        } else {
+            format!("\n{property_indent}{property}\n{next_indent}")
+        };
+        return Some(TextEdit {
+            range: Range {
+                start: Position {
+                    line: line_index as u32,
+                    character: al_syntax::byte_col_to_utf16_col(line, start_byte),
+                },
+                end: Position {
+                    line: line_index as u32,
+                    character: al_syntax::byte_col_to_utf16_col(line, end_byte),
+                },
+            },
+            new_text,
+        });
+    }
+    None
+}
+
+fn unquoted_open_brace(line: &str) -> Option<usize> {
+    let mut chars = line.char_indices().peekable();
+    let mut single_quoted = false;
+    let mut double_quoted = false;
+    while let Some((byte, ch)) = chars.next() {
+        if !single_quoted
+            && !double_quoted
+            && ch == '/'
+            && chars.peek().is_some_and(|(_, next)| *next == '/')
+        {
+            return None;
+        }
+        if ch == '\'' && !double_quoted {
+            if single_quoted && chars.peek().is_some_and(|(_, next)| *next == '\'') {
+                chars.next();
+            } else {
+                single_quoted = !single_quoted;
+            }
+            continue;
+        }
+        if ch == '"' && !single_quoted {
+            if double_quoted && chars.peek().is_some_and(|(_, next)| *next == '"') {
+                chars.next();
+            } else {
+                double_quoted = !double_quoted;
+            }
+            continue;
+        }
+        if ch == '{' && !single_quoted && !double_quoted {
+            return Some(byte);
+        }
+    }
     None
 }
 
@@ -308,6 +580,42 @@ mod tests {
     use super::*;
     use al_workspace::Workspace;
 
+    fn unused_diagnostic(source: &str, name_text: &str) -> DiagnosticInfo {
+        let parsed = al_syntax::AlParser::parse_quick(source);
+        let diagnostic = al_syntax::lint::lint(&parsed.tree, source)
+            .into_iter()
+            .find(|diagnostic| {
+                diagnostic.code == "AL-NL010"
+                    && &source[diagnostic.range.start_byte..diagnostic.range.end_byte] == name_text
+            })
+            .unwrap_or_else(|| panic!("missing AL-NL010 for {name_text}"));
+        DiagnosticInfo {
+            range: al_syntax::ts_range_to_syntax(&diagnostic.range, source.as_bytes()).into(),
+            message: diagnostic.message,
+            code: Some(diagnostic.code),
+        }
+    }
+
+    fn apply_edit(source: &str, edit: &TextEdit) -> String {
+        fn offset(source: &str, position: Position) -> usize {
+            let mut line_start = 0usize;
+            for _ in 0..position.line {
+                line_start += source[line_start..]
+                    .find('\n')
+                    .map(|relative| relative + 1)
+                    .expect("edit line exists");
+            }
+            let line_end = source[line_start..]
+                .find('\n')
+                .map_or(source.len(), |relative| line_start + relative);
+            let line = &source[line_start..line_end];
+            line_start + al_syntax::utf16_col_to_byte_offset(line, position.character as usize)
+        }
+        let start = offset(source, edit.range.start);
+        let end = offset(source, edit.range.end);
+        format!("{}{}{}", &source[..start], edit.new_text, &source[end..])
+    }
+
     /// `enableCodeActions` was parsed from user settings but never
     /// consumed — setting it to false had no effect. The query (the common
     /// choke point for both the LSP and daemon transports) must honor it.
@@ -317,8 +625,7 @@ mod tests {
         let uri = url::Url::parse("file:///proj/src/X.al").unwrap();
         let source =
             "codeunit 50100 \"Hello World\"\n{\n    procedure Greet()\n    begin\n    end;\n}\n";
-        ws.documents.open(uri.clone(), source.to_string());
-
+        ws.documents.open(uri.clone(), source.to_string()).unwrap();
         let range = Range {
             start: crate::queries::Position {
                 line: 2,
@@ -346,6 +653,200 @@ mod tests {
             "enableCodeActions=false must suppress source actions; got {} action(s)",
             disabled.len()
         );
+    }
+
+    #[test]
+    fn lint_annotation_quick_fixes_emit_real_utf16_edits() {
+        let ws = Workspace::new();
+        let uri = url::Url::parse("file:///proj/src/X.al").unwrap();
+        let source = "table 50100 \"Value { old }\"\n{\n    fields\n    {\n        field(1; Name; Text[20])\n        {\n        }\n    }\n}\n";
+        let diagnostic = DiagnosticInfo {
+            range: Range {
+                start: Position {
+                    line: 4,
+                    character: 0,
+                },
+                end: Position {
+                    line: 4,
+                    character: 0,
+                },
+            },
+            message: "Table field has no DataClassification property.".to_string(),
+            code: Some("AL-NL002".to_string()),
+        };
+
+        let action = quick_fix_for_diagnostic(&ws, &uri, source, &diagnostic)
+            .expect("registered lint rule must provide a fix");
+        let edit = &action.edit.expect("workspace edit").changes[0].1[0];
+        assert_eq!(edit.range.start.line, 5);
+        assert_eq!(edit.range.start.character, 9);
+        assert_eq!(
+            edit.new_text,
+            "\n            DataClassification = CustomerContent;"
+        );
+    }
+
+    #[test]
+    fn lint_quick_fixes_respect_enable_code_actions_toggle() {
+        let ws = Workspace::new();
+        ws.config.try_write().unwrap().enable_code_actions = false;
+        let uri = url::Url::parse("file:///proj/src/X.al").unwrap();
+        let diagnostic = DiagnosticInfo {
+            range: Range::default(),
+            message: "missing".to_string(),
+            code: Some("AL-NL006".to_string()),
+        };
+        assert!(quick_fix_for_diagnostic(&ws, &uri, "page 50100 X { }", &diagnostic).is_none());
+    }
+
+    #[test]
+    fn unused_local_quick_fix_removes_single_declaration_and_attributes() {
+        let ws = Workspace::new();
+        let uri = url::Url::parse("file:///proj/src/X.al").unwrap();
+        let source = r#"codeunit 50100 X
+{
+    procedure Exercise()
+    var
+        [NonDebuggable]
+        Unused: Integer;
+        Used: Integer;
+    begin
+        Used := 1;
+    end;
+}"#;
+        let diagnostic = unused_diagnostic(source, "Unused");
+        let action = quick_fix_for_diagnostic(&ws, &uri, source, &diagnostic)
+            .expect("unused local must have a removal");
+        assert_eq!(action.title, "Remove unused variable 'Unused'");
+        let edit = &action.edit.expect("workspace edit").changes[0].1[0];
+        assert_eq!(
+            edit.range.start,
+            Position {
+                line: 4,
+                character: 0
+            }
+        );
+        assert_eq!(
+            edit.range.end,
+            Position {
+                line: 6,
+                character: 0
+            }
+        );
+        let updated = apply_edit(source, edit);
+        assert!(!updated.contains("NonDebuggable"));
+        assert!(!updated.contains("Unused"));
+        assert!(updated.contains("Used: Integer;"));
+        assert!(!al_syntax::AlParser::parse_quick(&updated)
+            .tree
+            .root_node()
+            .has_error());
+    }
+
+    #[test]
+    fn unused_local_quick_fix_removes_one_name_from_multi_name_declaration() {
+        let ws = Workspace::new();
+        let uri = url::Url::parse("file:///proj/src/X.al").unwrap();
+        let source = r#"codeunit 50100 X
+{
+    procedure Exercise()
+    var
+        FirstUnused, Used, LastUnused: Integer;
+    begin
+        Used := 1;
+    end;
+}"#;
+
+        let first =
+            quick_fix_for_diagnostic(&ws, &uri, source, &unused_diagnostic(source, "FirstUnused"))
+                .expect("first unused name removal");
+        let first_edit = &first.edit.expect("workspace edit").changes[0].1[0];
+        let without_first = apply_edit(source, first_edit);
+        assert!(without_first.contains("Used, LastUnused: Integer;"));
+
+        let last =
+            quick_fix_for_diagnostic(&ws, &uri, source, &unused_diagnostic(source, "LastUnused"))
+                .expect("last unused name removal");
+        let last_edit = &last.edit.expect("workspace edit").changes[0].1[0];
+        let without_last = apply_edit(source, last_edit);
+        assert!(without_last.contains("FirstUnused, Used: Integer;"));
+    }
+
+    #[test]
+    fn unused_local_quick_fix_refuses_used_or_side_effecting_declarations() {
+        let ws = Workspace::new();
+        let uri = url::Url::parse("file:///proj/src/X.al").unwrap();
+        let source = r#"codeunit 50100 X
+{
+    procedure Compute(): Integer
+    begin
+        exit(1);
+    end;
+
+    procedure Exercise()
+    var
+        Used: Integer;
+        Initialized: Integer := Compute();
+    begin
+        Used := 1;
+    end;
+}"#;
+
+        let used = DiagnosticInfo {
+            range: Range {
+                start: Position {
+                    line: 9,
+                    character: 8,
+                },
+                end: Position {
+                    line: 9,
+                    character: 12,
+                },
+            },
+            message: "spoofed unused diagnostic".to_string(),
+            code: Some("AL-NL010".to_string()),
+        };
+        assert!(quick_fix_for_diagnostic(&ws, &uri, source, &used).is_none());
+
+        let initialized = unused_diagnostic(source, "Initialized");
+        assert!(
+            quick_fix_for_diagnostic(&ws, &uri, source, &initialized).is_none(),
+            "removing an initializer could discard side effects"
+        );
+    }
+
+    #[test]
+    fn historical_unused_local_code_uses_the_same_proven_safe_fix() {
+        let ws = Workspace::new();
+        let uri = url::Url::parse("file:///proj/src/X.al").unwrap();
+        let source = r#"codeunit 50100 X
+{
+    procedure Exercise()
+    var
+        Unused: Integer;
+    begin
+    end;
+}"#;
+        let mut diagnostic = unused_diagnostic(source, "Unused");
+        diagnostic.code = Some("AL-L005".to_string());
+        assert!(quick_fix_for_diagnostic(&ws, &uri, source, &diagnostic).is_some());
+    }
+
+    #[test]
+    fn unsafe_lint_rules_do_not_receive_guessed_edits() {
+        let ws = Workspace::new();
+        let uri = url::Url::parse("file:///proj/src/X.al").unwrap();
+        for code in ["AL-NL001", "AL-NL005", "AL-NL007"] {
+            let diagnostic = DiagnosticInfo {
+                range: Range::default(),
+                message: "manual decision required".to_string(),
+                code: Some(code.to_string()),
+            };
+            assert!(
+                quick_fix_for_diagnostic(&ws, &uri, "codeunit 50100 X { }", &diagnostic).is_none(),
+                "{code} must stay diagnostic-only"
+            );
+        }
     }
 
     #[test]
@@ -477,7 +978,7 @@ mod tests {
     }
 
     fn open_doc(ws: &al_workspace::Workspace, uri: &Url, al_code: &str) {
-        ws.documents.open(uri.clone(), al_code.to_string());
+        ws.documents.open(uri.clone(), al_code.to_string()).unwrap();
     }
 
     #[test]

@@ -5,23 +5,33 @@ use url::Url;
 
 use super::{Location, Position, Range};
 use crate::resolution::{self, ResolvedMemberKind};
-use al_workspace::Workspace;
+use al_workspace::{Workspace, WorkspaceStateError};
 
-#[must_use]
-pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Option<Vec<Location>> {
+pub fn definition(
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+) -> Result<Option<Vec<Location>>, WorkspaceStateError> {
     // Open buffers are authoritative, but cross-workspace callers also resolve
     // positions in indexed files that have never been opened in the editor.
-    let (text, tree) =
+    let Some((text, tree)) =
         al_source::parsing::get_or_parse(&workspace.documents, uri).or_else(|| {
             uri.to_file_path()
                 .ok()
                 .and_then(|path| workspace.file_index.get_cached_parse(&path))
                 .map(|(text, tree)| (text.into(), tree))
-        })?;
+        })
+    else {
+        return Ok(None);
+    };
 
-    let node = al_syntax::find_node_at_position(&tree, &text, position.into())?;
+    let Some(node) = al_syntax::find_node_at_position(&tree, &text, position.into()) else {
+        return Ok(None);
+    };
     let source = text.as_bytes();
-    let clean_name = super::node_clean_name(node, source)?;
+    let Some(clean_name) = super::node_clean_name(node, source) else {
+        return Ok(None);
+    };
 
     if let Some(access) = resolution::access_path_at(&tree, &text, position) {
         if let Some(receiver) = resolution::resolve_expression_type(
@@ -31,9 +41,9 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
             &tree,
             &access.receiver,
             position,
-        ) {
+        )? {
             if let Some(member) =
-                resolution::resolve_member(workspace, uri, &receiver, &access.member)
+                resolution::resolve_member(workspace, uri, &receiver, &access.member)?
             {
                 match member.kind {
                     ResolvedMemberKind::Variable {
@@ -44,10 +54,10 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                     }
                     | ResolvedMemberKind::Field { range: Some(range) }
                     | ResolvedMemberKind::EnumValue { range: Some(range) } => {
-                        return Some(vec![Location {
+                        return Ok(Some(vec![Location {
                             uri: member.uri.unwrap_or_else(|| uri.clone()),
                             range,
-                        }]);
+                        }]));
                     }
                     _ => {
                         if let Some(entry) = find_package_entry_for_type(
@@ -60,10 +70,10 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                                 &entry,
                                 Some(&access.member),
                             ) {
-                                return Some(vec![Location {
+                                return Ok(Some(vec![Location {
                                     uri: file_uri,
                                     range,
-                                }]);
+                                }]));
                             }
                         }
                     }
@@ -88,20 +98,20 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
             clean_name,
             type_subtype_kw.as_deref(),
         ) {
-            return Some(vec![Location {
+            return Ok(Some(vec![Location {
                 uri: obj_uri,
                 range,
-            }]);
+            }]));
         }
         let pkg_entries = workspace.symbols.get_by_name(clean_name);
         if let Some(entry) = pkg_entries.into_iter().find(|e| !e.kind.is_extension()) {
             if let Some((file_uri, range)) =
                 super::get_or_create_virtual_file(workspace, &entry, None)
             {
-                return Some(vec![Location {
+                return Ok(Some(vec![Location {
                     uri: file_uri,
                     range,
-                }]);
+                }]));
             }
         }
     }
@@ -110,20 +120,20 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     if let Some(decl) = resolver.resolve_type(clean_name, position.into()) {
         let def_range: Range = al_syntax::ts_range_to_syntax(&decl.range, text.as_bytes()).into();
         if def_range.start != position {
-            return Some(vec![Location {
+            return Ok(Some(vec![Location {
                 uri: uri.clone(),
                 range: def_range,
-            }]);
+            }]));
         }
     }
 
     if let Some(decl_range) = find_same_file_procedure_decl(&tree, source, clean_name) {
         let def_range: Range = al_syntax::ts_range_to_syntax(&decl_range, source).into();
         if def_range.start != position {
-            return Some(vec![Location {
+            return Ok(Some(vec![Location {
                 uri: uri.clone(),
                 range: def_range,
-            }]);
+            }]));
         }
     }
 
@@ -136,14 +146,14 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                 let obj_info = obj_info_entry.value();
                 if let Some(file_text_entry) = workspace.file_index.files.get(&file_path) {
                     if let Ok(file_uri) = Url::from_file_path(&file_path) {
-                        return Some(vec![Location {
+                        return Ok(Some(vec![Location {
                             uri: file_uri,
                             range: al_syntax::ts_range_to_syntax(
                                 &obj_info.range,
                                 file_text_entry.value().as_bytes(),
                             )
                             .into(),
-                        }]);
+                        }]));
                     }
                 }
             }
@@ -156,10 +166,10 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                 continue;
             }
             if let Ok(file_uri) = Url::from_file_path(&info.file) {
-                return Some(vec![Location {
+                return Ok(Some(vec![Location {
                     uri: file_uri,
                     range: info.selection_range.into(),
-                }]);
+                }]));
             }
         }
     }
@@ -168,10 +178,10 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     if let Some(entry) = symbols.into_iter().find(|e| !e.kind.is_extension()) {
         if let Some((file_uri, range)) = super::get_or_create_virtual_file(workspace, &entry, None)
         {
-            return Some(vec![Location {
+            return Ok(Some(vec![Location {
                 uri: file_uri,
                 range,
-            }]);
+            }]));
         }
     }
 
@@ -187,13 +197,13 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         if range_contains(def_range, position) {
             continue;
         }
-        return Some(vec![Location {
+        return Ok(Some(vec![Location {
             uri: uri.clone(),
             range: def_range,
-        }]);
+        }]));
     }
 
-    None
+    Ok(None)
 }
 
 /// True when `position` falls inside `range` (inclusive of start, exclusive of
@@ -313,12 +323,16 @@ mod tests {
     use al_symbols::{ObjectKind, SymbolEntry};
     use al_workspace::Workspace;
 
+    fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Option<Vec<Location>> {
+        super::definition(workspace, uri, position).unwrap()
+    }
+
     fn test_uri() -> Url {
         Url::parse("file:///test/src/Test.al").unwrap()
     }
 
     fn open_doc(ws: &Workspace, uri: &Url, al_code: &str) {
-        ws.documents.open(uri.clone(), al_code.to_string());
+        ws.documents.open(uri.clone(), al_code.to_string()).unwrap();
     }
 
     fn make_entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
@@ -582,7 +596,7 @@ mod tests {
 
     fn open(ws: &Workspace, src: &str) -> Url {
         let uri = Url::parse("file:///tmp/def-test.al").unwrap();
-        ws.documents.open(uri.clone(), src.to_string());
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
         uri
     }
 

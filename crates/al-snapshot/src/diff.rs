@@ -1,4 +1,4 @@
-//! Diff two snapshots by aligning samples on `(breakpoint_id, iteration)`.
+//! Diff two snapshots by aligning samples on stable source location and iteration.
 //!
 //! [`diff_snapshots`] is the main entry point. It produces a `Vec<Divergence>`
 //! describing every field-level difference found. An empty Vec means the two
@@ -22,18 +22,37 @@ pub struct Divergence {
 
 /// Compare two snapshots and return all field-level differences.
 ///
-/// Samples are matched by `(breakpoint_id, iteration)`.  Samples that exist
+/// Samples are matched by `(file, line, iteration)`. Business Central assigns
+/// breakpoint IDs per debug session, so IDs are deliberately not used as
+/// cross-run identity. Samples that exist
 /// in `a` but not in `b` are reported as having `new_value = null`.  Samples
 /// that exist in `b` but not in `a` are reported as having `old_value = null`.
 ///
-/// In addition, if `bc_version` or `source_hash` differ, a special divergence
-/// with `field_path = "/metadata/bc_version"` (or `"/metadata/source_hash"`) and
-/// `breakpoint_id = 0, iteration = 0` is prepended.
+/// Snapshot identity and source/runtime metadata differences are prepended as
+/// `breakpoint_id = 0, iteration = 0` divergences.
 ///
 /// Output is suitable both for human-readable display and JSON wire format.
 pub fn diff_snapshots(a: &Snapshot, b: &Snapshot) -> Vec<Divergence> {
     let mut out = Vec::new();
 
+    if a.codeunit_id != b.codeunit_id {
+        out.push(Divergence {
+            breakpoint_id: 0,
+            iteration: 0,
+            field_path: "/metadata/codeunit_id".to_string(),
+            old_value: serde_json::json!(a.codeunit_id),
+            new_value: serde_json::json!(b.codeunit_id),
+        });
+    }
+    if a.method_name != b.method_name {
+        out.push(Divergence {
+            breakpoint_id: 0,
+            iteration: 0,
+            field_path: "/metadata/method_name".to_string(),
+            old_value: serde_json::Value::String(a.method_name.clone()),
+            new_value: serde_json::Value::String(b.method_name.clone()),
+        });
+    }
     if a.bc_version != b.bc_version {
         out.push(Divergence {
             breakpoint_id: 0,
@@ -53,31 +72,56 @@ pub fn diff_snapshots(a: &Snapshot, b: &Snapshot) -> Vec<Divergence> {
         });
     }
 
+    type SampleKey = (String, u32, u32);
+    fn sample_key(sample: &Sample) -> SampleKey {
+        (
+            sample.file.replace('\\', "/"),
+            sample.line,
+            sample.iteration,
+        )
+    }
+
     use std::collections::HashMap;
-    let b_index: HashMap<(u32, u32), &Sample> = b
+    let b_index: HashMap<SampleKey, &Sample> = b
         .samples
         .iter()
-        .map(|s| ((s.breakpoint_id, s.iteration), s))
+        .map(|sample| (sample_key(sample), sample))
         .collect();
 
-    let a_index: HashMap<(u32, u32), &Sample> = a
+    let a_index: HashMap<SampleKey, &Sample> = a
         .samples
         .iter()
-        .map(|s| ((s.breakpoint_id, s.iteration), s))
+        .map(|sample| (sample_key(sample), sample))
         .collect();
 
-    let mut a_keys: Vec<(u32, u32)> = a_index.keys().copied().collect();
+    let mut a_keys: Vec<SampleKey> = a_index.keys().cloned().collect();
     a_keys.sort();
     for key in &a_keys {
         let sa = a_index[key];
         match b_index.get(key) {
             Some(sb) => {
-                diff_values(key.0, key.1, "", &sa.variables, &sb.variables, &mut out);
+                if sa.condition != sb.condition {
+                    out.push(Divergence {
+                        breakpoint_id: sa.breakpoint_id,
+                        iteration: sa.iteration,
+                        field_path: "/breakpoint/condition".to_string(),
+                        old_value: serde_json::json!(sa.condition),
+                        new_value: serde_json::json!(sb.condition),
+                    });
+                }
+                diff_values(
+                    sa.breakpoint_id,
+                    sa.iteration,
+                    "",
+                    &sa.variables,
+                    &sb.variables,
+                    &mut out,
+                );
             }
             None => {
                 out.push(Divergence {
-                    breakpoint_id: key.0,
-                    iteration: key.1,
+                    breakpoint_id: sa.breakpoint_id,
+                    iteration: sa.iteration,
                     field_path: "/variables".to_string(),
                     old_value: sa.variables.clone(),
                     new_value: serde_json::Value::Null,
@@ -86,17 +130,17 @@ pub fn diff_snapshots(a: &Snapshot, b: &Snapshot) -> Vec<Divergence> {
         }
     }
 
-    let mut b_only_keys: Vec<(u32, u32)> = b_index
+    let mut b_only_keys: Vec<SampleKey> = b_index
         .keys()
         .filter(|k| !a_index.contains_key(*k))
-        .copied()
+        .cloned()
         .collect();
     b_only_keys.sort();
     for key in b_only_keys {
         let sb = b_index[&key];
         out.push(Divergence {
-            breakpoint_id: key.0,
-            iteration: key.1,
+            breakpoint_id: sb.breakpoint_id,
+            iteration: sb.iteration,
             field_path: "/variables".to_string(),
             old_value: serde_json::Value::Null,
             new_value: sb.variables.clone(),
@@ -212,6 +256,7 @@ mod tests {
             breakpoint_id: bp,
             file: "Test.al".to_string(),
             line: 10,
+            condition: None,
             iteration: iter,
             variables: vars,
         }
@@ -299,5 +344,29 @@ mod tests {
         let result = diff_snapshots(&a, &b);
         assert!(!result.is_empty(), "extra sample must be flagged");
         assert!(result[0].old_value.is_null());
+    }
+
+    #[test]
+    fn test_diff_aligns_ephemeral_breakpoint_ids_by_location() {
+        let a = base_snapshot(vec![sample(7, 0, serde_json::json!({"x": 1}))]);
+        let b = base_snapshot(vec![sample(42, 0, serde_json::json!({"x": 1}))]);
+        assert!(
+            diff_snapshots(&a, &b).is_empty(),
+            "server-assigned IDs must not create a false divergence"
+        );
+    }
+
+    #[test]
+    fn test_diff_rejects_different_test_identity_as_equal() {
+        let a = base_snapshot(vec![]);
+        let mut b = base_snapshot(vec![]);
+        b.codeunit_id = 50101;
+        b.method_name = "OtherTest".to_string();
+        let fields = diff_snapshots(&a, &b)
+            .into_iter()
+            .map(|divergence| divergence.field_path)
+            .collect::<Vec<_>>();
+        assert!(fields.contains(&"/metadata/codeunit_id".to_string()));
+        assert!(fields.contains(&"/metadata/method_name".to_string()));
     }
 }

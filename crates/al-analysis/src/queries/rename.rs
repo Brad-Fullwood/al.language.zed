@@ -3,7 +3,7 @@
 use url::Url;
 
 use super::{Position, Range, TextEdit, WorkspaceEdit};
-use al_workspace::Workspace;
+use al_workspace::{Workspace, WorkspaceStateError};
 
 pub fn prepare_rename(
     workspace: &Workspace,
@@ -26,24 +26,29 @@ pub fn prepare_rename(
     ))
 }
 
-#[must_use]
 pub fn rename(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
     new_name: &str,
-) -> Option<WorkspaceEdit> {
+) -> Result<Option<WorkspaceEdit>, WorkspaceStateError> {
     // Reject a new name that would splice invalid AL into every touched file.
     // Without this, renaming to `my var`, `2Start`, `` or a reserved keyword
     // returns a WorkspaceEdit that writes syntax errors workspace-wide.
     if !is_valid_rename_target(new_name) {
-        return None;
+        return Ok(None);
     }
 
-    let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, uri)?;
+    let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
+        return Ok(None);
+    };
 
-    let node = al_syntax::find_node_at_position(&tree, &text, position.into())?;
-    let clean_name = super::node_clean_name(node, text.as_bytes())?;
+    let Some(node) = al_syntax::find_node_at_position(&tree, &text, position.into()) else {
+        return Ok(None);
+    };
+    let Some(clean_name) = super::node_clean_name(node, text.as_bytes()) else {
+        return Ok(None);
+    };
 
     let mut changes: Vec<(Url, Vec<TextEdit>)> = Vec::new();
     let source_bytes = text.as_bytes();
@@ -84,11 +89,11 @@ pub fn rename(
                 })
                 .collect();
             if edits.is_empty() {
-                return None;
+                return Ok(None);
             }
-            return Some(WorkspaceEdit {
+            return Ok(Some(WorkspaceEdit {
                 changes: vec![(uri.clone(), edits)],
-            });
+            }));
         }
     }
 
@@ -99,24 +104,23 @@ pub fn rename(
     // longer rewrites the other (or unrelated same-named fields/locals). The
     // binder is the go-to-definition query: two positions bind to the same
     // symbol iff they resolve to the same declaration location.
-    let cursor_decl = node_decl_loc(workspace, uri, node, source_bytes);
+    let cursor_decl = node_decl_loc(workspace, uri, node, source_bytes)?;
 
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
     if !refs.is_empty() {
-        let edits: Vec<TextEdit> = refs
-            .iter()
-            .filter_map(|r| {
-                if ref_decl_loc(workspace, uri, &text, r) != cursor_decl {
-                    return None;
-                }
-                let matched_text = text.get(r.start_byte..r.end_byte)?;
+        let mut edits = Vec::new();
+        for r in &refs {
+            if ref_decl_loc(workspace, uri, &text, r)? != cursor_decl {
+                continue;
+            }
+            if let Some(matched_text) = text.get(r.start_byte..r.end_byte) {
                 let replacement = make_rename_text(node.kind(), matched_text, new_name);
-                Some(TextEdit {
+                edits.push(TextEdit {
                     range: al_syntax::ts_range_to_syntax(r, source_bytes).into(),
                     new_text: replacement,
-                })
-            })
-            .collect();
+                });
+            }
+        }
         if !edits.is_empty() {
             changes.push((uri.clone(), edits));
         }
@@ -138,20 +142,19 @@ pub fn rename(
         let refs = al_syntax::find_variable_references(&file_tree, &file_text, clean_name);
         if !refs.is_empty() {
             let file_source_bytes = file_text.as_bytes();
-            let edits: Vec<TextEdit> = refs
-                .iter()
-                .filter_map(|r| {
-                    if ref_decl_loc(workspace, &file_uri, &file_text, r) != cursor_decl {
-                        return None;
-                    }
-                    let matched_text = file_text.get(r.start_byte..r.end_byte)?;
+            let mut edits = Vec::new();
+            for r in &refs {
+                if ref_decl_loc(workspace, &file_uri, &file_text, r)? != cursor_decl {
+                    continue;
+                }
+                if let Some(matched_text) = file_text.get(r.start_byte..r.end_byte) {
                     let replacement = make_rename_text("", matched_text, new_name);
-                    Some(TextEdit {
+                    edits.push(TextEdit {
                         range: al_syntax::ts_range_to_syntax(r, file_source_bytes).into(),
                         new_text: replacement,
-                    })
-                })
-                .collect();
+                    });
+                }
+            }
             if !edits.is_empty() {
                 changes.push((file_uri, edits));
             }
@@ -159,10 +162,10 @@ pub fn rename(
     }
 
     if changes.is_empty() {
-        return None;
+        return Ok(None);
     }
 
-    Some(WorkspaceEdit { changes })
+    Ok(Some(WorkspaceEdit { changes }))
 }
 
 use super::binding::{decl_loc, BindKey};
@@ -172,12 +175,17 @@ fn node_decl_loc(
     uri: &Url,
     node: tree_sitter::Node,
     source: &[u8],
-) -> BindKey {
+) -> Result<BindKey, WorkspaceStateError> {
     let range: Range = al_syntax::ts_range_to_syntax(&node.range(), source).into();
     decl_loc(workspace, uri, range.start)
 }
 
-fn ref_decl_loc(workspace: &Workspace, uri: &Url, text: &str, r: &tree_sitter::Range) -> BindKey {
+fn ref_decl_loc(
+    workspace: &Workspace,
+    uri: &Url,
+    text: &str,
+    r: &tree_sitter::Range,
+) -> Result<BindKey, WorkspaceStateError> {
     let range: Range = al_syntax::ts_range_to_syntax(r, text.as_bytes()).into();
     decl_loc(workspace, uri, range.start)
 }
@@ -228,12 +236,21 @@ mod tests {
     use super::*;
     use al_workspace::Workspace;
 
+    fn rename(
+        workspace: &Workspace,
+        uri: &Url,
+        position: Position,
+        new_name: &str,
+    ) -> Option<WorkspaceEdit> {
+        super::rename(workspace, uri, position, new_name).unwrap()
+    }
+
     fn test_uri() -> Url {
         Url::parse("file:///test/src/Test.al").unwrap()
     }
 
     fn open_doc(ws: &Workspace, uri: &Url, al_code: &str) {
-        ws.documents.open(uri.clone(), al_code.to_string());
+        ws.documents.open(uri.clone(), al_code.to_string()).unwrap();
     }
 
     #[test]

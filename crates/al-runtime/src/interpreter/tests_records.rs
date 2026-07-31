@@ -65,6 +65,13 @@ fn ok(eval: Eval) -> Value {
     }
 }
 
+fn error_message(eval: Eval) -> String {
+    match eval {
+        Eval::Error(error) => error.message,
+        other => panic!("expected an interpreter error, got {other:?}"),
+    }
+}
+
 #[test]
 fn var_param_mutation_propagates_to_caller() {
     let cu = r#"codeunit 50190 "VarParam Tests"
@@ -86,6 +93,113 @@ fn var_param_mutation_propagates_to_caller() {
 "#;
     let r = run(&[("/ws/VarParam.al", cu)], "VarParam Tests", "Run", vec![]);
     assert_eq!(ok(r), Value::Integer(11));
+}
+
+#[test]
+fn same_codeunit_nested_call_preserves_object_globals() {
+    let cu = r#"codeunit 50189 "Global State Tests"
+{
+    var
+        Counter: Integer;
+
+    procedure Run(): Integer
+    begin
+        Increment();
+        Increment();
+        exit(Counter);
+    end;
+
+    local procedure Increment()
+    begin
+        Counter := Counter + 1;
+    end;
+}
+"#;
+    let result = run(
+        &[("/ws/GlobalStateTests.al", cu)],
+        "Global State Tests",
+        "Run",
+        vec![],
+    );
+    assert_eq!(ok(result), Value::Integer(2));
+}
+
+#[test]
+fn stateful_cross_codeunit_call_fails_closed() {
+    let stateful = r#"codeunit 50187 "Stateful Helper"
+{
+    var
+        Counter: Integer;
+
+    procedure Next(): Integer
+    begin
+        Counter := Counter + 1;
+        exit(Counter);
+    end;
+}
+"#;
+    let caller = r#"codeunit 50188 "Stateful Caller"
+{
+    procedure Run(): Integer
+    var
+        Helper: Codeunit "Stateful Helper";
+    begin
+        exit(Helper.Next());
+    end;
+}
+"#;
+    let result = run(
+        &[
+            ("/ws/StatefulHelper.al", stateful),
+            ("/ws/StatefulCaller.al", caller),
+        ],
+        "Stateful Caller",
+        "Run",
+        vec![],
+    );
+    let Eval::Error(error) = result else {
+        panic!("stateful helper must fail closed");
+    };
+    assert!(
+        error.message.contains("requires live BC"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn unqualified_call_resolves_only_within_current_object() {
+    let caller = r#"codeunit 50185 "Scoped Caller"
+{
+    procedure Run(): Integer
+    begin
+        exit(Value());
+    end;
+
+    local procedure Value(): Integer
+    begin
+        exit(1);
+    end;
+}
+"#;
+    let collision = r#"codeunit 50186 "Scoped Collision"
+{
+    procedure Value(): Integer
+    begin
+        exit(99);
+    end;
+}
+"#;
+    let result = run(
+        &[
+            ("/ws/ScopedCollision.al", collision),
+            ("/ws/ScopedCaller.al", caller),
+        ],
+        "Scoped Caller",
+        "Run",
+        vec![],
+    );
+    assert_eq!(ok(result), Value::Integer(1));
 }
 
 #[test]
@@ -648,6 +762,89 @@ fn unknown_table_errors_gracefully() {
 }
 
 #[test]
+fn unknown_table_field_fails_instead_of_getting_a_synthetic_id() {
+    let cu = r#"codeunit 50101 "Item Tests"
+{
+    procedure WriteUnknown()
+    var
+        Item: Record "Item";
+    begin
+        Item.Init();
+        Item."Not A Field" := 'invented';
+    end;
+}
+"#;
+    let result = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/ItemTests.al", cu)],
+        "Item Tests",
+        "WriteUnknown",
+        vec![],
+    );
+    let message = error_message(result);
+    assert!(message.contains("is not declared"), "got: {message}");
+}
+
+#[test]
+fn requested_record_trigger_fails_instead_of_running_as_a_noop() {
+    let cu = r#"codeunit 50101 "Item Tests"
+{
+    procedure InsertWithTrigger()
+    var
+        Item: Record "Item";
+    begin
+        Item.Init();
+        Item."No." := 'X';
+        Item.Insert(true);
+    end;
+}
+"#;
+    let result = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/ItemTests.al", cu)],
+        "Item Tests",
+        "InsertWithTrigger",
+        vec![],
+    );
+    let message = error_message(result);
+    assert!(
+        message.contains("requires live Business Central"),
+        "got: {message}"
+    );
+}
+
+#[test]
+fn table_without_primary_key_is_rejected() {
+    let table = r#"table 50140 "No Key"
+{
+    fields
+    {
+        field(1; Value; Integer) { }
+    }
+}
+"#;
+    let cu = r#"codeunit 50141 "No Key Tests"
+{
+    procedure Touch()
+    var
+        Rec: Record "No Key";
+    begin
+        Rec.Init();
+    end;
+}
+"#;
+    let result = run(
+        &[("/ws/NoKey.al", table), ("/ws/NoKeyTests.al", cu)],
+        "No Key Tests",
+        "Touch",
+        vec![],
+    );
+    let message = error_message(result);
+    assert!(
+        message.contains("keys section is missing"),
+        "got: {message}"
+    );
+}
+
+#[test]
 fn two_record_vars_share_physical_table() {
     let cu = r#"codeunit 50101 "Item Tests"
 {
@@ -1046,4 +1243,26 @@ fn list_contains() {
 "#;
     let r = run(&[("/ws/ListTests.al", cu)], "List Tests", "HasIt", vec![]);
     assert_eq!(ok(r), Value::Boolean(true));
+}
+
+#[test]
+fn list_method_wrong_arity_is_rejected() {
+    let cu = r#"codeunit 50300 "List Tests"
+{
+    procedure BadCount()
+    var
+        items: List of [Integer];
+    begin
+        items.Count(1);
+    end;
+}
+"#;
+    let result = run(
+        &[("/ws/ListTests.al", cu)],
+        "List Tests",
+        "BadCount",
+        vec![],
+    );
+    let message = error_message(result);
+    assert!(message.contains("expects no arguments"), "got: {message}");
 }

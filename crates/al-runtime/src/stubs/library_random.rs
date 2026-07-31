@@ -74,8 +74,13 @@ pub fn rand_int_in_range(args: &[Value]) -> Eval {
     if min >= max {
         return ok(Value::Integer(min));
     }
-    let span = max - min + 1;
-    ok(Value::Integer(min + next_rand(span) - 1))
+    let Some(span) = max.checked_sub(min).and_then(|value| value.checked_add(1)) else {
+        return err("LibraryRandom.RandIntInRange: range width overflows Integer");
+    };
+    let Some(value) = min.checked_add(next_rand(span) - 1) else {
+        return err("LibraryRandom.RandIntInRange: generated value overflows Integer");
+    };
+    ok(Value::Integer(value))
 }
 
 /// `LibraryRandom.RandDec(MaxValue: Integer; DecimalPlaces: Integer): Decimal`
@@ -86,7 +91,17 @@ pub fn rand_int_in_range(args: &[Value]) -> Eval {
 pub fn rand_dec(args: &[Value]) -> Eval {
     let (max_val, places) = match args {
         [Value::Integer(m), Value::Integer(p)] => (*m, *p),
-        [Value::Decimal(m), Value::Integer(p)] => (m.to_i64().unwrap_or(0), *p),
+        [Value::Decimal(m), Value::Integer(p)] => {
+            let Some(max) = m.to_i64() else {
+                return err(
+                    "LibraryRandom.RandDec: MaxValue must be a whole Decimal within Integer range",
+                );
+            };
+            if Decimal::from(max) != *m {
+                return err("LibraryRandom.RandDec: MaxValue must be a whole Decimal");
+            }
+            (max, *p)
+        }
         _ => return err("LibraryRandom.RandDec expects (Integer, Integer)"),
     };
     if places < 0 {
@@ -96,7 +111,10 @@ pub fn rand_dec(args: &[Value]) -> Eval {
         return err("LibraryRandom.RandDec: DecimalPlaces must be ≤ 9");
     }
     let pow = 10_i64.pow(places as u32);
-    let scaled_max = max_val.saturating_mul(pow).max(1);
+    let Some(scaled_max) = max_val.checked_mul(pow) else {
+        return err("LibraryRandom.RandDec: scaled MaxValue overflows Integer");
+    };
+    let scaled_max = scaled_max.max(1);
     let raw = next_rand(scaled_max);
     // Divide by 10^places as an exact base-10 decimal, without float division.
     ok(Value::Decimal(Decimal::new(raw, places as u32)))
@@ -163,8 +181,14 @@ pub fn rand_date_from(args: &[Value]) -> Eval {
     if max_days <= 0 {
         return ok(Value::Date(start));
     }
-    let offset = next_rand(max_days + 1) - 1;
-    ok(Value::Date(start + offset))
+    let Some(range) = max_days.checked_add(1) else {
+        return err("LibraryRandom.RandDateFrom: day range overflows Integer");
+    };
+    let offset = next_rand(range) - 1;
+    let Some(date) = start.checked_add(offset) else {
+        return err("LibraryRandom.RandDateFrom: resulting date is outside the supported range");
+    };
+    ok(Value::Date(date))
 }
 
 pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
@@ -273,6 +297,15 @@ mod tests {
     }
 
     #[test]
+    fn rand_int_in_range_overflow_is_error() {
+        let msg = is_err(rand_int_in_range(&[
+            Value::Integer(i64::MIN),
+            Value::Integer(i64::MAX),
+        ]));
+        assert!(msg.contains("overflows"), "got: {msg}");
+    }
+
+    #[test]
     fn rand_dec_returns_decimal_in_range() {
         seed(99);
         for _ in 0..50 {
@@ -307,6 +340,18 @@ mod tests {
     fn rand_dec_excessive_places_is_error() {
         let msg = is_err(rand_dec(&[Value::Integer(10), Value::Integer(10)]));
         assert!(msg.contains("≤ 9"), "got: {msg}");
+    }
+
+    #[test]
+    fn rand_dec_rejects_unrepresentable_decimal_max() {
+        let msg = is_err(rand_dec(&[Value::Decimal(Decimal::MAX), Value::Integer(2)]));
+        assert!(msg.contains("within Integer range"), "got: {msg}");
+    }
+
+    #[test]
+    fn rand_dec_rejects_scaled_overflow() {
+        let msg = is_err(rand_dec(&[Value::Integer(i64::MAX), Value::Integer(1)]));
+        assert!(msg.contains("scaled MaxValue overflows"), "got: {msg}");
     }
 
     #[test]
@@ -411,6 +456,12 @@ mod tests {
     fn rand_date_from_wrong_args_is_error() {
         let msg = is_err(rand_date_from(&[Value::Integer(100), Value::Integer(30)]));
         assert!(msg.contains("expects"), "got: {msg}");
+    }
+
+    #[test]
+    fn rand_date_from_overflow_is_error() {
+        let msg = is_err(rand_date_from(&[Value::Date(i64::MAX), Value::Integer(1)]));
+        assert!(msg.contains("outside the supported range"), "got: {msg}");
     }
 
     #[test]

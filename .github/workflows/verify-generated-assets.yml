@@ -1,0 +1,62 @@
+name: Verify generated assets
+
+# The Microsoft AL extension is a proprietary external input. This workflow is
+# deliberately manual: a maintainer supplies a pinned archive URL/revision when
+# it is available, rather than making ordinary PR CI depend on marketplace
+# availability or silently regenerating from whichever extension is current.
+on:
+  workflow_dispatch:
+    inputs:
+      al_extension_archive_url:
+        description: 'Pinned URL to a ZIP containing the unpacked Microsoft AL extension'
+        required: true
+        type: string
+      al_extension_archive_sha256:
+        description: 'SHA-256 of that exact ZIP archive'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  full-regeneration:
+    name: Full AL-extension regeneration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Install pinned tree-sitter CLI
+        run: cargo install tree-sitter-cli --version "$(cat tree-sitter-al/.tree-sitter-cli-version)" --locked
+
+      - name: Fetch pinned Microsoft AL extension snapshot
+        env:
+          AL_EXTENSION_ARCHIVE_URL: ${{ inputs.al_extension_archive_url }}
+          AL_EXTENSION_ARCHIVE_SHA256: ${{ inputs.al_extension_archive_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/al-extension"
+          curl --fail --location --retry 3 --retry-all-errors \
+            "$AL_EXTENSION_ARCHIVE_URL" -o "$RUNNER_TEMP/al-extension.zip"
+          printf '%s  %s\n' "$AL_EXTENSION_ARCHIVE_SHA256" "$RUNNER_TEMP/al-extension.zip" | sha256sum --check --status
+          unzip -q "$RUNNER_TEMP/al-extension.zip" -d "$RUNNER_TEMP/al-extension"
+          # Archives may contain one top-level directory; locate the actual
+          # extension root by its syntax payload rather than assuming layout.
+          SYNTAX_FILE="$(find "$RUNNER_TEMP/al-extension" -type f -path '*/syntaxes/*.tmlanguage' -print -quit)"
+          [ -n "$SYNTAX_FILE" ] || { echo "No AL syntax payload found in archive" >&2; exit 1; }
+          AL_EXTENSION_PATH="$(dirname "$(dirname "$SYNTAX_FILE")")"
+          [ -n "$AL_EXTENSION_PATH" ] && [ -d "$AL_EXTENSION_PATH" ]
+          echo "AL_EXTENSION_PATH=$AL_EXTENSION_PATH" >> "$GITHUB_ENV"
+
+      - name: Regenerate, run pinned corpus, and require a clean tree
+        run: scripts/check-release-hygiene.sh --full-regenerate

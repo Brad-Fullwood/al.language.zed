@@ -44,6 +44,41 @@ pub struct RunOptions {
     pub coverage: bool,
 }
 
+/// Match an AL test method name against the CLI/runtime's simple glob.
+///
+/// Matching is case-insensitive and `*` consumes zero or more characters.
+/// All other characters are literal.
+pub fn method_name_matches(name: &str, pattern: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    let pattern = pattern.to_ascii_lowercase();
+    if !pattern.contains('*') {
+        return name == pattern;
+    }
+    let mut cursor = 0usize;
+    let mut first_chunk = true;
+    let leading_star = pattern.starts_with('*');
+    let trailing_star = pattern.ends_with('*');
+    let chunks = pattern
+        .split('*')
+        .filter(|chunk| !chunk.is_empty())
+        .collect::<Vec<_>>();
+    for chunk in chunks {
+        if first_chunk && !leading_star {
+            if !name[cursor..].starts_with(chunk) {
+                return false;
+            }
+            cursor += chunk.len();
+        } else {
+            match name[cursor..].find(chunk) {
+                Some(index) => cursor += index + chunk.len(),
+                None => return false,
+            }
+        }
+        first_chunk = false;
+    }
+    trailing_star || cursor == name.len()
+}
+
 /// Events emitted by a running test session.
 ///
 /// Tagged JSON for forward-compatibility on the wire — new variants don't

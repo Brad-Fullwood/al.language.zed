@@ -15,6 +15,7 @@ pub mod subcommands;
 pub use args::*;
 pub use subcommands::*;
 
+use std::io::Write;
 use std::process::ExitCode;
 
 use clap::CommandFactory;
@@ -26,11 +27,40 @@ pub fn run(cli: Cli) -> ExitCode {
     match cli.command {
         Commands::GenerateCompletions { shell } => {
             let mut cmd = Cli::command();
-            generate(shell, &mut cmd, "al-explorer", &mut std::io::stdout());
-            ExitCode::SUCCESS
+            let shell_name = format!("{shell:?}").to_ascii_lowercase();
+            let mut script = Vec::new();
+            generate(shell, &mut cmd, "al-explorer", &mut script);
+            let script = match String::from_utf8(script) {
+                Ok(script) => script,
+                Err(error) => {
+                    return commands::report_error(
+                        &format!("generated completion script was not UTF-8: {error}"),
+                        cli.json,
+                    );
+                }
+            };
+            if cli.json {
+                commands::print_json(&serde_json::json!({
+                    "shell": shell_name,
+                    "script": script,
+                }));
+                ExitCode::SUCCESS
+            } else {
+                match std::io::stdout().lock().write_all(script.as_bytes()) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                        ExitCode::SUCCESS
+                    }
+                    Err(error) => commands::report_error(
+                        &format!("cannot write completion script: {error}"),
+                        false,
+                    ),
+                }
+            }
         }
         Commands::Version => lsp::cmd_version(cli.json),
         Commands::ClearCache => lsp::cmd_clear_cache(cli.json),
+        Commands::DaemonShutdown => lsp::cmd_daemon_shutdown(cli.json),
         Commands::Setup => lsp::cmd_setup(cli.json),
         Commands::Doctor => lsp::cmd_doctor(cli.json),
         Commands::DownloadSymbols { project, source } => {
@@ -145,8 +175,12 @@ pub fn run(cli: Cli) -> ExitCode {
             name,
             publisher,
             template,
-        } => lsp::cmd_new(&dir, &name, &publisher, &template, cli.json),
-        Commands::InitDebug => lsp::cmd_init_debug(&commands::project_root(None), cli.json),
+            runtime,
+        } => lsp::cmd_new(&dir, &name, &publisher, &template, &runtime, cli.json),
+        Commands::InitDebug => match commands::project_root(None) {
+            Ok(root) => lsp::cmd_init_debug(&root, cli.json),
+            Err(error) => commands::report_error(&error, cli.json),
+        },
         Commands::Authenticate { cmd, tenant } => {
             lsp::cmd_authenticate(&cmd, tenant.as_deref(), cli.json)
         }
@@ -159,11 +193,12 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::Impact { symbol, table } => insight::cmd_impact(&symbol, table, cli.json),
         Commands::SuggestEvent {
             object,
+            kind,
             procedure,
             table,
             field,
             event,
-        } => insight::cmd_suggest_event(object, procedure, table, field, event, cli.json),
+        } => insight::cmd_suggest_event(object, kind, procedure, table, field, event, cli.json),
         Commands::Diag => lsp::cmd_diag(cli.json),
         Commands::Debug { subcmd } => debug::cmd_debug(&subcmd, cli.json),
         Commands::Snapshot { subcmd } => debug::cmd_snapshot(&subcmd, cli.json),
@@ -175,7 +210,7 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::AddTooltips {
             from_table,
             dry_run,
-        } => lsp::cmd_add_tooltips(from_table.as_deref(), dry_run, cli.json),
+        } => lsp::cmd_add_tooltips(&from_table, dry_run, cli.json),
         Commands::AddDataClassification { value, dry_run } => {
             lsp::cmd_add_data_classification(&value, dry_run, cli.json)
         }

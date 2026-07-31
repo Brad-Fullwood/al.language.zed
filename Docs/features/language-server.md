@@ -123,11 +123,12 @@ From MCP, `al_call` exposes the daemon equivalents (`hover`, `definition`, `refe
 `implementations`, `completions`, `signatureHelp`, `rename`, `documentSymbols`, `foldingRanges`,
 `semanticTokens`, `inlayHints`, and `codeActions`) with the same workspace/query implementation.
 
-## Limitations & roadmap
+## Compatibility boundaries
 
-- `workspace/diagnostic` reports syntax diagnostics for every indexed workspace file and semantic
-  diagnostics for open documents. Running the bridge across every unopened file remains optional
-  future work because it requires a compiler round-trip per file.
+- `workspace/diagnostic` reports native syntax/project/call-graph diagnostics for every indexed
+  workspace file and Microsoft bridge enrichment for open documents. This is a deliberate latency
+  boundary: exact whole-project Microsoft semantics use the explicit official compile backend
+  instead of issuing one serialized CLR compilation for every unopened file.
 - References/subscribers over `.app` dependencies are limited because package symbols carry public
   API metadata, not call-site bodies.
 - Settings-schema autocomplete only lights up on Zed 0.8+ extension API (see the

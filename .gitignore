@@ -33,3 +33,4 @@ crates/*/bridge/bin/
 
 # AL build artifacts (compiled .app packages)
 *.app
+!crates/al-lsp/benches/fixtures/representative.app

@@ -18,70 +18,155 @@ use al_syntax::AlParser;
 
 /// Parsed dependency symbols keyed by package path, modification time, and size.
 static EXTERNAL_CACHE: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<u64, std::sync::Arc<ExternalSymbols>>>,
+    std::sync::Mutex<std::collections::HashMap<ExternalCacheKey, std::sync::Arc<ExternalSymbols>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-/// Fingerprint the `.alpackages` `.app` files by (path, mtime, size). Any change
-/// to a referenced package invalidates the cached `ExternalSymbols`.
-fn alpackages_fingerprint(alpackages: &Path) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut items: Vec<(String, u128, u64)> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(alpackages) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("app") {
-                continue;
-            }
-            if let Ok(m) = std::fs::metadata(&p) {
-                let mtime = m
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                items.push((p.to_string_lossy().into_owned(), mtime, m.len()));
-            }
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ExternalCacheKey(Vec<(PathBuf, u128, u64)>);
+
+/// Fingerprint the selected dependency `.app` files by ordered
+/// (path, mtime, size). Any package change or priority-order change invalidates
+/// the cached [`ExternalSymbols`].
+fn packages_fingerprint(packages: &[PathBuf]) -> Result<ExternalCacheKey, EmitError> {
+    let mut items = Vec::with_capacity(packages.len());
+    for path in packages {
+        let metadata = std::fs::metadata(path).map_err(|error| {
+            EmitError::Project(format!(
+                "inspecting dependency package {}: {error}",
+                path.display()
+            ))
+        })?;
+        let mtime = metadata
+            .modified()
+            .map_err(|error| {
+                EmitError::Project(format!(
+                    "reading dependency package modification time {}: {error}",
+                    path.display()
+                ))
+            })?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| {
+                EmitError::Project(format!(
+                    "dependency package modification time predates the Unix epoch {}: {error}",
+                    path.display()
+                ))
+            })?
+            .as_nanos();
+        let len = metadata.len();
+        items.push((path.clone(), mtime, len));
+    }
+    Ok(ExternalCacheKey(items))
+}
+
+/// Lock the parsed-dependency cache. The cache is fully derived from package
+/// files, so a value left behind by a panicked writer is discarded in full
+/// before the poison flag is cleared.
+fn external_cache() -> std::sync::MutexGuard<
+    'static,
+    std::collections::HashMap<ExternalCacheKey, std::sync::Arc<ExternalSymbols>>,
+> {
+    match EXTERNAL_CACHE.lock() {
+        Ok(cache) => cache,
+        Err(poisoned) => {
+            let mut cache = poisoned.into_inner();
+            cache.clear();
+            EXTERNAL_CACHE.clear_poison();
+            tracing::warn!("discarded and repaired poisoned external-symbol cache");
+            cache
         }
     }
-    items.sort();
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    items.hash(&mut h);
-    h.finish()
 }
 
-/// Index the project's `.alpackages/*.app` symbol files into an
+fn default_dependency_packages(project_dir: &Path) -> Result<Vec<PathBuf>, EmitError> {
+    let directory = project_dir.join(".alpackages");
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(EmitError::Project(format!(
+                "reading dependency package directory {}: {error}",
+                directory.display()
+            )))
+        }
+    };
+    let mut packages = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            EmitError::Project(format!(
+                "enumerating dependency package directory {}: {error}",
+                directory.display()
+            ))
+        })?;
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        {
+            packages.push(path);
+        }
+    }
+    packages.sort();
+    Ok(packages)
+}
+
+/// Index the project's default `.alpackages/*.app` symbol files into an
 /// [`ExternalSymbols`]: object name → id + defining module (so references to
 /// System/Base objects resolve to alc's ids), referenced (table, field) → type,
-/// and referenced page → SourceTable name. Cached per `.alpackages` fingerprint —
-/// a repeat build with unchanged packages reuses the parse (see [`EXTERNAL_CACHE`]).
-pub fn load_external_symbols(project_dir: &Path) -> std::sync::Arc<ExternalSymbols> {
-    let fp = alpackages_fingerprint(&project_dir.join(".alpackages"));
-    if let Some(cached) = EXTERNAL_CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&fp)
-    {
-        return std::sync::Arc::clone(cached);
-    }
-    let parsed = std::sync::Arc::new(parse_external_symbols(project_dir));
-    EXTERNAL_CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(fp, std::sync::Arc::clone(&parsed));
-    parsed
+/// and referenced page → SourceTable name.
+pub fn load_external_symbols(
+    project_dir: &Path,
+) -> Result<std::sync::Arc<ExternalSymbols>, EmitError> {
+    let packages = default_dependency_packages(project_dir)?;
+    load_external_symbols_from_paths(&packages)
 }
 
-fn parse_external_symbols(project_dir: &Path) -> ExternalSymbols {
+/// Index an explicit, already-prioritized set of dependency packages.
+///
+/// This is the production path for configured `packageCachePath` and
+/// `appLocalFolderPaths`. Keeping the selected paths explicit prevents native
+/// builds from silently falling back to `<project>/.alpackages` after the
+/// workspace symbol index has loaded a different package set.
+pub fn load_external_symbols_from_paths(
+    packages: &[PathBuf],
+) -> Result<std::sync::Arc<ExternalSymbols>, EmitError> {
+    let fp = packages_fingerprint(packages)?;
+    if let Some(cached) = external_cache().get(&fp) {
+        return Ok(std::sync::Arc::clone(cached));
+    }
+    let parsed = std::sync::Arc::new(parse_external_symbols(packages)?);
+    let mut cache = external_cache();
+    // Bound memory in long-lived daemons that observe many package
+    // generations. Eviction only costs a reparse; it cannot change results.
+    if cache.len() >= 32 {
+        cache.clear();
+    }
+    cache.insert(fp, std::sync::Arc::clone(&parsed));
+    Ok(parsed)
+}
+
+fn parse_external_symbols(package_paths: &[PathBuf]) -> Result<ExternalSymbols, EmitError> {
     let mut ext = ExternalSymbols::default();
-    let Ok(entries) = std::fs::read_dir(project_dir.join(".alpackages")) else {
-        return ext;
-    };
-    let packages: Vec<_> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("app"))
-        .filter_map(|p| al_symbols::app_reader::read_app_file(&p).ok())
-        .collect();
+    let mut packages = Vec::with_capacity(package_paths.len());
+    for path in package_paths {
+        if !path.is_file()
+            || !path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        {
+            return Err(EmitError::Project(format!(
+                "configured dependency package is not a readable .app file: {}",
+                path.display()
+            )));
+        }
+        let package = al_symbols::app_reader::read_app_file(path).map_err(|error| {
+            EmitError::Project(format!(
+                "reading dependency package {}: {error}",
+                path.display()
+            ))
+        })?;
+        packages.push(package);
+    }
 
     // Pass 1: resolver, table id → name, referenced field types.
     let mut table_id_to_name: std::collections::HashMap<i32, String> =
@@ -129,7 +214,7 @@ fn parse_external_symbols(project_dir: &Path) -> ExternalSymbols {
             }
         }
     }
-    ext
+    Ok(ext)
 }
 
 /// A built `.app`: its bytes and the conventional output file name.
@@ -140,6 +225,29 @@ pub struct BuiltApp {
     pub file_name: String,
 }
 
+/// Measured phases of one native verification-and-emission run.
+///
+/// Nanoseconds are used so small projects do not collapse to zero. These
+/// values are observational telemetry only and never affect package contents.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildTimings {
+    /// Read and parse `app.json` and every AL source, including symbol extraction.
+    pub input_parse_ns: u64,
+    /// Read and index the selected dependency packages.
+    pub dependency_index_ns: u64,
+    /// Manifest, project, binding, type, and policy verification before emission.
+    pub semantic_verification_ns: u64,
+    /// Build symbol metadata, resources, and the in-memory NAVX archive.
+    pub package_emission_ns: u64,
+    /// Re-open and validate the completed in-memory artifact.
+    pub artifact_verification_ns: u64,
+    /// Atomic output-file write. Set by compiler/CLI callers after this crate returns.
+    pub output_write_ns: u64,
+    /// End-to-end native pipeline time represented by the populated phases.
+    pub total_ns: u64,
+}
+
 /// Result of the native verification-and-emission pipeline.
 ///
 /// `app` is absent whenever a blocking diagnostic exists. Warnings remain in
@@ -148,6 +256,7 @@ pub struct BuiltApp {
 pub struct VerifiedBuild {
     pub app: Option<BuiltApp>,
     pub diagnostics: Vec<VerificationDiagnostic>,
+    pub timings: BuildTimings,
 }
 
 impl VerifiedBuild {
@@ -197,12 +306,36 @@ pub fn build_verified_app_from_project(
     compiler_version: &str,
     build_timestamp: &str,
 ) -> Result<VerifiedBuild, EmitError> {
+    build_verified_app_from_project_with_packages(
+        project_dir,
+        compiler_version,
+        build_timestamp,
+        None,
+    )
+}
+
+/// Verify and build using an explicit dependency package selection.
+///
+/// `dependency_packages = None` preserves the standalone API's
+/// `<project>/.alpackages` default. Passing `Some`, including an empty slice,
+/// uses exactly that set and never performs an implicit directory fallback.
+pub fn build_verified_app_from_project_with_packages(
+    project_dir: &Path,
+    compiler_version: &str,
+    build_timestamp: &str,
+    dependency_packages: Option<&[PathBuf]>,
+) -> Result<VerifiedBuild, EmitError> {
+    let total_started = std::time::Instant::now();
+    let input_started = std::time::Instant::now();
+    let mut timings = BuildTimings::default();
     let app_json_path = project_dir.join("app.json");
     let app_json_text = std::fs::read_to_string(&app_json_path)
         .map_err(|e| EmitError::Project(format!("reading {}: {e}", app_json_path.display())))?;
     let app_json: serde_json::Value = match serde_json::from_str(&app_json_text) {
         Ok(value) => value,
         Err(error) => {
+            timings.input_parse_ns = elapsed_ns(input_started);
+            timings.total_ns = elapsed_ns(total_started);
             return Ok(VerifiedBuild {
                 app: None,
                 diagnostics: vec![VerificationDiagnostic {
@@ -215,15 +348,21 @@ pub fn build_verified_app_from_project(
                     code: "ALN0100",
                     message: format!("Invalid app.json: {error}"),
                 }],
+                timings,
             });
         }
     };
+    timings.input_parse_ns = elapsed_ns(input_started);
 
+    let verification_started = std::time::Instant::now();
     let manifest_diagnostics = verify_manifest(&app_json);
+    timings.semantic_verification_ns = elapsed_ns(verification_started);
     if !manifest_diagnostics.is_empty() {
+        timings.total_ns = elapsed_ns(total_started);
         return Ok(VerifiedBuild {
             app: None,
             diagnostics: manifest_diagnostics,
+            timings,
         });
     }
 
@@ -254,6 +393,7 @@ pub fn build_verified_app_from_project(
     // ENTIRE project root — AL has no fixed source folder, so objects live under
     // `objects/`, `src/`, `permissions/`, flat at the root, etc. Scanning only
     // `src/` silently produced an empty `.app` for any other layout.
+    let input_started = std::time::Instant::now();
     let mut files = Vec::new();
     collect_al_files(project_dir, &mut files)?;
     files.sort();
@@ -288,23 +428,38 @@ pub fn build_verified_app_from_project(
         objects.extend(extract_objects_from_tree(&content, &rel, &parsed.tree));
         sources.push(SourceFile::from_project_path(&rel, content));
     }
+    timings.input_parse_ns = timings
+        .input_parse_ns
+        .saturating_add(elapsed_ns(input_started));
 
-    let external = load_external_symbols(project_dir);
+    let dependency_started = std::time::Instant::now();
+    let external = match dependency_packages {
+        Some(packages) => load_external_symbols_from_paths(packages),
+        None => load_external_symbols(project_dir),
+    }?;
+    timings.dependency_index_ns = elapsed_ns(dependency_started);
+    let verification_started = std::time::Instant::now();
     diagnostics.extend(verify_project_objects(
         &app_json,
         &objects,
         external.as_ref(),
     ));
+    timings.semantic_verification_ns = timings
+        .semantic_verification_ns
+        .saturating_add(elapsed_ns(verification_started));
     if diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == VerificationSeverity::Error)
     {
+        timings.total_ns = elapsed_ns(total_started);
         return Ok(VerifiedBuild {
             app: None,
             diagnostics,
+            timings,
         });
     }
 
+    let emission_started = std::time::Instant::now();
     let meta = SymbolRefMeta {
         runtime_version: optional_string("runtime"),
         app_id,
@@ -325,14 +480,19 @@ pub fn build_verified_app_from_project(
         random_package_guid()?,
         Some(project_dir),
     )?;
+    timings.package_emission_ns = elapsed_ns(emission_started);
+    let artifact_verification_started = std::time::Instant::now();
     diagnostics.extend(verify_artifact(&bytes, &sources, &meta));
+    timings.artifact_verification_ns = elapsed_ns(artifact_verification_started);
     if diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == VerificationSeverity::Error)
     {
+        timings.total_ns = elapsed_ns(total_started);
         return Ok(VerifiedBuild {
             app: None,
             diagnostics,
+            timings,
         });
     }
 
@@ -341,37 +501,17 @@ pub fn build_verified_app_from_project(
     // where the native emit would otherwise fail with a raw IO error. The
     // archive *contents* already round-trip such names exactly; only the
     // on-disk artifact name needs sanitizing.
-    let file_name = format!(
-        "{}_{}_{}.app",
-        sanitize_filename_component(&publisher),
-        sanitize_filename_component(&app_name),
-        sanitize_filename_component(&version),
-    );
+    let file_name = al_types::app_package_filename(&publisher, &app_name, &version);
+    timings.total_ns = elapsed_ns(total_started);
     Ok(VerifiedBuild {
         app: Some(BuiltApp { bytes, file_name }),
         diagnostics,
+        timings,
     })
 }
 
-/// Replace characters that are invalid in a Windows filename (the `al-lsp`
-/// release target) with `_`, and trim the trailing dots/spaces Windows also
-/// rejects. Never returns an empty string.
-fn sanitize_filename_component(s: &str) -> String {
-    let mut out: String = s
-        .chars()
-        .map(|c| match c {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            c if (c as u32) < 0x20 => '_',
-            c => c,
-        })
-        .collect();
-    while out.ends_with('.') || out.ends_with(' ') {
-        out.pop();
-    }
-    if out.is_empty() {
-        out.push('_');
-    }
-    out
+fn elapsed_ns(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn collect_al_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), EmitError> {
@@ -427,6 +567,30 @@ pub fn now_timestamp() -> String {
 mod tests {
     use super::*;
     use al_symbols::app_inspect::list_app_entries;
+
+    #[test]
+    fn dependency_fingerprint_rejects_missing_package_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.app");
+        let error = packages_fingerprint(std::slice::from_ref(&missing)).unwrap_err();
+        assert!(
+            error.to_string().contains(&missing.display().to_string()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn poisoned_external_symbol_cache_is_discarded_and_repaired() {
+        let _ = std::thread::spawn(|| {
+            let _cache = EXTERNAL_CACHE.lock().unwrap();
+            panic!("poison external-symbol cache for test");
+        })
+        .join();
+
+        drop(external_cache());
+        assert!(!EXTERNAL_CACHE.is_poisoned());
+        assert!(load_external_symbols_from_paths(&[]).is_ok());
+    }
 
     #[test]
     fn builds_a_complete_app_from_a_project() {
@@ -513,12 +677,117 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_filename_component_cases() {
-        assert_eq!(sanitize_filename_component("a<b>c"), "a_b_c");
-        assert_eq!(sanitize_filename_component("Pub:Co"), "Pub_Co");
-        assert_eq!(sanitize_filename_component("trailing. "), "trailing");
-        assert_eq!(sanitize_filename_component(""), "_");
-        assert_eq!(sanitize_filename_component("Normal Name"), "Normal Name");
+    fn packages_declared_report_layout_and_logo_resources_deterministically() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"Resources",
+                 "publisher":"P", "version":"1.0.0.0", "runtime":"15.0",
+                 "logo":"res/logo.png", "idRanges":[{"from":50100,"to":50149}] }"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join("layout")).unwrap();
+        std::fs::create_dir_all(dir.path().join("res/nested")).unwrap();
+        std::fs::write(dir.path().join("layout/Customer.rdl"), b"<Report />").unwrap();
+        std::fs::write(dir.path().join("res/logo.png"), b"PNG").unwrap();
+        std::fs::write(dir.path().join("res/nested/Strings.res"), b"RES").unwrap();
+        std::fs::write(
+            dir.path().join("src/Customer.al"),
+            r#"report 50100 "Customer"
+{
+    rendering
+    {
+        layout(CustomerLayout)
+        {
+            Type = RDLC;
+            LayoutFile = 'layout/Customer.rdl';
+        }
+    }
+}"#,
+        )
+        .unwrap();
+
+        let first = build_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        let second = build_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        let first_entries = list_app_entries(&first.bytes).unwrap();
+        let second_entries = list_app_entries(&second.bytes).unwrap();
+        let first_names: Vec<_> = first_entries
+            .entries
+            .iter()
+            .map(|entry| &entry.name)
+            .collect();
+        let second_names: Vec<_> = second_entries
+            .entries
+            .iter()
+            .map(|entry| &entry.name)
+            .collect();
+        assert_eq!(
+            first_names, second_names,
+            "resource entry order must be deterministic"
+        );
+        for entry in ["layout/layout/Customer.rdl", "logo/logo.png"] {
+            assert!(
+                first_names.iter().any(|name| *name == entry),
+                "missing {entry}"
+            );
+        }
+        assert!(
+            !first_names
+                .iter()
+                .any(|name| *name == "res/nested/Strings.res"),
+            "alc does not package undeclared loose files from res/"
+        );
+
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(first.bytes[40..].to_vec())).unwrap();
+        let mut media = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("MediaIdListing.xml").unwrap(),
+            &mut media,
+        )
+        .unwrap();
+        assert!(media.contains("LogoFileName=\"logo/logo.png\""));
+        for (entry, expected) in [
+            ("layout/layout/Customer.rdl", b"<Report />".as_slice()),
+            ("logo/logo.png", b"PNG".as_slice()),
+        ] {
+            let mut actual = Vec::new();
+            std::io::Read::read_to_end(&mut archive.by_name(entry).unwrap(), &mut actual).unwrap();
+            assert_eq!(
+                actual, expected,
+                "resource bytes must be preserved for {entry}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_report_layout_paths_outside_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"BadLayout",
+                 "publisher":"P", "version":"1.0.0.0", "runtime":"15.0",
+                 "idRanges":[{"from":50100,"to":50149}] }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("Report.al"),
+            "report 50100 R { rendering { layout(L) { Type = RDLC; LayoutFile = '../escape.rdl'; } } }",
+        )
+        .unwrap();
+
+        let error = build_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z")
+            .expect_err("path traversal must be rejected");
+        assert!(error.to_string().contains("project-relative"));
+    }
+
+    #[test]
+    fn emitted_app_filename_uses_shared_cross_platform_sanitizer() {
+        assert_eq!(
+            al_types::app_package_filename("Pub:Co", "Normal Name", "1.0.0.0"),
+            "Pub_Co_Normal Name_1.0.0.0.app"
+        );
     }
 
     #[test]
@@ -636,5 +905,290 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "ALN1007"));
+    }
+
+    #[test]
+    fn verified_build_rejects_missing_local_interface_member() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"Contracts",
+                 "publisher":"P", "version":"1.0.0.0", "runtime":"14.0",
+                 "idRanges":[{"from":50100,"to":50149}] }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("Contract.al"),
+            "interface IWorker { procedure Work(Name: Text); }\ncodeunit 50100 Worker implements IWorker { }",
+        )
+        .unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        assert!(result.app.is_none());
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "ALN2104"),
+            "expected deterministic interface-contract diagnostic: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn verified_build_rejects_unknown_permission_targets_and_invalid_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"Permissions",
+                 "publisher":"P", "version":"1.0.0.0", "runtime":"14.0",
+                 "idRanges":[{"from":50100,"to":50149}] }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("Permissions.al"),
+            "permissionset 50100 Access { Permissions = tabledata Missing = RZZ; }",
+        )
+        .unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        assert!(result.app.is_none());
+        for code in ["ALN2102", "ALN2103"] {
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == code),
+                "expected {code}: {:?}",
+                result.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn verified_build_rejects_invalid_local_page_customization_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"PageChanges",
+                 "publisher":"P", "version":"1.0.0.0", "runtime":"15.0",
+                 "idRanges":[{"from":50100,"to":50149}] }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("PageChanges.al"),
+            r#"
+table 50100 "Local Table"
+{
+    fields { field(1; Name; Text[100]) { } }
+}
+page 50100 "Local Card"
+{
+    PageType = Card;
+    SourceTable = "Local Table";
+    layout { area(Content) { group(General) { field(Name; Rec.Name) { } } } }
+}
+pageextension 50101 "Local Card Ext" extends "Local Card"
+{
+    layout { addlast(General) { field(Duplicate; Rec.Name) { } } }
+}
+pagecustomization "Local Card Custom" customizes "Local Card"
+{
+    layout
+    {
+        addlast(General)
+        {
+            field(Duplicate; Rec.Name)
+            {
+                ToolTip = 'Not supported on a customization control';
+            }
+        }
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        assert!(result.app.is_none());
+        for code in ["ALN2105", "ALN2106"] {
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == code),
+                "expected {code}: {:?}",
+                result.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn verified_build_rejects_invalid_local_call_and_return_contracts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"Bodies",
+                 "publisher":"P", "version":"1.0.0.0", "runtime":"14.0",
+                 "idRanges":[{"from":50100,"to":50149}] }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("Bodies.al"),
+            "codeunit 50100 Bodies { procedure NeedsText(): Text begin exit(7); end; procedure TakesOne(Value: Integer) begin end; procedure Caller() begin TakesOne(); end; }",
+        )
+        .unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        assert!(result.app.is_none());
+        for code in ["ALN2201", "ALN2205"] {
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == code),
+                "expected {code}: {:?}",
+                result.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn verified_build_accepts_conditional_work_before_final_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"ReturnFlow",
+                 "publisher":"P", "version":"1.0.0.0", "runtime":"14.0",
+                 "idRanges":[{"from":50100,"to":50149}] }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("ReturnFlow.al"),
+            r#"codeunit 50100 ReturnFlow
+{
+    procedure Recalculate(Value: Decimal): Decimal
+    var
+        Result: Decimal;
+    begin
+        Result := Value;
+        if Result < 0 then
+            Result := 0;
+        exit(Result);
+    end;
+}"#,
+        )
+        .unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        assert!(
+            result.app.is_some(),
+            "a final unconditional Exit(value) makes every branch return: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn verified_build_rejects_single_branch_return_without_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"MissingReturn",
+                 "publisher":"P", "version":"1.0.0.0", "runtime":"14.0",
+                 "idRanges":[{"from":50100,"to":50149}] }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("MissingReturn.al"),
+            r#"codeunit 50100 MissingReturn
+{
+    procedure Compute(Value: Integer): Integer
+    begin
+        if Value > 0 then
+            exit(Value);
+    end;
+}"#,
+        )
+        .unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        assert!(result.app.is_none());
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ALN2210"));
+    }
+
+    #[test]
+    fn verified_build_accepts_standard_field_properties() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"FieldProps",
+                 "publisher":"P", "version":"1.0.0.0", "runtime":"14.0",
+                 "idRanges":[{"from":50100,"to":50149}] }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("FieldProps.al"),
+            r#"table 50100 FieldProps
+{
+    fields
+    {
+        field(1; EntryNo; Integer)
+        {
+            AutoIncrement = true;
+            DataClassification = CustomerContent;
+            InitValue = 1;
+            MinValue = 0;
+            NotBlank = true;
+        }
+    }
+}"#,
+        )
+        .unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        assert!(
+            result.app.is_some(),
+            "standard field properties must not be rejected: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn verified_build_checks_local_event_subscriber_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{ "id":"aaaaaaaa-1111-2222-3333-444444444444", "name":"Events",
+                 "publisher":"P", "version":"1.0.0.0", "runtime":"14.0",
+                 "idRanges":[{"from":50100,"to":50149}] }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("Events.al"),
+            "codeunit 50100 Publisher { [IntegrationEvent(false, false)] procedure OnPosted(Value: Integer) begin end; } codeunit 50101 Subscriber { [EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnPosted', '', false, false)] procedure HandlePosted() begin end; }",
+        )
+        .unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+        assert!(result.app.is_none());
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "ALN2301"),
+            "expected local subscriber signature diagnostic: {:?}",
+            result.diagnostics
+        );
     }
 }

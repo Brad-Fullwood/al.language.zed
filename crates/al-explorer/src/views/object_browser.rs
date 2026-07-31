@@ -421,7 +421,8 @@ pub(crate) fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     if let Some(status) = &app.init_status {
         // Workspace still loading (or failed): show the status where the
         // objects will appear instead of a silently empty pane.
-        let style = if status.starts_with("Workspace load failed") {
+        let status_lower = status.to_ascii_lowercase();
+        let style = if status_lower.contains("failed") || status_lower.contains("error") {
             Style::default().fg(Color::Red)
         } else {
             Style::default().fg(Color::Yellow)

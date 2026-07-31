@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use super::{connect, print_json, report_error, run_command};
+use super::{connect, print_json, report_error, request_checked, run_command};
 
 pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode {
     if tree {
@@ -12,7 +12,7 @@ pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode 
     };
 
     let params = serde_json::json!({ "event": event, "depth": depth });
-    match client.request("trace", Some(params)) {
+    match request_checked(&mut client, "trace", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -65,7 +65,7 @@ pub fn cmd_graph(format: &str, json: bool) -> ExitCode {
     };
 
     let params = serde_json::json!({ "format": format });
-    match client.request("graphExport", Some(params)) {
+    match request_checked(&mut client, "graphExport", Some(params)) {
         Ok(result) => {
             if format == "dot" {
                 if let Some(content) = result.get("content").and_then(|v| v.as_str()) {
@@ -107,8 +107,16 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
 
-    match client.request("deadCode", None) {
+    match request_checked(&mut client, "deadCode", None) {
         Ok(result) => {
+            let has_high_confidence = result.as_array().is_some_and(|findings| {
+                findings.iter().any(|finding| {
+                    finding
+                        .get("confidence")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|confidence| confidence.eq_ignore_ascii_case("high"))
+                })
+            });
             if json {
                 print_json(&result);
             } else {
@@ -169,7 +177,11 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
                     );
                 }
             }
-            ExitCode::SUCCESS
+            if has_high_confidence {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(e) => report_error(&e, json),
     }
@@ -184,7 +196,11 @@ pub fn cmd_impact(symbol: &str, table: bool, json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
 
-    match client.request("impact", Some(serde_json::json!({ "symbol": symbol }))) {
+    match request_checked(
+        &mut client,
+        "impact",
+        Some(serde_json::json!({ "symbol": symbol })),
+    ) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -239,7 +255,11 @@ fn cmd_table_impact(table: &str, json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    match client.request("tableImpact", Some(serde_json::json!({ "table": table }))) {
+    match request_checked(
+        &mut client,
+        "tableImpact",
+        Some(serde_json::json!({ "table": table })),
+    ) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -300,7 +320,7 @@ fn cmd_trace_chain(event: &str, depth: usize, json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
     let params = serde_json::json!({ "event": event, "depth": depth });
-    match client.request("traceChain", Some(params)) {
+    match request_checked(&mut client, "traceChain", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -359,7 +379,7 @@ pub fn cmd_intercept(json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    match client.request("eventMap", None) {
+    match request_checked(&mut client, "eventMap", None) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -430,6 +450,7 @@ pub fn cmd_intercept(json: bool) -> ExitCode {
 
 pub fn cmd_suggest_event(
     object: Option<String>,
+    kind: Option<String>,
     procedure: Option<String>,
     table: Option<String>,
     field: Option<String>,
@@ -462,6 +483,9 @@ pub fn cmd_suggest_event(
 
     let mut query_map = serde_json::Map::new();
     query_map.insert("source".to_string(), source);
+    if let Some(ref object_kind) = kind {
+        query_map.insert("objectKind".to_string(), serde_json::json!(object_kind));
+    }
     // If --table is provided alongside --object, it becomes a filter
     if object.is_some() {
         if let Some(ref tbl) = table {
@@ -478,8 +502,16 @@ pub fn cmd_suggest_event(
         Err(e) => return report_error(&e, json),
     };
 
-    match client.request("suggestEvent", Some(serde_json::json!({ "query": query }))) {
+    match request_checked(
+        &mut client,
+        "suggestEvent",
+        Some(serde_json::json!({ "query": query })),
+    ) {
         Ok(result) => {
+            let partial = result
+                .get("partial")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
             if json {
                 print_json(&result);
             } else {
@@ -488,11 +520,6 @@ pub fn cmd_suggest_event(
                     .and_then(|v| v.as_array())
                     .map(|v| &v[..])
                     .unwrap_or(&[]);
-                let partial = result
-                    .get("partial")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-
                 if points.is_empty() {
                     println!("No integration points found.");
                 } else {
@@ -538,7 +565,11 @@ pub fn cmd_suggest_event(
                     );
                 }
             }
-            ExitCode::SUCCESS
+            if partial {
+                ExitCode::from(75)
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(e) => report_error(&e, json),
     }

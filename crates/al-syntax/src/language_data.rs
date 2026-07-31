@@ -45,6 +45,14 @@ pub struct BuiltinFunction {
     pub category: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordMethodCatalog {
+    source_type: String,
+    toolchain_version: String,
+    methods: Vec<String>,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ObjectType {
     pub keyword: String,
@@ -134,6 +142,21 @@ static BUILTIN_FUNCTIONS: LazyLock<Vec<BuiltinFunction>> = LazyLock::new(|| {
         .expect("builtin_functions.json must be valid")
 });
 
+static RECORD_METHODS: LazyLock<RecordMethodCatalog> = LazyLock::new(|| {
+    let catalog: RecordMethodCatalog =
+        serde_json::from_str(include_str!("../data/record_methods.json"))
+            .expect("record_methods.json must be valid");
+    assert_eq!(
+        catalog.source_type, "TableClass",
+        "record_methods.json must come from Microsoft TableClass metadata"
+    );
+    assert!(
+        !catalog.toolchain_version.trim().is_empty(),
+        "record_methods.json must identify its source toolchain"
+    );
+    catalog
+});
+
 static OBJECT_TYPES: LazyLock<Vec<ObjectType>> = LazyLock::new(|| {
     let file: ObjectTypesFile = serde_json::from_str(tree_sitter_al::data::OBJECT_TYPES)
         .expect("object_types.json must be valid");
@@ -208,6 +231,14 @@ static BUILTIN_FUNCTION_MAP: LazyLock<HashMap<String, usize>> = LazyLock::new(||
         .collect()
 });
 
+static RECORD_METHOD_SET: LazyLock<HashSet<String>> = LazyLock::new(|| {
+    RECORD_METHODS
+        .methods
+        .iter()
+        .map(|method| method.to_ascii_lowercase())
+        .collect()
+});
+
 static OBJECT_TYPE_MAP: LazyLock<HashMap<String, usize>> = LazyLock::new(|| {
     OBJECT_TYPES
         .iter()
@@ -230,6 +261,19 @@ pub fn keywords() -> &'static Keywords {
 
 pub fn builtin_functions() -> &'static [BuiltinFunction] {
     &BUILTIN_FUNCTIONS
+}
+
+/// Microsoft `TableClass` methods exposed on AL `Record` variables.
+///
+/// Regenerate this catalog with the `al-semantic` `export_record_methods`
+/// example when updating the pinned Microsoft AL toolchain.
+pub fn record_methods() -> &'static [String] {
+    &RECORD_METHODS.methods
+}
+
+/// Whether `name` is a platform method exposed on an AL `Record`.
+pub fn is_record_method(name: &str) -> bool {
+    RECORD_METHOD_SET.contains(&name.to_ascii_lowercase())
 }
 
 pub fn object_types() -> &'static [ObjectType] {
@@ -370,6 +414,33 @@ mod tests {
         assert!(funcs.len() >= 30);
         assert!(builtin_function_by_name("Message").is_some());
         assert!(builtin_function_by_name("message").is_some());
+    }
+
+    #[test]
+    fn generated_record_methods_are_complete_unique_and_case_insensitive() {
+        let methods = record_methods();
+        assert!(
+            methods.len() >= 75,
+            "Microsoft TableClass catalog is implausibly small"
+        );
+        assert_eq!(
+            methods.len(),
+            RECORD_METHOD_SET.len(),
+            "record method names must be unique case-insensitively"
+        );
+        for method in [
+            "FindSet",
+            "ModifyAll",
+            "SetCurrentKey",
+            "FieldError",
+            "GetBySystemId",
+            "Truncate",
+        ] {
+            assert!(is_record_method(method), "missing Record method {method}");
+            assert!(is_record_method(&method.to_ascii_lowercase()));
+        }
+        assert!(!is_record_method("Error"));
+        assert!(!is_record_method("NoSuchMethodHere"));
     }
 
     #[test]

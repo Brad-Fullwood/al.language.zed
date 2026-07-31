@@ -1,6 +1,6 @@
 {
   "description": "AL Language debug adapter configuration for Business Central. Schema extracted from Microsoft AL Language extension v18.",
-  "$comment": "A7 honesty pass: fields the native al-dap adapter does not consume were removed so the schema matches behaviour. Removed Microsoft's launch-config MCP fields (useMcpServerForDebugging, mcpServicePort) because agent control is exposed independently through the al_debug MCP tool rather than toggled by a DAP configuration; VS Code auth fields (useVsCodeAuthentication, vsCodeAuthenticationProvider) because the adapter acquires its own OAuth token; userId and primaryTenantDomain because native attach has no user filter and derives the tenant from tenant; and snapshot/profiling fields (snapshotFileName, snapshotVerbosity, executionContext, profilingType, profileSamplingInterval) because snapshot/profiling are not part of DAP launch here; use al-explorer snapshot / al-explorer profile instead. sessionId IS consumed by attach.",
+  "$comment": "Only fields consumed by the native adapter are exposed. Microsoft-only launch fields remain available by opting into al.useOfficialDap and using the Microsoft adapter's own configuration surface.",
   "type": "object",
   "required": [
     "adapter",
@@ -50,20 +50,13 @@
         }
       ]
     },
-    "applicationFamily": {
-      "type": "string",
-      "default": "",
-      "description": "The application family in the cloud server, for example: Fabrikam. This property is reserved for Embed Apps."
-    },
     "authentication": {
       "enum": [
         "MicrosoftEntraID",
-        "AAD",
-        "Windows",
-        "UserPassword"
+        "AAD"
       ],
       "default": "MicrosoftEntraID",
-      "description": "Specifies the server authentication method."
+      "description": "Native DAP uses OAuth bearer authentication. Use al.useOfficialDap=true when Windows or UserPassword authentication is required."
     },
     "breakOnError": {
       "oneOf": [
@@ -123,11 +116,6 @@
       "default": "Default",
       "description": "Specifies the publishing option to use. By specifying the Ignore option, only the current project is published, dependencies are ignored. By specifying the Strict option, publishing will fail if the project has apps that not part of the workspace and depend on it"
     },
-    "disableHttpRequestTimeout": {
-      "type": "boolean",
-      "default": false,
-      "description": "Turn off Visual Studio Code's HTTP request timeout and allow for requests to run with infinite timeout."
-    },
     "enableLongRunningSqlStatements": {
       "type": "boolean",
       "default": true,
@@ -150,34 +138,29 @@
       ],
       "description": "Specifies which environment to use to connect to Business Central."
     },
-    "forceUpgrade": {
-      "type": "boolean",
-      "default": false,
-      "description": "Always run upgrade codeunits, even if the version number of the extension is the same as an already installed version."
-    },
     "launchBrowser": {
       "type": "boolean",
       "default": true,
       "description": "If the value is set to true, the browser tab is launched, if false, the browser tab is not launched. If publishing with debugging enabled, the browser tab is launched and this setting is ignored. The default value is true."
     },
     "longRunningSqlStatementsThreshold": {
-      "type": "number",
+      "type": "integer",
+      "minimum": 0,
       "default": 500,
       "description": "Sets the number of milliseconds spent before a SQL statement is considered as long running in the debugger."
     },
     "numberOfSqlStatements": {
-      "type": "number",
+      "type": "integer",
+      "minimum": 0,
       "default": 10,
       "description": "Sets the number of SQL statements to be shown in the debugger."
     },
     "port": {
-      "type": "number",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
       "default": 7049,
       "description": "The development service port."
-    },
-    "sandboxName": {
-      "type": "string",
-      "description": "Specifies which sandbox to use in cases where multiple sandboxes are owned by the same tenant."
     },
     "schemaUpdateMode": {
       "enum": [
@@ -199,7 +182,8 @@
       "description": "The server instance to connect to."
     },
     "sessionId": {
-      "type": "number",
+      "type": "integer",
+      "minimum": -1,
       "default": -1,
       "description": "For attach requests, the id of the BC client session to attach to. Use -1 (the default) to attach via `breakOnNext` instead of a specific session."
     },
@@ -208,7 +192,8 @@
       "description": "Specifies the name of the company which should be opened after publishing."
     },
     "startupObjectId": {
-      "type": "number",
+      "type": "integer",
+      "minimum": 0,
       "default": 22,
       "description": "Specifies the ID of the object which should be opened after publishing."
     },
@@ -226,16 +211,6 @@
       "type": "string",
       "default": "default",
       "description": "The tenant to connect to.\nFor an on-premise server, this parameter must contain a tenant name, for example: MyTenant.\nFor a cloud server, this parameter must contain the Microsoft Entra tenant ID or Primary Domain associated with the Microsoft Entra tenant, for example: bf4ab6d6-cd93-424e-91fa-afe03fa286ac or mycustomer.onmicrosoft.com"
-    },
-    "usePublicURLFromServer": {
-      "type": "boolean",
-      "default": true,
-      "description": "If the value is set to true, the browser will be launched with the URL provided by the PublicWebBaseURL set by the server. If false, it will use the server defined in the launch configuration."
-    },
-    "useSystemSessionForDeployment": {
-      "type": "boolean",
-      "default": false,
-      "description": "Runs install and upgrade codeunits in a system session. This will prevent debugging install and upgrade codeunits."
     },
     "validateServerCertificate": {
       "type": "boolean",

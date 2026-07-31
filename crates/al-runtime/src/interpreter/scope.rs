@@ -56,6 +56,10 @@ impl CallFrame {
         self.locals.get_mut(&name.to_ascii_lowercase())
     }
 
+    pub fn is_object_globals(&self) -> bool {
+        self.procedure == "<globals>"
+    }
+
     pub fn bind_declared_text_length(&mut self, name: &str, length: usize) {
         self.declared_text_lengths
             .insert(name.to_ascii_lowercase(), length);
@@ -125,27 +129,55 @@ impl ScopeStack {
         self.frames.last_mut()
     }
 
+    pub fn has_object_globals(&self, object: &str) -> bool {
+        self.frames
+            .iter()
+            .any(|frame| frame.is_object_globals() && frame.object.eq_ignore_ascii_case(object))
+    }
+
     pub fn lookup(&self, name: &str) -> Option<&Value> {
         let key = name.to_ascii_lowercase();
-        self.frames.iter().rev().find_map(|f| f.locals.get(&key))
+        let current = self.frames.last()?;
+        current.locals.get(&key).or_else(|| {
+            self.frames.iter().rev().skip(1).find_map(|frame| {
+                (frame.is_object_globals() && frame.object.eq_ignore_ascii_case(&current.object))
+                    .then(|| frame.locals.get(&key))
+                    .flatten()
+            })
+        })
     }
 
     pub fn lookup_mut(&mut self, name: &str) -> Option<&mut Value> {
         let key = name.to_ascii_lowercase();
-        for frame in self.frames.iter_mut().rev() {
-            if frame.locals.contains_key(&key) {
-                return frame.locals.get_mut(&key);
-            }
+        let top_index = self.frames.len().checked_sub(1)?;
+        if self.frames[top_index].locals.contains_key(&key) {
+            return self.frames[top_index].locals.get_mut(&key);
         }
-        None
+        let object = self.frames[top_index].object.clone();
+        let global_index = (0..top_index).rev().find(|index| {
+            let frame = &self.frames[*index];
+            frame.is_object_globals()
+                && frame.object.eq_ignore_ascii_case(&object)
+                && frame.locals.contains_key(&key)
+        })?;
+        self.frames[global_index].locals.get_mut(&key)
     }
 
     pub fn declared_text_length(&self, name: &str) -> Option<usize> {
         let key = name.to_ascii_lowercase();
-        self.frames
-            .iter()
-            .rev()
-            .find_map(|frame| frame.declared_text_lengths.get(&key).copied())
+        let current = self.frames.last()?;
+        current
+            .declared_text_lengths
+            .get(&key)
+            .copied()
+            .or_else(|| {
+                self.frames.iter().rev().skip(1).find_map(|frame| {
+                    (frame.is_object_globals()
+                        && frame.object.eq_ignore_ascii_case(&current.object))
+                    .then(|| frame.declared_text_lengths.get(&key).copied())
+                    .flatten()
+                })
+            })
     }
 
     pub fn stack_trace(&self) -> Vec<String> {
@@ -213,15 +245,39 @@ mod tests {
     }
 
     #[test]
-    fn lookup_walks_outer_scopes() {
+    fn lookup_walks_from_procedure_to_object_globals() {
         let mut stack = ScopeStack::new();
-        let mut outer = CallFrame::new("Cu", "Outer");
+        let mut outer = CallFrame::new("Cu", "<globals>");
         outer.bind("g", Value::Integer(1));
         stack.push(outer);
         let inner = CallFrame::new("Cu", "Inner");
         stack.push(inner);
 
         assert_eq!(stack.lookup("g"), Some(&Value::Integer(1)));
+    }
+
+    #[test]
+    fn nested_procedure_cannot_read_caller_locals() {
+        let mut stack = ScopeStack::new();
+        stack.push(CallFrame::new("Cu", "<globals>"));
+        let mut caller = CallFrame::new("Cu", "Caller");
+        caller.bind("private_local", Value::Integer(42));
+        stack.push(caller);
+        stack.push(CallFrame::new("Cu", "Callee"));
+
+        assert_eq!(stack.lookup("private_local"), None);
+        assert_eq!(stack.lookup_mut("private_local"), None);
+    }
+
+    #[test]
+    fn procedure_cannot_read_another_objects_globals() {
+        let mut stack = ScopeStack::new();
+        let mut caller_globals = CallFrame::new("Caller", "<globals>");
+        caller_globals.bind("shared_name", Value::Integer(42));
+        stack.push(caller_globals);
+        stack.push(CallFrame::new("Callee", "Run"));
+
+        assert_eq!(stack.lookup("shared_name"), None);
     }
 
     #[test]
@@ -273,17 +329,16 @@ mod tests {
     #[test]
     fn scope_stack_1000_deep_lookup_does_not_overflow() {
         let mut stack = ScopeStack::new();
-        for i in 0..1000_usize {
-            let mut frame = CallFrame::new("Cu", format!("proc_{i}"));
-            if i == 500 {
-                frame.bind("deep_var", Value::Integer(500));
-            }
-            stack.push(frame);
+        let mut globals = CallFrame::new("Cu", "<globals>");
+        globals.bind("deep_var", Value::Integer(500));
+        stack.push(globals);
+        for i in 1..1000_usize {
+            stack.push(CallFrame::new("Cu", format!("proc_{i}")));
         }
         assert_eq!(
             stack.lookup("deep_var"),
             Some(&Value::Integer(500)),
-            "must find value in frame 500 of 1000 without stack overflow"
+            "must find object global beneath 999 call frames without stack overflow"
         );
         assert!(
             stack.lookup_mut("deep_var").is_some(),

@@ -92,8 +92,12 @@ pub enum BcClientError {
     Io(#[from] std::io::Error),
     #[error("No server configuration found in launch.json")]
     NoConfig,
-    #[error("Missing credentials: set BC_USERNAME and BC_PASSWORD environment variables")]
+    #[error(
+        "Missing credentials: set BC_ACCESS_TOKEN (or BC_TOKEN) for AAD, or BC_USERNAME and BC_PASSWORD for UserPassword"
+    )]
     MissingCredentials,
+    #[error("Invalid bearer-token environment: {0}")]
+    CredentialConfiguration(#[from] crate::http_auth::AccessTokenEnvError),
     #[error("Extension upload failed: compilation errors in the .app file")]
     CompilationErrors,
     #[error("Timeout after {secs}s waiting for BC server")]
@@ -367,11 +371,8 @@ impl BcClient {
                 }
             }
             AuthMethod::AAD => {
-                let token = std::env::var("BC_TOKEN").unwrap_or_default();
-                let token = token.trim();
-                if token.is_empty() {
-                    return Err(BcClientError::MissingCredentials);
-                }
+                let token = crate::http_auth::access_token_from_env()?
+                    .ok_or(BcClientError::MissingCredentials)?;
                 req = req.bearer_auth(token);
             }
         }
@@ -485,6 +486,7 @@ mod tests {
             tenant: None,
             authentication: AuthMethod::UserPassword,
             accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
         }
     }
 
@@ -499,6 +501,7 @@ mod tests {
             tenant: Some("mycompany.onmicrosoft.com".to_string()),
             authentication: AuthMethod::AAD,
             accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
         }
     }
 
@@ -874,6 +877,7 @@ mod tests {
             tenant: None,
             authentication: AuthMethod::Windows, // no creds required
             accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
         })
     }
 

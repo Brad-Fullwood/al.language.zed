@@ -39,6 +39,14 @@ use crate::queries::code_lens::CodeLensEntry;
 use crate::queries::Range;
 use al_workspace::Workspace;
 
+#[derive(Debug, thiserror::Error)]
+pub enum ProfilerHintError {
+    #[error("invalid profiler hotspot: {reason}")]
+    InvalidHotspot { reason: String },
+    #[error(transparent)]
+    IncompleteWorkspace(#[from] super::WorkspaceQueryError),
+}
+
 // The profiler data model lives in the tier-0 `al-types` crate; the parsing
 // and hint-rendering logic below stays here.
 pub use al_types::{ProfilerHint, ProfilerSession};
@@ -198,7 +206,8 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
             Some((id, self_ms))
         })
         .collect();
-    // Total time = self + Σ descendants, rolled up over the call tree (    // follow-up). Keyed by node id; nodes outside the map fall back to self time.
+    // Total time = self + all descendants, rolled up over the call tree.
+    // Keyed by node id; nodes outside the map fall back to self time.
     let total_by_node = aggregate_total_time_ms(nodes, &self_ms_by_node);
 
     let mut hints = Vec::new();
@@ -279,30 +288,69 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
 /// Matching is case-insensitive on the procedure name; the `object` field
 /// (AL object name or codeunit name) is used to disambiguate when multiple
 /// procedures share the same name.
-pub fn profiler_hints(workspace: &Workspace, hotspots: &[serde_json::Value]) -> Vec<ProfilerHint> {
-    let mut hints: Vec<ProfilerHint> = hotspots
-        .iter()
-        .filter_map(|h| {
-            let procedure = h.get("procedure")?.as_str()?.to_string();
-            let object = h
-                .get("object")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            Some(ProfilerHint {
-                procedure,
-                object,
-                self_time_ms: h.get("selfTimeMs").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                total_time_ms: h.get("totalTimeMs").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                hit_count: h.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0),
-                file: None,
-                line: None,
-            })
-        })
-        .collect();
+pub fn profiler_hints(
+    workspace: &Workspace,
+    hotspots: &[serde_json::Value],
+) -> Result<Vec<ProfilerHint>, ProfilerHintError> {
+    let optional_f64 = |hotspot: &serde_json::Value,
+                        index: usize,
+                        field: &str|
+     -> Result<f64, ProfilerHintError> {
+        match hotspot.get(field) {
+            None => Ok(0.0),
+            Some(value) => value
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| ProfilerHintError::InvalidHotspot {
+                    reason: format!("hotspot {index} field '{field}' must be a finite number"),
+                }),
+        }
+    };
+    let optional_u64 = |hotspot: &serde_json::Value,
+                        index: usize,
+                        field: &str|
+     -> Result<u64, ProfilerHintError> {
+        match hotspot.get(field) {
+            None => Ok(0),
+            Some(value) => value
+                .as_u64()
+                .ok_or_else(|| ProfilerHintError::InvalidHotspot {
+                    reason: format!("hotspot {index} field '{field}' must be an unsigned integer"),
+                }),
+        }
+    };
+    let mut hints = Vec::with_capacity(hotspots.len());
+    for (index, hotspot) in hotspots.iter().enumerate() {
+        let procedure = hotspot
+            .get("procedure")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| ProfilerHintError::InvalidHotspot {
+                reason: format!("hotspot {index} requires a non-empty string field 'procedure'"),
+            })?
+            .to_string();
+        let object = match hotspot.get("object") {
+            None => String::new(),
+            Some(value) => value
+                .as_str()
+                .ok_or_else(|| ProfilerHintError::InvalidHotspot {
+                    reason: format!("hotspot {index} field 'object' must be a string"),
+                })?
+                .to_string(),
+        };
+        hints.push(ProfilerHint {
+            procedure,
+            object,
+            self_time_ms: optional_f64(hotspot, index, "selfTimeMs")?,
+            total_time_ms: optional_f64(hotspot, index, "totalTimeMs")?,
+            hit_count: optional_u64(hotspot, index, "hitCount")?,
+            file: None,
+            line: None,
+        });
+    }
 
-    resolve_source_locations(workspace, &mut hints);
-    hints
+    resolve_source_locations(workspace, &mut hints)?;
+    Ok(hints)
 }
 
 /// Map profiler hints parsed from a profile file to workspace source locations.
@@ -314,14 +362,18 @@ pub fn profile_hints_with_locations(
     profile_json: &str,
 ) -> Result<Vec<ProfilerHint>, String> {
     let mut hints = parse_profile(profile_json)?;
-    resolve_source_locations(workspace, &mut hints);
+    resolve_source_locations(workspace, &mut hints).map_err(|error| error.to_string())?;
     Ok(hints)
 }
 
-fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
+fn resolve_source_locations(
+    workspace: &Workspace,
+    hints: &mut [ProfilerHint],
+) -> Result<(), super::WorkspaceQueryError> {
     if hints.is_empty() {
-        return;
+        return Ok(());
     }
+    let sources = crate::workspace_sources::snapshot(workspace)?;
 
     // Qualified names disambiguate procedures shared by multiple objects. The
     // unqualified index contains only names that are unique in the workspace.
@@ -331,21 +383,12 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
         std::collections::HashMap::new();
     let mut ambiguous = std::collections::HashSet::new();
 
-    for entry in workspace.file_index.files.iter() {
-        let path = entry.key();
-        let file_path = path.to_string_lossy().to_string();
-        let Some((text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {
-            continue;
-        };
-
-        let object_name = al_syntax::find_object_declaration(&parsed_tree, &text)
-            .map(|o| o.name.to_lowercase())
-            .unwrap_or_default();
-
+    for source in sources {
+        let object_name = source.object.info.name.to_lowercase();
         collect_procedure_locations(
-            &parsed_tree,
-            &text,
-            &file_path,
+            &source.tree,
+            &source.text,
+            &source.path.to_string_lossy(),
             &object_name,
             &mut qualified,
             &mut fallback,
@@ -370,6 +413,7 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
             hint.line = Some(*line);
         }
     }
+    Ok(())
 }
 
 fn collect_procedure_locations(
@@ -555,21 +599,32 @@ pub fn load_profile_file(workspace: &Workspace, profile_path: &str) -> Result<us
         String::from_utf8(data).map_err(|e| format!("Profile file is not valid UTF-8: {e}"))?;
 
     let mut hints = parse_profile(&json)?;
-    resolve_source_locations(workspace, &mut hints);
+    resolve_source_locations(workspace, &mut hints).map_err(|error| error.to_string())?;
     let mapped = hints.iter().filter(|h| h.file.is_some()).count();
 
     let session = ProfilerSession::new(profile_path.to_string(), hints);
-    *workspace
-        .profiler_session
-        .write()
-        .unwrap_or_else(|e| e.into_inner()) = Some(session);
+    match workspace.profiler_session.write() {
+        Ok(mut guard) => *guard = Some(session),
+        Err(poisoned) => {
+            *poisoned.into_inner() = Some(session);
+            workspace.profiler_session.clear_poison();
+            tracing::warn!(
+                "discarded poisoned profiler session during complete profile replacement"
+            );
+        }
+    }
 
     Ok(mapped)
 }
 
 pub fn clear_profile(workspace: &Workspace) {
-    if let Ok(mut guard) = workspace.profiler_session.write() {
-        *guard = None;
+    match workspace.profiler_session.write() {
+        Ok(mut guard) => *guard = None,
+        Err(poisoned) => {
+            *poisoned.into_inner() = None;
+            workspace.profiler_session.clear_poison();
+            tracing::warn!("discarded and repaired poisoned profiler session during clear");
+        }
     }
 }
 
@@ -633,7 +688,7 @@ mod tests {
 
         let hotspots = vec![make_hotspot("ProcessRecord", "My Codeunit", 10.0, 10.0, 10)];
 
-        let hints = profiler_hints(&ws, &hotspots);
+        let hints = profiler_hints(&ws, &hotspots).unwrap();
         assert_eq!(hints.len(), 1);
 
         let h = &hints[0];
@@ -650,7 +705,7 @@ mod tests {
 
         let hotspots = vec![make_hotspot("NonExistentProc", "", 5.0, 5.0, 5)];
 
-        let hints = profiler_hints(&ws, &hotspots);
+        let hints = profiler_hints(&ws, &hotspots).unwrap();
         assert_eq!(hints.len(), 1);
         assert!(hints[0].file.is_none(), "Unmapped proc should have no file");
         assert!(hints[0].line.is_none(), "Unmapped proc should have no line");
@@ -663,7 +718,7 @@ mod tests {
         // Profiler may emit different casing
         let hotspots = vec![make_hotspot("processrecord", "", 3.0, 3.0, 3)];
 
-        let hints = profiler_hints(&ws, &hotspots);
+        let hints = profiler_hints(&ws, &hotspots).unwrap();
         assert_eq!(hints.len(), 1);
         assert!(
             hints[0].file.is_some(),
@@ -675,7 +730,7 @@ mod tests {
     fn empty_workspace_no_crash() {
         let ws = Workspace::new();
         let hotspots = vec![make_hotspot("SomeProc", "SomeObject", 1.0, 1.0, 1)];
-        let hints = profiler_hints(&ws, &hotspots);
+        let hints = profiler_hints(&ws, &hotspots).unwrap();
         assert_eq!(hints.len(), 1);
         assert!(hints[0].file.is_none());
     }
@@ -683,7 +738,7 @@ mod tests {
     #[test]
     fn empty_hotspots_returns_empty() {
         let ws = workspace_with(vec![("/src/Test.al", CODEUNIT_AL)]);
-        let hints = profiler_hints(&ws, &[]);
+        let hints = profiler_hints(&ws, &[]).unwrap();
         assert!(hints.is_empty());
     }
 
@@ -986,7 +1041,7 @@ mod tests {
             20.0,
             20,
         )];
-        let hints_beta = profiler_hints(&ws, &hotspots_beta);
+        let hints_beta = profiler_hints(&ws, &hotspots_beta).unwrap();
         assert_eq!(hints_beta.len(), 1);
         let h_beta = &hints_beta[0];
         assert!(
@@ -1006,7 +1061,7 @@ mod tests {
             10.0,
             10,
         )];
-        let hints_alpha = profiler_hints(&ws, &hotspots_alpha);
+        let hints_alpha = profiler_hints(&ws, &hotspots_alpha).unwrap();
         assert_eq!(hints_alpha.len(), 1);
         let h_alpha = &hints_alpha[0];
         assert!(
@@ -1019,7 +1074,8 @@ mod tests {
             h_alpha.file
         );
 
-        let unqualified = profiler_hints(&ws, &[make_hotspot("OnAfterValidate", "", 5.0, 5.0, 5)]);
+        let unqualified =
+            profiler_hints(&ws, &[make_hotspot("OnAfterValidate", "", 5.0, 5.0, 5)]).unwrap();
         assert_eq!(unqualified[0].file, None);
         assert_eq!(unqualified[0].line, None);
     }
@@ -1172,5 +1228,21 @@ mod tests {
             ws.profiler_session.read().unwrap().is_none(),
             "session should be None after clear_profile"
         );
+    }
+
+    #[test]
+    fn clear_profile_repairs_poisoned_session_state() {
+        let ws = std::sync::Arc::new(Workspace::new());
+        let poison_target = std::sync::Arc::clone(&ws);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target.profiler_session.write().unwrap();
+            panic!("poison profiler session for test");
+        })
+        .join();
+
+        clear_profile(&ws);
+
+        assert!(!ws.profiler_session.is_poisoned());
+        assert!(ws.profiler_session.read().unwrap().is_none());
     }
 }

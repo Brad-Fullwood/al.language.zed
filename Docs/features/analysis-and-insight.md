@@ -1,10 +1,10 @@
 # Analysis & Insight Engine
 
 **Modules:** `crates/al-insight/src/` (graph engine) + analysis queries in
-`crates/al-analysis/src/queries/` · **Status:** ✅ shipped (a few items phase-gated, noted inline)
+`crates/al-analysis/src/queries/` · **Status:** ✅ shipped
 
 The graph-based analysis engine is available through the shared daemon, `al-explorer --json`, MCP,
-and selected Zed tasks. Results are sorted so CI output remains stable across runs.
+and checkout-local contributor tasks. Results are sorted so CI output remains stable across runs.
 
 ## The insight graph (`insight/`)
 
@@ -42,7 +42,7 @@ graph is built. Event traversal detects cycles and enforces a 10,000-node global
 | **Obsolescence** | `queries/obsolescence.rs` | Inventory of `[Obsolete]` symbols with state/reason/tag and caller counts. |
 | **Data-classification audit** | `queries/audit.rs` | GDPR posture: every table field's `DataClassification` and a risk level. |
 | **Permission audit** | `queries/audit.rs` | Permission-set coverage plus unused object grants (`overBroad`) and granted I/M/D rights without a corresponding observed write (`overGrantedRights`). |
-| **Dependency graph** | `queries/deps.rs` | Full transitive dependency tree from `app.json` + packages; version-conflict and missing-dependency detection; DOT export. |
+| **Dependency graph** | `queries/deps.rs` | GUID-keyed transitive tree from the typed current `app.json` and loaded `.app` manifests; implicit dependencies, missing packages, duplicate versions, unsatisfied minimum versions, deterministic JSON/DOT export. |
 | **Duplicates** | (daemon `duplicates`) | Repeated AL code blocks (configurable min tokens/similarity, clamped to safe bounds). |
 | **Profiler hints** | `queries/profiler_hints.rs` | Map `.alcpuprofile` (Chrome DevTools) hotspots to AL procedure declaration lines. |
 | **Complexity metrics** | `syntax/complexity.rs` | Cyclomatic + cognitive complexity per procedure with thresholds. |
@@ -61,6 +61,11 @@ graph is built. Event traversal detects cycles and enforces a 10,000-node global
 - **Profiler analysis** parses Chrome profiles, skips synthetic nodes (`(root)`/`(idle)`/GC),
   aggregates sampled `timeDeltas`, and rolls total time up the call tree. The `profiler-hints`
   command maps supplied procedure hotspots to workspace declarations.
+- **Architecture lint** validates `.alarch.json` before running. Naming conventions accept one Rust
+  regular expression. Forbidden patterns are case-insensitive literals by default and become Rust
+  regular expressions when `"regex": true`; invalid expressions fail configuration loading instead
+  of silently disabling a rule. `pattern` remains an exact, case-insensitive object-kind scope.
+  [`schemas/alarch.json`](../../schemas/alarch.json) is the editor schema.
 
 ## Microsoft comparison
 
@@ -110,14 +115,13 @@ agent workflows also have descriptive aliases such as `al_impact`, `al_deadcode`
 an MCP allow-list. The TUI surfaces event chains, call-graph/impact, and profiler views interactively
 (see [cli-and-tui](./cli-and-tui.md)).
 
-## Limitations
+## Compatibility boundaries
 
 - `breaking` and `upgrade` require `--baseline-app <old.app>` for a cross-version result. Without a
   baseline they explicitly report that the comparison was not evaluated.
 - Package-only call sites cannot be recovered because `.app` symbols do not contain method bodies.
-- Architecture rules use literal case-insensitive pattern matching rather than regular expressions.
-  Four conservative table/page layering rules are enabled by default; `.alarch.json` adds
-  project-specific rules.
+- Four conservative table/page layering rules are enabled by default; `.alarch.json` adds
+  project-specific literal or regex-backed rules.
 - Permission over-grant analysis cannot prove dynamic `RecordRef`/`FieldRef` writes, unresolved
   interface dispatch, or writes inside dependency packages without source bodies.
 - Profiler data without `samples` and `timeDeltas` falls back to the legacy hit-count estimate.

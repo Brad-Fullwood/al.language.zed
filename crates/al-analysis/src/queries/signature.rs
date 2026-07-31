@@ -6,7 +6,7 @@ use url::Url;
 
 use super::Position;
 use crate::resolution;
-use al_workspace::Workspace;
+use al_workspace::{Workspace, WorkspaceStateError};
 
 /// A parameter in a signature help display (label + optional docs).
 /// Distinct from al_syntax::ParameterInfo which holds parsed name/type/is_var.
@@ -99,11 +99,28 @@ fn parse_parameters_from_detail(detail: &str) -> Vec<SignatureParameterInfo> {
         .collect()
 }
 
-#[must_use]
 pub fn signature_help(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
+) -> Result<Option<SignatureHelpResult>, WorkspaceStateError> {
+    let builtins = {
+        let guard = workspace
+            .builtins
+            .read()
+            .map_err(|_| WorkspaceStateError::Poisoned {
+                component: "builtins",
+            })?;
+        Arc::clone(&guard)
+    };
+    Ok(signature_help_inner(workspace, uri, position, &builtins))
+}
+
+fn signature_help_inner(
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+    builtins: &[al_semantic::BuiltinType],
 ) -> Option<SignatureHelpResult> {
     let text = workspace.documents.get_text_arc(uri)?;
 
@@ -222,15 +239,8 @@ pub fn signature_help(
         }
     }
 
-    // Built-in types — collect all overloads.
-    // Take a clone of the Arc<Vec<BuiltinType>> and immediately drop the
-    // read guard. The builtins value is itself an Arc, so the clone is a
-    // single refcount bump — far cheaper than holding the lock across the
-    // nested overload-collection loops.
-    let builtins = {
-        let guard = workspace.builtins.read().unwrap_or_else(|e| e.into_inner());
-        Arc::clone(&*guard)
-    };
+    // Built-in types — collect all overloads from the caller's coherent
+    // catalog snapshot.
     let mut signatures = Vec::new();
     for bt in builtins.iter() {
         for method in &bt.methods {
@@ -368,6 +378,37 @@ fn resolve_receiver_signature(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn signature_help(
+        workspace: &Workspace,
+        uri: &Url,
+        position: Position,
+    ) -> Option<SignatureHelpResult> {
+        super::signature_help(workspace, uri, position).unwrap()
+    }
+
+    #[test]
+    fn signature_help_reports_poisoned_builtins() {
+        let ws = Workspace::new();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = ws.builtins.write().expect("builtins write lock");
+            panic!("poison builtins for test");
+        }));
+
+        let error = super::signature_help(
+            &ws,
+            &Url::parse("file:///test/poisoned-signature.al").expect("uri"),
+            Position {
+                line: 0,
+                character: 0,
+            },
+        )
+        .expect_err("poisoned builtins must fail signature help");
+        assert_eq!(
+            error.to_string(),
+            "workspace state lock 'builtins' is poisoned"
+        );
+    }
 
     /// Verify that `parse_parameters_from_detail` correctly turns the detail string produced
     /// by `extract_document_symbols` into individual `ParameterInfo` entries.  This is the
@@ -602,8 +643,7 @@ mod tests {
     fn signature_help_local_procedure_happy_path() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/sig.al").expect("uri");
-        ws.documents.open(uri.clone(), SRC.to_string());
-
+        ws.documents.open(uri.clone(), SRC.to_string()).unwrap();
         let lines: Vec<&str> = SRC.lines().collect();
         let call_line = lines
             .iter()
@@ -636,8 +676,7 @@ mod tests {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/sig2.al").expect("uri");
         let src = "codeunit 50100 \"Sig CU\"\n{\n    procedure Compute(Amount: Decimal; Factor: Integer): Decimal\n    begin\n    end;\n\n    procedure Run()\n    begin\n        Compute(100,\n    end;\n}\n";
-        ws.documents.open(uri.clone(), src.to_string());
-
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
         let lines: Vec<&str> = src.lines().collect();
         let call_line = lines
             .iter()
@@ -682,7 +721,7 @@ mod tests {
     fn signature_help_not_in_call_context_returns_none() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/nocall.al").expect("uri");
-        ws.documents.open(uri.clone(), SRC.to_string());
+        ws.documents.open(uri.clone(), SRC.to_string()).unwrap();
         let result = signature_help(
             &ws,
             &uri,
@@ -699,8 +738,7 @@ mod tests {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/unknownfn.al").expect("uri");
         let src = "codeunit 50100 \"Sig CU\"\n{\n    procedure Run()\n    begin\n        NoSuchProcXYZ(\n    end;\n}\n";
-        ws.documents.open(uri.clone(), src.to_string());
-
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
         let lines: Vec<&str> = src.lines().collect();
         let call_line = lines
             .iter()
@@ -727,7 +765,7 @@ mod tests {
     fn signature_help_line_out_of_range_returns_none() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/oob.al").expect("uri");
-        ws.documents.open(uri.clone(), SRC.to_string());
+        ws.documents.open(uri.clone(), SRC.to_string()).unwrap();
         let result = signature_help(
             &ws,
             &uri,
@@ -743,8 +781,7 @@ mod tests {
     fn signature_help_column_past_eol_clamps() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/clamp.al").expect("uri");
-        ws.documents.open(uri.clone(), SRC.to_string());
-
+        ws.documents.open(uri.clone(), SRC.to_string()).unwrap();
         let lines: Vec<&str> = SRC.lines().collect();
         let call_line = lines
             .iter()

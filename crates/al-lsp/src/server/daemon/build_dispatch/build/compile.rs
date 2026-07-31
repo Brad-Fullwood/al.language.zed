@@ -24,6 +24,31 @@ fn diagnostics_json(diagnostics: &[al_compile::CompileDiagnostic]) -> Vec<serde_
         .collect()
 }
 
+/// The daemon's two build method names are transport aliases, not different
+/// compiler contracts. Keep their result envelope stable across native and
+/// official backends so MCP/CLI callers can select artifacts and diagnostics
+/// without endpoint-specific parsing.
+fn build_result_json(
+    result: &al_compile::CompileResult,
+    backend: &str,
+    mut diagnostics: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    diagnostics.extend(diagnostics_json(&result.diagnostics));
+    serde_json::json!({
+        "success": result.success,
+        "diagnostics": diagnostics,
+        "appPath": result.app_path.as_ref().map(|p| p.display().to_string()),
+        "output": result.output,
+        "backend": backend,
+        "validated": true,
+        "verificationLevel": if backend == "native" {
+            serde_json::Value::String("native-syntax-project-binding-symbol-graph".to_string())
+        } else {
+            serde_json::Value::Null
+        },
+    })
+}
+
 /// Run the workspace-native semantic and call/event-stack analyzers used by
 /// editor lint. Error-severity findings gate native emission; transaction
 /// warnings are returned alongside the emitter's project/binding diagnostics.
@@ -99,6 +124,10 @@ pub(in crate::server::daemon) async fn dispatch_compile(
         }
     };
     let package_cache = project.as_ref().map(|p| p.packages_dir.clone());
+    let dependency_packages = project
+        .as_ref()
+        .map(|project| project.packages.clone())
+        .unwrap_or_default();
     // Drop the read guard before acquiring async locks
     drop(project);
 
@@ -132,23 +161,18 @@ pub(in crate::server::daemon) async fn dispatch_compile(
                 project_root: &project_root,
                 backend: al_compile::BuildBackend::Native,
                 toolchain: None,
+                dependency_packages: Some(dependency_packages.as_slice()),
                 package_cache: None,
                 analyzers: None,
                 config: al_compile::CompilationConfigOptions::default(),
             })
             .await
             .map_err(|e| (error_codes::CODE_ANALYSIS_ERROR, e.to_string()))?;
-            let mut diagnostics = diagnostics_json(&compile_result.diagnostics);
-            diagnostics.extend(workspace_diagnostics);
-            return Ok(serde_json::json!({
-                "success": compile_result.success,
-                "diagnostics": diagnostics,
-                "appPath": compile_result.app_path.as_ref().map(|p| p.display().to_string()),
-                "output": compile_result.output,
-                "backend": "native",
-                "validated": true,
-                "verificationLevel": "native-syntax-project-binding-symbol-graph",
-            }));
+            return Ok(build_result_json(
+                &compile_result,
+                "native",
+                workspace_diagnostics,
+            ));
         }
 
         // Opted into Microsoft's compiler subprocess (non-native). Warn so this
@@ -176,16 +200,7 @@ pub(in crate::server::daemon) async fn dispatch_compile(
         // `al.compile` path too (not just packaging). Snapshot the config once
         // so a concurrent update can't cause this to silently fall back to
         // defaults (dropping configured flags) mid-request.
-        let cfg = workspace.config.read().await;
-        let config_options = al_compile::CompilationConfigOptions {
-            compilation_options: cfg.compilation_options.clone(),
-            incremental_build: cfg.incremental_build,
-            enable_external_rulesets: cfg.enable_external_rulesets,
-            rule_set_path: cfg.rule_set_path.clone(),
-            assembly_probing_paths: cfg.assembly_probing_paths.clone(),
-            output_analyzer_statistics: cfg.output_analyzer_statistics,
-        };
-        drop(cfg);
+        let config_options = al_compile::CompilationConfigOptions::from(&config_snapshot);
         // Route through the shared build service. Infrastructure
         // failures (no toolchain, missing app.json, alc spawn) propagate as Err
         // → INTERNAL/CODE_ANALYSIS error; a compile that ran with error
@@ -194,8 +209,10 @@ pub(in crate::server::daemon) async fn dispatch_compile(
             project_root: &project_root,
             backend: al_compile::BuildBackend::Alc,
             toolchain: Some(toolchain),
+            dependency_packages: Some(dependency_packages.as_slice()),
             package_cache: package_cache.as_deref(),
-            analyzers: None,
+            analyzers: (!config_snapshot.code_analyzers.is_empty())
+                .then_some(config_snapshot.code_analyzers.as_slice()),
             config: config_options,
         })
         .await
@@ -205,17 +222,7 @@ pub(in crate::server::daemon) async fn dispatch_compile(
                 format!("Compilation failed: {}", e),
             )
         })?;
-        let app_path = compile_result
-            .app_path
-            .as_ref()
-            .map(|p| p.display().to_string());
-        Ok(serde_json::json!({
-            "success": compile_result.success,
-            "diagnostics": diagnostics_json(&compile_result.diagnostics),
-            "appPath": app_path,
-            "backend": "alc",
-            "validated": true,
-        }))
+        Ok(build_result_json(&compile_result, "alc", Vec::new()))
     }
     .await;
     match result {
@@ -266,6 +273,11 @@ pub(in crate::server::daemon) async fn dispatch_package(
             };
         }
     };
+    let package_cache = project.as_ref().map(|project| project.packages_dir.clone());
+    let dependency_packages = project
+        .as_ref()
+        .map(|project| project.packages.clone())
+        .unwrap_or_default();
 
     // Native-first packaging policy, mirroring `dispatch_compile`. The default
     // builds the `.app` with the pure-Rust emitter — no `alc`, no C# bridge, no
@@ -298,6 +310,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
             project_root: &project_root,
             backend: al_compile::BuildBackend::Native,
             toolchain: None,
+            dependency_packages: Some(dependency_packages.as_slice()),
             package_cache: None,
             analyzers: None,
             config: al_compile::CompilationConfigOptions::default(),
@@ -317,19 +330,13 @@ pub(in crate::server::daemon) async fn dispatch_package(
                 };
             }
         };
-        let mut diagnostics = diagnostics_json(&compile_result.diagnostics);
-        diagnostics.extend(workspace_diagnostics);
         return Response {
             id,
-            result: Some(serde_json::json!({
-                "success": compile_result.success,
-                "diagnostics": diagnostics,
-                "appPath": compile_result.app_path.as_ref().map(|p| p.display().to_string()),
-                "output": compile_result.output,
-                "backend": "native",
-                "validated": true,
-                "verificationLevel": "native-syntax-project-binding-symbol-graph",
-            })),
+            result: Some(build_result_json(
+                &compile_result,
+                "native",
+                workspace_diagnostics,
+            )),
             error: None,
             ..Default::default()
         };
@@ -383,14 +390,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
         let cfg = workspace.config.read().await;
         (
             cfg.code_analyzers.clone(),
-            al_compile::CompilationConfigOptions {
-                compilation_options: cfg.compilation_options.clone(),
-                incremental_build: cfg.incremental_build,
-                enable_external_rulesets: cfg.enable_external_rulesets,
-                rule_set_path: cfg.rule_set_path.clone(),
-                assembly_probing_paths: cfg.assembly_probing_paths.clone(),
-                output_analyzer_statistics: cfg.output_analyzer_statistics,
-            },
+            al_compile::CompilationConfigOptions::from(&*cfg),
         )
     };
     let analyzer_filter: Option<Vec<String>> = if code_analyzers.is_empty() {
@@ -406,7 +406,8 @@ pub(in crate::server::daemon) async fn dispatch_package(
         project_root: &project_root,
         backend: al_compile::BuildBackend::Alc,
         toolchain: Some(&toolchain),
-        package_cache: None,
+        dependency_packages: Some(dependency_packages.as_slice()),
+        package_cache: package_cache.as_deref(),
         analyzers: analyzer_filter.as_deref(),
         config: config_options,
     })
@@ -414,8 +415,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
     {
         Ok(result) => Response {
             id,
-            // Serialization is infallible for valid values.
-            result: Some(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)),
+            result: Some(build_result_json(&result, "alc", Vec::new())),
             error: None,
             ..Default::default()
         },
@@ -641,6 +641,48 @@ mod tests {
             std::path::Path::new(app_path).is_file(),
             "the native `.app` must exist on disk at {app_path}"
         );
+    }
+
+    #[tokio::test]
+    async fn compile_and_package_share_native_result_contract_and_artifact() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("app.json"),
+            r#"{"id":"aaaaaaaa-1111-2222-3333-444444444444","name":"t","publisher":"p","version":"1.0.0.0","runtime":"14.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("src/Lib.al"),
+            "codeunit 50100 T { procedure P() begin end; }",
+        )
+        .unwrap();
+        *ws.project.write().await = Some(make_project(tmp.path()));
+
+        let compile = dispatch_compile(&ws, 40).await.result.unwrap();
+        let package = dispatch_package(&ws, 41).await.result.unwrap();
+        for key in [
+            "success",
+            "diagnostics",
+            "appPath",
+            "output",
+            "backend",
+            "validated",
+            "verificationLevel",
+        ] {
+            assert!(
+                compile.get(key).is_some(),
+                "compile missing {key}: {compile}"
+            );
+            assert!(
+                package.get(key).is_some(),
+                "package missing {key}: {package}"
+            );
+            assert_eq!(compile[key], package[key], "different {key}");
+        }
+        let app = compile["appPath"].as_str().expect("native app path");
+        assert!(std::path::Path::new(app).is_file());
     }
 
     #[tokio::test]

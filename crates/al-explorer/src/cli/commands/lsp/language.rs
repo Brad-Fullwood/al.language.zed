@@ -15,22 +15,27 @@ pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bo
         params["analyzers"] = serde_json::json!(analyzer_list);
     }
     if let Some(f) = file {
-        // file_to_uri() prints "file not found" on failure; surface a clear
-        // client-side error instead of forwarding an unresolvable raw path that
-        // would only trigger a second, confusing error from the daemon.
-        let Some(uri) = file_to_uri(f) else {
-            return report_error(&format!("Cannot resolve path: {f}"), json);
+        let uri = match file_to_uri(f) {
+            Ok(uri) => uri,
+            Err(error) => return report_error(&error, json),
         };
         params["uri"] = serde_json::json!(uri);
     }
-    match client.request("lint", Some(params)) {
+    match request_checked(&mut client, "lint", Some(params)) {
         Ok(result) => {
+            let diagnostic_count = match lint_diagnostic_count(&result, all) {
+                Ok(count) => count,
+                Err(error) => return report_error(&error, json),
+            };
             if json {
                 print_json(&result);
-                return ExitCode::SUCCESS;
+                return if diagnostic_count > 0 {
+                    ExitCode::FAILURE
+                } else {
+                    ExitCode::SUCCESS
+                };
             }
-            let found_diagnostics = if all {
-                let mut total = 0usize;
+            if all {
                 if let Some(files) = result.as_array() {
                     for file_result in files {
                         let fname = file_result
@@ -43,12 +48,14 @@ pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bo
                             for d in diags {
                                 print_lint_diag(Some(fname), d);
                             }
-                            total += diags.len();
                         }
                     }
-                    eprintln!("\n{} diagnostics across {} files", total, files.len());
+                    eprintln!(
+                        "\n{} diagnostics across {} files",
+                        diagnostic_count,
+                        files.len()
+                    );
                 }
-                total > 0
             } else {
                 let diagnostics = result.as_array().cloned().unwrap_or_default();
                 if diagnostics.is_empty() {
@@ -59,9 +66,8 @@ pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bo
                     }
                     eprintln!("\n{} diagnostics", diagnostics.len());
                 }
-                !diagnostics.is_empty()
-            };
-            if found_diagnostics {
+            }
+            if diagnostic_count > 0 {
                 ExitCode::FAILURE
             } else {
                 ExitCode::SUCCESS
@@ -69,6 +75,27 @@ pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bo
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+fn lint_diagnostic_count(result: &serde_json::Value, all: bool) -> Result<usize, String> {
+    let files_or_diagnostics = result
+        .as_array()
+        .ok_or_else(|| "validated lint response was not an array".to_string())?;
+    if !all {
+        return Ok(files_or_diagnostics.len());
+    }
+    files_or_diagnostics
+        .iter()
+        .enumerate()
+        .try_fold(0usize, |total, (index, file)| {
+            let diagnostics = file
+                .get("diagnostics")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    format!("validated lint response file {index} has no diagnostics array")
+                })?;
+            Ok(total + diagnostics.len())
+        })
 }
 
 pub fn cmd_format(file: Option<&str>, check: bool, stdin: bool, all: bool, json: bool) -> ExitCode {
@@ -87,11 +114,12 @@ pub fn cmd_format(file: Option<&str>, check: bool, stdin: bool, all: bool, json:
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let Some(uri) = file_to_uri(file) else {
-        return report_error(&format!("Cannot resolve path: {file}"), json);
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
     };
     let params = serde_json::json!({ "check": check, "uri": uri });
-    match client.request("format", Some(params)) {
+    match request_checked(&mut client, "format", Some(params)) {
         Ok(result) => {
             let changed = result
                 .get("changed")
@@ -131,7 +159,7 @@ fn cmd_format_stdin(check: bool, json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
     let params = serde_json::json!({ "content": content, "check": check });
-    match client.request("format", Some(params)) {
+    match request_checked(&mut client, "format", Some(params)) {
         Ok(result) => {
             if check {
                 let changed = result
@@ -164,8 +192,14 @@ fn cmd_format_stdin(check: bool, json: bool) -> ExitCode {
 }
 
 fn cmd_format_all(check: bool, json: bool) -> ExitCode {
-    let root = project_root(None);
-    let al_files = collect_al_files(&root);
+    let root = match project_root(None) {
+        Ok(root) => root,
+        Err(error) => return report_error(&error, json),
+    };
+    let al_files = match collect_al_files(&root) {
+        Ok(files) => files,
+        Err(error) => return report_error(&error, json),
+    };
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -175,30 +209,39 @@ fn cmd_format_all(check: bool, json: bool) -> ExitCode {
     let mut total = 0;
     for path in &al_files {
         total += 1;
-        if let Some(uri) = url::Url::from_file_path(path).ok().map(|u| u.to_string()) {
-            let params = serde_json::json!({ "uri": uri, "check": check });
-            match client.request("format", Some(params)) {
-                Ok(result) => {
-                    let changed = result
-                        .get("changed")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    if changed {
-                        changed_count += 1;
-                        if !json {
-                            let display = path.strip_prefix(&root).unwrap_or(path);
-                            if check {
-                                eprintln!("  would reformat: {}", display.display());
-                            } else {
-                                eprintln!("  formatted: {}", display.display());
-                            }
+        let uri = match url::Url::from_file_path(path) {
+            Ok(uri) => uri.to_string(),
+            Err(()) => {
+                error_count += 1;
+                eprintln!(
+                    "Error formatting {}: path cannot be represented as a file URI",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        let params = serde_json::json!({ "uri": uri, "check": check });
+        match request_checked(&mut client, "format", Some(params)) {
+            Ok(result) => {
+                let changed = result
+                    .get("changed")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if changed {
+                    changed_count += 1;
+                    if !json {
+                        let display = path.strip_prefix(&root).unwrap_or(path);
+                        if check {
+                            eprintln!("  would reformat: {}", display.display());
+                        } else {
+                            eprintln!("  formatted: {}", display.display());
                         }
                     }
                 }
-                Err(e) => {
-                    error_count += 1;
-                    eprintln!("Error formatting {}: {e}", path.display());
-                }
+            }
+            Err(e) => {
+                error_count += 1;
+                eprintln!("Error formatting {}: {e}", path.display());
             }
         }
     }
@@ -232,15 +275,16 @@ pub fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let Some(uri) = file_to_uri(file) else {
-        return report_error(&format!("Cannot resolve path: {file}"), json);
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
     };
     let params = serde_json::json!({
         "uri": uri,
         "line": line.saturating_sub(1),
         "character": col.saturating_sub(1),
     });
-    match client.request("hover", Some(params)) {
+    match request_checked(&mut client, "hover", Some(params)) {
         Ok(result) => {
             if result.is_null() {
                 if json {
@@ -274,15 +318,16 @@ pub fn cmd_position_query(method: &str, file: &str, line: u32, col: u32, json: b
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let Some(uri) = file_to_uri(file) else {
-        return report_error(&format!("Cannot resolve path: {file}"), json);
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
     };
     let params = serde_json::json!({
         "uri": uri,
         "line": line.saturating_sub(1),
         "character": col.saturating_sub(1),
     });
-    match client.request(method, Some(params)) {
+    match request_checked(&mut client, method, Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -382,11 +427,12 @@ fn cmd_file_query(method: &str, file: &str, json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let Some(uri) = file_to_uri(file) else {
-        return report_error(&format!("Cannot resolve path: {file}"), json);
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
     };
     let params = serde_json::json!({ "uri": uri });
-    match client.request(method, Some(params)) {
+    match request_checked(&mut client, method, Some(params)) {
         Ok(result) => {
             if json || !result.is_null() {
                 print_json(&result);
@@ -411,8 +457,9 @@ pub fn cmd_rename(
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let Some(uri) = file_to_uri(file) else {
-        return report_error(&format!("Cannot resolve path: {file}"), json);
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
     };
     let params = serde_json::json!({
         "uri": uri,
@@ -420,15 +467,20 @@ pub fn cmd_rename(
         "character": col.saturating_sub(1),
         "newName": new_name,
     });
-    match client.request("rename", Some(params)) {
+    match request_checked(&mut client, "rename", Some(params)) {
         Ok(result) => {
+            let exit_code = rename_exit_code(&result);
             if json {
                 print_json(&result);
-                return ExitCode::SUCCESS;
             }
-            if result.is_null() {
-                eprintln!("Cannot rename symbol at {file}:{line}:{col}");
-                return ExitCode::FAILURE;
+            if exit_code == ExitCode::FAILURE {
+                if !json {
+                    eprintln!("Cannot rename symbol at {file}:{line}:{col}");
+                }
+                return exit_code;
+            }
+            if json {
+                return exit_code;
             }
             if let Some(changes) = result.get("changes").and_then(|v| v.as_object()) {
                 let mut total_edits = 0;
@@ -462,6 +514,14 @@ pub fn cmd_rename(
             ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
+    }
+}
+
+fn rename_exit_code(result: &serde_json::Value) -> ExitCode {
+    if result.is_null() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
@@ -587,4 +647,41 @@ fn apply_workspace_edit(
     }
 
     Ok(files_changed)
+}
+
+#[cfg(test)]
+mod exit_status_tests {
+    use super::*;
+
+    #[test]
+    fn lint_counts_findings_in_single_and_all_responses() {
+        assert_eq!(
+            lint_diagnostic_count(&serde_json::json!([{}, {}]), false).unwrap(),
+            2
+        );
+        assert_eq!(
+            lint_diagnostic_count(
+                &serde_json::json!([
+                    {"file": "a.al", "diagnostics": [{}]},
+                    {"file": "b.al", "diagnostics": [{}, {}]}
+                ]),
+                true
+            )
+            .unwrap(),
+            3
+        );
+        assert!(lint_diagnostic_count(&serde_json::json!({}), false).is_err());
+    }
+
+    #[test]
+    fn unresolved_rename_is_a_failure_in_every_output_mode() {
+        assert_eq!(
+            rename_exit_code(&serde_json::Value::Null),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            rename_exit_code(&serde_json::json!({"changes": {}})),
+            ExitCode::SUCCESS
+        );
+    }
 }

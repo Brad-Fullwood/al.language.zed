@@ -12,5 +12,6 @@ al-syntax = { path = "../al-syntax", version = "0.1.0" }
 petgraph = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 tree-sitter = "0.25"

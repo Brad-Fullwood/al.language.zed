@@ -17,6 +17,7 @@ const GITHUB_REPO: &str = "Brad-Fullwood/al.language.zed";
 
 struct AlExtension {
     cached_binary_path: Option<String>,
+    cached_dotnet_path: Option<String>,
 }
 
 /// Maximum nesting depth for `merge_json`. Above this, the override
@@ -101,10 +102,11 @@ impl AlExtension {
     fn find_or_download_binary(
         &mut self,
         status_id: Option<&zed::LanguageServerId>,
-        worktree: &zed::Worktree,
+        worktree: Option<&zed::Worktree>,
         user_configured_path: Option<&str>,
     ) -> Result<String> {
         if let Some(path) = user_configured_path {
+            self.cached_binary_path = Some(path.to_string());
             return Ok(path.to_string());
         }
 
@@ -115,7 +117,8 @@ impl AlExtension {
             self.cached_binary_path = None;
         }
 
-        if let Some(path) = worktree.which("al-lsp") {
+        if let Some(path) = worktree.and_then(|worktree| worktree.which("al-lsp")) {
+            self.cached_binary_path = Some(path.clone());
             return Ok(path);
         }
 
@@ -176,8 +179,16 @@ impl AlExtension {
             _ => "al-lsp",
         };
         let binary_path = format!("{version_dir}/{binary_name}");
+        let explorer_name = match os {
+            zed::Os::Windows => "al-explorer.exe",
+            _ => "al-explorer",
+        };
+        let explorer_path = format!("{version_dir}/{explorer_name}");
 
-        if !fs::metadata(&binary_path).is_ok_and(|m| m.is_file()) {
+        let archive_is_complete = [&binary_path, &explorer_path]
+            .iter()
+            .all(|path| fs::metadata(path).is_ok_and(|metadata| metadata.is_file()));
+        if !archive_is_complete {
             if let Some(id) = status_id {
                 zed::set_language_server_installation_status(
                     id,
@@ -188,8 +199,16 @@ impl AlExtension {
             zed::download_file(&asset.download_url, &version_dir, archive_type)
                 .map_err(|e| format!("Failed to download al-lsp: {e}"))?;
 
-            zed::make_file_executable(&binary_path)
-                .map_err(|e| format!("Failed to make al-lsp executable: {e}"))?;
+            for (tool, path) in [("al-lsp", &binary_path), ("al-explorer", &explorer_path)] {
+                if !fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+                    return Err(format!(
+                        "Downloaded release archive does not contain the required {tool} \
+                         sidecar at {path}"
+                    ));
+                }
+                zed::make_file_executable(path)
+                    .map_err(|e| format!("Failed to make {tool} executable: {e}"))?;
+            }
 
             // Cleanup failure only leaves an obsolete cached release.
             if fs::metadata(&version_dir).is_ok_and(|m| m.is_dir()) {
@@ -214,6 +233,7 @@ impl zed::Extension for AlExtension {
     fn new() -> Self {
         Self {
             cached_binary_path: None,
+            cached_dotnet_path: None,
         }
     }
 
@@ -239,17 +259,21 @@ impl zed::Extension for AlExtension {
             .as_ref()
             .and_then(|b| b.path.as_ref())
             .map(|p| p.to_string());
+        let dotnet_path = settings::resolve_dotnet_path(settings.settings.as_ref());
+        self.cached_dotnet_path = dotnet_path.clone();
 
         let binary_path = self.find_or_download_binary(
             Some(language_server_id),
-            worktree,
+            Some(worktree),
             user_configured_path.as_deref(),
         )?;
 
         Ok(zed::Command {
             command: binary_path,
             args: user_args,
-            env: vec![],
+            env: dotnet_path
+                .map(|path| vec![("AL_DOTNET_PATH".to_string(), path)])
+                .unwrap_or_default(),
         })
     }
 
@@ -262,15 +286,12 @@ impl zed::Extension for AlExtension {
 
         // User overrides only — proxy provides defaults from package.json
         let mut user_config = json!({});
-        let mut user_init_options: Option<&Value> = None;
 
-        let lsp_settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree).ok();
-        if let Some(ref s) = lsp_settings {
-            if let Some(user_settings) = &s.settings {
-                user_config = settings::apply_al_settings_to_config(&user_config, user_settings);
-            }
-            user_init_options = s.initialization_options.as_ref();
+        let lsp_settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
+        if let Some(user_settings) = &lsp_settings.settings {
+            user_config = settings::apply_al_settings_to_config(&user_config, user_settings);
         }
+        let user_init_options: Option<&Value> = lsp_settings.initialization_options.as_ref();
 
         let mut init_options = json!({
             "workspacePath": workspace_path,
@@ -341,14 +362,19 @@ impl zed::Extension for AlExtension {
         _context_server_id: &zed::ContextServerId,
         _project: &zed::Project,
     ) -> Result<zed::Command> {
-        // The MCP server reuses the al-lsp binary (`al-lsp mcp`). The
-        // context-server API hands us a Project (not a Worktree), so the
-        // 4-step download chain isn't available here — PATH is the contract
-        // (set up by `make install`), with an actionable error otherwise.
+        // A Project does not expose `which`, but the release cache/download
+        // portion of the resolver is worktree-independent. This makes a fresh
+        // gallery install self-contained instead of silently depending on a
+        // developer `make install`.
+        let al_lsp_path = self.find_or_download_binary(None, None, None)?;
         Ok(zed::Command {
-            command: "al-lsp".to_string(),
+            command: al_lsp_path,
             args: vec!["mcp".to_string()],
-            env: vec![],
+            env: self
+                .cached_dotnet_path
+                .clone()
+                .map(|path| vec![("AL_DOTNET_PATH".to_string(), path)])
+                .unwrap_or_default(),
         })
     }
 
@@ -366,15 +392,15 @@ impl zed::Extension for AlExtension {
         // the status UI — see find_or_download_binary's status_id doc.
         let al_lsp_path = self.find_or_download_binary(
             None,
-            worktree,
+            Some(worktree),
             user_provided_debug_adapter_path.as_deref(),
         )?;
 
         // Read the same lsp."al-lsp".settings block the LSP uses so the
         // al.useOfficialDap toggle lives alongside al.useOfficialLsp. The DAP
         // path has no LanguageServerId, so key the lookup on the server id.
-        let lsp_settings = LspSettings::for_worktree("al-lsp", worktree).ok();
-        let user_settings = lsp_settings.as_ref().and_then(|s| s.settings.as_ref());
+        let lsp_settings = LspSettings::for_worktree("al-lsp", worktree)?;
+        let user_settings = lsp_settings.settings.as_ref();
         dap::build_dap_binary(config, al_lsp_path, worktree, user_settings)
     }
 

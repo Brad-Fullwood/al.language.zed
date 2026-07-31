@@ -18,6 +18,40 @@ pub enum DiscoveryError {
     #[error("Invalid app.json at {path}: {error}")]
     InvalidAppJson { path: PathBuf, error: String },
 
+    #[error(transparent)]
+    LaunchConfiguration(#[from] al_bc::launch::LaunchConfigError),
+
+    #[error("Cannot inspect AL workspace directory '{}': {source}", path.display())]
+    WorkspaceDirectory {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Cannot inspect symbol package folder '{}': {source}", path.display())]
+    PackageFolder {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Cannot inspect AL toolchain location '{}': {source}", path.display())]
+    ToolchainDirectory {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Invalid AL_TOOL_PATH '{}': {message}", path.display())]
+    InvalidToolchainPath { path: PathBuf, message: String },
+
+    #[error("Cannot run toolchain discovery command '{command}': {source}")]
+    ToolchainDiscoveryCommand {
+        command: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

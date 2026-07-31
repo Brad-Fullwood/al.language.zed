@@ -19,12 +19,21 @@ pub enum ManifestError {
     InvalidAttribute(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestDependency {
+    pub app_id: String,
+    pub name: String,
+    pub publisher: String,
+    pub min_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NavxManifest {
     pub app_id: String,
     pub name: String,
     pub publisher: String,
     pub version: String,
+    pub dependencies: Vec<ManifestDependency>,
 }
 
 /// The manifest XML typically looks like:
@@ -43,6 +52,7 @@ pub fn parse_manifest(xml_bytes: &[u8]) -> Result<NavxManifest, ManifestError> {
     let mut name = None;
     let mut publisher = None;
     let mut version = None;
+    let mut dependencies = Vec::new();
     let mut buf = Vec::new();
 
     loop {
@@ -70,6 +80,44 @@ pub fn parse_manifest(xml_bytes: &[u8]) -> Result<NavxManifest, ManifestError> {
                             _ => {}
                         }
                     }
+                } else if local_name.as_ref() == b"Dependency" {
+                    let mut dependency_id = None;
+                    let mut dependency_name = None;
+                    let mut dependency_publisher = None;
+                    let mut dependency_version = None;
+                    for attr in e.attributes() {
+                        let attr = attr
+                            .map_err(|error| ManifestError::InvalidAttribute(error.to_string()))?;
+                        let local = attr.key.local_name();
+                        let key = std::str::from_utf8(local.as_ref())?;
+                        let value = attr
+                            .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                            .map_err(ManifestError::Xml)?
+                            .to_string();
+                        match key {
+                            "Id" => dependency_id = Some(value),
+                            "Name" => dependency_name = Some(value),
+                            "Publisher" => dependency_publisher = Some(value),
+                            // Current NAVX manifests use MinVersion. Accept
+                            // Version as well for older third-party packages.
+                            "MinVersion" | "Version" => dependency_version = Some(value),
+                            _ => {}
+                        }
+                    }
+                    dependencies.push(ManifestDependency {
+                        app_id: dependency_id.ok_or_else(|| {
+                            ManifestError::MissingElement("Dependency/@Id".into())
+                        })?,
+                        name: dependency_name.ok_or_else(|| {
+                            ManifestError::MissingElement("Dependency/@Name".into())
+                        })?,
+                        publisher: dependency_publisher.ok_or_else(|| {
+                            ManifestError::MissingElement("Dependency/@Publisher".into())
+                        })?,
+                        min_version: dependency_version.ok_or_else(|| {
+                            ManifestError::MissingElement("Dependency/@MinVersion".into())
+                        })?,
+                    });
                 }
             }
             Ok(Event::Eof) => break,
@@ -85,6 +133,7 @@ pub fn parse_manifest(xml_bytes: &[u8]) -> Result<NavxManifest, ManifestError> {
         publisher: publisher
             .ok_or_else(|| ManifestError::MissingElement("App/@Publisher".into()))?,
         version: version.ok_or_else(|| ManifestError::MissingElement("App/@Version".into()))?,
+        dependencies,
     })
 }
 
@@ -119,6 +168,7 @@ mod tests {
         assert_eq!(m.name, "Base Application");
         assert_eq!(m.publisher, "Microsoft");
         assert_eq!(m.version, "24.0.12345.0");
+        assert!(m.dependencies.is_empty());
     }
 
     #[test]
@@ -134,6 +184,39 @@ mod tests {
         let m = parse_manifest(xml.as_bytes()).unwrap();
         assert_eq!(m.app_id, "abc-123");
         assert_eq!(m.name, "Test App");
+    }
+
+    #[test]
+    fn parses_dependency_identity_and_minimum_version() {
+        let xml = r#"<Package>
+  <App Id="app" Name="App" Publisher="Vendor" Version="1.0.0.0" />
+  <Dependencies>
+    <Dependency Id="dep" Name="Shared &amp; Safe" Publisher="Other"
+                MinVersion="2.3.0.0" CompatibilityId="0.0.0.0" />
+  </Dependencies>
+</Package>"#;
+        let manifest = parse_manifest(xml.as_bytes()).expect("manifest");
+        assert_eq!(
+            manifest.dependencies,
+            vec![ManifestDependency {
+                app_id: "dep".to_string(),
+                name: "Shared & Safe".to_string(),
+                publisher: "Other".to_string(),
+                min_version: "2.3.0.0".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn malformed_dependency_fails_instead_of_disappearing() {
+        let xml = r#"<Package>
+  <App Id="app" Name="App" Publisher="Vendor" Version="1.0.0.0" />
+  <Dependencies>
+    <Dependency Id="dep" Name="Shared" MinVersion="1.0.0.0" />
+  </Dependencies>
+</Package>"#;
+        let error = parse_manifest(xml.as_bytes()).expect_err("missing publisher must fail");
+        assert!(error.to_string().contains("Dependency/@Publisher"));
     }
 
     #[test]

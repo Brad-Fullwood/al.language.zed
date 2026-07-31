@@ -17,7 +17,7 @@ delegate by design)
 | Parser | tree-sitter AL (native, incremental, error-resilient) | TextMate (highlight) + compiler (structure) |
 | Hover / completion / definition / references / rename | ✅ native (bridge fallback for semantics) | ✅ (compiler-backed) |
 | Document/workspace symbols, folding, semantic tokens, inlay hints, signature help, CodeLens | ✅ native | ✅ |
-| Formatting | ✅ native (partial option coverage) | ✅ (more complete) |
+| Formatting | ✅ native (all documented native options wired) | ✅ (different/broader compatibility surface) |
 | Diagnostics | ✅ syntax native + 🔷 CodeAnalysis bridge | 🔷 CodeAnalysis |
 | Code actions / refactorings | ✅ curated native set | ✅ full compiler code-fix catalog |
 | Complexity metrics | ✅ | ❌ |
@@ -59,9 +59,9 @@ delegate by design)
 | Supported workspace-record tests **without a BC server** | ✅ isolated native record runtime | ❌ (all tests need BC) |
 | Test discovery (static, BC-free) | ✅ | needs toolchain |
 | Routing transparency (`test-classify`) | ✅ | ❌ |
-| JUnit output / coverage | ✅ (coverage static) | partial (needs BC) |
+| JUnit output / coverage | ✅ (static call-graph plus opt-in dynamic statement/path/MC/DC coverage) | partial (needs BC) |
 | Mutation testing | ✅ interpreter-routed, optionally parallel | ❌ |
-| Snapshot files | format validation and file diff | partial (snapshot debugging) |
+| Test snapshot files | live capture/replay plus BC-free validation and file diff | partial (snapshot debugging) |
 | Base-app/package DB, unsupported record, HTTP/UI/report/platform tests | 🔷 route to live BC | 🔷 live BC |
 
 ## Debugging

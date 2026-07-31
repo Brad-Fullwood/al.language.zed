@@ -47,7 +47,7 @@ fn main() {
         publisher: s("publisher"),
         version: s("version"),
     };
-    let external = load_external_symbols(dir);
+    let external = load_external_symbols(dir).expect("load dependency symbols");
     let value = build_symbol_reference(&objects, &meta, external.as_ref());
     println!("{}", serde_json::to_string_pretty(&value).unwrap());
 }

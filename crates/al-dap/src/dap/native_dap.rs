@@ -20,7 +20,9 @@ use tokio::io::{self, BufReader};
 use tokio::sync::{watch, Mutex};
 use tracing::{debug, error, info, warn};
 
-use super::bc_debug::{percent_encode_url, publish_app, BcDebugConfig, BcDebugSession, BcEvent};
+use super::bc_debug::{
+    get_web_endpoint, percent_encode_url, publish_app, BcDebugConfig, BcDebugSession, BcEvent,
+};
 use super::framing::{read_dap_body, write_dap_frame};
 use super::{DapError, Result};
 
@@ -74,6 +76,72 @@ pub struct ResolvedObject {
     pub object_id: i32,
 }
 
+const VARIABLE_HANDLE_BASE: i64 = 1 << 18;
+const MAX_VARIABLE_HANDLES: usize = 65_536;
+const SCOPE_GLOBALS: i64 = 1;
+const SCOPE_LOCALS: i64 = 2;
+
+#[derive(Debug, Clone)]
+struct VariableHandle {
+    frame_id: i64,
+    parent_path: String,
+    /// BC sometimes supplies children inline and sometimes requires an
+    /// `ExpandNode` request. `None` retains that distinction for lazy loading.
+    nodes: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Debug)]
+struct VariableHandleStore {
+    next: i64,
+    handles: HashMap<i64, VariableHandle>,
+}
+
+impl Default for VariableHandleStore {
+    fn default() -> Self {
+        Self {
+            next: VARIABLE_HANDLE_BASE,
+            handles: HashMap::new(),
+        }
+    }
+}
+
+impl VariableHandleStore {
+    fn create(&mut self, handle: VariableHandle) -> Option<i64> {
+        if self.handles.len() >= MAX_VARIABLE_HANDLES {
+            return None;
+        }
+        let reference = self.next;
+        self.next = self.next.checked_add(1)?;
+        self.handles.insert(reference, handle);
+        Some(reference)
+    }
+
+    fn get(&self, reference: i64) -> Option<VariableHandle> {
+        self.handles.get(&reference).cloned()
+    }
+
+    fn reset(&mut self) {
+        self.next = VARIABLE_HANDLE_BASE;
+        self.handles.clear();
+    }
+}
+
+fn scope_reference(group: i64, frame_id: i64) -> Option<i64> {
+    let frame_id = u16::try_from(frame_id).ok()?;
+    Some((group << 16) | i64::from(frame_id))
+}
+
+fn decode_scope_reference(reference: i64) -> Option<(i64, i64)> {
+    if !(0..VARIABLE_HANDLE_BASE).contains(&reference) {
+        return None;
+    }
+    let group = reference >> 16;
+    if !matches!(group, SCOPE_GLOBALS | SCOPE_LOCALS) {
+        return None;
+    }
+    Some((group, reference & 0xffff))
+}
+
 /// Run the native DAP server on stdio.
 ///
 /// `acquire_token` is a callback to get an OAuth access token for the given tenant.
@@ -89,6 +157,7 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     session: Arc<Mutex<Option<Arc<BcDebugSession>>>>,
     debug_config: Arc<Mutex<Option<BcDebugConfig>>>,
     breakpoints: Arc<Mutex<HashMap<String, Vec<i64>>>>,
+    variable_handles: Arc<Mutex<VariableHandleStore>>,
     /// Cancellation channel for the background event-forwarding task.
     /// When a new debug session starts we send a new value so the old task exits.
     cancel_tx: watch::Sender<u64>,
@@ -97,7 +166,6 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     /// event bytes to the main loop (bounded to 1024 messages).
     dap_event_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     project_root: String,
-    alc_path: Option<PathBuf>,
     acquire_token: F,
     resolve_object: R,
     resolve_path: P,
@@ -110,14 +178,15 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     find_app: A,
 }
 
-impl<F, Fut, R, P, C, A> NativeDapState<F, R, P, C, A>
+impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
     R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
-    C: Fn(&Path) -> std::result::Result<String, String> + Send + Sync + 'static,
-    A: Fn(&Path) -> Option<PathBuf> + Send + Sync + 'static,
+    C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
+    CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,
+    A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
 {
     /// Dispatch one DAP request to its handler. Returns `Ok(true)` when the
     /// server loop should exit (disconnect/terminate).
@@ -144,6 +213,10 @@ where
             }
             "next" | "stepIn" | "stepOut" => self.handle_step(out, request_seq, command).await?,
             "pause" => self.handle_pause(out, request_seq, command).await?,
+            "setFunctionBreakpoints" | "setVariable" | "completions" | "restart" | "stepBack" => {
+                self.handle_unsupported_capability(out, request_seq, command)
+                    .await?
+            }
             "continue" => self.handle_continue(out, request_seq, command).await?,
             "threads" => self.handle_threads(out, request_seq, command).await?,
             "stackTrace" => self.handle_stack_trace(out, request_seq, command).await?,
@@ -186,6 +259,7 @@ where
                 "supportsEvaluateForHovers": true,
                 "supportsStepBack": false,
                 "supportsSetVariable": false,
+                "supportsRestartFrame": false,
                 "supportsCompletionsRequest": false,
                 "supportsTerminateRequest": true,
                 "supportsDelayedStackTraceLoading": true,
@@ -231,9 +305,19 @@ where
         arguments: &serde_json::Value,
     ) -> Result<()> {
         let config = BcDebugConfig::from_dap_args(arguments);
+        if let Err(error) = config.validate_native() {
+            write_dap(
+                out,
+                &make_response(&self.seq, request_seq, command, false, None, Some(error)),
+            )
+            .await?;
+            return Ok(());
+        }
+        self.variable_handles.lock().await.reset();
         // Store config for use in the configurationDone handler.
         *self.debug_config.lock().await = Some(config.clone());
 
+        let mut onprem_web_base = None;
         if command == "launch" {
             write_dap(
                 out,
@@ -247,28 +331,14 @@ where
                 ),
             )
             .await?;
-            // Native-first: build the deploy `.app` with the pure-Rust native
-            // emitter (no `alc`, no C# bridge). A configured toolchain gates the
-            // compile step; the emitter itself does not need `alc`.
-            if self.alc_path.is_some() {
-                let compile_outcome: std::result::Result<String, String> =
-                    (self.compile)(std::path::Path::new(&self.project_root));
-                match compile_outcome {
-                    Ok(output) => {
-                        if !output.is_empty() {
-                            write_dap(
-                                out,
-                                &make_event(
-                                    &self.seq,
-                                    "output",
-                                    Some(serde_json::json!({
-                                        "category": "console",
-                                        "output": format!("{output}\r\n")
-                                    })),
-                                ),
-                            )
-                            .await?;
-                        }
+            // Native-first: build the deploy `.app` with the shared build
+            // service. The native emitter needs neither `alc` nor a configured
+            // Microsoft toolchain, so launch must never skip compilation merely
+            // because those optional components are absent.
+            let compile_outcome = (self.compile)(PathBuf::from(&self.project_root)).await;
+            match compile_outcome {
+                Ok(output) => {
+                    if !output.is_empty() {
                         write_dap(
                             out,
                             &make_event(
@@ -276,39 +346,51 @@ where
                                 "output",
                                 Some(serde_json::json!({
                                     "category": "console",
-                                    "output": "Compilation succeeded.\r\n"
+                                    "output": format!("{output}\r\n")
                                 })),
                             ),
                         )
                         .await?;
                     }
-                    Err(e) => {
-                        write_dap(
-                            out,
-                            &make_event(
-                                &self.seq,
-                                "output",
-                                Some(serde_json::json!({
-                                    "category": "stderr",
-                                    "output": format!("Compilation failed: {e}\r\n")
-                                })),
-                            ),
-                        )
-                        .await?;
-                        write_dap(
-                            out,
-                            &make_response(
-                                &self.seq,
-                                request_seq,
-                                command,
-                                false,
-                                None,
-                                Some(format!("Compilation failed: {e}")),
-                            ),
-                        )
-                        .await?;
-                        return Ok(());
-                    }
+                    write_dap(
+                        out,
+                        &make_event(
+                            &self.seq,
+                            "output",
+                            Some(serde_json::json!({
+                                "category": "console",
+                                "output": "Compilation succeeded.\r\n"
+                            })),
+                        ),
+                    )
+                    .await?;
+                }
+                Err(e) => {
+                    write_dap(
+                        out,
+                        &make_event(
+                            &self.seq,
+                            "output",
+                            Some(serde_json::json!({
+                                "category": "stderr",
+                                "output": format!("Compilation failed: {e}\r\n")
+                            })),
+                        ),
+                    )
+                    .await?;
+                    write_dap(
+                        out,
+                        &make_response(
+                            &self.seq,
+                            request_seq,
+                            command,
+                            false,
+                            None,
+                            Some(format!("Compilation failed: {e}")),
+                        ),
+                    )
+                    .await?;
+                    return Ok(());
                 }
             }
         }
@@ -378,13 +460,53 @@ where
                 .await?;
             }
 
-            let app_path = (self.find_app)(Path::new(&self.project_root));
-            if let Some(app_path) = app_path {
-                let http = reqwest::Client::builder()
-                    .danger_accept_invalid_certs(config.accept_invalid_certs)
-                    .build()
-                    .map_err(|e| DapError::PublishFailed(e.to_string()))?;
+            let http = reqwest::Client::builder()
+                .danger_accept_invalid_certs(config.accept_invalid_certs)
+                .build()
+                .map_err(|e| DapError::PublishFailed(e.to_string()))?;
 
+            if config.launch_browser && config.environment_type.eq_ignore_ascii_case("OnPrem") {
+                match get_web_endpoint(&http, &config, &token).await {
+                    Ok(endpoint) => onprem_web_base = Some(endpoint),
+                    Err(error) => {
+                        write_dap(
+                            out,
+                            &make_response(
+                                &self.seq,
+                                request_seq,
+                                command,
+                                false,
+                                None,
+                                Some(format!(
+                                    "Cannot resolve the on-premises Web client URL: {error}"
+                                )),
+                            ),
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                }
+            }
+
+            let app_path = match (self.find_app)(Path::new(&self.project_root)) {
+                Ok(app_path) => app_path,
+                Err(error) => {
+                    write_dap(
+                        out,
+                        &make_response(
+                            &self.seq,
+                            request_seq,
+                            command,
+                            false,
+                            None,
+                            Some(format!("Cannot locate compiled package: {error}")),
+                        ),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
+            if let Some(app_path) = app_path {
                 match publish_app(&http, &config, &token, &app_path).await {
                     Ok(()) => {
                         write_dap(
@@ -476,6 +598,28 @@ where
 
                 // Capture connection ID before moving session into Arc+mutex
                 let conn_id = debug_session.connection_id.clone();
+                let web_url = if command == "launch" && config.launch_browser {
+                    match build_debug_browser_url(&config, &conn_id, onprem_web_base.as_deref()) {
+                        Ok(url) => Some(url),
+                        Err(error) => {
+                            write_dap(
+                                out,
+                                &make_response(
+                                    &self.seq,
+                                    request_seq,
+                                    command,
+                                    false,
+                                    None,
+                                    Some(format!("Cannot build the Web client URL: {error}")),
+                                ),
+                            )
+                            .await?;
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    None
+                };
                 *self.session.lock().await = Some(Arc::new(debug_session));
 
                 self.spawn_event_forwarder();
@@ -500,9 +644,7 @@ where
                 .await?;
 
                 // Open browser with debug context params (must match SignalR ConnectionId)
-                if config.launch_browser {
-                    let web_url = build_debug_browser_url(&config, &conn_id);
-
+                if let Some(web_url) = web_url {
                     write_dap(
                         out,
                         &make_event(
@@ -711,6 +853,7 @@ where
                 .await?;
                 return Ok(());
             }
+            self.variable_handles.lock().await.reset();
         }
         write_dap(
             out,
@@ -749,6 +892,48 @@ where
         Ok(())
     }
 
+    async fn handle_unsupported_capability<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+    ) -> Result<()> {
+        // Keep these command-specific failures aligned with the false
+        // initialize capabilities. Protocol DTOs are not hub operations: the
+        // live HubBasedDebuggerService has no method for any command below.
+        let message = match command {
+            "setFunctionBreakpoints" => {
+                "function breakpoints are not supported by the BC debug hub; use source breakpoints instead"
+            }
+            "setVariable" => {
+                "setVariable is not supported by the BC debug hub; variables can be inspected and evaluated but not mutated"
+            }
+            "completions" => {
+                "completions are not supported by the native adapter; BC exposes no completion method and Microsoft's adapter delegates this request to its editor workspace"
+            }
+            "restart" => {
+                "restart is not supported by the BC debug hub; disconnect and launch or attach a new debug session"
+            }
+            "stepBack" => {
+                "stepBack is not supported by the BC debug hub; only continue, step-over, step-in, and step-out are available"
+            }
+            _ => unreachable!("only capability-gated commands are dispatched here"),
+        };
+        write_dap(
+            out,
+            &make_response(
+                &self.seq,
+                request_seq,
+                command,
+                false,
+                None,
+                Some(message.to_string()),
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn handle_continue<W: tokio::io::AsyncWrite + Unpin>(
         &self,
         out: &mut W,
@@ -773,6 +958,7 @@ where
                 .await?;
                 return Ok(());
             }
+            self.variable_handles.lock().await.reset();
         }
         write_dap(
             out,
@@ -854,47 +1040,44 @@ where
         command: &str,
         arguments: &serde_json::Value,
     ) -> Result<()> {
-        // variablesReference is encoded as (frame_id * 100 + scope_index) so the
-        // "variables" handler can decode which frame and scope to fetch.
         let frame_id = arguments
             .get("frameId")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-        // Clone Arc and drop guard before any async work.
-        let session_arc = self.session.lock().await.clone();
         let mut scopes = Vec::new();
-        if let Some(s) = session_arc {
-            // Locals scope (variablesReference = frame_id * 100 + 1)
-            // Always include locals — GetVariables returns per-frame locals.
-            let locals_ref = frame_id * 100 + 1;
-            scopes.push(serde_json::json!({
-                "name": "Locals",
-                "variablesReference": locals_ref,
-                "expensive": false,
-            }));
-
-            match s.get_globals(frame_id).await {
-                Ok(globals) if !globals.as_array().map(|a| a.is_empty()).unwrap_or(true) => {
-                    let globals_ref = frame_id * 100 + 2;
-                    let count = globals.as_array().map(|a| a.len()).unwrap_or(0);
-                    scopes.push(serde_json::json!({
-                        "name": "Globals",
-                        "variablesReference": globals_ref,
-                        "expensive": true,
-                        "namedVariables": count,
-                    }));
-                }
-                Ok(_) => {
-                    // Empty globals — still add scope so Zed shows it
-                    let globals_ref = frame_id * 100 + 2;
+        if self.session.lock().await.is_some() {
+            match (
+                scope_reference(SCOPE_GLOBALS, frame_id),
+                scope_reference(SCOPE_LOCALS, frame_id),
+            ) {
+                (Some(globals_ref), Some(locals_ref)) => {
                     scopes.push(serde_json::json!({
                         "name": "Globals",
                         "variablesReference": globals_ref,
                         "expensive": true,
                     }));
+                    scopes.push(serde_json::json!({
+                        "name": "Locals",
+                        "variablesReference": locals_ref,
+                        "expensive": false,
+                    }));
                 }
-                Err(e) => {
-                    debug!("get_globals failed for frame {frame_id}: {e}");
+                _ => {
+                    write_dap(
+                        out,
+                        &make_response(
+                            &self.seq,
+                            request_seq,
+                            command,
+                            false,
+                            None,
+                            Some(format!(
+                                "stack frame {frame_id} is outside the supported DAP range"
+                            )),
+                        ),
+                    )
+                    .await?;
+                    return Ok(());
                 }
             }
         }
@@ -924,41 +1107,78 @@ where
             .get("variablesReference")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-        // Decode the variablesReference encoding from the "scopes" handler:
-        // variablesReference = frame_id * 100 + scope_index
-        // scope_index 2 → globals, otherwise → locals
-        let frame_id = vars_ref / 100;
-        let scope_index = vars_ref % 100;
-        // Clone Arc and drop guard before async work.
         let session_arc = self.session.lock().await.clone();
-        let variables = if let Some(s) = session_arc {
-            if scope_index == 2 {
-                match s.get_globals(frame_id).await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(
-                            frame_id,
-                            error = %e,
-                            "DAP variables: get_globals failed; returning empty array"
-                        );
-                        serde_json::json!([])
-                    }
-                }
+        let Some(session) = session_arc else {
+            write_dap(
+                out,
+                &make_response(
+                    &self.seq,
+                    request_seq,
+                    command,
+                    true,
+                    Some(serde_json::json!({"variables": []})),
+                    None,
+                ),
+            )
+            .await?;
+            return Ok(());
+        };
+
+        let resolved = if vars_ref >= VARIABLE_HANDLE_BASE {
+            let handle = self.variable_handles.lock().await.get(vars_ref);
+            if let Some(handle) = handle {
+                let nodes = match handle.nodes {
+                    Some(nodes) => Ok(nodes),
+                    None => session
+                        .expand_node(handle.frame_id, &handle.parent_path)
+                        .await
+                        .map(json_array),
+                };
+                nodes.map(|nodes| (handle.frame_id, handle.parent_path, nodes))
             } else {
-                match s.get_variables(frame_id).await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(
-                            frame_id,
-                            error = %e,
-                            "DAP variables: get_variables failed; returning empty array"
-                        );
-                        serde_json::json!([])
-                    }
-                }
+                Ok((0, String::new(), Vec::new()))
+            }
+        } else if let Some((group, frame_id)) = decode_scope_reference(vars_ref) {
+            match session.get_variables(frame_id).await {
+                Ok(root_nodes) if group == SCOPE_LOCALS => Ok((
+                    frame_id,
+                    String::new(),
+                    local_nodes_from_frame_variables(&root_nodes),
+                )),
+                Ok(root_nodes) => match inline_global_nodes(&root_nodes) {
+                    Some(nodes) => Ok((frame_id, String::new(), nodes)),
+                    None => session.get_globals(frame_id).await.map(|expanded| {
+                        let (parent_path, nodes) = expanded_global_nodes(&expanded);
+                        (frame_id, parent_path, nodes)
+                    }),
+                },
+                Err(error) => Err(error),
             }
         } else {
-            serde_json::json!([])
+            Ok((0, String::new(), Vec::new()))
+        };
+
+        let (frame_id, parent_path, nodes) = match resolved {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                write_dap(
+                    out,
+                    &make_response(
+                        &self.seq,
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some(format!("Business Central variable request failed: {error}")),
+                    ),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+        let variables = {
+            let mut handles = self.variable_handles.lock().await;
+            bc_vars_to_dap(&nodes, frame_id, &parent_path, &mut handles)
         };
         write_dap(
             out,
@@ -967,7 +1187,7 @@ where
                 request_seq,
                 command,
                 true,
-                Some(serde_json::json!({"variables": bc_vars_to_dap(&variables)})),
+                Some(serde_json::json!({"variables": variables})),
                 None,
             ),
         )
@@ -992,30 +1212,64 @@ where
             .unwrap_or(0);
         // Clone Arc and drop guard before async work.
         let session_arc = self.session.lock().await.clone();
-        let result = if let Some(s) = session_arc {
-            s.evaluate(frame_id, expression)
-                .await
-                .unwrap_or(serde_json::Value::Null)
-        } else {
-            serde_json::Value::Null
+        let result = match session_arc {
+            Some(session) => match session.evaluate(frame_id, expression).await {
+                Ok(result) => result,
+                Err(error) => {
+                    write_dap(
+                        out,
+                        &make_response(
+                            &self.seq,
+                            request_seq,
+                            command,
+                            false,
+                            None,
+                            Some(format!("Business Central evaluation failed: {error}")),
+                        ),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            },
+            None => serde_json::Value::Null,
         };
-        // LocalNode has value, name, type fields
-        let display = result
-            .get("value")
-            .or(result.get("Value"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let display = bc_node_display_value(&result);
+        let type_name = result
+            .get("TypeName")
+            .or_else(|| result.get("typeName"))
+            .or_else(|| result.get("Type"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let children = bc_node_children(&result);
+        let has_children = bc_node_has_children(&result)
+            || children.as_ref().is_some_and(|value| !value.is_empty());
+        let (variables_reference, named_variables) = if has_children && !expression.is_empty() {
+            let named_variables = children.as_ref().map(Vec::len);
+            let reference = self
+                .variable_handles
+                .lock()
+                .await
+                .create(VariableHandle {
+                    frame_id,
+                    parent_path: expression.to_string(),
+                    nodes: children,
+                })
+                .unwrap_or(0);
+            (reference, named_variables)
+        } else {
+            (0, None)
+        };
+        let mut body = serde_json::json!({
+            "result": display,
+            "type": type_name,
+            "variablesReference": variables_reference,
+        });
+        if let Some(count) = named_variables {
+            body["namedVariables"] = serde_json::json!(count);
+        }
         write_dap(
             out,
-            &make_response(
-                &self.seq,
-                request_seq,
-                command,
-                true,
-                Some(serde_json::json!({"result": display, "variablesReference": 0})),
-                None,
-            ),
+            &make_response(&self.seq, request_seq, command, true, Some(body), None),
         )
         .await?;
         Ok(())
@@ -1033,6 +1287,7 @@ where
             let _ = s.stop_debugging().await;
         }
         *self.session.lock().await = None;
+        self.variable_handles.lock().await.reset();
         write_dap(
             out,
             &make_response(&self.seq, request_seq, command, true, None, None),
@@ -1167,9 +1422,8 @@ where
     }
 }
 
-pub async fn run_native_dap<F, Fut, R, P, C, A>(
+pub async fn run_native_dap<F, Fut, R, P, C, CompileFut, A>(
     project_root: &str,
-    alc_path: Option<&Path>,
     acquire_token: F,
     resolve_object: R,
     resolve_path: P,
@@ -1181,8 +1435,9 @@ where
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
     R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
-    C: Fn(&Path) -> std::result::Result<String, String> + Send + Sync + 'static,
-    A: Fn(&Path) -> Option<PathBuf> + Send + Sync + 'static,
+    C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
+    CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,
+    A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
 {
     let (cancel_tx, cancel_rx) = watch::channel(0u64);
     let (dap_event_tx, mut dap_event_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
@@ -1192,11 +1447,11 @@ where
         session: Arc::new(Mutex::new(None)),
         debug_config: Arc::new(Mutex::new(None)),
         breakpoints: Arc::new(Mutex::new(HashMap::new())),
+        variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
         cancel_tx,
         cancel_rx,
         dap_event_tx,
         project_root: project_root.to_string(),
-        alc_path: alc_path.map(|p| p.to_path_buf()),
         acquire_token,
         resolve_object,
         resolve_path,
@@ -1328,22 +1583,57 @@ fn make_event(seq: &AtomicU64, event: &str, body: Option<serde_json::Value>) -> 
 /// values containing special characters (spaces, ampersands, slashes) produce
 /// valid URLs — matching the encoding already applied in
 /// [`bc_debug::BcDebugConfig::base_url`] and `debug_hub_url`.
-pub fn build_debug_browser_url(config: &BcDebugConfig, conn_id: &str) -> String {
-    if config.environment_type.eq_ignore_ascii_case("OnPrem") {
-        // Use onprem_base() to include the port number in the URL.
-        let base = config.onprem_base();
-        format!(
-            "{base}/?page={}&connectioncontext={conn_id}&debuggingcontext={conn_id}&sk={conn_id}",
-            config.startup_object_id
-        )
+pub fn build_debug_browser_url(
+    config: &BcDebugConfig,
+    conn_id: &str,
+    onprem_web_base: Option<&str>,
+) -> Result<String> {
+    let object_parameter = match config.startup_object_type.to_ascii_lowercase().as_str() {
+        "table" => "table",
+        "report" => "report",
+        "query" => "query",
+        _ => "page",
+    };
+    let base = if config.environment_type.eq_ignore_ascii_case("OnPrem") {
+        onprem_web_base
+            .ok_or_else(|| {
+                DapError::ConnectionFailed(
+                    "on-premises browser launch requires the server-provided PublicWebBaseUrl"
+                        .to_string(),
+                )
+            })?
+            .to_string()
     } else {
         let tenant = percent_encode_url(&config.tenant);
         let env = percent_encode_url(config.environment_name.as_deref().unwrap_or("sandbox"));
-        format!(
-            "https://businesscentral.dynamics.com/{tenant}/{env}/?page={}&noSignUpCheck=1&connectioncontext={conn_id}&debuggingcontext={conn_id}&sk={conn_id}",
-            config.startup_object_id
-        )
+        format!("https://businesscentral.dynamics.com/{tenant}/{env}/")
+    };
+    let mut url = url::Url::parse(&base).map_err(|error| {
+        DapError::ConnectionFailed(format!("invalid Web client base URL `{base}`: {error}"))
+    })?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(DapError::ConnectionFailed(format!(
+            "unsupported Web client base URL `{base}`"
+        )));
     }
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair(object_parameter, &config.startup_object_id.to_string());
+        if let Some(company) = config
+            .startup_company
+            .as_deref()
+            .filter(|company| !company.is_empty())
+        {
+            query.append_pair("company", company);
+        }
+        if !config.environment_type.eq_ignore_ascii_case("OnPrem") {
+            query.append_pair("noSignUpCheck", "1");
+        }
+        query.append_pair("connectioncontext", conn_id);
+        query.append_pair("debuggingcontext", conn_id);
+        query.append_pair("sk", conn_id);
+    }
+    Ok(url.to_string())
 }
 
 async fn write_dap<W: tokio::io::AsyncWrite + Unpin>(
@@ -1409,37 +1699,161 @@ fn extract_breakpoint_id(result: &serde_json::Value) -> Option<i64> {
         .filter(|&id| id != 0)
 }
 
-/// Converts BC variable nodes to flat DAP variables.
-///
-/// BC casing varies by server version. Compound values are not expandable, so
-/// every returned `variablesReference` is zero.
-fn bc_vars_to_dap(variables: &serde_json::Value) -> Vec<serde_json::Value> {
-    let Some(arr) = variables.as_array() else {
+fn json_array(value: serde_json::Value) -> Vec<serde_json::Value> {
+    value.as_array().cloned().unwrap_or_default()
+}
+
+fn bc_node_name(node: &serde_json::Value) -> Option<&str> {
+    node.get("Name")
+        .or_else(|| node.get("name"))
+        .and_then(serde_json::Value::as_str)
+}
+
+fn bc_node_is(node: &serde_json::Value, expected: &str) -> bool {
+    bc_node_name(node).is_some_and(|name| name.eq_ignore_ascii_case(expected))
+}
+
+fn bc_node_children(node: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
+    node.get("Children")
+        .or_else(|| node.get("children"))
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+}
+
+fn bc_node_has_children(node: &serde_json::Value) -> bool {
+    node.get("HasChildren")
+        .or_else(|| node.get("hasChildren"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+        || bc_node_children(node).is_some_and(|children| !children.is_empty())
+}
+
+fn local_nodes_from_frame_variables(variables: &serde_json::Value) -> Vec<serde_json::Value> {
+    let Some(nodes) = variables.as_array() else {
         return Vec::new();
     };
-    arr.iter()
+    let mut start = usize::from(
+        nodes
+            .first()
+            .is_some_and(|node| bc_node_is(node, "<Globals>")),
+    );
+    if nodes
+        .get(start)
+        .is_some_and(|node| bc_node_is(node, "<Database Statistics>"))
+    {
+        start += 1;
+    }
+    nodes[start..].to_vec()
+}
+
+/// Return globals already embedded in the `GetVariables` root node. `None`
+/// means BC advertised children but requires the separate `ExpandGlobals` RPC.
+fn inline_global_nodes(variables: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
+    let globals = variables.as_array()?.first()?;
+    if !bc_node_is(globals, "<Globals>") {
+        return None;
+    }
+    if let Some(children) = bc_node_children(globals) {
+        return Some(children);
+    }
+    (!bc_node_has_children(globals)).then(Vec::new)
+}
+
+fn expanded_global_nodes(variables: &serde_json::Value) -> (String, Vec<serde_json::Value>) {
+    let nodes = variables.as_array().cloned().unwrap_or_default();
+    let Some(first) = nodes.first() else {
+        return (String::new(), Vec::new());
+    };
+    if bc_node_is(first, "<Globals>") {
+        let mut flattened = bc_node_children(first).unwrap_or_default();
+        flattened.extend(nodes.into_iter().skip(1));
+        return (String::new(), flattened);
+    }
+
+    // This is the legacy server shape handled by Microsoft's adapter: the
+    // first expanded node names the parent whose children follow.
+    (
+        bc_node_name(first)
+            .map(quote_al_identifier)
+            .unwrap_or_default(),
+        nodes,
+    )
+}
+
+fn quote_al_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn bc_node_display_value(node: &serde_json::Value) -> String {
+    let value = node
+        .get("Summary")
+        .or_else(|| node.get("summary"))
+        .or_else(|| node.get("Value"))
+        .or_else(|| node.get("value"));
+    match value {
+        Some(serde_json::Value::String(value)) => value
+            .strip_prefix("\r\n")
+            .or_else(|| value.strip_prefix('\n'))
+            .unwrap_or(value)
+            .to_string(),
+        Some(serde_json::Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    }
+}
+
+/// Convert BC `LocalNode` values into DAP variables while retaining structured
+/// child nodes. BC casing varies by server version, so every wire field accepts
+/// both its Newtonsoft PascalCase form and camelCase variants.
+fn bc_vars_to_dap(
+    nodes: &[serde_json::Value],
+    frame_id: i64,
+    parent_path: &str,
+    handles: &mut VariableHandleStore,
+) -> Vec<serde_json::Value> {
+    nodes
+        .iter()
         .filter_map(|node| {
-            let name = node
-                .get("Name")
-                .or_else(|| node.get("name"))
-                .and_then(|v| v.as_str())?;
-            let value = match node.get("Value").or_else(|| node.get("value")) {
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(serde_json::Value::Null) | None => String::new(),
-                Some(other) => other.to_string(),
-            };
+            let name = bc_node_name(node)?;
+            let value = bc_node_display_value(node);
             let type_name = node
                 .get("TypeName")
                 .or_else(|| node.get("typeName"))
                 .or_else(|| node.get("Type"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            Some(serde_json::json!({
+            let quoted_name = quote_al_identifier(name);
+            let path = if parent_path.is_empty() {
+                quoted_name
+            } else {
+                format!("{parent_path}.{quoted_name}")
+            };
+            let children = bc_node_children(node);
+            let has_children = bc_node_has_children(node)
+                || children.as_ref().is_some_and(|value| !value.is_empty());
+            let (variables_reference, named_variables) = if has_children {
+                let named_variables = children.as_ref().map(Vec::len);
+                let reference = handles
+                    .create(VariableHandle {
+                        frame_id,
+                        parent_path: path.clone(),
+                        nodes: children,
+                    })
+                    .unwrap_or(0);
+                (reference, named_variables)
+            } else {
+                (0, None)
+            };
+            let mut variable = serde_json::json!({
                 "name": name,
                 "value": value,
                 "type": type_name,
-                "variablesReference": 0,
-            }))
+                "evaluateName": path,
+                "variablesReference": variables_reference,
+            });
+            if let Some(count) = named_variables {
+                variable["namedVariables"] = serde_json::json!(count);
+            }
+            Some(variable)
         })
         .collect()
 }
@@ -1633,7 +2047,7 @@ mod tests {
             startup_object_id: 22,
             ..Default::default()
         };
-        let url = build_debug_browser_url(&config, "abc123");
+        let url = build_debug_browser_url(&config, "abc123", None).expect("valid cloud URL");
         assert!(
             url.contains("acme%20%26%20co"),
             "tenant special chars must be encoded: {url}"
@@ -1660,11 +2074,45 @@ mod tests {
             environment_name: None,
             ..Default::default()
         };
-        let url = build_debug_browser_url(&config, "conn");
+        let url = build_debug_browser_url(&config, "conn", None).expect("valid cloud URL");
         assert!(
             url.contains("/tenant1/sandbox/?"),
             "missing env should default to sandbox: {url}"
         );
+    }
+
+    #[test]
+    fn browser_url_honors_every_advertised_startup_object_type_and_company() {
+        for (object_type, parameter) in [
+            ("Page", "page"),
+            ("Table", "table"),
+            ("Report", "report"),
+            ("Query", "query"),
+        ] {
+            let config = BcDebugConfig {
+                environment_type: "Cloud".to_string(),
+                tenant: "tenant".to_string(),
+                environment_name: Some("sandbox".to_string()),
+                startup_object_type: object_type.to_string(),
+                startup_object_id: 42,
+                startup_company: Some("CRONUS UK Ltd.".to_string()),
+                ..Default::default()
+            };
+            let url = build_debug_browser_url(&config, "conn", None).expect("valid cloud URL");
+            assert!(
+                url.contains(&format!("{parameter}=42")),
+                "{object_type} must use its own URL parameter: {url}"
+            );
+            let parsed = url::Url::parse(&url).expect("browser URL parses");
+            assert_eq!(
+                parsed
+                    .query_pairs()
+                    .find(|(key, _)| key == "company")
+                    .map(|(_, value)| value.into_owned()),
+                Some("CRONUS UK Ltd.".to_string()),
+                "startup company must survive URL encoding: {url}"
+            );
+        }
     }
 
     #[test]
@@ -1845,10 +2293,7 @@ mod tests {
     }
 
     #[test]
-    fn onprem_browser_url_defaults_instance_when_absent() {
-        // When server_instance is None, onprem_base() falls back to "BC". The
-        // browser URL must reflect that default so the user lands on a valid
-        // dev endpoint rather than a malformed one.
+    fn onprem_browser_url_requires_server_provided_public_web_base_url() {
         let config = BcDebugConfig {
             environment_type: "OnPrem".to_string(),
             server: Some("http://localhost".to_string()),
@@ -1857,15 +2302,9 @@ mod tests {
             startup_object_id: 42,
             ..Default::default()
         };
-        let url = build_debug_browser_url(&config, "cid");
-        assert!(
-            url.contains(":7049/BC/?page=42"),
-            "default instance BC and port must appear: {url}"
-        );
-        assert!(
-            url.contains("connectioncontext=cid"),
-            "connection id must be threaded into the URL: {url}"
-        );
+        let error = build_debug_browser_url(&config, "cid", None)
+            .expect_err("developer-services URL must not stand in for the Web client URL");
+        assert!(error.to_string().contains("PublicWebBaseUrl"), "{error}");
     }
 
     #[test]
@@ -1880,9 +2319,10 @@ mod tests {
             startup_object_id: 9,
             ..Default::default()
         };
-        let url = build_debug_browser_url(&config, "conn");
+        let url = build_debug_browser_url(&config, "conn", Some("http://localhost:8080/BC"))
+            .expect("server-provided on-prem URL");
         assert!(
-            url.contains(":8080/BC/?page=9"),
+            url.contains(":8080/BC?page=9"),
             "lowercase onprem must use the on-prem URL branch: {url}"
         );
         assert!(
@@ -1892,7 +2332,7 @@ mod tests {
     }
 
     #[test]
-    fn onprem_browser_url_uses_onprem_base() {
+    fn onprem_browser_url_uses_authoritative_web_base_not_developer_services_port() {
         let config = BcDebugConfig {
             environment_type: "OnPrem".to_string(),
             server: Some("http://localhost".to_string()),
@@ -1901,10 +2341,16 @@ mod tests {
             startup_object_id: 5,
             ..Default::default()
         };
-        let url = build_debug_browser_url(&config, "conn");
+        let url =
+            build_debug_browser_url(&config, "conn", Some("https://web.example.test:8443/BC"))
+                .expect("server-provided on-prem URL");
         assert!(
-            url.contains(":7049/BC/?page=5"),
-            "on-prem URL should include port and instance: {url}"
+            url.starts_with("https://web.example.test:8443/BC?page=5"),
+            "on-prem URL must use the authoritative Web endpoint: {url}"
+        );
+        assert!(
+            !url.contains(":7049"),
+            "developer-services port must not leak into Web client URL: {url}"
         );
     }
 
@@ -1991,11 +2437,13 @@ mod tests {
             { "name": "i", "value": 5, "typeName": "Integer" },
             { "Value": "orphan" }
         ]);
-        let vars = bc_vars_to_dap(&bc);
+        let mut handles = VariableHandleStore::default();
+        let vars = bc_vars_to_dap(bc.as_array().expect("fixture array"), 0, "", &mut handles);
         assert_eq!(vars.len(), 2, "nameless node must be skipped");
         assert_eq!(vars[0]["name"], "Customer");
         assert_eq!(vars[0]["value"], "10000");
         assert_eq!(vars[0]["type"], "Record");
+        assert_eq!(vars[0]["evaluateName"], "\"Customer\"");
         assert_eq!(vars[0]["variablesReference"], 0);
         assert_eq!(vars[1]["name"], "i");
         assert_eq!(vars[1]["value"], "5", "numeric value stringified");
@@ -2003,9 +2451,94 @@ mod tests {
     }
 
     #[test]
-    fn bc_vars_to_dap_non_array_yields_empty() {
-        assert!(bc_vars_to_dap(&serde_json::json!(null)).is_empty());
-        assert!(bc_vars_to_dap(&serde_json::json!({ "Name": "x" })).is_empty());
+    fn json_array_non_array_yields_empty() {
+        assert!(json_array(serde_json::json!(null)).is_empty());
+        assert!(json_array(serde_json::json!({ "Name": "x" })).is_empty());
+    }
+
+    #[test]
+    fn bc_vars_to_dap_retains_inline_and_lazy_child_nodes() {
+        let bc = serde_json::json!([
+            {
+                "Name": "Customer",
+                "Summary": "Record Customer",
+                "TypeName": "Record Customer",
+                "HasChildren": true,
+                "Children": [{
+                    "Name": "No.",
+                    "Summary": "10000",
+                    "TypeName": "Code[20]"
+                }]
+            },
+            {
+                "name": "Lines",
+                "summary": "List of [Record Sales Line]",
+                "typeName": "List",
+                "hasChildren": true,
+                "children": null
+            }
+        ]);
+        let mut handles = VariableHandleStore::default();
+        let vars = bc_vars_to_dap(bc.as_array().expect("fixture array"), 7, "", &mut handles);
+
+        assert_eq!(vars[0]["variablesReference"], VARIABLE_HANDLE_BASE);
+        assert_eq!(vars[0]["namedVariables"], 1);
+        assert_eq!(vars[0]["evaluateName"], "\"Customer\"");
+        let customer = handles.get(VARIABLE_HANDLE_BASE).expect("customer handle");
+        assert_eq!(customer.frame_id, 7);
+        assert_eq!(customer.parent_path, "\"Customer\"");
+        assert_eq!(customer.nodes.expect("inline children").len(), 1);
+
+        assert_eq!(vars[1]["variablesReference"], VARIABLE_HANDLE_BASE + 1);
+        assert!(vars[1].get("namedVariables").is_none());
+        let lines = handles
+            .get(VARIABLE_HANDLE_BASE + 1)
+            .expect("lazy list handle");
+        assert_eq!(lines.parent_path, "\"Lines\"");
+        assert!(lines.nodes.is_none(), "null children must expand lazily");
+    }
+
+    #[test]
+    fn variable_scope_references_match_editorservices_wire_contract() {
+        assert_eq!(scope_reference(SCOPE_GLOBALS, 7), Some((1 << 16) | 7));
+        assert_eq!(scope_reference(SCOPE_LOCALS, 7), Some((2 << 16) | 7));
+        assert_eq!(
+            decode_scope_reference((1 << 16) | 7),
+            Some((SCOPE_GLOBALS, 7))
+        );
+        assert_eq!(
+            decode_scope_reference((2 << 16) | 7),
+            Some((SCOPE_LOCALS, 7))
+        );
+        assert_eq!(scope_reference(SCOPE_LOCALS, 65_536), None);
+        assert_eq!(decode_scope_reference(VARIABLE_HANDLE_BASE), None);
+    }
+
+    #[test]
+    fn frame_variable_groups_strip_wrappers_without_losing_locals() {
+        let roots = serde_json::json!([
+            { "Name": "<Globals>", "HasChildren": true, "Children": null },
+            { "Name": "<Database Statistics>", "HasChildren": true },
+            { "Name": "Customer", "Summary": "10000" },
+            { "Name": "Count", "Summary": "2" }
+        ]);
+        let locals = local_nodes_from_frame_variables(&roots);
+        assert_eq!(locals.len(), 2);
+        assert_eq!(bc_node_name(&locals[0]), Some("Customer"));
+        assert!(
+            inline_global_nodes(&roots).is_none(),
+            "null advertised children require ExpandGlobals"
+        );
+
+        let inline = serde_json::json!([{
+            "Name": "<Globals>",
+            "HasChildren": true,
+            "Children": [{ "Name": "GlobalValue", "Summary": "42" }]
+        }]);
+        assert_eq!(
+            inline_global_nodes(&inline).expect("inline globals").len(),
+            1
+        );
     }
 
     #[test]
@@ -2092,6 +2625,7 @@ mod handler_tests {
     use super::*;
 
     type TokenFut = std::future::Ready<std::result::Result<String, String>>;
+    type CompileFut = std::future::Ready<std::result::Result<String, String>>;
 
     /// The concrete `NativeDapState` specialization used across these tests:
     /// plain `fn` pointers for the token / object / path hooks.
@@ -2099,12 +2633,16 @@ mod handler_tests {
         fn(String) -> TokenFut,
         fn(&str) -> Option<ResolvedObject>,
         fn(i32, i32) -> Option<PathBuf>,
-        fn(&Path) -> std::result::Result<String, String>,
-        fn(&Path) -> Option<PathBuf>,
+        fn(PathBuf) -> CompileFut,
+        fn(&Path) -> std::result::Result<Option<PathBuf>, String>,
     >;
 
     fn no_token(_tenant: String) -> TokenFut {
         std::future::ready(Err("no auth in tests".to_string()))
+    }
+
+    fn no_compile(_project_root: PathBuf) -> CompileFut {
+        std::future::ready(Err("no compile in handler tests".to_string()))
     }
 
     fn test_state() -> TestState {
@@ -2119,16 +2657,16 @@ mod handler_tests {
             session: Arc::new(Mutex::new(None)),
             debug_config: Arc::new(Mutex::new(None)),
             breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
             cancel_tx,
             cancel_rx,
             dap_event_tx,
             project_root: "/nonexistent/test-project".to_string(),
-            alc_path: None,
             acquire_token: no_token,
             resolve_object: |_| None,
             resolve_path: |_, _| None,
-            compile: |_| Err("no compile in handler tests".to_string()),
-            find_app: |_| None,
+            compile: no_compile,
+            find_app: |_| Ok(None),
         }
     }
 
@@ -2138,6 +2676,14 @@ mod handler_tests {
         arguments: serde_json::Value,
     ) -> (bool, Vec<serde_json::Value>) {
         let state = test_state();
+        run_request_on(&state, command, arguments).await
+    }
+
+    async fn run_request_on(
+        state: &TestState,
+        command: &str,
+        arguments: serde_json::Value,
+    ) -> (bool, Vec<serde_json::Value>) {
         let (mut client, server) = tokio::io::duplex(64 * 1024);
         let terminate = state
             .handle_request(&mut client, command, 7, &arguments)
@@ -2147,7 +2693,7 @@ mod handler_tests {
         client.shutdown().await.expect("shutdown");
         drop(client);
         let mut reader = tokio::io::BufReader::new(server);
-        let mut frames = Vec::new();
+        let mut frames: Vec<serde_json::Value> = Vec::new();
         while let Ok(body) = read_dap_body(&mut reader).await {
             frames.push(serde_json::from_slice(&body).expect("valid JSON frame"));
         }
@@ -2165,6 +2711,19 @@ mod handler_tests {
             frames[0]["body"]["supportsConfigurationDoneRequest"], true,
             "capabilities must be advertised"
         );
+        for capability in [
+            "supportsFunctionBreakpoints",
+            "supportsStepBack",
+            "supportsSetVariable",
+            "supportsRestartFrame",
+            "supportsCompletionsRequest",
+            "supportsRestartRequest",
+        ] {
+            assert_eq!(
+                frames[0]["body"][capability], false,
+                "{capability} must stay false until the native adapter has a real implementation"
+            );
+        }
         assert_eq!(frames[1]["event"], "initialized");
         // Monotonic seq across both messages.
         assert!(frames[0]["seq"].as_u64() < frames[1]["seq"].as_u64());
@@ -2188,6 +2747,89 @@ mod handler_tests {
                 .contains("breakpoint"),
             "must tell the user the BC alternative: {frames:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn unsupported_capability_requests_fail_explicitly_without_mutating_state() {
+        let state = test_state();
+        *state.debug_config.lock().await = Some(BcDebugConfig::from_dap_args(
+            &serde_json::json!({"tenant": "state-sentinel"}),
+        ));
+        state
+            .breakpoints
+            .lock()
+            .await
+            .insert("/project/Sentinel.al".to_string(), vec![41]);
+        state
+            .variable_handles
+            .lock()
+            .await
+            .create(VariableHandle {
+                frame_id: 3,
+                parent_path: "Sentinel".to_string(),
+                nodes: Some(Vec::new()),
+            })
+            .expect("sentinel variable handle");
+
+        let cases = [
+            (
+                "setFunctionBreakpoints",
+                "function breakpoints are not supported by the BC debug hub; use source breakpoints instead",
+            ),
+            (
+                "setVariable",
+                "setVariable is not supported by the BC debug hub; variables can be inspected and evaluated but not mutated",
+            ),
+            (
+                "completions",
+                "completions are not supported by the native adapter; BC exposes no completion method and Microsoft's adapter delegates this request to its editor workspace",
+            ),
+            (
+                "restart",
+                "restart is not supported by the BC debug hub; disconnect and launch or attach a new debug session",
+            ),
+            (
+                "stepBack",
+                "stepBack is not supported by the BC debug hub; only continue, step-over, step-in, and step-out are available",
+            ),
+        ];
+
+        for (command, expected_message) in cases {
+            let (terminate, frames) = run_request_on(&state, command, serde_json::json!({})).await;
+            assert!(!terminate, "{command} must not terminate the adapter");
+            assert_eq!(frames.len(), 1, "{command}: {frames:?}");
+            assert_eq!(frames[0]["type"], "response");
+            assert_eq!(frames[0]["request_seq"], 7);
+            assert_eq!(frames[0]["requestSeq"], 7);
+            assert_eq!(frames[0]["command"], command);
+            assert_eq!(frames[0]["success"], false);
+            assert_eq!(frames[0]["message"], expected_message);
+            assert!(
+                frames[0].get("body").is_none(),
+                "failed {command} response must not fabricate a body: {frames:?}"
+            );
+
+            assert!(state.session.lock().await.is_none());
+            assert_eq!(
+                state
+                    .debug_config
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|config| config.tenant.as_str()),
+                Some("state-sentinel")
+            );
+            assert_eq!(
+                state
+                    .breakpoints
+                    .lock()
+                    .await
+                    .get("/project/Sentinel.al")
+                    .cloned(),
+                Some(vec![41])
+            );
+            assert_eq!(state.variable_handles.lock().await.handles.len(), 1);
+        }
     }
 
     #[tokio::test]
@@ -2295,5 +2937,66 @@ mod handler_tests {
             .as_str()
             .unwrap_or("")
             .contains("Authentication failed"));
+    }
+
+    #[tokio::test]
+    async fn launch_compiles_then_rejects_missing_manifest_selected_artifact() {
+        let (cancel_tx, cancel_rx) = watch::channel(0u64);
+        let (dap_event_tx, _dap_event_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        std::mem::forget(_dap_event_rx);
+        let compiled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let compiled_by_hook = Arc::clone(&compiled);
+        let state = NativeDapState {
+            seq: Arc::new(AtomicU64::new(1)),
+            session: Arc::new(Mutex::new(None)),
+            debug_config: Arc::new(Mutex::new(None)),
+            breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
+            cancel_tx,
+            cancel_rx,
+            dap_event_tx,
+            project_root: "/test/project".to_string(),
+            acquire_token: |_: String| std::future::ready(Ok("test-token".to_string())),
+            resolve_object: |_: &str| -> Option<ResolvedObject> { None },
+            resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
+            compile: move |_: PathBuf| {
+                compiled_by_hook.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::future::ready(Ok("shared build completed".to_string()))
+            },
+            // This is the shared manifest-name selector supplied by al-lsp;
+            // no match must fail rather than publishing a stale neighbouring app.
+            find_app: |_: &Path| -> std::result::Result<Option<PathBuf>, String> { Ok(None) },
+        };
+
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let terminate = state
+            .handle_request(
+                &mut client,
+                "launch",
+                7,
+                &serde_json::json!({"tenant": "test-tenant", "environmentType": "Sandbox"}),
+            )
+            .await
+            .expect("launch handler");
+        use tokio::io::AsyncWriteExt;
+        client.shutdown().await.expect("shutdown");
+        drop(client);
+        let mut reader = tokio::io::BufReader::new(server);
+        let mut frames: Vec<serde_json::Value> = Vec::new();
+        while let Ok(body) = read_dap_body(&mut reader).await {
+            frames.push(serde_json::from_slice(&body).expect("DAP JSON"));
+        }
+        assert!(!terminate);
+        assert!(compiled.load(std::sync::atomic::Ordering::SeqCst));
+        let response = frames.last().expect("launch response");
+        assert_eq!(response["success"], false, "frames: {frames:?}");
+        assert!(response["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("No compiled .app found"));
+        assert!(
+            state.session.lock().await.is_none(),
+            "must not connect after missing artifact"
+        );
     }
 }

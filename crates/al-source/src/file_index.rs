@@ -12,13 +12,62 @@ use dashmap::DashMap;
 /// Prevents runaway memory usage if a workspace root accidentally includes a huge directory tree.
 pub const MAX_WORKSPACE_FILES: usize = 10_000;
 
-const MAX_DEPTH: usize = 10;
-
 /// Real AL source files are KB-scale; a multi-megabyte `.al` is almost
-/// certainly a build artifact, generated blob, or pathological input. Reading
-/// it would pin its full contents in the in-memory `files` map. `scan` and
-/// `incremental_scan` skip and log larger files.
+/// certainly a build artifact, generated blob, or pathological input.
 pub const MAX_AL_FILE_BYTES: u64 = 50 * 1024 * 1024; // 50 MiB
+
+/// Bound the complete source snapshot staged before an atomic index refresh.
+/// Reaching the cap is an explicit scan error rather than a partial index.
+pub const MAX_WORKSPACE_SOURCE_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
+
+#[derive(Debug, thiserror::Error)]
+pub enum ScanError {
+    #[error("failed to read workspace directory '{}': {source}", path.display())]
+    ReadDirectory {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to read an entry in workspace directory '{}': {source}", path.display())]
+    ReadDirectoryEntry {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to inspect workspace path '{}': {source}", path.display())]
+    InspectPath {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "workspace contains more than {limit} AL files; narrow the workspace root or increase the explicit limit"
+    )]
+    FileLimit { limit: usize },
+    #[error(
+        "AL source '{}' is {size} bytes, exceeding the per-file limit of {limit} bytes",
+        path.display()
+    )]
+    FileTooLarge {
+        path: PathBuf,
+        size: u64,
+        limit: u64,
+    },
+    #[error(
+        "workspace AL source totals at least {size} bytes, exceeding the limit of {limit} bytes"
+    )]
+    WorkspaceTooLarge { size: u64, limit: u64 },
+    #[error("failed to read AL source '{}': {source}", path.display())]
+    ReadFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("AL source '{}' changed while the workspace snapshot was being read", path.display())]
+    ChangedDuringScan { path: PathBuf },
+    #[error("workspace source '{}' is not a regular file", path.display())]
+    NotRegularFile { path: PathBuf },
+}
 
 /// Snapshot of file metadata used for change detection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +169,17 @@ pub struct FileIndex {
     path_to_procedures: DashMap<PathBuf, Vec<String>>,
 }
 
+/// Deterministic accounting for the text and secondary indexes owned by a
+/// [`FileIndex`]. Opaque tree-sitter allocations are intentionally not guessed.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileIndexMemoryStats {
+    pub source_text_bytes: usize,
+    pub index_bytes: usize,
+    pub cached_tree_count: usize,
+    pub tracked_bytes: usize,
+}
+
 impl FileIndex {
     pub fn new() -> Self {
         Self {
@@ -132,6 +192,130 @@ impl FileIndex {
             file_symbols: DashMap::new(),
             procedures: DashMap::new(),
             path_to_procedures: DashMap::new(),
+        }
+    }
+
+    /// Replace every primary and secondary index with a completely staged
+    /// generation.
+    ///
+    /// Callers that publish this into a live workspace must hold their
+    /// workspace-generation write lock so readers cannot observe the brief
+    /// clear-and-move window.
+    pub fn replace_with(&self, replacement: FileIndex) {
+        self.files.clear();
+        self.objects.clear();
+        self.path_to_object.clear();
+        self.file_metadata.clear();
+        self.object_info.clear();
+        self.file_trees.clear();
+        self.file_symbols.clear();
+        self.procedures.clear();
+        self.path_to_procedures.clear();
+
+        for (key, value) in replacement.files {
+            self.files.insert(key, value);
+        }
+        for (key, value) in replacement.objects {
+            self.objects.insert(key, value);
+        }
+        for (key, value) in replacement.path_to_object {
+            self.path_to_object.insert(key, value);
+        }
+        for (key, value) in replacement.file_metadata {
+            self.file_metadata.insert(key, value);
+        }
+        for (key, value) in replacement.object_info {
+            self.object_info.insert(key, value);
+        }
+        for (key, value) in replacement.file_trees {
+            self.file_trees.insert(key, value);
+        }
+        for (key, value) in replacement.file_symbols {
+            self.file_symbols.insert(key, value);
+        }
+        for (key, value) in replacement.procedures {
+            self.procedures.insert(key, value);
+        }
+        for (key, value) in replacement.path_to_procedures {
+            self.path_to_procedures.insert(key, value);
+        }
+    }
+
+    pub fn memory_stats(&self) -> FileIndexMemoryStats {
+        let source_text_bytes = self
+            .files
+            .iter()
+            .map(|entry| entry.value().capacity())
+            .sum();
+        // The secondary structures contain paths, names, vectors, and metadata.
+        // Count their concrete values/keys without pretending to know DashMap
+        // bucket allocation or tree-sitter tree allocation sizes.
+        let index_bytes = self
+            .objects
+            .iter()
+            .map(|entry| {
+                entry.key().capacity()
+                    + entry
+                        .value()
+                        .iter()
+                        .map(|owner| {
+                            owner.kind.capacity()
+                                + owner.path.as_os_str().len()
+                                + std::mem::size_of_val(owner)
+                        })
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+            + self
+                .path_to_object
+                .iter()
+                .map(|entry| entry.key().as_os_str().len() + entry.value().capacity())
+                .sum::<usize>()
+            + self
+                .file_metadata
+                .iter()
+                .map(|entry| entry.key().as_os_str().len() + std::mem::size_of_val(entry.value()))
+                .sum::<usize>()
+            + self
+                .object_info
+                .iter()
+                .map(|entry| {
+                    entry.key().as_os_str().len()
+                        + entry.value().kind.capacity()
+                        + entry.value().name.capacity()
+                        + std::mem::size_of_val(entry.value())
+                })
+                .sum::<usize>()
+            + self
+                .file_symbols
+                .iter()
+                .map(|entry| {
+                    entry.key().as_os_str().len()
+                        + entry.value().capacity()
+                            * std::mem::size_of::<al_syntax::types::SyntaxDocumentSymbol>()
+                })
+                .sum::<usize>()
+            + self
+                .procedures
+                .iter()
+                .map(|entry| {
+                    entry.key().capacity()
+                        + entry.value().len() * std::mem::size_of::<CachedProcedureInfo>()
+                })
+                .sum::<usize>()
+            + self
+                .path_to_procedures
+                .iter()
+                .map(|entry| {
+                    entry.key().as_os_str().len()
+                        + entry.value().iter().map(String::capacity).sum::<usize>()
+                })
+                .sum::<usize>();
+        FileIndexMemoryStats {
+            source_text_bytes,
+            index_bytes,
+            cached_tree_count: self.file_trees.len(),
+            tracked_bytes: source_text_bytes + index_bytes,
         }
     }
 
@@ -164,27 +348,23 @@ impl FileIndex {
             .map(|entry| entry.value().clone())
     }
 
-    /// Skips hidden directories, `node_modules`, and `.alpackages`.
+    /// Skips hidden directories, `node_modules`, `.alpackages`, and symlinks.
     /// On a re-scan, indexed files that no longer
     /// exist on disk are removed from every index (primary + secondary
     /// object-name / object-id / procedure maps).
-    /// Returns the number of files freshly indexed (not the resulting
-    /// total — call [`len`] for that).
-    pub fn scan(&self, root: &Path) -> usize {
-        let mut count = 0;
-        let mut on_disk: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-        self.walk_al_files(root, &mut count, 0, &mut |path| {
-            on_disk.insert(path.clone());
-            if al_file_exceeds_cap(&path) {
-                return;
-            }
-            match std::fs::read_to_string(&path) {
-                Ok(content) => self.add_file(path, content),
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), error = %e, "skipping unreadable .al file during scan");
-                }
-            }
-        });
+    ///
+    /// The refresh is atomic with respect to discovery and file reads: a walk,
+    /// size, UTF-8, or concurrent-modification failure leaves the previous
+    /// generation intact and returns the precise error.
+    pub fn scan(&self, root: &Path) -> Result<usize, ScanError> {
+        let paths = collect_al_files(root)?;
+        let staged = stage_files(&paths)?;
+        let on_disk: std::collections::HashSet<PathBuf> = paths.iter().cloned().collect();
+
+        for (path, content, metadata) in staged {
+            self.add_file_with_meta(path, content, Some(metadata));
+        }
+
         // Drop entries for files that disappeared from disk between scans.
         // remove_file already cleans the secondary maps (object-name,
         // object-id, procedures, file_metadata, file_trees, file_symbols).
@@ -194,7 +374,7 @@ impl FileIndex {
                 self.remove_file(&path);
             }
         }
-        count
+        Ok(paths.len())
     }
 
     /// Incrementally scan a directory tree for changed `.al` files.
@@ -207,57 +387,29 @@ impl FileIndex {
     /// Returns a [`ScanDelta`] describing what was added/changed/removed.
     /// The first call after construction behaves like a full scan (no prior
     /// metadata recorded).
-    pub fn incremental_scan(&self, root: &Path) -> ScanDelta {
+    pub fn incremental_scan(&self, root: &Path) -> Result<ScanDelta, ScanError> {
         let mut delta = ScanDelta::default();
+        let paths = collect_al_files(root)?;
+        let on_disk: std::collections::HashSet<PathBuf> = paths.iter().cloned().collect();
+        let metadata = strict_metadata_for_paths(&paths)?;
+        let mut staged = Vec::new();
 
-        let mut on_disk: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-        let mut walk_count = 0;
-        self.walk_al_files(root, &mut walk_count, 0, &mut |path| {
-            on_disk.insert(path);
-        });
-
-        for path in &on_disk {
-            let current_meta = match FileMetadata::read(path) {
-                Some(m) => m,
-                None => {
-                    tracing::warn!(path = %path.display(), "skipping file: cannot read metadata");
-                    continue;
-                }
-            };
-            // The metadata read above lets us reject oversized files before allocation.
-            if current_meta.size > MAX_AL_FILE_BYTES {
-                tracing::warn!(
-                    path = %path.display(),
-                    size = current_meta.size,
-                    cap = MAX_AL_FILE_BYTES,
-                    "skipping .al file: exceeds per-file size cap"
-                );
-                // If this path is indexed and has grown past the cap, its old content,
-                // parse tree, and object/procedure mappings are now stale and
-                // will never be refreshed. Evict it so the index never serves
-                // outdated data for an oversized file. Record it as removed so
-                // callers can invalidate dependent caches.
-                if self.files.contains_key(path) {
-                    self.remove_file(path);
-                    delta.removed.push(path.clone());
-                }
-                continue;
-            }
+        for (path, current_meta) in &metadata {
             let needs_index = match self.file_metadata.get(path) {
-                Some(prev) => *prev != current_meta,
+                Some(prev) => *prev != *current_meta,
                 None => true, // new file
             };
             if needs_index {
-                match std::fs::read_to_string(path) {
-                    Ok(content) => {
-                        self.add_file_with_meta(path.clone(), content, Some(current_meta));
-                        delta.changed.push(path.clone());
-                    }
-                    Err(e) => {
-                        tracing::warn!(path = %path.display(), error = %e, "skipping unreadable .al file during incremental scan");
-                    }
-                }
+                let content = read_stable_file(path, current_meta)?;
+                staged.push((path.clone(), content, current_meta.clone()));
             }
+        }
+
+        // Discovery and every changed-file read completed successfully. Only
+        // now publish the new generation and evict deleted paths.
+        for (path, content, metadata) in staged {
+            self.add_file_with_meta(path.clone(), content, Some(metadata));
+            delta.changed.push(path);
         }
 
         let indexed_paths: Vec<PathBuf> = self.files.iter().map(|e| e.key().clone()).collect();
@@ -268,7 +420,7 @@ impl FileIndex {
             }
         }
 
-        delta
+        Ok(delta)
     }
 
     /// If the file is already indexed, the old object-name mapping is
@@ -496,67 +648,47 @@ impl FileIndex {
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
     }
+}
 
-    /// Skips hidden directories, `node_modules`, and `.alpackages`.
-    /// Respects `MAX_DEPTH` and stops after `MAX_WORKSPACE_FILES` visits.
-    fn walk_al_files(
-        &self,
-        dir: &Path,
-        count: &mut usize,
-        depth: usize,
-        visitor: &mut dyn FnMut(PathBuf),
-    ) {
-        if depth > MAX_DEPTH || *count >= MAX_WORKSPACE_FILES {
-            return;
+/// Read one on-disk AL source with the same size, UTF-8, file-type, and
+/// concurrent-modification guarantees as a workspace scan.
+///
+/// `Ok(None)` means the path no longer exists. This distinction is used when
+/// an editor closes a buffer: a real project file must be restored from disk,
+/// while a never-saved transient buffer must be removed from every index.
+pub fn read_source_file(path: &Path) -> Result<Option<String>, ScanError> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(ScanError::InspectPath {
+                path: path.to_path_buf(),
+                source,
+            });
         }
-
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-
-        for entry_result in entries {
-            let entry = match entry_result {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::debug!(error = %e, dir = %dir.display(), "skipping directory entry due to error");
-                    continue;
-                }
-            };
-            let path = entry.path();
-
-            // Use the cached file type from the directory read instead of
-            // `path.is_dir()`, which would issue a fresh `stat()` syscall per
-            // entry. Fall back to `false` (treat as a file) on
-            // error; a genuinely unreadable entry will fail later on read.
-            let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-
-            if is_dir {
-                let dir_name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-
-                if dir_name.starts_with('.')
-                    || dir_name == "node_modules"
-                    || dir_name == ".alpackages"
-                {
-                    continue;
-                }
-
-                self.walk_al_files(&path, count, depth + 1, visitor);
-            } else if path
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("al"))
-            {
-                if *count >= MAX_WORKSPACE_FILES {
-                    return;
-                }
-                visitor(path);
-                *count += 1;
-            }
-        }
+    };
+    if !metadata.file_type().is_file() {
+        return Err(ScanError::NotRegularFile {
+            path: path.to_path_buf(),
+        });
     }
+    let expected = FileMetadata {
+        modified: metadata
+            .modified()
+            .map_err(|source| ScanError::InspectPath {
+                path: path.to_path_buf(),
+                source,
+            })?,
+        size: metadata.len(),
+    };
+    if expected.size > MAX_AL_FILE_BYTES {
+        return Err(ScanError::FileTooLarge {
+            path: path.to_path_buf(),
+            size: expected.size,
+            limit: MAX_AL_FILE_BYTES,
+        });
+    }
+    read_stable_file(path, &expected).map(Some)
 }
 
 impl Default for FileIndex {
@@ -565,23 +697,141 @@ impl Default for FileIndex {
     }
 }
 
-/// Returns `true` if the `.al` file at `path` is larger than
-/// [`MAX_AL_FILE_BYTES`] and should be skipped. Logs a warning when it is.
-/// On metadata-read failure returns `false` so the caller proceeds to its
-/// own read (which will then surface the I/O error).
-fn al_file_exceeds_cap(path: &Path) -> bool {
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.len() > MAX_AL_FILE_BYTES => {
-            tracing::warn!(
-                path = %path.display(),
-                size = meta.len(),
-                cap = MAX_AL_FILE_BYTES,
-                "skipping .al file: exceeds per-file size cap"
-            );
-            true
+/// Discover the exact AL source set used by [`FileIndex::scan`].
+///
+/// Returned paths preserve the caller's root identity instead of
+/// canonicalizing it. This is important on platforms such as macOS where
+/// lexical aliases (for example `/var` and `/private/var`) can name the same
+/// directory: consumers must be able to compare discovery results with the
+/// paths stored in the index.
+pub fn collect_al_files(root: &Path) -> Result<Vec<PathBuf>, ScanError> {
+    let mut directories = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+
+    while let Some(directory) = directories.pop() {
+        let read_dir =
+            std::fs::read_dir(&directory).map_err(|source| ScanError::ReadDirectory {
+                path: directory.clone(),
+                source,
+            })?;
+        let mut entries = read_dir
+            .map(|result| {
+                result.map_err(|source| ScanError::ReadDirectoryEntry {
+                    path: directory.clone(),
+                    source,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.sort_unstable_by_key(std::fs::DirEntry::path);
+
+        let mut child_directories = Vec::new();
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|source| ScanError::InspectPath {
+                path: path.clone(),
+                source,
+            })?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with('.')
+                    || name.eq_ignore_ascii_case("node_modules")
+                    || name.eq_ignore_ascii_case(".alpackages")
+                {
+                    continue;
+                }
+                child_directories.push(path);
+            } else if file_type.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("al"))
+            {
+                files.push(path);
+                if files.len() > MAX_WORKSPACE_FILES {
+                    return Err(ScanError::FileLimit {
+                        limit: MAX_WORKSPACE_FILES,
+                    });
+                }
+            }
         }
-        _ => false,
+        // The stack is LIFO; reverse to retain stable lexical traversal.
+        child_directories.reverse();
+        directories.extend(child_directories);
     }
+
+    files.sort_unstable();
+    Ok(files)
+}
+
+fn strict_file_metadata(path: &Path) -> Result<FileMetadata, ScanError> {
+    let metadata = std::fs::metadata(path).map_err(|source| ScanError::InspectPath {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let modified = metadata
+        .modified()
+        .map_err(|source| ScanError::InspectPath {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let size = metadata.len();
+    if size > MAX_AL_FILE_BYTES {
+        return Err(ScanError::FileTooLarge {
+            path: path.to_path_buf(),
+            size,
+            limit: MAX_AL_FILE_BYTES,
+        });
+    }
+    Ok(FileMetadata { modified, size })
+}
+
+fn strict_metadata_for_paths(paths: &[PathBuf]) -> Result<Vec<(PathBuf, FileMetadata)>, ScanError> {
+    let mut total = 0u64;
+    let mut result = Vec::with_capacity(paths.len());
+    for path in paths {
+        let metadata = strict_file_metadata(path)?;
+        total = total
+            .checked_add(metadata.size)
+            .ok_or(ScanError::WorkspaceTooLarge {
+                size: u64::MAX,
+                limit: MAX_WORKSPACE_SOURCE_BYTES,
+            })?;
+        if total > MAX_WORKSPACE_SOURCE_BYTES {
+            return Err(ScanError::WorkspaceTooLarge {
+                size: total,
+                limit: MAX_WORKSPACE_SOURCE_BYTES,
+            });
+        }
+        result.push((path.clone(), metadata));
+    }
+    Ok(result)
+}
+
+fn read_stable_file(path: &Path, expected: &FileMetadata) -> Result<String, ScanError> {
+    let content = std::fs::read_to_string(path).map_err(|source| ScanError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let after = strict_file_metadata(path)?;
+    if &after != expected || content.len() as u64 != expected.size {
+        return Err(ScanError::ChangedDuringScan {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(content)
+}
+
+fn stage_files(paths: &[PathBuf]) -> Result<Vec<(PathBuf, String, FileMetadata)>, ScanError> {
+    strict_metadata_for_paths(paths)?
+        .into_iter()
+        .map(|(path, metadata)| {
+            let content = read_stable_file(&path, &metadata)?;
+            Ok((path, content, metadata))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -638,7 +888,7 @@ mod tests {
     fn scan_finds_al_files() {
         let dir = setup_test_dir();
         let index = FileIndex::new();
-        let count = index.scan(dir.path());
+        let count = index.scan(dir.path()).unwrap();
 
         assert_eq!(
             count, 3,
@@ -648,15 +898,17 @@ mod tests {
     }
 
     #[test]
-    fn al_file_exceeds_cap_helper() {
+    fn strict_file_metadata_enforces_limits_and_missing_files() {
         let dir = tempfile::tempdir().unwrap();
 
         let small = dir.path().join("small.al");
         fs::write(&small, "codeunit 1 X {}").unwrap();
-        assert!(!al_file_exceeds_cap(&small));
+        assert!(strict_file_metadata(&small).unwrap().size < MAX_AL_FILE_BYTES);
 
-        // A missing file does not count as "over cap" (caller surfaces I/O err).
-        assert!(!al_file_exceeds_cap(&dir.path().join("missing.al")));
+        assert!(matches!(
+            strict_file_metadata(&dir.path().join("missing.al")),
+            Err(ScanError::InspectPath { .. })
+        ));
 
         // A file just over the cap is rejected. Use a sparse file via set_len
         // so the test stays cheap.
@@ -664,11 +916,61 @@ mod tests {
         let f = std::fs::File::create(&big).unwrap();
         f.set_len(MAX_AL_FILE_BYTES + 1).unwrap();
         drop(f);
-        assert!(al_file_exceeds_cap(&big));
+        assert!(matches!(
+            strict_file_metadata(&big),
+            Err(ScanError::FileTooLarge { .. })
+        ));
     }
 
     #[test]
-    fn scan_skips_oversized_al_file() {
+    fn read_source_file_distinguishes_regular_missing_and_oversized_sources() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let regular = dir.path().join("Regular.al");
+        fs::write(&regular, "codeunit 50100 Regular {}").unwrap();
+        assert_eq!(
+            read_source_file(&regular).unwrap().as_deref(),
+            Some("codeunit 50100 Regular {}")
+        );
+
+        assert_eq!(
+            read_source_file(&dir.path().join("Missing.al")).unwrap(),
+            None
+        );
+
+        let oversized = dir.path().join("Oversized.al");
+        let file = std::fs::File::create(&oversized).unwrap();
+        file.set_len(MAX_AL_FILE_BYTES + 1).unwrap();
+        drop(file);
+        assert!(matches!(
+            read_source_file(&oversized),
+            Err(ScanError::FileTooLarge { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_source_file_rejects_symlinks_and_directories() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("Source.al");
+        fs::write(&source, "codeunit 50100 Source {}").unwrap();
+
+        let link = dir.path().join("Linked.al");
+        symlink(&source, &link).unwrap();
+        assert!(matches!(
+            read_source_file(&link),
+            Err(ScanError::NotRegularFile { .. })
+        ));
+        assert!(matches!(
+            read_source_file(dir.path()),
+            Err(ScanError::NotRegularFile { .. })
+        ));
+    }
+
+    #[test]
+    fn scan_rejects_oversized_al_file_without_publishing_partial_index() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("ok.al"), "codeunit 1 Ok {}").unwrap();
         let big = dir.path().join("big.al");
@@ -677,24 +979,100 @@ mod tests {
         drop(f);
 
         let index = FileIndex::new();
-        // walk still counts both .al files, but only the small one is indexed.
-        index.scan(dir.path());
-        assert_eq!(index.len(), 1, "oversized .al file should not be indexed");
-        assert!(index.get_content(&dir.path().join("ok.al")).is_some());
+        let error = index
+            .scan(dir.path())
+            .expect_err("oversized source must fail the complete scan");
+        assert!(matches!(error, ScanError::FileTooLarge { .. }));
+        assert_eq!(
+            index.len(),
+            0,
+            "a failed scan must publish no partial index"
+        );
+        assert!(index.get_content(&dir.path().join("ok.al")).is_none());
         assert!(index.get_content(&big).is_none());
     }
 
     #[test]
-    fn incremental_scan_evicts_file_that_grew_oversized() {
-        // A file indexed while small, then grown past the cap, must be evicted
-        // from the index on the next incremental scan rather than left serving
-        // stale content/parse-trees/object mappings.
+    fn scan_rejects_invalid_utf8_without_replacing_previous_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("Existing.al");
+        fs::write(&existing, "codeunit 1 Existing {}").unwrap();
+        let index = FileIndex::new();
+        index.scan(dir.path()).unwrap();
+
+        let invalid = dir.path().join("Invalid.al");
+        fs::write(&invalid, [0xff, 0xfe]).unwrap();
+        let error = index
+            .scan(dir.path())
+            .expect_err("non-UTF-8 AL source must fail the complete scan");
+        assert!(matches!(error, ScanError::ReadFile { .. }));
+        assert_eq!(index.len(), 1);
+        assert!(index.get_content(&existing).is_some());
+        assert!(index.get_content(&invalid).is_none());
+    }
+
+    #[test]
+    fn scan_has_no_arbitrary_directory_depth_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut nested = dir.path().to_path_buf();
+        for index in 0..24 {
+            nested.push(format!("level-{index:02}"));
+        }
+        fs::create_dir_all(&nested).unwrap();
+        let deep = nested.join("Deep.al");
+        fs::write(&deep, "codeunit 1 Deep {}").unwrap();
+
+        let index = FileIndex::new();
+        assert_eq!(index.scan(dir.path()).unwrap(), 1);
+        assert!(index.get_content(&deep).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_does_not_follow_file_or_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("Outside.al");
+        fs::write(&outside_file, "codeunit 1 Outside {}").unwrap();
+        symlink(&outside_file, dir.path().join("FileLink.al")).unwrap();
+        symlink(outside.path(), dir.path().join("DirectoryLink")).unwrap();
+        fs::write(dir.path().join("Inside.al"), "codeunit 2 Inside {}").unwrap();
+
+        let index = FileIndex::new();
+        assert_eq!(index.scan(dir.path()).unwrap(), 1);
+        assert!(index.find_by_object_name("Inside").is_some());
+        assert!(index.find_by_object_name("Outside").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_preserves_an_aliased_project_root() {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempfile::tempdir().unwrap();
+        let project = parent.path().join("project");
+        let alias = parent.path().join("alias");
+        fs::create_dir(&project).unwrap();
+        fs::write(project.join("Inside.al"), "codeunit 2 Inside {}").unwrap();
+        symlink(&project, &alias).unwrap();
+
+        assert_eq!(
+            collect_al_files(&alias).unwrap(),
+            vec![alias.join("Inside.al")],
+            "discovery paths must use the same root identity as the index caller"
+        );
+    }
+
+    #[test]
+    fn incremental_scan_rejects_file_that_grew_oversized_atomically() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Grower.al");
         fs::write(&path, "codeunit 50100 \"Grower\" { }").unwrap();
 
         let index = FileIndex::new();
-        let first = index.incremental_scan(dir.path());
+        let first = index.incremental_scan(dir.path()).unwrap();
         assert_eq!(first.changed.len(), 1, "small file indexed on first scan");
         assert!(index.get_content(&path).is_some());
         assert_eq!(index.len(), 1);
@@ -704,23 +1082,22 @@ mod tests {
         f.set_len(MAX_AL_FILE_BYTES + 1).unwrap();
         drop(f);
 
-        let second = index.incremental_scan(dir.path());
+        let second = index
+            .incremental_scan(dir.path())
+            .expect_err("oversized changed file must fail the refresh");
+        assert!(matches!(second, ScanError::FileTooLarge { .. }));
         assert!(
-            second.removed.contains(&path),
-            "oversized-grown file should be reported removed"
+            index.get_content(&path).is_some(),
+            "failed refresh must retain the complete previous generation"
         );
-        assert!(
-            index.get_content(&path).is_none(),
-            "oversized-grown file must be evicted, not left stale"
-        );
-        assert_eq!(index.len(), 0);
+        assert_eq!(index.len(), 1);
     }
 
     #[test]
     fn scan_skips_hidden_and_alpackages() {
         let dir = setup_test_dir();
         let index = FileIndex::new();
-        index.scan(dir.path());
+        index.scan(dir.path()).unwrap();
 
         assert!(index.find_by_object_name("secret").is_none());
         assert!(index.find_by_object_name("dep").is_none());
@@ -730,7 +1107,7 @@ mod tests {
     fn scan_indexes_object_names() {
         let dir = setup_test_dir();
         let index = FileIndex::new();
-        index.scan(dir.path());
+        index.scan(dir.path()).unwrap();
 
         assert!(index.find_by_object_name("my test table").is_some());
         assert!(index.find_by_object_name("My Test Table").is_some());
@@ -743,7 +1120,7 @@ mod tests {
     fn get_content_returns_file_text() {
         let dir = setup_test_dir();
         let index = FileIndex::new();
-        index.scan(dir.path());
+        index.scan(dir.path()).unwrap();
 
         let table_path = dir.path().join("MyTestTable.al");
         let content = index.get_content(&table_path);
@@ -943,7 +1320,7 @@ mod tests {
         fs::write(dir.path().join("config.json"), "{}").unwrap();
 
         let index = FileIndex::new();
-        let count = index.scan(dir.path());
+        let count = index.scan(dir.path()).unwrap();
         assert_eq!(count, 0);
         assert!(index.is_empty());
     }
@@ -966,7 +1343,7 @@ mod tests {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        let delta = index.incremental_scan(dir.path());
+        let delta = index.incremental_scan(dir.path()).unwrap();
 
         assert_eq!(
             delta.changed.len(),
@@ -982,9 +1359,9 @@ mod tests {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        index.incremental_scan(dir.path());
+        index.incremental_scan(dir.path()).unwrap();
 
-        let delta = index.incremental_scan(dir.path());
+        let delta = index.incremental_scan(dir.path()).unwrap();
 
         assert!(
             delta.is_empty(),
@@ -998,7 +1375,7 @@ mod tests {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        index.incremental_scan(dir.path());
+        index.incremental_scan(dir.path()).unwrap();
         assert_eq!(index.len(), 3);
 
         let table_path = dir.path().join("MyTestTable.al");
@@ -1015,7 +1392,7 @@ mod tests {
 
         // The size change makes the metadata snapshot differ even on coarse filesystems.
 
-        let delta = index.incremental_scan(dir.path());
+        let delta = index.incremental_scan(dir.path()).unwrap();
 
         assert_eq!(
             delta.changed.len(),
@@ -1041,13 +1418,13 @@ mod tests {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        index.incremental_scan(dir.path());
+        index.incremental_scan(dir.path()).unwrap();
         assert_eq!(index.len(), 3);
 
         let new_path = dir.path().join("NewReport.al");
         fs::write(&new_path, r#"report 50100 "New Report" { }"#).unwrap();
 
-        let delta = index.incremental_scan(dir.path());
+        let delta = index.incremental_scan(dir.path()).unwrap();
 
         assert_eq!(
             delta.changed.len(),
@@ -1064,14 +1441,14 @@ mod tests {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        index.scan(dir.path());
+        index.scan(dir.path()).unwrap();
         assert_eq!(index.len(), 3);
         assert!(index.find_by_object_name("my test page").is_some());
 
         let page_path = dir.path().join("MyTestPage.al");
         fs::remove_file(&page_path).unwrap();
 
-        let count = index.scan(dir.path());
+        let count = index.scan(dir.path()).unwrap();
 
         assert_eq!(count, 2, "scan() walks only files still on disk");
         assert_eq!(index.len(), 2, "deleted file must be dropped from index");
@@ -1090,11 +1467,11 @@ mod tests {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        index.scan(dir.path());
+        index.scan(dir.path()).unwrap();
         let initial_len = index.len();
         assert_eq!(initial_len, 3);
 
-        index.scan(dir.path());
+        index.scan(dir.path()).unwrap();
         assert_eq!(
             index.len(),
             initial_len,
@@ -1109,13 +1486,13 @@ mod tests {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        index.incremental_scan(dir.path());
+        index.incremental_scan(dir.path()).unwrap();
         assert_eq!(index.len(), 3);
 
         let page_path = dir.path().join("MyTestPage.al");
         fs::remove_file(&page_path).unwrap();
 
-        let delta = index.incremental_scan(dir.path());
+        let delta = index.incremental_scan(dir.path()).unwrap();
 
         assert_eq!(delta.changed.len(), 0);
         assert_eq!(
@@ -1138,7 +1515,7 @@ mod tests {
         let dir = setup_test_dir();
         let index = FileIndex::new();
 
-        index.incremental_scan(dir.path());
+        index.incremental_scan(dir.path()).unwrap();
 
         let old_path = dir.path().join("MyTestTable.al");
         let new_path = dir.path().join("RenamedTable.al");
@@ -1147,7 +1524,7 @@ mod tests {
         fs::remove_file(&old_path).unwrap();
         fs::write(&new_path, &content).unwrap();
 
-        let delta = index.incremental_scan(dir.path());
+        let delta = index.incremental_scan(dir.path()).unwrap();
 
         assert_eq!(delta.removed.len(), 1, "Old path should be removed");
         assert_eq!(delta.changed.len(), 1, "New path should be added");
@@ -1298,6 +1675,43 @@ mod tests {
         assert_eq!(t2, b, "must return the re-indexed content, not stale text");
         // The tree came from the same Arc as the text, so its span matches.
         assert_eq!(tree2.root_node().end_byte(), t2.len());
+    }
+
+    #[test]
+    fn replace_with_removes_old_entries_and_moves_all_secondary_indexes() {
+        let active = FileIndex::new();
+        let old = PathBuf::from("/old/Old.al");
+        active.add_file(
+            old.clone(),
+            r#"codeunit 50100 Old { procedure OldProcedure() begin end; }"#.to_string(),
+        );
+
+        let staged = FileIndex::new();
+        let new = PathBuf::from("/new/New.al");
+        staged.add_file(
+            new.clone(),
+            r#"codeunit 50101 New { procedure NewProcedure() begin end; }"#.to_string(),
+        );
+
+        active.replace_with(staged);
+
+        assert!(active.get_content(&old).is_none());
+        assert!(active.find_by_object_name("Old").is_none());
+        assert!(active.lookup_procedures("OldProcedure").is_none());
+        assert!(active.get_content(&new).is_some());
+        assert_eq!(
+            active.find_by_object_name("New").as_deref(),
+            Some(new.as_path())
+        );
+        assert_eq!(
+            active
+                .lookup_procedures("NewProcedure")
+                .expect("procedure secondary index")
+                .len(),
+            1
+        );
+        assert!(active.get_cached_parse(&new).is_some());
+        assert!(active.get_cached_symbols(&new).is_some());
     }
 
     #[test]

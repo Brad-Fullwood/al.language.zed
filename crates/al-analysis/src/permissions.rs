@@ -5,6 +5,7 @@
 //! an AL `permissionset` object or an XML permission set file.
 
 use std::fmt::Write;
+use std::path::PathBuf;
 
 use serde::Serialize;
 
@@ -21,22 +22,70 @@ pub struct PermissionEntry {
     pub permissions: String,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum PermissionCollectionError {
+    #[error("cannot generate permissions because '{}' contains AL syntax errors: {details}", path.display())]
+    ParseSource { path: PathBuf, details: String },
+    #[error(
+        "cannot generate permissions because '{}' has no AL object declaration",
+        path.display()
+    )]
+    MissingObjectDeclaration { path: PathBuf },
+    #[error(
+        "cannot generate permissions because numbered {kind} object '{name}' in '{}' has no numeric ID",
+        path.display()
+    )]
+    MissingObjectId {
+        path: PathBuf,
+        kind: String,
+        name: String,
+    },
+}
+
 /// Extension objects (tableextension, pageextension, etc.) are skipped — they extend existing objects.
-pub fn collect_permissions(workspace: &Workspace) -> Vec<PermissionEntry> {
+pub fn collect_permissions(
+    workspace: &Workspace,
+) -> Result<Vec<PermissionEntry>, PermissionCollectionError> {
     let mut entries = Vec::new();
 
     for item in workspace.file_index.files.iter() {
+        let path = item.key().clone();
         let content = item.value();
         let result = al_syntax::AlParser::parse_quick(content);
-        if let Some(obj) = al_syntax::find_object_declaration(&result.tree, content) {
-            if let Some((perm_type, perm_value)) = permission_for_kind(&obj.kind) {
-                entries.push(PermissionEntry {
-                    object_type: perm_type.to_string(),
-                    object_name: obj.name,
-                    object_id: obj.id,
-                    permissions: perm_value.to_string(),
+        if !result.errors.is_empty() {
+            let details = result
+                .errors
+                .iter()
+                .take(3)
+                .map(|error| {
+                    format!(
+                        "{} at {}:{}",
+                        error.message,
+                        error.range.start_point.row + 1,
+                        error.range.start_point.column + 1
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(PermissionCollectionError::ParseSource { path, details });
+        }
+        let obj = al_syntax::find_object_declaration(&result.tree, content).ok_or_else(|| {
+            PermissionCollectionError::MissingObjectDeclaration { path: path.clone() }
+        })?;
+        if let Some((perm_type, perm_value)) = permission_for_kind(&obj.kind) {
+            if obj.id.is_none() {
+                return Err(PermissionCollectionError::MissingObjectId {
+                    path,
+                    kind: obj.kind,
+                    name: obj.name,
                 });
             }
+            entries.push(PermissionEntry {
+                object_type: perm_type.to_string(),
+                object_name: obj.name,
+                object_id: obj.id,
+                permissions: perm_value.to_string(),
+            });
         }
     }
 
@@ -47,7 +96,7 @@ pub fn collect_permissions(workspace: &Workspace) -> Vec<PermissionEntry> {
             .then(a.object_name.cmp(&b.object_name))
     });
 
-    entries
+    Ok(entries)
 }
 
 pub fn render_al(entries: &[PermissionEntry], name: &str, id: i64) -> String {
@@ -291,7 +340,7 @@ mod tests {
             r#"enum 50100 "My Enum" { value(0; None) { } }"#.to_string(),
         );
 
-        let mut entries = collect_permissions(&workspace);
+        let mut entries = collect_permissions(&workspace).unwrap();
         entries.sort_by(|a, b| {
             a.object_type
                 .cmp(&b.object_type)
@@ -449,19 +498,22 @@ mod tests {
     #[test]
     fn collect_permissions_empty_workspace() {
         let workspace = Workspace::new();
-        let entries = collect_permissions(&workspace);
+        let entries = collect_permissions(&workspace).unwrap();
         assert!(entries.is_empty());
     }
 
     #[test]
-    fn collect_permissions_skips_unparseable_file() {
+    fn collect_permissions_rejects_unparseable_file() {
         let workspace = Workspace::new();
         workspace.file_index.add_file(
             std::path::PathBuf::from("/project/bad.al"),
-            "this is not valid AL at all %%%".to_string(),
+            "codeunit 50100 Broken { procedure Incomplete(".to_string(),
         );
-        let entries = collect_permissions(&workspace);
-        assert!(entries.is_empty());
+        let error = collect_permissions(&workspace).unwrap_err();
+        assert!(matches!(
+            error,
+            PermissionCollectionError::ParseSource { .. }
+        ));
     }
 
     #[test]
@@ -472,7 +524,7 @@ mod tests {
             std::path::PathBuf::from("/project/IMyInterface.al"),
             r#"interface "IMyInterface" { procedure Run(); }"#.to_string(),
         );
-        let entries = collect_permissions(&workspace);
+        let entries = collect_permissions(&workspace).unwrap();
         assert!(entries.is_empty());
     }
 }

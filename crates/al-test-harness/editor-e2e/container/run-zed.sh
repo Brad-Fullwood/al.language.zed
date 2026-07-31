@@ -47,18 +47,26 @@ al-lsp --help >/dev/null 2>&1 && echo "  al-lsp OK" || echo "  al-lsp NOT runnab
 
 echo "=== writable copy of project under test ==="
 rm -rf /tmp/proj; cp -r "$REPO/$PROJ_SUBDIR" /tmp/proj
-ls /tmp/proj/$OPEN_FILE >/dev/null || { echo "OPEN_FILE not found: $OPEN_FILE"; exit 2; }
+[ -f "/tmp/proj/$OPEN_FILE" ] || { echo "OPEN_FILE not found: $OPEN_FILE"; exit 2; }
 
 echo "=== launch Zed under cage (headless wlroots) ==="
-cage -- bash -c "zed-editor /tmp/proj /tmp/proj/$OPEN_FILE; sleep 600" > /tmp/zed.log 2>&1 &
+# Positional parameters are intentionally expanded by the isolated child shell.
+# shellcheck disable=SC2016
+cage -- bash -c 'zed-editor "$1" "$2"; sleep 600' \
+  _ /tmp/proj "/tmp/proj/$OPEN_FILE" > /tmp/zed.log 2>&1 &
 CAGE_PID=$!
 sock=""
-for i in $(seq 1 25); do
-  sock=$(ls "$XDG_RUNTIME_DIR"/wayland-* 2>/dev/null | grep -v lock | head -1)
+for _ in {1..25}; do
+  for candidate in "$XDG_RUNTIME_DIR"/wayland-*; do
+    [ -S "$candidate" ] || continue
+    sock="$candidate"
+    break
+  done
   [ -n "$sock" ] && break; sleep 1
 done
 [ -z "$sock" ] && { echo "NO COMPOSITOR"; cat /tmp/zed.log; exit 1; }
-export WAYLAND_DISPLAY=$(basename "$sock")
+WAYLAND_DISPLAY=$(basename "$sock")
+export WAYLAND_DISPLAY
 echo "  WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
 
 echo "=== render ($SETTLE s) -> trust project (Enter, retried until LSP starts) ==="
@@ -77,8 +85,26 @@ sleep "$POST"
 [ -n "${KEYS:-}" ] && { echo "  extra keys: $KEYS"; eval "$KEYS"; sleep 3; }
 
 grim "$OUT" 2>&1 && echo "SHOT: $OUT ($(stat -c%s "$OUT") bytes)" || echo "GRIM FAILED"
-echo "AL_LSP_PROCS: $(pgrep -af 'al-lsp' | grep -c -- --stdio) stdio server(s) running"
+lsp_count=$(pgrep -af 'al-lsp' | grep -c -- --stdio)
+echo "AL_LSP_PROCS: $lsp_count stdio server(s) running"
 echo "=== zed.log (al / lsp / extension / error) ==="
 grep -iE "al-lsp|extension|language server|grammar|fail|error|panic" /tmp/zed.log | tail -20
-kill $CAGE_PID 2>/dev/null || true
+if [ "$lsp_count" -eq 0 ]; then
+  echo "=== zed.log tail (LSP did not start) ==="
+  tail -120 /tmp/zed.log
+  echo "=== Zed application-log tails ==="
+  while IFS= read -r app_log; do
+    echo "--- $app_log"
+    tail -120 "$app_log"
+  done < <(find "$HOME/.local/share/zed" -type f \
+    \( -iname '*.log' -o -iname 'zed.log' \) -print 2>/dev/null | sort)
+fi
+if [ -n "${OUTD:-}" ]; then
+  cp /tmp/zed.log "$OUTD/zed.log"
+  app_log=$(find "$HOME/.local/share/zed" -type f \
+    \( -iname '*.log' -o -iname 'zed.log' \) -print 2>/dev/null \
+    | sort | tail -1)
+  [ -z "$app_log" ] || cp "$app_log" "$OUTD/zed-app.log"
+fi
+kill "$CAGE_PID" 2>/dev/null || true
 exit 0

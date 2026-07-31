@@ -1,11 +1,11 @@
 # al-lsp benchmarks
 
-Criterion benchmarks for the symbol / insight hot paths (gap **C6**).
+Deterministic Criterion benchmarks for the symbol / insight hot paths.
 
-- `perf.rs` — deterministic, fixture-based benchmarks: cold load (parse+index),
-  warm lookup (by name & id, search), completion at a position, and the insight
-  engine's graph build / `impact` / `trace`. Prints an approximate memory metric
-  (`[C6 MEMORY] …`) alongside the timings.
+- `perf.rs` — cold synthetic SymbolReference parse/index, cold committed `.app`
+  file/archive load, warm lookup (by name & id, search), completion at a
+  position, and the insight engine's graph build / `impact` / `trace`. It also
+  prints owned index/workspace/graph byte totals alongside the timings.
 
 ## Running
 

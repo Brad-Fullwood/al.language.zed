@@ -24,6 +24,10 @@ pub struct NativeDebugSession {
     breakpoints: HashMap<String, Vec<i64>>,
     history: VecDeque<BreakpointHit>,
     last_stack: Vec<serde_json::Value>,
+    /// Object identity from the most recent Break callback. Kept separately
+    /// from the user-facing file location because the debug hub reports BC
+    /// object type/number, not a workspace path.
+    last_object: Option<(i32, i32)>,
     /// BC only accepts DebugAdapterConfigurationDone after a concrete client
     /// has attached. Break-on-next web sessions attach asynchronously after
     /// the debug-context browser URL is opened, so configuration is deferred
@@ -58,6 +62,7 @@ impl NativeDebugSession {
             breakpoints: HashMap::new(),
             history: VecDeque::new(),
             last_stack: Vec::new(),
+            last_object: None,
             configured: false,
         })
     }
@@ -170,18 +175,22 @@ impl NativeDebugSession {
             } = event
             {
                 self.last_stack = frames;
+                self.last_object = None;
                 // Use the actual break site carried by the BC Break event's top
                 // StackFrame so history records the real stop position instead
                 // of a stale copy of the previous entry. The daemon doesn't
                 // resolve BC object ids to workspace file paths, so `file` stays
                 // empty; line/column/procedure now reflect the genuine location.
                 let location = match location {
-                    Some(loc) => Location {
-                        file: String::new(),
-                        line: loc.line.saturating_add(1),
-                        column: loc.column.saturating_add(1),
-                        procedure: loc.procedure,
-                    },
+                    Some(loc) => {
+                        self.last_object = loc.object_type.zip(loc.object_number);
+                        Location {
+                            file: String::new(),
+                            line: loc.line.saturating_add(1),
+                            column: loc.column.saturating_add(1),
+                            procedure: loc.procedure,
+                        }
+                    }
                     None => Location {
                         file: String::new(),
                         line: 0,
@@ -254,6 +263,12 @@ impl NativeDebugSession {
             variables,
             thread_id: Some(1),
         })
+    }
+
+    /// BC object type/number for the most recent stop, when the Break callback
+    /// carried an `ApplicationObjectId`.
+    pub fn current_object(&self) -> Option<(i32, i32)> {
+        self.last_object
     }
 
     /// Return the BC call stack for the current stop. This keeps the native BC
@@ -402,6 +417,7 @@ impl NativeDebugSession {
             breakpoints: HashMap::new(),
             history: VecDeque::new(),
             last_stack: Vec::new(),
+            last_object: None,
             configured: false,
         }
     }
@@ -1079,7 +1095,11 @@ mod native_session_tests {
             "Break",
             json!([
                 null,
-                [{ "DisplayName": "OnRun", "SourcePosition": { "Line": 42, "Column": 8 } }],
+                [{
+                    "DisplayName": "OnRun",
+                    "SourcePosition": { "Line": 42, "Column": 8 },
+                    "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 50100 }
+                }],
                 "stopped"
             ]),
         );
@@ -1099,6 +1119,7 @@ mod native_session_tests {
         assert_eq!(loc.line, 43);
         assert_eq!(loc.column, 9);
         assert_eq!(loc.procedure.as_deref(), Some("OnRun"));
+        assert_eq!(nds.current_object(), Some((5, 50100)));
     }
 
     #[tokio::test]

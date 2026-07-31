@@ -18,7 +18,8 @@ name = "AL Language Server"
 languages = ["AL"]
 
 # MCP server exposing AL tools (al_build, al_symbolsearch, al_deadcode, …)
-# to Zed's agent panel. Spawns `al-lsp mcp` from PATH (`make install`).
+# to Zed's agent panel. The extension resolves the same downloaded `al-lsp`
+# binary used by LSP and DAP; a separate PATH install is not required.
 [context_servers.al-tools]
 name = "AL Tools"
 
@@ -35,4 +36,4 @@ name = "AL Tools"
 #        <(echo "extension"; cd tree-sitter-al && git rev-parse HEAD)
 [grammars.al]
 repository = "https://github.com/Brad-Fullwood/AL-Tree-Sitter"
-rev = "3e50182cbe3fdd4d47b1eee3c0a75cee1e3bb740"
+rev = "f26b067065dc3b766d0386a5c65d8f40d9389724"

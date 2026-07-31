@@ -4,12 +4,15 @@
 #   make install   — first-time setup: build everything + symlink into PATH + Zed
 #   make build     — rebuild everything (all Rust crates + WASM extension + .NET bridges)
 #   make rust      — rebuild all Rust crates (native, excludes zed-al)
-#   make wasm      — rebuild only the WASM extension (zed-al, wasm32-wasip1)
+#   make wasm      — rebuild only the WASM extension (zed-al, wasm32-wasip2)
 #   make bridges   — rebuild just .NET bridges
 #   make grammar   — regenerate the tree-sitter-al parser sources before a
 #                    fresh `tree-sitter build`
 #   make language  — regenerate only the Zed-facing languages/al package files
+#   make record-methods — regenerate the Microsoft-derived Record method catalog
+#   make check-record-methods — prove the catalog matches the pinned Microsoft DLL
 #   make repro-artifacts — regenerate generated artifacts; fail on any diff (CI drift guard)
+#   make live-bc-contracts — strict tenant-backed publish/DAP/test/snapshot profile
 #   make release-dryrun  — read-only release-readiness gate (never publishes)
 #   make clean     — clean all build artifacts
 
@@ -22,9 +25,9 @@ ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
 
 # .NET bridge projects (quoted for paths with spaces)
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
-WASM_BIN := $(ROOT)/target/wasm32-wasip1/release/zed_al.wasm
+WASM_BIN := $(ROOT)/target/wasm32-wasip2/release/zed_al.wasm
 
-.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language repro-artifacts release-dryrun clean
+.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun clean
 
 # Crates that are NOT published to crates.io (publish = false): the root wasm
 # extension plus the binary/harness crates. Everything else under crates/* is a
@@ -99,7 +102,7 @@ install-lsp:
 # on a fresh machine, then use `make watch` while developing.
 dev-setup:
 	@echo "=== Ensuring prerequisites ==="
-	@rustup target add wasm32-wasip1 2>/dev/null || true
+	@rustup target add wasm32-wasip2 2>/dev/null || true
 	@command -v cargo-watch >/dev/null 2>&1 || { echo "Installing cargo-watch..."; cargo install cargo-watch; }
 	@case ":$$PATH:" in *":$(INSTALL_DIR):"*) ;; *) echo "NOTE: $(INSTALL_DIR) is not on your PATH — add it so al-lsp/al-explorer are found.";; esac
 	@$(MAKE) install
@@ -128,7 +131,8 @@ rust:
 # ── Build WASM extension ─────────────────────────────────────────
 wasm:
 	@echo "=== Building WASM extension (zed-al) ==="
-	cargo build -p zed-al --target wasm32-wasip1 --release
+	cargo build -p zed-al --target wasm32-wasip2 --release
+	@bash scripts/check-zed-wasm-component.sh "$(WASM_BIN)"
 	@echo "  zed-al: $(WASM_BIN)"
 
 # ── Build .NET bridges ───────────────────────────────────────────
@@ -157,6 +161,7 @@ grammar:
 		echo "ERROR: tree-sitter CLI not found on PATH. Install: cargo install tree-sitter-cli"; \
 		exit 1; \
 	fi
+	tree-sitter-al/tests/check_cli_version.sh
 	cd tree-sitter-al/generator && cargo run --release --bin al-gen
 	cd tree-sitter-al && tree-sitter generate
 	@echo ""
@@ -172,6 +177,42 @@ language:
 	@echo "=== Regenerating languages/al from al-gen ==="
 	cd tree-sitter-al/generator && cargo run --release --bin al-gen -- --zed-language-only
 	@echo "Zed language package regenerated."
+
+# ── Regenerate the Microsoft-derived Record method catalog ───────
+record-methods:
+	@test -n "$(AL_TOOL_PATH)" || { echo "ERROR: set AL_TOOL_PATH to the Microsoft AL extension's bin/<platform> directory."; exit 2; }
+	@test -f "$(AL_TOOL_PATH)/Microsoft.Dynamics.Nav.CodeAnalysis.dll" || { echo "ERROR: Microsoft.Dynamics.Nav.CodeAnalysis.dll not found below AL_TOOL_PATH."; exit 2; }
+	cargo run -p al-semantic --features semantic --example export_record_methods -- \
+		"$(AL_TOOL_PATH)/Microsoft.Dynamics.Nav.CodeAnalysis.dll" \
+		"$(ROOT)/crates/al-syntax/data/record_methods.json"
+
+# Generate beside the checkout and compare bytes so verification neither
+# rewrites the working tree nor mistakes another generated-file change for a
+# current Record catalog.
+check-record-methods:
+	@test -n "$(AL_TOOL_PATH)" || { echo "UNAVAILABLE: set AL_TOOL_PATH to the Microsoft AL extension's bin/<platform> directory."; exit 2; }
+	@test -f "$(AL_TOOL_PATH)/Microsoft.Dynamics.Nav.CodeAnalysis.dll" || { echo "UNAVAILABLE: Microsoft.Dynamics.Nav.CodeAnalysis.dll not found below AL_TOOL_PATH."; exit 2; }
+	@tmp_file=$$(mktemp "$${TMPDIR:-/tmp}/al-record-methods.XXXXXX.json") || exit 1; \
+	trap 'rm -f -- "$$tmp_file"' EXIT; \
+	if ! cargo run -p al-semantic --features semantic --example export_record_methods -- \
+		"$(AL_TOOL_PATH)/Microsoft.Dynamics.Nav.CodeAnalysis.dll" "$$tmp_file"; then \
+		echo "ERROR: Record method catalog generation failed."; \
+		exit 1; \
+	fi; \
+	committed="$(ROOT)/crates/al-syntax/data/record_methods.json"; \
+	if cmp -s "$$committed" "$$tmp_file"; then \
+		echo "Record method catalog matches the Microsoft AL toolchain."; \
+	elif [ "$$(grep -v '"toolchainVersion"' "$$committed")" = "$$(grep -v '"toolchainVersion"' "$$tmp_file")" ]; then \
+		echo "PROVENANCE DRIFT: the Record method set is identical, but AL_TOOL_PATH is a different toolchain build."; \
+		echo "  committed toolchain: $$(sed -n 's/.*"toolchainVersion": "\(.*\)".*/\1/p' "$$committed")"; \
+		echo "  measured toolchain:  $$(sed -n 's/.*"toolchainVersion": "\(.*\)".*/\1/p' "$$tmp_file")"; \
+		echo "  Point AL_TOOL_PATH at the pinned toolchain, or run 'make record-methods' to move the pin deliberately."; \
+		exit 1; \
+	else \
+		echo "DRIFT: crates/al-syntax/data/record_methods.json does not match the Microsoft AL toolchain."; \
+		diff -u "$$committed" "$$tmp_file" | head -120; \
+		exit 1; \
+	fi
 
 # ── Reproducible generated artifacts (CI drift guard) ────────────
 # Prove the committed generated outputs regenerate with NO diff. On success the
@@ -204,31 +245,84 @@ repro-artifacts:
 	fi
 	@echo "Reproducible-artifact check passed."
 
+# ── Microsoft toolchain contract profile ─────────────────────────
+# This profile is deliberately strict: an absent compiler, bridge, or coherent
+# dependency package cache is UNAVAILABLE/non-zero, never a successful skipped
+# test. The individual Rust tests are `#[ignore]` in self-contained runs and
+# execute only through this explicit external-contract gate.
+microsoft-contracts:
+	@echo "=== Microsoft AL toolchain contract profile ==="
+	@if [ -z "$$AL_TOOL_PATH" ] || [ ! -f "$$AL_TOOL_PATH/alc.dll" ] || [ ! -f "$$AL_TOOL_PATH/Microsoft.Dynamics.Nav.CodeAnalysis.dll" ]; then \
+		echo "UNAVAILABLE: AL_TOOL_PATH must contain alc.dll and Microsoft.Dynamics.Nav.CodeAnalysis.dll"; \
+		exit 2; \
+	fi
+	@if ! command -v dotnet >/dev/null 2>&1 || ! dotnet --version >/dev/null 2>&1; then \
+		echo "UNAVAILABLE: a working dotnet host is required"; \
+		exit 2; \
+	fi
+	@if [ -z "$$AL_PACKAGE_CACHE_PATH" ] || [ ! -d "$$AL_PACKAGE_CACHE_PATH" ]; then \
+		echo "UNAVAILABLE: AL_PACKAGE_CACHE_PATH must name a coherent dependency package directory"; \
+		exit 2; \
+	fi
+	@$(MAKE) --no-print-directory check-record-methods
+	cargo build -p al-lsp --bin al-lsp --features semantic
+	cargo test -p al-semantic --features semantic --test live_bridge -- --ignored --nocapture
+	cargo test -p al-test-harness --test semantic_bridge -- --ignored --nocapture
+	cargo test -p al-test-harness --test pack_native_validate -- --ignored --nocapture
+	cargo test -p al-test-harness --test emit_differential -- --ignored --nocapture
+	cargo test -p al-test-harness --test zed_simulation builtin -- --include-ignored --nocapture --test-threads=1
+	@echo "Microsoft AL toolchain contract profile passed."
+
+# ── Live Business Central contract profile ───────────────────────
+# Strict external-service gate. The default repository fixture derives the
+# project/test/breakpoint contract; missing tenant/environment/version/token
+# inputs are UNAVAILABLE/non-zero, and the ignored Rust integration test is
+# never counted as passed by the self-contained suite.
+live-bc-contracts:
+	@bash scripts/live-bc-contracts.sh
+
 # ── Release readiness dry-run (READ-ONLY, never publishes) ────────
-# Runs the gates a release would, without uploading anything: repo-slug
-# consistency, version/metadata/grammar-rev alignment, generated-artifact
-# reproducibility, a full native build (incl. the real --features semantic
-# al-lsp), the test suite, and `cargo publish --dry-run` for every publishable
-# crate. zed-al is excluded from build/test (it is a wasm32-wasip1 cdylib; use
-# `make wasm`). See Docs/testing-guide.md §6 for the publish-dry-run caveat:
-# until the first real publish, crates with not-yet-published path-deps report
-# "blocked on unpublished workspace dep (expected)" and do NOT fail the run.
+# Runs every self-contained gate a release would, without uploading anything:
+# grammar/generator/corpus/package checks, repository and generated-artifact
+# invariants, formatting and clippy, native and WASM builds, host/WASM-extension
+# tests, the full native workspace test suite, and local package-manifest audits.
+# Profiles needing a proprietary Microsoft extension, `alc`, or live Business
+# Central remain explicit environment-gated checks in Docs/testing-guide.md.
+# The separate `crates-publish-dryrun` target is the strict registry-resolution
+# gate and never converts a blocked dependency into success.
 release-dryrun:
 	@echo "=== Release dry-run (read-only; nothing is published) ==="
-	@echo "--- 1/7 repo-slug consistency ---"
+	@echo "--- 1/13 grammar crate tests ---"
+	cd tree-sitter-al && cargo test --all-targets
+	@echo "--- 2/13 grammar generator tests ---"
+	cd tree-sitter-al && cargo test --manifest-path generator/Cargo.toml --all-targets
+	@echo "--- 3/13 focused grammar fixtures + pinned repository corpus ---"
+	tree-sitter-al/tests/run_repo_tests.sh
+	@echo "--- 4/13 grammar package manifest ---"
+	cd tree-sitter-al && cargo package --list
+	@echo "--- 5/13 repo-slug consistency ---"
 	@bash scripts/check-repo-consistency.sh
-	@echo "--- 2/7 stale crates/<name> doc references ---"
+	@bash scripts/test-use-api.sh
+	@echo "--- 6/13 stale crates/<name> doc references ---"
 	@bash scripts/check-doc-paths.sh
-	@echo "--- 3/7 release hygiene (versions / submodule / grammar rev / generated assets) ---"
+	@echo "--- 7/13 release hygiene (versions / submodule / grammar rev / generated assets) ---"
 	@bash scripts/check-release-hygiene.sh
-	@echo "--- 4/7 reproducible generated artifacts ---"
+	@echo "--- 8/13 reproducible generated artifacts ---"
 	@$(MAKE) --no-print-directory repro-artifacts
-	@echo "--- 5/7 build workspace (excl zed-al) + real semantic al-lsp ---"
+	@echo "--- 9/13 formatting + clippy + benchmark harness contracts ---"
+	cargo fmt --all -- --check
+	cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
+	python3 -m unittest discover -s benchmarks/scripts -p 'test_*_bench.py'
+	@echo "--- 10/13 build workspace (excl zed-al) + real semantic al-lsp ---"
 	cargo build --workspace --exclude zed-al
 	cargo build -p al-lsp --bin al-lsp --features semantic
-	@echo "--- 6/7 test workspace (excl zed-al) ---"
+	@echo "--- 11/13 test workspace (excl zed-al) ---"
 	cargo test --workspace --exclude zed-al
-	@echo "--- 7/7 cargo publish --dry-run for publishable crates ---"
+	@echo "--- 12/13 test + build the actual Zed extension ---"
+	cargo test -p zed-al
+	cargo build -p zed-al --target wasm32-wasip2 --release
+	@bash scripts/check-zed-wasm-component.sh "$(WASM_BIN)"
+	@echo "--- 13/13 local package-manifest audit for publishable crates ---"
 	@fail=0; \
 	for dir in crates/*/; do \
 		f="$$dir/Cargo.toml"; \
@@ -236,20 +330,36 @@ release-dryrun:
 		name=$$(awk -F'"' '/^name[[:space:]]*=/{print $$2; exit}' "$$f"); \
 		case " $(PUBLISH_EXCLUDE) " in *" $$name "*) continue;; esac; \
 		grep -Eq '^publish[[:space:]]*=[[:space:]]*false' "$$f" && continue; \
-		out=$$(cargo publish --dry-run --no-verify -p "$$name" 2>&1); \
+		out=$$(cargo package --list --allow-dirty -p "$$name" 2>&1); \
 		if [ $$? -eq 0 ]; then \
-			echo "  $$name: OK (dry-run)"; \
-		elif echo "$$out" | grep -q "no matching package named"; then \
-			echo "  $$name: blocked on unpublished workspace dep (expected pre-first-publish)"; \
-		elif echo "$$out" | grep -q "failed to select a version for the requirement"; then \
-			echo "  $$name: blocked on unpublished/unmatched workspace dep version (expected pre-first-publish)"; \
+			echo "  $$name: OK (package manifest)"; \
 		else \
 			echo "  $$name: FAILED"; echo "$$out" | tail -8; fail=1; \
 		fi; \
 	done; \
-	[ $$fail -eq 0 ] || { echo "release-dryrun: a crate failed publish dry-run for a non-dependency reason"; exit 1; }
+	[ $$fail -eq 0 ] || { echo "release-dryrun: a crate package manifest is invalid"; exit 1; }
 	@echo ""
 	@echo "Release dry-run complete (read-only — nothing published)."
+
+# Strict crates.io resolution gate. This is deliberately separate from the Zed
+# extension release: before the first dependency-ordered library publication,
+# registry resolution is expected to fail, and that failure must stay visible.
+crates-publish-dryrun:
+	@echo "=== Strict crates.io publish dry-run (read-only) ==="
+	@fail=0; \
+	for dir in crates/*/; do \
+		f="$$dir/Cargo.toml"; \
+		[ -f "$$f" ] || continue; \
+		name=$$(awk -F'"' '/^name[[:space:]]*=/{print $$2; exit}' "$$f"); \
+		case " $(PUBLISH_EXCLUDE) " in *" $$name "*) continue;; esac; \
+		grep -Eq '^publish[[:space:]]*=[[:space:]]*false' "$$f" && continue; \
+		if cargo publish --dry-run --no-verify -p "$$name"; then \
+			echo "  $$name: OK (registry dry-run)"; \
+		else \
+			echo "  $$name: FAILED/BLOCKED"; fail=1; \
+		fi; \
+	done; \
+	[ $$fail -eq 0 ] || { echo "crates-publish-dryrun: registry readiness is not green"; exit 1; }
 
 # ── Clean ────────────────────────────────────────────────────────
 clean:

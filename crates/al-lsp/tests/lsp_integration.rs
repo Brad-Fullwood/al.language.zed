@@ -189,6 +189,7 @@ fn build_test_index() -> SymbolIndex {
             enum_values: vec![],
             keys: vec![],
             properties: vec![],
+            permissions: Vec::new(),
             variables: vec![],
         },
         SymbolEntry {
@@ -216,6 +217,7 @@ fn build_test_index() -> SymbolIndex {
             enum_values: vec![],
             keys: vec![],
             properties: vec![],
+            permissions: Vec::new(),
             variables: vec![],
         },
         SymbolEntry {
@@ -250,6 +252,7 @@ fn build_test_index() -> SymbolIndex {
             ],
             keys: vec![],
             properties: vec![],
+            permissions: Vec::new(),
             variables: vec![],
         },
     ]);
@@ -261,7 +264,9 @@ fn document_store_open_change_close_lifecycle() {
     let store = al_source::documents::DocumentStore::new();
     let uri = Url::parse("file:///test/lifecycle.al").unwrap();
 
-    store.open(uri.clone(), SIMPLE_CODEUNIT.to_string());
+    store
+        .open(uri.clone(), SIMPLE_CODEUNIT.to_string())
+        .unwrap();
     assert!(store.contains(&uri));
     assert_eq!(store.get_version(&uri), Some(0));
 
@@ -272,18 +277,20 @@ fn document_store_open_change_close_lifecycle() {
     let line = text[..hello_offset].matches('\n').count() as u32;
     let col = hello_offset - text[..hello_offset].rfind('\n').map_or(0, |p| p + 1);
 
-    store.apply_changes(
-        &uri,
-        &[al_source::documents::TextChange {
-            range: Some(al_source::documents::TextRange {
-                start_line: line,
-                start_character: col as u32,
-                end_line: line,
-                end_character: (col + "HelloWorld".len()) as u32,
-            }),
-            text: "Greet".to_string(),
-        }],
-    );
+    store
+        .apply_changes(
+            &uri,
+            &[al_source::documents::TextChange {
+                range: Some(al_source::documents::TextRange {
+                    start_line: line,
+                    start_character: col as u32,
+                    end_line: line,
+                    end_character: (col + "HelloWorld".len()) as u32,
+                }),
+                text: "Greet".to_string(),
+            }],
+        )
+        .unwrap();
 
     let updated = store.get_text(&uri).unwrap();
     assert!(
@@ -293,7 +300,7 @@ fn document_store_open_change_close_lifecycle() {
     assert!(!updated.contains("HelloWorld"));
     assert_eq!(store.get_version(&uri), Some(1));
 
-    store.close(&uri);
+    assert!(store.close(&uri));
     assert!(!store.contains(&uri));
     assert_eq!(store.get_text(&uri), None);
 }
@@ -367,13 +374,18 @@ fn syntax_error_to_lsp_diagnostic_conversion() {
 
 #[test]
 fn lint_diagnostics_convert_to_lsp() {
-    // Native lint rules have been removed, but the conversion boundary remains
-    // available for diagnostics supplied by future rule providers.
+    // Exercise the native-lint-to-LSP conversion boundary with an actual
+    // native diagnostic, rather than merely proving an empty iterator converts.
     let code = r#"codeunit 50100 Test
 {
     procedure DoSomething()
+    var
+        Customer: Record Customer;
     begin
-        Message('Hello');
+        if Customer.FindSet() then
+            repeat
+                Message(Customer.Name);
+            until Customer.Next() = 0;
     end;
 }"#;
 
@@ -381,18 +393,53 @@ fn lint_diagnostics_convert_to_lsp() {
     let result = parser.parse(code);
     let lints = al_syntax::lint(&result.tree, code);
 
-    assert!(
-        lints.is_empty(),
-        "lint() must return empty Vec (rules removed): {:?}",
-        lints
-    );
+    assert_eq!(lints.len(), 1, "unexpected native lint set: {lints:?}");
+    assert_eq!(lints[0].code, "AL-NL005");
 
     let src_bytes = code.as_bytes();
     let diagnostics: Vec<Diagnostic> = lints
         .iter()
         .map(|l| al_lsp::server::diagnostics::lint_to_diagnostic(l, src_bytes))
         .collect();
-    assert!(diagnostics.is_empty(), "no lint diagnostics expected");
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].code,
+        Some(NumberOrString::String("AL-NL005".into()))
+    );
+    assert_eq!(diagnostics[0].severity, Some(DiagnosticSeverity::WARNING));
+}
+
+#[test]
+fn page_control_lints_convert_to_lsp_with_stable_codes() {
+    let code = r#"page 50100 "Item List"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(Description; Rec.Description)
+            {
+            }
+        }
+    }
+}"#;
+    let mut parser = make_parser();
+    let result = parser.parse(code);
+    let lints = al_syntax::lint(&result.tree, code);
+    let diagnostics: Vec<Diagnostic> = lints
+        .iter()
+        .map(|lint| al_lsp::server::diagnostics::lint_to_diagnostic(lint, code.as_bytes()))
+        .collect();
+
+    for code in ["AL-NL006", "AL-NL007"] {
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == Some(NumberOrString::String(code.into()))
+                    && diagnostic.severity == Some(DiagnosticSeverity::WARNING)
+            }),
+            "{code} must reach the LSP diagnostic boundary: {diagnostics:?}"
+        );
+    }
 }
 
 #[test]
@@ -672,21 +719,19 @@ fn formatting_produces_valid_parseable_output() {
 }
 
 #[test]
-fn lint_returns_empty_for_codeunit() {
-    // Native lint rules have been removed — lint() always returns empty.
+fn lint_reports_missing_set_load_fields_for_record_reads() {
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
     let lints = al_syntax::lint(&result.tree, CODEUNIT_AL);
-    assert!(
-        lints.is_empty(),
-        "lint() must return empty Vec (rules removed): {:?}",
-        lints
-    );
+    assert_eq!(lints.len(), 1, "unexpected native lint set: {lints:?}");
+    assert_eq!(lints[0].code, "AL-NL005");
+    assert!(lints[0].message.contains("SetLoadFields"));
 }
 
 #[test]
 fn lint_returns_empty_for_naming_violation() {
-    // Native lint rules have been removed — procedure naming is checked by the .NET bridge.
+    // Procedure naming remains the responsibility of the official analyzer;
+    // the native rules intentionally do not duplicate it.
     let code = r#"codeunit 50100 Test
 {
     procedure badName()
@@ -707,7 +752,8 @@ fn lint_returns_empty_for_naming_violation() {
 
 #[test]
 fn lint_returns_empty_for_clean_code() {
-    // Native lint rules have been removed — lint() returns empty for all input.
+    // A procedure with no record reads or UI metadata obligations is clean
+    // under the native rule set.
     let code = r#"codeunit 50100 "Clean Code"
 {
     procedure ProcessData()
@@ -1129,14 +1175,15 @@ fn json_schema_hover_result_has_contents_and_range() {
 
     let ws = Workspace::new();
     let uri = Url::parse("file:///test/hover_schema.al").unwrap();
-    ws.documents.open(uri.clone(), SIMPLE_CODEUNIT.to_string());
-
+    ws.documents
+        .open(uri.clone(), SIMPLE_CODEUNIT.to_string())
+        .unwrap();
     // Hover at (0, 0) — on "codeunit" keyword. May return None.
     let pos = al_analysis::queries::Position {
         line: 0,
         character: 0,
     };
-    let result = al_analysis::queries::hover::hover(&ws, &uri, pos);
+    let result = al_analysis::queries::hover::hover(&ws, &uri, pos).unwrap();
 
     if let Some(r) = result {
         let json = hover_result_to_json(&r);
@@ -1331,10 +1378,12 @@ fn suggest_event_integration_procedure_query() {
                 object: "Sales-Post".to_string(),
                 procedure: None,
             },
+            object_kind: None,
             filter_table: None,
             filter_field: None,
         },
-    );
+    )
+    .unwrap();
     assert!(
         !result.integration_points.is_empty(),
         "Should find OnAfterPostSalesDoc"
@@ -1350,10 +1399,12 @@ fn suggest_event_integration_procedure_query() {
             source: QuerySource::Table {
                 table: "Sales Header".to_string(),
             },
+            object_kind: None,
             filter_table: None,
             filter_field: None,
         },
-    );
+    )
+    .unwrap();
     assert!(result.integration_points.iter().any(|ip| {
         ip.params
             .iter()
@@ -1367,28 +1418,32 @@ fn suggest_event_integration_procedure_query() {
                 object: "Sales-Post".to_string(),
                 procedure: None,
             },
+            object_kind: None,
             filter_table: Some("Sales Header".to_string()),
             filter_field: None,
         },
-    );
+    )
+    .unwrap();
     assert!(result.integration_points.iter().all(|ip| {
         ip.params
             .iter()
             .any(|p| p.is_var && p.type_name.to_lowercase().contains("sales header"))
     }));
 
-    let result = suggest_event(
+    let error = suggest_event(
         &ws,
         &EventQuery {
             source: QuerySource::Procedure {
                 object: "NonExistent".to_string(),
                 procedure: None,
             },
+            object_kind: None,
             filter_table: None,
             filter_field: None,
         },
-    );
-    assert!(result.integration_points.is_empty());
+    )
+    .unwrap_err();
+    assert!(matches!(error, SuggestEventError::ObjectNotFound { .. }));
 }
 
 #[test]
@@ -1405,10 +1460,13 @@ fn suggest_event_real_workspace_files() {
 
     let ws = al_workspace::Workspace::new();
 
-    let file_count = ws.file_index.scan(&test_project);
+    let file_count = ws
+        .file_index
+        .scan(&test_project)
+        .expect("test project source scan");
     assert!(file_count > 0, "Should find .al files in test project");
 
-    let (insight, cg_guard) = ws.get_or_build_call_graph();
+    let (insight, cg_guard) = ws.get_or_build_call_graph().unwrap();
     let cg = cg_guard.as_ref().expect("CallGraph should be built");
 
     assert!(
@@ -1423,10 +1481,12 @@ fn suggest_event_real_workspace_files() {
                 object: "Test Event Publisher".to_string(),
                 procedure: None,
             },
+            object_kind: None,
             filter_table: None,
             filter_field: None,
         },
-    );
+    )
+    .unwrap();
 
     println!("Procedure query results for 'Test Event Publisher':");
     for ip in &result.integration_points {
@@ -1493,10 +1553,12 @@ fn suggest_event_real_workspace_files() {
                 object: "Test Event Publisher".to_string(),
                 procedure: Some("DoProcess".to_string()),
             },
+            object_kind: None,
             filter_table: None,
             filter_field: None,
         },
-    );
+    )
+    .unwrap();
 
     println!("\nProcedure query for DoProcess:");
     for ip in &result.integration_points {
@@ -1526,10 +1588,12 @@ fn suggest_event_real_workspace_files() {
                 object: "Test Event Publisher".to_string(),
                 event: "OnBeforeProcess".to_string(),
             },
+            object_kind: None,
             filter_table: None,
             filter_field: None,
         },
-    );
+    )
+    .unwrap();
 
     println!("\nEvent query for OnBeforeProcess:");
     for ip in &result.integration_points {

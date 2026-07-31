@@ -225,18 +225,38 @@ pub fn write_cobertura_dynamic<W: Write>(
     // not executed" denominator in a hits-only dynamic report.)
     let overall_rate = if lines_covered > 0 { "1.0" } else { "0.0" };
 
-    // Branch-rate: fraction of recorded decisions that exercised BOTH sides.
+    // Branch-rate: fraction of executable control-flow paths observed. A
+    // multi-way CASE contributes one path per arm plus ELSE/no-match; ordinary
+    // IF/loop decisions contribute their two sides.
     let mut branch_total = 0usize;
-    let mut branch_both = 0usize;
+    let mut branch_covered = 0usize;
     for f in &report.files {
         for b in &f.branches {
-            branch_total += 1;
-            if b.then_taken > 0 && b.else_taken > 0 {
-                branch_both += 1;
+            if b.paths.is_empty() {
+                branch_total += 2;
+                branch_covered += usize::from(b.then_taken > 0) + usize::from(b.else_taken > 0);
+            } else {
+                branch_total += b.paths.len();
+                branch_covered += b.paths.iter().filter(|path| path.hits > 0).count();
             }
         }
     }
-    let branch_rate = format_rate(branch_both, branch_total);
+    let branch_rate = format_rate(branch_covered, branch_total);
+    let mcdc_total: usize = report
+        .files
+        .iter()
+        .flat_map(|file| &file.branches)
+        .filter_map(|branch| branch.mcdc.as_ref())
+        .map(|mcdc| mcdc.conditions.len())
+        .sum();
+    let mcdc_covered: usize = report
+        .files
+        .iter()
+        .flat_map(|file| &file.branches)
+        .filter_map(|branch| branch.mcdc.as_ref())
+        .map(|mcdc| mcdc.covered_count())
+        .sum();
+    let mcdc_rate = format_rate(mcdc_covered, mcdc_total);
 
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -254,7 +274,8 @@ pub fn write_cobertura_dynamic<W: Write>(
     writer.write_event(Event::Comment(quick_xml::events::BytesText::new(
         " AL DYNAMIC executed-line coverage (al-test interpreter): hits = line was \
          actually executed at runtime; number = executed statement line. Branch \
-         lines carry condition-coverage from if/case decisions. See \
+         lines carry path coverage from if/case decisions and explicit MC/DC \
+         evidence for compound Boolean decisions. See \
          coverage-mode=\"dynamic-executed-lines\" below. ",
     )))?;
 
@@ -265,6 +286,9 @@ pub fn write_cobertura_dynamic<W: Write>(
     coverage_start.push_attribute(("timestamp", timestamp.as_str()));
     coverage_start.push_attribute(("lines-covered", lines_covered.to_string().as_str()));
     coverage_start.push_attribute(("lines-valid", lines_covered.to_string().as_str()));
+    coverage_start.push_attribute(("mcdc-rate", mcdc_rate.as_str()));
+    coverage_start.push_attribute(("conditions-covered", mcdc_covered.to_string().as_str()));
+    coverage_start.push_attribute(("conditions-valid", mcdc_total.to_string().as_str()));
     // Non-standard but inert attribute that flags the coverage semantics.
     coverage_start.push_attribute(("coverage-mode", "dynamic-executed-lines"));
     writer.write_event(Event::Start(coverage_start))?;
@@ -308,18 +332,56 @@ pub fn write_cobertura_dynamic<W: Write>(
             line_el.push_attribute(("number", line.to_string().as_str()));
             line_el.push_attribute(("hits", "1"));
             if let Some(b) = branch_lines.get(&line) {
-                // A decision site: report two-way condition coverage.
-                let sides_taken = usize::from(b.then_taken > 0) + usize::from(b.else_taken > 0);
-                let pct = sides_taken * 50; // 0, 50 or 100 %
+                let (paths_taken, path_count) = if b.paths.is_empty() {
+                    (
+                        usize::from(b.then_taken > 0) + usize::from(b.else_taken > 0),
+                        2,
+                    )
+                } else {
+                    (
+                        b.paths.iter().filter(|path| path.hits > 0).count(),
+                        b.paths.len(),
+                    )
+                };
+                let pct = (paths_taken * 100).checked_div(path_count).unwrap_or(0);
                 line_el.push_attribute(("branch", "true"));
                 line_el.push_attribute((
                     "condition-coverage",
-                    format!("{pct}% ({sides_taken}/2)").as_str(),
+                    format!("{pct}% ({paths_taken}/{path_count})").as_str(),
                 ));
+                if let Some(mcdc) = &b.mcdc {
+                    let mcdc_covered = mcdc.covered_count();
+                    let mcdc_total = mcdc.conditions.len();
+                    let mcdc_pct = (mcdc_covered * 100).checked_div(mcdc_total).unwrap_or(0);
+                    line_el.push_attribute((
+                        "mcdc-coverage",
+                        format!("{mcdc_pct}% ({mcdc_covered}/{mcdc_total})").as_str(),
+                    ));
+                }
             } else {
                 line_el.push_attribute(("branch", "false"));
             }
-            writer.write_event(Event::Empty(line_el))?;
+            if let Some(mcdc) = branch_lines
+                .get(&line)
+                .and_then(|branch| branch.mcdc.as_ref())
+            {
+                writer.write_event(Event::Start(line_el))?;
+                writer.write_event(Event::Start(BytesStart::new("conditions")))?;
+                for condition in &mcdc.conditions {
+                    let mut condition_el = BytesStart::new("condition");
+                    condition_el.push_attribute(("number", condition.index.to_string().as_str()));
+                    condition_el.push_attribute(("type", "mcdc"));
+                    condition_el.push_attribute((
+                        "coverage",
+                        if condition.covered { "100%" } else { "0%" },
+                    ));
+                    writer.write_event(Event::Empty(condition_el))?;
+                }
+                writer.write_event(Event::End(BytesEnd::new("conditions")))?;
+                writer.write_event(Event::End(BytesEnd::new("line")))?;
+            } else {
+                writer.write_event(Event::Empty(line_el))?;
+            }
         }
         writer.write_event(Event::End(BytesEnd::new("lines")))?;
 
@@ -399,6 +461,7 @@ mod tests {
                         line: 25,
                     },
                 ],
+                unresolved_calls: Vec::new(),
             }],
             untested: vec![UntestedProcedure {
                 name: "UntestedProc".to_string(),
@@ -445,6 +508,7 @@ mod tests {
                     file: "src/MyCodeunit.al".to_string(),
                     line: 10,
                 }],
+                unresolved_calls: Vec::new(),
             }],
             untested: Vec::new(),
         };
@@ -503,6 +567,7 @@ mod tests {
                     file: "src/AT&T Codeunit.al".to_string(),
                     line: 10,
                 }],
+                unresolved_calls: Vec::new(),
             }],
             untested: Vec::new(),
         };
@@ -514,7 +579,10 @@ mod tests {
         );
     }
 
-    use al_runtime::interpreter::coverage::{BranchCoverage, FileCoverage};
+    use al_runtime::interpreter::coverage::{
+        BranchCoverage, ConditionMcdcCoverage, ConditionObservationCoverage, FileCoverage,
+        McdcCoverage, PathCoverage,
+    };
 
     fn run_cobertura_dynamic(report: &DynamicCoverageReport) -> String {
         let mut buf = Vec::new();
@@ -532,6 +600,8 @@ mod tests {
                     line: 11,
                     then_taken: 3,
                     else_taken: 0,
+                    paths: Vec::new(),
+                    mcdc: None,
                 }],
             }],
         };
@@ -581,5 +651,85 @@ mod tests {
                 "XML comment body must not contain '--'"
             );
         }
+    }
+
+    #[test]
+    fn dynamic_cobertura_uses_all_named_case_paths_as_denominator() {
+        let report = DynamicCoverageReport {
+            files: vec![FileCoverage {
+                file: "src/Case.al".to_string(),
+                executed_lines: vec![8],
+                branches: vec![BranchCoverage {
+                    line: 8,
+                    then_taken: 1,
+                    else_taken: 0,
+                    paths: vec![
+                        PathCoverage {
+                            path: "arm:1:9".into(),
+                            hits: 0,
+                        },
+                        PathCoverage {
+                            path: "arm:2:11".into(),
+                            hits: 1,
+                        },
+                        PathCoverage {
+                            path: "else".into(),
+                            hits: 0,
+                        },
+                    ],
+                    mcdc: None,
+                }],
+            }],
+        };
+        let xml = run_cobertura_dynamic(&report);
+        assert_well_formed_xml(&xml);
+        assert!(
+            xml.contains(r#"branch-rate="0.3333""#),
+            "one of three CASE paths should be covered: {xml}"
+        );
+        assert!(
+            xml.contains(r#"condition-coverage="33% (1/3)""#),
+            "line-level CASE path denominator should be three: {xml}"
+        );
+    }
+
+    #[test]
+    fn dynamic_cobertura_emits_mcdc_evidence_and_denominator() {
+        let report = DynamicCoverageReport {
+            files: vec![FileCoverage {
+                file: "src/Mcdc.al".to_string(),
+                executed_lines: vec![12],
+                branches: vec![BranchCoverage {
+                    line: 12,
+                    then_taken: 1,
+                    else_taken: 2,
+                    paths: Vec::new(),
+                    mcdc: Some(McdcCoverage {
+                        conditions: vec![
+                            ConditionMcdcCoverage {
+                                index: 0,
+                                covered: true,
+                            },
+                            ConditionMcdcCoverage {
+                                index: 1,
+                                covered: false,
+                            },
+                        ],
+                        observations: vec![ConditionObservationCoverage {
+                            conditions: vec![true, false],
+                            outcome: false,
+                            hits: 1,
+                        }],
+                    }),
+                }],
+            }],
+        };
+        let xml = run_cobertura_dynamic(&report);
+        assert_well_formed_xml(&xml);
+        assert!(xml.contains(r#"mcdc-rate="0.5000""#), "{xml}");
+        assert!(xml.contains(r#"mcdc-coverage="50% (1/2)""#), "{xml}");
+        assert!(xml.contains(r#"type="mcdc""#), "{xml}");
+        assert!(xml.contains(r#"number="0" type="mcdc" coverage="100%""#));
+        assert!(xml.contains(r#"number="1" type="mcdc" coverage="0%""#));
     }
 }

@@ -9,23 +9,30 @@
 use url::Url;
 
 use crate::queries::{AlInlayHint, AlInlayHintKind, AlInlayHintLabel, Position, Range};
-use al_workspace::Workspace;
+use al_workspace::{Workspace, WorkspaceStateError};
 
 /// Returns transport-agnostic `AlInlayHint` values; al-lsp converts at the boundary.
-#[must_use]
-pub fn inlay_hints(workspace: &Workspace, uri: &Url, range: Range) -> Option<Vec<AlInlayHint>> {
-    let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, uri)?;
+pub fn inlay_hints(
+    workspace: &Workspace,
+    uri: &Url,
+    range: Range,
+) -> Result<Option<Vec<AlInlayHint>>, String> {
+    let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
+        return Ok(None);
+    };
     let root = tree.root_node();
     let source = text.as_bytes();
     let mut hints = Vec::new();
 
-    let (param_hints, return_hints) = match workspace.config.try_read() {
-        Ok(config) => (
-            config.inlay_hints.parameter_names,
-            config.inlay_hints.return_types,
-        ),
-        Err(_) => (true, false), // defaults if lock is held
-    };
+    let config = workspace
+        .config
+        .try_read()
+        .map_err(|_| "workspace configuration is currently unavailable".to_string())?;
+    let (param_hints, return_hints) = (
+        config.inlay_hints.parameter_names,
+        config.inlay_hints.return_types,
+    );
+    drop(config);
 
     if param_hints {
         // Prefer the cached symbols already populated by the file index to
@@ -52,7 +59,8 @@ pub fn inlay_hints(workspace: &Workspace, uri: &Url, range: Range) -> Option<Vec
             &doc_symbols,
             &range,
             &mut hints,
-        );
+        )
+        .map_err(|error| error.to_string())?;
     }
 
     if return_hints {
@@ -60,9 +68,9 @@ pub fn inlay_hints(workspace: &Workspace, uri: &Url, range: Range) -> Option<Vec
     }
 
     if hints.is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(hints)
+        Ok(Some(hints))
     }
 }
 
@@ -93,7 +101,7 @@ fn collect_inlay_hints(
     doc_symbols: &[super::AlDocumentSymbol],
     range: &Range,
     hints: &mut Vec<AlInlayHint>,
-) {
+) -> Result<(), WorkspaceStateError> {
     // TypeResolver is built once and shared across all argument nodes; a fresh
     // resolver per argument would mean N full-AST scans per inlay-hints request.
     let resolver = al_syntax::TypeResolver::new(tree, text);
@@ -128,7 +136,7 @@ fn collect_inlay_hints(
                         &resolver,
                         position,
                         &arg_types,
-                    );
+                    )?;
                     if !param_names.is_empty() {
                         add_parameter_hints(node, source, &param_names, hints);
                     }
@@ -139,6 +147,7 @@ fn collect_inlay_hints(
         let mut cursor = node.walk();
         stack.extend(node.children(&mut cursor));
     }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -365,19 +374,19 @@ fn lookup_parameter_names(
     resolver: &al_syntax::TypeResolver<'_>,
     position: Position,
     arg_types: &[Option<InferredType>],
-) -> Vec<String> {
+) -> Result<Vec<String>, WorkspaceStateError> {
     let candidates = overload_candidates_from_symbols(doc_symbols, func_name);
     if !candidates.is_empty() {
         if let Some(best) = select_best_overload(&candidates, arg_types) {
-            return best;
+            return Ok(best);
         }
     }
 
     if let Some(recv) = receiver_name {
         if let Some(names) = lookup_via_receiver(
             workspace, func_name, recv, text, tree, resolver, position, arg_types,
-        ) {
-            return names;
+        )? {
+            return Ok(names);
         }
     }
 
@@ -392,10 +401,15 @@ fn lookup_parameter_names(
         })
         .collect();
     if let Some(best) = select_best_overload(&candidates, arg_types) {
-        return best;
+        return Ok(best);
     }
 
-    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner());
+    let builtins = workspace
+        .builtins
+        .read()
+        .map_err(|_| WorkspaceStateError::Poisoned {
+            component: "builtins",
+        })?;
     let candidates: Vec<OverloadCandidate> = builtins
         .iter()
         .flat_map(|bt| bt.methods.iter())
@@ -407,14 +421,14 @@ fn lookup_parameter_names(
         .collect();
     drop(builtins);
     if let Some(best) = select_best_overload(&candidates, arg_types) {
-        return best;
+        return Ok(best);
     }
 
     if let Some(names) = lookup_embedded_builtin(func_name) {
-        return names;
+        return Ok(names);
     }
 
-    Vec::new()
+    Ok(Vec::new())
 }
 
 // Member-call resolution needs workspace + func + receiver + the tree-walk
@@ -430,13 +444,17 @@ fn lookup_via_receiver(
     resolver: &al_syntax::TypeResolver<'_>,
     position: Position,
     arg_types: &[Option<InferredType>],
-) -> Option<Vec<String>> {
-    let decl = resolver.resolve_type(receiver_name, position.into())?;
+) -> Result<Option<Vec<String>>, WorkspaceStateError> {
+    let Some(decl) = resolver.resolve_type(receiver_name, position.into()) else {
+        return Ok(None);
+    };
 
     let cache = workspace
         .semantic_cache
         .read()
-        .unwrap_or_else(|e| e.into_inner());
+        .map_err(|_| WorkspaceStateError::Poisoned {
+            component: "semantic cache",
+        })?;
     let type_names: Vec<&str> = {
         let mut names = vec![decl.type_name.as_str()];
         if let Some(sub) = decl.type_subtype.as_deref() {
@@ -456,7 +474,7 @@ fn lookup_via_receiver(
         .collect();
     drop(cache);
     if let Some(best) = select_best_overload(&candidates, arg_types) {
-        return Some(best);
+        return Ok(Some(best));
     }
 
     if let Some(subtype) = &decl.type_subtype {
@@ -472,7 +490,7 @@ fn lookup_via_receiver(
             })
             .collect();
         if let Some(best) = select_best_overload(&candidates, arg_types) {
-            return Some(best);
+            return Ok(Some(best));
         }
     }
 
@@ -483,13 +501,13 @@ fn lookup_via_receiver(
                     target_symbols.into_iter().map(Into::into).collect();
                 let candidates = overload_candidates_from_symbols(&target_symbols, func_name);
                 if let Some(best) = select_best_overload(&candidates, arg_types) {
-                    return Some(best);
+                    return Ok(Some(best));
                 }
             }
         }
     }
 
-    lookup_embedded_builtin(func_name)
+    Ok(lookup_embedded_builtin(func_name))
 }
 
 fn lookup_embedded_builtin(func_name: &str) -> Option<Vec<String>> {
@@ -870,7 +888,8 @@ mod tests {
             &symbols,
             &full_range(),
             &mut hints,
-        );
+        )
+        .expect("collect parameter hints");
 
         let labels: Vec<String> = hints
             .iter()
@@ -912,6 +931,38 @@ mod tests {
         ];
         let best = select_best_overload(&candidates, &arg_types).expect("an overload");
         assert_eq!(best, vec!["First".to_string(), "Second".to_string()]);
+    }
+
+    #[test]
+    fn parameter_lookup_reports_poisoned_builtins() {
+        let src = "codeunit 50100 Test\n{\n    procedure Caller()\n    begin\n        Unknown(1);\n    end;\n}";
+        let (text, tree) = parse(src);
+        let resolver = al_syntax::TypeResolver::new(&tree, &text);
+        let ws = Workspace::new();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = ws.builtins.write().expect("builtins write lock");
+            panic!("poison builtins for test");
+        }));
+
+        let error = lookup_parameter_names(
+            &ws,
+            &[],
+            "Unknown",
+            None,
+            &text,
+            &tree,
+            &resolver,
+            Position {
+                line: 4,
+                character: 16,
+            },
+            &[],
+        )
+        .expect_err("poisoned builtins must fail parameter lookup");
+        assert_eq!(
+            error.to_string(),
+            "workspace state lock 'builtins' is poisoned"
+        );
     }
 
     #[test]
@@ -1324,7 +1375,7 @@ mod tests {
         let ws = Workspace::new();
         let uri = Url::parse("file:///nonexistent.al").unwrap();
         assert!(
-            inlay_hints(&ws, &uri, full_range()).is_none(),
+            inlay_hints(&ws, &uri, full_range()).unwrap().is_none(),
             "an unopened document must produce no inlay hints"
         );
     }
@@ -1346,9 +1397,10 @@ mod tests {
 }"#;
         let ws = Workspace::new();
         let uri = Url::parse("file:///tmp/inlay_param_test.al").unwrap();
-        ws.documents.open(uri.clone(), src.to_string());
-
-        let hints = inlay_hints(&ws, &uri, full_range()).expect("some hints");
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
+        let hints = inlay_hints(&ws, &uri, full_range())
+            .unwrap()
+            .expect("some hints");
         let param_labels: Vec<String> = hints
             .iter()
             .filter(|h| h.kind == Some(AlInlayHintKind::Parameter))
@@ -1386,12 +1438,27 @@ mod tests {
             cfg.inlay_hints.return_types = false;
         }
         let uri = Url::parse("file:///tmp/inlay_disabled_test.al").unwrap();
-        ws.documents.open(uri.clone(), src.to_string());
-
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
         assert!(
-            inlay_hints(&ws, &uri, full_range()).is_none(),
+            inlay_hints(&ws, &uri, full_range()).unwrap().is_none(),
             "with both hint kinds disabled there should be no hints"
         );
+    }
+
+    #[test]
+    fn inlay_hints_does_not_substitute_defaults_during_config_contention() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///tmp/inlay_config_contention.al").unwrap();
+        ws.documents
+            .open(
+                uri.clone(),
+                "codeunit 50100 Test { procedure Run() begin end; }".to_string(),
+            )
+            .unwrap();
+        let _write_guard = ws.config.try_write().unwrap();
+        let error = inlay_hints(&ws, &uri, full_range())
+            .expect_err("held configuration write lock must be explicit");
+        assert!(error.contains("configuration"));
     }
 
     #[test]
@@ -1411,9 +1478,10 @@ mod tests {
             cfg.inlay_hints.return_types = true;
         }
         let uri = Url::parse("file:///tmp/inlay_return_test.al").unwrap();
-        ws.documents.open(uri.clone(), src.to_string());
-
-        let hints = inlay_hints(&ws, &uri, full_range()).expect("a return-type hint");
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
+        let hints = inlay_hints(&ws, &uri, full_range())
+            .unwrap()
+            .expect("a return-type hint");
         assert!(
             hints.iter().any(|h| h.kind == Some(AlInlayHintKind::Type)),
             "expected a Type-kind return hint, got: {hints:?}"

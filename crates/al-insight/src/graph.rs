@@ -130,12 +130,77 @@ pub struct InsightGraph {
     pub(crate) edge_set: std::collections::HashSet<(NodeIndex, NodeIndex, InsightEdge)>,
 }
 
+/// Byte totals for allocations owned by an insight graph. Allocator/RSS
+/// overhead remains intentionally outside this deterministic accounting.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsightGraphMemoryStats {
+    pub node_payload_bytes: usize,
+    pub index_bytes: usize,
+    pub edge_bytes: usize,
+    pub tracked_bytes: usize,
+}
+
 impl InsightGraph {
     pub fn new() -> Self {
         Self {
             graph: DiGraph::new(),
             index: HashMap::new(),
             edge_set: std::collections::HashSet::new(),
+        }
+    }
+
+    pub fn memory_stats(&self) -> InsightGraphMemoryStats {
+        let node_payload_bytes = self
+            .graph
+            .node_weights()
+            .map(|node| match node {
+                InsightNode::Object { name, package, .. } => {
+                    std::mem::size_of_val(node) + name.capacity() + package.capacity()
+                }
+                InsightNode::Procedure {
+                    object_name, name, ..
+                }
+                | InsightNode::Event {
+                    object_name, name, ..
+                } => std::mem::size_of_val(node) + object_name.capacity() + name.capacity(),
+                InsightNode::Subscriber {
+                    object_name,
+                    name,
+                    target_object,
+                    target_event,
+                    ..
+                } => {
+                    std::mem::size_of_val(node)
+                        + object_name.capacity()
+                        + name.capacity()
+                        + target_object.capacity()
+                        + target_event.capacity()
+                }
+            })
+            .sum::<usize>();
+        let index_bytes = self
+            .index
+            .iter()
+            .map(|(key, nodes)| {
+                let key_bytes = match key {
+                    NodeKey::Object(_, a) => a.capacity(),
+                    NodeKey::Procedure(_, a, b)
+                    | NodeKey::Event(_, a, b)
+                    | NodeKey::Subscriber(_, a, b) => a.capacity() + b.capacity(),
+                };
+                std::mem::size_of_val(key)
+                    + key_bytes
+                    + nodes.capacity() * std::mem::size_of::<NodeIndex>()
+            })
+            .sum::<usize>();
+        let edge_bytes = self.graph.edge_count() * std::mem::size_of::<InsightEdge>()
+            + self.edge_set.len() * std::mem::size_of::<(NodeIndex, NodeIndex, InsightEdge)>();
+        InsightGraphMemoryStats {
+            node_payload_bytes,
+            index_bytes,
+            edge_bytes,
+            tracked_bytes: node_payload_bytes + index_bytes + edge_bytes,
         }
     }
 
@@ -606,6 +671,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -631,6 +697,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -656,6 +723,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         }
     }
@@ -1057,6 +1125,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         };
 
@@ -1083,6 +1152,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         };
 
@@ -1134,6 +1204,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         };
 
@@ -1160,6 +1231,7 @@ mod tests {
             enum_values: Vec::new(),
             keys: Vec::new(),
             properties: Vec::new(),
+            permissions: Vec::new(),
             variables: Vec::new(),
         };
 

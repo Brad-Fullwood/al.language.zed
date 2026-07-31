@@ -46,10 +46,81 @@ pub struct PackageInfo {
     pub object_count: usize,
 }
 
+type DependencyFingerprint = Vec<(PathBuf, u64, std::time::SystemTime)>;
+
 struct DependencySourceCache {
-    /// `(canonical app path, byte length, modified nanos)` in stable order.
-    fingerprint: Vec<(PathBuf, u64, u128)>,
+    /// `(canonical app path, byte length, modified time)` in stable order.
+    fingerprint: DependencyFingerprint,
     index: Arc<FileIndex>,
+}
+
+/// A synchronization failure that makes workspace state unsafe to inspect.
+///
+/// Rust lock poisoning means a writer panicked while it held the lock. Query
+/// paths must not reuse the possibly half-written value or translate it into an
+/// empty/healthy-looking response. Full cache invalidation is the one exception:
+/// it overwrites the protected value without reading it and clears the poison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum WorkspaceStateError {
+    #[error("workspace state lock '{component}' is poisoned")]
+    Poisoned { component: &'static str },
+}
+
+impl WorkspaceStateError {
+    fn poisoned(component: &'static str) -> Self {
+        Self::Poisoned { component }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DependencySourceError {
+    #[error(transparent)]
+    State(#[from] WorkspaceStateError),
+    #[error("failed to inspect loaded symbol package '{}': {source}", path.display())]
+    InspectPackage {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to index embedded source in loaded package '{}': {source}", path.display())]
+    IndexPackage {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to extract embedded source from loaded package '{}': {source}", path.display())]
+    ExtractPackage {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "embedded AL source '{archive_path}' in package '{}' did not parse cleanly: {details}",
+        package_path.display()
+    )]
+    ParseSource {
+        package_path: PathBuf,
+        archive_path: String,
+        details: String,
+    },
+    #[error(
+        "embedded AL source '{archive_path}' in package '{}' has no object declaration",
+        package_path.display()
+    )]
+    MissingObjectDeclaration {
+        package_path: PathBuf,
+        archive_path: String,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CallGraphBuildError {
+    #[error(transparent)]
+    DependencySource(#[from] DependencySourceError),
+    #[error(transparent)]
+    SourceGraph(#[from] al_insight::calls::SourceGraphError),
+    #[error(transparent)]
+    State(#[from] WorkspaceStateError),
 }
 
 /// ## Lock strategy
@@ -77,6 +148,13 @@ pub struct Workspace {
     /// initialize multiple in-process CLR bridge generations.
     semantic_lifecycle_lock: tokio::sync::Mutex<()>,
     pub file_index: Arc<FileIndex>,
+    /// Serializes publication of a fully staged source/package/project
+    /// generation. LSP request handlers hold a read guard while querying; a
+    /// reindex holds the write guard only for the final in-memory swap.
+    pub generation_lock: tokio::sync::RwLock<()>,
+    /// Monotonic publication revision used by operations that stage work under
+    /// a read guard and then upgrade by reacquiring the write lock.
+    pub generation_revision: std::sync::atomic::AtomicU64,
     /// Merged workspace configuration (settings from client + project defaults).
     pub config: RwLock<AlConfig>,
     /// Builtins loaded once at init, read-only afterward.
@@ -104,6 +182,13 @@ pub struct Workspace {
     /// Cached call graph. Built lazily after insight graph; invalidated with it.
     /// Private; access via `get_or_build_call_graph()` only.
     call_graph: std::sync::RwLock<Option<CallGraph>>,
+    /// Exact dependency-source generation used to build `call_graph`.
+    ///
+    /// A cached graph is reusable only while this equals the current package
+    /// fingerprint. Keeping the association explicit prevents a deleted,
+    /// replaced, or corrupt `.app` from being hidden by a previously successful
+    /// graph build.
+    call_graph_dependency_fingerprint: std::sync::RwLock<Option<DependencyFingerprint>>,
     /// Serialises concurrent call-graph builds so two callers can't waste CPU
     /// running the (100-200ms) build twice. *Not* the data lock — readers and
     /// the build itself don't take this; only the slow-path build acquires it.
@@ -146,6 +231,8 @@ impl Workspace {
             semantic: RwLock::new(None),
             semantic_lifecycle_lock: tokio::sync::Mutex::new(()),
             file_index: Arc::new(FileIndex::new()),
+            generation_lock: tokio::sync::RwLock::new(()),
+            generation_revision: std::sync::atomic::AtomicU64::new(0),
             config: RwLock::new(AlConfig::default()),
             builtins: std::sync::RwLock::new(Arc::new(Vec::new())),
             error_codes: DashMap::new(),
@@ -157,6 +244,7 @@ impl Workspace {
             notify_sink: std::sync::OnceLock::new(),
             insight_graph: std::sync::RwLock::new(None),
             call_graph: std::sync::RwLock::new(None),
+            call_graph_dependency_fingerprint: std::sync::RwLock::new(None),
             call_graph_build_lock: std::sync::Mutex::new(()),
             dependency_source_index: std::sync::RwLock::new(None),
             profiler_session: std::sync::RwLock::new(None),
@@ -165,19 +253,59 @@ impl Workspace {
         }
     }
 
+    /// Current monotonic revision of the published workspace generation.
+    #[inline]
+    pub fn generation_revision(&self) -> u64 {
+        self.generation_revision
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Mark a source, symbol, project, or configuration mutation as visible.
+    ///
+    /// Optimistic long-running operations snapshot this value, do blocking
+    /// work without holding [`generation_lock`](Self::generation_lock), and
+    /// publish only when the revision still matches.
+    #[inline]
+    pub fn mark_generation_changed(&self) {
+        self.generation_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Replace the complete package inventory for a published generation.
+    ///
+    /// The inventory is derived from the validated package batch. If an older
+    /// writer panicked, the replacement payload is complete, so overwriting the
+    /// inaccessible value and clearing the poison is safe.
+    pub fn replace_package_info(&self, packages: Vec<PackageInfo>) {
+        match self.package_info.write() {
+            Ok(mut guard) => *guard = packages,
+            Err(poisoned) => {
+                *poisoned.into_inner() = packages;
+                self.package_info.clear_poison();
+                tracing::warn!(
+                    "discarded poisoned package inventory during complete generation replacement"
+                );
+            }
+        }
+    }
+
     /// Get or lazily build the cached insight graph.
-    pub fn get_or_build_insight_graph(&self) -> Arc<InsightGraph> {
-        if let Ok(guard) = self.insight_graph.read() {
+    pub fn get_or_build_insight_graph(&self) -> Result<Arc<InsightGraph>, WorkspaceStateError> {
+        {
+            let guard = self
+                .insight_graph
+                .read()
+                .map_err(|_| WorkspaceStateError::poisoned("insight_graph"))?;
             if let Some(arc) = guard.as_ref() {
-                return Arc::clone(arc);
+                return Ok(Arc::clone(arc));
             }
         }
         let mut guard = self
             .insight_graph
             .write()
-            .unwrap_or_else(|e| e.into_inner());
+            .map_err(|_| WorkspaceStateError::poisoned("insight_graph"))?;
         if let Some(arc) = guard.as_ref() {
-            return Arc::clone(arc);
+            return Ok(Arc::clone(arc));
         }
         let build = || {
             let mut g = InsightGraph::new();
@@ -192,24 +320,26 @@ impl Workspace {
         };
         let arc = Arc::new(graph);
         *guard = Some(Arc::clone(&arc));
-        arc
+        Ok(arc)
     }
 
     /// Invalidate both graph caches.
     pub fn invalidate_insight_graph(&self) {
-        let mut ig = self
-            .insight_graph
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        *ig = None;
-        let mut cg = self.call_graph.write().unwrap_or_else(|e| e.into_inner());
-        *cg = None;
+        reset_optional_cache(&self.insight_graph, "insight_graph");
+        reset_optional_cache(&self.call_graph, "call_graph");
+        reset_optional_cache(
+            &self.call_graph_dependency_fingerprint,
+            "call_graph_dependency_fingerprint",
+        );
     }
 
     /// Invalidate the call graph while retaining the insight graph.
     pub fn invalidate_call_graph_only(&self) {
-        let mut cg = self.call_graph.write().unwrap_or_else(|e| e.into_inner());
-        *cg = None;
+        reset_optional_cache(&self.call_graph, "call_graph");
+        reset_optional_cache(
+            &self.call_graph_dependency_fingerprint,
+            "call_graph_dependency_fingerprint",
+        );
     }
 
     /// Return a coherent parsed index of every AL object body embedded in the
@@ -218,54 +348,90 @@ impl Workspace {
     /// Package source is immutable during normal editing, so it is cached
     /// separately from the workspace graph. A stable path/size/mtime
     /// fingerprint forces a rebuild when a package is downloaded or replaced.
-    pub fn get_or_build_dependency_source_index(&self) -> Arc<FileIndex> {
-        let fingerprint = self.dependency_package_fingerprint();
-        if let Ok(cache) = self.dependency_source_index.read() {
+    pub fn get_or_build_dependency_source_index(
+        &self,
+    ) -> Result<Arc<FileIndex>, DependencySourceError> {
+        self.get_or_build_dependency_source_generation()
+            .map(|(_, index)| index)
+    }
+
+    fn get_or_build_dependency_source_generation(
+        &self,
+    ) -> Result<(DependencyFingerprint, Arc<FileIndex>), DependencySourceError> {
+        let fingerprint = self.dependency_package_fingerprint()?;
+        {
+            let cache = self
+                .dependency_source_index
+                .read()
+                .map_err(|_| WorkspaceStateError::poisoned("dependency_source_index"))?;
             if let Some(cache) = cache
                 .as_ref()
                 .filter(|cache| cache.fingerprint == fingerprint)
             {
-                return Arc::clone(&cache.index);
+                return Ok((fingerprint, Arc::clone(&cache.index)));
             }
         }
 
         let mut cache = self
             .dependency_source_index
             .write()
-            .unwrap_or_else(|error| error.into_inner());
+            .map_err(|_| WorkspaceStateError::poisoned("dependency_source_index"))?;
         if let Some(existing) = cache
             .as_ref()
             .filter(|existing| existing.fingerprint == fingerprint)
         {
-            return Arc::clone(&existing.index);
+            return Ok((fingerprint, Arc::clone(&existing.index)));
         }
 
         let index = Arc::new(FileIndex::new());
         for (app_path, _, _) in &fingerprint {
-            let source_index = match al_symbols::source_index::get_or_build(app_path) {
-                Ok(index) => index,
-                Err(error) => {
-                    tracing::debug!(
-                        path = %app_path.display(),
-                        %error,
-                        "loaded package has no readable embedded AL source"
-                    );
-                    continue;
+            let source_index =
+                al_symbols::source_index::get_or_build(app_path).map_err(|source| {
+                    DependencySourceError::IndexPackage {
+                        path: app_path.clone(),
+                        source,
+                    }
+                })?;
+            let sources = source_index.extract_all_sources().map_err(|source| {
+                DependencySourceError::ExtractPackage {
+                    path: app_path.clone(),
+                    source,
                 }
-            };
-            let sources = match source_index.extract_all_sources() {
-                Ok(sources) => sources,
-                Err(error) => {
-                    tracing::warn!(
-                        path = %app_path.display(),
-                        %error,
-                        "failed to extract dependency AL sources"
-                    );
-                    continue;
-                }
-            };
+            })?;
             for (archive_path, source) in sources {
-                index.add_file(dependency_virtual_path(app_path, &archive_path), source);
+                let parsed = al_syntax::AlParser::parse_quick(&source);
+                if !parsed.errors.is_empty() {
+                    let details = parsed
+                        .errors
+                        .iter()
+                        .take(3)
+                        .map(|error| {
+                            format!(
+                                "{} at {}:{}",
+                                error.message,
+                                error.range.start_point.row + 1,
+                                error.range.start_point.column + 1
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    return Err(DependencySourceError::ParseSource {
+                        package_path: app_path.clone(),
+                        archive_path,
+                        details,
+                    });
+                }
+                if al_syntax::find_object_declaration(&parsed.tree, &source).is_none() {
+                    return Err(DependencySourceError::MissingObjectDeclaration {
+                        package_path: app_path.clone(),
+                        archive_path,
+                    });
+                }
+                index.add_file_with_tree(
+                    dependency_virtual_path(app_path, &archive_path),
+                    source,
+                    parsed.tree,
+                );
             }
         }
         tracing::info!(
@@ -274,85 +440,118 @@ impl Workspace {
             "dependency AL source index ready"
         );
         let index_for_return = Arc::clone(&index);
-        *cache = Some(DependencySourceCache { fingerprint, index });
-        index_for_return
+        *cache = Some(DependencySourceCache {
+            fingerprint: fingerprint.clone(),
+            index,
+        });
+        Ok((fingerprint, index_for_return))
     }
 
-    fn dependency_package_fingerprint(&self) -> Vec<(PathBuf, u64, u128)> {
-        let mut package_names: std::collections::HashSet<String> = self
-            .symbols
-            .all_entries()
-            .into_iter()
-            .filter(|entry| !entry.synthetic && !entry.package.eq_ignore_ascii_case("workspace"))
-            .map(|entry| entry.package.clone())
-            .collect();
+    fn dependency_package_fingerprint(
+        &self,
+    ) -> Result<DependencyFingerprint, DependencySourceError> {
         let mut fingerprint = Vec::new();
-        for package in package_names.drain() {
-            let Some(path) = self.symbols.app_path(&package) else {
-                continue;
-            };
-            let Ok(metadata) = std::fs::metadata(&path) else {
-                continue;
-            };
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default();
+        for path in self.symbols.loaded_package_paths() {
+            let metadata = std::fs::metadata(&path).map_err(|source| {
+                DependencySourceError::InspectPackage {
+                    path: path.clone(),
+                    source,
+                }
+            })?;
+            let modified =
+                metadata
+                    .modified()
+                    .map_err(|source| DependencySourceError::InspectPackage {
+                        path: path.clone(),
+                        source,
+                    })?;
             fingerprint.push((path, metadata.len(), modified));
         }
         fingerprint.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         fingerprint.dedup_by(|left, right| left.0 == right.0);
-        fingerprint
+        Ok(fingerprint)
     }
 
     /// Get (or lazily build) the cached CallGraph.
     ///
-    /// **Lock ordering invariant:** This function takes locks in the order
-    /// `call_graph_build_lock` → `dependency_source_index` → `insight_graph`
-    /// (write, brief) → `call_graph` (write, brief). The expensive build itself
-    /// runs without either graph data lock, so readers are not blocked. Any new
-    /// code that touches these locks MUST follow that ordering or the daemon can
-    /// deadlock.
+    /// **Lock ordering invariant:** This function briefly validates
+    /// `dependency_source_index` before reading graph caches. On the slow path
+    /// it then takes `call_graph_build_lock`, revalidates dependency source, and
+    /// publishes `insight_graph` → `call_graph` → its dependency fingerprint.
+    /// No dependency or graph data guard is held while acquiring the build
+    /// mutex. Any new code that touches these locks MUST preserve that ordering
+    /// or the daemon can deadlock.
     pub fn get_or_build_call_graph(
         &self,
-    ) -> (
-        Arc<InsightGraph>,
-        std::sync::RwLockReadGuard<'_, Option<CallGraph>>,
-    ) {
+    ) -> Result<
+        (
+            Arc<InsightGraph>,
+            std::sync::RwLockReadGuard<'_, Option<CallGraph>>,
+        ),
+        CallGraphBuildError,
+    > {
+        let (dependency_fingerprint, _) = self.get_or_build_dependency_source_generation()?;
         {
-            let cg_guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
-            if cg_guard.is_some() {
-                let insight = self.get_or_build_insight_graph();
-                return (insight, cg_guard);
+            let insight = self
+                .insight_graph
+                .read()
+                .map_err(|_| WorkspaceStateError::poisoned("insight_graph"))?
+                .as_ref()
+                .cloned();
+            let cg_guard = self
+                .call_graph
+                .read()
+                .map_err(|_| WorkspaceStateError::poisoned("call_graph"))?;
+            let fingerprint_guard = self
+                .call_graph_dependency_fingerprint
+                .read()
+                .map_err(|_| WorkspaceStateError::poisoned("call_graph_dependency_fingerprint"))?;
+            if let Some(insight) = insight.filter(|_| {
+                cg_guard.is_some() && fingerprint_guard.as_ref() == Some(&dependency_fingerprint)
+            }) {
+                drop(fingerprint_guard);
+                return Ok((insight, cg_guard));
             }
         }
 
         let _build_lock = self
             .call_graph_build_lock
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .map_err(|_| WorkspaceStateError::poisoned("call_graph_build_lock"))?;
+        let (dependency_fingerprint, dependency_sources) =
+            self.get_or_build_dependency_source_generation()?;
         {
-            let cg_guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
-            if cg_guard.is_some() {
-                drop(cg_guard);
-                let insight = self.get_or_build_insight_graph();
-                let guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
-                return (insight, guard);
+            let insight = self
+                .insight_graph
+                .read()
+                .map_err(|_| WorkspaceStateError::poisoned("insight_graph"))?
+                .as_ref()
+                .cloned();
+            let cg_guard = self
+                .call_graph
+                .read()
+                .map_err(|_| WorkspaceStateError::poisoned("call_graph"))?;
+            let fingerprint_guard = self
+                .call_graph_dependency_fingerprint
+                .read()
+                .map_err(|_| WorkspaceStateError::poisoned("call_graph_dependency_fingerprint"))?;
+            if let Some(insight) = insight.filter(|_| {
+                cg_guard.is_some() && fingerprint_guard.as_ref() == Some(&dependency_fingerprint)
+            }) {
+                drop(fingerprint_guard);
+                return Ok((insight, cg_guard));
             }
         }
 
         let build = || {
-            let dependency_sources = self.get_or_build_dependency_source_index();
             let mut graph = InsightGraph::new();
             graph.build_from_index(&self.symbols);
             al_insight::calls::register_workspace_nodes(
                 &self.file_index,
                 &self.symbols,
                 &mut graph,
-            );
-            al_insight::calls::register_dependency_source_nodes(&dependency_sources, &mut graph);
+            )?;
+            al_insight::calls::register_dependency_source_nodes(&dependency_sources, &mut graph)?;
             let insight = Arc::new(graph);
 
             let mut cg = CallGraph::build_from_insight(&insight);
@@ -361,49 +560,93 @@ impl Workspace {
                 &self.symbols,
                 &insight,
                 &mut cg,
-            );
+            )?;
             al_insight::calls::populate_workspace_call_edges(
                 &dependency_sources,
                 &self.symbols,
                 &insight,
                 &mut cg,
-            );
-            (insight, cg)
+            )?;
+            Ok::<_, CallGraphBuildError>((insight, cg))
         };
         let (insight, cg) = match tokio::runtime::Handle::try_current() {
             Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
                 tokio::task::block_in_place(build)
             }
             _ => build(),
-        };
+        }?;
 
-        {
-            let mut ig_guard = self
-                .insight_graph
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
-            *ig_guard = Some(Arc::clone(&insight));
-        }
-        {
-            let mut cg_guard = self.call_graph.write().unwrap_or_else(|e| e.into_inner());
-            *cg_guard = Some(cg);
-        }
+        // Acquire every publication lock before mutating any of them. If one
+        // lock is poisoned, no partial graph generation is published.
+        let mut ig_guard = self
+            .insight_graph
+            .write()
+            .map_err(|_| WorkspaceStateError::poisoned("insight_graph"))?;
+        let mut cg_guard = self
+            .call_graph
+            .write()
+            .map_err(|_| WorkspaceStateError::poisoned("call_graph"))?;
+        let mut fingerprint_guard = self
+            .call_graph_dependency_fingerprint
+            .write()
+            .map_err(|_| WorkspaceStateError::poisoned("call_graph_dependency_fingerprint"))?;
+        *ig_guard = Some(Arc::clone(&insight));
+        *cg_guard = Some(cg);
+        *fingerprint_guard = Some(dependency_fingerprint);
+        drop(fingerprint_guard);
+        drop(cg_guard);
+        drop(ig_guard);
 
-        let guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
-        (insight, guard)
+        let guard = self
+            .call_graph
+            .read()
+            .map_err(|_| WorkspaceStateError::poisoned("call_graph"))?;
+        Ok((insight, guard))
     }
 
-    pub fn memory_stats(&self) -> WorkspaceMemoryStats {
+    pub fn memory_stats(&self) -> Result<WorkspaceMemoryStats, WorkspaceStateError> {
         let symbol_count = self.symbols.len();
         let open_docs = self.documents.len();
         let workspace_files = self.file_index.files.len();
         let procedure_index_entries = self.file_index.procedures.len();
         let error_code_count = self.error_codes.len();
-        let builtin_count = self.builtins.read().map(|b| b.len()).unwrap_or(0);
-        let package_count = self.package_info.read().map(|p| p.len()).unwrap_or(0);
+        let builtin_count = self
+            .builtins
+            .read()
+            .map_err(|_| WorkspaceStateError::poisoned("builtins"))?
+            .len();
+        let packages = self
+            .package_info
+            .read()
+            .map_err(|_| WorkspaceStateError::poisoned("package_info"))?;
+        let package_count = packages.len();
         let symbol_index_memory = self.symbols.memory_stats();
+        let document_store_memory = self.documents.memory_stats();
+        let file_index_memory = self.file_index.memory_stats();
+        let package_metadata_bytes = packages
+            .iter()
+            .map(|package| {
+                std::mem::size_of::<PackageInfo>()
+                    + package.name.capacity()
+                    + package.publisher.capacity()
+                    + package.version.capacity()
+            })
+            .sum();
+        drop(packages);
+        let insight_graph_memory = self
+            .insight_graph
+            .read()
+            .map_err(|_| WorkspaceStateError::poisoned("insight_graph"))?
+            .as_ref()
+            .map(|graph| graph.memory_stats());
+        let call_graph_memory = self
+            .call_graph
+            .read()
+            .map_err(|_| WorkspaceStateError::poisoned("call_graph"))?
+            .as_ref()
+            .map(|graph| graph.memory_stats());
 
-        WorkspaceMemoryStats {
+        Ok(WorkspaceMemoryStats {
             symbol_count,
             open_docs,
             workspace_files,
@@ -412,6 +655,26 @@ impl Workspace {
             builtin_count,
             package_count,
             symbol_index_memory,
+            document_store_memory,
+            file_index_memory,
+            package_metadata_bytes,
+            insight_graph_memory,
+            call_graph_memory,
+        })
+    }
+}
+
+/// Reset an optional cache without reading the protected value.
+///
+/// This is a deliberate recovery boundary: unlike query paths, invalidation
+/// can safely repair a poisoned cache because `None` replaces the whole value.
+fn reset_optional_cache<T>(lock: &std::sync::RwLock<Option<T>>, component: &'static str) {
+    match lock.write() {
+        Ok(mut guard) => *guard = None,
+        Err(poisoned) => {
+            *poisoned.into_inner() = None;
+            lock.clear_poison();
+            tracing::warn!(component, "discarded and repaired poisoned workspace cache");
         }
     }
 }
@@ -445,17 +708,35 @@ pub struct WorkspaceMemoryStats {
     pub builtin_count: usize,
     pub package_count: usize,
     pub symbol_index_memory: al_symbols::SymbolIndexMemoryStats,
+    pub document_store_memory: al_source::documents::DocumentStoreMemoryStats,
+    pub file_index_memory: al_source::file_index::FileIndexMemoryStats,
+    pub package_metadata_bytes: usize,
+    pub insight_graph_memory: Option<al_insight::graph::InsightGraphMemoryStats>,
+    pub call_graph_memory: Option<al_insight::index::CallGraphMemoryStats>,
 }
 
 /// Result of a successful core workspace initialization.
 ///
 /// Callers (LSP and daemon) consume this to perform their transport-specific
 /// post-init steps (sending notifications, opening files in DocumentStore, etc.).
+#[derive(Debug)]
 pub struct CoreInitResult {
     pub file_count: usize,
     pub package_count: usize,
     pub total_symbols: usize,
     pub has_toolchain: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CoreInitError {
+    #[error(transparent)]
+    Project(#[from] al_project::errors::DiscoveryError),
+    #[error(transparent)]
+    SourceScan(#[from] al_source::file_index::ScanError),
+    #[error(transparent)]
+    SymbolPackages(#[from] al_symbols::PackageLoadError),
+    #[error(transparent)]
+    State(#[from] WorkspaceStateError),
 }
 
 /// Initialize the common parts of a workspace.
@@ -464,13 +745,13 @@ pub struct CoreInitResult {
 /// toolchain, loads symbols, and indexes workspace files. The caller remains
 /// responsible for transport-specific notifications and document setup.
 ///
-/// Returns `Ok(CoreInitResult)` on success; the workspace may be partially
-/// initialised (e.g. project not found but toolchain found) — errors are logged
-/// via `tracing` and represented as partial results.
+/// A directory without `app.json` is a valid syntax-only workspace. Invalid
+/// project metadata or an incomplete source scan is not: those states return a
+/// concrete error instead of publishing an apparently complete partial index.
 pub async fn initialize_core_workspace(
     workspace: &Workspace,
     project_root: &std::path::Path,
-) -> CoreInitResult {
+) -> Result<CoreInitResult, CoreInitError> {
     let file_count;
     let mut package_count = 0usize;
     let mut total_symbols = 0usize;
@@ -485,7 +766,7 @@ pub async fn initialize_core_workspace(
     match project_result {
         Ok(mut project) => {
             let config = workspace.config.read().await.clone();
-            project.apply_symbol_settings(&config);
+            project.apply_symbol_settings(&config)?;
             tracing::info!(
                 name = %project.app_json.name,
                 root = %project.root.display(),
@@ -496,7 +777,7 @@ pub async fn initialize_core_workspace(
             let cache = al_symbols::cache::SymbolCache::default_location();
             let loaded = workspace
                 .symbols
-                .load_packages_cached(&project.packages, &cache);
+                .load_packages_cached(&project.packages, &cache)?;
             total_symbols = loaded.iter().map(|p| p.object_count).sum();
             package_count = loaded.len();
             tracing::info!(
@@ -504,22 +785,6 @@ pub async fn initialize_core_workspace(
                 symbols = total_symbols,
                 "workspace: loaded symbol packages"
             );
-            let attempted = project.packages.len();
-            if package_count < attempted {
-                let missing = attempted - package_count;
-                tracing::error!(
-                    attempted,
-                    loaded = package_count,
-                    missing,
-                    "workspace: {missing}/{attempted} .app packages failed to load — check earlier warnings for paths"
-                );
-                if let Some(sink) = workspace.notify_sink.get() {
-                    sink(&format!(
-                        "AL workspace: {missing}/{attempted} symbol packages failed to load. Symbol index is partial; some completions and references may be missing. See al-lsp log for details."
-                    ));
-                }
-            }
-
             // Load runtime enum definitions (compiler built-ins not in any package).
             workspace.symbols.load_runtime_enums();
 
@@ -534,15 +799,12 @@ pub async fn initialize_core_workspace(
                     object_count: p.object_count,
                 })
                 .collect();
-            *workspace
-                .package_info
-                .write()
-                .unwrap_or_else(|e| e.into_inner()) = pkg_info;
+            workspace.replace_package_info(pkg_info);
 
             // Scan workspace .al files. file_index.scan walks the tree
             // synchronously (read_dir + read_to_string per file) so wrap
             // it in block_in_place — we still hold the &Workspace borrow.
-            file_count = tokio::task::block_in_place(|| workspace.file_index.scan(&project.root));
+            file_count = tokio::task::block_in_place(|| workspace.file_index.scan(&project.root))?;
 
             *workspace.project.write().await = Some(project);
 
@@ -553,12 +815,16 @@ pub async fn initialize_core_workspace(
                 "workspace: initialized"
             );
         }
-        Err(e) => {
-            tracing::warn!(error = %e, root = %project_root.display(), "workspace: project discovery failed");
+        Err(al_project::errors::DiscoveryError::NoProjectFound { .. }) => {
+            tracing::info!(root = %project_root.display(), "workspace: no app.json; using syntax-only workspace");
 
             // Still scan for .al files even without a project. Same
             // block_in_place bridge as the happy path above.
-            file_count = tokio::task::block_in_place(|| workspace.file_index.scan(project_root));
+            file_count = tokio::task::block_in_place(|| workspace.file_index.scan(project_root))?;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, root = %project_root.display(), "workspace: project discovery failed");
+            return Err(CoreInitError::Project(e));
         }
     }
 
@@ -574,12 +840,12 @@ pub async fn initialize_core_workspace(
         }
     };
 
-    CoreInitResult {
+    Ok(CoreInitResult {
         file_count,
         package_count,
         total_symbols,
         has_toolchain,
-    }
+    })
 }
 
 impl Default for Workspace {
@@ -608,6 +874,13 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
     // Capture procedure names before re-indexing to distinguish topology
     // changes from body-only edits.
     let topology_change = if let Ok(path) = uri.to_file_path() {
+        let previous_identity = workspace.file_index.object_info.get(&path).map(|info| {
+            (
+                info.kind.to_ascii_lowercase(),
+                info.id,
+                info.name.to_ascii_lowercase(),
+            )
+        });
         let prev_procs: std::collections::HashSet<String> = workspace
             .file_index
             .procedures_snapshot(&path)
@@ -618,9 +891,20 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
             .file_index
             .add_file_with_tree(path.clone(), text.to_string(), result.tree);
 
-        if let Some(info) = workspace.file_index.object_info.get(&path) {
-            workspace.symbols.invalidate_composed(&info.name);
-        } else {
+        let new_identity = workspace.file_index.object_info.get(&path).map(|info| {
+            (
+                info.kind.to_ascii_lowercase(),
+                info.id,
+                info.name.to_ascii_lowercase(),
+            )
+        });
+        if let Some((_, _, name)) = &previous_identity {
+            workspace.symbols.invalidate_composed(name);
+        }
+        if let Some((_, _, name)) = &new_identity {
+            workspace.symbols.invalidate_composed(name);
+        }
+        if previous_identity.is_none() && new_identity.is_none() {
             workspace.symbols.invalidate_all_composed();
         }
 
@@ -631,7 +915,7 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
             .procedures_snapshot(&path)
             .into_iter()
             .collect();
-        prev_procs != new_procs
+        prev_procs != new_procs || previous_identity != new_identity
     } else {
         workspace.symbols.invalidate_all_composed();
         // Non-file URI (virtual buffer etc.) — conservative: full invalidate.
@@ -647,6 +931,7 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
         // instead of the full insight + call build.
         workspace.invalidate_call_graph_only();
     }
+    workspace.mark_generation_changed();
 }
 
 /// Invalidate the composed symbol cache when a file is closed.
@@ -667,6 +952,7 @@ pub fn on_document_close(workspace: &Workspace, uri: &url::Url) {
     // Same reason as on_document_change: file leaving the index changes
     // the call/reference graph topology.
     workspace.invalidate_insight_graph();
+    workspace.mark_generation_changed();
 }
 
 #[cfg(test)]
@@ -688,6 +974,7 @@ mod workspace_lifecycle_tests {
                 tokio::task::spawn_blocking(move || ws.get_or_build_insight_graph())
                     .await
                     .unwrap()
+                    .unwrap()
             }));
         }
         let mut graphs = Vec::new();
@@ -706,9 +993,9 @@ mod workspace_lifecycle_tests {
     #[test]
     fn insight_graph_invalidation_yields_new_arc() {
         let workspace = make_workspace();
-        let first = workspace.get_or_build_insight_graph();
+        let first = workspace.get_or_build_insight_graph().unwrap();
         workspace.invalidate_insight_graph();
-        let second = workspace.get_or_build_insight_graph();
+        let second = workspace.get_or_build_insight_graph().unwrap();
         assert!(
             !std::sync::Arc::ptr_eq(&first, &second),
             "invalidation should drop the cached graph; next call must rebuild a new Arc"
@@ -726,8 +1013,10 @@ mod workspace_lifecycle_tests {
 }"#;
 
         // Open the document first so get_version works.
-        workspace.documents.open(uri.clone(), text.to_string());
-
+        workspace
+            .documents
+            .open(uri.clone(), text.to_string())
+            .unwrap();
         on_document_change(&workspace, &uri, text);
 
         let path = uri.to_file_path().unwrap();
@@ -741,6 +1030,62 @@ mod workspace_lifecycle_tests {
         );
         let info = workspace.file_index.object_info.get(&path).unwrap();
         assert_eq!(info.name.to_lowercase(), "test table");
+    }
+
+    #[test]
+    fn object_identity_change_invalidates_old_and_new_composition_and_graph() {
+        let workspace = make_workspace();
+        workspace.symbols.add_entries(&[
+            al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Codeunit,
+                id: 50_100,
+                name: "Old Name".to_string(),
+                package: "Test".to_string(),
+                ..Default::default()
+            },
+            al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Codeunit,
+                id: 50_101,
+                name: "New Name".to_string(),
+                package: "Test".to_string(),
+                ..Default::default()
+            },
+        ]);
+        let uri = Url::from_file_path("/tmp/object_identity_change/Codeunit.al").unwrap();
+        let old = r#"codeunit 50100 "Old Name" { procedure Run() begin end; }"#;
+        let new = r#"codeunit 50101 "New Name" { procedure Run() begin end; }"#;
+        workspace
+            .documents
+            .open(uri.clone(), old.to_string())
+            .unwrap();
+        on_document_change(&workspace, &uri, old);
+
+        let _ = workspace
+            .symbols
+            .get_composed_cached(al_symbols::ObjectKind::Codeunit, "Old Name");
+        let _ = workspace
+            .symbols
+            .get_composed_cached(al_symbols::ObjectKind::Codeunit, "New Name");
+        assert!(!workspace.symbols.is_composed_cache_empty());
+        let graph_before = workspace.get_or_build_insight_graph().unwrap();
+        let revision_before = workspace.generation_revision();
+
+        workspace
+            .documents
+            .replace_or_open(uri.clone(), new.to_string())
+            .unwrap();
+        on_document_change(&workspace, &uri, new);
+
+        assert!(
+            workspace.symbols.is_composed_cache_empty(),
+            "both the discarded and replacement object identities must be invalidated"
+        );
+        let graph_after = workspace.get_or_build_insight_graph().unwrap();
+        assert!(
+            !Arc::ptr_eq(&graph_before, &graph_after),
+            "an identity change with the same procedure set is still a topology change"
+        );
+        assert!(workspace.generation_revision() > revision_before);
     }
 
     #[test]
@@ -807,14 +1152,18 @@ mod workspace_lifecycle_tests {
     }
 
     fn build_test_app(name: &str, table_name: &str) -> Vec<u8> {
+        let symbols = format!(
+            r#"{{"Tables":[{{"Id":50123,"Name":"{table_name}","Fields":[],"Methods":[]}}]}}"#
+        );
+        build_test_app_with_sources(name, &symbols, &[])
+    }
+
+    fn build_test_app_with_sources(name: &str, symbols: &str, sources: &[(&str, &str)]) -> Vec<u8> {
         use std::io::{Cursor, Write};
         use zip::write::SimpleFileOptions;
 
         let manifest = format!(
             r#"<?xml version="1.0"?><Package><App Id="00000000-0000-0000-0000-000000000001" Name="{name}" Publisher="Test" Version="1.0.0.0" /></Package>"#
-        );
-        let symbols = format!(
-            r#"{{"Tables":[{{"Id":50123,"Name":"{table_name}","Fields":[],"Methods":[]}}]}}"#
         );
         let mut data = Vec::from(&b"NAVX"[..]);
         data.resize(40, 0);
@@ -826,10 +1175,203 @@ mod workspace_lifecycle_tests {
             zip.write_all(manifest.as_bytes()).unwrap();
             zip.start_file("SymbolReference.json", options).unwrap();
             zip.write_all(symbols.as_bytes()).unwrap();
+            for (path, source) in sources {
+                zip.start_file(*path, options).unwrap();
+                zip.write_all(source.as_bytes()).unwrap();
+            }
             zip.finish().unwrap();
         }
         data.extend_from_slice(&zip_data);
         data
+    }
+
+    #[test]
+    fn dependency_source_index_includes_package_with_no_symbol_entries() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("source-only-package");
+        let app_path = dir.join("SourceOnly.app");
+        std::fs::write(
+            &app_path,
+            build_test_app_with_sources(
+                "SourceOnly",
+                r#"{"Tables":[]}"#,
+                &[
+                    (
+                        "src/Cod50124.SourceOnly.al",
+                        r#"codeunit 50124 "Source Only" { procedure Run() begin end; }"#,
+                    ),
+                    (
+                        "src/SourceContract.Interface.al",
+                        r#"interface "Source Contract" { procedure Run(); }"#,
+                    ),
+                ],
+            ),
+        )
+        .unwrap();
+        workspace
+            .symbols
+            .load_packages(std::slice::from_ref(&app_path))
+            .unwrap();
+
+        let index = workspace
+            .get_or_build_dependency_source_index()
+            .expect("file-backed package source must not depend on symbol entry count");
+        assert_eq!(index.len(), 2);
+        let (_, call_graph) = workspace
+            .get_or_build_call_graph()
+            .expect("ID-less dependency objects must participate in graph construction");
+        assert!(call_graph.is_some());
+        assert_eq!(
+            workspace.symbols.loaded_package_paths(),
+            vec![app_path.canonicalize().unwrap()],
+            "loaded package paths use the canonical source-index cache identity"
+        );
+    }
+
+    #[test]
+    fn failed_dependency_parse_publishes_no_partial_graph_or_source_index() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("dependency-parse-atomic");
+        let app_path = dir.join("BrokenSource.app");
+        let symbols = r#"{"Codeunits":[{"Id":50125,"Name":"Broken Source","Methods":[]}]}"#;
+        std::fs::write(
+            &app_path,
+            build_test_app_with_sources(
+                "BrokenSource",
+                symbols,
+                &[
+                    (
+                        "src/Cod50125.Good.al",
+                        r#"codeunit 50125 "Broken Source" { procedure Good() begin end; }"#,
+                    ),
+                    (
+                        "src/Cod50126.Broken.al",
+                        "codeunit 50126 Broken { procedure Incomplete(",
+                    ),
+                ],
+            ),
+        )
+        .unwrap();
+        workspace
+            .symbols
+            .load_packages(std::slice::from_ref(&app_path))
+            .unwrap();
+
+        let error = match workspace.get_or_build_call_graph() {
+            Err(error) => error,
+            Ok(_) => panic!("one malformed embedded source must reject the whole graph generation"),
+        };
+        assert!(
+            matches!(
+                error,
+                CallGraphBuildError::DependencySource(DependencySourceError::ParseSource { .. })
+            ),
+            "{error}"
+        );
+        assert!(workspace.dependency_source_index.read().unwrap().is_none());
+        assert!(workspace.insight_graph.read().unwrap().is_none());
+        assert!(workspace.call_graph.read().unwrap().is_none());
+        assert!(workspace
+            .call_graph_dependency_fingerprint
+            .read()
+            .unwrap()
+            .is_none());
+
+        std::fs::write(
+            &app_path,
+            build_test_app_with_sources(
+                "BrokenSource",
+                symbols,
+                &[
+                    (
+                        "src/Cod50125.Good.al",
+                        r#"codeunit 50125 "Broken Source" { procedure Good() begin end; }"#,
+                    ),
+                    (
+                        "src/Cod50126.Repaired.al",
+                        r#"codeunit 50126 "Repaired Source"
+{
+    procedure Repaired()
+    begin
+    end;
+}"#,
+                    ),
+                ],
+            ),
+        )
+        .unwrap();
+
+        let (_, graph) = workspace
+            .get_or_build_call_graph()
+            .expect("a repaired package must build a fresh complete generation");
+        assert!(graph.is_some());
+        assert_eq!(
+            workspace
+                .dependency_source_index
+                .read()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .index
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn cached_call_graph_does_not_hide_package_deletion_or_corruption() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("dependency-cache-revalidation");
+        let app_path = dir.join("Mutable.app");
+        std::fs::write(
+            &app_path,
+            build_test_app_with_sources(
+                "Mutable",
+                r#"{"Tables":[{"Id":50127,"Name":"Mutable Table","Fields":[],"Methods":[]}]}"#,
+                &[(
+                    "src/Tab50127.Mutable.al",
+                    r#"table 50127 "Mutable Table" { fields { field(1; Value; Integer) { } } }"#,
+                )],
+            ),
+        )
+        .unwrap();
+        workspace
+            .symbols
+            .load_packages(std::slice::from_ref(&app_path))
+            .unwrap();
+        let (_, initial) = workspace.get_or_build_call_graph().unwrap();
+        assert!(initial.is_some());
+        drop(initial);
+
+        std::fs::write(
+            &app_path,
+            b"NAVX corrupt replacement with a different length",
+        )
+        .unwrap();
+        let corrupt_error = match workspace.get_or_build_call_graph() {
+            Err(error) => error,
+            Ok(_) => panic!("a cached graph must not conceal package corruption"),
+        };
+        assert!(
+            matches!(
+                corrupt_error,
+                CallGraphBuildError::DependencySource(DependencySourceError::IndexPackage { .. })
+            ),
+            "{corrupt_error}"
+        );
+
+        std::fs::remove_file(&app_path).unwrap();
+        let missing_error = match workspace.get_or_build_call_graph() {
+            Err(error) => error,
+            Ok(_) => panic!("a cached graph must not conceal package deletion"),
+        };
+        assert!(
+            matches!(
+                missing_error,
+                CallGraphBuildError::DependencySource(DependencySourceError::InspectPackage { .. })
+            ),
+            "{missing_error}"
+        );
     }
 
     /// memory_stats reflects the *actual* live state of the workspace, not
@@ -839,7 +1381,7 @@ mod workspace_lifecycle_tests {
     fn memory_stats_reflects_indexed_file() {
         let workspace = make_workspace();
 
-        let empty = workspace.memory_stats();
+        let empty = workspace.memory_stats().unwrap();
         assert_eq!(empty.workspace_files, 0, "fresh workspace has no files");
         assert_eq!(empty.open_docs, 0, "fresh workspace has no open docs");
 
@@ -856,10 +1398,13 @@ mod workspace_lifecycle_tests {
     begin
     end;
 }"#;
-        workspace.documents.open(uri.clone(), text.to_string());
+        workspace
+            .documents
+            .open(uri.clone(), text.to_string())
+            .unwrap();
         on_document_change(&workspace, &uri, text);
 
-        let after = workspace.memory_stats();
+        let after = workspace.memory_stats().unwrap();
         assert_eq!(
             after.workspace_files, 1,
             "indexing one file must report exactly one workspace file"
@@ -880,8 +1425,8 @@ mod workspace_lifecycle_tests {
     #[test]
     fn memory_stats_counts_package_info_and_error_codes() {
         let workspace = make_workspace();
-        assert_eq!(workspace.memory_stats().package_count, 0);
-        assert_eq!(workspace.memory_stats().error_code_count, 0);
+        assert_eq!(workspace.memory_stats().unwrap().package_count, 0);
+        assert_eq!(workspace.memory_stats().unwrap().error_code_count, 0);
 
         workspace.package_info.write().unwrap().push(PackageInfo {
             name: "Base Application".to_string(),
@@ -893,7 +1438,7 @@ mod workspace_lifecycle_tests {
             .error_codes
             .insert("AL0118".to_string(), "Unknown identifier".to_string());
 
-        let stats = workspace.memory_stats();
+        let stats = workspace.memory_stats().unwrap();
         assert_eq!(stats.package_count, 1, "one package must be counted");
         assert_eq!(stats.error_code_count, 1, "one error code must be counted");
     }
@@ -901,7 +1446,7 @@ mod workspace_lifecycle_tests {
     #[test]
     fn memory_stats_exposes_symbol_index_bytes() {
         let workspace = make_workspace();
-        let empty = workspace.memory_stats().symbol_index_memory;
+        let empty = workspace.memory_stats().unwrap().symbol_index_memory;
         workspace.symbols.add_entries(&[al_symbols::SymbolEntry {
             kind: al_symbols::ObjectKind::Table,
             id: 50_100,
@@ -910,9 +1455,107 @@ mod workspace_lifecycle_tests {
             ..Default::default()
         }]);
 
-        let populated = workspace.memory_stats().symbol_index_memory;
+        let populated = workspace.memory_stats().unwrap().symbol_index_memory;
         assert!(populated.symbol_payload_bytes > 0);
         assert!(populated.tracked_bytes > empty.tracked_bytes);
+    }
+
+    #[test]
+    fn memory_stats_accounts_for_document_file_package_and_graph_caches() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("memory-components");
+        let path = dir.join("Measured.al");
+        let uri = Url::from_file_path(&path).unwrap();
+        let text = "codeunit 50101 Measured { procedure Run() begin end; }";
+        workspace
+            .documents
+            .open(uri.clone(), text.to_string())
+            .unwrap();
+        on_document_change(&workspace, &uri, text);
+        workspace.file_index.add_file(path, text.to_string());
+        workspace.package_info.write().unwrap().push(PackageInfo {
+            name: "Measured Package".to_string(),
+            publisher: "Test".to_string(),
+            version: "1.0.0.0".to_string(),
+            object_count: 1,
+        });
+        let _ = workspace.get_or_build_call_graph().unwrap();
+
+        let stats = workspace.memory_stats().unwrap();
+        assert!(stats.document_store_memory.document_text_bytes >= text.len());
+        assert!(stats.file_index_memory.source_text_bytes >= text.len());
+        assert!(stats.package_metadata_bytes > 0);
+        assert!(stats.insight_graph_memory.is_some());
+        assert!(stats.call_graph_memory.is_some());
+    }
+
+    #[test]
+    fn memory_stats_reports_poisoned_state_instead_of_zero() {
+        let workspace = Arc::new(make_workspace());
+        let poison_target = Arc::clone(&workspace);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target.builtins.write().unwrap();
+            panic!("poison builtins for test");
+        })
+        .join();
+
+        let error = workspace.memory_stats().unwrap_err();
+        assert_eq!(
+            error,
+            WorkspaceStateError::Poisoned {
+                component: "builtins"
+            }
+        );
+    }
+
+    #[test]
+    fn dependency_source_cache_poison_is_an_explicit_error() {
+        let workspace = Arc::new(make_workspace());
+        let poison_target = Arc::clone(&workspace);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target.dependency_source_index.write().unwrap();
+            panic!("poison dependency source cache for test");
+        })
+        .join();
+
+        let error = match workspace.get_or_build_dependency_source_index() {
+            Err(error) => error,
+            Ok(_) => panic!("poisoned dependency source state must not produce an index"),
+        };
+        assert!(matches!(
+            error,
+            DependencySourceError::State(WorkspaceStateError::Poisoned {
+                component: "dependency_source_index"
+            })
+        ));
+    }
+
+    #[test]
+    fn graph_query_rejects_poison_and_invalidation_repairs_the_cache() {
+        let workspace = Arc::new(make_workspace());
+        let poison_target = Arc::clone(&workspace);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_target.insight_graph.write().unwrap();
+            panic!("poison insight graph for test");
+        })
+        .join();
+
+        let error = match workspace.get_or_build_call_graph() {
+            Err(error) => error,
+            Ok(_) => panic!("poisoned graph state must not produce a successful graph"),
+        };
+        assert!(matches!(
+            error,
+            CallGraphBuildError::State(WorkspaceStateError::Poisoned {
+                component: "insight_graph"
+            })
+        ));
+
+        workspace.invalidate_insight_graph();
+        assert!(
+            workspace.get_or_build_call_graph().is_ok(),
+            "full invalidation overwrites poisoned cache state and clears the poison"
+        );
     }
 
     /// on_document_close with a real file URI invalidates the composed cache
@@ -932,7 +1575,10 @@ mod workspace_lifecycle_tests {
         field(1; "No."; Code[20]) { }
     }
 }"#;
-        workspace.documents.open(uri.clone(), text.to_string());
+        workspace
+            .documents
+            .open(uri.clone(), text.to_string())
+            .unwrap();
         on_document_change(&workspace, &uri, text);
 
         // Object info must exist so the file-URI branch (not the fallback)
@@ -943,9 +1589,9 @@ mod workspace_lifecycle_tests {
             "precondition: object_info populated"
         );
 
-        let before = workspace.get_or_build_insight_graph();
+        let before = workspace.get_or_build_insight_graph().unwrap();
         on_document_close(&workspace, &uri);
-        let after = workspace.get_or_build_insight_graph();
+        let after = workspace.get_or_build_insight_graph().unwrap();
         assert!(
             !std::sync::Arc::ptr_eq(&before, &after),
             "on_document_close must invalidate the cached insight graph"
@@ -968,25 +1614,25 @@ mod workspace_lifecycle_tests {
         // insight graph and stores it, so capture the insight Arc it leaves
         // cached (NOT an earlier symbol-only one).
         let insight_before = {
-            let (ig, cg) = workspace.get_or_build_call_graph();
+            let (ig, cg) = workspace.get_or_build_call_graph().unwrap();
             assert!(cg.is_some(), "call graph must be built");
             ig
         };
 
         workspace.invalidate_call_graph_only();
 
-        let insight_after = workspace.get_or_build_insight_graph();
+        let insight_after = workspace.get_or_build_insight_graph().unwrap();
         assert!(
             std::sync::Arc::ptr_eq(&insight_before, &insight_after),
             "invalidate_call_graph_only must NOT drop the insight graph"
         );
 
-        let (_ig2, cg2) = workspace.get_or_build_call_graph();
+        let (_ig2, cg2) = workspace.get_or_build_call_graph().unwrap();
         assert!(cg2.is_some(), "call graph must rebuild after invalidation");
     }
 
     /// initialize_core_workspace on a directory with no app.json takes the
-    /// project-discovery-failure branch: it still scans for .al files and
+    /// syntax-only branch: it still scans for .al files and
     /// returns a CoreInitResult with zero packages.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn initialize_core_workspace_no_project_scans_files() {
@@ -995,7 +1641,9 @@ mod workspace_lifecycle_tests {
         // A loose .al file but NO app.json anywhere up the tree.
         std::fs::write(dir.join("Loose.al"), r#"codeunit 50500 "Loose" { }"#).unwrap();
 
-        let result = initialize_core_workspace(&workspace, &dir).await;
+        let result = initialize_core_workspace(&workspace, &dir)
+            .await
+            .expect("syntax-only workspace must initialize");
 
         assert_eq!(result.package_count, 0, "no app.json => no packages loaded");
         assert_eq!(
@@ -1032,7 +1680,9 @@ mod workspace_lifecycle_tests {
         .unwrap();
         std::fs::write(dir.join("Obj.al"), r#"codeunit 50600 "Init Obj" { }"#).unwrap();
 
-        let result = initialize_core_workspace(&workspace, &dir).await;
+        let result = initialize_core_workspace(&workspace, &dir)
+            .await
+            .expect("valid project must initialize");
 
         assert_eq!(
             result.file_count, 1,
@@ -1073,7 +1723,9 @@ mod workspace_lifecycle_tests {
         workspace.config.write().await.app_local_folder_paths =
             vec![std::path::PathBuf::from("shared-symbols")];
 
-        let result = initialize_core_workspace(&workspace, &dir).await;
+        let result = initialize_core_workspace(&workspace, &dir)
+            .await
+            .expect("valid project and package must initialize");
 
         assert_eq!(result.package_count, 1);
         assert_eq!(workspace.symbols.get_by_name("Shared Local Table").len(), 1);
@@ -1084,5 +1736,20 @@ mod workspace_lifecycle_tests {
             .packages
             .iter()
             .any(|path| path.starts_with(&local)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn initialize_core_workspace_rejects_invalid_manifest_instead_of_scanning_partially() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("invalidproject");
+        std::fs::write(dir.join("app.json"), "{ not json").unwrap();
+        std::fs::write(dir.join("Obj.al"), r#"codeunit 50600 "Init Obj" { }"#).unwrap();
+
+        let error = initialize_core_workspace(&workspace, &dir)
+            .await
+            .expect_err("invalid app.json must fail initialization");
+        assert!(matches!(error, CoreInitError::Project(_)), "{error}");
+        assert!(workspace.file_index.is_empty());
+        assert!(workspace.project.read().await.is_none());
     }
 }

@@ -126,6 +126,13 @@ pub enum Value {
     /// class as [`Value::Integer`] for comparison (see `variant_index`), and
     /// arithmetic on it traps only at the i64 range.
     BigInteger(i64),
+    /// Inclusive range expression (`low .. high`). This is an expression
+    /// carrier used by CASE labels and `in` set members, not a user-declarable
+    /// AL variable type.
+    Range {
+        start: Box<Value>,
+        end: Box<Value>,
+    },
 }
 
 /// In-memory record handle backed by `mock::record::MockRecord`.
@@ -186,6 +193,7 @@ impl Ord for Value {
                 Blob(_) => 20,
                 ErrorInfo(_) => 21,
                 Codeunit { .. } => 22,
+                Range { .. } => 23,
             }
         }
         let mine = variant_index(self);
@@ -227,6 +235,16 @@ impl Ord for Value {
             (Blob(a), Blob(b)) => a.cmp(b),
             (ErrorInfo(a), ErrorInfo(b)) => a.message.cmp(&b.message),
             (Codeunit { object_name: a }, Codeunit { object_name: b }) => a.cmp(b),
+            (
+                Range {
+                    start: a_start,
+                    end: a_end,
+                },
+                Range {
+                    start: b_start,
+                    end: b_end,
+                },
+            ) => (a_start, a_end).cmp(&(b_start, b_end)),
             // Different variants handled by the index check above.
             _ => Ordering::Equal,
         }
@@ -347,6 +365,7 @@ impl Value {
             Value::Blob(_) => "Blob",
             Value::ErrorInfo(_) => "ErrorInfo",
             Value::Codeunit { .. } => "Codeunit",
+            Value::Range { .. } => "Range",
         }
     }
 }

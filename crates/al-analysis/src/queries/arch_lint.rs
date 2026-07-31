@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use al_workspace::Workspace;
+use regex::Regex;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,24 +13,18 @@ pub struct ArchViolation {
     pub rule_id: String,
     pub message: String,
     pub object: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub line: Option<u32>,
+    pub file: String,
+    /// One-based source line. Every rule is evaluated against a concrete
+    /// workspace source, so absence would be an internal integrity failure.
+    pub line: u32,
 }
 
 /// Kind of architectural rule.
 ///
-/// **NamingConvention pattern support is intentionally narrow.** The first
-/// entry in `values` is interpreted as a literal token chosen from the
-/// supported set below — *not* as a general regular expression. Adding the
-/// `regex` crate is out of scope for this query module; tighten the supported
-/// token set as concrete rules emerge.
-///
-/// Currently supported NamingConvention `values[0]` tokens:
-/// - `"[A-Z]"` — object name must start with an uppercase character.
-///
-/// Other values are rejected when `.alarch.json` is loaded.
+/// `NamingConvention` accepts one Rust-regex pattern in `values`. The legacy
+/// `"[A-Z]"` value retains its original “starts with uppercase” meaning.
+/// `ForbiddenPattern` values remain case-insensitive literals by default;
+/// setting `regex: true` makes them Rust regular expressions instead.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ArchRuleKind {
@@ -50,6 +45,11 @@ pub struct ArchRule {
     pub pattern: String,
     #[serde(default)]
     pub values: Vec<String>,
+    /// Interpret `ForbiddenPattern` values as regular expressions. Naming
+    /// conventions are always regular expressions; other rule kinds reject
+    /// this flag so an inapplicable option cannot be silently inert.
+    #[serde(default)]
+    pub regex: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -81,19 +81,41 @@ impl ArchConfig {
                 return Err(format!("{label} must have a non-empty description"));
             }
             match rule.kind {
-                ArchRuleKind::NamingConvention if rule.values.as_slice() != ["[A-Z]"] => {
-                    return Err(format!(
-                        "{label} uses an unsupported naming convention; values must be [\"[A-Z]\"]"
-                    ))
+                ArchRuleKind::NamingConvention => {
+                    let [pattern] = rule.values.as_slice() else {
+                        return Err(format!(
+                            "{label} must provide exactly one naming regular expression"
+                        ));
+                    };
+                    let effective = legacy_naming_regex(pattern);
+                    Regex::new(&effective).map_err(|error| {
+                        format!(
+                            "{label} has invalid naming regular expression '{pattern}': {error}"
+                        )
+                    })?;
                 }
                 ArchRuleKind::ForbiddenPattern
                     if rule.values.is_empty() || rule.values.iter().any(|v| v.is_empty()) =>
                 {
                     return Err(format!(
                         "{label} must provide at least one non-empty forbidden value"
-                    ))
+                    ));
+                }
+                ArchRuleKind::ForbiddenPattern if rule.regex => {
+                    for pattern in &rule.values {
+                        Regex::new(pattern).map_err(|error| {
+                            format!(
+                                "{label} has invalid forbidden regular expression '{pattern}': {error}"
+                            )
+                        })?;
+                    }
                 }
                 ArchRuleKind::RequiredProperty => {
+                    if rule.regex {
+                        return Err(format!(
+                            "{label} cannot set regex for a required-property rule"
+                        ));
+                    }
                     let [range] = rule.values.as_slice() else {
                         return Err(format!(
                             "{label} must provide exactly one inclusive ID range"
@@ -116,6 +138,11 @@ impl ArchConfig {
                     }
                 }
                 ArchRuleKind::MaxComplexity => {
+                    if rule.regex {
+                        return Err(format!(
+                            "{label} cannot set regex for a max-complexity rule"
+                        ));
+                    }
                     let [threshold] = rule.values.as_slice() else {
                         return Err(format!(
                             "{label} must provide exactly one positive complexity threshold"
@@ -137,20 +164,14 @@ impl ArchConfig {
     /// Opinionated, always-on AL architecture rules applied to every workspace
     /// in addition to any `.alarch.json` config (see [`arch_lint`]).
     ///
-    /// Each rule encodes a Business Central layering principle that the
-    /// substring-based [`ArchRuleKind::ForbiddenPattern`] model can express
-    /// *precisely* — the leading `.` and trailing `(` anchors keep the literal
-    /// match from firing on unrelated identifiers (e.g. a user procedure named
-    /// `Insert`). They are deliberately conservative: only data-layer (`table`)
-    /// and presentation-layer (`page`) coupling smells with low false-positive
-    /// risk are encoded, so the defaults stay quiet on idiomatic AL.
-    ///
-    /// Naming-relationship rules the gap doc lists as examples — e.g. "tables
-    /// must not reference `*Mgt` / `*Management` codeunits" or "area X must not
-    /// reach into area Y's internals" — need real pattern matching (word
-    /// boundaries / alternation) that a plain substring search cannot do
-    /// without noise. They are deferred until the linter grows regex support;
-    /// see the note on [`ArchRuleKind`].
+    /// Each rule encodes a Business Central layering principle that a literal
+    /// [`ArchRuleKind::ForbiddenPattern`] can express precisely — the leading
+    /// `.` and trailing `(` anchors keep the literal match from firing on
+    /// unrelated identifiers (e.g. a user procedure named `Insert`). They are
+    /// deliberately conservative: only data-layer (`table`) and
+    /// presentation-layer (`page`) coupling smells with low false-positive
+    /// risk are encoded, so the defaults stay quiet on idiomatic AL. Projects
+    /// can add regex-backed naming and dependency conventions explicitly.
     pub fn builtin_rules() -> Vec<ArchRule> {
         vec![
             // Data layer must not drive the UI: opening a page from a table
@@ -162,6 +183,7 @@ impl ArchConfig {
                 kind: ArchRuleKind::ForbiddenPattern,
                 pattern: "table".to_string(),
                 values: vec!["Page.Run".to_string(), "Page.RunModal".to_string()],
+                regex: false,
             },
             // Interactive dialogs raised from a table trigger surface during
             // background / API / upgrade execution where no user can answer
@@ -176,6 +198,7 @@ impl ArchConfig {
                     "Confirm(".to_string(),
                     "StrMenu(".to_string(),
                 ],
+                regex: false,
             },
             // An explicit Commit from a table trigger fragments the caller's
             // transaction and can leave partially-applied writes after a
@@ -186,6 +209,7 @@ impl ArchConfig {
                 kind: ArchRuleKind::ForbiddenPattern,
                 pattern: "table".to_string(),
                 values: vec!["Commit(".to_string()],
+                regex: false,
             },
             // Presentation layer must not own persistence: direct create /
             // delete / bulk writes belong in a codeunit so the logic is
@@ -201,33 +225,28 @@ impl ArchConfig {
                     ".ModifyAll(".to_string(),
                     ".DeleteAll(".to_string(),
                 ],
+                regex: false,
             },
         ]
     }
 }
 
-pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolation> {
+pub fn arch_lint(
+    workspace: &Workspace,
+    config: &ArchConfig,
+) -> Result<Vec<ArchViolation>, super::WorkspaceQueryError> {
+    let sources = crate::workspace_sources::snapshot(workspace)?;
     let mut violations = Vec::new();
 
-    for entry in workspace.file_index.files.iter() {
-        let path = entry.key().clone();
-        let file_path = path.to_string_lossy().to_string();
-        drop(entry);
-        let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) else {
-            continue;
-        };
-
-        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
-            continue;
-        };
-
-        let obj_kind_lower = obj_info.kind.to_lowercase();
+    for source in sources {
+        let file_path = source.path.to_string_lossy().to_string();
+        let obj_kind_lower = source.object.info.kind.to_lowercase();
         for rule in &config.rules {
             apply_rule(
                 &file_path,
-                &text,
-                &tree,
-                &obj_info,
+                &source.text,
+                &source.tree,
+                &source.object.info,
                 &obj_kind_lower,
                 rule,
                 &mut violations,
@@ -237,9 +256,9 @@ pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolatio
         for rule in &ArchConfig::builtin_rules() {
             apply_rule(
                 &file_path,
-                &text,
-                &tree,
-                &obj_info,
+                &source.text,
+                &source.tree,
+                &source.object.info,
                 &obj_kind_lower,
                 rule,
                 &mut violations,
@@ -247,7 +266,7 @@ pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolatio
         }
     }
 
-    violations
+    Ok(violations)
 }
 
 /// Whether a rule scoped by `rule_pattern` applies to an object of kind
@@ -260,6 +279,14 @@ pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolatio
 /// the exact keyword to scope a rule to a single object type.
 fn applies_to_kind(rule_pattern: &str, obj_kind_lower: &str) -> bool {
     rule_pattern.is_empty() || obj_kind_lower == rule_pattern.to_lowercase()
+}
+
+fn legacy_naming_regex(pattern: &str) -> String {
+    if pattern == "[A-Z]" {
+        "^[A-Z]".to_string()
+    } else {
+        pattern.to_string()
+    }
 }
 
 fn apply_rule(
@@ -278,38 +305,40 @@ fn apply_rule(
     match rule.kind {
         ArchRuleKind::NamingConvention => {
             if let Some(name_pattern) = rule.values.first() {
-                if name_pattern == "[A-Z]"
-                    && !obj_info
-                        .name
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_uppercase())
-                {
+                let effective = legacy_naming_regex(name_pattern);
+                let regex = Regex::new(&effective).expect("validated naming regular expression");
+                if !regex.is_match(&obj_info.name) {
                     violations.push(ArchViolation {
                         rule_id: rule.id.clone(),
                         message: format!(
-                            "{}: '{}' does not start with uppercase",
-                            rule.description, obj_info.name
+                            "{}: '{}' does not match naming pattern '{}'",
+                            rule.description, obj_info.name, name_pattern
                         ),
                         object: obj_info.name.clone(),
-                        file: Some(file_path.to_string()),
-                        line: Some(1),
+                        file: file_path.to_string(),
+                        line: 1,
                     });
                 }
             }
         }
         ArchRuleKind::ForbiddenPattern => {
             for forbidden in &rule.values {
-                let forbidden_lower = forbidden.to_lowercase();
                 // Find the first line that actually contains the pattern so
                 // editor jump-to-diagnostic lands somewhere useful, instead
                 // of always reporting line: Some(1).
+                let regex = rule
+                    .regex
+                    .then(|| Regex::new(forbidden).expect("validated forbidden regex"));
+                let forbidden_lower = (!rule.regex).then(|| forbidden.to_lowercase());
                 let line_no = text.lines().enumerate().find_map(|(idx, line)| {
-                    if line.to_lowercase().contains(&forbidden_lower) {
-                        Some((idx + 1) as u32)
-                    } else {
-                        None
-                    }
+                    let matches = regex.as_ref().map_or_else(
+                        || {
+                            line.to_lowercase()
+                                .contains(forbidden_lower.as_deref().unwrap_or_default())
+                        },
+                        |regex| regex.is_match(line),
+                    );
+                    matches.then_some((idx + 1) as u32)
                 });
                 if let Some(line) = line_no {
                     violations.push(ArchViolation {
@@ -319,8 +348,8 @@ fn apply_rule(
                             rule.description, obj_info.name, forbidden
                         ),
                         object: obj_info.name.clone(),
-                        file: Some(file_path.to_string()),
-                        line: Some(line),
+                        file: file_path.to_string(),
+                        line,
                     });
                 }
             }
@@ -342,8 +371,8 @@ fn apply_rule(
                                 rule.description, id, range
                             ),
                             object: obj_info.name.clone(),
-                            file: Some(file_path.to_string()),
-                            line: Some(1),
+                            file: file_path.to_string(),
+                            line: 1,
                         });
                     }
                 }
@@ -366,8 +395,8 @@ fn apply_rule(
                             rule.description, m.name, m.cyclomatic, max
                         ),
                         object: obj_info.name.clone(),
-                        file: Some(file_path.to_string()),
-                        line: Some(m.line),
+                        file: file_path.to_string(),
+                        line: m.line,
                     });
                 }
             }
@@ -410,10 +439,11 @@ mod tests {
                 kind: ArchRuleKind::ForbiddenPattern,
                 pattern: "codeunit".to_string(),
                 values: vec!["Sleep(1000)".to_string()],
+                regex: false,
             }],
         };
 
-        let v = arch_lint(&ws, &config);
+        let v = arch_lint(&ws, &config).unwrap();
         assert!(
             v.iter().any(|x| x.rule_id == "ARCH-TEST-001"),
             "Should detect Sleep: {:?}",
@@ -422,8 +452,38 @@ mod tests {
     }
 
     #[test]
+    fn forbidden_pattern_regex_supports_alternation_and_reports_source_line() {
+        let ws = workspace_with(vec![(
+            "/src/Layering.al",
+            r#"table 50100 "Layering"
+{
+    procedure BreakBoundary()
+    begin
+        Codeunit::"Customer Management".Run();
+    end;
+}"#,
+        )]);
+        let config = ArchConfig::from_json(
+            r#"{"rules":[{"id":"ARCH-REGEX","description":"No management dependency","kind":"forbiddenPattern","pattern":"table","values":["Codeunit::\"[^\"]*(Mgt|Management)\""],"regex":true}]}"#,
+        )
+        .expect("valid forbidden regex");
+        let violations = arch_lint(&ws, &config).unwrap();
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].rule_id, "ARCH-REGEX");
+        assert_eq!(violations[0].line, 5);
+
+        assert!(
+            ArchConfig::from_json(
+                r#"{"rules":[{"id":"BAD","description":"bad regex","kind":"forbiddenPattern","values":["("],"regex":true}]}"#
+            )
+            .is_err(),
+            "invalid forbidden regex must fail configuration loading"
+        );
+    }
+
+    #[test]
     fn empty_workspace_no_violations() {
-        let v = arch_lint(&Workspace::new(), &ArchConfig::default());
+        let v = arch_lint(&Workspace::new(), &ArchConfig::default()).unwrap();
         assert!(v.is_empty());
     }
 
@@ -435,30 +495,47 @@ mod tests {
     }
 
     #[test]
-    fn naming_convention_pattern_is_literal_not_regex() {
-        let ws = workspace_with(vec![(
-            "/src/lowercase.al",
-            "codeunit 50100 lowercase\n{\n}\n",
-        )]);
+    fn naming_convention_accepts_regex_and_preserves_legacy_uppercase_rule() {
+        let ws = workspace_with(vec![
+            ("/src/lowercase.al", "codeunit 50100 lowercase\n{\n}\n"),
+            (
+                "/src/Prefix.al",
+                "codeunit 50101 \"Sales Processor\"\n{\n}\n",
+            ),
+        ]);
 
-        assert!(
-            ArchConfig::from_json(r#"{"rules":[{"id":"N1","description":"uppercase","kind":"namingConvention","values":["^[A-Z][a-z]+"]}]}"#).is_err(),
-            "unsupported regex-style patterns must be rejected"
-        );
-
-        let supported = ArchConfig {
+        let legacy = ArchConfig {
             rules: vec![ArchRule {
                 id: "N2".to_string(),
                 description: "must start uppercase".to_string(),
                 kind: ArchRuleKind::NamingConvention,
                 pattern: String::new(),
                 values: vec!["[A-Z]".to_string()],
+                regex: false,
             }],
         };
-        let violations = arch_lint(&ws, &supported);
+        let violations = arch_lint(&ws, &legacy).unwrap();
         assert!(
-            !violations.is_empty(),
-            "Literal [A-Z] pattern must flag a lowercase object name"
+            violations
+                .iter()
+                .any(|violation| violation.object == "lowercase"),
+            "Legacy [A-Z] pattern must flag a lowercase object name"
+        );
+
+        let regex = ArchConfig::from_json(
+            r#"{"rules":[{"id":"N3","description":"Sales prefix","kind":"namingConvention","values":["^Sales (Processor|Service)$"]}]}"#,
+        )
+        .expect("valid naming regex");
+        let violations = arch_lint(&ws, &regex).unwrap();
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].object, "lowercase");
+
+        assert!(
+            ArchConfig::from_json(
+                r#"{"rules":[{"id":"N4","description":"invalid","kind":"namingConvention","values":["["]}]}"#
+            )
+            .is_err(),
+            "invalid naming regex must fail configuration loading"
         );
     }
 
@@ -483,10 +560,11 @@ mod tests {
                 kind: ArchRuleKind::ForbiddenPattern,
                 pattern: "code".to_string(),
                 values: vec!["Sleep(1000)".to_string()],
+                regex: false,
             }],
         };
         assert!(
-            arch_lint(&ws, &substring_pattern).is_empty(),
+            arch_lint(&ws, &substring_pattern).unwrap().is_empty(),
             "Substring pattern 'code' must NOT match object kind 'codeunit'"
         );
 
@@ -497,10 +575,12 @@ mod tests {
                 kind: ArchRuleKind::ForbiddenPattern,
                 pattern: "codeunit".to_string(),
                 values: vec!["Sleep(1000)".to_string()],
+                regex: false,
             }],
         };
         assert!(
             arch_lint(&ws, &exact_pattern)
+                .unwrap()
                 .iter()
                 .any(|v| v.rule_id == "ARCH-EXACT"),
             "Exact pattern 'codeunit' must match object kind 'codeunit'"
@@ -515,6 +595,7 @@ mod tests {
                 kind: ArchRuleKind::RequiredProperty,
                 pattern: String::new(),
                 values: vec![range.to_string()],
+                regex: false,
             }],
         }
     }
@@ -525,7 +606,7 @@ mod tests {
             "/src/InRange.al",
             "codeunit 50100 \"InRange\"\n{\n}\n",
         )]);
-        let v = arch_lint(&ws, &required_property_rule("50000-50100"));
+        let v = arch_lint(&ws, &required_property_rule("50000-50100")).unwrap();
         assert!(
             v.is_empty(),
             "ID 50100 inside 50000-50100 must not violate: {v:?}"
@@ -538,7 +619,7 @@ mod tests {
             "/src/OutOfRange.al",
             "codeunit 50500 \"OutOfRange\"\n{\n}\n",
         )]);
-        let v = arch_lint(&ws, &required_property_rule("50000-50100"));
+        let v = arch_lint(&ws, &required_property_rule("50000-50100")).unwrap();
         assert_eq!(v.len(), 1, "ID 50500 outside 50000-50100 must violate");
         assert_eq!(v[0].rule_id, "ARCH-RANGE");
         assert!(v[0].message.contains("50500"));
@@ -549,7 +630,7 @@ mod tests {
         // An object without a numeric ID (e.g. an interface) has obj_info.id
         // == None, so the rule cannot fire.
         let ws = workspace_with(vec![("/src/NoId.al", "interface \"IFoo\"\n{\n}\n")]);
-        let v = arch_lint(&ws, &required_property_rule("50000-50100"));
+        let v = arch_lint(&ws, &required_property_rule("50000-50100")).unwrap();
         assert!(v.is_empty(), "Object without ID must not violate: {v:?}");
     }
 
@@ -571,6 +652,7 @@ mod tests {
                 kind: ArchRuleKind::MaxComplexity,
                 pattern: String::new(),
                 values: vec![threshold.to_string()],
+                regex: false,
             }],
         }
     }
@@ -587,7 +669,7 @@ mod tests {
     end;
 }"#,
         )]);
-        let v = arch_lint(&ws, &max_complexity_rule("10"));
+        let v = arch_lint(&ws, &max_complexity_rule("10")).unwrap();
         assert!(
             v.is_empty(),
             "Straight-line procedure must not violate: {v:?}"
@@ -613,13 +695,13 @@ mod tests {
     end;
 }"#,
         )]);
-        let v = arch_lint(&ws, &max_complexity_rule("1"));
+        let v = arch_lint(&ws, &max_complexity_rule("1")).unwrap();
         assert!(
             v.iter().any(|x| x.rule_id == "ARCH-CX"),
             "Branching procedure must exceed threshold 1: {v:?}"
         );
         // The violation line must point at the procedure, not always line 1.
-        assert!(v[0].line.unwrap() >= 1);
+        assert!(v[0].line >= 1);
     }
 
     #[test]
@@ -676,7 +758,7 @@ mod tests {
     end;
 }"#,
         )]);
-        let v = arch_lint(&ws, &ArchConfig::default());
+        let v = arch_lint(&ws, &ArchConfig::default()).unwrap();
         assert!(
             v.iter().any(|x| x.rule_id == "BUILTIN-TABLE-NO-PAGE-RUN"),
             "Table running a page must be flagged: {v:?}"
@@ -696,7 +778,7 @@ mod tests {
     end;
 }"#,
         )]);
-        let v = arch_lint(&ws, &ArchConfig::default());
+        let v = arch_lint(&ws, &ArchConfig::default()).unwrap();
         assert!(
             v.iter().any(|x| x.rule_id == "BUILTIN-TABLE-NO-DIALOG"),
             "Table raising a Message dialog must be flagged: {v:?}"
@@ -716,7 +798,7 @@ mod tests {
     end;
 }"#,
         )]);
-        let v = arch_lint(&ws, &ArchConfig::default());
+        let v = arch_lint(&ws, &ArchConfig::default()).unwrap();
         assert!(
             v.iter().any(|x| x.rule_id == "BUILTIN-TABLE-NO-COMMIT"),
             "Table issuing an explicit Commit must be flagged: {v:?}"
@@ -746,7 +828,7 @@ mod tests {
     }
 }"#,
         )]);
-        let v = arch_lint(&ws, &ArchConfig::default());
+        let v = arch_lint(&ws, &ArchConfig::default()).unwrap();
         assert!(
             v.iter().any(|x| x.rule_id == "BUILTIN-PAGE-NO-DB-WRITE"),
             "Page performing a direct Insert must be flagged: {v:?}"
@@ -792,7 +874,7 @@ mod tests {
 }"#,
             ),
         ]);
-        let v = arch_lint(&ws, &ArchConfig::default());
+        let v = arch_lint(&ws, &ArchConfig::default()).unwrap();
         assert!(
             v.is_empty(),
             "Clean, well-layered objects must not trip built-in rules: {v:?}"

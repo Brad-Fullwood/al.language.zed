@@ -7,7 +7,7 @@ description = "Tree-sitter-based AL (Business Central) syntax layer: parsing, AS
 repository.workspace = true
 [dependencies]
 tree-sitter = "0.25"
-tree-sitter-al = { path = "../../tree-sitter-al", version = "0.1.0" }
+tree-sitter-al = { package = "tree-sitter-al-bc", path = "../../tree-sitter-al", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

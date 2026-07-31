@@ -211,6 +211,9 @@ Examples:
     },
     /// Clear the local symbol cache
     ClearCache,
+    /// Stop the existing daemon for the current project without starting one
+    #[command(name = "daemon-shutdown")]
+    DaemonShutdown,
     /// Get completions at a position
     Completions {
         file: String,
@@ -338,6 +341,9 @@ Examples:
         /// Built-in template name or a user template from the configured template directory
         #[arg(short, long, default_value = "default")]
         template: String,
+        /// AL runtime version; the matching minimum application version is derived automatically
+        #[arg(long, default_value = "17.0")]
+        runtime: String,
     },
     /// Generate .zed/debug.json with AL debug configurations
     InitDebug,
@@ -402,6 +408,9 @@ Examples:
         /// Object name to trace (e.g. "Sales-Post")
         #[arg(long)]
         object: Option<String>,
+        /// AL object kind used when the name exists in more than one kind
+        #[arg(long)]
+        kind: Option<String>,
         /// Procedure name within the object
         #[arg(long)]
         procedure: Option<String>,
@@ -450,7 +459,7 @@ Examples:
     AddTooltips {
         /// Source table name to copy tooltips from
         #[arg(long)]
-        from_table: Option<String>,
+        from_table: String,
         /// Preview changes without applying
         #[arg(long)]
         dry_run: bool,
@@ -487,7 +496,7 @@ Examples:
     /// Run mutation testing on workspace AL files
     #[command(name = "test-mutate")]
     TestMutate {
-        /// Restrict to these files (optional, default: all test files)
+        /// Restrict to these files (optional; default: files reachable from tests)
         #[arg(long, num_args = 0..)]
         files: Vec<String>,
         /// Enable parallel variant execution (advisory)

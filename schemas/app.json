@@ -76,7 +76,7 @@
         },
         "runtime": {
             "type": "string",
-            "description": "The AL runtime version the project targets (e.g. 13.0, 14.0, 15.0, 16.0). The project can be published to a server supporting the same or higher runtime. If omitted, the highest available major version is used.",
+            "description": "The AL runtime version the project targets (e.g. 14.0, 15.0, 16.0, 17.0). The project can be published to a server supporting the same or higher runtime. If omitted, the highest available major version is used.",
             "pattern": "^\\d+(\\.\\d+)?$"
         },
         "target": {
