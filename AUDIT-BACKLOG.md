@@ -60,8 +60,12 @@ matching TEST entry from the same section.
 
 - **AL case-insensitivity sweep** — case-sensitive comparisons on attribute names
   (`IntegrationEvent`/`EventSubscriber` in al-symbols, al-analysis, al-insight), `true/false`
-  highlighting, date/time literal suffixes (`0d` vs `0D`), and filter matching. AL is
-  case-insensitive everywhere; these should share one canonical comparison helper.
+  highlighting, and date/time literal suffixes (`0d` vs `0D`). AL identifiers, attributes,
+  keywords, and literal suffixes are case-insensitive and should share one canonical comparison
+  helper. Filter *matching* is deliberately excluded from this sweep: BC filter semantics are
+  case-sensitive for unprefixed Text patterns and case-insensitive only under the `@` prefix
+  (see the inverted-`@` finding in § Runtime & DAP), so it needs its own dedicated fix, not the
+  shared helper.
 - **One-bad-file-fails-everything** — workspace init (corrupt `.app`), whole-workspace analysis
   snapshots (one unparsable `.al`), daemon/MCP startup (one oversized file), and dependency
   source indexing all abort wholesale instead of degrading per-file with a diagnostic.
@@ -149,7 +153,7 @@ Note: `tree-sitter-al/` is a git submodule that is not checked out by default in
 - **[BUG]** `crates/al-analysis/src/queries/code_actions/events.rs:34-64` — the `in_page_field` backward scan matches any earlier `field(` line (the brace-depth counter is computed then discarded via `let _ = depth`), so a ToolTip inside a page *action* block also receives the delete-tooltip action.
 - **[BUG]** `crates/al-analysis/src/queries/code_actions/promoted.rs:220-225` — the generated `actionref({name}_Promoted; {name})` uses the unquoted action name, so `action("My Action")` yields invalid `actionref(My Action_Promoted; My Action)`; additionally each conversion inserts a fresh `area(Promoted)` block (duplicates on repeated use), `PromotedCategory` is mistranslated into `Caption = '<cat>'`, and `PromotedOnly`/`PromotedIsBig` lines are left orphaned.
 - **[BUG]** `crates/al-analysis/src/queries/code_actions/make_local.rs:84-94` — the already-local check is `line.contains("local ")`, so on an `internal procedure` the action is still offered and its edit produces `internal local procedure`, an invalid modifier combination; a comment containing "local " on the declaration line also falsely suppresses the action.
-- **[BUG]** `crates/al-analysis/src/queries/code_actions/namespace.rs:147-197` — `try_extract_quoted_identifier` pairs a *closing* quote to the left of the cursor with the next quote to the right, so a cursor between two quoted identifiers (`... "X"; B: Record "Y"`) extracts garbage like `; B: Record ` as the word; `source_action_add_using` also triggers on words inside comments and string literals.
+- **[BUG]** `crates/al-analysis/src/queries/code_actions/namespace.rs:147-197` — `try_extract_quoted_identifier` pairs a *closing* quote to the left of the cursor with the next quote to the right, so a cursor between two quoted identifiers (`... "X"; B: Record "Y"`) extracts garbage like `; B: Record` (plus a trailing space) as the word; `source_action_add_using` also triggers on words inside comments and string literals.
 - **[DOCS]** `Docs/features/code-actions.md:30` vs `crates/al-analysis/src/queries/code_actions/doc_region.rs:111-125` — docs say "Wrap in region" emits `#region Name … #endregion`; the implementation emits `//region MyRegion` / `//endregion`, which is not AL's `#region` directive and won't fold as a region.
 - **[DOCS]** `Docs/features/code-actions.md:25` vs `crates/al-analysis/src/queries/code_actions/events.rs:94-207` — "Convert event subscriber … migrates old-style declarations to the modern attribute syntax" overstates the implementation, which only converts the third attribute argument from `'EventName'` string to a bare identifier (and only when the whole attribute fits on one line within ±2 lines of the cursor).
 - **[DOCS]** `crates/al-analysis/src/queries/code_actions/promoted.rs:295,429` — `source_action_set_application_area` and `source_action_fix_report_layout` are shipped, user-visible actions that are absent from the code-actions.md action table.
