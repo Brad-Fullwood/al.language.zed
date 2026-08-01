@@ -41,10 +41,9 @@ pub fn sort_members(text: &str) -> Option<String> {
         return Some(text.to_string());
     }
 
-    // At most one object-level `var` block is legal; anything further is either
-    // malformed input or a mis-split. Keep the first and pass the rest through
-    // as `other` so no line can be dropped on the floor.
-    let mut var_block: Option<Vec<&str>> = None;
+    // `var` and `protected var` blocks all hoist to the top, keeping their
+    // relative source order. (An object may legally declare both.)
+    let mut var_blocks: Vec<Vec<&str>> = Vec::new();
     let mut triggers: Vec<(String, Vec<&str>)> = Vec::new();
     let mut procedures: Vec<(String, Vec<&str>)> = Vec::new();
     let mut other: Vec<Vec<&str>> = Vec::new();
@@ -57,35 +56,19 @@ pub fn sort_members(text: &str) -> Option<String> {
             .unwrap_or("");
         let trimmed = first.trim().to_lowercase();
 
-        if trimmed == "var" || trimmed.starts_with("var ") || trimmed.starts_with("var\t") {
-            if var_block.is_none() {
-                var_block = Some(member);
-            } else {
-                other.push(member);
-            }
+        if is_var_start(&trimmed) {
+            var_blocks.push(member);
         } else if trimmed.starts_with("trigger ") {
             let name = extract_member_name(first, "trigger");
             triggers.push((name, member));
-        } else if trimmed.starts_with("procedure ")
-            || trimmed.starts_with("local procedure ")
-            || trimmed.starts_with("internal procedure ")
-            || trimmed.starts_with("protected procedure ")
-            || trimmed.starts_with("protected local procedure ")
-        {
+        } else if is_procedure_start(&trimmed) {
             let name = extract_member_name_procedure(first);
             procedures.push((name, member));
         } else if trimmed.starts_with("[") {
             // Attribute annotation — peek ahead: treat whole block as procedure
             let name = member
                 .iter()
-                .find(|l| {
-                    let t = l.trim().to_lowercase();
-                    t.starts_with("procedure ")
-                        || t.starts_with("local procedure ")
-                        || t.starts_with("internal procedure ")
-                        || t.starts_with("protected procedure ")
-                        || t.starts_with("protected local procedure ")
-                })
+                .find(|l| is_procedure_start(&l.trim().to_lowercase()))
                 .map(|l| extract_member_name_procedure(l))
                 .unwrap_or_default();
             procedures.push((name, member));
@@ -99,7 +82,7 @@ pub fn sort_members(text: &str) -> Option<String> {
 
     let mut result_lines: Vec<&str> = header.to_vec();
 
-    if let Some(vb) = var_block {
+    for vb in var_blocks {
         for l in vb {
             result_lines.push(l);
         }
@@ -217,19 +200,39 @@ fn split_into_members<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
     let mut current_has_body_member = false;
     // … and has that member's body opened yet?
     let mut seen_begin = false;
+    // The block being accumulated is (so far) only attribute lines; a
+    // procedure/trigger header that follows continues the same member instead
+    // of starting a new one — otherwise sorting detaches the attribute from
+    // the member it annotates.
+    let mut attr_pending = false;
+    // Net unclosed `[` of a multi-line attribute; while > 0, lines are
+    // attribute continuation and never member starts.
+    let mut attr_bracket_depth = 0i32;
 
     for &line in lines {
         let (code, still_in_comment) = crate::formatting::strip_comments(line, in_block_comment);
         let was_in_comment = in_block_comment;
         in_block_comment = still_in_comment;
 
-        let trimmed = code.trim().to_lowercase();
-        let is_var_keyword =
-            trimmed == "var" || trimmed.starts_with("var ") || trimmed.starts_with("var\t");
-        let is_local_var = is_var_keyword && current_has_body_member && !seen_begin;
+        if attr_bracket_depth > 0 {
+            // Interior/closing line of a multi-line `[…]` attribute.
+            attr_bracket_depth += crate::count_net_delimiters(&code, '[', ']');
+            depth += crate::count_net_delimiters(&code, '{', '}');
+            current.push(line);
+            continue;
+        }
 
-        let is_member_start =
-            depth == 0 && !was_in_comment && is_member_keyword(&trimmed) && !is_local_var;
+        let trimmed = code.trim().to_lowercase();
+        let is_var_keyword = is_var_start(&trimmed);
+        let is_local_var = is_plain_var_start(&trimmed) && current_has_body_member && !seen_begin;
+
+        let at_member_level = depth == 0 && !was_in_comment;
+        let is_attr_start = at_member_level && trimmed.starts_with('[');
+        let is_keyword_start = at_member_level && is_member_keyword(&trimmed) && !is_local_var;
+
+        // A pending attribute binds to the next keyword line, and stacked
+        // attributes accumulate — neither may start a fresh member.
+        let is_member_start = !attr_pending && (is_attr_start || is_keyword_start);
 
         if is_member_start && !current.is_empty() {
             members.push(current);
@@ -237,8 +240,17 @@ fn split_into_members<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
             current_has_body_member = false;
             seen_begin = false;
         }
-        if is_member_start && !is_var_keyword {
-            current_has_body_member = true;
+        if is_attr_start {
+            attr_pending = true;
+            attr_bracket_depth += crate::count_net_delimiters(&code, '[', ']');
+        } else if is_keyword_start {
+            attr_pending = false;
+            if !is_var_keyword {
+                current_has_body_member = true;
+            }
+        } else if !trimmed.is_empty() {
+            // Any other code line breaks the attribute→member linkage.
+            attr_pending = false;
         }
         // Match `begin` as a word anywhere in the code, not just at the end of
         // the line: a single-line body (`procedure A() begin end;`) opens and
@@ -264,17 +276,54 @@ fn split_into_members<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
     members
 }
 
-fn is_member_keyword(trimmed_lower: &str) -> bool {
+/// True for a plain `var` section header (never `protected var`).
+fn is_plain_var_start(trimmed_lower: &str) -> bool {
     trimmed_lower == "var"
         || trimmed_lower.starts_with("var ")
         || trimmed_lower.starts_with("var\t")
+}
+
+/// True for any object-level var section header: `var` or `protected var`.
+fn is_var_start(trimmed_lower: &str) -> bool {
+    is_plain_var_start(trimmed_lower)
+        || trimmed_lower == "protected var"
+        || trimmed_lower.starts_with("protected var ")
+        || trimmed_lower.starts_with("protected var\t")
+}
+
+/// Return the text after the `procedure ` keyword of a procedure header,
+/// accepting any combination of the `local`/`internal`/`protected` modifiers
+/// (e.g. `internal local procedure Foo()`), or `None` if the line is not a
+/// procedure header. Input must be trimmed and lower-cased.
+fn procedure_name_part(trimmed_lower: &str) -> Option<&str> {
+    let mut rest = trimmed_lower;
+    loop {
+        if let Some(after) = rest.strip_prefix("procedure ") {
+            return Some(after.trim_start());
+        }
+        let mut advanced = false;
+        for modifier in ["local ", "internal ", "protected "] {
+            if let Some(after) = rest.strip_prefix(modifier) {
+                rest = after.trim_start();
+                advanced = true;
+                break;
+            }
+        }
+        if !advanced {
+            return None;
+        }
+    }
+}
+
+/// True when the (trimmed, lower-cased) line is a procedure header.
+fn is_procedure_start(trimmed_lower: &str) -> bool {
+    procedure_name_part(trimmed_lower).is_some()
+}
+
+fn is_member_keyword(trimmed_lower: &str) -> bool {
+    is_var_start(trimmed_lower)
         || trimmed_lower.starts_with("trigger ")
-        || trimmed_lower.starts_with("procedure ")
-        || trimmed_lower.starts_with("local procedure ")
-        || trimmed_lower.starts_with("internal procedure ")
-        || trimmed_lower.starts_with("protected procedure ")
-        || trimmed_lower.starts_with("protected local procedure ")
-        || (trimmed_lower.starts_with('[') && trimmed_lower.ends_with(']'))
+        || is_procedure_start(trimmed_lower)
 }
 
 fn extract_member_name(line: &str, keyword: &str) -> String {
@@ -292,20 +341,7 @@ fn extract_member_name(line: &str, keyword: &str) -> String {
 
 fn extract_member_name_procedure(line: &str) -> String {
     let lower = line.trim().to_lowercase();
-    // Strip the longest matching prefix first (most-specific to least-specific).
-    let after = if let Some(rest) = lower.strip_prefix("protected local procedure ") {
-        rest.trim()
-    } else if let Some(rest) = lower.strip_prefix("protected procedure ") {
-        rest.trim()
-    } else if let Some(rest) = lower.strip_prefix("internal procedure ") {
-        rest.trim()
-    } else if let Some(rest) = lower.strip_prefix("local procedure ") {
-        rest.trim()
-    } else if let Some(rest) = lower.strip_prefix("procedure ") {
-        rest.trim()
-    } else {
-        lower.trim()
-    };
+    let after = procedure_name_part(&lower).unwrap_or(&lower);
     after
         .split(|c: char| c == '(' || c.is_whitespace())
         .next()
@@ -488,6 +524,122 @@ codeunit 50100 T
             let twice = sort_members(&out).expect("second pass must still sort");
             assert_eq!(out, twice, "sorting is not idempotent for {input:?}");
         }
+    }
+
+    #[test]
+    fn multi_line_attribute_stays_attached_to_its_procedure() {
+        // A multi-line [EventSubscriber(...)] used to be split from its
+        // procedure, leaving the attribute orphaned after sorting (which
+        // silently unbinds the subscriber).
+        let input = "\
+codeunit 50100 T
+{
+    procedure Zebra()
+    begin
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::Customer, 'OnAfterInsertEvent',
+        '', false, false)]
+    local procedure Alpha()
+    begin
+    end;
+}
+";
+        let out = sort_members(input).expect("should sort");
+        assert_eq!(
+            content_multiset(input),
+            content_multiset(&out),
+            "sorting dropped content:\n{out}"
+        );
+        let attr = out.find("[EventSubscriber").expect("attribute present");
+        let attr_close = out.find("false, false)]").expect("attribute close present");
+        let alpha = out.find("local procedure Alpha").expect("Alpha present");
+        let zebra = out.find("procedure Zebra").expect("Zebra present");
+        assert!(
+            attr < attr_close && attr_close < alpha,
+            "attribute must immediately precede Alpha:\n{out}"
+        );
+        assert!(alpha < zebra, "Alpha must sort before Zebra:\n{out}");
+        assert!(
+            !out[alpha..zebra].contains('['),
+            "no attribute fragment may sit between Alpha's header and Zebra:\n{out}"
+        );
+    }
+
+    #[test]
+    fn single_line_attribute_stays_attached_to_its_procedure() {
+        let input = "\
+codeunit 50100 T
+{
+    procedure Zebra()
+    begin
+    end;
+
+    [IntegrationEvent(false, false)]
+    procedure Alpha()
+    begin
+    end;
+}
+";
+        let out = sort_members(input).expect("should sort");
+        assert_eq!(content_multiset(input), content_multiset(&out), "{out}");
+        let attr = out.find("[IntegrationEvent").expect("attribute present");
+        let alpha = out.find("procedure Alpha").expect("Alpha present");
+        let zebra = out.find("procedure Zebra").expect("Zebra present");
+        assert!(
+            attr < alpha && alpha < zebra,
+            "attribute must precede Alpha, which sorts before Zebra:\n{out}"
+        );
+    }
+
+    #[test]
+    fn protected_var_block_hoists_with_var_blocks() {
+        let input = "\
+codeunit 50100 T
+{
+    procedure Zebra()
+    begin
+    end;
+
+    protected var
+        SharedState: Integer;
+}
+";
+        let out = sort_members(input).expect("should sort");
+        assert_eq!(content_multiset(input), content_multiset(&out), "{out}");
+        let pv = out.find("protected var").expect("protected var present");
+        let zebra = out.find("procedure Zebra").expect("Zebra present");
+        assert!(
+            pv < zebra,
+            "protected var must hoist above procedures:\n{out}"
+        );
+        assert!(
+            out[pv..zebra].contains("SharedState: Integer;"),
+            "protected var must keep its declarations:\n{out}"
+        );
+    }
+
+    #[test]
+    fn internal_local_procedure_is_a_member_start() {
+        let input = "\
+codeunit 50100 T
+{
+    internal local procedure Zebra()
+    begin
+    end;
+
+    procedure Alpha()
+    begin
+    end;
+}
+";
+        let out = sort_members(input).expect("should sort");
+        assert_eq!(content_multiset(input), content_multiset(&out), "{out}");
+        let alpha = out.find("procedure Alpha").expect("Alpha present");
+        let zebra = out
+            .find("internal local procedure Zebra")
+            .expect("Zebra present");
+        assert!(alpha < zebra, "Alpha must sort before Zebra:\n{out}");
     }
 
     #[test]

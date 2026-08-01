@@ -93,12 +93,27 @@ pub fn utf16_col_to_byte_offset(line: &str, utf16_col: usize) -> usize {
 /// This is the canonical quote-stripping helper used across the crate.
 /// Use `node_text_or` when a fallback string is needed instead of `None`.
 pub fn node_text_clean(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
-    let text = node.utf8_text(source).ok()?;
-    let clean = text.trim_matches('"').trim();
+    clean_identifier_text(node.utf8_text(source).ok()?)
+}
+
+/// Clean raw identifier text: strip exactly one surrounding `"` pair (when
+/// present) and unescape doubled quotes inside it, returning `None` on empty.
+///
+/// AL quoted identifiers escape an embedded `"` by doubling it, so
+/// `"My ""X"" Field"` names the identifier `My "X" Field`. Stripping quote
+/// *runs* (`trim_matches('"')`) would both leave the doubled quotes in place
+/// and over-strip a name that legitimately ends in `"`.
+pub fn clean_identifier_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let clean = if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        trimmed[1..trimmed.len() - 1].replace("\"\"", "\"")
+    } else {
+        trimmed.to_string()
+    };
     if clean.is_empty() {
         None
     } else {
-        Some(clean.to_string())
+        Some(clean)
     }
 }
 
@@ -237,6 +252,41 @@ pub fn ts_range_to_syntax(range: &tree_sitter::Range, source: &[u8]) -> types::S
             line: range.end_point.row as u32,
             character: byte_col_to_utf16_col(end_line, range.end_point.column),
         },
+    }
+}
+
+#[cfg(test)]
+mod clean_identifier_tests {
+    use super::clean_identifier_text;
+
+    #[test]
+    fn strips_one_quote_pair_and_unescapes_doubled_quotes() {
+        assert_eq!(
+            clean_identifier_text(r#""My ""X"" Field""#),
+            Some(r#"My "X" Field"#.to_string())
+        );
+        assert_eq!(
+            clean_identifier_text(r#""My Table""#),
+            Some("My Table".to_string())
+        );
+        assert_eq!(clean_identifier_text("Plain"), Some("Plain".to_string()));
+    }
+
+    #[test]
+    fn does_not_over_strip_names_ending_in_a_quote() {
+        // `"Name"""` is the identifier `Name"` — trim_matches('"') used to
+        // strip every trailing quote and yield `Name`.
+        assert_eq!(
+            clean_identifier_text(r#""Name""""#),
+            Some(r#"Name""#.to_string())
+        );
+    }
+
+    #[test]
+    fn empty_results_are_none() {
+        assert_eq!(clean_identifier_text(""), None);
+        assert_eq!(clean_identifier_text(r#""""#), None);
+        assert_eq!(clean_identifier_text("   "), None);
     }
 }
 

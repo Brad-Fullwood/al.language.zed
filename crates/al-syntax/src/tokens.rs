@@ -312,15 +312,12 @@ fn classify_node(
 
         "comment" => Some(token_types::COMMENT),
 
-        // Directives (preprocessor): we DON'T classify the whole directive
-        // node as a single PREPROCESSOR_KEYWORD — that would prune children
-        // and lose highlighting on the inner expression (e.g. `#if EXPR`
-        // where EXPR contains an identifier that should still highlight as
-        // an identifier). Instead return None so the DFS recurses into the
-        // directive's children; the directive's leading `#` token and any
-        // `kw_*` child (`kw_if`, `kw_endif`, etc.) end up classified
-        // individually via the existing kw_* path.
-        "directive" => None,
+        // Directives (preprocessor): `directive` is an external *leaf* token
+        // covering the whole `#if/#endif/#pragma/#region/…` line — it has no
+        // children for the DFS to recurse into, so returning `None` here used
+        // to emit zero tokens for preprocessor lines. Classify the whole
+        // directive as a preprocessor keyword.
+        "directive" => Some(token_types::PREPROCESSOR_KEYWORD),
         // `inactive_code` is left as a single EXCLUDED_CODE span by design
         // (the whole block is dimmed by clients; recursing into it would
         // emit conflicting tokens on top of the EXCLUDED_CODE block).
@@ -443,13 +440,6 @@ fn classify_name_like_node(
                 None
             }
         }
-        "field_declaration" => {
-            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
-                Some(token_types::TABLE_FIELD)
-            } else {
-                None
-            }
-        }
         // key_declaration covers: table keys, query/report dataitems, query/report columns,
         // xmlport table elements. Discriminate by the keyword child.
         "key_declaration" => classify_key_declaration_name(node, parent, source),
@@ -474,8 +464,10 @@ fn classify_name_like_node(
             None
         }
         // Identifiers inside parenthesized blocks — classify by preceding sibling keyword.
-        // Covers: pageView names, reportLayout names, xmlport element names, queryFilter names.
-        "parenthesized_block" => classify_parenthesized_block_name(node, parent, source),
+        // Covers: pageView names, reportLayout names, xmlport element names, queryFilter
+        // names, and table field names (`field(1; Name; Type)` in a table).
+        "parenthesized_block" => classify_parenthesized_block_name(node, parent, source)
+            .or_else(|| classify_table_field_name(node, parent, source)),
         "object_declaration" => {
             if is_object_name(node, parent) {
                 Some(token_types::TYPE)
@@ -573,9 +565,14 @@ fn is_builtin_record_member(
         return false;
     }
 
+    // Tree-sitter columns are byte offsets, but the type resolver expects
+    // UTF-16 code units (LSP convention). Convert before resolving so lines
+    // containing non-ASCII text don't resolve at the wrong point.
+    let row = member.start_position().row;
+    let line = super::get_source_line(source, row);
     let position = super::types::SyntaxPosition {
-        line: member.start_position().row as u32,
-        character: member.start_position().column as u32,
+        line: row as u32,
+        character: super::byte_col_to_utf16_col(line, member.start_position().column),
     };
     type_resolver
         .resolve_type(receiver, position)
@@ -667,6 +664,52 @@ fn classify_key_declaration_name(node: Node, declaration: Node, source: &[u8]) -
         "tableelement" => Some(token_types::XMLPORT_TABLE_ELEMENT),
         _ => None,
     }
+}
+
+/// Classify the name of a table field declaration.
+///
+/// `field(1; "No."; Code[20])` inside a table's `fields` section parses as an
+/// `object_section` (keyword `field`) whose `parenthesized_block` holds
+/// `(id; Name; Type)`. The field name is the first name-like child after the
+/// first semicolon. Only table/tableextension objects carry the dedicated
+/// `TABLE_FIELD` token; page `field(Name; Expr)` controls are left to the
+/// generic classification.
+fn classify_table_field_name(node: Node, paren_block: Node, source: &[u8]) -> Option<u32> {
+    let section = paren_block
+        .parent()
+        .filter(|p| p.kind() == "object_section")?;
+    let keyword = section.child_by_field_name("keyword")?;
+    if !keyword
+        .utf8_text(source)
+        .ok()?
+        .trim()
+        .eq_ignore_ascii_case("field")
+    {
+        return None;
+    }
+
+    let object = super::find_ancestor(node, |n| n.kind() == "object_declaration")?;
+    let object_kind = object.child_by_field_name("kind")?.kind();
+    if object_kind != "kw_table" && object_kind != "kw_tableextension" {
+        return None;
+    }
+
+    let mut past_semicolon = false;
+    let name_node = (0..paren_block.child_count())
+        .filter_map(|i| paren_block.child(i))
+        .find(|child| {
+            if !past_semicolon {
+                if child.kind() == "semicolon" {
+                    past_semicolon = true;
+                }
+                return false;
+            }
+            matches!(
+                child.kind(),
+                "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
+            )
+        })?;
+    (name_node.id() == node.id()).then_some(token_types::TABLE_FIELD)
 }
 
 /// Classify identifiers that appear as the first child inside a `parenthesized_block`.
@@ -1342,6 +1385,114 @@ codeunit 50100 Test
             token_types::FUNCTION
         );
         assert_eq!(token_type_on_line(13, "Insert"), token_types::FUNCTION);
+    }
+
+    #[test]
+    fn test_table_field_names_get_table_field_token() {
+        let src = r#"table 50100 "My Table"
+{
+    fields
+    {
+        field(1; "No."; Code[20])
+        {
+            DataClassification = CustomerContent;
+        }
+        field(2; Description; Text[100]) { }
+    }
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_token_type_for_text(src, &tokens, r#""No.""#, token_types::TABLE_FIELD);
+        assert_token_type_for_text(src, &tokens, "Description", token_types::TABLE_FIELD);
+    }
+
+    #[test]
+    fn test_page_field_names_do_not_get_table_field_token() {
+        let src = r#"page 50100 "Item List"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(Description; Rec.Description)
+            {
+                ApplicationArea = All;
+            }
+        }
+    }
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        let has_table_field = decoded_tokens(&tokens)
+            .into_iter()
+            .any(|(_, _, _, token_type)| token_type == token_types::TABLE_FIELD);
+        assert!(
+            !has_table_field,
+            "page field controls must not receive TABLE_FIELD tokens"
+        );
+    }
+
+    #[test]
+    fn test_preprocessor_directives_emit_preprocessor_keyword_tokens() {
+        // The scanner's `directive` leaf starts after the `#pragma ` prefix
+        // (the prefix itself is a hidden token), so the emitted token covers
+        // the directive body.
+        let src = "#pragma warning disable AA0001\ncodeunit 50100 Test\n{\n}";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "warning disable AA0001",
+            token_types::PREPROCESSOR_KEYWORD,
+        );
+
+        let src = "#if MYFLAG\ncodeunit 50100 Test\n{\n}\n#endif";
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        let preprocessor_count = tokens
+            .iter()
+            .filter(|t| t.token_type == token_types::PREPROCESSOR_KEYWORD)
+            .count();
+        assert_eq!(
+            preprocessor_count, 2,
+            "both #if and #endif lines must emit PREPROCESSOR_KEYWORD tokens"
+        );
+    }
+
+    #[test]
+    fn record_builtin_classification_survives_non_ascii_on_the_same_line() {
+        // The member's tree-sitter column is a BYTE offset; the type resolver
+        // expects UTF-16. Without conversion, the 40 two-byte `é`s below shift
+        // the resolution point 40 bytes to the right — out of procedure A and
+        // into procedure B, where `Customer` is not declared — silently
+        // downgrading FindFirst from BUILTIN_FUNCTION to FUNCTION.
+        let src = "codeunit 50100 Test\n{\n    procedure A() var Customer: Record Customer; begin Message('éééééééééééééééééééééééééééééééééééééééé'); Customer.FindFirst(); end; procedure B() begin Foo(); Bar(); Baz(); Quux(); end;\n}";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        let line_no = 2u32;
+        let line_text = src.lines().nth(line_no as usize).unwrap();
+        let find_first = decoded_tokens(&tokens)
+            .into_iter()
+            .find_map(|(line, col, len, token_type)| {
+                if line != line_no {
+                    return None;
+                }
+                let start = crate::utf16_col_to_byte_offset(line_text, col as usize);
+                let end = crate::utf16_col_to_byte_offset(line_text, (col + len) as usize);
+                (line_text.get(start..end) == Some("FindFirst")).then_some(token_type)
+            })
+            .expect("FindFirst token missing");
+        assert_eq!(
+            find_first,
+            token_types::BUILTIN_FUNCTION,
+            "FindFirst on a Record receiver must stay a builtin despite non-ASCII text earlier on the line"
+        );
     }
 
     #[test]

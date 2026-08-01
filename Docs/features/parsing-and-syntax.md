@@ -21,7 +21,7 @@ symbols, folding, formatting, and analysis all consume. It is transport-agnostic
 | Member sort | `sort.rs` | canonical member ordering |
 | Complexity | `complexity.rs` | cyclomatic + cognitive complexity per procedure |
 | Formatting | `formatting.rs` | indentation/keyword-casing formatter |
-| Native lint | `lint.rs` | rule registry plus file-local `AL-NL001`/`002`/`005`–`007` diagnostics; workspace and graph rules are composed by `al-analysis` |
+| Native lint | `lint.rs` | rule registry plus file-local `AL-NL001`/`002`/`005`–`007`/`010` diagnostics; workspace and graph rules are composed by `al-analysis` |
 | Language data | `language_data.rs` | data-driven keyword/builtin/type tables |
 | Traversal & encoding | `traversal.rs`, `mod.rs` | tree walking + UTF-16 ⇄ byte conversion |
 
@@ -138,7 +138,8 @@ and the analyzer disagree about what a keyword is" drift.
 
 ## Limitations
 
-- ✅ **Native lint is active.** File-local `AL-NL001`/`AL-NL002` and `AL-NL005`–`AL-NL007`,
+- ✅ **Native lint is active.** File-local `AL-NL001`/`AL-NL002`, `AL-NL005`–`AL-NL007`, and
+  unused-local `AL-NL010`,
   project-semantic `AL-NC001`–`AL-NC006`, resolved transaction-stack `AL-NL003`/`AL-NL004`,
   obsolete-use `AL-NL008`, and architecture-layer `AL-NL009` diagnostics share the editor,
   CLI/daemon, and native build surfaces. `al.enableNativeLint` and `al.nativeLintRules` are

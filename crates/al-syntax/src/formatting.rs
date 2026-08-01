@@ -105,6 +105,15 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     let mut indent_level: i32 = 0;
     let mut prev_was_empty = false;
 
+    // Runs of blank lines are collapsed only when a blank-line policy is
+    // active. `BlankLinesBetweenProcedures::Preserve` (the default) is
+    // documented as a strict no-op, so it must not rewrite files that
+    // intentionally use double blank lines.
+    let collapse_blank_runs = !matches!(
+        options.blank_lines_between_procedures,
+        BlankLinesBetweenProcedures::Preserve
+    );
+
     // Track how many single-statement indents are pending (if...then, for...do, while...do)
     let mut single_stmt_depth: i32 = 0;
 
@@ -156,7 +165,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         };
 
         if trimmed.is_empty() {
-            if prev_was_empty {
+            if collapse_blank_runs && prev_was_empty {
                 continue;
             }
             prev_was_empty = true;
@@ -470,7 +479,12 @@ pub fn format_range(
         return None;
     }
 
-    let formatted_region = extract_formatted_region(&orig_lines, &fmt_lines, start, end);
+    let collapse_blank_runs = !matches!(
+        options.blank_lines_between_procedures,
+        BlankLinesBetweenProcedures::Preserve
+    );
+    let formatted_region =
+        extract_formatted_region(&orig_lines, &fmt_lines, start, end, collapse_blank_runs);
     let original_region: Vec<&str> = orig_lines[start..=end].to_vec();
 
     if formatted_region == original_region {
@@ -504,8 +518,11 @@ pub fn format_range(
 
 /// Extract lines from the formatted output corresponding to orig lines [start..=end].
 ///
-/// The formatter collapses consecutive blank lines (two → one). We walk orig and fmt
-/// in lockstep, skipping orig-only collapsed blanks without advancing the fmt cursor.
+/// When a blank-line policy is active (`collapse_blanks`), the formatter
+/// collapses consecutive blank lines (two → one). We walk orig and fmt in
+/// lockstep, skipping orig-only collapsed blanks without advancing the fmt
+/// cursor. Under the default `Preserve` policy blank runs survive verbatim and
+/// the two walks advance together.
 ///
 /// Collapsed double-blanks are the only supported line-count difference.
 fn extract_formatted_region<'a>(
@@ -513,6 +530,7 @@ fn extract_formatted_region<'a>(
     fmt_lines: &[&'a str],
     start: usize,
     end: usize,
+    collapse_blanks: bool,
 ) -> Vec<&'a str> {
     let mut orig_idx = 0usize;
     let mut fmt_idx = 0usize;
@@ -523,7 +541,7 @@ fn extract_formatted_region<'a>(
     while orig_idx <= end && fmt_idx < fmt_lines.len() {
         let orig_is_blank = orig_lines[orig_idx].trim().is_empty();
 
-        if orig_is_blank && prev_orig_blank {
+        if collapse_blanks && orig_is_blank && prev_orig_blank {
             orig_idx += 1;
             continue;
         }
@@ -1331,10 +1349,26 @@ end;
     }
 
     #[test]
-    fn test_double_blank_lines_collapsed() {
+    fn test_double_blank_lines_collapsed_when_blank_policy_active() {
         let input = "codeunit 50100 Test\n{\n\n\nprocedure A()\nbegin\nend;\n}";
-        let result = fmt(input);
+        let opts = FormatOptions {
+            blank_lines_between_procedures: BlankLinesBetweenProcedures::One,
+            ..Default::default()
+        };
+        let result = format_al(input, &opts);
         assert!(!result.contains("\n\n\n"));
+    }
+
+    #[test]
+    fn test_double_blank_lines_preserved_by_default() {
+        // `BlankLinesBetweenProcedures::Preserve` (the default) is documented
+        // as a strict no-op: intentional double blank lines must survive.
+        let input = "codeunit 50100 Test\n{\n    procedure A()\n    begin\n    end;\n\n\n    procedure B()\n    begin\n    end;\n}\n";
+        let result = fmt(input);
+        assert_eq!(
+            result, input,
+            "default options must not collapse blank runs"
+        );
     }
 
     #[test]

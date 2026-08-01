@@ -72,9 +72,22 @@ pub fn object_kind_to_al_type(kind: &str) -> String {
     kind.to_string()
 }
 
+/// Cache key for a resolution scope: (enclosing procedure node id, enclosing
+/// object node id).
+type ScopeKey = (Option<usize>, Option<usize>);
+
 pub struct TypeResolver<'a> {
     tree: &'a Tree,
     source: &'a [u8],
+    /// Byte offset of the start of each line, built lazily so repeated
+    /// position→node lookups don't re-scan the file per call.
+    line_starts: std::cell::OnceCell<Vec<usize>>,
+    /// Memo of `variables_at` results keyed by resolution scope. Bulk
+    /// consumers (semantic-token extraction) resolve one receiver per member
+    /// token; without this memo every call re-walks the globals, source
+    /// table, and dataitem scan.
+    scope_cache:
+        std::cell::RefCell<std::collections::HashMap<ScopeKey, std::rc::Rc<Vec<VariableDecl>>>>,
 }
 
 impl<'a> TypeResolver<'a> {
@@ -82,6 +95,8 @@ impl<'a> TypeResolver<'a> {
         Self {
             tree,
             source: text.as_bytes(),
+            line_starts: std::cell::OnceCell::new(),
+            scope_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         }
     }
 
@@ -90,8 +105,11 @@ impl<'a> TypeResolver<'a> {
     /// Searches in order: local variables, parameters, global variables,
     /// trigger-implicit variables.
     pub fn resolve_type(&self, name: &str, position: Position) -> Option<VariableDecl> {
-        let vars = self.variables_at(position);
-        let result = vars.into_iter().find(|v| v.name.eq_ignore_ascii_case(name));
+        let vars = self.scoped_variables(position);
+        let result = vars
+            .iter()
+            .find(|v| v.name.eq_ignore_ascii_case(name))
+            .cloned();
         match &result {
             Some(decl) => debug!(
                 name,
@@ -117,31 +135,65 @@ impl<'a> TypeResolver<'a> {
     /// Includes: local vars in current procedure, parameters,
     /// global vars, and trigger-implicit variables.
     pub fn variables_at(&self, position: Position) -> Vec<VariableDecl> {
+        (*self.scoped_variables(position)).clone()
+    }
+
+    /// Memoized scope resolution backing [`variables_at`]/[`resolve_type`].
+    ///
+    /// The visible-variable set only depends on the enclosing procedure and
+    /// object of `position`, so results are cached per (procedure, object)
+    /// node-id pair for the lifetime of this resolver.
+    fn scoped_variables(&self, position: Position) -> std::rc::Rc<Vec<VariableDecl>> {
+        let proc_node = self.find_enclosing_procedure(position);
+        let object = self.find_enclosing_object(position);
+        let key = (proc_node.map(|n| n.id()), object.map(|n| n.id()));
+        if let Some(cached) = self.scope_cache.borrow().get(&key) {
+            return std::rc::Rc::clone(cached);
+        }
+        let vars = std::rc::Rc::new(self.collect_scope_variables(position, proc_node, object));
+        self.scope_cache
+            .borrow_mut()
+            .insert(key, std::rc::Rc::clone(&vars));
+        vars
+    }
+
+    fn collect_scope_variables(
+        &self,
+        position: Position,
+        proc_node: Option<Node<'a>>,
+        object: Option<Node<'a>>,
+    ) -> Vec<VariableDecl> {
         let mut result = Vec::new();
 
         let root = self.tree.root_node();
         self.add_self_implicit_var(root, &mut result);
-
-        let proc_node = self.find_enclosing_procedure(position);
 
         if let Some(proc) = proc_node {
             self.collect_local_vars(proc, &mut result);
             self.collect_parameters(proc, &mut result);
 
             if proc.kind() == "trigger_declaration" {
-                self.add_trigger_implicit_vars(root, &mut result);
+                self.add_trigger_only_implicit_vars(root, &mut result);
             }
         }
 
         // Rec/xRec are available across table-bound object members, including
-        // page/report layout expressions outside procedure bodies.
-        //
-        let source_table = self.find_source_table(root);
+        // page/report layout expressions outside procedure bodies. In a
+        // multi-object file, the source table (like the globals below) is
+        // scoped to the object enclosing `position` so a codeunit sharing the
+        // file with a table does not inherit that table's Rec.
+        let source_table = match object {
+            Some(obj) => self.source_table_of(obj),
+            None => self.find_source_table(root),
+        };
         if let Some(ref table) = source_table {
             self.add_record_implicit_vars_for(table, root, &mut result);
         }
 
-        self.collect_global_vars(root, &mut result);
+        match object {
+            Some(obj) => self.collect_object_global_vars(obj, &mut result),
+            None => self.collect_global_vars(root, &mut result),
+        }
 
         // Collect dataitem variables from report dataset sections.
         // The tree-sitter grammar parses `dataitem(Name; "Table")` generically
@@ -176,6 +228,46 @@ impl<'a> TypeResolver<'a> {
         result
     }
 
+    /// Byte-offset table of line starts, built once per resolver.
+    fn line_starts(&self) -> &[usize] {
+        self.line_starts.get_or_init(|| {
+            std::iter::once(0)
+                .chain(
+                    self.source
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, &b)| b == b'\n')
+                        .map(|(i, _)| i + 1),
+                )
+                .collect()
+        })
+    }
+
+    /// Content of line `row` (without its terminator), or `""` out of range.
+    fn source_line(&self, row: usize) -> &'a str {
+        let starts = self.line_starts();
+        let Some(&start) = starts.get(row) else {
+            return "";
+        };
+        let end = starts.get(row + 1).copied().unwrap_or(self.source.len());
+        std::str::from_utf8(&self.source[start..end])
+            .unwrap_or("")
+            .trim_end_matches(['\n', '\r'])
+    }
+
+    /// Find the object declaration enclosing the given position, for
+    /// multi-object files. `None` when the position sits outside every object.
+    fn find_enclosing_object(&self, position: Position) -> Option<Node<'a>> {
+        let row = position.line as usize;
+        let root = self.tree.root_node();
+        let mut cursor = root.walk();
+        let found = root
+            .children(&mut cursor)
+            .filter(|child| child.kind() == "object_declaration")
+            .find(|child| child.start_position().row <= row && row <= child.end_position().row);
+        found
+    }
+
     /// Find the procedure/trigger declaration enclosing the given position.
     fn find_enclosing_procedure(&self, position: Position) -> Option<Node<'a>> {
         // Convert the LSP UTF-16 column to a byte column before constructing
@@ -184,8 +276,7 @@ impl<'a> TypeResolver<'a> {
         // through to the text-scanning fallback.
         //
         let row = position.line as usize;
-        let source_str = std::str::from_utf8(self.source).ok()?;
-        let line = source_str.lines().nth(row).unwrap_or("");
+        let line = self.source_line(row);
         let column = super::utf16_col_to_byte_offset(line, position.character as usize);
         let point = tree_sitter::Point { row, column };
 
@@ -242,34 +333,40 @@ impl<'a> TypeResolver<'a> {
         }
     }
 
+    /// Collect the globals of every object in the file. Fallback used when no
+    /// enclosing object is known; scoped callers use
+    /// [`collect_object_global_vars`] to avoid cross-object leakage.
     fn collect_global_vars(&self, root: Node<'a>, result: &mut Vec<VariableDecl>) {
         let mut cursor = root.walk();
         for child in root.children(&mut cursor) {
             if child.kind() == "object_declaration" {
-                if let Some(body) = child.child_by_field_name("body") {
-                    let mut body_cursor = body.walk();
-                    for body_child in body.children(&mut body_cursor) {
-                        if body_child.kind() == "object_var_section" {
-                            self.collect_var_section_decls(
-                                body_child,
-                                "object_variable_declaration",
-                                VariableScope::Global,
-                                result,
-                            );
-                        }
-                        // Also handle standalone variable_declaration nodes
-                        // that appear directly in the object body (parsed as
-                        // variable_declaration instead of inside object_var_section)
-                        if body_child.kind() == "variable_declaration" {
-                            result.extend(
-                                self.parse_var_decls_from_container(
-                                    body_child,
-                                    VariableScope::Global,
-                                ),
-                            );
-                        }
-                    }
-                }
+                self.collect_object_global_vars(child, result);
+            }
+        }
+    }
+
+    /// Collect the object-level `var` declarations of a single
+    /// `object_declaration` node.
+    fn collect_object_global_vars(&self, object: Node<'a>, result: &mut Vec<VariableDecl>) {
+        let Some(body) = object.child_by_field_name("body") else {
+            return;
+        };
+        let mut body_cursor = body.walk();
+        for body_child in body.children(&mut body_cursor) {
+            if body_child.kind() == "object_var_section" {
+                self.collect_var_section_decls(
+                    body_child,
+                    "object_variable_declaration",
+                    VariableScope::Global,
+                    result,
+                );
+            }
+            // Also handle standalone variable_declaration nodes
+            // that appear directly in the object body (parsed as
+            // variable_declaration instead of inside object_var_section)
+            if body_child.kind() == "variable_declaration" {
+                result
+                    .extend(self.parse_var_decls_from_container(body_child, VariableScope::Global));
             }
         }
     }
@@ -500,16 +597,6 @@ impl<'a> TypeResolver<'a> {
         });
     }
 
-    fn add_record_implicit_vars(&self, root: Node<'a>, result: &mut Vec<VariableDecl>) {
-        // Determine the source table name for Record types (if applicable).
-        // Retained for any external callers that still take this entry point;
-        // `variables_at` uses the more efficient `add_record_implicit_vars_for`
-        // path with a pre-computed table name.
-        if let Some(table) = self.find_source_table(root) {
-            self.add_record_implicit_vars_for(&table, root, result);
-        }
-    }
-
     /// Inner helper that injects Rec/xRec given a pre-resolved table name.
     /// Splits the work so the caller can amortise `find_source_table` (a full
     /// root-children walk) across multiple consumers in `variables_at`.
@@ -539,13 +626,12 @@ impl<'a> TypeResolver<'a> {
 
     /// Add trigger-implicit variables based on the object type.
     ///
-    /// Rec/xRec are handled separately by `add_record_implicit_vars` (which is
-    /// also called outside trigger context for table-bound objects). The remaining
-    /// implicit variables (CurrPage, CurrReport, CurrFieldNo, etc.) come from the
-    /// canonical `implicit_variables.json` data file.
-    fn add_trigger_implicit_vars(&self, root: Node<'a>, result: &mut Vec<VariableDecl>) {
-        self.add_record_implicit_vars(root, result);
-
+    /// Rec/xRec are handled separately by the scoped source-table lookup in
+    /// `collect_scope_variables` (which also applies outside trigger context
+    /// for table-bound objects). The remaining implicit variables (CurrPage,
+    /// CurrReport, CurrFieldNo, etc.) come from the canonical
+    /// `implicit_variables.json` data file.
+    fn add_trigger_only_implicit_vars(&self, root: Node<'a>, result: &mut Vec<VariableDecl>) {
         for iv in super::language_data::implicit_variables() {
             if iv.name.eq_ignore_ascii_case("Rec") || iv.name.eq_ignore_ascii_case("xRec") {
                 continue;
@@ -561,72 +647,78 @@ impl<'a> TypeResolver<'a> {
         }
     }
 
-    /// Find the source table name for table/page/report objects.
+    /// Find the source table of the first object in the file that has one.
+    /// Fallback for positions outside any object; scoped callers use
+    /// [`source_table_of`].
+    fn find_source_table(&self, root: Node<'a>) -> Option<String> {
+        let mut cursor = root.walk();
+        let found = root
+            .children(&mut cursor)
+            .filter(|child| child.kind() == "object_declaration")
+            .find_map(|child| self.source_table_of(child));
+        found
+    }
+
+    /// Find the source table name for a single table/page/report object node.
     ///
     /// For table objects, the source table is the object name itself.
     /// For page/report objects, infer it from the `SourceTable` property.
-    fn find_source_table(&self, root: Node<'a>) -> Option<String> {
-        let mut cursor = root.walk();
-        for child in root.children(&mut cursor) {
-            if child.kind() == "object_declaration" {
-                if let Some(kind_node) = child.child_by_field_name("kind") {
-                    let kind = kind_node.kind();
-                    if kind == "kw_table" || kind == "kw_tableextension" {
-                        let mut obj_cursor = child.walk();
-                        for c in child.children(&mut obj_cursor) {
-                            match c.kind() {
-                                "identifier" | "quoted_identifier" | "name" | "name_or_keyword" => {
-                                    if let Ok(text) = c.utf8_text(self.source) {
-                                        let name = text.trim_matches('"').to_string();
-                                        if !name.is_empty() {
-                                            debug!(
-                                                object_kind = kind,
-                                                source_table = %name,
-                                                "find_source_table: table object is its own source"
-                                            );
-                                            return Some(name);
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    } else if let Some(body) = child.child_by_field_name("body") {
-                        let mut body_cursor = body.walk();
-                        for body_child in body.children(&mut body_cursor) {
-                            if body_child.kind() != "property_assignment" {
-                                continue;
-                            }
-                            let Some(name_node) = body_child.child_by_field_name("name") else {
-                                continue;
-                            };
-                            let Ok(name_text) = name_node.utf8_text(self.source) else {
-                                continue;
-                            };
-                            if !name_text.eq_ignore_ascii_case("SourceTable") {
-                                continue;
-                            }
-                            let Some(value_node) = body_child.child_by_field_name("value") else {
-                                continue;
-                            };
-                            let Ok(value_text) = value_node.utf8_text(self.source) else {
-                                continue;
-                            };
-                            let clean = value_text
-                                .trim()
-                                .trim_matches('"')
-                                .trim_matches('\'')
-                                .to_string();
-                            if !clean.is_empty() {
+    fn source_table_of(&self, object: Node<'a>) -> Option<String> {
+        let kind_node = object.child_by_field_name("kind")?;
+        let kind = kind_node.kind();
+        if kind == "kw_table" || kind == "kw_tableextension" {
+            let mut obj_cursor = object.walk();
+            for c in object.children(&mut obj_cursor) {
+                match c.kind() {
+                    "identifier" | "quoted_identifier" | "name" | "name_or_keyword" => {
+                        if let Ok(text) = c.utf8_text(self.source) {
+                            let name = text.trim_matches('"').to_string();
+                            if !name.is_empty() {
                                 debug!(
                                     object_kind = kind,
-                                    source_table = %clean,
-                                    "find_source_table: found SourceTable property"
+                                    source_table = %name,
+                                    "source_table_of: table object is its own source"
                                 );
-                                return Some(clean);
+                                return Some(name);
                             }
                         }
                     }
+                    _ => {}
+                }
+            }
+        } else if let Some(body) = object.child_by_field_name("body") {
+            let mut body_cursor = body.walk();
+            for body_child in body.children(&mut body_cursor) {
+                if body_child.kind() != "property_assignment" {
+                    continue;
+                }
+                let Some(name_node) = body_child.child_by_field_name("name") else {
+                    continue;
+                };
+                let Ok(name_text) = name_node.utf8_text(self.source) else {
+                    continue;
+                };
+                if !name_text.eq_ignore_ascii_case("SourceTable") {
+                    continue;
+                }
+                let Some(value_node) = body_child.child_by_field_name("value") else {
+                    continue;
+                };
+                let Ok(value_text) = value_node.utf8_text(self.source) else {
+                    continue;
+                };
+                let clean = value_text
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
+                if !clean.is_empty() {
+                    debug!(
+                        object_kind = kind,
+                        source_table = %clean,
+                        "source_table_of: found SourceTable property"
+                    );
+                    return Some(clean);
                 }
             }
         }
@@ -1193,6 +1285,76 @@ mod tests {
             .unwrap();
         assert_eq!(rec_decl.type_name, "Record");
         assert_eq!(rec_decl.type_subtype, Some("Customer".to_string()));
+    }
+
+    #[test]
+    fn multi_object_file_scopes_globals_and_rec_to_the_enclosing_object() {
+        let src = r#"table 50100 MyTable
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+
+    var
+        TableGlobal: Integer;
+
+    procedure TableProc()
+    begin
+        TableGlobal := 1;
+    end;
+}
+
+codeunit 50101 MyCodeunit
+{
+    var
+        CuGlobal: Integer;
+
+    procedure CuProc()
+    begin
+        CuGlobal := 2;
+    end;
+}"#;
+        let (tree, text) = parse(src);
+        let resolver = TypeResolver::new(&tree, &text);
+
+        // Inside the codeunit's procedure body (line of `CuGlobal := 2;`).
+        let cu_pos = Position {
+            line: 23,
+            character: 8,
+        };
+        let cu = resolver
+            .resolve_type("CuGlobal", cu_pos)
+            .expect("codeunit global resolves in its own object");
+        assert_eq!(cu.scope, VariableScope::Global);
+
+        assert!(
+            resolver.resolve_type("TableGlobal", cu_pos).is_none(),
+            "the table's global must not leak into the codeunit"
+        );
+        assert!(
+            resolver.resolve_type("Rec", cu_pos).is_none(),
+            "a codeunit has no Rec even when a table shares the file"
+        );
+
+        // Inside the table's procedure body (line of `TableGlobal := 1;`).
+        let table_pos = Position {
+            line: 12,
+            character: 8,
+        };
+        let table_global = resolver
+            .resolve_type("TableGlobal", table_pos)
+            .expect("table global resolves in its own object");
+        assert_eq!(table_global.scope, VariableScope::Global);
+        let rec = resolver
+            .resolve_type("Rec", table_pos)
+            .expect("Rec resolves inside the table");
+        assert_eq!(rec.type_name, "Record");
+        assert_eq!(rec.type_subtype, Some("MyTable".to_string()));
+        assert!(
+            resolver.resolve_type("CuGlobal", table_pos).is_none(),
+            "the codeunit's global must not leak into the table"
+        );
     }
 
     #[test]

@@ -1163,8 +1163,15 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
         .map(|symbol| symbol.name.to_lowercase())
         .collect();
 
+    let mut in_block_comment = false;
     for (offset, line) in section_text.lines().enumerate() {
-        let trimmed = line.trim();
+        // Mask comments and string literals (offset-preserving) so a
+        // commented-out `// MyLbl: Label 'disabled';` or a trailing `// …`
+        // comment cannot produce a bogus label symbol.
+        let (masked, still_in_block_comment) = crate::lint::mask_non_code(line, in_block_comment);
+        in_block_comment = still_in_block_comment;
+
+        let trimmed = masked.trim();
         if !trimmed.ends_with(';') {
             continue;
         }
@@ -1181,7 +1188,9 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
         }
 
         let line_no = node.start_position().row as u32 + offset as u32;
-        let Some(start_byte) = line.find(name_part) else {
+        // `masked` preserves byte offsets, so the position found there is
+        // valid in the original `line` too.
+        let Some(start_byte) = masked.find(name_part) else {
             continue;
         };
         let start_col = super::byte_col_to_utf16_col(line, start_byte);
@@ -1984,6 +1993,32 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
         let children = symbols[0].children.as_ref().expect("var children");
         let count = children.iter().filter(|c| c.name == "GreetingLbl").count();
         assert_eq!(count, 1, "label must appear exactly once, not duplicated");
+    }
+
+    #[test]
+    fn test_commented_out_label_produces_no_symbol() {
+        // The label text-scan must skip comment lines: a commented-out
+        // declaration used to produce a bogus symbol named "// DisabledLbl".
+        let src = r#"codeunit 50100 Test
+{
+    var
+        // DisabledLbl: Label 'disabled';
+        /* BlockLbl: Label 'also disabled'; */
+        ActiveLbl: Label 'active'; // TrailingLbl: Label 'nope';
+}"#;
+        let symbols = parse_symbols(src);
+        let children = symbols[0].children.as_ref().expect("var children");
+        let names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.contains(&"ActiveLbl"),
+            "real label must survive: {names:?}"
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.contains("DisabledLbl") || n.contains("BlockLbl")),
+            "commented-out labels must not become symbols: {names:?}"
+        );
     }
 
     fn parse_tree(src: &str) -> (tree_sitter::Tree, String) {
