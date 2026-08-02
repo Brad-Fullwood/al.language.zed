@@ -1,11 +1,13 @@
 //! JSONC pre-processing shared by everything that parses `.vscode/launch.json`
-//! and `.zed/debug.json` (single-line `//` comments and trailing commas).
+//! and `.zed/debug.json` (`//` line comments, `/* … */` block comments, and
+//! trailing commas).
 
-/// Strip `//` single-line comments from a JSONC string.
+/// Strip `//` single-line and `/* … */` block comments from a JSONC string.
 ///
-/// Comment characters inside string literals are left untouched.
-/// After stripping comments the result is passed through
-/// [`strip_trailing_commas`] before being returned.
+/// Comment characters inside string literals are left untouched. Newlines
+/// inside block comments are preserved so downstream parse errors keep
+/// meaningful line numbers. After stripping comments the result is passed
+/// through [`strip_trailing_commas`] before being returned.
 pub fn strip_json_comments(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut in_string = false;
@@ -34,6 +36,20 @@ pub fn strip_json_comments(input: &str) -> String {
                     result.push('\n');
                     break;
                 }
+            }
+            continue;
+        }
+        if !in_string && c == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            let mut previous = '\0';
+            for cc in chars.by_ref() {
+                if cc == '\n' {
+                    result.push('\n');
+                }
+                if previous == '*' && cc == '/' {
+                    break;
+                }
+                previous = cc;
             }
             continue;
         }
@@ -103,6 +119,32 @@ mod tests {
         let result = strip_json_comments(input);
         assert!(!result.contains("// a comment"));
         assert!(result.contains("\"key\": \"value\""));
+    }
+
+    /// `/* … */` block comments are valid in VS Code's `launch.json` and were
+    /// previously a parse error that blocked project loading entirely.
+    #[test]
+    fn strips_block_comments() {
+        let input = "{ /* block\n   comment */ \"key\": /* inline */ \"value\" }";
+        let result = strip_json_comments(input);
+        assert!(!result.contains("block"));
+        assert!(!result.contains("inline"));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["key"], "value");
+    }
+
+    #[test]
+    fn block_comment_markers_inside_strings_are_preserved() {
+        let input = r#"{"glob": "src/*.al", "note": "/* not a comment */"}"#;
+        assert_eq!(strip_json_comments(input), input);
+    }
+
+    #[test]
+    fn unterminated_block_comment_consumes_to_end_without_panicking() {
+        let input = "{ \"key\": 1 } /* dangling";
+        let result = strip_json_comments(input);
+        let parsed: serde_json::Value = serde_json::from_str(result.trim()).unwrap();
+        assert_eq!(parsed["key"], 1);
     }
 
     #[test]

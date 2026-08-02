@@ -304,8 +304,16 @@ fn search_dotnet_tool_store(store: &Path) -> Result<Option<AlToolchain>, Discove
         }
     }
 
-    package_dirs.sort();
-    package_dirs.reverse();
+    // Plain lexicographic descending order chooses `…tools.9.x` over
+    // `…tools.17.x` ("9" > "1" as strings). Compare digit runs numerically so
+    // the newest package directory wins.
+    package_dirs.sort_by(|a, b| {
+        natural_key(&b.file_name().unwrap_or_default().to_string_lossy())
+            .cmp(&natural_key(
+                &a.file_name().unwrap_or_default().to_string_lossy(),
+            ))
+            .then_with(|| b.cmp(a))
+    });
 
     for pkg_dir in package_dirs {
         if let Some(tc) = search_dir_recursive(&pkg_dir)? {
@@ -316,9 +324,61 @@ fn search_dotnet_tool_store(store: &Path) -> Result<Option<AlToolchain>, Discove
     Ok(None)
 }
 
+/// Natural-order sort key: digit runs compare numerically, text runs
+/// case-insensitively; numbers order before text at the same position.
+fn natural_key(name: &str) -> Vec<NaturalPiece> {
+    let lower = name.to_lowercase();
+    let mut pieces = Vec::new();
+    let mut chars = lower.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            let mut value: u128 = 0;
+            while let Some(&digit) = chars.peek() {
+                let Some(d) = digit.to_digit(10) else { break };
+                value = value.saturating_mul(10).saturating_add(u128::from(d));
+                chars.next();
+            }
+            pieces.push(NaturalPiece::Number(value));
+        } else {
+            let mut text = String::new();
+            while let Some(&other) = chars.peek() {
+                if other.is_ascii_digit() {
+                    break;
+                }
+                text.push(other);
+                chars.next();
+            }
+            pieces.push(NaturalPiece::Text(text));
+        }
+    }
+    pieces
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum NaturalPiece {
+    Number(u128),
+    Text(String),
+}
+
+/// Rank a candidate toolchain directory by the dotted numeric version in its
+/// path. Versioned candidates outrank version-less ones; higher versions win.
+fn toolchain_version_rank(dir: &Path) -> (bool, Vec<u64>) {
+    let version = extract_version_from_path(dir);
+    let parts: Option<Vec<u64>> = version.split('.').map(|part| part.parse().ok()).collect();
+    match parts {
+        Some(parts) if !parts.is_empty() => (true, parts),
+        _ => (false, Vec::new()),
+    }
+}
+
 fn search_dir_recursive(root: &Path) -> Result<Option<AlToolchain>, DiscoveryError> {
+    // Collect every directory below `root` that holds an `alc.dll`, then pick
+    // the newest by path-embedded version. Returning the first hit of an
+    // unordered directory walk made the selected toolchain depend on
+    // filesystem enumeration order when several versions are installed.
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if root.join(ALC_DLL).is_file() {
-        return build_toolchain(root).map(Some);
+        candidates.push(root.to_path_buf());
     }
 
     // Tool stores are user-writable, so canonical paths must remain below the
@@ -368,13 +428,39 @@ fn search_dir_recursive(root: &Path) -> Result<Option<AlToolchain>, DiscoveryErr
                     continue;
                 }
                 if path.join(ALC_DLL).is_file() {
-                    return build_toolchain(&path).map(Some);
+                    candidates.push(path.clone());
                 }
                 queue.push(path);
             }
         }
     }
-    Ok(None)
+
+    // Newest version first; version-less candidates last; path order as the
+    // deterministic tiebreak.
+    candidates.sort_by(|a, b| {
+        toolchain_version_rank(b)
+            .cmp(&toolchain_version_rank(a))
+            .then_with(|| a.cmp(b))
+    });
+
+    let mut first_error: Option<DiscoveryError> = None;
+    for candidate in candidates {
+        match build_toolchain(&candidate) {
+            Ok(toolchain) => return Ok(Some(toolchain)),
+            Err(error) => {
+                tracing::debug!(
+                    path = %candidate.display(),
+                    %error,
+                    "skipping incomplete toolchain candidate"
+                );
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(None),
+    }
 }
 
 fn search_system_path() -> Result<Option<AlToolchain>, DiscoveryError> {
@@ -700,6 +786,79 @@ mod tests {
             .expect("tool-store search failed")
             .expect("expected AL package");
         assert_eq!(tc.alc, leaf.join(ALC_DLL));
+    }
+
+    /// Multiple tool-store package directories matching the AL prefix must be
+    /// ordered numerically: `…tools.17.x` beats `…tools.9.x` even though `9`
+    /// sorts after `17` as a string.
+    #[test]
+    fn search_dotnet_tool_store_prefers_numerically_newest_package_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join(".store");
+        std::fs::create_dir_all(&store).unwrap();
+        let mut leaves = Vec::new();
+        for suffix in ["9.x", "17.x"] {
+            let leaf = store.join(format!(
+                "{DOTNET_TOOL_PACKAGE_PREFIX}.{suffix}/tools/net8.0/any"
+            ));
+            std::fs::create_dir_all(&leaf).unwrap();
+            std::fs::write(leaf.join(ALC_DLL), b"").unwrap();
+            std::fs::write(leaf.join(CODE_ANALYSIS_DLL), b"").unwrap();
+            leaves.push(leaf);
+        }
+
+        let tc = search_dotnet_tool_store(&store)
+            .expect("tool-store search failed")
+            .expect("expected AL package");
+        assert_eq!(
+            tc.alc,
+            leaves[1].join(ALC_DLL),
+            "the 17.x package must beat the 9.x package"
+        );
+    }
+
+    /// One store package dir holding several versions must deterministically
+    /// select the numerically newest, not the first `read_dir` hit.
+    #[test]
+    fn search_dir_recursive_selects_newest_version_deterministically() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut leaves = Vec::new();
+        for version in ["9.1.0.0", "17.0.34.45391", "16.9.99.0"] {
+            let leaf = tmp.path().join(format!("pkg/{version}/tools/net8.0/any"));
+            std::fs::create_dir_all(&leaf).unwrap();
+            std::fs::write(leaf.join(ALC_DLL), b"").unwrap();
+            std::fs::write(leaf.join(CODE_ANALYSIS_DLL), b"").unwrap();
+            leaves.push(leaf);
+        }
+
+        let tc = search_dir_recursive(tmp.path())
+            .expect("recursive search failed")
+            .expect("expected a toolchain");
+        assert_eq!(
+            tc.alc,
+            leaves[1].join(ALC_DLL),
+            "17.x must win over 9.x/16.x"
+        );
+        assert_eq!(tc.version, "17.0.34.45391");
+    }
+
+    /// An incomplete newer candidate (alc.dll without CodeAnalysis) must not
+    /// mask a complete older install.
+    #[test]
+    fn search_dir_recursive_skips_incomplete_candidate_for_complete_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let broken = tmp.path().join("pkg/17.0.0.0/tools/net8.0/any");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join(ALC_DLL), b"").unwrap();
+        let complete = tmp.path().join("pkg/16.0.0.0/tools/net8.0/any");
+        std::fs::create_dir_all(&complete).unwrap();
+        std::fs::write(complete.join(ALC_DLL), b"").unwrap();
+        std::fs::write(complete.join(CODE_ANALYSIS_DLL), b"").unwrap();
+
+        let tc = search_dir_recursive(tmp.path())
+            .expect("recursive search failed")
+            .expect("complete candidate must be found");
+        assert_eq!(tc.alc, complete.join(ALC_DLL));
     }
 
     #[test]

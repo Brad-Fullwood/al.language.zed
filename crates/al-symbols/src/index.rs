@@ -10,10 +10,50 @@ use dashmap::DashMap;
 use tracing::{debug, warn};
 
 use super::app_reader;
+use super::events;
 use super::model::{ObjectKind, SymbolEntry, SymbolPackage};
 use super::source_availability::{self, SourceAvailability, SourceAvailabilitySummary};
 
 const DEFAULT_COMPLETIONS_CAP: usize = 30;
+
+/// Canonical case-folding for AL package and object names.
+///
+/// Every name-keyed map in the index uses this one helper so lookups and
+/// comparisons can never disagree about non-ASCII folding (`İ`, `ß`, …).
+pub(crate) fn fold_name(name: &str) -> String {
+    name.to_lowercase()
+}
+
+/// Canonical identity key for a loaded package: the app GUID when the
+/// manifest provides one, with the folded display name as fallback.
+///
+/// Two vendors can legitimately ship apps that share a display name; keying
+/// package generations by this identity keeps their symbols independent.
+pub(crate) fn package_identity_key(app_id: &str, name: &str) -> String {
+    let app_id = app_id.trim();
+    if app_id.is_empty() {
+        format!("name:{}", fold_name(name))
+    } else {
+        format!("id:{}", app_id.to_ascii_lowercase())
+    }
+}
+
+/// One entry in the primary `all` map: the shared symbol plus the folded
+/// object name and the canonical identity of the package that contributed it.
+#[derive(Debug, Clone)]
+struct IndexedEntry {
+    arc: Arc<SymbolEntry>,
+    name_key: String,
+    package_key: String,
+}
+
+/// A file-backed package path published under its canonical identity key,
+/// with the folded display name retained for legacy name-based lookups.
+#[derive(Debug, Clone)]
+struct AppPathRecord {
+    name_key: String,
+    path: std::path::PathBuf,
+}
 
 /// Acquire a derived-cache read guard, discarding (never inspecting) a value
 /// left behind by a panicked writer and replacing it with `T::default()`.
@@ -154,14 +194,25 @@ pub struct SymbolIndex {
     by_kind_id: DashMap<(ObjectKind, i32), Vec<Arc<SymbolEntry>>>,
     by_kind: DashMap<ObjectKind, Vec<Arc<SymbolEntry>>>,
     by_extends: DashMap<String, Vec<Arc<SymbolEntry>>>,
-    all: DashMap<usize, (Arc<SymbolEntry>, String)>,
+    /// Entries grouped by folded package *display name*. Serves per-package
+    /// search/summary queries without a full-index scan; two identity-distinct
+    /// packages sharing a display name legitimately share one bucket here.
+    by_package: DashMap<String, Vec<Arc<SymbolEntry>>>,
+    all: DashMap<usize, IndexedEntry>,
     next_id: std::sync::atomic::AtomicUsize,
-    app_paths: DashMap<String, std::path::PathBuf>,
+    /// Package paths keyed by canonical identity (`package_identity_key`).
+    app_paths: DashMap<String, AppPathRecord>,
     source_path_cache: DashMap<(String, ObjectKind, i32), String>,
     composed_cache: DashMap<(ObjectKind, String), Arc<super::model::ComposedObject>>,
     /// Pre-computed slice of the first DEFAULT_COMPLETIONS_CAP entries for O(1)
     /// default completion responses. Populated by add_entries/add_entries_owned.
     default_completions: std::sync::RwLock<Vec<Arc<SymbolEntry>>>,
+    /// Monotonic counter bumped on every entry addition/removal; used to
+    /// invalidate derived caches (currently the event catalog) cheaply.
+    mutation: std::sync::atomic::AtomicU64,
+    /// Cached publisher/subscriber catalog rebuilt lazily when `mutation`
+    /// advances, so repeated event queries avoid a full-index scan.
+    event_catalog: std::sync::RwLock<Option<events::EventCatalogCache>>,
 }
 
 impl Default for SymbolIndex {
@@ -178,13 +229,45 @@ impl SymbolIndex {
             by_kind_id: DashMap::new(),
             by_kind: DashMap::new(),
             by_extends: DashMap::new(),
+            by_package: DashMap::new(),
             all: DashMap::new(),
             next_id: std::sync::atomic::AtomicUsize::new(0),
             app_paths: DashMap::new(),
             source_path_cache: DashMap::new(),
             composed_cache: DashMap::new(),
             default_completions: std::sync::RwLock::new(Vec::new()),
+            mutation: std::sync::atomic::AtomicU64::new(0),
+            event_catalog: std::sync::RwLock::new(None),
         }
+    }
+
+    /// Bump the mutation counter so lazily rebuilt derived caches (event
+    /// catalog) know the entry set changed.
+    fn note_mutation(&self) {
+        self.mutation
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Shared, lazily rebuilt event catalog for the current entry generation.
+    pub(crate) fn event_catalog(&self) -> Arc<events::EventCatalog> {
+        let generation = self.mutation.load(std::sync::atomic::Ordering::Acquire);
+        {
+            let (cache, _) = read_derived_cache(&self.event_catalog, "event_catalog");
+            if let Some(cached) = cache.as_ref() {
+                if cached.generation == generation {
+                    return Arc::clone(&cached.catalog);
+                }
+            }
+        }
+        let catalog = Arc::new(events::build_event_catalog(self));
+        let (mut cache, _) = write_derived_cache(&self.event_catalog, "event_catalog");
+        // A concurrent builder may have stored its own catalog; either is a
+        // complete snapshot, so last-write-wins is safe.
+        *cache = Some(events::EventCatalogCache {
+            generation,
+            catalog: Arc::clone(&catalog),
+        });
+        catalog
     }
 
     /// Replace the entire symbol generation with a separately validated index.
@@ -193,11 +276,15 @@ impl SymbolIndex {
     /// instead of copying their internal maps independently. Callers publishing
     /// into a live workspace must hold the workspace-generation write lock.
     pub fn replace_with(&self, replacement: &SymbolIndex) {
-        let entries = replacement
-            .all_entries()
-            .into_iter()
-            .map(|entry| (*entry).clone())
-            .collect::<Vec<_>>();
+        // Share the staged Arc payloads instead of deep-cloning every
+        // SymbolEntry: a generation swap must not duplicate the entire
+        // multi-megabyte symbol payload.
+        let mut entries: Vec<(usize, IndexedEntry)> = replacement
+            .all
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().clone()))
+            .collect();
+        entries.sort_unstable_by_key(|(seq, _)| *seq);
         let app_paths = replacement
             .app_paths
             .iter()
@@ -214,6 +301,7 @@ impl SymbolIndex {
         self.by_kind_id.clear();
         self.by_kind.clear();
         self.by_extends.clear();
+        self.by_package.clear();
         self.all.clear();
         self.next_id.store(0, std::sync::atomic::Ordering::Relaxed);
         self.app_paths.clear();
@@ -223,13 +311,19 @@ impl SymbolIndex {
             .0
             .clear();
 
-        self.add_entries_owned(entries);
+        let arcs: Vec<Arc<SymbolEntry>> = entries
+            .into_iter()
+            .map(|(_, entry)| self.add_arc(entry.arc, entry.package_key))
+            .collect();
+        self.update_sorted_names_after_add(&arcs, false);
+        self.update_default_completions(&arcs);
         for (key, value) in app_paths {
             self.app_paths.insert(key, value);
         }
         for (key, value) in source_paths {
             self.source_path_cache.insert(key, value);
         }
+        self.note_mutation();
     }
 
     pub fn memory_stats(&self) -> SymbolIndexMemoryStats {
@@ -237,7 +331,7 @@ impl SymbolIndex {
         let symbol_payload_bytes = self
             .all
             .iter()
-            .map(|entry| entry.value().0.owned_bytes() + arc_allocation_overhead)
+            .map(|entry| entry.value().arc.owned_bytes() + arc_allocation_overhead)
             .sum::<usize>();
 
         let arc_bytes = std::mem::size_of::<Arc<SymbolEntry>>();
@@ -281,13 +375,23 @@ impl SymbolIndex {
             })
             .sum::<usize>();
         lookup_index_bytes += self
+            .by_package
+            .iter()
+            .map(|entry| {
+                std::mem::size_of::<String>()
+                    + entry.key().capacity()
+                    + std::mem::size_of::<Vec<Arc<SymbolEntry>>>()
+                    + entry.value().capacity() * arc_bytes
+            })
+            .sum::<usize>();
+        lookup_index_bytes += self
             .all
             .iter()
             .map(|entry| {
                 std::mem::size_of::<usize>()
-                    + arc_bytes
-                    + std::mem::size_of::<String>()
-                    + entry.value().1.capacity()
+                    + std::mem::size_of::<IndexedEntry>()
+                    + entry.value().name_key.capacity()
+                    + entry.value().package_key.capacity()
             })
             .sum::<usize>();
         let (sorted_names, _) = read_derived_cache(&self.sorted_names, "sorted_names");
@@ -308,8 +412,9 @@ impl SymbolIndex {
             .map(|entry| {
                 std::mem::size_of::<String>()
                     + entry.key().capacity()
-                    + std::mem::size_of::<std::path::PathBuf>()
-                    + entry.value().as_os_str().len()
+                    + std::mem::size_of::<AppPathRecord>()
+                    + entry.value().name_key.capacity()
+                    + entry.value().path.as_os_str().len()
             })
             .sum::<usize>()
             + self
@@ -357,7 +462,7 @@ impl SymbolIndex {
 
     pub fn cache_source_path(&self, package: String, kind: ObjectKind, id: i32, path: String) {
         self.source_path_cache
-            .insert((package.to_lowercase(), kind, id), path);
+            .insert((fold_name(&package), kind, id), path);
     }
 
     pub fn get_cached_source_path(
@@ -367,12 +472,15 @@ impl SymbolIndex {
         id: i32,
     ) -> Option<String> {
         self.source_path_cache
-            .get(&(package.to_lowercase(), kind, id))
+            .get(&(fold_name(package), kind, id))
             .map(|s| s.value().clone())
     }
 
     pub fn is_package_indexed(&self, package: &str) -> bool {
-        self.app_paths.contains_key(&package.to_lowercase())
+        let name_key = fold_name(package);
+        self.app_paths
+            .iter()
+            .any(|record| record.value().name_key == name_key)
     }
 
     /// Report what kind of source navigation is genuinely available for an
@@ -386,9 +494,8 @@ impl SymbolIndex {
     /// Count source representations for every object in one package.
     pub fn package_source_availability(&self, package: &str) -> SourceAvailabilitySummary {
         let mut summary = SourceAvailabilitySummary::default();
-        for entry in self.all.iter() {
-            let (symbol, _) = entry.value();
-            if symbol.package.eq_ignore_ascii_case(package) {
+        if let Some(entries) = self.by_package.get(&fold_name(package)) {
+            for symbol in entries.value() {
                 summary.record(self.source_availability(symbol));
             }
         }
@@ -447,6 +554,7 @@ impl SymbolIndex {
     ) -> Result<Vec<SymbolPackage>, PackageLoadError> {
         use rayon::prelude::*;
 
+        cache.gc_once();
         let parsed: Vec<_> = paths
             .par_iter()
             .map(|path| {
@@ -486,6 +594,58 @@ impl SymbolIndex {
         Ok(results)
     }
 
+    /// Like [`Self::load_packages_cached`], but degrades per package instead
+    /// of failing the whole batch: every readable package is indexed and each
+    /// unreadable/corrupt one is reported in the returned failure list. Use
+    /// this on initialization paths where one truncated `.app` (e.g. an
+    /// interrupted download) must not abort the entire workspace.
+    pub fn load_packages_cached_lenient(
+        &self,
+        paths: &[impl AsRef<Path> + Sync],
+        cache: &super::cache::SymbolCache,
+    ) -> (Vec<SymbolPackage>, Vec<PackageLoadFailure>) {
+        use rayon::prelude::*;
+
+        cache.gc_once();
+        let parsed: Vec<_> = paths
+            .par_iter()
+            .map(|path| {
+                let path = path.as_ref();
+
+                if let Some(pkg) = cache.load(path) {
+                    prewarm_source_index(path);
+                    return Ok((path.to_path_buf(), pkg, true));
+                }
+
+                match app_reader::read_app_file(path) {
+                    Ok(pkg) => {
+                        prewarm_source_index(path);
+                        if let Err(error) = cache.save(path, &pkg) {
+                            warn!(path = %path.display(), %error, "Failed to save to cache");
+                        }
+                        Ok((path.to_path_buf(), pkg, false))
+                    }
+                    Err(error) => Err(PackageLoadFailure {
+                        path: path.to_path_buf(),
+                        message: error.to_string(),
+                    }),
+                }
+            })
+            .collect();
+
+        let mut results = Vec::new();
+        let mut failures = Vec::new();
+        for item in parsed {
+            match item {
+                Ok((path, pkg, from_cache)) => {
+                    results.push(self.index_loaded_package(pkg, Some(&path), from_cache));
+                }
+                Err(failure) => failures.push(failure),
+            }
+        }
+        (results, failures)
+    }
+
     /// Replace every file-backed package currently in the index with `paths`.
     ///
     /// Parsing completes before the existing generation is removed, so a bad or
@@ -498,6 +658,7 @@ impl SymbolIndex {
     ) -> Result<Vec<SymbolPackage>, PackageLoadError> {
         use rayon::prelude::*;
 
+        cache.gc_once();
         let parsed: Vec<_> = paths
             .par_iter()
             .map(|path| {
@@ -539,21 +700,44 @@ impl SymbolIndex {
     ) -> SymbolPackage {
         // Re-loading a downloaded or changed package replaces its old symbols
         // rather than duplicating every object in all secondary indexes.
-        self.remove_package_entries(&pkg.name);
+        // Replacement is keyed by the canonical package identity (app GUID,
+        // display name as fallback), so two distinct apps that merely share a
+        // display name never evict each other's generation.
+        let identity = package_identity_key(&pkg.app_id, &pkg.name);
+        self.remove_package_identities(&std::collections::HashSet::from([identity.clone()]));
         if let Some(path) = path {
             // The source-index cache canonicalizes package paths before
             // warming them. Publish the same identity so cache-only user
             // queries work through symlinks and macOS `/var` aliases.
             let indexed_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-            self.app_paths.insert(pkg.name.to_lowercase(), indexed_path);
+            // A path holds exactly one package. If a manifest rewrite changed
+            // the identity stored for this same file, drop the stale
+            // generation so it cannot linger under the old key.
+            let stale: std::collections::HashSet<String> = self
+                .app_paths
+                .iter()
+                .filter(|record| record.value().path == indexed_path && record.key() != &identity)
+                .map(|record| record.key().clone())
+                .collect();
+            if !stale.is_empty() {
+                self.remove_package_identities(&stale);
+            }
+            self.app_paths.insert(
+                identity.clone(),
+                AppPathRecord {
+                    name_key: fold_name(&pkg.name),
+                    path: indexed_path,
+                },
+            );
         }
         debug!(
             name = %pkg.name,
+            app_id = %pkg.app_id,
             objects = pkg.objects.len(),
             from_cache,
             "Indexing package"
         );
-        self.add_entries_owned(std::mem::take(&mut pkg.objects));
+        self.add_entries_owned_with_key(std::mem::take(&mut pkg.objects), Some(identity));
         pkg
     }
 
@@ -562,8 +746,9 @@ impl SymbolIndex {
         data: &[u8],
     ) -> Result<SymbolPackage, app_reader::AppReaderError> {
         let pkg = app_reader::read_app_bytes(data)?;
-        self.remove_package_entries(&pkg.name);
-        self.add_entries(&pkg.objects);
+        let identity = package_identity_key(&pkg.app_id, &pkg.name);
+        self.remove_package_identities(&std::collections::HashSet::from([identity.clone()]));
+        self.add_entries_owned_with_key(pkg.objects.clone(), Some(identity));
         Ok(pkg)
     }
 
@@ -618,14 +803,25 @@ impl SymbolIndex {
         }
     }
 
-    fn add_arc(&self, arc: Arc<SymbolEntry>) -> Arc<SymbolEntry> {
-        let name_lower = arc.name.to_lowercase();
+    fn add_arc(&self, arc: Arc<SymbolEntry>, package_key: String) -> Arc<SymbolEntry> {
+        let name_lower = fold_name(&arc.name);
         let seq = self
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.all.insert(seq, (Arc::clone(&arc), name_lower.clone()));
+        self.all.insert(
+            seq,
+            IndexedEntry {
+                arc: Arc::clone(&arc),
+                name_key: name_lower.clone(),
+                package_key,
+            },
+        );
         self.by_name
             .entry(name_lower)
+            .or_default()
+            .push(Arc::clone(&arc));
+        self.by_package
+            .entry(fold_name(&arc.package))
             .or_default()
             .push(Arc::clone(&arc));
         // Only index entries with a real positive object id. Sentinel ids
@@ -653,21 +849,18 @@ impl SymbolIndex {
     }
 
     pub fn add_entries(&self, entries: &[SymbolEntry]) {
-        self.invalidate_composed_for_entries(entries.iter());
-        let update_sorted_names = entries.len() <= 64
-            && read_derived_cache(&self.sorted_names, "sorted_names")
-                .0
-                .is_some();
-        let new_arcs: Vec<Arc<SymbolEntry>> = entries
-            .iter()
-            .map(|entry| self.add_arc(Arc::new(entry.clone())))
-            .collect();
-        self.update_sorted_names_after_add(&new_arcs, update_sorted_names);
-        self.update_default_completions(&new_arcs);
+        self.add_entries_owned_with_key(entries.to_vec(), None);
     }
 
     /// Like `add_entries` but takes owned entries, avoiding the clone into Arc.
     pub fn add_entries_owned(&self, entries: Vec<SymbolEntry>) {
+        self.add_entries_owned_with_key(entries, None);
+    }
+
+    /// Add a batch of entries under one canonical package identity. When
+    /// `package_key` is `None` (direct `add_entries*` callers such as
+    /// workspace registration), each entry falls back to a name-derived key.
+    fn add_entries_owned_with_key(&self, entries: Vec<SymbolEntry>, package_key: Option<String>) {
         self.invalidate_composed_for_entries(entries.iter());
         let update_sorted_names = entries.len() <= 64
             && read_derived_cache(&self.sorted_names, "sorted_names")
@@ -675,10 +868,16 @@ impl SymbolIndex {
                 .is_some();
         let new_arcs: Vec<Arc<SymbolEntry>> = entries
             .into_iter()
-            .map(|entry| self.add_arc(Arc::new(entry)))
+            .map(|entry| {
+                let key = package_key
+                    .clone()
+                    .unwrap_or_else(|| package_identity_key("", &entry.package));
+                self.add_arc(Arc::new(entry), key)
+            })
             .collect();
         self.update_sorted_names_after_add(&new_arcs, update_sorted_names);
         self.update_default_completions(&new_arcs);
+        self.note_mutation();
     }
 
     fn update_sorted_names_after_add(&self, entries: &[Arc<SymbolEntry>], update_in_place: bool) {
@@ -834,18 +1033,25 @@ impl SymbolIndex {
     }
 
     pub fn search_in_package(&self, package_name: &str, query: &str) -> Vec<Arc<SymbolEntry>> {
-        let query_lower = query.to_lowercase();
-        let mut results: Vec<(String, usize, Arc<SymbolEntry>)> = self
-            .all
+        let query_lower = fold_name(query);
+        let Some(entries) = self.by_package.get(&fold_name(package_name)) else {
+            return Vec::new();
+        };
+        let mut results: Vec<(String, usize, Arc<SymbolEntry>)> = entries
+            .value()
             .iter()
-            .filter_map(|entry| {
-                let (arc, name_lower) = entry.value();
-                (!arc.synthetic
-                    && arc.package.eq_ignore_ascii_case(package_name)
-                    && name_lower.contains(&query_lower))
-                .then(|| (name_lower.clone(), *entry.key(), Arc::clone(arc)))
+            .enumerate()
+            .filter_map(|(position, arc)| {
+                if arc.synthetic {
+                    return None;
+                }
+                let name_lower = fold_name(&arc.name);
+                name_lower
+                    .contains(&query_lower)
+                    .then(|| (name_lower, position, Arc::clone(arc)))
             })
             .collect();
+        drop(entries);
         results.sort_unstable_by(|a, b| {
             (&a.0, a.2.kind, a.2.id, a.1).cmp(&(&b.0, b.2.kind, b.2.id, b.1))
         });
@@ -899,10 +1105,7 @@ impl SymbolIndex {
     pub fn all_entries(&self) -> Vec<Arc<SymbolEntry>> {
         self.all
             .iter()
-            .map(|e| {
-                let (arc, _) = e.value();
-                Arc::clone(arc)
-            })
+            .map(|e| Arc::clone(&e.value().arc))
             .collect()
     }
 
@@ -914,10 +1117,19 @@ impl SymbolIndex {
         self.all.is_empty()
     }
 
+    /// Resolve a package's `.app` path by display name.
+    ///
+    /// Paths are stored under canonical identity keys (app GUID + name
+    /// fallback), so two same-named packages keep independent records; a
+    /// name-only lookup over an ambiguous name returns the record with the
+    /// smallest identity key for determinism.
     pub fn app_path(&self, package_name: &str) -> Option<std::path::PathBuf> {
+        let name_key = fold_name(package_name);
         self.app_paths
-            .get(&package_name.to_lowercase())
-            .map(|v| v.value().clone())
+            .iter()
+            .filter(|record| record.value().name_key == name_key)
+            .min_by(|a, b| a.key().cmp(b.key()))
+            .map(|record| record.value().path.clone())
     }
 
     /// Return every file-backed package path currently published in the index.
@@ -930,7 +1142,7 @@ impl SymbolIndex {
         let mut paths: Vec<_> = self
             .app_paths
             .iter()
-            .map(|entry| entry.value().clone())
+            .map(|entry| entry.value().path.clone())
             .collect();
         paths.sort_unstable();
         paths.dedup();
@@ -1009,20 +1221,22 @@ impl SymbolIndex {
     /// uniform — adding a new secondary index requires adding exactly one
     /// `Self::retain_arcs_not_in(&self.new_index, &ptrs);` line below.
     pub fn remove_package_entries(&self, package_name: &str) {
-        self.remove_packages_named(&std::collections::HashSet::from([
-            package_name.to_lowercase()
-        ]));
+        self.remove_packages_named(&std::collections::HashSet::from([fold_name(package_name)]));
     }
 
     fn clear_loaded_packages(&self) {
-        let package_names: std::collections::HashSet<String> = self
+        let identities: std::collections::HashSet<String> = self
             .app_paths
             .iter()
             .map(|entry| entry.key().clone())
             .collect();
-        self.remove_packages_named(&package_names);
+        self.remove_package_identities(&identities);
     }
 
+    /// Remove every entry whose *display* package name folds to one of
+    /// `package_names`, plus the matching path/source caches. This is the
+    /// legacy name-scoped removal used by workspace re-registration; with an
+    /// ambiguous display name it removes all same-named generations.
     fn remove_packages_named(&self, package_names: &std::collections::HashSet<String>) {
         if package_names.is_empty() {
             return;
@@ -1031,21 +1245,67 @@ impl SymbolIndex {
             .all
             .iter()
             .filter_map(|entry| {
-                let (arc, _) = entry.value();
-                if package_names.contains(&arc.package.to_lowercase()) {
-                    Some((*entry.key(), Arc::clone(arc)))
+                let indexed = entry.value();
+                if package_names.contains(&fold_name(&indexed.arc.package)) {
+                    Some((*entry.key(), Arc::clone(&indexed.arc)))
                 } else {
                     None
                 }
             })
             .collect();
+        self.app_paths
+            .retain(|_, record| !package_names.contains(&record.name_key));
+        self.source_path_cache
+            .retain(|(package, _, _), _| !package_names.contains(package));
+        self.remove_selected_entries(to_remove);
+    }
 
+    /// Remove every entry contributed under one of the canonical package
+    /// identity keys, plus the matching path/source caches. Same-named
+    /// packages with different app GUIDs are untouched.
+    fn remove_package_identities(&self, identities: &std::collections::HashSet<String>) {
+        if identities.is_empty() {
+            return;
+        }
+        let to_remove: Vec<(usize, Arc<SymbolEntry>)> = self
+            .all
+            .iter()
+            .filter_map(|entry| {
+                let indexed = entry.value();
+                if identities.contains(&indexed.package_key) {
+                    Some((*entry.key(), Arc::clone(&indexed.arc)))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // Purge the name-keyed source-path cache for the removed identities'
+        // display names, but only when no *other* identity still publishes
+        // that display name.
+        let removed_names: std::collections::HashSet<String> = self
+            .app_paths
+            .iter()
+            .filter(|record| identities.contains(record.key()))
+            .map(|record| record.value().name_key.clone())
+            .collect();
+        for identity in identities {
+            self.app_paths.remove(identity);
+        }
+        let surviving_names: std::collections::HashSet<String> = self
+            .app_paths
+            .iter()
+            .map(|record| record.value().name_key.clone())
+            .collect();
+        self.source_path_cache.retain(|(package, _, _), _| {
+            !removed_names.contains(package) || surviving_names.contains(package)
+        });
+        self.remove_selected_entries(to_remove);
+    }
+
+    /// Shared core of both removal flavors: prune the primary map and every
+    /// secondary index for the selected entries, then repair derived caches.
+    fn remove_selected_entries(&self, to_remove: Vec<(usize, Arc<SymbolEntry>)>) {
         if to_remove.is_empty() {
-            for package_name in package_names {
-                self.app_paths.remove(package_name);
-                self.source_path_cache
-                    .retain(|(package, _, _), _| package != package_name);
-            }
             return;
         }
 
@@ -1072,6 +1332,7 @@ impl SymbolIndex {
         Self::retain_arcs_not_in(&self.by_kind_id, &ptrs);
         Self::retain_arcs_not_in(&self.by_kind, &ptrs);
         Self::retain_arcs_not_in(&self.by_extends, &ptrs);
+        Self::retain_arcs_not_in(&self.by_package, &ptrs);
         let (mut sorted_names, repaired) = write_derived_cache(&self.sorted_names, "sorted_names");
         if update_sorted_names && !repaired {
             if let Some(names) = sorted_names.as_mut() {
@@ -1088,17 +1349,12 @@ impl SymbolIndex {
             *sorted_names = None;
         }
 
-        for package_name in package_names {
-            self.app_paths.remove(package_name);
-            self.source_path_cache
-                .retain(|(package, _, _), _| package != package_name);
-        }
-
         // Package additions/removals can change any composed base-extension
         // relationship. Clear the small derived cache rather than serving a
         // stale view after hot symbol reload.
         self.composed_cache.clear();
         self.rebuild_default_completions();
+        self.note_mutation();
     }
 
     fn rebuild_default_completions(&self) {
@@ -1106,8 +1362,8 @@ impl SymbolIndex {
             .all
             .iter()
             .filter_map(|entry| {
-                let (arc, _) = entry.value();
-                (!arc.synthetic).then(|| (*entry.key(), Arc::clone(arc)))
+                let indexed = entry.value();
+                (!indexed.arc.synthetic).then(|| (*entry.key(), Arc::clone(&indexed.arc)))
             })
             .collect();
         remaining.sort_unstable_by_key(|(seq, _)| *seq);
@@ -1539,9 +1795,13 @@ mod tests {
             entry.package = "Keep".into();
         }
         index.add_entries(&entries);
-        index
-            .app_paths
-            .insert("drop".into(), "/tmp/drop.app".into());
+        index.app_paths.insert(
+            package_identity_key("", "Drop"),
+            AppPathRecord {
+                name_key: "drop".into(),
+                path: "/tmp/drop.app".into(),
+            },
+        );
         index.cache_source_path(
             "Drop".into(),
             ObjectKind::Table,
@@ -1642,12 +1902,21 @@ mod tests {
     }
 
     fn build_app(name: &str, table_id: i32, table_name: &str) -> Vec<u8> {
+        build_app_with_id(
+            "00000000-0000-0000-0000-000000000001",
+            name,
+            table_id,
+            table_name,
+        )
+    }
+
+    fn build_app_with_id(app_id: &str, name: &str, table_id: i32, table_name: &str) -> Vec<u8> {
         use std::io::{Cursor, Write};
         use zip::write::SimpleFileOptions;
 
         let manifest = format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
-<Package><App Id="00000000-0000-0000-0000-000000000001" Name="{name}" Publisher="Contoso" Version="1.0.0.0" /></Package>"#
+<Package><App Id="{app_id}" Name="{name}" Publisher="Contoso" Version="1.0.0.0" /></Package>"#
         );
         let symbols = format!(
             r#"{{ "Tables": [ {{ "Id": {table_id}, "Name": "{table_name}", "Fields": [], "Methods": [] }} ] }}"#
@@ -1854,5 +2123,111 @@ mod tests {
             .expect_err("mixed cached batch must fail");
         assert_eq!(error.failures.len(), 1);
         assert!(cached.is_empty(), "cached load published a partial batch");
+    }
+
+    #[test]
+    fn lenient_load_indexes_valid_packages_and_reports_corrupt_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid = dir.path().join("Valid.app");
+        let invalid = dir.path().join("Invalid.app");
+        std::fs::write(&valid, build_app("Valid", 50_001, "Valid Table")).unwrap();
+        std::fs::write(&invalid, b"NAVX truncated download").unwrap();
+        let cache = crate::cache::SymbolCache::at(dir.path().join("cache"));
+
+        let index = SymbolIndex::new();
+        let (loaded, failures) =
+            index.load_packages_cached_lenient(&[valid, invalid.clone()], &cache);
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "Valid");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].path, invalid);
+        assert_eq!(
+            index.get_by_name("Valid Table").len(),
+            1,
+            "the valid package must be indexed despite the corrupt sibling"
+        );
+    }
+
+    /// Two apps that share a display name but carry different app GUIDs must
+    /// keep independent symbol generations: loading (or reloading) one must
+    /// never evict the other's symbols or app path.
+    #[test]
+    fn packages_sharing_a_display_name_keep_independent_generations() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("VendorA_Library.app");
+        let second = dir.path().join("VendorB_Library.app");
+        std::fs::write(
+            &first,
+            build_app_with_id(
+                "11111111-1111-1111-1111-111111111111",
+                "Library",
+                50_100,
+                "Vendor A Widget",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &second,
+            build_app_with_id(
+                "22222222-2222-2222-2222-222222222222",
+                "Library",
+                50_200,
+                "Vendor B Widget",
+            ),
+        )
+        .unwrap();
+
+        let index = SymbolIndex::new();
+        index
+            .load_packages(&[first.clone(), second.clone()])
+            .expect("both same-named packages load");
+
+        assert_eq!(index.get_by_name("Vendor A Widget").len(), 1);
+        assert_eq!(index.get_by_name("Vendor B Widget").len(), 1);
+        assert_eq!(index.len(), 2, "both generations must coexist");
+
+        // Reloading the second package must replace only its own generation.
+        std::fs::write(
+            &second,
+            build_app_with_id(
+                "22222222-2222-2222-2222-222222222222",
+                "Library",
+                50_201,
+                "Vendor B Widget V2",
+            ),
+        )
+        .unwrap();
+        index
+            .load_packages(std::slice::from_ref(&second))
+            .expect("reload of one same-named package");
+
+        assert_eq!(
+            index.get_by_name("Vendor A Widget").len(),
+            1,
+            "reloading vendor B must not evict vendor A's symbols"
+        );
+        assert!(index.get_by_name("Vendor B Widget").is_empty());
+        assert_eq!(index.get_by_name("Vendor B Widget V2").len(), 1);
+        assert!(
+            index.app_path("Library").is_some(),
+            "a name-based path lookup must still resolve deterministically"
+        );
+    }
+
+    /// The index folds package names with one canonical (Unicode) rule.
+    /// `İSTANBUL` folds to `i̇stanbul` (i + combining dot); an ASCII-only
+    /// comparison would report zero matches for that folded query.
+    #[test]
+    fn package_name_matching_uses_one_unicode_folding() {
+        let index = SymbolIndex::new();
+        let mut entry = make_entry(ObjectKind::Table, 1, "Turkish Object");
+        entry.package = "İSTANBUL".to_string();
+        index.add_entries(&[entry]);
+
+        let folded = "İSTANBUL".to_lowercase();
+        assert_ne!(folded, "İSTANBUL");
+        assert_eq!(index.search_in_package(&folded, "").len(), 1);
+        assert_eq!(index.search_in_package("İSTANBUL", "turkish").len(), 1);
     }
 }

@@ -49,6 +49,7 @@ pub fn get_or_create_with_availability(
     let file_path = pkg_dir.join(cache_filename(entry, app_path));
 
     ensure_readonly_settings(&cache_root)?;
+    gc_cache_once(&cache_root);
 
     fs::create_dir_all(&pkg_dir)?;
 
@@ -158,6 +159,75 @@ fn self_exe_mtime() -> Option<std::time::SystemTime> {
     })
 }
 
+/// GC bound: cached virtual files whose mtime is older than this are deleted.
+/// The cache filename embeds package mtime/size and symbol metadata, so every
+/// package update mints a new file and the old hash-named files would
+/// otherwise accumulate forever. A deleted entry is regenerated on demand.
+const MAX_VIRTUAL_FILE_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Run [`gc_cache`] at most once per process, best-effort.
+fn gc_cache_once(cache_root: &Path) {
+    static GC_RAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if GC_RAN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    gc_cache(cache_root, MAX_VIRTUAL_FILE_AGE);
+}
+
+/// Delete stale virtual source files (and leftover temp files) under the
+/// per-package cache directories, removing package directories that end up
+/// empty. All failures are ignored — GC is strictly best-effort and every
+/// entry can be regenerated on demand.
+fn gc_cache(cache_root: &Path, max_age: std::time::Duration) {
+    let now = std::time::SystemTime::now();
+    let Ok(package_dirs) = fs::read_dir(cache_root) else {
+        return;
+    };
+    for package_dir in package_dirs.flatten() {
+        if package_dir.file_name() == ".zed" {
+            continue;
+        }
+        let dir = package_dir.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut remaining = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let is_virtual_source = name.ends_with(".al");
+            let is_leftover_tmp = name.ends_with(".tmp");
+            if !is_virtual_source && !is_leftover_tmp {
+                remaining += 1;
+                continue;
+            }
+            let age = fs::metadata(&path)
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .unwrap_or(std::time::Duration::ZERO);
+            let expired = if is_leftover_tmp {
+                // Temp files are renamed away within one call; anything older
+                // than an hour was abandoned by a crashed writer.
+                age > std::time::Duration::from_secs(60 * 60)
+            } else {
+                age > max_age
+            };
+            if expired && remove_readonly_file_if_exists(&path).is_ok() {
+                continue;
+            }
+            remaining += 1;
+        }
+        if remaining == 0 {
+            let _ = fs::remove_dir(&dir);
+        }
+    }
+}
+
 /// Drop the read-only attribute on a cached virtual file so `remove_file`
 /// can delete it.
 fn clear_readonly(path: &Path) -> std::io::Result<()> {
@@ -215,17 +285,23 @@ pub fn find_member_range(path: &Path, member_name: &str, kind: MemberKind) -> Op
 /// landed at `(0,0)` — the file start / outline — instead of the object.
 pub fn find_object_range(path: &Path, entry: &SymbolEntry) -> Option<MemberRange> {
     let content = fs::read_to_string(path).ok()?;
-    // Declaration line shape (both outline and alc source): `{kw} {id} {name}`.
-    let prefix = format!(
-        "{} {} ",
-        entry.kind.al_keyword().to_ascii_lowercase(),
-        entry.id
-    );
+    // Declaration line shape (both outline and alc source): `{kw} {id} {name}`
+    // for ID-bearing kinds, `{kw} {name}` for name-scoped kinds (interface,
+    // profile, controladdin, …) — real embedded source never carries a bogus
+    // `0` for those, so both forms must match.
+    let keyword = entry.kind.al_keyword().to_ascii_lowercase();
+    let with_id = format!("{keyword} {} ", entry.id);
+    let without_id = format!("{keyword} ");
     for (line_idx, line) in content.lines().enumerate() {
         let lead = line.len() - line.trim_start().len();
-        if !line[lead..].to_ascii_lowercase().starts_with(&prefix) {
+        let lowered = line[lead..].to_ascii_lowercase();
+        let prefix = if lowered.starts_with(&with_id) {
+            &with_id
+        } else if !entry.kind.requires_numeric_id() && lowered.starts_with(&without_id) {
+            &without_id
+        } else {
             continue;
-        }
+        };
         let name_start = lead + prefix.len();
         let rest = &line[name_start..];
         // Name runs to an ` extends ` clause, the opening ` {`, or end of line;
@@ -405,17 +481,23 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
     use super::model::{FieldSymbol, MethodSymbol};
 
     fn format_name(name: &str) -> String {
-        let needs_quoting = name.contains(' ')
-            || name.contains('.')
-            || name.contains('/')
-            || name.contains('-')
-            || name.contains('&')
-            || name.contains('(')
-            || name.contains(')');
-        if needs_quoting {
-            format!("\"{}\"", name)
-        } else {
+        // Quote unless the name is a plain AL identifier (letter/underscore
+        // start, alphanumeric/underscore continuation). A closed allowlist of
+        // "special" characters under-quoted names containing `%`, `+`, `,`,
+        // leading digits, etc., producing invalid AL outlines. Doubled quotes
+        // escape embedded `"` characters.
+        let mut chars = name.chars();
+        let is_plain_identifier = match chars.next() {
+            Some(first) => {
+                (first.is_ascii_alphabetic() || first == '_')
+                    && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            }
+            None => false,
+        };
+        if is_plain_identifier {
             name.to_string()
+        } else {
+            format!("\"{}\"", name.replace('"', "\"\""))
         }
     }
 
@@ -466,14 +548,19 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
     let name_str = format_name(&entry.name);
     let kw = entry.kind.al_keyword();
 
+    // Name-scoped kinds (interface, profile, controladdin, …) declare no
+    // numeric object ID in AL; rendering the internal `0` sentinel would
+    // produce invalid AL like `interface 0 "My Contract"`.
+    let id_part = if entry.kind.requires_numeric_id() {
+        format!("{} ", entry.id)
+    } else {
+        String::new()
+    };
     if let Some(ref extends) = entry.extends {
         let ext = format_name(extends);
-        out.push_str(&format!(
-            "{} {} {} extends {}\n",
-            kw, entry.id, name_str, ext
-        ));
+        out.push_str(&format!("{kw} {id_part}{name_str} extends {ext}\n"));
     } else {
-        out.push_str(&format!("{} {} {}\n", kw, entry.id, name_str));
+        out.push_str(&format!("{kw} {id_part}{name_str}\n"));
     }
     out.push_str("{\n");
 
@@ -1022,6 +1109,130 @@ mod tests {
             !outline.to_ascii_lowercase().contains("begin"),
             "a package outline must not contain an implementation body; got:\n{outline}"
         );
+    }
+
+    /// Name-scoped kinds (interface, profile, …) must render without the
+    /// internal `0` id sentinel: `interface 0 "X"` is not valid AL.
+    #[test]
+    fn render_outline_omits_id_for_name_scoped_kinds() {
+        let interface = SymbolEntry {
+            kind: ObjectKind::Interface,
+            id: 0,
+            name: "My Contract".to_string(),
+            methods: vec![MethodSymbol {
+                name: "Run".to_string(),
+                parameters: Vec::new(),
+                return_type: None,
+                attributes: Vec::new(),
+                is_local: false,
+            }],
+            ..Default::default()
+        };
+        let outline = render_outline(&interface);
+        assert!(
+            outline.starts_with("interface \"My Contract\"\n"),
+            "got:\n{outline}"
+        );
+        assert!(!outline.contains("interface 0"), "got:\n{outline}");
+
+        let profile = SymbolEntry {
+            kind: ObjectKind::Profile,
+            id: 0,
+            name: "Operator".to_string(),
+            ..Default::default()
+        };
+        let outline = render_outline(&profile);
+        assert!(outline.starts_with("profile Operator\n"), "got:\n{outline}");
+
+        // ID-bearing kinds keep their id.
+        let outline = render_outline(&package_codeunit());
+        assert!(outline.starts_with("codeunit 80 \"Sales-Post\"\n"));
+    }
+
+    /// Any name that is not a plain identifier must be quoted — the previous
+    /// closed character allowlist left `%`, `+`, `,`, leading digits, etc.
+    /// unquoted and produced invalid AL.
+    #[test]
+    fn render_outline_quotes_all_non_identifier_names() {
+        for name in ["100% Done", "A+B", "Q,R", "1stObject", "Käufer:Liste"] {
+            let entry = SymbolEntry {
+                kind: ObjectKind::Codeunit,
+                id: 50_100,
+                name: name.to_string(),
+                ..Default::default()
+            };
+            let outline = render_outline(&entry);
+            assert!(
+                outline.starts_with(&format!("codeunit 50100 \"{name}\"\n")),
+                "name {name:?} must be quoted; got:\n{outline}"
+            );
+        }
+        // Plain identifiers stay unquoted; embedded quotes are doubled.
+        let entry = SymbolEntry {
+            kind: ObjectKind::Codeunit,
+            id: 1,
+            name: "PlainName_1".to_string(),
+            ..Default::default()
+        };
+        assert!(render_outline(&entry).starts_with("codeunit 1 PlainName_1\n"));
+        let entry = SymbolEntry {
+            kind: ObjectKind::Codeunit,
+            id: 1,
+            name: "Has\"Quote".to_string(),
+            ..Default::default()
+        };
+        assert!(render_outline(&entry).starts_with("codeunit 1 \"Has\"\"Quote\"\n"));
+    }
+
+    /// Object-level navigation must work for ID-less kinds in both rendered
+    /// outlines and real embedded source (`interface "X" {` has no `0`).
+    #[test]
+    fn find_object_range_matches_idless_declarations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("iface.al");
+        fs::write(
+            &path,
+            "// header comment\ninterface \"Source Contract\"\n{\n    procedure Run();\n}\n",
+        )
+        .unwrap();
+        let entry = SymbolEntry {
+            kind: ObjectKind::Interface,
+            id: 0,
+            name: "Source Contract".to_string(),
+            ..Default::default()
+        };
+        let range = find_object_range(&path, &entry).expect("ID-less declaration must be found");
+        assert_eq!(range.line, 1);
+    }
+
+    #[test]
+    fn gc_cache_removes_stale_entries_and_empty_package_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let pkg_dir = root.path().join("Old_Package");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        let stale = pkg_dir.join("Codeunit_80_Old-abc.al");
+        let fresh = pkg_dir.join("Codeunit_81_New-def.al");
+        fs::write(&stale, "codeunit 80 Old { }").unwrap();
+        fs::write(&fresh, "codeunit 81 New { }").unwrap();
+        let old_time =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 24 * 60 * 60);
+        let file = fs::OpenOptions::new().write(true).open(&stale).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(old_time))
+            .unwrap();
+        drop(file);
+
+        gc_cache(root.path(), MAX_VIRTUAL_FILE_AGE);
+        assert!(!stale.exists(), "stale entry must be deleted");
+        assert!(fresh.exists(), "fresh entry must survive");
+        assert!(pkg_dir.exists(), "non-empty package dir must survive");
+
+        // Age the remaining entry too: the directory should be swept away.
+        let file = fs::OpenOptions::new().write(true).open(&fresh).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(old_time))
+            .unwrap();
+        drop(file);
+        gc_cache(root.path(), MAX_VIRTUAL_FILE_AGE);
+        assert!(!pkg_dir.exists(), "emptied package dir must be removed");
     }
 
     #[test]

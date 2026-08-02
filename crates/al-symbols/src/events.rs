@@ -41,6 +41,96 @@ impl std::fmt::Display for EventType {
     }
 }
 
+/// One publisher method in the pre-extracted event catalog. The method is
+/// referenced by index into `object.methods` so building the catalog never
+/// deep-clones symbol payloads.
+#[derive(Debug, Clone)]
+pub(crate) struct PublisherRef {
+    object: Arc<SymbolEntry>,
+    method_index: usize,
+    event_type: EventType,
+}
+
+/// One subscriber method in the pre-extracted event catalog.
+#[derive(Debug, Clone)]
+pub(crate) struct SubscriberRef {
+    object: Arc<SymbolEntry>,
+    method_index: usize,
+    target_type: String,
+    target_name: String,
+    target_event: String,
+}
+
+/// Publishers and subscribers extracted once per index generation, so event
+/// queries filter a small pre-built list instead of scanning every method of
+/// every indexed object per call.
+#[derive(Debug, Default)]
+pub(crate) struct EventCatalog {
+    publishers: Vec<PublisherRef>,
+    subscribers: Vec<SubscriberRef>,
+}
+
+/// Catalog plus the index mutation generation it was built from.
+#[derive(Debug)]
+pub(crate) struct EventCatalogCache {
+    pub(crate) generation: u64,
+    pub(crate) catalog: Arc<EventCatalog>,
+}
+
+/// Extract every publisher/subscriber from the index. AL attribute names are
+/// case-insensitive, and workspace-derived symbols carry the attribute as
+/// typed in source, so matching must ignore case.
+pub(crate) fn build_event_catalog(index: &SymbolIndex) -> EventCatalog {
+    let mut catalog = EventCatalog::default();
+    for entry in index.all_entries() {
+        for (method_index, method) in entry.methods.iter().enumerate() {
+            for attr in &method.attributes {
+                if attr.name.eq_ignore_ascii_case("IntegrationEvent") {
+                    catalog.publishers.push(PublisherRef {
+                        object: Arc::clone(&entry),
+                        method_index,
+                        event_type: EventType::Integration,
+                    });
+                } else if attr.name.eq_ignore_ascii_case("BusinessEvent") {
+                    catalog.publishers.push(PublisherRef {
+                        object: Arc::clone(&entry),
+                        method_index,
+                        event_type: EventType::Business,
+                    });
+                } else if attr.name.eq_ignore_ascii_case("EventSubscriber") {
+                    let (target_type, target_name, target_event) =
+                        parse_subscriber_args(&attr.arguments);
+                    catalog.subscribers.push(SubscriberRef {
+                        object: Arc::clone(&entry),
+                        method_index,
+                        target_type,
+                        target_name,
+                        target_event,
+                    });
+                }
+            }
+        }
+    }
+    // DashMap iteration order is arbitrary; sort so results are deterministic.
+    catalog.publishers.sort_by(|a, b| {
+        (&a.object.name, a.object.kind, a.object.id, a.method_index).cmp(&(
+            &b.object.name,
+            b.object.kind,
+            b.object.id,
+            b.method_index,
+        ))
+    });
+    catalog.subscribers.sort_by(|a, b| {
+        (&a.object.name, a.object.kind, a.object.id, a.method_index).cmp(&(
+            &b.object.name,
+            b.object.kind,
+            b.object.id,
+            b.method_index,
+        ))
+    });
+    catalog
+}
+
 /// Find all event publishers and subscribers matching a name pattern.
 ///
 /// The `query` is matched case-insensitively against:
@@ -49,53 +139,40 @@ impl std::fmt::Display for EventType {
 /// - Object names containing events
 pub fn get_events(index: &SymbolIndex, query: &str) -> EventResults {
     let query_lower = query.to_lowercase();
+    let catalog = index.event_catalog();
     let mut publishers = Vec::new();
     let mut subscribers = Vec::new();
 
-    for entry in index.all_entries() {
-        for method in &entry.methods {
-            for attr in &method.attributes {
-                match attr.name.as_str() {
-                    "IntegrationEvent"
-                        if matches_event_query(&entry.name, &method.name, &query_lower) =>
-                    {
-                        publishers.push(EventPublisher {
-                            object: Arc::clone(&entry),
-                            method: method.clone(),
-                            event_type: EventType::Integration,
-                        });
-                    }
-                    "BusinessEvent"
-                        if matches_event_query(&entry.name, &method.name, &query_lower) =>
-                    {
-                        publishers.push(EventPublisher {
-                            object: Arc::clone(&entry),
-                            method: method.clone(),
-                            event_type: EventType::Business,
-                        });
-                    }
-                    "EventSubscriber" => {
-                        let (target_type, target_name, target_event) =
-                            parse_subscriber_args(&attr.arguments);
-                        if matches_subscriber_query(
-                            &entry.name,
-                            &method.name,
-                            &target_name,
-                            &target_event,
-                            &query_lower,
-                        ) {
-                            subscribers.push(EventSubscriber {
-                                object: Arc::clone(&entry),
-                                method: method.clone(),
-                                target_object_type: target_type,
-                                target_object_name: target_name,
-                                target_event_name: target_event,
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-            }
+    for publisher in &catalog.publishers {
+        let Some(method) = publisher.object.methods.get(publisher.method_index) else {
+            continue;
+        };
+        if matches_event_query(&publisher.object.name, &method.name, &query_lower) {
+            publishers.push(EventPublisher {
+                object: Arc::clone(&publisher.object),
+                method: method.clone(),
+                event_type: publisher.event_type,
+            });
+        }
+    }
+    for subscriber in &catalog.subscribers {
+        let Some(method) = subscriber.object.methods.get(subscriber.method_index) else {
+            continue;
+        };
+        if matches_subscriber_query(
+            &subscriber.object.name,
+            &method.name,
+            &subscriber.target_name,
+            &subscriber.target_event,
+            &query_lower,
+        ) {
+            subscribers.push(EventSubscriber {
+                object: Arc::clone(&subscriber.object),
+                method: method.clone(),
+                target_object_type: subscriber.target_type.clone(),
+                target_object_name: subscriber.target_name.clone(),
+                target_event_name: subscriber.target_event.clone(),
+            });
         }
     }
 
@@ -333,6 +410,83 @@ mod tests {
         let results = get_events(&index, "NonexistentEvent");
         assert!(results.publishers.is_empty());
         assert!(results.subscribers.is_empty());
+    }
+
+    /// AL attribute names are case-insensitive and the workspace pipeline
+    /// preserves as-typed casing (`[integrationevent]`, `[EVENTSUBSCRIBER]`),
+    /// so discovery must match attributes case-insensitively.
+    #[test]
+    fn attribute_matching_is_case_insensitive() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[SymbolEntry {
+            kind: ObjectKind::Codeunit,
+            id: 50_200,
+            name: "Casing Publisher".to_string(),
+            package: "TestPkg".to_string(),
+            methods: vec![
+                MethodSymbol {
+                    name: "OnLowercasePublisher".to_string(),
+                    parameters: Vec::new(),
+                    return_type: None,
+                    attributes: vec![AttributeSymbol {
+                        name: "integrationevent".to_string(),
+                        arguments: vec!["false".to_string(), "false".to_string()],
+                    }],
+                    is_local: false,
+                },
+                MethodSymbol {
+                    name: "OnUppercaseBusiness".to_string(),
+                    parameters: Vec::new(),
+                    return_type: None,
+                    attributes: vec![AttributeSymbol {
+                        name: "BUSINESSEVENT".to_string(),
+                        arguments: vec!["false".to_string()],
+                    }],
+                    is_local: false,
+                },
+                MethodSymbol {
+                    name: "HandleMixedCase".to_string(),
+                    parameters: Vec::new(),
+                    return_type: None,
+                    attributes: vec![AttributeSymbol {
+                        name: "eventsubscriber".to_string(),
+                        arguments: vec![
+                            "ObjectType::Codeunit".to_string(),
+                            "Codeunit::\"Casing Publisher\"".to_string(),
+                            "'OnLowercasePublisher'".to_string(),
+                        ],
+                    }],
+                    is_local: false,
+                },
+            ],
+            ..Default::default()
+        }]);
+
+        let results = get_events(&index, "");
+        assert_eq!(
+            results.publishers.len(),
+            2,
+            "non-canonical attribute casing must still classify publishers"
+        );
+        assert_eq!(results.subscribers.len(), 1);
+        assert_eq!(
+            results.subscribers[0].target_event_name,
+            "OnLowercasePublisher"
+        );
+    }
+
+    /// The cached catalog must be invalidated when the index mutates.
+    #[test]
+    fn event_results_track_index_mutations() {
+        let index = SymbolIndex::new();
+        index.add_entries(&make_codeunit_with_events());
+        assert_eq!(get_events(&index, "").publishers.len(), 2);
+
+        index.remove_package_entries("TestPkg");
+        assert_eq!(get_events(&index, "").publishers.len(), 0);
+
+        index.add_entries(&make_codeunit_with_events());
+        assert_eq!(get_events(&index, "").publishers.len(), 2);
     }
 
     #[test]

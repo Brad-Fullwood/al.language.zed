@@ -836,9 +836,24 @@ pub(crate) struct EnumValueJson {
 impl SymbolReferenceJson {
     pub fn into_entries(self, package_name: &str) -> Vec<SymbolEntry> {
         let mut entries = Vec::new();
+        // Option-enum candidates and real enum names are accumulated across
+        // *all* namespace levels: synthetic pseudo-enums must be suppressed by
+        // a real enum declared in any namespace, and same-named Option fields
+        // from different objects must collapse into one deterministic entry
+        // instead of several arbitrary same-named ones.
+        let mut option_enums: std::collections::HashMap<(ObjectKind, String, String), Vec<String>> =
+            std::collections::HashMap::new();
+        let mut existing_enum_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut root = self;
         let nested = std::mem::take(&mut root.namespaces);
-        root.collect_entries_at_level(package_name, "", &mut entries);
+        root.collect_entries_at_level(
+            package_name,
+            "",
+            &mut entries,
+            &mut option_enums,
+            &mut existing_enum_names,
+        );
 
         let mut stack: Vec<(SymbolReferenceJson, String)> = nested
             .into_iter()
@@ -856,17 +871,35 @@ impl SymbolReferenceJson {
             for child in nested {
                 stack.push((child, namespace.clone()));
             }
-            current.collect_entries_at_level(package_name, &namespace, &mut entries);
+            current.collect_entries_at_level(
+                package_name,
+                &namespace,
+                &mut entries,
+                &mut option_enums,
+                &mut existing_enum_names,
+            );
         }
+
+        entries.extend(synthesize_option_enums(
+            package_name,
+            option_enums,
+            &existing_enum_names,
+        ));
         entries
     }
 
     /// Collect entries from this level only (namespaces field must be empty).
+    ///
+    /// Option-enum candidates and real enum names are pushed into the shared
+    /// package-level accumulators; synthetic entries are emitted once, at the
+    /// end of [`Self::into_entries`].
     fn collect_entries_at_level(
         self,
         package_name: &str,
         namespace: &str,
         entries: &mut Vec<SymbolEntry>,
+        option_enums: &mut std::collections::HashMap<(ObjectKind, String, String), Vec<String>>,
+        existing_enum_names: &mut std::collections::HashSet<String>,
     ) {
         let pkg = package_name.to_string();
 
@@ -896,12 +929,8 @@ impl SymbolReferenceJson {
 
         // Key: (object_kind, object_name, field_or_param_name) — prevents cross-object
         // collisions where two unrelated objects share the same field/parameter name but
-        // have different OptionMembers. Each (object, field) pair produces its own entry.
-        let mut option_enums: std::collections::HashMap<(ObjectKind, String, String), Vec<String>> =
-            std::collections::HashMap::new();
-        let mut existing_enum_names: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-
+        // have different OptionMembers; the final merge in `synthesize_option_enums`
+        // combines same-named candidates deterministically.
         for (kind, objects) in &collections {
             if matches!(kind, ObjectKind::Enum | ObjectKind::EnumExtension) {
                 for obj in objects {
@@ -943,38 +972,88 @@ impl SymbolReferenceJson {
                 entries.push(obj.into_entry(kind, &pkg, namespace));
             }
         }
+    }
+}
 
-        // Each (object_kind, object_name, field_name) triple produces a separate entry
-        // named after the field, so type resolution can find it by field/parameter name.
-        for ((_obj_kind, _obj_name, field_name), members) in &option_enums {
-            if existing_enum_names.contains(&field_name.to_lowercase()) {
-                continue;
-            }
-            let enum_values: Vec<EnumValueSymbol> = members
-                .iter()
-                .enumerate()
-                .filter(|(_, v)| !v.is_empty())
-                .map(|(i, v)| EnumValueSymbol {
-                    ordinal: i as i32,
-                    name: v.clone(),
-                })
-                .collect();
-            if !enum_values.is_empty() {
-                entries.push(SymbolEntry {
-                    kind: ObjectKind::Enum,
-                    id: -1,
-                    // Fabricated from an Option-typed field/parameter so the
-                    // type resolver can complete its members — not a real AL
-                    // enum object. Hidden from search and browse results.
-                    synthetic: true,
-                    name: field_name.clone(),
-                    package: pkg.clone(),
-                    enum_values,
-                    ..Default::default()
+/// Merge Option-typed field/parameter candidates into synthetic pseudo-enum
+/// entries, one per field name.
+///
+/// Candidates are keyed by `(object_kind, object_name, field_name)` while
+/// collecting, but type resolution looks entries up by *field name* alone, so
+/// same-named candidates from different objects must not become several
+/// same-named entries that resolve arbitrarily. Instead, one entry is emitted
+/// per field name with the deterministic union of every candidate's members
+/// (iteration over a sorted key list keeps the output stable). A real enum of
+/// the same name declared anywhere in the package suppresses the synthetic.
+fn synthesize_option_enums(
+    package_name: &str,
+    option_enums: std::collections::HashMap<(ObjectKind, String, String), Vec<String>>,
+    existing_enum_names: &std::collections::HashSet<String>,
+) -> Vec<SymbolEntry> {
+    let mut sorted: Vec<((ObjectKind, String, String), Vec<String>)> =
+        option_enums.into_iter().collect();
+    sorted.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+
+    let mut merged: std::collections::BTreeMap<String, (String, Vec<EnumValueSymbol>)> =
+        std::collections::BTreeMap::new();
+    for ((_obj_kind, _obj_name, field_name), members) in sorted {
+        let folded = field_name.to_lowercase();
+        if existing_enum_names.contains(&folded) {
+            continue;
+        }
+        let (_, values) = merged
+            .entry(folded)
+            .or_insert_with(|| (field_name.clone(), Vec::new()));
+        if values.is_empty() {
+            // First candidate keeps its positional ordinals (empty Option
+            // members consume an ordinal slot in AL but produce no value).
+            values.extend(
+                members
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, member)| !member.is_empty())
+                    .map(|(i, member)| EnumValueSymbol {
+                        ordinal: i as i32,
+                        name: member.clone(),
+                    }),
+            );
+        } else {
+            // Later same-named candidates append their distinct members after
+            // the existing ordinals so completion sees the full union.
+            let mut next = values.iter().map(|v| v.ordinal).max().unwrap_or(-1) + 1;
+            for member in members {
+                if member.is_empty()
+                    || values
+                        .iter()
+                        .any(|existing| existing.name.to_lowercase() == member.to_lowercase())
+                {
+                    continue;
+                }
+                values.push(EnumValueSymbol {
+                    ordinal: next,
+                    name: member,
                 });
+                next += 1;
             }
         }
     }
+
+    merged
+        .into_values()
+        .filter(|(_, values)| !values.is_empty())
+        .map(|(display_name, enum_values)| SymbolEntry {
+            kind: ObjectKind::Enum,
+            id: -1,
+            // Fabricated from an Option-typed field/parameter so the
+            // type resolver can complete its members — not a real AL
+            // enum object. Hidden from search and browse results.
+            synthetic: true,
+            name: display_name,
+            package: package_name.to_string(),
+            enum_values,
+            ..Default::default()
+        })
+        .collect()
 }
 
 impl ObjectJson {
@@ -1535,6 +1614,67 @@ mod tests {
         assert!(entries.iter().any(|e| e.name == "DeeplyNested"
             && e.kind == ObjectKind::Codeunit
             && e.namespace == "Contoso.Sales"));
+    }
+
+    /// Same-named Option fields on different objects must collapse into ONE
+    /// synthetic pseudo-enum carrying the union of all members (name-based
+    /// resolution cannot distinguish several same-named entries), and a real
+    /// enum in *any* namespace must suppress the same-named synthetic.
+    #[test]
+    fn synthetic_option_enums_merge_same_names_and_defer_to_real_enums_package_wide() {
+        let json = r#"{
+            "Tables": [
+                { "Id": 1, "Name": "Sales Order", "Fields": [
+                    { "Id": 1, "Name": "Status",
+                      "TypeDefinition": { "Name": "Option", "OptionMembers": ["Open", "Released"] } },
+                    { "Id": 2, "Name": "Priority",
+                      "TypeDefinition": { "Name": "Option", "OptionMembers": ["Low", "High"] } }
+                ] },
+                { "Id": 2, "Name": "Purchase Order", "Fields": [
+                    { "Id": 1, "Name": "Status",
+                      "TypeDefinition": { "Name": "Option", "OptionMembers": ["Open", "Closed"] } }
+                ] }
+            ],
+            "Namespaces": [
+                { "Name": "Other",
+                  "EnumTypes": [
+                    { "Id": 10, "Name": "Priority",
+                      "Values": [ { "Ordinal": 0, "Name": "RealLow" } ] }
+                  ] }
+            ]
+        }"#;
+        let sr: SymbolReferenceJson = serde_json::from_str(json).unwrap();
+        let entries = sr.into_entries("Pkg");
+
+        let status: Vec<_> = entries
+            .iter()
+            .filter(|e| e.synthetic && e.name == "Status")
+            .collect();
+        assert_eq!(
+            status.len(),
+            1,
+            "same-named Option fields must produce exactly one synthetic entry"
+        );
+        let members: Vec<&str> = status[0]
+            .enum_values
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect();
+        // Candidates merge in sorted (kind, object, field) order: "Purchase
+        // Order" precedes "Sales Order", so its positional members come first.
+        assert_eq!(
+            members,
+            vec!["Open", "Closed", "Released"],
+            "the synthetic entry must carry the union of every candidate's members"
+        );
+
+        assert!(
+            !entries.iter().any(|e| e.synthetic && e.name == "Priority"),
+            "a real enum in another namespace must suppress the synthetic duplicate"
+        );
+        assert!(entries
+            .iter()
+            .any(|e| !e.synthetic && e.kind == ObjectKind::Enum && e.name == "Priority"));
     }
 
     #[test]

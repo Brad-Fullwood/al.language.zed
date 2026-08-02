@@ -202,11 +202,34 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
     };
 
     let mut searched = Vec::new();
+    // A malformed `app.json` in the *start* directory is the user's own
+    // project and stays a hard error. A malformed manifest anywhere else on
+    // the walk (an unrelated `$HOME/app.json`, a broken sibling project) must
+    // not hide a perfectly valid project further along the search; those are
+    // recorded and only reported if nothing valid is found.
+    let mut deferred_error: Option<DiscoveryError> = None;
+    let try_dir = |dir: &Path,
+                   deferred_error: &mut Option<DiscoveryError>|
+     -> Result<Option<AlProject>, DiscoveryError> {
+        match try_load_project(dir) {
+            Ok(project) => Ok(project),
+            Err(error) if dir == start => Err(error),
+            Err(error) => {
+                tracing::warn!(
+                    path = %dir.display(),
+                    %error,
+                    "skipping directory with unloadable app.json during project discovery"
+                );
+                deferred_error.get_or_insert(error);
+                Ok(None)
+            }
+        }
+    };
 
     let mut current = Some(start.as_path());
     while let Some(dir) = current {
         searched.push(dir.to_path_buf());
-        if let Some(project) = try_load_project(dir)? {
+        if let Some(project) = try_dir(dir, &mut deferred_error)? {
             return Ok(project);
         }
         current = dir.parent();
@@ -238,10 +261,16 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
                 continue;
             }
             searched.push(path.clone());
-            if let Some(project) = try_load_project(&path)? {
+            if let Some(project) = try_dir(&path, &mut deferred_error)? {
                 return Ok(project);
             }
         }
+    }
+
+    // Nothing valid anywhere: a recorded manifest error explains the failure
+    // better than a bare "no project found".
+    if let Some(error) = deferred_error {
+        return Err(error);
     }
 
     let searched_str = searched
@@ -373,12 +402,35 @@ fn scan_package_folders(folders: &[PathBuf]) -> Result<Vec<PathBuf>, DiscoveryEr
                     path: path.clone(),
                     source,
                 })?;
-            if (file_type.is_file() || file_type.is_symlink())
-                && path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+            if !path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
             {
+                continue;
+            }
+            if file_type.is_file() {
                 folder_packages.push(path);
+            } else if file_type.is_symlink() {
+                // Resolve the target: a dangling symlink or one pointing at a
+                // directory is not a loadable package, and admitting it would
+                // fail the whole atomic batch load later. Skip it with a
+                // warning instead.
+                match std::fs::metadata(&path) {
+                    Ok(target) if target.is_file() => folder_packages.push(path),
+                    Ok(_) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            "ignoring .app symlink that resolves to a non-file"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            %error,
+                            "ignoring dangling .app symlink"
+                        );
+                    }
+                }
             }
         }
         folder_packages.sort();
@@ -560,6 +612,109 @@ mod tests {
         let project = find_project(&project_dir).unwrap();
         assert_eq!(project.root, project_dir);
         assert_eq!(project.app_json.name, "Test");
+    }
+
+    fn write_valid_manifest(dir: &Path, name: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000000",
+                "name": name, "publisher": "Test", "version": "1.0.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// A malformed `app.json` in an *ancestor* directory (e.g. junk in
+    /// `$HOME`) must not abort discovery before the child scan finds the
+    /// user's valid project one level below the start.
+    #[test]
+    fn find_project_survives_malformed_ancestor_app_json() {
+        let tmp = tempdir();
+        std::fs::write(tmp.join("app.json"), "{ not json").unwrap();
+        let start = tmp.join("workspace");
+        std::fs::create_dir_all(&start).unwrap();
+        let child = start.join("my-project");
+        write_valid_manifest(&child, "Child Project");
+
+        let project = find_project(&start).expect("valid child project must be discovered");
+        assert_eq!(project.app_json.name, "Child Project");
+        assert_eq!(project.root, child);
+    }
+
+    /// A malformed sibling subdirectory must not stop the scan from reaching
+    /// a valid subdirectory project.
+    #[test]
+    fn find_project_skips_malformed_sibling_subdirectory() {
+        let tmp = tempdir();
+        let start = tmp.join("workspace");
+        let broken = start.join("a-broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("app.json"), "{ definitely not json").unwrap();
+        let valid = start.join("b-valid");
+        write_valid_manifest(&valid, "Valid Project");
+
+        let project = find_project(&start).expect("valid sibling project must be discovered");
+        assert_eq!(project.app_json.name, "Valid Project");
+    }
+
+    /// The start directory's own malformed manifest is the user's project and
+    /// stays a hard error; when nothing valid exists anywhere, a recorded
+    /// manifest error is reported instead of a bare "no project found".
+    #[test]
+    fn find_project_reports_manifest_errors_when_nothing_valid_exists() {
+        let tmp = tempdir();
+        let start = tmp.join("direct");
+        std::fs::create_dir_all(&start).unwrap();
+        std::fs::write(start.join("app.json"), "{ nope").unwrap();
+        assert!(matches!(
+            find_project(&start),
+            Err(DiscoveryError::InvalidAppJson { .. })
+        ));
+
+        let tmp2 = tempdir();
+        let start2 = tmp2.join("workspace");
+        std::fs::create_dir_all(&start2).unwrap();
+        let broken = start2.join("only-broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("app.json"), "{ nope").unwrap();
+        assert!(matches!(
+            find_project(&start2),
+            Err(DiscoveryError::InvalidAppJson { .. })
+        ));
+    }
+
+    /// Dangling `.app` symlinks (or symlinks to directories) must be skipped
+    /// with a warning instead of entering the package list, where the atomic
+    /// batch load would fail on them.
+    #[cfg(unix)]
+    #[test]
+    fn scan_package_folders_skips_dangling_and_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempdir();
+        let folder = tmp.join(".alpackages");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("Real.app"), b"NAVX").unwrap();
+        symlink(tmp.join("missing-target.app"), folder.join("Dangling.app")).unwrap();
+        let dir_target = tmp.join("a-directory.app");
+        std::fs::create_dir_all(&dir_target).unwrap();
+        symlink(&dir_target, folder.join("DirLink.app")).unwrap();
+        // A symlink to a real file is still accepted.
+        symlink(folder.join("Real.app"), folder.join("GoodLink.app")).unwrap();
+
+        let packages =
+            scan_package_folders(std::slice::from_ref(&folder)).expect("scan must not fail");
+        let names: Vec<String> = packages
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"Real.app".to_string()));
+        assert!(names.contains(&"GoodLink.app".to_string()));
+        assert!(!names.contains(&"Dangling.app".to_string()));
+        assert!(!names.contains(&"DirLink.app".to_string()));
     }
 
     #[test]

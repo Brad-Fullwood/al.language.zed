@@ -27,6 +27,12 @@ const CACHE_SCHEMA_VERSION: u32 = 1;
 /// A cache serializes the already-capped (200 MB) SymbolReference payload plus
 /// a small header. Refuse pathological/corrupt files before allocating them.
 const MAX_CACHE_FILE_BYTES: u64 = 256 * 1024 * 1024;
+/// GC bound: cache entries untouched for this long are deleted. Entries are
+/// rewritten whenever their `.app` changes, so anything this old belongs to a
+/// package that is gone, moved, or truly frozen (and is cheap to re-create).
+const MAX_CACHE_ENTRY_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// GC bound: total bytes the cache directory may retain after an age sweep.
+const MAX_CACHE_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CacheHeader {
@@ -288,6 +294,82 @@ impl SymbolCache {
         Ok(())
     }
 
+    /// Run [`Self::gc`] at most once per process.
+    ///
+    /// Package loaders call this on their initialization paths; a per-process
+    /// guard keeps repeated reloads from rescanning the cache directory.
+    pub fn gc_once(&self) {
+        static GC_RAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if GC_RAN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        self.gc(MAX_CACHE_ENTRY_AGE, MAX_CACHE_TOTAL_BYTES);
+    }
+
+    /// Bounded garbage collection for the symbol cache directory.
+    ///
+    /// Cache entries are keyed by `.app` path hash, so packages that were
+    /// removed, moved, or renamed leave orphaned files behind forever without
+    /// GC. Two simple bounds keep the directory from growing without limit:
+    /// entries whose mtime is older than `max_age` are deleted (`save`
+    /// rewrites the entry whenever the package changes, and a reused entry is
+    /// re-created cheaply after deletion), and if the surviving entries still
+    /// exceed `max_total_bytes` the oldest are deleted until under the cap.
+    /// All failures are logged and ignored — GC is strictly best-effort.
+    pub fn gc(&self, max_age: Duration, max_total_bytes: u64) {
+        let entries = match fs::read_dir(&self.cache_dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                debug!(%error, path = %self.cache_dir.display(), "symbol cache GC: cannot scan directory");
+                return;
+            }
+        };
+        let now = SystemTime::now();
+        let mut survivors: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+        let mut removed = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !name.ends_with(".cache") {
+                continue; // stale .tmp files are handled by cleanup_stale_tmp
+            }
+            let Ok(meta) = fs::metadata(&path) else {
+                continue;
+            };
+            let modified = meta.modified().unwrap_or(now);
+            let age = now.duration_since(modified).unwrap_or(Duration::ZERO);
+            if age > max_age {
+                if fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
+                continue;
+            }
+            survivors.push((modified, meta.len(), path));
+        }
+
+        let mut total: u64 = survivors.iter().map(|(_, size, _)| size).sum();
+        if total > max_total_bytes {
+            // Delete oldest-first until under the size cap.
+            survivors.sort_unstable_by_key(|(modified, _, _)| *modified);
+            for (_, size, path) in &survivors {
+                if total <= max_total_bytes {
+                    break;
+                }
+                if fs::remove_file(path).is_ok() {
+                    removed += 1;
+                    total = total.saturating_sub(*size);
+                }
+            }
+        }
+        if removed > 0 {
+            debug!(
+                removed,
+                path = %self.cache_dir.display(),
+                "symbol cache GC: deleted stale entries"
+            );
+        }
+    }
+
     fn cache_path_for(&self, app_path: &Path) -> PathBuf {
         let filename = app_path
             .file_name()
@@ -503,6 +585,35 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
             .collect();
         assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
+    }
+
+    #[test]
+    fn gc_removes_aged_entries_and_enforces_size_cap() {
+        let dir = TempDir::new().unwrap();
+        let cache = SymbolCache::at(dir.path().join("cache"));
+        let (old_app, old_pkg) = make_test_app(dir.path(), "OldPkg");
+        let (new_app, new_pkg) = make_test_app(dir.path(), "NewPkg");
+        cache.save(&old_app, &old_pkg).unwrap();
+        cache.save(&new_app, &new_pkg).unwrap();
+
+        // Age the first entry far past the cutoff.
+        let old_entry = cache.cache_path_for(&old_app);
+        let stale = SystemTime::now() - Duration::from_secs(90 * 24 * 60 * 60);
+        let file = fs::OpenOptions::new().write(true).open(&old_entry).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(stale))
+            .unwrap();
+        drop(file);
+
+        cache.gc(Duration::from_secs(30 * 24 * 60 * 60), u64::MAX);
+        assert!(cache.load(&old_app).is_none(), "aged entry must be deleted");
+        assert!(cache.load(&new_app).is_some(), "fresh entry must survive");
+
+        // A zero-byte size cap forces the remaining entry out too.
+        cache.gc(Duration::from_secs(30 * 24 * 60 * 60), 0);
+        assert!(
+            cache.load(&new_app).is_none(),
+            "entries beyond the size cap must be deleted oldest-first"
+        );
     }
 
     #[test]
