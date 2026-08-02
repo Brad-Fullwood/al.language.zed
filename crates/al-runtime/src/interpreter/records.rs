@@ -766,7 +766,7 @@ fn run_record_method(
             // literal matches a Code key and an Integer a Decimal one.
             let pk_fields: Vec<FieldNo> = store.record.primary_key_fields().to_vec();
             let mut key_values = Vec::with_capacity(values.len());
-            for (field, value) in pk_fields.into_iter().zip(values.into_iter()) {
+            for (field, value) in pk_fields.into_iter().zip(values) {
                 match store.coerce_to_field(field, value) {
                     Ok(coerced) => key_values.push(coerced),
                     Err(error) => return err(format!("Get: {error}")),
