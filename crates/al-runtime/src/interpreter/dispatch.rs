@@ -20,19 +20,23 @@ use crate::interpreter::scope::{CallFrame, Eval, ScopeStack};
 use crate::interpreter::value::{ErrorInfo, Value};
 use crate::stubs;
 
-const MAX_RECURSION_DEPTH: usize = 100;
+/// Each interpreted call level is a dispatch→eval_stmt→eval_expr native
+/// frame cluster that can cost tens of KiB of stack in debug builds, and
+/// the interpreter must stay within a 2 MiB thread stack (test threads and
+/// tokio workers — not the 8 MiB main thread). 48 levels keeps the worst
+/// case comfortably inside that budget while remaining far deeper than any
+/// realistic AL test-code call chain.
+const MAX_RECURSION_DEPTH: usize = 48;
 
 /// Maximum syntactic nesting depth `eval_stmt` will descend into before
 /// aborting with an error. The counter is cumulative across nested
-/// procedure calls (a 100-deep call chain stacks ~4 AST levels per frame),
-/// so we set the cap above what `MAX_RECURSION_DEPTH` (100) can reach via
-/// call recursion alone — that way an infinite-call test trips the call
-/// cap first (clearer error message) and only truly pathological single-
-/// procedure nesting trips this AST cap. 1024 leaves plenty of headroom
-/// for the OS stack (each `eval_stmt` frame is ~256 B of locals plus the
-/// Node payload, so 1024 frames is ~1-2 MiB — well under the default
-/// 8 MiB stack).
-pub const MAX_AST_DEPTH: usize = 1024;
+/// procedure calls (a call chain stacks ~4 AST levels per frame), so the
+/// cap must exceed what `MAX_RECURSION_DEPTH` (48 × ~4 = 192) can reach
+/// via call recursion alone — that way an infinite-call test trips the
+/// call cap first (clearer error message) and only truly pathological
+/// single-procedure nesting trips this AST cap. 256 such frames stay
+/// within the same 2 MiB thread-stack budget as the call cap.
+pub const MAX_AST_DEPTH: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchMode {
@@ -2459,15 +2463,26 @@ mod tests {
 
     #[test]
     fn workspace_dispatch_deep_recursion_negative() {
-        let ws = workspace_with_helper();
-        let mut ctx = DispatchCtx::new_pure(ws);
-        let result = dispatch_call(Some("Helper"), "Forever", vec![], &mut ctx);
-        let e = err(result);
-        assert!(
-            e.message.contains("recursion depth exceeded"),
-            "expected 'recursion depth exceeded' in error, got: {}",
-            e.message
-        );
+        // Run on a thread with an explicit large stack so this verifies the
+        // interpreter's own depth guard, not the runner's thread-stack size
+        // (CI test threads default to 2 MiB and debug frames vary by
+        // toolchain).
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let ws = workspace_with_helper();
+                let mut ctx = DispatchCtx::new_pure(ws);
+                let result = dispatch_call(Some("Helper"), "Forever", vec![], &mut ctx);
+                let e = err(result);
+                assert!(
+                    e.message.contains("recursion depth exceeded"),
+                    "expected 'recursion depth exceeded' in error, got: {}",
+                    e.message
+                );
+            })
+            .expect("spawn recursion test thread")
+            .join()
+            .expect("recursion test thread panicked");
     }
 
     #[test]
