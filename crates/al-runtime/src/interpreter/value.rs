@@ -454,6 +454,35 @@ mod tests {
     }
 
     #[test]
+    fn civil_days_round_trip_over_wide_range() {
+        // Property-style round trip: civil_from_days is the exact inverse of
+        // days_from_civil. Step through a wide day range (covering leap
+        // centuries, negative years, and both era branches) plus a few named
+        // anchors, and require days -> (y, m, d) -> days to be the identity
+        // with in-range month/day parts.
+        let anchors = [
+            days_from_civil(2024, 2, 29), // leap day
+            -AL_EPOCH_TO_UNIX_DAYS,       // AL epoch 0001-01-01
+            0,                            // Unix epoch 1970-01-01
+        ];
+        let stepped = (-1_000_000..=1_000_000).step_by(1_237);
+        for days in stepped.chain(anchors) {
+            let (year, month, day) = civil_from_days(days);
+            assert!((1..=12).contains(&month), "bad month {month} for {days}");
+            assert!((1..=31).contains(&day), "bad day {day} for {days}");
+            assert_eq!(
+                days_from_civil(year, month, day),
+                days,
+                "round trip failed for day {days} ({year:04}-{month:02}-{day:02})"
+            );
+        }
+        // The named anchors also decode to the expected civil dates.
+        assert_eq!(civil_from_days(days_from_civil(2024, 2, 29)), (2024, 2, 29));
+        assert_eq!(civil_from_days(-AL_EPOCH_TO_UNIX_DAYS), (1, 1, 1));
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+    }
+
+    #[test]
     fn decimal_is_exact_no_binary_float_drift() {
         assert_eq!(
             Value::Decimal(dec!(0.1) + dec!(0.2)),

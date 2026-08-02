@@ -807,7 +807,7 @@ fn run_record_method(
         }
         "setfilter" => {
             let f = field_no.unwrap();
-            let mut expr = match values.first() {
+            let raw = match values.first() {
                 Some(Value::Text(s)) | Some(Value::Code(s)) => s.clone(),
                 Some(value) => {
                     return err(format!(
@@ -817,15 +817,17 @@ fn run_record_method(
                 }
                 None => return err("SetFilter: missing filter expression"),
             };
-            // Substitute in DESCENDING placeholder order so replacing `%1`
-            // cannot corrupt `%10`.
-            for index in (1..values.len()).rev() {
-                let rendered = match render_filter_value(&values[index]) {
-                    Ok(rendered) => rendered,
-                    Err(error) => return err(format!("SetFilter: {error}")),
-                };
-                expr = expr.replace(&format!("%{index}"), &rendered);
-            }
+            // Single left-to-right pass (shared with StrSubstNo): substituted
+            // text is never re-scanned, so a value containing `%1` stays
+            // literal and `%10` cannot be corrupted by the `%1` replacement.
+            let expr = match crate::interpreter::dispatch::substitute_placeholders_with(
+                &raw,
+                values.len() - 1,
+                |n| render_filter_value(&values[n]),
+            ) {
+                Ok(expr) => expr,
+                Err(error) => return err(format!("SetFilter: {error}")),
+            };
             match store.record.set_filter_in(view, f, &expr) {
                 Ok(()) => Eval::Normal(Value::Empty),
                 Err(e) => err(format!("SetFilter: {e}")),

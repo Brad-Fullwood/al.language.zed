@@ -422,9 +422,10 @@ fn split_set_members(source: &str) -> Result<Vec<&str>, String> {
 ///
 /// Parses are memoized in `ctx.expr_fragment_cache` (keyed by the fragment
 /// text): a set literal evaluated inside a loop re-parses each member once,
-/// not once per iteration. `tree_sitter::Tree` clones are cheap (refcounted),
-/// so taking a clone out of the cache avoids borrowing `ctx` across the
-/// evaluation below.
+/// not once per iteration. `tree_sitter::Tree` clones are cheap (refcounted)
+/// and the wrapper source is an `Arc<str>`, so taking a clone out of the
+/// cache avoids borrowing `ctx` across the evaluation below without
+/// reallocating the wrapper text on every hit.
 fn eval_expression_fragment(
     expression: &str,
     stack: &mut ScopeStack,
@@ -443,7 +444,7 @@ fn eval_expression_fragment(
                     "set literal member is not a valid expression: `{expression}`"
                 )));
             }
-            let entry = (wrapper, parsed.tree);
+            let entry: (std::sync::Arc<str>, _) = (wrapper.into(), parsed.tree);
             ctx.expr_fragment_cache
                 .insert(expression.to_string(), entry.clone());
             entry
@@ -1286,25 +1287,6 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
                 },
             )
         }
-        // Duration ± Duration/number → Duration.
-        ("+", Value::Duration(l), offset) | ("+", offset, Value::Duration(l)) => Some(
-            match whole_offset(offset).and_then(|offset| {
-                l.checked_add(offset)
-                    .ok_or_else(|| simple_error("Duration arithmetic overflow"))
-            }) {
-                Ok(value) => Eval::Normal(Value::Duration(value)),
-                Err(error) => Eval::Error(error),
-            },
-        ),
-        ("-", Value::Duration(l), offset) => Some(
-            match whole_offset(offset).and_then(|offset| {
-                l.checked_sub(offset)
-                    .ok_or_else(|| simple_error("Duration arithmetic overflow"))
-            }) {
-                Ok(value) => Eval::Normal(Value::Duration(value)),
-                Err(error) => Eval::Error(error),
-            },
-        ),
         ("+", Value::Date(date), offset) | ("+", offset, Value::Date(date)) => {
             if *date == 0 {
                 return Some(Eval::Error(simple_error(
@@ -1392,6 +1374,30 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
                 },
             )
         }
+        // Duration ± Duration/number → Duration. These arms must come AFTER
+        // the Date/Time arms: their symmetric `("+", offset, Duration)`
+        // pattern would otherwise capture `Duration + Date` / `Duration +
+        // Time` with the Date/Time operand as `offset`, and `whole_offset`
+        // rejects Date/Time operands — the temporal arms above handle those
+        // shapes (with the Duration operand contributing its milliseconds).
+        ("+", Value::Duration(l), offset) | ("+", offset, Value::Duration(l)) => Some(
+            match whole_offset(offset).and_then(|offset| {
+                l.checked_add(offset)
+                    .ok_or_else(|| simple_error("Duration arithmetic overflow"))
+            }) {
+                Ok(value) => Eval::Normal(Value::Duration(value)),
+                Err(error) => Eval::Error(error),
+            },
+        ),
+        ("-", Value::Duration(l), offset) => Some(
+            match whole_offset(offset).and_then(|offset| {
+                l.checked_sub(offset)
+                    .ok_or_else(|| simple_error("Duration arithmetic overflow"))
+            }) {
+                Ok(value) => Eval::Normal(Value::Duration(value)),
+                Err(error) => Eval::Error(error),
+            },
+        ),
         _ => None,
     }
 }
@@ -1709,6 +1715,39 @@ mod tests {
         assert_eq!(
             ok(apply_binary("div", Value::Integer(7), Value::Integer(2))),
             Value::Integer(3)
+        );
+    }
+
+    #[test]
+    fn duration_plus_date_and_time_dispatch_to_temporal_arms() {
+        // Regression: the symmetric Duration arms used to match first, so
+        // `Duration + Date` / `Duration + Time` captured the Date/Time operand
+        // as `offset` and errored in `whole_offset` instead of reaching the
+        // Date/Time handlers.
+        let date = crate::interpreter::value::al_days_from_ymd(2024, 2, 28);
+        let expected = ok(apply_binary("+", Value::Date(date), Value::Duration(1)));
+        assert_eq!(expected, Value::Date(date + 1));
+        assert_eq!(
+            ok(apply_binary("+", Value::Duration(1), Value::Date(date))),
+            expected,
+            "Duration + Date must match Date + Duration"
+        );
+        let time = 3_600_000;
+        let expected = ok(apply_binary("+", Value::Time(time), Value::Duration(500)));
+        assert_eq!(expected, Value::Time(time + 500));
+        assert_eq!(
+            ok(apply_binary("+", Value::Duration(500), Value::Time(time))),
+            expected,
+            "Duration + Time must match Time + Duration"
+        );
+        // Duration ± Duration still lands on the Duration arms.
+        assert_eq!(
+            ok(apply_binary("+", Value::Duration(2), Value::Duration(3))),
+            Value::Duration(5)
+        );
+        assert_eq!(
+            ok(apply_binary("-", Value::Duration(5), Value::Duration(3))),
+            Value::Duration(2)
         );
     }
 

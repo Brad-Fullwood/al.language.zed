@@ -1534,6 +1534,89 @@ fn setfilter_placeholder_ten_is_not_corrupted_by_placeholder_one() {
 }
 
 #[test]
+fn setfilter_value_containing_percent_one_stays_literal() {
+    // Regression: substituted text must never be re-scanned. A `%2` value
+    // whose text contains '%1' used to be corrupted by the later `%1` pass
+    // (descending replace order), turning 'A%1B' into 'AXB'.
+    let cu = r#"codeunit 50101 "Item Tests"
+{
+    procedure PercentLiteralValue(): Text
+    var
+        Item: Record "Item";
+    begin
+        Item.Init();
+        Item."No." := 'K1';
+        Item.Description := 'A%1B';
+        Item.Insert();
+        Item.Init();
+        Item."No." := 'K2';
+        Item.Description := 'AXB';
+        Item.Insert();
+        Item.SetFilter(Description, '%2', 'X', 'A%1B');
+        if Item.Count() <> 1 then
+            Error('filter matched %1 rows', Item.Count());
+        Item.FindFirst();
+        exit(Item.Description);
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/ItemTests.al", cu)],
+        "Item Tests",
+        "PercentLiteralValue",
+        vec![],
+    );
+    assert_eq!(
+        ok(r),
+        Value::Text("A%1B".into()),
+        "a substituted value containing '%1' must stay literal, not be rewritten by a later pass"
+    );
+}
+
+#[test]
+fn by_value_record_argument_does_not_share_the_caller_view() {
+    // Regression: a by-value record parameter used to keep the caller's view
+    // handle (RecordValue is Clone), so the callee's SetRange corrupted the
+    // caller's filters. The callee must get its own fresh view.
+    let cu = r#"codeunit 50103 "Num Tests"
+{
+    procedure CalleeFilters(Num: Record "Num")
+    begin
+        Num.SetRange("Entry No.", 9, 9);
+        if Num.Count() <> 1 then
+            Error('callee view expected 1 row, got %1', Num.Count());
+    end;
+
+    procedure ByValueKeepsCallerView(): Integer
+    var
+        Num: Record "Num";
+        i: Integer;
+    begin
+        for i := 1 to 10 do begin
+            Num.Init();
+            Num."Entry No." := i;
+            Num.Insert();
+        end;
+        Num.SetRange("Entry No.", 1, 4);
+        CalleeFilters(Num);
+        exit(Num.Count());
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Num.al", NUM_TABLE), ("/ws/NumTests.al", cu)],
+        "Num Tests",
+        "ByValueKeepsCallerView",
+        vec![],
+    );
+    assert_eq!(
+        ok(r),
+        Value::Integer(4),
+        "the caller's SetRange(1,4) must survive a by-value call that sets its own filter"
+    );
+}
+
+#[test]
 fn deleteall_removes_only_filtered_rows() {
     let cu = r#"codeunit 50103 "Num Tests"
 {

@@ -453,6 +453,7 @@ fn classify_reachable(
             }
             classify_procedure_ast(
                 workspace,
+                catalog,
                 location,
                 &mut decision,
                 &mut reasons,
@@ -627,6 +628,7 @@ fn has_object_global_declarations(root: tree_sitter::Node<'_>) -> bool {
 
 fn classify_procedure_ast(
     workspace: &Workspace,
+    catalog: &ProcedureCatalog,
     location: &ProcedureLocation,
     decision: &mut RoutingDecision,
     reasons: &mut Vec<RoutingReason>,
@@ -698,6 +700,8 @@ fn classify_procedure_ast(
                 CallRoutingContext {
                     reachable,
                     handler_support,
+                    catalog,
+                    object: &location.object,
                 },
             );
         } else if node.kind() == "attribute" || node.kind() == "attribute_list" {
@@ -864,9 +868,14 @@ fn table_platform_capability(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CallRoutingContext {
+struct CallRoutingContext<'a> {
     reachable: bool,
     handler_support: LocalHandlerSupport,
+    /// The workspace procedure catalog, for O(1) "same-object procedure"
+    /// lookups instead of a full-file tree walk per bare-global call.
+    catalog: &'a ProcedureCatalog,
+    /// Name of the object whose procedure is being classified.
+    object: &'a str,
 }
 
 fn classify_call(
@@ -876,12 +885,14 @@ fn classify_call(
     source: &[u8],
     file: &std::path::Path,
     outcome: (&mut RoutingDecision, &mut Vec<RoutingReason>),
-    context: CallRoutingContext,
+    context: CallRoutingContext<'_>,
 ) {
     let (decision, reasons) = outcome;
     let CallRoutingContext {
         reachable,
         handler_support,
+        catalog,
+        object,
     } = context;
     let mut cursor = node.walk();
     let children: Vec<_> = node.named_children(&mut cursor).collect();
@@ -954,8 +965,8 @@ fn classify_call(
         // a receiver-less native stub. Everything else has no local
         // implementation and must route to LiveBc.
         let is_builtin = al_runtime::interpreter::dispatch::supports_global_builtin(receiver);
-        let is_same_object_procedure =
-            is_builtin || find_callable_node(resolver_root(node), source, receiver).is_some();
+        let is_same_object_procedure = is_builtin
+            || catalog.contains_key(&(object.to_ascii_lowercase(), receiver.to_ascii_lowercase()));
         let is_stub = is_same_object_procedure
             || al_runtime::stubs::CATALOGS
                 .iter()
@@ -1224,14 +1235,6 @@ fn push_reason(reasons: &mut Vec<RoutingReason>, reason: RoutingReason) {
 }
 
 /// The root node of the tree containing `node` (walks up the parent chain).
-fn resolver_root(node: tree_sitter::Node<'_>) -> tree_sitter::Node<'_> {
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        current = parent;
-    }
-    current
-}
-
 fn find_callable_node<'a>(
     root: tree_sitter::Node<'a>,
     source: &[u8],

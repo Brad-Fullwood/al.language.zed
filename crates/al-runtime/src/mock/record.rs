@@ -265,8 +265,11 @@ impl MockRecord {
         result
     }
 
+    // Several `*_in` methods below take `&self` without touching it: they
+    // only mutate the caller's view, but keep the uniform
+    // `table.op_in(view, …)` receiver shape shared by every view operation.
+    #[allow(clippy::unused_self)]
     pub fn field_set_in(&self, view: &mut RecordView, field: FieldNo, value: Value) {
-        let _ = self;
         view.current.insert(field, value);
     }
 
@@ -274,8 +277,8 @@ impl MockRecord {
         self.view.current.insert(field, value);
     }
 
+    #[allow(clippy::unused_self)]
     pub fn field_get_in<'a>(&self, view: &'a RecordView, field: FieldNo) -> Option<&'a Value> {
-        let _ = self;
         view.current.get(&field)
     }
 
@@ -465,17 +468,31 @@ impl MockRecord {
     ) -> Result<(), RecordError> {
         let old_key = self.current_primary_key(view)?;
         let old_row = self.rows.remove(&old_key).ok_or(RecordError::NotFound)?;
-        view.x_rec = old_row.clone();
-        let mut new_row = old_row;
+        // BC leaves Rec (and the table) unchanged when Rename fails, so
+        // snapshot the buffer before writing the new key values into it and
+        // restore both on every error path — otherwise the buffer would keep
+        // the new key while the table still holds the old one, and a
+        // subsequent Modify would target a row that does not exist.
+        let saved_current = view.current.clone();
+        let mut new_row = old_row.clone();
         for (field, value) in new_key_values {
             new_row.insert(field, value.clone());
             view.current.insert(field, value);
         }
-        let new_key = self.current_primary_key(view)?;
+        let new_key = match self.current_primary_key(view) {
+            Ok(key) => key,
+            Err(error) => {
+                view.current = saved_current;
+                self.rows.insert(old_key, old_row);
+                return Err(error);
+            }
+        };
         if self.rows.contains_key(&new_key) {
-            self.rows.insert(old_key, view.x_rec.clone());
+            view.current = saved_current;
+            self.rows.insert(old_key, old_row);
             return Err(RecordError::DuplicateKey);
         }
+        view.x_rec = old_row;
         self.rows.insert(new_key, new_row);
         Ok(())
     }
@@ -485,8 +502,8 @@ impl MockRecord {
     }
 
     /// `SETCURRENTKEY(fields…)` — change iteration sort order.
+    #[allow(clippy::unused_self)]
     pub fn set_current_key_in(&self, view: &mut RecordView, fields: Vec<FieldNo>) {
-        let _ = self;
         view.sort_key = SortKey::from_fields(fields);
         view.iter_set.clear();
         view.iter_pos = None;
@@ -497,8 +514,8 @@ impl MockRecord {
     }
 
     /// `SETRANGE(field, low, high)` — filter a field to an inclusive value range.
+    #[allow(clippy::unused_self)]
     pub fn set_range_in(&self, view: &mut RecordView, field: FieldNo, low: Value, high: Value) {
-        let _ = self;
         view.filters.insert(field, FieldFilter::Range(low, high));
         view.iter_set.clear();
         view.iter_pos = None;
@@ -509,8 +526,8 @@ impl MockRecord {
     }
 
     /// Remove the active filter for one field.
+    #[allow(clippy::unused_self)]
     pub fn clear_filter_in(&self, view: &mut RecordView, field: FieldNo) {
-        let _ = self;
         view.filters.remove(&field);
         view.iter_set.clear();
         view.iter_pos = None;
@@ -521,13 +538,13 @@ impl MockRecord {
     }
 
     /// `SETFILTER(field, expr)` — set a BC filter expression on a field.
+    #[allow(clippy::unused_self)]
     pub fn set_filter_in(
         &self,
         view: &mut RecordView,
         field: FieldNo,
         expr: &str,
     ) -> Result<(), RecordError> {
-        let _ = self;
         let parsed =
             filter::parse(expr).map_err(|e| RecordError::FilterParse(field, e.to_string()))?;
         view.filters.insert(field, FieldFilter::Expr(parsed));
@@ -1128,6 +1145,29 @@ mod tests {
         rec.get(vec![Value::Integer(1)]).unwrap();
         let err = rec.rename(vec![(1, Value::Integer(2))]).unwrap_err();
         assert_eq!(err, RecordError::DuplicateKey);
+    }
+
+    #[test]
+    fn failed_rename_leaves_buffer_and_table_in_sync() {
+        let mut rec = make_table();
+        insert_row(&mut rec, 1, "A");
+        insert_row(&mut rec, 2, "B");
+        rec.get(vec![Value::Integer(1)]).unwrap();
+        let err = rec.rename(vec![(1, Value::Integer(2))]).unwrap_err();
+        assert_eq!(err, RecordError::DuplicateKey);
+        // BC leaves Rec unchanged on a failed Rename: the buffer must still
+        // hold the OLD key, not the attempted new one.
+        assert_eq!(rec.field_get(1), Some(&Value::Integer(1)));
+        // And the buffer/table stay in sync: a subsequent Modify targets the
+        // old row and succeeds.
+        rec.field_set(2, Value::Text("A2".to_string()));
+        rec.modify(false)
+            .expect("Modify after a failed Rename must still target the old row");
+        rec.get(vec![Value::Integer(1)]).unwrap();
+        assert_eq!(rec.field_get(2), Some(&Value::Text("A2".to_string())));
+        // The neighbouring row is untouched.
+        rec.get(vec![Value::Integer(2)]).unwrap();
+        assert_eq!(rec.field_get(2), Some(&Value::Text("B".to_string())));
     }
 
     #[test]

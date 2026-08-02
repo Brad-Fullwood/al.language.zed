@@ -143,9 +143,10 @@ pub struct DispatchCtx {
     /// Memoized parses for expression fragments recovered from lossless
     /// bracket blocks (`in [...]` set members). Keyed by the fragment text so
     /// a set literal inside a loop parses each member once, not once per
-    /// iteration.
+    /// iteration. The wrapper source is an `Arc<str>` so cache hits share it
+    /// instead of reallocating the string.
     #[doc(hidden)]
-    pub expr_fragment_cache: HashMap<String, (String, tree_sitter::Tree)>,
+    pub expr_fragment_cache: HashMap<String, (Arc<str>, tree_sitter::Tree)>,
 }
 
 /// Fixed default seed for the deterministic `Random` builtin.
@@ -675,7 +676,19 @@ fn dispatch_workspace_procedure(
 
         let mut frame = CallFrame::new(object_name.as_str(), procedure);
         for (i, param) in params.iter().enumerate() {
-            let val = args.get(i).cloned().unwrap_or(Value::Empty);
+            let mut val = args.get(i).cloned().unwrap_or(Value::Empty);
+            // A by-value record parameter is the callee's own copy: BC gives
+            // it the caller's buffer but its own filters/cursor. `RecordValue`
+            // is `Clone` and carries the caller's view `handle`, so keeping it
+            // would alias the caller's view and let the callee's SetRange/Next
+            // corrupt the caller's filters. Reset it so `record_binding` mints
+            // a fresh view on first access; `var` parameters keep the shared
+            // handle (by-reference semantics).
+            if !param.is_var {
+                if let Value::Record(rv) = &mut val {
+                    rv.handle = None;
+                }
+            }
             // Coerce an integer argument to the parameter's declared width so a
             // `BigInteger` parameter keeps i64 semantics even when passed a small
             // Integer literal and vice versa, matching BC's fixed parameter types.
@@ -1747,10 +1760,14 @@ fn builtin_incstr(args: &[Value]) -> Eval {
     }
     let digits: String = chars[start..end].iter().collect();
     let width = digits.len();
-    let Ok(number) = digits.parse::<u64>() else {
+    let Some(number) = digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_add(1))
+    else {
         return simple_error(format!("IncStr: number '{digits}' is out of range"));
     };
-    let incremented = format!("{:0width$}", number + 1, width = width);
+    let incremented = format!("{number:0width$}");
     let mut result: String = chars[..start].iter().collect();
     result.push_str(&incremented);
     result.extend(&chars[end..]);
@@ -1874,13 +1891,22 @@ fn builtin_workdate(args: &[Value], ctx: &mut DispatchCtx) -> Eval {
     }
 }
 
-/// Advance the deterministic LCG and return the next raw value in [0, 0x7FFF].
-fn next_random(ctx: &mut DispatchCtx) -> i64 {
+/// Advance the deterministic LCG one step and return 31 usable state bits.
+fn lcg_step(ctx: &mut DispatchCtx) -> u64 {
     ctx.random_state = ctx
         .random_state
         .wrapping_mul(214_013)
         .wrapping_add(2_531_011);
-    ((ctx.random_state >> 16) & 0x7FFF) as i64
+    (ctx.random_state >> 16) & 0x7FFF_FFFF
+}
+
+/// Combine two deterministic LCG steps into the next raw value in
+/// `[0, 2^62)`, so `Random(n)` covers large `n` instead of being capped at
+/// the 15 bits a single truncated step would provide.
+fn next_random(ctx: &mut DispatchCtx) -> i64 {
+    let hi = lcg_step(ctx);
+    let lo = lcg_step(ctx);
+    ((hi << 31) | lo) as i64
 }
 
 /// `Random(n)` — a deterministic pseudo-random Integer in `1..=n`.
@@ -1974,13 +2000,19 @@ fn render_value(v: &Value) -> String {
     }
 }
 
-/// Substitute %1, %2, … placeholders in `fmt` with rendered arg values.
+/// Substitute `%1`, `%2`, … placeholders in `fmt`, rendering the 1-based
+/// argument `n` (for `n` in `1..=arg_count`) through `render`.
 ///
 /// Single left-to-right pass over `fmt`: inserted argument text is never
 /// re-scanned, so an argument whose value contains `%1` stays literal (BC
 /// behaviour). Digit runs are read maximally (`%10` targets the 10th
-/// argument); a placeholder with no matching argument is left verbatim.
-fn substitute_placeholders(fmt: &str, args: &[Value]) -> String {
+/// argument); a placeholder with no matching argument is left verbatim. A
+/// `render` error aborts the substitution.
+pub(crate) fn substitute_placeholders_with<E>(
+    fmt: &str,
+    arg_count: usize,
+    mut render: impl FnMut(usize) -> Result<String, E>,
+) -> Result<String, E> {
     let mut result = String::with_capacity(fmt.len());
     let mut chars = fmt.chars().peekable();
     while let Some(c) = chars.next() {
@@ -1994,8 +2026,8 @@ fn substitute_placeholders(fmt: &str, args: &[Value]) -> String {
             chars.next();
         }
         match digits.parse::<usize>() {
-            Ok(n) if n >= 1 && n <= args.len() => {
-                result.push_str(&render_value(&args[n - 1]));
+            Ok(n) if n >= 1 && n <= arg_count => {
+                result.push_str(&render(n)?);
             }
             _ => {
                 result.push('%');
@@ -2003,7 +2035,18 @@ fn substitute_placeholders(fmt: &str, args: &[Value]) -> String {
             }
         }
     }
-    result
+    Ok(result)
+}
+
+/// Substitute %1, %2, … placeholders in `fmt` with rendered arg values
+/// (see [`substitute_placeholders_with`] for the scanning rules).
+fn substitute_placeholders(fmt: &str, args: &[Value]) -> String {
+    match substitute_placeholders_with(fmt, args.len(), |n| {
+        Ok::<_, std::convert::Infallible>(render_value(&args[n - 1]))
+    }) {
+        Ok(result) => result,
+        Err(infallible) => match infallible {},
+    }
 }
 
 #[cfg(test)]
@@ -2790,6 +2833,33 @@ mod tests {
     }
 
     #[test]
+    fn incstr_u64_max_errors_instead_of_overflowing() {
+        let mut ctx = ctx();
+        // u64::MAX parses, but incrementing it must be a range error, not a
+        // wrap or panic.
+        let error = err(dispatch_call(
+            None,
+            "IncStr",
+            vec![Value::Text("X18446744073709551615".into())],
+            &mut ctx,
+        ));
+        assert_eq!(
+            error.message,
+            "IncStr: number '18446744073709551615' is out of range"
+        );
+        // One below u64::MAX still increments normally.
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "IncStr",
+                vec![Value::Text("X18446744073709551614".into())],
+                &mut ctx
+            )),
+            Value::Text("X18446744073709551615".into())
+        );
+    }
+
+    #[test]
     fn date_builtins_round_trip() {
         let mut ctx = ctx();
         let date = crate::interpreter::value::al_days_from_ymd(2024, 7, 31);
@@ -2905,8 +2975,9 @@ mod tests {
                 other => panic!("Random must return Integer, got {other:?}"),
             }
         }
-        // Re-seeding resets the sequence deterministically.
-        let first = seq(&mut a);
+        // Re-seeding resets the sequence deterministically: after Randomize
+        // (argument-less or with the default seed) both contexts replay the
+        // exact sequence a fresh context produces.
         assert!(dispatch_call(None, "Randomize", vec![], &mut a)
             .into_value()
             .is_some());
@@ -2914,7 +2985,42 @@ mod tests {
             dispatch_call(None, "Randomize", vec![Value::Integer(1)], &mut b),
             Eval::Normal(_)
         ));
-        let _ = first;
+        let fresh = seq(&mut ctx());
+        assert_eq!(
+            seq(&mut a),
+            fresh,
+            "argument-less Randomize resets to the fixed default sequence"
+        );
+        assert_eq!(
+            seq(&mut b),
+            fresh,
+            "Randomize(default seed) resets to the fixed default sequence"
+        );
+    }
+
+    #[test]
+    fn random_covers_ranges_beyond_15_bits() {
+        let mut ctx = ctx();
+        let n = i32::MAX as i64;
+        let mut max_seen = 0i64;
+        for _ in 0..64 {
+            match ok(dispatch_call(
+                None,
+                "Random",
+                vec![Value::Integer(n)],
+                &mut ctx,
+            )) {
+                Value::Integer(v) => {
+                    assert!((1..=n).contains(&v));
+                    max_seen = max_seen.max(v);
+                }
+                other => panic!("Random must return Integer, got {other:?}"),
+            }
+        }
+        assert!(
+            max_seen > 0x8000,
+            "Random({n}) never exceeded 15 bits (max seen {max_seen}); the raw generator is too narrow"
+        );
     }
 
     #[test]

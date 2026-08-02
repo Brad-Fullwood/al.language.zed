@@ -55,8 +55,9 @@ with the session default of today), deterministic `Random`/`Randomize`, and
 `GetLastErrorText`/`ClearLastError` wired to `asserterror` capture.
 `supports_global_builtin` is the shared safe-list: the test router sends bare global calls
 outside it (for example `Evaluate` and `CalcDate`) to live BC. `Text` instance methods
-(`Contains`, `Split`, `Replace`, `Substring`, trims and casing) and the mutation side of
-`Dictionary` (`Add`/`Set`/`Remove`/`ContainsKey`/`Count`/`Keys`/`Values`) also execute locally.
+(`Contains`, `Split`, `Replace`, `Substring`, trims and casing) and `Dictionary` — both the
+mutating methods (`Add`/`Set`/`Remove`) and the read-only ones
+(`ContainsKey`/`Count`/`Keys`/`Values`) — also execute locally.
 
 **Native test libraries (`stubs/`):** Library Assert, Library - Variable Storage, Library Random, and
 Any. Randomness is seedable; thread-local state is reset between test methods.
