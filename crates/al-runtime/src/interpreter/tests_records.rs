@@ -418,7 +418,11 @@ fn field_assignment_then_readback() {
         "SetThenRead",
         vec![],
     );
-    assert_eq!(ok(r), Value::Integer(19));
+    assert_eq!(
+        ok(r),
+        Value::Decimal(dec!(19)),
+        "an Integer literal stored into a Decimal field reads back as Decimal"
+    );
 }
 
 #[test]
@@ -596,7 +600,7 @@ fn findset_next_iteration_sums_amount() {
         "SumAmounts",
         vec![],
     );
-    assert_eq!(ok(r), Value::Integer(100));
+    assert_eq!(ok(r), Value::Decimal(dec!(100)));
 }
 
 #[test]
@@ -1055,7 +1059,7 @@ fn run_flow(proc: &str) -> Eval {
 
 #[test]
 fn flowfield_sum_via_calcfields() {
-    assert_eq!(ok(run_flow("SumViaCalcFields")), Value::Integer(60));
+    assert_eq!(ok(run_flow("SumViaCalcFields")), Value::Decimal(dec!(60)));
 }
 
 #[test]
@@ -1065,17 +1069,17 @@ fn flowfield_count_on_read() {
 
 #[test]
 fn flowfield_filtered_const() {
-    assert_eq!(ok(run_flow("FilteredConst")), Value::Integer(40));
+    assert_eq!(ok(run_flow("FilteredConst")), Value::Decimal(dec!(40)));
 }
 
 #[test]
 fn flowfield_filtered_expr() {
-    assert_eq!(ok(run_flow("FilteredExpr")), Value::Integer(50));
+    assert_eq!(ok(run_flow("FilteredExpr")), Value::Decimal(dec!(50)));
 }
 
 #[test]
 fn flowfield_max() {
-    assert_eq!(ok(run_flow("MaxOnRead")), Value::Integer(30));
+    assert_eq!(ok(run_flow("MaxOnRead")), Value::Decimal(dec!(30)));
 }
 
 #[test]
@@ -1265,4 +1269,359 @@ fn list_method_wrong_arity_is_rejected() {
     );
     let message = error_message(result);
     assert!(message.contains("expects no arguments"), "got: {message}");
+}
+
+#[test]
+fn compound_assignment_to_record_field_accumulates() {
+    // Regression: `Rec.Amount += 5` must store Amount + 5, not the raw RHS.
+    let cu = r#"codeunit 50101 "Item Tests"
+{
+    procedure Compound(): Decimal
+    var
+        Item: Record "Item";
+    begin
+        Item.Init();
+        Item."No." := 'A';
+        Item."Unit Price" := 19;
+        Item."Unit Price" += 5;
+        exit(Item."Unit Price");
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/ItemTests.al", cu)],
+        "Item Tests",
+        "Compound",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Decimal(dec!(24)));
+}
+
+#[test]
+fn statement_position_get_miss_errors() {
+    // BC raises "The record does not exist" when a statement-position Get
+    // misses; only `if Rec.Get(...) then` yields false.
+    let cu = r#"codeunit 50101 "Item Tests"
+{
+    procedure GetMiss()
+    var
+        Item: Record "Item";
+    begin
+        Item.Get('NOPE');
+    end;
+}
+"#;
+    let result = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/ItemTests.al", cu)],
+        "Item Tests",
+        "GetMiss",
+        vec![],
+    );
+    let message = error_message(result);
+    assert!(message.contains("does not exist"), "got: {message}");
+}
+
+#[test]
+fn expression_position_get_miss_returns_false() {
+    let cu = r#"codeunit 50101 "Item Tests"
+{
+    procedure GetMissExpr(): Integer
+    var
+        Item: Record "Item";
+    begin
+        if Item.Get('NOPE') then
+            exit(1);
+        exit(0);
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/ItemTests.al", cu)],
+        "Item Tests",
+        "GetMissExpr",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(0));
+}
+
+#[test]
+fn statement_position_findfirst_miss_errors() {
+    let cu = r#"codeunit 50103 "Num Tests"
+{
+    procedure FindMiss()
+    var
+        Num: Record "Num";
+    begin
+        Num.FindFirst();
+    end;
+}
+"#;
+    let result = run(
+        &[("/ws/Num.al", NUM_TABLE), ("/ws/NumTests.al", cu)],
+        "Num Tests",
+        "FindMiss",
+        vec![],
+    );
+    let message = error_message(result);
+    assert!(
+        message.contains("no 'Num' record matches"),
+        "got: {message}"
+    );
+}
+
+#[test]
+fn expression_position_insert_duplicate_returns_false() {
+    // `if Rec.Insert() then` must take the false branch on a duplicate key
+    // instead of raising.
+    let cu = r#"codeunit 50101 "Item Tests"
+{
+    procedure DupInsertExpr(): Integer
+    var
+        Item: Record "Item";
+    begin
+        Item."No." := 'X';
+        Item.Insert();
+        Item."No." := 'X';
+        if Item.Insert() then
+            exit(1);
+        exit(0);
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/ItemTests.al", cu)],
+        "Item Tests",
+        "DupInsertExpr",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(0));
+}
+
+#[test]
+fn record_variables_have_independent_filters_and_cursors() {
+    // Two record variables of one table share the physical rows but each has
+    // its own filter set and iteration cursor (BC semantics).
+    let cu = r#"codeunit 50103 "Num Tests"
+{
+    procedure IndependentViews(): Integer
+    var
+        A: Record "Num";
+        B: Record "Num";
+        i: Integer;
+    begin
+        for i := 1 to 5 do begin
+            A.Init();
+            A."Entry No." := i;
+            A.Insert();
+        end;
+        A.SetRange("Entry No.", 1, 2);
+        B.SetRange("Entry No.", 4, 5);
+        if A.Count() <> 2 then
+            Error('A sees %1 rows after its own filter', A.Count());
+        if B.Count() <> 2 then
+            Error('B sees %1 rows after its own filter', B.Count());
+        A.FindFirst();
+        B.FindFirst();
+        if A."Entry No." <> 1 then
+            Error('A cursor moved by B: %1', A."Entry No.");
+        if B."Entry No." <> 4 then
+            Error('B cursor is wrong: %1', B."Entry No.");
+        if A.Next() <> 1 then
+            Error('A cursor lost its position');
+        if A."Entry No." <> 2 then
+            Error('A next row wrong: %1', A."Entry No.");
+        exit(A.Count() + B.Count());
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Num.al", NUM_TABLE), ("/ws/NumTests.al", cu)],
+        "Num Tests",
+        "IndependentViews",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(4));
+}
+
+#[test]
+fn unset_field_reads_typed_zero_and_matches_zero_filter() {
+    // A never-assigned field is the field type's zero value in BC: reading it
+    // participates in arithmetic and `SetRange(F, 0)` matches the row.
+    let cu = r#"codeunit 50103 "Num Tests"
+{
+    procedure UnsetDefaults(): Decimal
+    var
+        Num: Record "Num";
+    begin
+        Num.Init();
+        Num."Entry No." := 1;
+        Num.Insert();
+        Num.SetRange(Amount, 0);
+        if Num.Count() <> 1 then
+            Error('SetRange(Amount, 0) missed the unset row: %1', Num.Count());
+        Num.FindFirst();
+        exit(Num.Amount + 1);
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Num.al", NUM_TABLE), ("/ws/NumTests.al", cu)],
+        "Num Tests",
+        "UnsetDefaults",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Decimal(dec!(1)));
+}
+
+#[test]
+fn get_on_code_primary_key_is_caseless() {
+    let cu = r#"codeunit 50101 "Item Tests"
+{
+    procedure CaselessGet(): Boolean
+    var
+        Item: Record "Item";
+    begin
+        Item."No." := 'abc';
+        Item.Insert();
+        exit(Item.Get('ABC'));
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/ItemTests.al", cu)],
+        "Item Tests",
+        "CaselessGet",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Boolean(true));
+}
+
+#[test]
+fn setfilter_placeholder_ten_is_not_corrupted_by_placeholder_one() {
+    // `%10` must substitute the tenth value; ascending substitution used to
+    // rewrite the `%1` prefix of `%10` first.
+    let cu = r#"codeunit 50103 "Num Tests"
+{
+    procedure ManyPlaceholders(): Integer
+    var
+        Num: Record "Num";
+        i: Integer;
+    begin
+        for i := 1 to 50 do begin
+            Num.Init();
+            Num."Entry No." := i;
+            Num.Insert();
+        end;
+        Num.SetFilter("Entry No.", '%1|%2|%3|%4|%5|%6|%7|%8|%9|%10', 1, 2, 3, 4, 5, 6, 7, 8, 9, 42);
+        if Num.Count() <> 10 then
+            Error('placeholder filter matched %1 rows', Num.Count());
+        Num.FindLast();
+        exit(Num."Entry No.");
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Num.al", NUM_TABLE), ("/ws/NumTests.al", cu)],
+        "Num Tests",
+        "ManyPlaceholders",
+        vec![],
+    );
+    assert_eq!(
+        ok(r),
+        Value::Integer(42),
+        "%10 must map to the tenth value (42), not be corrupted into 10"
+    );
+}
+
+#[test]
+fn deleteall_removes_only_filtered_rows() {
+    let cu = r#"codeunit 50103 "Num Tests"
+{
+    procedure DeleteFiltered(): Integer
+    var
+        Num: Record "Num";
+        i: Integer;
+    begin
+        for i := 1 to 10 do begin
+            Num.Init();
+            Num."Entry No." := i;
+            Num.Insert();
+        end;
+        Num.SetRange("Entry No.", 1, 4);
+        Num.DeleteAll();
+        Num.Reset();
+        exit(Num.Count());
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Num.al", NUM_TABLE), ("/ws/NumTests.al", cu)],
+        "Num Tests",
+        "DeleteFiltered",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(6));
+}
+
+const FLAGGED_TABLE: &str = r#"table 50130 "Flagged"
+{
+    fields
+    {
+        field(1; "Id"; Integer) { }
+        field(2; Flag; Boolean) { }
+    }
+    keys
+    {
+        key(PK; "Id") { }
+    }
+}
+"#;
+
+const FLAG_HDR_TABLE: &str = r#"table 50131 "Flag Hdr"
+{
+    fields
+    {
+        field(1; "Id"; Integer) { }
+        field(2; FlagCount; Integer)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Count("Flagged" WHERE (Flag = CONST(true)));
+        }
+    }
+    keys
+    {
+        key(PK; "Id") { }
+    }
+}
+"#;
+
+#[test]
+fn flowfield_boolean_const_matches_boolean_cells() {
+    // Regression: `WHERE(Flag = CONST(true))` used to compare Text("true")
+    // against Boolean cells and match nothing.
+    let cu = r#"codeunit 50132 "Flag Tests"
+{
+    procedure CountFlagged(): Integer
+    var
+        Row: Record "Flagged";
+        Hdr: Record "Flag Hdr";
+    begin
+        Row.Init(); Row."Id" := 1; Row.Flag := true; Row.Insert();
+        Row.Init(); Row."Id" := 2; Row.Flag := false; Row.Insert();
+        Row.Init(); Row."Id" := 3; Row.Flag := true; Row.Insert();
+        exit(Hdr.FlagCount);
+    end;
+}
+"#;
+    let r = run(
+        &[
+            ("/ws/Flagged.al", FLAGGED_TABLE),
+            ("/ws/FlagHdr.al", FLAG_HDR_TABLE),
+            ("/ws/FlagTests.al", cu),
+        ],
+        "Flag Tests",
+        "CountFlagged",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(2));
 }

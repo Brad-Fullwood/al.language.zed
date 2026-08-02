@@ -555,22 +555,28 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
         if let Some(ll) = label_list {
             let mut lc = ll.walk();
             for lbl in ll.named_children(&mut lc) {
-                if let Eval::Normal(v) = eval_expr(lbl, source, stack, ctx) {
-                    let label_matches = match &v {
-                        Value::Range { start, end } => {
-                            match crate::interpreter::eval_expr::value_in_range(
-                                &selector, start, end,
-                            ) {
-                                Ok(matches) => matches,
-                                Err(error) => return Eval::Error(error),
-                            }
+                if is_punctuation(lbl.kind()) {
+                    continue;
+                }
+                // A runtime error inside a label expression (div-by-zero,
+                // unbound identifier, failing call) propagates — it must not
+                // be silently treated as "label did not match".
+                let v = match eval_expr(lbl, source, stack, ctx) {
+                    Eval::Normal(v) => v,
+                    other => return other,
+                };
+                let label_matches = match &v {
+                    Value::Range { start, end } => {
+                        match crate::interpreter::eval_expr::value_in_range(&selector, start, end) {
+                            Ok(matches) => matches,
+                            Err(error) => return Eval::Error(error),
                         }
-                        _ => crate::interpreter::eval_expr::values_equal(&selector, &v),
-                    };
-                    if label_matches {
-                        matched = true;
-                        break;
                     }
+                    _ => crate::interpreter::eval_expr::values_equal(&selector, &v),
+                };
+                if label_matches {
+                    matched = true;
+                    break;
                 }
             }
         }
@@ -637,16 +643,17 @@ fn eval_assignment(
     if let Some(slot) = stack.lookup_mut(&lhs_name) {
         // Preserve the slot's declared type (Code caselessness / integer width)
         // rather than adopting the RHS's — see `coerce_into_slot`.
-        *slot = Value::coerce_into_slot(slot, rhs_val);
-    } else if let Some(frame) = stack.top_mut() {
-        // Auto-bind: declare in the current frame on first assignment
-        // (simulates AL's permissive variable declaration semantics in
-        // procedures that declare vars at the top — the interpreter
-        // trusts that the caller set up the frame correctly, but falls
-        // back to auto-binding for convenience in tests).
-        frame.bind(&lhs_name, rhs_val);
+        match Value::coerce_into_slot(slot, rhs_val) {
+            Ok(value) => *slot = value,
+            Err(message) => return Eval::Error(simple_error(&message)),
+        }
     } else {
-        return Eval::Error(simple_error("assignment: no active scope frame"));
+        // AL has no implicit declaration: assigning to an unknown name is a
+        // compile error in BC, so a typo'd LHS must fail loudly instead of
+        // silently creating a fresh variable.
+        return Eval::Error(simple_error(&format!(
+            "assignment to unbound identifier '{lhs_name}' — variables must be declared"
+        )));
     }
 
     Eval::Normal(Value::Empty)
@@ -692,7 +699,12 @@ fn eval_asserterror(
     };
 
     match eval_stmt(body_node, source, stack, ctx) {
-        Eval::Error(_) => Eval::Normal(Value::Empty),
+        Eval::Error(caught) => {
+            // Retain the caught error so the standard pattern
+            // `asserterror X; Assert.ExpectedError(GetLastErrorText())` works.
+            ctx.last_error = Some(caught);
+            Eval::Normal(Value::Empty)
+        }
         // Exit unwinds the procedure; asserterror does NOT swallow it. AL
         // semantics treat Exit as control flow that bypasses the assertion.
         // Break/Continue are loop control flow — likewise pass them through.
@@ -714,6 +726,10 @@ fn eval_expression_stmt(
     let effective = resolve_to_call_node(node);
     match effective.kind() {
         "member_access_expression" | "method_call_expression" | "call_expression" => {
+            // Mark statement position: a `Rec.Get(...)`/`Rec.FindFirst()` miss
+            // must raise here (BC) instead of silently yielding false. The
+            // record dispatcher consumes and resets the marker.
+            ctx.stmt_position = true;
             eval_call(effective, source, stack, ctx)
         }
         // The AL grammar expresses bare calls as `postfix_expression`:
@@ -723,6 +739,7 @@ fn eval_expression_stmt(
         // We detect calls by checking for a call_suffix / member_call_suffix child.
         "postfix_expression" => {
             if is_call_postfix(effective) {
+                ctx.stmt_position = true;
                 eval_call(effective, source, stack, ctx)
             } else {
                 eval_expr(node, source, stack, ctx)
@@ -805,10 +822,15 @@ pub(crate) fn eval_call(
     // dispatch is handed the raw `args_node` rather than pre-evaluated values.
     if let Some(recv) = receiver.as_deref() {
         match stack.lookup(recv) {
-            Some(Value::Record(rv)) if records::supports_record_method(&proc_name) => {
-                let table_name = rv.table_name.clone();
+            Some(Value::Record(_)) if records::supports_record_method(&proc_name) => {
+                let Some((table_name, handle)) = records::record_binding(recv, stack, ctx) else {
+                    return Eval::Error(simple_error(&format!(
+                        "record variable '{recv}' is not bound"
+                    )));
+                };
                 return records::dispatch_record_method(
                     &table_name,
+                    handle,
                     &proc_name,
                     args_node,
                     source,
@@ -823,6 +845,27 @@ pub(crate) fn eval_call(
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
                 return records::dispatch_list_method(recv, &proc_name, args, stack);
+            }
+            Some(Value::Text(_) | Value::Code(_)) if records::supports_text_method(&proc_name) => {
+                let recv = recv.to_string();
+                let args = match eval_args_opt(args_node, source, stack, ctx) {
+                    Ok(v) => v,
+                    Err(ArgsShort::Error(e)) => return Eval::Error(e),
+                    Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
+                };
+                return records::dispatch_text_method(&recv, &proc_name, args, stack);
+            }
+            Some(Value::Dict(_))
+                if records::supports_dict_method(&proc_name)
+                    || proc_name.eq_ignore_ascii_case("get") =>
+            {
+                let recv = recv.to_string();
+                let args = match eval_args_opt(args_node, source, stack, ctx) {
+                    Ok(v) => v,
+                    Err(ArgsShort::Error(e)) => return Eval::Error(e),
+                    Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
+                };
+                return records::dispatch_dict_method(&recv, &proc_name, args, stack);
             }
             Some(Value::Codeunit { object_name }) => {
                 let object_name = object_name.clone();
@@ -913,6 +956,10 @@ fn eval_args_opt(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Result<Vec<Value>, ArgsShort> {
+    // Argument expressions are never in statement position, whatever the
+    // enclosing call was — `Foo(Rec.Get(1));` evaluates the Get as an
+    // expression.
+    ctx.stmt_position = false;
     match args_node {
         Some(an) => eval_args(an, source, stack, ctx),
         None => Ok(vec![]),
@@ -1194,7 +1241,7 @@ mod tests {
     /// Wraps `source_snippet` in a full codeunit so the AL parser accepts it.
     fn run_stmt(source_snippet: &str) -> (Eval, ScopeStack) {
         let wrapper = format!(
-            "codeunit 50100 \"X\"\n{{\n    procedure Test()\n    var\n        x: Integer;\n        s: Text;\n    begin\n        {source_snippet}\n    end;\n}}"
+            "codeunit 50100 \"X\"\n{{\n    procedure Test()\n    var\n        x: Integer;\n        y: BigInteger;\n        s: Text;\n    begin\n        {source_snippet}\n    end;\n}}"
         );
         let result = al_syntax::parser::AlParser::parse_quick(&wrapper);
         let tree = result.tree;
@@ -1206,6 +1253,7 @@ mod tests {
         let mut stack = ScopeStack::new();
         let mut frame = CallFrame::new("X", "Test");
         frame.bind("x", Value::Integer(0));
+        frame.bind("y", Value::BigInteger(0));
         frame.bind("s", Value::Text(String::new()));
         stack.push(frame);
 
@@ -1347,6 +1395,135 @@ mod tests {
                 e.message
             );
         }
+    }
+
+    #[test]
+    fn string_literal_escaped_quotes_survive_unescaping() {
+        // '''' is the one-character string ' — stripping ALL outer quotes
+        // before unescaping used to collapse it to "".
+        let (eval, stack) = run_stmt("s := '''';");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("s"), Some(&Value::Text("'".into())));
+
+        let (eval, stack) = run_stmt("s := 'abc''';");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("s"), Some(&Value::Text("abc'".into())));
+    }
+
+    #[test]
+    fn assignment_to_undeclared_variable_errors() {
+        // A typo'd LHS must fail loudly, not silently create a variable.
+        let (eval, _) = run_stmt("Totl := 5;");
+        match eval {
+            Eval::Error(e) => assert!(
+                e.message.contains("unbound identifier 'totl'"),
+                "got: {}",
+                e.message
+            ),
+            other => panic!("expected an error for an undeclared LHS, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn integer_slot_rejects_out_of_range_assignment() {
+        // BC raises an overflow error when a BigInteger value outside the
+        // i32 range is narrowed into an Integer variable.
+        let (eval, _) = run_stmt("x := 5000000000;");
+        match eval {
+            Eval::Error(e) => assert!(
+                e.message.contains("outside the Integer range"),
+                "got: {}",
+                e.message
+            ),
+            other => panic!("expected an Integer overflow error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decimal_slot_keeps_decimal_type_for_integer_rhs() {
+        // `d := 5` must store Decimal(5) so a later `d div 2` fails like BC
+        // (div is integer-only).
+        let wrapper = "codeunit 50100 \"X\"\n{\n    procedure Test()\n    var\n        d: Decimal;\n        x: Integer;\n    begin\n        d := 5;\n        x := d div 2;\n    end;\n}";
+        let result = al_syntax::parser::AlParser::parse_quick(wrapper);
+        let bytes = wrapper.as_bytes();
+        let body = find_proc_body(result.tree.root_node(), bytes).expect("body");
+        let mut stack = ScopeStack::new();
+        let mut frame = CallFrame::new("X", "Test");
+        if let Some(proc_node) = body.parent() {
+            crate::interpreter::dispatch::bind_procedure_locals(proc_node, bytes, &mut frame);
+        }
+        stack.push(frame);
+        let mut ctx = ctx();
+        let eval = eval_stmt(body, bytes, &mut stack, &mut ctx);
+        match eval {
+            Eval::Error(e) => assert!(
+                e.message.contains("integer-only"),
+                "div on a Decimal slot must fail like BC; got: {}",
+                e.message
+            ),
+            other => panic!("expected a div-on-Decimal error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn case_label_runtime_error_propagates() {
+        // A failing label expression (here: an unbound identifier) must
+        // propagate, not be treated as "no match".
+        let (eval, _) = run_stmt("case x of NoSuchConst: x := 1; else x := 2; end;");
+        match eval {
+            Eval::Error(e) => assert!(
+                e.message.contains("unbound identifier"),
+                "got: {}",
+                e.message
+            ),
+            other => panic!("expected the label error to propagate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn asserterror_captures_error_for_get_last_error_text() {
+        let (eval, stack) = run_stmt("asserterror error('boom'); s := GetLastErrorText();");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(
+            stack.lookup("s"),
+            Some(&Value::Text("boom".into())),
+            "GetLastErrorText must return the asserterror-caught message"
+        );
+
+        let (eval, stack) =
+            run_stmt("asserterror error('boom'); ClearLastError(); s := GetLastErrorText();");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("s"), Some(&Value::Text(String::new())));
+    }
+
+    #[test]
+    fn text_instance_methods_execute_locally() {
+        let (eval, stack) = run_stmt("s := 'Hello World'; s := s.Replace('World', 'AL');");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("s"), Some(&Value::Text("Hello AL".into())));
+
+        let (eval, stack) = run_stmt("s := '  pad  '; s := s.Trim();");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("s"), Some(&Value::Text("pad".into())));
+
+        let (eval, stack) = run_stmt("s := 'abc'; if s.Contains('b') then x := 1;");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(1)));
+
+        let (eval, stack) = run_stmt("s := 'abcdef'; s := s.Substring(2, 3);");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("s"), Some(&Value::Text("bcd".into())));
+    }
+
+    #[test]
+    fn set_literal_in_loop_uses_cached_fragment_parses() {
+        // `in [...]` members are re-parsed as expression fragments; inside a
+        // loop each member must parse once (memoized) and keep evaluating
+        // correctly on every iteration from the cached tree.
+        let (eval, stack) =
+            run_stmt("while x < 3 do begin if (x + 1) in [1, 2, 3] then x := x + 1; end;");
+        assert!(matches!(eval, Eval::Normal(_)), "got {eval:?}");
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(3)));
     }
 
     #[test]

@@ -114,7 +114,38 @@ pub struct DispatchCtx {
     /// non-workspace calls leave it empty.
     pub var_writebacks: Vec<(usize, Value)>,
     pub test_handlers: TestHandlers,
+    /// Allocator for per-record-variable view handles. Each record variable
+    /// gets its own filter/cursor/buffer view over the shared table store
+    /// (BC semantics); the handle is stored on the variable's `RecordValue`.
+    pub next_record_handle: u64,
+    /// True while the innermost call being dispatched sits in *statement*
+    /// position (`Rec.Get(...);` as its own statement). Consumed (reset)
+    /// by the record-method dispatcher: BC raises a runtime error when a
+    /// statement-position `Get`/`Find*` misses, but returns `false` in
+    /// expression position (`if Rec.Get(...) then`). Set by
+    /// `eval_expression_stmt` immediately before evaluating a call.
+    #[doc(hidden)]
+    pub stmt_position: bool,
+    /// The most recent error captured by `asserterror`, surfaced through the
+    /// `GetLastErrorText` / `ClearLastError` builtins.
+    pub last_error: Option<ErrorInfo>,
+    /// The session work date. `None` until first set — `WorkDate` then
+    /// defaults to `Today` (BC's session default).
+    pub work_date: Option<i64>,
+    /// Deterministic LCG state for the `Random`/`Randomize` builtins. Seeded
+    /// with a fixed value so interpreter runs are reproducible; `Randomize(n)`
+    /// re-seeds it explicitly.
+    pub random_state: u64,
+    /// Memoized parses for expression fragments recovered from lossless
+    /// bracket blocks (`in [...]` set members). Keyed by the fragment text so
+    /// a set literal inside a loop parses each member once, not once per
+    /// iteration.
+    #[doc(hidden)]
+    pub expr_fragment_cache: HashMap<String, (String, tree_sitter::Tree)>,
 }
+
+/// Fixed default seed for the deterministic `Random` builtin.
+pub const DEFAULT_RANDOM_SEED: u64 = 1;
 
 impl DispatchCtx {
     pub fn new_pure(source: Arc<dyn al_types::ProcedureSource>) -> Self {
@@ -130,6 +161,12 @@ impl DispatchCtx {
             condition_trace_stack: Vec::new(),
             var_writebacks: Vec::new(),
             test_handlers: TestHandlers::default(),
+            next_record_handle: 0,
+            stmt_position: false,
+            last_error: None,
+            work_date: None,
+            random_state: DEFAULT_RANDOM_SEED,
+            expr_fragment_cache: HashMap::new(),
         }
     }
 
@@ -138,17 +175,9 @@ impl DispatchCtx {
         records: HashMap<String, RecordStore>,
     ) -> Self {
         Self {
-            source,
             records,
             mode: DispatchMode::WithRecords,
-            recursion_depth: 0,
-            ast_depth: 0,
-            deadline: None,
-            cancel: None,
-            coverage: None,
-            condition_trace_stack: Vec::new(),
-            var_writebacks: Vec::new(),
-            test_handlers: TestHandlers::default(),
+            ..Self::new_pure(source)
         }
     }
 
@@ -316,6 +345,10 @@ pub(crate) fn dispatch_call_scoped(
     // builtins and non-workspace calls (which never populate it) leave the
     // channel empty for the caller to observe.
     ctx.var_writebacks.clear();
+    // Statement-position information applies only to record-method dispatch
+    // (which consumes it before reaching here); make sure it never leaks into
+    // a callee's body.
+    ctx.stmt_position = false;
     if let Some(recv) = receiver {
         if let Some(stub_fn) = stubs::resolve(recv, procedure) {
             return stub_fn(&args);
@@ -462,6 +495,40 @@ pub(crate) fn dispatch_call_scoped(
             "currentdatetime" => return Eval::Normal(Value::DateTime(clock_current_datetime())),
             "today" => return Eval::Normal(Value::Date(clock_today())),
             "time" => return Eval::Normal(Value::Time(clock_time())),
+            "abs" => return builtin_abs(&args),
+            "round" => return builtin_round(&args),
+            "power" => return builtin_power(&args),
+            "strpos" => return builtin_strpos(&args),
+            "delchr" => return builtin_delchr(&args),
+            "convertstr" => return builtin_convertstr(&args),
+            "padstr" => return builtin_padstr(&args),
+            "selectstr" => return builtin_selectstr(&args),
+            "incstr" => return builtin_incstr(&args),
+            "date2dmy" => return builtin_date2dmy(&args),
+            "dmy2date" => return builtin_dmy2date(&args, ctx),
+            "dt2date" => return builtin_dt2date(&args),
+            "dt2time" => return builtin_dt2time(&args),
+            "workdate" => return builtin_workdate(&args, ctx),
+            "random" => return builtin_random(&args, ctx),
+            "randomize" => return builtin_randomize(&args, ctx),
+            "getlasterrortext" => {
+                if !args.is_empty() {
+                    return simple_error("GetLastErrorText expects no arguments");
+                }
+                let text = ctx
+                    .last_error
+                    .as_ref()
+                    .map(|error| error.message.clone())
+                    .unwrap_or_default();
+                return Eval::Normal(Value::Text(text));
+            }
+            "clearlasterror" => {
+                if !args.is_empty() {
+                    return simple_error("ClearLastError expects no arguments");
+                }
+                ctx.last_error = None;
+                return Eval::Normal(Value::Empty);
+            }
             _ => {}
         }
     }
@@ -1113,13 +1180,100 @@ fn builtin_strsubstno(args: &[Value]) -> Eval {
     Eval::Normal(Value::Text(result))
 }
 
-/// `Format(value[, length[, format_str]])` — convert a value to Text.
+/// `Format(value[, length[, format]])` — convert a value to Text.
 ///
-/// Supports the single-argument form.
+/// The default (format number 0) and XML (format number 9) renderings are
+/// implemented; any other format number or a custom `<...>` format string is
+/// an explicit error rather than a silently ignored argument. `length`
+/// follows BC: positive → exactly `length` characters (right-padded or
+/// truncated), negative → right-justified in `abs(length)` characters, 0 →
+/// unconstrained.
 fn builtin_format(args: &[Value]) -> Eval {
-    match args.first() {
-        Some(v) => Eval::Normal(Value::Text(render_value(v))),
-        None => simple_error("Format() requires at least 1 argument"),
+    let Some(value) = args.first() else {
+        return simple_error("Format() requires at least 1 argument");
+    };
+    if args.len() > 3 {
+        return simple_error("Format expects at most 3 arguments");
+    }
+    let rendered = match args.get(2) {
+        None | Some(Value::Integer(0)) => render_value(value),
+        Some(Value::Integer(9)) => render_value_xml(value),
+        Some(Value::Integer(n)) => {
+            return simple_error(format!(
+                "Format: format number {n} is not supported by the local runtime (supported: 0, 9)"
+            ))
+        }
+        Some(Value::Text(s)) | Some(Value::Code(s)) if s.is_empty() => render_value(value),
+        Some(Value::Text(s)) | Some(Value::Code(s)) => {
+            return simple_error(format!(
+                "Format: custom format strings are not supported by the local runtime: '{s}'"
+            ))
+        }
+        Some(other) => {
+            return simple_error(format!(
+                "Format: format argument must be an Integer or Text, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    let length = match args.get(1) {
+        None => 0,
+        Some(Value::Integer(n)) => *n,
+        Some(other) => {
+            return simple_error(format!(
+                "Format: length must be an Integer, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    if length == 0 {
+        return Eval::Normal(Value::Text(rendered));
+    }
+    let width = length.unsigned_abs() as usize;
+    let mut chars: Vec<char> = rendered.chars().collect();
+    if chars.len() > width {
+        chars.truncate(width);
+        return Eval::Normal(Value::Text(chars.into_iter().collect()));
+    }
+    let padding = std::iter::repeat_n(' ', width - chars.len());
+    let text: String = if length > 0 {
+        chars.into_iter().chain(padding).collect()
+    } else {
+        padding.chain(chars).collect()
+    };
+    Eval::Normal(Value::Text(text))
+}
+
+/// Render a value with Format's XML format (format number 9).
+fn render_value_xml(v: &Value) -> String {
+    match v {
+        Value::Boolean(b) => b.to_string(),
+        Value::Date(0) | Value::Time(0) | Value::DateTime(0) => String::new(),
+        Value::Date(d) => {
+            let (y, m, day) = crate::interpreter::value::ymd_from_al_days(*d);
+            format!("{y:04}-{m:02}-{day:02}")
+        }
+        Value::Time(t) => render_time_ms(*t),
+        Value::DateTime(dt) => {
+            let (y, m, day) = crate::interpreter::value::ymd_from_al_days(
+                dt.div_euclid(crate::interpreter::value::MS_PER_DAY),
+            );
+            let time = render_time_ms(dt.rem_euclid(crate::interpreter::value::MS_PER_DAY));
+            format!("{y:04}-{m:02}-{day:02}T{time}Z")
+        }
+        other => render_value(other),
+    }
+}
+
+/// Render a milliseconds-since-midnight carrier as `HH:MM:SS[.fff]`.
+fn render_time_ms(ms: i64) -> String {
+    let seconds = ms.div_euclid(1000);
+    let millis = ms.rem_euclid(1000);
+    let (h, m, s) = (seconds / 3600, (seconds / 60) % 60, seconds % 60);
+    if millis == 0 {
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        format!("{h:02}:{m:02}:{s:02}.{millis:03}")
     }
 }
 
@@ -1167,13 +1321,10 @@ fn builtin_copystr(args: &[Value]) -> Eval {
     }
     let pos = pos as usize;
     let chars: Vec<char> = s.chars().collect();
-    // AL runtime raises an error when position exceeds the string length.
+    // BC's CopyStr is the *safe* truncating variant: a position beyond the
+    // string length returns the empty string (it does not raise an error).
     if pos > chars.len() {
-        return simple_error(format!(
-            "CopyStr: position {} is beyond the string length {}",
-            pos,
-            chars.len()
-        ));
+        return Eval::Normal(Value::Text(String::new()));
     }
     let start = pos - 1;
     let end = (start + len).min(chars.len());
@@ -1263,6 +1414,499 @@ fn builtin_createdatetime(args: &[Value]) -> Eval {
     }
 }
 
+/// True when `name` is a global (receiver-less) builtin the interpreter
+/// implements natively — the single source of truth shared with the al-test
+/// router: bare global calls to any *other* name have no local implementation
+/// and must route to live BC. Every name listed here has a matching arm in
+/// [`dispatch_call_scoped`] (or the niladic identifier fallback in
+/// `eval_expr`); a unit test pins the agreement.
+pub fn supports_global_builtin(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "error"
+            | "message"
+            | "confirm"
+            | "strmenu"
+            | "hyperlink"
+            | "strsubstno"
+            | "format"
+            | "strlen"
+            | "copystr"
+            | "lowercase"
+            | "uppercase"
+            | "indexof"
+            | "maxstrlen"
+            | "createdatetime"
+            | "currentdatetime"
+            | "today"
+            | "time"
+            | "abs"
+            | "round"
+            | "power"
+            | "strpos"
+            | "delchr"
+            | "convertstr"
+            | "padstr"
+            | "selectstr"
+            | "incstr"
+            | "date2dmy"
+            | "dmy2date"
+            | "dt2date"
+            | "dt2time"
+            | "workdate"
+            | "random"
+            | "randomize"
+            | "getlasterrortext"
+            | "clearlasterror"
+    )
+}
+
+/// Numeric view of an argument for the math builtins.
+fn arg_decimal(v: &Value) -> Option<crate::interpreter::value::Decimal> {
+    v.as_decimal()
+}
+
+/// `Abs(n)` — absolute value, preserving the argument's numeric type and its
+/// overflow trap (`Abs(-2147483648)` overflows Integer in BC).
+fn builtin_abs(args: &[Value]) -> Eval {
+    match args {
+        [Value::Integer(n)] => match n.checked_abs() {
+            Some(a) if (i32::MIN as i64..=i32::MAX as i64).contains(&a) => {
+                Eval::Normal(Value::Integer(a))
+            }
+            _ => simple_error("Abs: integer overflow"),
+        },
+        [Value::BigInteger(n)] => match n.checked_abs() {
+            Some(a) => Eval::Normal(Value::BigInteger(a)),
+            None => simple_error("Abs: integer overflow"),
+        },
+        [Value::Decimal(d)] => Eval::Normal(Value::Decimal(d.abs())),
+        [v] => simple_error(format!(
+            "Abs expects a numeric value, got {}",
+            v.type_name()
+        )),
+        _ => simple_error("Abs expects exactly 1 argument"),
+    }
+}
+
+/// `Round(Number [, Precision [, Direction]])`.
+///
+/// Defaults follow BC: precision `0.01`, direction `'='` (round to nearest
+/// with banker's rounding — midpoints go to the even multiple). `'<'` rounds
+/// toward negative infinity, `'>'` toward positive infinity. Always returns a
+/// `Decimal`.
+fn builtin_round(args: &[Value]) -> Eval {
+    use crate::interpreter::value::Decimal;
+    if args.is_empty() || args.len() > 3 {
+        return simple_error("Round expects 1 to 3 arguments");
+    }
+    let Some(number) = arg_decimal(&args[0]) else {
+        return simple_error(format!(
+            "Round expects a numeric value, got {}",
+            args[0].type_name()
+        ));
+    };
+    let precision = match args.get(1) {
+        None => Decimal::new(1, 2), // 0.01, BC's default rounding precision
+        Some(v) => match arg_decimal(v) {
+            Some(p) if p > Decimal::ZERO => p,
+            Some(_) => return simple_error("Round: precision must be greater than zero"),
+            None => {
+                return simple_error(format!(
+                    "Round: precision must be numeric, got {}",
+                    v.type_name()
+                ))
+            }
+        },
+    };
+    let direction = match args.get(2) {
+        None => "=".to_string(),
+        Some(Value::Text(s)) | Some(Value::Code(s)) => s.clone(),
+        Some(v) => {
+            return simple_error(format!(
+                "Round: direction must be Text, got {}",
+                v.type_name()
+            ))
+        }
+    };
+    let Some(quotient) = number.checked_div(precision) else {
+        return simple_error("Round: arithmetic overflow");
+    };
+    let rounded = match direction.as_str() {
+        "=" => {
+            quotient.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::MidpointNearestEven)
+        }
+        "<" => quotient.floor(),
+        ">" => quotient.ceil(),
+        other => {
+            return simple_error(format!(
+                "Round: direction must be '=', '<' or '>', got '{other}'"
+            ))
+        }
+    };
+    match rounded.checked_mul(precision) {
+        Some(result) => Eval::Normal(Value::Decimal(result.normalize())),
+        None => simple_error("Round: arithmetic overflow"),
+    }
+}
+
+/// `Power(base, exponent)` — returns `Decimal`, like BC's `Power`.
+fn builtin_power(args: &[Value]) -> Eval {
+    use rust_decimal::MathematicalOps;
+    let (base, exponent) = match args {
+        [a, b] => match (arg_decimal(a), arg_decimal(b)) {
+            (Some(base), Some(exponent)) => (base, exponent),
+            _ => {
+                return simple_error(format!(
+                    "Power expects numeric arguments, got ({}, {})",
+                    a.type_name(),
+                    b.type_name()
+                ))
+            }
+        },
+        _ => return simple_error("Power expects exactly 2 arguments"),
+    };
+    match base.checked_powd(exponent) {
+        Some(result) => Eval::Normal(Value::Decimal(result.normalize())),
+        None => simple_error("Power: arithmetic overflow or undefined result"),
+    }
+}
+
+/// `StrPos(s, substring)` — 1-based position of the first occurrence, 0 when
+/// absent or when the substring is empty (BC convention).
+fn builtin_strpos(args: &[Value]) -> Eval {
+    let (s, needle) = match args {
+        [Value::Text(s) | Value::Code(s), Value::Text(n) | Value::Code(n)] => {
+            (s.as_str(), n.as_str())
+        }
+        _ => return simple_error("StrPos expects (Text, Text)"),
+    };
+    if needle.is_empty() {
+        return Eval::Normal(Value::Integer(0));
+    }
+    let result = s
+        .find(needle)
+        .map(|i| s[..i].chars().count() as i64 + 1)
+        .unwrap_or(0);
+    Eval::Normal(Value::Integer(result))
+}
+
+/// `DelChr(s [, where [, which]])` — delete characters. `where` is any
+/// combination of `<` (leading), `>` (trailing), `=` (everywhere); defaults
+/// follow BC: `where` = `'<'`, `which` = `' '` (space).
+fn builtin_delchr(args: &[Value]) -> Eval {
+    let s = match args.first() {
+        Some(Value::Text(s) | Value::Code(s)) => s.clone(),
+        Some(v) => return simple_error(format!("DelChr expects Text, got {}", v.type_name())),
+        None => return simple_error("DelChr expects 1 to 3 arguments"),
+    };
+    if args.len() > 3 {
+        return simple_error("DelChr expects 1 to 3 arguments");
+    }
+    let where_ = match args.get(1) {
+        None => "<".to_string(),
+        Some(Value::Text(w) | Value::Code(w)) => w.clone(),
+        Some(v) => {
+            return simple_error(format!("DelChr: where must be Text, got {}", v.type_name()))
+        }
+    };
+    let which: Vec<char> = match args.get(2) {
+        None => vec![' '],
+        Some(Value::Text(w) | Value::Code(w)) => w.chars().collect(),
+        Some(v) => {
+            return simple_error(format!("DelChr: which must be Text, got {}", v.type_name()))
+        }
+    };
+    if let Some(bad) = where_.chars().find(|c| !matches!(c, '<' | '>' | '=')) {
+        return simple_error(format!(
+            "DelChr: where must contain only '<', '>' or '=', got '{bad}'"
+        ));
+    }
+    let in_set = |c: char| which.contains(&c);
+    let mut result: &str = &s;
+    let everywhere = where_.contains('=');
+    if everywhere {
+        return Eval::Normal(Value::Text(
+            result.chars().filter(|c| !in_set(*c)).collect(),
+        ));
+    }
+    if where_.contains('<') {
+        result = result.trim_start_matches(in_set);
+    }
+    if where_.contains('>') {
+        result = result.trim_end_matches(in_set);
+    }
+    Eval::Normal(Value::Text(result.to_string()))
+}
+
+/// `ConvertStr(s, from, to)` — replace every occurrence of the i-th character
+/// of `from` with the i-th character of `to`. Errors when the lengths differ
+/// (BC behaviour).
+fn builtin_convertstr(args: &[Value]) -> Eval {
+    let (s, from, to) = match args {
+        [Value::Text(s) | Value::Code(s), Value::Text(f) | Value::Code(f), Value::Text(t) | Value::Code(t)] => {
+            (s, f, t)
+        }
+        _ => return simple_error("ConvertStr expects (Text, Text, Text)"),
+    };
+    let from: Vec<char> = from.chars().collect();
+    let to: Vec<char> = to.chars().collect();
+    if from.len() != to.len() {
+        return simple_error(
+            "ConvertStr: FromCharacters and ToCharacters must have the same length",
+        );
+    }
+    let converted: String = s
+        .chars()
+        .map(|c| match from.iter().position(|f| *f == c) {
+            Some(i) => to[i],
+            None => c,
+        })
+        .collect();
+    Eval::Normal(Value::Text(converted))
+}
+
+/// `PadStr(s, length [, fill])` — return exactly `length` characters: truncate
+/// when too long, pad on the right with `fill` (default space) when too short.
+fn builtin_padstr(args: &[Value]) -> Eval {
+    let (s, length) = match args {
+        [Value::Text(s) | Value::Code(s), Value::Integer(n)]
+        | [Value::Text(s) | Value::Code(s), Value::Integer(n), _] => (s.clone(), *n),
+        _ => return simple_error("PadStr expects (Text, Integer[, Text])"),
+    };
+    if length < 0 {
+        return simple_error("PadStr: length must be >= 0");
+    }
+    let fill = match args.get(2) {
+        None => ' ',
+        Some(Value::Text(f) | Value::Code(f)) => match f.chars().next() {
+            Some(c) => c,
+            None => return simple_error("PadStr: fill character cannot be empty"),
+        },
+        Some(v) => {
+            return simple_error(format!(
+                "PadStr: fill character must be Text, got {}",
+                v.type_name()
+            ))
+        }
+    };
+    let length = length as usize;
+    let mut chars: Vec<char> = s.chars().collect();
+    if chars.len() > length {
+        chars.truncate(length);
+    } else {
+        chars.resize(length, fill);
+    }
+    Eval::Normal(Value::Text(chars.into_iter().collect()))
+}
+
+/// `SelectStr(index, commaString)` — the 1-based `index`-th comma-separated
+/// element; errors when the index is out of range (BC behaviour).
+fn builtin_selectstr(args: &[Value]) -> Eval {
+    let (index, list) = match args {
+        [Value::Integer(n), Value::Text(s) | Value::Code(s)] => (*n, s.as_str()),
+        _ => return simple_error("SelectStr expects (Integer, Text)"),
+    };
+    if index < 1 {
+        return simple_error("SelectStr: index must be >= 1");
+    }
+    match list.split(',').nth(index as usize - 1) {
+        Some(part) => Eval::Normal(Value::Text(part.to_string())),
+        None => simple_error(format!(
+            "SelectStr: index {index} is beyond the number of elements in '{list}'"
+        )),
+    }
+}
+
+/// `IncStr(s)` — increment the last number embedded in the string, preserving
+/// its zero-padded width. Returns `''` when the string contains no digits
+/// (BC behaviour).
+fn builtin_incstr(args: &[Value]) -> Eval {
+    let s = match args {
+        [Value::Text(s) | Value::Code(s)] => s.clone(),
+        _ => return simple_error("IncStr expects exactly 1 Text argument"),
+    };
+    let chars: Vec<char> = s.chars().collect();
+    let mut end = None;
+    for (i, c) in chars.iter().enumerate().rev() {
+        if c.is_ascii_digit() {
+            end = Some(i + 1);
+            break;
+        }
+    }
+    let Some(end) = end else {
+        return Eval::Normal(Value::Text(String::new()));
+    };
+    let mut start = end;
+    while start > 0 && chars[start - 1].is_ascii_digit() {
+        start -= 1;
+    }
+    let digits: String = chars[start..end].iter().collect();
+    let width = digits.len();
+    let Ok(number) = digits.parse::<u64>() else {
+        return simple_error(format!("IncStr: number '{digits}' is out of range"));
+    };
+    let incremented = format!("{:0width$}", number + 1, width = width);
+    let mut result: String = chars[..start].iter().collect();
+    result.push_str(&incremented);
+    result.extend(&chars[end..]);
+    Eval::Normal(Value::Text(result))
+}
+
+/// `Date2DMY(date, what)` — extract day (1), month (2) or year (3).
+fn builtin_date2dmy(args: &[Value]) -> Eval {
+    let (date, what) = match args {
+        [Value::Date(d), Value::Integer(w)] => (*d, *w),
+        _ => return simple_error("Date2DMY expects (Date, Integer)"),
+    };
+    if date == 0 {
+        return simple_error("Date2DMY is undefined for 0D");
+    }
+    let (year, month, day) = crate::interpreter::value::ymd_from_al_days(date);
+    let part = match what {
+        1 => day,
+        2 => month,
+        3 => year,
+        other => {
+            return simple_error(format!(
+                "Date2DMY: the what argument must be 1 (day), 2 (month) or 3 (year), got {other}"
+            ))
+        }
+    };
+    Eval::Normal(Value::Integer(part))
+}
+
+/// `DMY2Date(day [, month [, year]])` — build a Date; omitted month/year come
+/// from the session work date (BC behaviour).
+fn builtin_dmy2date(args: &[Value], ctx: &mut DispatchCtx) -> Eval {
+    if args.is_empty() || args.len() > 3 {
+        return simple_error("DMY2Date expects 1 to 3 arguments");
+    }
+    let mut parts = [0i64; 3];
+    for (i, arg) in args.iter().enumerate() {
+        match arg {
+            Value::Integer(n) => parts[i] = *n,
+            other => {
+                return simple_error(format!(
+                    "DMY2Date expects Integer arguments, got {}",
+                    other.type_name()
+                ))
+            }
+        }
+    }
+    let work = current_work_date(ctx);
+    let (work_year, work_month, _) = crate::interpreter::value::ymd_from_al_days(work);
+    let day = parts[0];
+    let month = if args.len() >= 2 {
+        parts[1]
+    } else {
+        work_month
+    };
+    let year = if args.len() >= 3 { parts[2] } else { work_year };
+    match checked_al_date(year, month, day) {
+        Some(date) => Eval::Normal(Value::Date(date)),
+        None => simple_error(format!(
+            "DMY2Date: {day}/{month}/{year} is not a valid date"
+        )),
+    }
+}
+
+/// Validate a year/month/day and convert it to the AL day carrier.
+fn checked_al_date(year: i64, month: i64, day: i64) -> Option<i64> {
+    if !(1..=9999).contains(&year) || !(1..=12).contains(&month) {
+        return None;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        _ => 28,
+    };
+    if !(1..=max_day).contains(&day) {
+        return None;
+    }
+    Some(crate::interpreter::value::al_days_from_ymd(
+        year, month, day,
+    ))
+}
+
+/// `DT2Date(datetime)` — the date part of a DateTime.
+fn builtin_dt2date(args: &[Value]) -> Eval {
+    match args {
+        [Value::DateTime(dt)] => Eval::Normal(Value::Date(
+            dt.div_euclid(crate::interpreter::value::MS_PER_DAY),
+        )),
+        _ => simple_error("DT2Date expects exactly 1 DateTime argument"),
+    }
+}
+
+/// `DT2Time(datetime)` — the time part of a DateTime.
+fn builtin_dt2time(args: &[Value]) -> Eval {
+    match args {
+        [Value::DateTime(dt)] => Eval::Normal(Value::Time(
+            dt.rem_euclid(crate::interpreter::value::MS_PER_DAY),
+        )),
+        _ => simple_error("DT2Time expects exactly 1 DateTime argument"),
+    }
+}
+
+/// The effective session work date: the value set through `WorkDate(d)`, or
+/// today (BC's session default) when never set.
+fn current_work_date(ctx: &DispatchCtx) -> i64 {
+    ctx.work_date.unwrap_or_else(clock_today)
+}
+
+/// `WorkDate([newdate])` — read or set the session work date.
+fn builtin_workdate(args: &[Value], ctx: &mut DispatchCtx) -> Eval {
+    match args {
+        [] => Eval::Normal(Value::Date(current_work_date(ctx))),
+        [Value::Date(d)] => {
+            ctx.work_date = Some(*d);
+            Eval::Normal(Value::Date(*d))
+        }
+        [v] => simple_error(format!("WorkDate expects a Date, got {}", v.type_name())),
+        _ => simple_error("WorkDate expects at most 1 argument"),
+    }
+}
+
+/// Advance the deterministic LCG and return the next raw value in [0, 0x7FFF].
+fn next_random(ctx: &mut DispatchCtx) -> i64 {
+    ctx.random_state = ctx
+        .random_state
+        .wrapping_mul(214_013)
+        .wrapping_add(2_531_011);
+    ((ctx.random_state >> 16) & 0x7FFF) as i64
+}
+
+/// `Random(n)` — a deterministic pseudo-random Integer in `1..=n`.
+fn builtin_random(args: &[Value], ctx: &mut DispatchCtx) -> Eval {
+    let n = match args {
+        [Value::Integer(n)] => *n,
+        _ => return simple_error("Random expects exactly 1 Integer argument"),
+    };
+    if n < 1 {
+        return simple_error("Random: the maximum must be >= 1");
+    }
+    Eval::Normal(Value::Integer(next_random(ctx) % n + 1))
+}
+
+/// `Randomize([seed])` — re-seed the deterministic generator. Without a seed
+/// the generator returns to the fixed default so runs stay reproducible.
+fn builtin_randomize(args: &[Value], ctx: &mut DispatchCtx) -> Eval {
+    match args {
+        [] => {
+            ctx.random_state = DEFAULT_RANDOM_SEED;
+            Eval::Normal(Value::Empty)
+        }
+        [Value::Integer(seed) | Value::BigInteger(seed)] => {
+            ctx.random_state = *seed as u64;
+            Eval::Normal(Value::Empty)
+        }
+        _ => simple_error("Randomize expects at most 1 Integer argument"),
+    }
+}
+
 /// Signed milliseconds since the Unix epoch.
 fn unix_now_ms() -> i64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
@@ -1291,6 +1935,11 @@ pub(crate) fn clock_current_datetime() -> i64 {
 }
 
 /// Render a `Value` as AL would show it in StrSubstNo / Format.
+///
+/// Date/Time/DateTime render as invariant-culture date strings
+/// (`MM/DD/YYYY`, `HH:MM:SS`), not their raw integer carriers; the undefined
+/// values (0D/0T and the zero DateTime) render as the empty string, matching
+/// BC.
 fn render_value(v: &Value) -> String {
     match v {
         Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
@@ -1298,27 +1947,57 @@ fn render_value(v: &Value) -> String {
         Value::Boolean(true) => "Yes".to_string(),
         Value::Boolean(false) => "No".to_string(),
         Value::Text(s) | Value::Code(s) => s.clone(),
-        Value::Date(d) => d.to_string(),
-        Value::Time(t) => t.to_string(),
-        Value::DateTime(dt) => dt.to_string(),
+        Value::Date(0) | Value::Time(0) | Value::DateTime(0) => String::new(),
+        Value::Date(d) => {
+            let (y, m, day) = crate::interpreter::value::ymd_from_al_days(*d);
+            format!("{m:02}/{day:02}/{y:04}")
+        }
+        Value::Time(t) => render_time_ms(*t),
+        Value::DateTime(dt) => {
+            let (y, m, day) = crate::interpreter::value::ymd_from_al_days(
+                dt.div_euclid(crate::interpreter::value::MS_PER_DAY),
+            );
+            let time = render_time_ms(dt.rem_euclid(crate::interpreter::value::MS_PER_DAY));
+            format!("{m:02}/{day:02}/{y:04} {time}")
+        }
         Value::Duration(d) => d.to_string(),
         Value::Guid(g) => g.clone(),
         Value::Char(c) => c.to_string(),
         Value::Null => String::new(),
         Value::Empty => String::new(),
+        Value::Option { member, .. } => member.clone(),
         other => format!("<{}>", other.type_name()),
     }
 }
 
 /// Substitute %1, %2, … placeholders in `fmt` with rendered arg values.
 ///
-/// Replaces in decreasing placeholder-number order so that `%10` is handled
-/// before `%1`, preventing `%1` from consuming the `%1` prefix of `%10`.
+/// Single left-to-right pass over `fmt`: inserted argument text is never
+/// re-scanned, so an argument whose value contains `%1` stays literal (BC
+/// behaviour). Digit runs are read maximally (`%10` targets the 10th
+/// argument); a placeholder with no matching argument is left verbatim.
 fn substitute_placeholders(fmt: &str, args: &[Value]) -> String {
-    let mut result = fmt.to_string();
-    for i in (0..args.len()).rev() {
-        let placeholder = format!("%{}", i + 1);
-        result = result.replace(&placeholder, &render_value(&args[i]));
+    let mut result = String::with_capacity(fmt.len());
+    let mut chars = fmt.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            result.push(c);
+            continue;
+        }
+        let mut digits = String::new();
+        while let Some(d) = chars.peek().filter(|d| d.is_ascii_digit()) {
+            digits.push(*d);
+            chars.next();
+        }
+        match digits.parse::<usize>() {
+            Ok(n) if n >= 1 && n <= args.len() => {
+                result.push_str(&render_value(&args[n - 1]));
+            }
+            _ => {
+                result.push('%');
+                result.push_str(&digits);
+            }
+        }
     }
     result
 }
@@ -1586,7 +2265,9 @@ mod tests {
     }
 
     #[test]
-    fn copystr_rejects_position_beyond_string_length() {
+    fn copystr_position_beyond_string_length_returns_empty() {
+        // BC's CopyStr is the safe truncating variant: past-the-end positions
+        // yield '' rather than a runtime error.
         let mut ctx = ctx();
         let result = dispatch_call(
             None,
@@ -1598,10 +2279,10 @@ mod tests {
             ],
             &mut ctx,
         );
-        assert!(
-            result.is_error(),
-            "CopyStr pos > string length must error, got: {:?}",
-            result
+        assert_eq!(
+            ok(result),
+            Value::Text(String::new()),
+            "CopyStr pos > string length must return the empty string"
         );
     }
 
@@ -1786,6 +2467,579 @@ mod tests {
             e.message.contains("recursion depth exceeded"),
             "expected 'recursion depth exceeded' in error, got: {}",
             e.message
+        );
+    }
+
+    #[test]
+    fn every_supported_global_builtin_dispatches_without_procedure_not_found() {
+        // The router's safe-list and the dispatch catalog share
+        // `supports_global_builtin`; this pins that every listed name actually
+        // has a dispatch arm (a zero-argument call may fail its own argument
+        // validation, but must never fall through to "procedure not found").
+        let names = [
+            "Error",
+            "Message",
+            "Confirm",
+            "StrMenu",
+            "Hyperlink",
+            "StrSubstNo",
+            "Format",
+            "StrLen",
+            "CopyStr",
+            "LowerCase",
+            "UpperCase",
+            "IndexOf",
+            "MaxStrLen",
+            "CreateDateTime",
+            "CurrentDateTime",
+            "Today",
+            "Time",
+            "Abs",
+            "Round",
+            "Power",
+            "StrPos",
+            "DelChr",
+            "ConvertStr",
+            "PadStr",
+            "SelectStr",
+            "IncStr",
+            "Date2DMY",
+            "DMY2Date",
+            "DT2Date",
+            "DT2Time",
+            "WorkDate",
+            "Random",
+            "Randomize",
+            "GetLastErrorText",
+            "ClearLastError",
+        ];
+        for name in names {
+            assert!(
+                supports_global_builtin(name),
+                "{name} must be in the shared safe-list"
+            );
+            let mut ctx = ctx();
+            let result = dispatch_call(None, name, vec![], &mut ctx);
+            if let Eval::Error(e) = &result {
+                assert!(
+                    !e.message.contains("procedure not found"),
+                    "{name} must dispatch to a builtin, got: {}",
+                    e.message
+                );
+            }
+        }
+        assert!(
+            !supports_global_builtin("Evaluate"),
+            "unimplemented globals must stay off the safe-list"
+        );
+        assert!(!supports_global_builtin("CalcDate"));
+    }
+
+    #[test]
+    fn abs_preserves_numeric_type_and_traps_overflow() {
+        let mut ctx = ctx();
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Abs",
+                vec![Value::Integer(-5)],
+                &mut ctx
+            )),
+            Value::Integer(5)
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Abs",
+                vec![Value::Decimal(rust_decimal_macros::dec!(-1.25))],
+                &mut ctx
+            )),
+            Value::Decimal(rust_decimal_macros::dec!(1.25))
+        );
+        assert!(
+            dispatch_call(None, "Abs", vec![Value::Integer(i32::MIN as i64)], &mut ctx).is_error()
+        );
+    }
+
+    #[test]
+    fn round_uses_bankers_rounding_and_directions() {
+        use rust_decimal_macros::dec;
+        let mut ctx = ctx();
+        let round =
+            |ctx: &mut DispatchCtx, args: Vec<Value>| dispatch_call(None, "Round", args, ctx);
+
+        // Default precision 0.01, banker's midpoint: 2.675 → 2.68 (268 even).
+        assert_eq!(
+            ok(round(&mut ctx, vec![Value::Decimal(dec!(2.675))])),
+            Value::Decimal(dec!(2.68))
+        );
+        // Midpoints round to the EVEN multiple: 2.5 → 2, 1.5 → 2.
+        assert_eq!(
+            ok(round(
+                &mut ctx,
+                vec![Value::Decimal(dec!(2.5)), Value::Integer(1)]
+            )),
+            Value::Decimal(dec!(2))
+        );
+        assert_eq!(
+            ok(round(
+                &mut ctx,
+                vec![Value::Decimal(dec!(1.5)), Value::Integer(1)]
+            )),
+            Value::Decimal(dec!(2))
+        );
+        // Explicit directions.
+        assert_eq!(
+            ok(round(
+                &mut ctx,
+                vec![
+                    Value::Decimal(dec!(2.1)),
+                    Value::Integer(1),
+                    Value::Text("<".into())
+                ]
+            )),
+            Value::Decimal(dec!(2))
+        );
+        assert_eq!(
+            ok(round(
+                &mut ctx,
+                vec![
+                    Value::Decimal(dec!(2.1)),
+                    Value::Integer(1),
+                    Value::Text(">".into())
+                ]
+            )),
+            Value::Decimal(dec!(3))
+        );
+        assert!(round(
+            &mut ctx,
+            vec![
+                Value::Decimal(dec!(1.0)),
+                Value::Integer(1),
+                Value::Text("?".into())
+            ]
+        )
+        .is_error());
+    }
+
+    #[test]
+    fn power_strpos_and_string_builtins() {
+        use rust_decimal_macros::dec;
+        let mut ctx = ctx();
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Power",
+                vec![Value::Integer(2), Value::Integer(10)],
+                &mut ctx
+            )),
+            Value::Decimal(dec!(1024))
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "StrPos",
+                vec![
+                    Value::Text("Hello World".into()),
+                    Value::Text("World".into())
+                ],
+                &mut ctx
+            )),
+            Value::Integer(7)
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "StrPos",
+                vec![Value::Text("abc".into()), Value::Text("zz".into())],
+                &mut ctx
+            )),
+            Value::Integer(0)
+        );
+        // DelChr default: trim leading spaces only.
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "DelChr",
+                vec![Value::Text("  x  ".into())],
+                &mut ctx
+            )),
+            Value::Text("x  ".into())
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "DelChr",
+                vec![
+                    Value::Text(" a,b, c ".into()),
+                    Value::Text("=".into()),
+                    Value::Text(",".into())
+                ],
+                &mut ctx
+            )),
+            Value::Text(" ab c ".into())
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "DelChr",
+                vec![
+                    Value::Text("  x  ".into()),
+                    Value::Text("<>".into()),
+                    Value::Text(" ".into())
+                ],
+                &mut ctx
+            )),
+            Value::Text("x".into())
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "ConvertStr",
+                vec![
+                    Value::Text("a-b-c".into()),
+                    Value::Text("-".into()),
+                    Value::Text("_".into())
+                ],
+                &mut ctx
+            )),
+            Value::Text("a_b_c".into())
+        );
+        assert!(dispatch_call(
+            None,
+            "ConvertStr",
+            vec![
+                Value::Text("abc".into()),
+                Value::Text("ab".into()),
+                Value::Text("x".into())
+            ],
+            &mut ctx
+        )
+        .is_error());
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "PadStr",
+                vec![Value::Text("ab".into()), Value::Integer(5)],
+                &mut ctx
+            )),
+            Value::Text("ab   ".into())
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "PadStr",
+                vec![
+                    Value::Text("abcdef".into()),
+                    Value::Integer(3),
+                    Value::Text("*".into())
+                ],
+                &mut ctx
+            )),
+            Value::Text("abc".into())
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "SelectStr",
+                vec![Value::Integer(2), Value::Text("one,two,three".into())],
+                &mut ctx
+            )),
+            Value::Text("two".into())
+        );
+        assert!(dispatch_call(
+            None,
+            "SelectStr",
+            vec![Value::Integer(9), Value::Text("one,two".into())],
+            &mut ctx
+        )
+        .is_error());
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "IncStr",
+                vec![Value::Text("INV-009".into())],
+                &mut ctx
+            )),
+            Value::Text("INV-010".into())
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "IncStr",
+                vec![Value::Text("nodigits".into())],
+                &mut ctx
+            )),
+            Value::Text(String::new())
+        );
+    }
+
+    #[test]
+    fn date_builtins_round_trip() {
+        let mut ctx = ctx();
+        let date = crate::interpreter::value::al_days_from_ymd(2024, 7, 31);
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Date2DMY",
+                vec![Value::Date(date), Value::Integer(1)],
+                &mut ctx
+            )),
+            Value::Integer(31)
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Date2DMY",
+                vec![Value::Date(date), Value::Integer(2)],
+                &mut ctx
+            )),
+            Value::Integer(7)
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Date2DMY",
+                vec![Value::Date(date), Value::Integer(3)],
+                &mut ctx
+            )),
+            Value::Integer(2024)
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "DMY2Date",
+                vec![Value::Integer(31), Value::Integer(7), Value::Integer(2024)],
+                &mut ctx
+            )),
+            Value::Date(date)
+        );
+        assert!(dispatch_call(
+            None,
+            "DMY2Date",
+            vec![Value::Integer(31), Value::Integer(2), Value::Integer(2024)],
+            &mut ctx
+        )
+        .is_error());
+
+        let dt = date * crate::interpreter::value::MS_PER_DAY + 3_600_000;
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "DT2Date",
+                vec![Value::DateTime(dt)],
+                &mut ctx
+            )),
+            Value::Date(date)
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "DT2Time",
+                vec![Value::DateTime(dt)],
+                &mut ctx
+            )),
+            Value::Time(3_600_000)
+        );
+    }
+
+    #[test]
+    fn workdate_defaults_to_today_and_is_settable() {
+        let mut ctx = ctx();
+        assert_eq!(
+            ok(dispatch_call(None, "WorkDate", vec![], &mut ctx)),
+            Value::Date(clock_today()),
+            "the session work date defaults to Today"
+        );
+        let date = crate::interpreter::value::al_days_from_ymd(2025, 1, 2);
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "WorkDate",
+                vec![Value::Date(date)],
+                &mut ctx
+            )),
+            Value::Date(date)
+        );
+        assert_eq!(
+            ok(dispatch_call(None, "WorkDate", vec![], &mut ctx)),
+            Value::Date(date)
+        );
+    }
+
+    #[test]
+    fn random_is_deterministic_and_seedable() {
+        let mut a = ctx();
+        let mut b = ctx();
+        let seq = |ctx: &mut DispatchCtx| {
+            (0..5)
+                .map(|_| {
+                    ok(dispatch_call(
+                        None,
+                        "Random",
+                        vec![Value::Integer(100)],
+                        ctx,
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(seq(&mut a), seq(&mut b), "fresh contexts share the seed");
+        for value in seq(&mut a) {
+            match value {
+                Value::Integer(n) => assert!((1..=100).contains(&n)),
+                other => panic!("Random must return Integer, got {other:?}"),
+            }
+        }
+        // Re-seeding resets the sequence deterministically.
+        let first = seq(&mut a);
+        assert!(dispatch_call(None, "Randomize", vec![], &mut a)
+            .into_value()
+            .is_some());
+        assert!(matches!(
+            dispatch_call(None, "Randomize", vec![Value::Integer(1)], &mut b),
+            Eval::Normal(_)
+        ));
+        let _ = first;
+    }
+
+    #[test]
+    fn get_last_error_text_reads_and_clears() {
+        let mut ctx = ctx();
+        ctx.last_error = Some(ErrorInfo {
+            message: "boom".into(),
+            error_type: None,
+            source: None,
+        });
+        assert_eq!(
+            ok(dispatch_call(None, "GetLastErrorText", vec![], &mut ctx)),
+            Value::Text("boom".into())
+        );
+        assert!(matches!(
+            dispatch_call(None, "ClearLastError", vec![], &mut ctx),
+            Eval::Normal(_)
+        ));
+        assert_eq!(
+            ok(dispatch_call(None, "GetLastErrorText", vec![], &mut ctx)),
+            Value::Text(String::new())
+        );
+    }
+
+    #[test]
+    fn format_renders_dates_not_raw_carriers() {
+        let mut ctx = ctx();
+        let date = crate::interpreter::value::al_days_from_ymd(2024, 1, 31);
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Format",
+                vec![Value::Date(date)],
+                &mut ctx
+            )),
+            Value::Text("01/31/2024".into())
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Format",
+                vec![Value::Date(0)],
+                &mut ctx
+            )),
+            Value::Text(String::new()),
+            "the undefined date renders as ''"
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Format",
+                vec![Value::Time(6 * 3_600_000 + 30 * 60_000)],
+                &mut ctx
+            )),
+            Value::Text("06:30:00".into())
+        );
+        // StrSubstNo renders through the same path.
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "StrSubstNo",
+                vec![Value::Text("on %1".into()), Value::Date(date)],
+                &mut ctx
+            )),
+            Value::Text("on 01/31/2024".into())
+        );
+    }
+
+    #[test]
+    fn format_supports_length_and_format_number_and_rejects_format_strings() {
+        let mut ctx = ctx();
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Format",
+                vec![Value::Integer(42), Value::Integer(5)],
+                &mut ctx
+            )),
+            Value::Text("42   ".into()),
+            "positive length pads on the right"
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Format",
+                vec![Value::Integer(42), Value::Integer(-5)],
+                &mut ctx
+            )),
+            Value::Text("   42".into()),
+            "negative length right-justifies"
+        );
+        let date = crate::interpreter::value::al_days_from_ymd(2024, 1, 31);
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Format",
+                vec![Value::Date(date), Value::Integer(0), Value::Integer(9)],
+                &mut ctx
+            )),
+            Value::Text("2024-01-31".into()),
+            "format 9 is the XML rendering"
+        );
+        // Unsupported format arguments must error, not be silently ignored.
+        assert!(dispatch_call(
+            None,
+            "Format",
+            vec![
+                Value::Decimal(rust_decimal_macros::dec!(1.5)),
+                Value::Integer(0),
+                Value::Text("<Precision,2:2><Standard Format,0>".into())
+            ],
+            &mut ctx
+        )
+        .is_error());
+        assert!(dispatch_call(
+            None,
+            "Format",
+            vec![Value::Integer(1), Value::Integer(0), Value::Integer(4)],
+            &mut ctx
+        )
+        .is_error());
+    }
+
+    #[test]
+    fn strsubstno_does_not_rescan_substituted_values() {
+        let mut ctx = ctx();
+        let result = dispatch_call(
+            None,
+            "StrSubstNo",
+            vec![
+                Value::Text("%2 %1".into()),
+                Value::Text("A".into()),
+                Value::Text("x%1y".into()),
+            ],
+            &mut ctx,
+        );
+        assert_eq!(
+            ok(result),
+            Value::Text("x%1y A".into()),
+            "a %1 inside a substituted value must stay literal"
         );
     }
 

@@ -37,7 +37,7 @@ use crate::interpreter::scope::{Eval, ScopeStack};
 use crate::interpreter::value::{ErrorInfo, RecordValue, Value};
 use crate::mock::calcformula_parser::{self, CalcFormula, FormulaType, WhereValue};
 use crate::mock::filter;
-use crate::mock::record::{FieldNo, FlowAgg, FlowFilter, MockRecord};
+use crate::mock::record::{FieldNo, FlowAgg, FlowFilter, MockRecord, RecordView};
 
 /// A live record-table backing store: the `MockRecord` data plus the
 /// field-name→number map recovered from the workspace table definition.
@@ -50,6 +50,15 @@ pub struct RecordStore {
     /// `FieldClass = FlowField` *and* a parseable formula appear here; reads and
     /// `CalcFields` of these are computed from the referenced table's store.
     flowfields: HashMap<FieldNo, CalcFormula>,
+    /// Field number → the typed default value of the declared field type
+    /// (`0` / `''` / `false` / `0D` …). Reads of never-assigned fields return
+    /// this default (BC zero-initialises every field); fields with types the
+    /// interpreter cannot default are absent.
+    field_defaults: HashMap<FieldNo, Value>,
+    /// Per-record-variable view state (filters/cursor/buffer), keyed by the
+    /// variable's handle. BC gives each record variable independent state over
+    /// the shared physical table.
+    views: HashMap<u64, RecordView>,
 }
 
 impl RecordStore {
@@ -64,6 +73,29 @@ impl RecordStore {
             )
         })
     }
+
+    /// Take the view for `handle` out of the store, creating a fresh one for a
+    /// first use. The caller MUST put it back with [`RecordStore::put_view`]
+    /// on every path.
+    fn take_view(&mut self, handle: u64) -> RecordView {
+        self.views
+            .remove(&handle)
+            .unwrap_or_else(|| self.record.new_view())
+    }
+
+    fn put_view(&mut self, handle: u64, view: RecordView) {
+        self.views.insert(handle, view);
+    }
+
+    /// Coerce a value being written into `field` to the field's declared type
+    /// (Code caselessness, integer width, Decimal promotion). Unknown field
+    /// types store the value as-is.
+    fn coerce_to_field(&self, field: FieldNo, value: Value) -> Result<Value, String> {
+        match self.field_defaults.get(&field) {
+            Some(default) => Value::coerce_into_slot(default, value),
+            None => Ok(value),
+        }
+    }
 }
 
 /// Parsed metadata for a workspace table definition.
@@ -72,6 +104,7 @@ struct TableMeta {
     table_name: String,
     field_by_name: HashMap<String, FieldNo>,
     flowfields: HashMap<FieldNo, CalcFormula>,
+    field_defaults: HashMap<FieldNo, Value>,
     pk_fields: Vec<FieldNo>,
 }
 
@@ -109,9 +142,42 @@ fn ensure_store(ctx: &mut DispatchCtx, table_name: &str) -> Result<String, Strin
         record: MockRecord::new(meta.table_id, meta.table_name, meta.pk_fields),
         field_by_name: meta.field_by_name,
         flowfields: meta.flowfields,
+        field_defaults: meta.field_defaults,
+        views: HashMap::new(),
     };
     ctx.records.insert(key.clone(), store);
     Ok(key)
+}
+
+/// Resolve the record variable named `recv` to its `(table_name, handle)`
+/// pair, allocating a fresh per-variable view handle on first use and writing
+/// it back onto the variable's `RecordValue`. Returns `None` when `recv` is
+/// not a bound record variable.
+pub(crate) fn record_binding(
+    recv: &str,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Option<(String, u64)> {
+    let table_name = match stack.lookup(recv) {
+        Some(Value::Record(rv)) => rv.table_name.clone(),
+        _ => return None,
+    };
+    let existing = match stack.lookup(recv) {
+        Some(Value::Record(rv)) => rv.handle,
+        _ => None,
+    };
+    let handle = match existing {
+        Some(handle) => handle,
+        None => {
+            ctx.next_record_handle += 1;
+            let handle = ctx.next_record_handle;
+            if let Some(Value::Record(rv)) = stack.lookup_mut(recv) {
+                rv.handle = Some(handle);
+            }
+            handle
+        }
+    };
+    Some((table_name, handle))
 }
 
 /// Locate and parse a workspace table object's metadata by name.
@@ -169,12 +235,13 @@ fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMe
 
     let mut field_by_name: HashMap<String, FieldNo> = HashMap::new();
     let mut flowfields: HashMap<FieldNo, CalcFormula> = HashMap::new();
+    let mut field_defaults: HashMap<FieldNo, Value> = HashMap::new();
 
     let fields_body = section_body(body, "fields", source)
         .ok_or_else(|| "fields section is missing".to_string())?;
     let mut field_numbers = std::collections::HashSet::new();
     for fdef in sections_with_keyword(fields_body, "field", source) {
-        let (no, name, calc) = parse_field_def(fdef, source)?;
+        let (no, name, type_text, calc) = parse_field_def(fdef, source)?;
         if no <= 0 {
             return Err(format!("field '{name}' has non-positive number {no}"));
         }
@@ -184,6 +251,17 @@ fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMe
         let normalized_name = name.to_ascii_lowercase();
         if field_by_name.insert(normalized_name, no).is_some() {
             return Err(format!("duplicate field name '{name}'"));
+        }
+        if let Some(type_text) = type_text {
+            // Strip any length suffix (`Text[20]`, `Code[10]`) to the base name.
+            let base = type_text
+                .split(['[', ' '])
+                .next()
+                .unwrap_or(&type_text)
+                .trim();
+            if let Some(default) = Value::default_for(base) {
+                field_defaults.insert(no, default);
+            }
         }
         if let Some(formula) = calc {
             if flowfields.insert(no, formula).is_some() {
@@ -221,6 +299,7 @@ fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMe
         table_name,
         field_by_name,
         flowfields,
+        field_defaults,
         pk_fields,
     })
 }
@@ -308,13 +387,15 @@ fn section_keyword(section: Node<'_>, source: &[u8]) -> Option<String> {
         .map(|t| t.trim().to_string())
 }
 
-/// Parse `field(N; Name; Type) { ... }` → (field_no, name, flow_calc_formula).
-/// The third element is `Some(formula)` only when the field is a FlowField.
+/// Parse `field(N; Name; Type) { ... }` →
+/// (field_no, name, declared_type_text, flow_calc_formula).
+/// The last element is `Some(formula)` only when the field is a FlowField.
 /// Malformed FlowField metadata is an error.
+#[allow(clippy::type_complexity)]
 fn parse_field_def(
     section: Node<'_>,
     source: &[u8],
-) -> Result<(FieldNo, String, Option<CalcFormula>), String> {
+) -> Result<(FieldNo, String, Option<String>, Option<CalcFormula>), String> {
     let mut cursor = section.walk();
     let pblock = section
         .named_children(&mut cursor)
@@ -323,6 +404,7 @@ fn parse_field_def(
 
     let mut number: Option<FieldNo> = None;
     let mut name: Option<String> = None;
+    let mut type_text: Option<String> = None;
     let mut segment = 0_u8;
     let mut bc = pblock.walk();
     for child in pblock.children(&mut bc) {
@@ -353,6 +435,12 @@ fn parse_field_def(
                         .to_string(),
                 );
             }
+            2 if type_text.is_none() => {
+                type_text = child
+                    .utf8_text(source)
+                    .ok()
+                    .map(|text| text.trim().to_string());
+            }
             _ => {}
         }
     }
@@ -360,7 +448,7 @@ fn parse_field_def(
     let number = number.ok_or_else(|| "field number is missing".to_string())?;
     let name = name.ok_or_else(|| format!("field {number} name is missing"))?;
     let calc = parse_field_calcformula(section, source, &name)?;
-    Ok((number, name, calc))
+    Ok((number, name, type_text, calc))
 }
 
 /// If a field's body declares `FieldClass = FlowField;` *and* a parseable
@@ -484,18 +572,24 @@ pub fn supports_record_method(method: &str) -> bool {
 
 /// Execute a record-API method call (`Rec.Method(args)`).
 ///
-/// `table_name` is the declared subtype of the receiver record variable.
-/// `args_node` is the call's `argument_list` (so field-reference arguments —
-/// e.g. the first arg of `SetRange` — can be read as field names rather than
-/// evaluated as variables).
+/// `table_name` is the declared subtype of the receiver record variable and
+/// `handle` identifies that variable's own view (filters/cursor/buffer) over
+/// the shared table store. `args_node` is the call's `argument_list` (so
+/// field-reference arguments — e.g. the first arg of `SetRange` — can be read
+/// as field names rather than evaluated as variables).
 pub(crate) fn dispatch_record_method(
     table_name: &str,
+    handle: u64,
     method: &str,
     args_node: Option<Node<'_>>,
     source: &[u8],
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
+    // Consume the statement-position marker before any nested evaluation:
+    // a statement-position `Get`/`Find*` miss is a runtime error in BC, an
+    // expression-position one returns false.
+    let stmt_position = std::mem::take(&mut ctx.stmt_position);
     if !records_enabled(ctx) {
         return records_disabled_error();
     }
@@ -507,7 +601,7 @@ pub(crate) fn dispatch_record_method(
     // subsequent plain read sees it. Handled before the value-eval loop so the
     // field-name nodes are never evaluated as variables.
     if lower == "calcfields" {
-        return dispatch_calcfields(table_name, &nodes, source, ctx);
+        return dispatch_calcfields(table_name, handle, &nodes, source, ctx);
     }
 
     // SetCurrentKey takes only field references. Handle it before the general
@@ -532,7 +626,9 @@ pub(crate) fn dispatch_record_method(
                 Err(error) => return err(format!("SetCurrentKey: {error}")),
             }
         }
-        store.record.set_current_key(field_nos);
+        let mut view = store.take_view(handle);
+        store.record.set_current_key_in(&mut view, field_nos);
+        store.put_view(handle, view);
         return Eval::Normal(Value::Boolean(true));
     }
 
@@ -577,39 +673,82 @@ pub(crate) fn dispatch_record_method(
     };
 
     let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let mut view = store.take_view(handle);
+    let result = run_record_method(
+        store,
+        &mut view,
+        &lower,
+        method,
+        field_no,
+        values,
+        stmt_position,
+    );
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    store.put_view(handle, view);
+    result
+}
 
-    match lower.as_str() {
+/// The record-method body proper, operating on a taken-out view so early
+/// returns cannot lose the view (the caller reinserts it unconditionally).
+fn run_record_method(
+    store: &mut RecordStore,
+    view: &mut RecordView,
+    lower: &str,
+    method: &str,
+    field_no: Option<FieldNo>,
+    values: Vec<Value>,
+    stmt_position: bool,
+) -> Eval {
+    use crate::mock::record::RecordError;
+
+    // Map a mutation failure with BC statement/expression semantics:
+    // a statement-position failure raises; `if Rec.Insert() then` takes the
+    // false branch. Capability errors (trigger execution) always raise.
+    let mutation_result = |method: &str, result: Result<(), RecordError>| match result {
+        Ok(()) => Eval::Normal(Value::Boolean(true)),
+        Err(error @ RecordError::TriggerExecutionUnsupported(_)) => {
+            err(format!("{method}: {error}"))
+        }
+        Err(error) if stmt_position => err(format!("{method}: {error}")),
+        Err(_) => Eval::Normal(Value::Boolean(false)),
+    };
+    // A find-class miss errors in statement position and yields false in
+    // expression position.
+    let find_result = |method: &str, table: &str, found: Result<bool, RecordError>| match found {
+        Ok(true) => Eval::Normal(Value::Boolean(true)),
+        Ok(false) if stmt_position => err(format!(
+            "{method}: no '{table}' record matches the current filters"
+        )),
+        Ok(false) => Eval::Normal(Value::Boolean(false)),
+        Err(error) => err(format!("{method}: {error}")),
+    };
+
+    match lower {
         "init" => {
             if let Err(error) = require_no_args("Init", &values) {
                 return err(error);
             }
-            store.record.init();
+            store.record.init_in(view);
             Eval::Normal(Value::Empty)
         }
         "reset" => {
             if let Err(error) = require_no_args("Reset", &values) {
                 return err(error);
             }
-            store.record.reset();
+            store.record.reset_in(view);
             Eval::Normal(Value::Empty)
         }
-        "insert" => match optional_boolean("Insert", &values)
-            .and_then(|run_trigger| store.record.insert(run_trigger).map_err(|e| e.to_string()))
-        {
-            Ok(()) => Eval::Normal(Value::Boolean(true)),
-            Err(e) => err(format!("Insert: {e}")),
+        "insert" => match optional_boolean("Insert", &values) {
+            Ok(run_trigger) => mutation_result("Insert", store.record.insert_in(view, run_trigger)),
+            Err(error) => err(error),
         },
-        "modify" => match optional_boolean("Modify", &values)
-            .and_then(|run_trigger| store.record.modify(run_trigger).map_err(|e| e.to_string()))
-        {
-            Ok(()) => Eval::Normal(Value::Boolean(true)),
-            Err(e) => err(format!("Modify: {e}")),
+        "modify" => match optional_boolean("Modify", &values) {
+            Ok(run_trigger) => mutation_result("Modify", store.record.modify_in(view, run_trigger)),
+            Err(error) => err(error),
         },
-        "delete" => match optional_boolean("Delete", &values)
-            .and_then(|run_trigger| store.record.delete(run_trigger).map_err(|e| e.to_string()))
-        {
-            Ok(()) => Eval::Normal(Value::Boolean(true)),
-            Err(e) => err(format!("Delete: {e}")),
+        "delete" => match optional_boolean("Delete", &values) {
+            Ok(run_trigger) => mutation_result("Delete", store.record.delete_in(view, run_trigger)),
+            Err(error) => err(error),
         },
         "get" => {
             if values.is_empty() {
@@ -623,8 +762,22 @@ pub(crate) fn dispatch_record_method(
                     values.len()
                 ));
             }
-            match store.record.get(values.clone()) {
+            // Coerce each key part to the declared PK field type so a Text
+            // literal matches a Code key and an Integer a Decimal one.
+            let pk_fields: Vec<FieldNo> = store.record.primary_key_fields().to_vec();
+            let mut key_values = Vec::with_capacity(values.len());
+            for (field, value) in pk_fields.into_iter().zip(values.into_iter()) {
+                match store.coerce_to_field(field, value) {
+                    Ok(coerced) => key_values.push(coerced),
+                    Err(error) => return err(format!("Get: {error}")),
+                }
+            }
+            match store.record.get_in(view, key_values) {
                 Ok(()) => Eval::Normal(Value::Boolean(true)),
+                Err(_) if stmt_position => err(format!(
+                    "Get: the record does not exist in table '{}'",
+                    store.record.table_name
+                )),
                 Err(_) => Eval::Normal(Value::Boolean(false)),
             }
         }
@@ -632,19 +785,19 @@ pub(crate) fn dispatch_record_method(
             let f = field_no.unwrap();
             match values.len() {
                 0 => {
-                    store.record.clear_filter(f);
+                    store.record.clear_filter_in(view, f);
                     Eval::Normal(Value::Empty)
                 }
                 1 => {
                     store
                         .record
-                        .set_range(f, values[0].clone(), values[0].clone());
+                        .set_range_in(view, f, values[0].clone(), values[0].clone());
                     Eval::Normal(Value::Empty)
                 }
                 2 => {
                     store
                         .record
-                        .set_range(f, values[0].clone(), values[1].clone());
+                        .set_range_in(view, f, values[0].clone(), values[1].clone());
                     Eval::Normal(Value::Empty)
                 }
                 count => err(format!(
@@ -664,14 +817,16 @@ pub(crate) fn dispatch_record_method(
                 }
                 None => return err("SetFilter: missing filter expression"),
             };
-            for (index, value) in values.iter().skip(1).enumerate() {
-                let rendered = match render_filter_value(value) {
+            // Substitute in DESCENDING placeholder order so replacing `%1`
+            // cannot corrupt `%10`.
+            for index in (1..values.len()).rev() {
+                let rendered = match render_filter_value(&values[index]) {
                     Ok(rendered) => rendered,
                     Err(error) => return err(format!("SetFilter: {error}")),
                 };
-                expr = expr.replace(&format!("%{}", index + 1), &rendered);
+                expr = expr.replace(&format!("%{index}"), &rendered);
             }
-            match store.record.set_filter(f, &expr) {
+            match store.record.set_filter_in(view, f, &expr) {
                 Ok(()) => Eval::Normal(Value::Empty),
                 Err(e) => err(format!("SetFilter: {e}")),
             }
@@ -684,28 +839,22 @@ pub(crate) fn dispatch_record_method(
             {
                 return err("FindSet: expects up to two optional Boolean arguments");
             }
-            match store.record.find_first() {
-                Ok(found) => Eval::Normal(Value::Boolean(found)),
-                Err(e) => err(format!("FindSet: {e}")),
-            }
+            let table = store.record.table_name.clone();
+            find_result("FindSet", &table, store.record.find_first_in(view))
         }
         "findfirst" => {
             if let Err(error) = require_no_args("FindFirst", &values) {
                 return err(error);
             }
-            match store.record.find_first() {
-                Ok(found) => Eval::Normal(Value::Boolean(found)),
-                Err(e) => err(format!("FindFirst: {e}")),
-            }
+            let table = store.record.table_name.clone();
+            find_result("FindFirst", &table, store.record.find_first_in(view))
         }
         "findlast" => {
             if let Err(error) = require_no_args("FindLast", &values) {
                 return err(error);
             }
-            match store.record.find_last() {
-                Ok(found) => Eval::Normal(Value::Boolean(found)),
-                Err(e) => err(format!("FindLast: {e}")),
-            }
+            let table = store.record.table_name.clone();
+            find_result("FindLast", &table, store.record.find_last_in(view))
         }
         "find" => {
             let direction = match values.as_slice() {
@@ -721,10 +870,8 @@ pub(crate) fn dispatch_record_method(
                     "Find: local record runtime supports only the single-character '-' and '+' directions",
                 );
             }
-            match store.record.find(direction) {
-                Ok(found) => Eval::Normal(Value::Boolean(found)),
-                Err(e) => err(format!("Find: {e}")),
-            }
+            let table = store.record.table_name.clone();
+            find_result("Find", &table, store.record.find_in(view, direction))
         }
         "next" => {
             let steps = match values.as_slice() {
@@ -737,7 +884,7 @@ pub(crate) fn dispatch_record_method(
                 },
                 _ => return err("Next: expects one optional Integer step count"),
             };
-            match store.record.next(steps) {
+            match store.record.next_in(view, steps) {
                 Ok(moved) => Eval::Normal(Value::Integer(moved as i64)),
                 Err(e) => err(format!("Next: {e}")),
             }
@@ -746,41 +893,53 @@ pub(crate) fn dispatch_record_method(
             if let Err(error) = require_no_args(method, &values) {
                 return err(error);
             }
-            Eval::Normal(Value::Integer(store.record.count() as i64))
+            Eval::Normal(Value::Integer(store.record.count_in(view) as i64))
         }
         "isempty" => {
             if let Err(error) = require_no_args("IsEmpty", &values) {
                 return err(error);
             }
-            Eval::Normal(Value::Boolean(store.record.is_empty()))
+            Eval::Normal(Value::Boolean(store.record.is_empty_in(view)))
         }
         "deleteall" => {
             let run_trigger = match optional_boolean("DeleteAll", &values) {
                 Ok(run_trigger) => run_trigger,
                 Err(error) => return err(error),
             };
-            loop {
-                match store.record.find_first() {
-                    Ok(true) => {
-                        if let Err(error) = store.record.delete(run_trigger) {
-                            return err(format!("DeleteAll: {error}"));
-                        }
-                    }
-                    Ok(false) => break,
-                    Err(error) => return err(format!("DeleteAll: {error}")),
-                }
+            // One pass over the table (collect matching keys, remove them)
+            // instead of the O(n² log n) find-first-then-delete loop.
+            match store.record.delete_all_in(view, run_trigger) {
+                Ok(_) => Eval::Normal(Value::Empty),
+                Err(error) => err(format!("DeleteAll: {error}")),
             }
-            Eval::Normal(Value::Empty)
         }
         other => err(format!("unsupported record method: {other}")),
     }
 }
 
+/// Read one buffer field of the view identified by `handle`, falling back to
+/// the field's typed default (BC zero-initialisation) when never assigned.
+fn read_buffer_field(store: &RecordStore, handle: u64, field: FieldNo) -> Value {
+    store
+        .views
+        .get(&handle)
+        .and_then(|view| store.record.field_get_in(view, field).cloned())
+        .filter(|value| !matches!(value, Value::Empty))
+        .or_else(|| store.field_defaults.get(&field).cloned())
+        .unwrap_or(Value::Empty)
+}
+
 /// Read a record field by name: `x := Rec."Field"`.
 ///
 /// A FlowField with a parseable `CalcFormula` is computed on read (auto-calc);
-/// any other field returns its buffer value.
-pub(crate) fn field_get(table_name: &str, field_name: &str, ctx: &mut DispatchCtx) -> Eval {
+/// any other field returns its buffer value, or the field's typed zero value
+/// when it was never assigned (BC zero-initialises every field).
+pub(crate) fn field_get(
+    table_name: &str,
+    handle: u64,
+    field_name: &str,
+    ctx: &mut DispatchCtx,
+) -> Eval {
     if !records_enabled(ctx) {
         return records_disabled_error();
     }
@@ -797,13 +956,10 @@ pub(crate) fn field_get(table_name: &str, field_name: &str, ctx: &mut DispatchCt
         (f, store.flowfields.get(&f).cloned())
     };
     if let Some(formula) = formula {
-        return eval_flowfield(ctx, &key, &formula);
+        return eval_flowfield(ctx, &key, handle, &formula);
     }
-    let store = ctx.records.get_mut(&key).expect("store just ensured");
-    match store.record.field_get(f) {
-        Some(v) => Eval::Normal(v.clone()),
-        None => Eval::Normal(Value::Empty),
-    }
+    let store = ctx.records.get(&key).expect("store just ensured");
+    Eval::Normal(read_buffer_field(store, handle, f))
 }
 
 /// `Rec.CalcFields(F1, F2, …)` — evaluate each named FlowField and store the
@@ -811,6 +967,7 @@ pub(crate) fn field_get(table_name: &str, field_name: &str, ctx: &mut DispatchCt
 /// ignored, matching BC's tolerance of explicitly-listed normal fields.
 fn dispatch_calcfields(
     table_name: &str,
+    handle: u64,
     nodes: &[Node<'_>],
     source: &[u8],
     ctx: &mut DispatchCtx,
@@ -842,10 +999,12 @@ fn dispatch_calcfields(
                 "CalcFields: field number {field_no} is not a supported FlowField"
             ));
         };
-        match eval_flowfield(ctx, &key, &formula) {
+        match eval_flowfield(ctx, &key, handle, &formula) {
             Eval::Normal(v) => {
                 let store = ctx.records.get_mut(&key).expect("store just ensured");
-                store.record.field_set(field_no, v);
+                let mut view = store.take_view(handle);
+                store.record.field_set_in(&mut view, field_no, v);
+                store.put_view(handle, view);
             }
             other => return other,
         }
@@ -859,15 +1018,17 @@ fn dispatch_calcfields(
 /// the referenced table's store via [`MockRecord::calc_flow`]. `FIELD(...)`
 /// references read the *calculating* record's current buffer; the aggregation
 /// and the constrained fields are resolved against the *referenced* table.
-fn eval_flowfield(ctx: &mut DispatchCtx, current_key: &str, formula: &CalcFormula) -> Eval {
+fn eval_flowfield(
+    ctx: &mut DispatchCtx,
+    current_key: &str,
+    handle: u64,
+    formula: &CalcFormula,
+) -> Eval {
     // 1. Resolve any FIELD(...) references against the calculating record's
     //    buffer first, before borrowing the referenced store (they may be the
     //    same store for a self-referencing FlowField).
     let field_values: Vec<Option<Value>> = {
-        let store = ctx
-            .records
-            .get_mut(current_key)
-            .expect("store just ensured");
+        let store = ctx.records.get(current_key).expect("store just ensured");
         let mut values = Vec::with_capacity(formula.where_clause.len());
         for condition in &formula.where_clause {
             let value = match &condition.value {
@@ -876,7 +1037,7 @@ fn eval_flowfield(ctx: &mut DispatchCtx, current_key: &str, formula: &CalcFormul
                         Ok(field_no) => field_no,
                         Err(error) => return err(format!("FlowField: {error}")),
                     };
-                    Some(store.record.field_get(f).cloned().unwrap_or(Value::Empty))
+                    Some(read_buffer_field(store, handle, f))
                 }
                 _ => None,
             };
@@ -952,12 +1113,21 @@ fn parse_scalar(s: &str) -> Value {
     if let Ok(d) = t.parse::<crate::interpreter::value::Decimal>() {
         return Value::Decimal(d);
     }
+    // `WHERE(Flag = CONST(true))` — a Boolean constant, not text.
+    if t.eq_ignore_ascii_case("true") {
+        return Value::Boolean(true);
+    }
+    if t.eq_ignore_ascii_case("false") {
+        return Value::Boolean(false);
+    }
     Value::Text(t.to_string())
 }
 
 /// If `lhs_node` is a record field access (`Rec."Field"`) whose receiver is a
 /// bound `Value::Record`, set the field to `rhs_val` and return `Some(result)`.
-/// Returns `None` when the LHS is not a record field access.
+/// Returns `None` when the LHS is not a record field access. The value is
+/// coerced to the field's declared type (Code caselessness, Integer overflow
+/// trap, Decimal promotion) before it is stored.
 pub(crate) fn try_field_assign(
     lhs_node: Node<'_>,
     source: &[u8],
@@ -966,10 +1136,7 @@ pub(crate) fn try_field_assign(
     ctx: &mut DispatchCtx,
 ) -> Option<Eval> {
     let (recv, field_name) = record_field_access(lhs_node, source)?;
-    let table_name = match stack.lookup(&recv) {
-        Some(Value::Record(rv)) => rv.table_name.clone(),
-        _ => return None,
-    };
+    let (table_name, handle) = record_binding(&recv, stack, ctx)?;
     if !records_enabled(ctx) {
         return Some(records_disabled_error());
     }
@@ -982,7 +1149,13 @@ pub(crate) fn try_field_assign(
         Ok(field_no) => field_no,
         Err(error) => return Some(err(error)),
     };
-    store.record.field_set(f, rhs_val.clone());
+    let coerced = match store.coerce_to_field(f, rhs_val.clone()) {
+        Ok(value) => value,
+        Err(error) => return Some(err(error)),
+    };
+    let mut view = store.take_view(handle);
+    store.record.field_set_in(&mut view, f, coerced);
+    store.put_view(handle, view);
     Some(Eval::Normal(Value::Empty))
 }
 
@@ -1134,6 +1307,310 @@ fn list_index(method: &str, args: &[Value], len: usize) -> Result<usize, String>
     Ok(zero_based)
 }
 
+/// True if `method` is a `Text`/`Code` instance method implemented by the
+/// local runtime (`s.Contains(...)`, `s.Split(...)`, …).
+pub fn supports_text_method(method: &str) -> bool {
+    matches!(
+        method.to_ascii_lowercase().as_str(),
+        "contains"
+            | "startswith"
+            | "endswith"
+            | "indexof"
+            | "lastindexof"
+            | "replace"
+            | "split"
+            | "trim"
+            | "trimstart"
+            | "trimend"
+            | "tolower"
+            | "toupper"
+            | "substring"
+    )
+}
+
+/// Execute a `Text`/`Code` instance method on the string bound to `recv`.
+pub(crate) fn dispatch_text_method(
+    recv: &str,
+    method: &str,
+    args: Vec<Value>,
+    stack: &mut ScopeStack,
+) -> Eval {
+    let s = match stack.lookup(recv) {
+        Some(Value::Text(s)) | Some(Value::Code(s)) => s.clone(),
+        _ => return err(format!("text variable '{recv}' is not bound")),
+    };
+    let text_arg = |v: &Value| -> Option<String> {
+        match v {
+            Value::Text(t) | Value::Code(t) => Some(t.clone()),
+            Value::Char(c) => Some(c.to_string()),
+            _ => None,
+        }
+    };
+    let lower = method.to_ascii_lowercase();
+    match lower.as_str() {
+        "contains" | "startswith" | "endswith" => match args.as_slice() {
+            [needle] => match text_arg(needle) {
+                Some(needle) => {
+                    let result = match lower.as_str() {
+                        "contains" => s.contains(&needle),
+                        "startswith" => s.starts_with(&needle),
+                        _ => s.ends_with(&needle),
+                    };
+                    Eval::Normal(Value::Boolean(result))
+                }
+                None => err(format!(
+                    "Text.{method} expects a Text argument, got {}",
+                    needle.type_name()
+                )),
+            },
+            _ => err(format!("Text.{method} expects exactly one Text argument")),
+        },
+        "indexof" | "lastindexof" => match args.as_slice() {
+            [needle] => match text_arg(needle) {
+                Some(needle) if needle.is_empty() => Eval::Normal(Value::Integer(0)),
+                Some(needle) => {
+                    let byte_pos = if lower == "indexof" {
+                        s.find(&needle)
+                    } else {
+                        s.rfind(&needle)
+                    };
+                    let result = byte_pos
+                        .map(|i| s[..i].chars().count() as i64 + 1)
+                        .unwrap_or(0);
+                    Eval::Normal(Value::Integer(result))
+                }
+                None => err(format!(
+                    "Text.{method} expects a Text argument, got {}",
+                    needle.type_name()
+                )),
+            },
+            _ => err(format!("Text.{method} expects exactly one Text argument")),
+        },
+        "replace" => match args.as_slice() {
+            [old, new] => match (text_arg(old), text_arg(new)) {
+                (Some(old), Some(new)) if !old.is_empty() => {
+                    Eval::Normal(Value::Text(s.replace(&old, &new)))
+                }
+                (Some(_), Some(_)) => err("Text.Replace: the old value cannot be empty"),
+                _ => err("Text.Replace expects (Text, Text)"),
+            },
+            _ => err("Text.Replace expects exactly two Text arguments"),
+        },
+        "split" => {
+            let mut separators = Vec::with_capacity(args.len());
+            for arg in &args {
+                match text_arg(arg) {
+                    Some(sep) if !sep.is_empty() => separators.push(sep),
+                    Some(_) => return err("Text.Split: separators cannot be empty"),
+                    None => {
+                        return err(format!(
+                            "Text.Split expects Text separators, got {}",
+                            arg.type_name()
+                        ))
+                    }
+                }
+            }
+            if separators.is_empty() {
+                return Eval::Normal(Value::List(vec![Value::Text(s)]));
+            }
+            let mut parts = vec![s];
+            for sep in &separators {
+                parts = parts
+                    .into_iter()
+                    .flat_map(|part| {
+                        part.split(sep.as_str())
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+            }
+            Eval::Normal(Value::List(parts.into_iter().map(Value::Text).collect()))
+        }
+        "trim" | "trimstart" | "trimend" => {
+            if !args.is_empty() {
+                return err(format!("Text.{method} expects no arguments"));
+            }
+            let trimmed = match lower.as_str() {
+                "trim" => s.trim(),
+                "trimstart" => s.trim_start(),
+                _ => s.trim_end(),
+            };
+            Eval::Normal(Value::Text(trimmed.to_string()))
+        }
+        "tolower" => {
+            if !args.is_empty() {
+                return err("Text.ToLower expects no arguments");
+            }
+            Eval::Normal(Value::Text(s.to_lowercase()))
+        }
+        "toupper" => {
+            if !args.is_empty() {
+                return err("Text.ToUpper expects no arguments");
+            }
+            Eval::Normal(Value::Text(s.to_uppercase()))
+        }
+        "substring" => {
+            let (start, length) = match args.as_slice() {
+                [Value::Integer(start)] => (*start, None),
+                [Value::Integer(start), Value::Integer(length)] => (*start, Some(*length)),
+                _ => return err("Text.Substring expects (Integer[, Integer])"),
+            };
+            let chars: Vec<char> = s.chars().collect();
+            if start < 1 || (start as usize) > chars.len() + 1 {
+                return err(format!(
+                    "Text.Substring: start position {start} is out of range for a {}-character string",
+                    chars.len()
+                ));
+            }
+            let zero = start as usize - 1;
+            match length {
+                None => Eval::Normal(Value::Text(chars[zero..].iter().collect())),
+                Some(length) if length < 0 => {
+                    err("Text.Substring: length must be >= 0".to_string())
+                }
+                Some(length) => {
+                    let end = zero + length as usize;
+                    if end > chars.len() {
+                        return err(format!(
+                            "Text.Substring: start {start} plus length {length} exceeds the string length {}",
+                            chars.len()
+                        ));
+                    }
+                    Eval::Normal(Value::Text(chars[zero..end].iter().collect()))
+                }
+            }
+        }
+        other => err(format!("unsupported Text method: {other}")),
+    }
+}
+
+/// True if `method` is a `Dictionary of [K, V]` method implemented by the
+/// local runtime. `Get` is intentionally absent: its common two-argument
+/// `var`-out form needs by-reference write-back the builtin path does not
+/// have, so Dictionary reads route to live BC (the one-argument returning
+/// form still executes if a body reaches the interpreter).
+pub fn supports_dict_method(method: &str) -> bool {
+    matches!(
+        method.to_ascii_lowercase().as_str(),
+        "add" | "set" | "containskey" | "remove" | "count" | "keys" | "values"
+    )
+}
+
+/// Serialise a dictionary key value into the `Dict` map's string key space.
+fn dict_key(value: &Value) -> Result<String, String> {
+    Ok(match value {
+        Value::Text(s) => s.clone(),
+        // Code keys are caseless.
+        Value::Code(s) => s.to_uppercase(),
+        Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
+        Value::Decimal(d) => d.normalize().to_string(),
+        Value::Boolean(b) => b.to_string(),
+        Value::Date(d) => format!("D{d}"),
+        Value::Time(t) => format!("T{t}"),
+        Value::DateTime(dt) => format!("DT{dt}"),
+        Value::Guid(g) => g.to_uppercase(),
+        other => {
+            return Err(format!(
+                "Dictionary keys of type {} are not supported by the local runtime",
+                other.type_name()
+            ))
+        }
+    })
+}
+
+/// Execute a `Dictionary of [K, V]` method call on the dictionary bound to
+/// `recv`.
+pub(crate) fn dispatch_dict_method(
+    recv: &str,
+    method: &str,
+    args: Vec<Value>,
+    stack: &mut ScopeStack,
+) -> Eval {
+    let lower = method.to_ascii_lowercase();
+    let Some(slot) = stack.lookup_mut(recv) else {
+        return err(format!("dictionary variable '{recv}' is not bound"));
+    };
+    let Value::Dict(entries) = slot else {
+        return err(format!("'{recv}' is not a Dictionary"));
+    };
+    match lower.as_str() {
+        "add" => match args.as_slice() {
+            [key, value] => match dict_key(key) {
+                Ok(key_text) => match entries.entry(key_text) {
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        err("Dictionary.Add: the key already exists")
+                    }
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(value.clone());
+                        Eval::Normal(Value::Empty)
+                    }
+                },
+                Err(error) => err(error),
+            },
+            _ => err("Dictionary.Add expects exactly a key and a value"),
+        },
+        "set" => match args.as_slice() {
+            [key, value] => match dict_key(key) {
+                Ok(key_text) => {
+                    entries.insert(key_text, value.clone());
+                    Eval::Normal(Value::Empty)
+                }
+                Err(error) => err(error),
+            },
+            _ => err("Dictionary.Set expects exactly a key and a value"),
+        },
+        "get" => match args.as_slice() {
+            [key] => match dict_key(key) {
+                Ok(key_text) => match entries.get(&key_text) {
+                    Some(value) => Eval::Normal(value.clone()),
+                    None => err("Dictionary.Get: the key does not exist"),
+                },
+                Err(error) => err(error),
+            },
+            _ => err("Dictionary.Get with a var out-parameter requires live BC; \
+                 only the one-argument returning form runs locally"),
+        },
+        "containskey" => match args.as_slice() {
+            [key] => match dict_key(key) {
+                Ok(key_text) => Eval::Normal(Value::Boolean(entries.contains_key(&key_text))),
+                Err(error) => err(error),
+            },
+            _ => err("Dictionary.ContainsKey expects exactly one key"),
+        },
+        "remove" => match args.as_slice() {
+            [key] => match dict_key(key) {
+                Ok(key_text) => Eval::Normal(Value::Boolean(entries.remove(&key_text).is_some())),
+                Err(error) => err(error),
+            },
+            _ => err("Dictionary.Remove expects exactly one key"),
+        },
+        "count" => {
+            if !args.is_empty() {
+                return err("Dictionary.Count expects no arguments");
+            }
+            match i64::try_from(entries.len()) {
+                Ok(count) => Eval::Normal(Value::Integer(count)),
+                Err(_) => err("Dictionary.Count exceeds the supported Integer range"),
+            }
+        }
+        "keys" => {
+            if !args.is_empty() {
+                return err("Dictionary.Keys expects no arguments");
+            }
+            Eval::Normal(Value::List(
+                entries.keys().cloned().map(Value::Text).collect(),
+            ))
+        }
+        "values" => {
+            if !args.is_empty() {
+                return err("Dictionary.Values expects no arguments");
+            }
+            Eval::Normal(Value::List(entries.values().cloned().collect()))
+        }
+        other => err(format!("unsupported Dictionary method: {other}")),
+    }
+}
+
 /// Build a default `Value` for a structured local variable type the scalar
 /// `Value::default_for` does not cover: `Record <Subtype>`, `Codeunit <Subtype>`,
 /// and `List of [T]`. Returns `None` for anything else.
@@ -1162,6 +1639,12 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
     }
     if lower.starts_with("list of") {
         return Some(Value::List(Vec::new()));
+    }
+    if lower.starts_with("dictionary of") {
+        return Some(Value::Dict(std::collections::BTreeMap::new()));
+    }
+    if lower == "variant" {
+        return Some(Value::Variant(Box::new(Value::Null)));
     }
     None
 }

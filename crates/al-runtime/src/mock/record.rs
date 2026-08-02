@@ -97,8 +97,14 @@ impl FieldFilter {
 /// Compare a stored field `value` against a filter `bound` with BC field
 /// semantics: numeric fields numerically (tolerant of Integer/Decimal mix),
 /// a `Code` cell caselessly, a `Text` cell case-sensitively, and other scalars
-/// by their natural order. Returns `None` when the two are not comparable.
+/// by their natural order. A never-assigned cell (`Empty`) compares as the
+/// typed zero of the bound (0 / "" / false / 0D), matching BC's default-value
+/// semantics. Returns `None` when the two are not comparable.
 fn field_cmp(value: &Value, bound: &Value) -> Option<std::cmp::Ordering> {
+    if matches!(value, Value::Empty) && !matches!(bound, Value::Empty) {
+        let zero = zero_like(bound)?;
+        return field_cmp(&zero, bound);
+    }
     if let (Some(x), Some(y)) = (as_number(value), as_number(bound)) {
         return Some(x.cmp(&y));
     }
@@ -116,9 +122,27 @@ fn field_cmp(value: &Value, bound: &Value) -> Option<std::cmp::Ordering> {
     None
 }
 
+/// The typed zero value matching `bound`'s type, used to compare unset
+/// (`Empty`) cells with BC's default-value semantics.
+fn zero_like(bound: &Value) -> Option<Value> {
+    Some(match bound {
+        Value::Integer(_) | Value::BigInteger(_) => Value::Integer(0),
+        Value::Decimal(_) => Value::Decimal(Decimal::ZERO),
+        Value::Boolean(_) => Value::Boolean(false),
+        Value::Text(_) => Value::Text(String::new()),
+        Value::Code(_) => Value::Code(String::new()),
+        Value::Date(_) => Value::Date(0),
+        Value::Time(_) => Value::Time(0),
+        Value::DateTime(_) => Value::DateTime(0),
+        Value::Duration(_) => Value::Duration(0),
+        Value::Char(_) => Value::Char('\0'),
+        _ => return None,
+    })
+}
+
 /// The current-key fields that determine iteration order.
 /// Defaults to the primary key fields.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct SortKey {
     /// Field numbers, in priority order.
     fields: Vec<FieldNo>,
@@ -137,17 +161,15 @@ impl SortKey {
     }
 }
 
-/// An in-memory BC record table.
+/// Per-record-variable state over a shared physical table: the row buffer,
+/// xRec snapshot, active filters, sort key, and iteration cursor.
 ///
-/// Supports the standard BC Record API: Init, Get, Insert, Modify, Delete,
-/// Rename, FindFirst/FindLast/FindSet/Find, Next, SetRange, SetFilter,
-/// IsEmpty, Count.
-#[derive(Debug, Clone)]
-pub struct MockRecord {
-    pub table_id: i32,
-    pub table_name: String,
-    primary_key_fields: Vec<FieldNo>,
-    rows: BTreeMap<PrimaryKey, Row>,
+/// BC gives every record *variable* of a table its own filter set, cursor,
+/// and buffer while all variables read/write one physical table. The
+/// interpreter therefore keeps one [`MockRecord`] per table (the rows) and
+/// one `RecordView` per record variable.
+#[derive(Debug, Clone, Default)]
+pub struct RecordView {
     /// The current row's field values (the "buffer").
     current: Row,
     /// Snapshot of `current` before the last Modify/Rename (xRec).
@@ -157,6 +179,52 @@ pub struct MockRecord {
     /// Filtered, sorted keys ready for iteration (built by FindFirst/FindSet).
     iter_set: Vec<PrimaryKey>,
     iter_pos: Option<usize>,
+}
+
+/// Normalize one primary-key component so key lookup follows BC field
+/// semantics: `Code` keys are caseless (uppercased) and the Integer/Decimal
+/// numeric class unifies (an `Integer` key value matches a stored `Decimal`
+/// one). Everything else keys by its exact value.
+fn normalize_key_value(value: &Value) -> Value {
+    match value {
+        Value::Code(s) => Value::Code(s.to_uppercase()),
+        Value::Integer(n) | Value::BigInteger(n) => Value::Decimal(Decimal::from(*n)),
+        other => other.clone(),
+    }
+}
+
+fn normalize_key(key: &[Value]) -> PrimaryKey {
+    key.iter().map(normalize_key_value).collect()
+}
+
+fn row_matches_filters(filters: &BTreeMap<FieldNo, FieldFilter>, row: &Row) -> bool {
+    for (&field, filter) in filters {
+        let value = row.get(&field).unwrap_or(&Value::Empty);
+        if !filter.matches(value) {
+            return false;
+        }
+    }
+    true
+}
+
+/// An in-memory BC record table.
+///
+/// Supports the standard BC Record API: Init, Get, Insert, Modify, Delete,
+/// Rename, FindFirst/FindLast/FindSet/Find, Next, SetRange, SetFilter,
+/// IsEmpty, Count, DeleteAll.
+///
+/// Rows are the shared physical table. View state (buffer/filters/cursor)
+/// lives in a [`RecordView`]: the `*_in` methods take an explicit view (one
+/// per record variable), and the plain methods delegate to a built-in default
+/// view for single-variable callers and unit tests.
+#[derive(Debug, Clone)]
+pub struct MockRecord {
+    pub table_id: i32,
+    pub table_name: String,
+    primary_key_fields: Vec<FieldNo>,
+    rows: BTreeMap<PrimaryKey, Row>,
+    /// Built-in view backing the plain (view-less) API.
+    view: RecordView,
 }
 
 impl MockRecord {
@@ -172,34 +240,65 @@ impl MockRecord {
             table_name,
             primary_key_fields: primary_key_fields.clone(),
             rows: BTreeMap::new(),
-            current: BTreeMap::new(),
-            x_rec: BTreeMap::new(),
-            filters: BTreeMap::new(),
-            sort_key,
-            iter_set: Vec::new(),
-            iter_pos: None,
+            view: RecordView {
+                sort_key,
+                ..RecordView::default()
+            },
         }
     }
 
+    /// A fresh, unfiltered view of this table sorted by the primary key —
+    /// the state a newly declared record variable starts with.
+    pub fn new_view(&self) -> RecordView {
+        RecordView {
+            sort_key: SortKey::from_fields(self.primary_key_fields.clone()),
+            ..RecordView::default()
+        }
+    }
+
+    /// Run `f` against the built-in default view. Temporarily takes the view
+    /// out of `self` so `f` can borrow the table and the view disjointly.
+    fn with_default_view<R>(&mut self, f: impl FnOnce(&mut Self, &mut RecordView) -> R) -> R {
+        let mut view = std::mem::take(&mut self.view);
+        let result = f(self, &mut view);
+        self.view = view;
+        result
+    }
+
+    pub fn field_set_in(&self, view: &mut RecordView, field: FieldNo, value: Value) {
+        let _ = self;
+        view.current.insert(field, value);
+    }
+
     pub fn field_set(&mut self, field: FieldNo, value: Value) {
-        self.current.insert(field, value);
+        self.view.current.insert(field, value);
+    }
+
+    pub fn field_get_in<'a>(&self, view: &'a RecordView, field: FieldNo) -> Option<&'a Value> {
+        let _ = self;
+        view.current.get(&field)
     }
 
     pub fn field_get(&self, field: FieldNo) -> Option<&Value> {
-        self.current.get(&field)
+        self.view.current.get(&field)
     }
 
     pub fn primary_key_len(&self) -> usize {
         self.primary_key_fields.len()
     }
 
-    fn current_primary_key(&self) -> Result<PrimaryKey, RecordError> {
+    /// The primary-key field numbers, in key order.
+    pub fn primary_key_fields(&self) -> &[FieldNo] {
+        &self.primary_key_fields
+    }
+
+    fn current_primary_key(&self, view: &RecordView) -> Result<PrimaryKey, RecordError> {
         self.primary_key_fields
             .iter()
             .map(|&f| {
-                self.current
+                view.current
                     .get(&f)
-                    .cloned()
+                    .map(normalize_key_value)
                     .ok_or(RecordError::MissingKeyField(f))
             })
             .collect()
@@ -209,74 +308,107 @@ impl MockRecord {
     /// fields. BC's `Init` keeps the key so the ubiquitous idiom
     /// `Rec."No." := X; Rec.Init(); Rec.Insert();` inserts under `X`; clearing
     /// the whole buffer here loses the key and fails the insert.
-    pub fn init(&mut self) {
+    pub fn init_in(&self, view: &mut RecordView) {
         let preserved: Vec<(FieldNo, Value)> = self
             .primary_key_fields
             .iter()
-            .filter_map(|f| self.current.get(f).map(|v| (*f, v.clone())))
+            .filter_map(|f| view.current.get(f).map(|v| (*f, v.clone())))
             .collect();
-        self.current.clear();
-        self.x_rec.clear();
-        self.iter_pos = None;
+        view.current.clear();
+        view.x_rec.clear();
+        view.iter_pos = None;
         for (f, v) in preserved {
-            self.current.insert(f, v);
+            view.current.insert(f, v);
         }
     }
 
+    pub fn init(&mut self) {
+        self.with_default_view(|table, view| table.init_in(view));
+    }
+
     /// `RESET` — clear all filters and the sort key; reset to primary key order.
+    pub fn reset_in(&self, view: &mut RecordView) {
+        view.filters.clear();
+        view.sort_key = SortKey::from_fields(self.primary_key_fields.clone());
+        view.iter_set.clear();
+        view.iter_pos = None;
+    }
+
     pub fn reset(&mut self) {
-        self.filters.clear();
-        self.sort_key = SortKey::from_fields(self.primary_key_fields.clone());
-        self.iter_set.clear();
-        self.iter_pos = None;
+        self.with_default_view(|table, view| table.reset_in(view));
     }
 
     /// `GET(key_parts…)` — look up a row by primary key; load into buffer.
-    pub fn get(&mut self, key: PrimaryKey) -> Result<(), RecordError> {
+    pub fn get_in(&self, view: &mut RecordView, key: PrimaryKey) -> Result<(), RecordError> {
+        let key = normalize_key(&key);
         let row = self.rows.get(&key).ok_or(RecordError::NotFound)?;
-        self.current = row.clone();
-        self.x_rec = row.clone();
+        view.current = row.clone();
+        view.x_rec = row.clone();
         Ok(())
+    }
+
+    pub fn get(&mut self, key: PrimaryKey) -> Result<(), RecordError> {
+        self.with_default_view(|table, view| table.get_in(view, key))
     }
 
     /// `INSERT` — insert the current buffer as a new row.
     ///
     /// The local store cannot execute table triggers. A caller that explicitly
     /// requests trigger execution must be routed to live Business Central.
-    pub fn insert(&mut self, run_trigger: bool) -> Result<(), RecordError> {
+    pub fn insert_in(
+        &mut self,
+        view: &mut RecordView,
+        run_trigger: bool,
+    ) -> Result<(), RecordError> {
         if run_trigger {
             return Err(RecordError::TriggerExecutionUnsupported("Insert"));
         }
-        let key = self.current_primary_key()?;
+        let key = self.current_primary_key(view)?;
         if self.rows.contains_key(&key) {
             return Err(RecordError::DuplicateKey);
         }
-        self.rows.insert(key, self.current.clone());
+        self.rows.insert(key, view.current.clone());
         // BC behaviour: after Insert, xRec mirrors the inserted row (Rec).
-        self.x_rec = self.current.clone();
+        view.x_rec = view.current.clone();
         Ok(())
+    }
+
+    pub fn insert(&mut self, run_trigger: bool) -> Result<(), RecordError> {
+        self.with_default_view(|table, view| table.insert_in(view, run_trigger))
     }
 
     /// `MODIFY` — overwrite the existing row with the current buffer.
     ///
     /// Saves the prior row as `xRec`.
-    pub fn modify(&mut self, run_trigger: bool) -> Result<(), RecordError> {
+    pub fn modify_in(
+        &mut self,
+        view: &mut RecordView,
+        run_trigger: bool,
+    ) -> Result<(), RecordError> {
         if run_trigger {
             return Err(RecordError::TriggerExecutionUnsupported("Modify"));
         }
-        let key = self.current_primary_key()?;
+        let key = self.current_primary_key(view)?;
         let old_row = self.rows.get_mut(&key).ok_or(RecordError::NotFound)?;
-        self.x_rec = old_row.clone();
-        *old_row = self.current.clone();
+        view.x_rec = old_row.clone();
+        *old_row = view.current.clone();
         Ok(())
     }
 
+    pub fn modify(&mut self, run_trigger: bool) -> Result<(), RecordError> {
+        self.with_default_view(|table, view| table.modify_in(view, run_trigger))
+    }
+
     /// `DELETE` — remove the row matching the current buffer's primary key.
-    pub fn delete(&mut self, run_trigger: bool) -> Result<(), RecordError> {
+    pub fn delete_in(
+        &mut self,
+        view: &mut RecordView,
+        run_trigger: bool,
+    ) -> Result<(), RecordError> {
         if run_trigger {
             return Err(RecordError::TriggerExecutionUnsupported("Delete"));
         }
-        let key = self.current_primary_key()?;
+        let key = self.current_primary_key(view)?;
         self.rows.remove(&key).ok_or(RecordError::NotFound)?;
         // Keep `iter_pos` intact: BC's canonical delete loop
         // `if FindSet then repeat Delete until Next() = 0` relies on `Next`
@@ -287,65 +419,133 @@ impl MockRecord {
         Ok(())
     }
 
+    pub fn delete(&mut self, run_trigger: bool) -> Result<(), RecordError> {
+        self.with_default_view(|table, view| table.delete_in(view, run_trigger))
+    }
+
+    /// `DELETEALL` — remove every row matching the view's filters.
+    ///
+    /// Collects the matching keys once and removes them directly, so deleting
+    /// n rows costs one pass over the table instead of the O(n² log n)
+    /// find-first-then-delete loop. Returns the number of rows removed.
+    pub fn delete_all_in(
+        &mut self,
+        view: &mut RecordView,
+        run_trigger: bool,
+    ) -> Result<usize, RecordError> {
+        if run_trigger {
+            return Err(RecordError::TriggerExecutionUnsupported("Delete"));
+        }
+        let doomed: Vec<PrimaryKey> = self
+            .rows
+            .iter()
+            .filter(|(_, row)| row_matches_filters(&view.filters, row))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &doomed {
+            self.rows.remove(key);
+        }
+        view.iter_set.clear();
+        view.iter_pos = None;
+        Ok(doomed.len())
+    }
+
+    pub fn delete_all(&mut self, run_trigger: bool) -> Result<usize, RecordError> {
+        self.with_default_view(|table, view| table.delete_all_in(view, run_trigger))
+    }
+
     /// `RENAME(new_key)` — move the current row to a new primary key.
     ///
     /// The new key values must be provided as a `Vec<(FieldNo, Value)>` that
     /// covers all primary key fields. Saves the old row as `xRec`.
-    pub fn rename(&mut self, new_key_values: Vec<(FieldNo, Value)>) -> Result<(), RecordError> {
-        let old_key = self.current_primary_key()?;
+    pub fn rename_in(
+        &mut self,
+        view: &mut RecordView,
+        new_key_values: Vec<(FieldNo, Value)>,
+    ) -> Result<(), RecordError> {
+        let old_key = self.current_primary_key(view)?;
         let old_row = self.rows.remove(&old_key).ok_or(RecordError::NotFound)?;
-        self.x_rec = old_row.clone();
+        view.x_rec = old_row.clone();
         let mut new_row = old_row;
         for (field, value) in new_key_values {
             new_row.insert(field, value.clone());
-            self.current.insert(field, value);
+            view.current.insert(field, value);
         }
-        let new_key = self.current_primary_key()?;
+        let new_key = self.current_primary_key(view)?;
         if self.rows.contains_key(&new_key) {
-            self.rows.insert(old_key, self.x_rec.clone());
+            self.rows.insert(old_key, view.x_rec.clone());
             return Err(RecordError::DuplicateKey);
         }
         self.rows.insert(new_key, new_row);
         Ok(())
     }
 
+    pub fn rename(&mut self, new_key_values: Vec<(FieldNo, Value)>) -> Result<(), RecordError> {
+        self.with_default_view(|table, view| table.rename_in(view, new_key_values))
+    }
+
     /// `SETCURRENTKEY(fields…)` — change iteration sort order.
+    pub fn set_current_key_in(&self, view: &mut RecordView, fields: Vec<FieldNo>) {
+        let _ = self;
+        view.sort_key = SortKey::from_fields(fields);
+        view.iter_set.clear();
+        view.iter_pos = None;
+    }
+
     pub fn set_current_key(&mut self, fields: Vec<FieldNo>) {
-        self.sort_key = SortKey::from_fields(fields);
-        self.iter_set.clear();
-        self.iter_pos = None;
+        self.with_default_view(|table, view| table.set_current_key_in(view, fields));
     }
 
     /// `SETRANGE(field, low, high)` — filter a field to an inclusive value range.
+    pub fn set_range_in(&self, view: &mut RecordView, field: FieldNo, low: Value, high: Value) {
+        let _ = self;
+        view.filters.insert(field, FieldFilter::Range(low, high));
+        view.iter_set.clear();
+        view.iter_pos = None;
+    }
+
     pub fn set_range(&mut self, field: FieldNo, low: Value, high: Value) {
-        self.filters.insert(field, FieldFilter::Range(low, high));
-        self.iter_set.clear();
-        self.iter_pos = None;
+        self.with_default_view(|table, view| table.set_range_in(view, field, low, high));
     }
 
     /// Remove the active filter for one field.
+    pub fn clear_filter_in(&self, view: &mut RecordView, field: FieldNo) {
+        let _ = self;
+        view.filters.remove(&field);
+        view.iter_set.clear();
+        view.iter_pos = None;
+    }
+
     pub fn clear_filter(&mut self, field: FieldNo) {
-        self.filters.remove(&field);
-        self.iter_set.clear();
-        self.iter_pos = None;
+        self.with_default_view(|table, view| table.clear_filter_in(view, field));
     }
 
     /// `SETFILTER(field, expr)` — set a BC filter expression on a field.
-    pub fn set_filter(&mut self, field: FieldNo, expr: &str) -> Result<(), RecordError> {
+    pub fn set_filter_in(
+        &self,
+        view: &mut RecordView,
+        field: FieldNo,
+        expr: &str,
+    ) -> Result<(), RecordError> {
+        let _ = self;
         let parsed =
             filter::parse(expr).map_err(|e| RecordError::FilterParse(field, e.to_string()))?;
-        self.filters.insert(field, FieldFilter::Expr(parsed));
-        self.iter_set.clear();
-        self.iter_pos = None;
+        view.filters.insert(field, FieldFilter::Expr(parsed));
+        view.iter_set.clear();
+        view.iter_pos = None;
         Ok(())
     }
 
-    fn build_iter_set(&mut self) {
+    pub fn set_filter(&mut self, field: FieldNo, expr: &str) -> Result<(), RecordError> {
+        self.with_default_view(|table, view| table.set_filter_in(view, field, expr))
+    }
+
+    fn build_iter_set(&self, view: &mut RecordView) {
         let mut keys: Vec<PrimaryKey> = self
             .rows
             .iter()
             .filter_map(|(key, row)| {
-                if self.row_matches_filters(row) {
+                if row_matches_filters(&view.filters, row) {
                     Some(key.clone())
                 } else {
                     None
@@ -353,81 +553,87 @@ impl MockRecord {
             })
             .collect();
 
-        let sort_key = self.sort_key.clone();
+        let sort_key = view.sort_key.clone();
         keys.sort_by(|a, b| {
             let row_a = self.rows.get(a).unwrap();
             let row_b = self.rows.get(b).unwrap();
             sort_key.key_of(row_a).cmp(&sort_key.key_of(row_b))
         });
 
-        self.iter_set = keys;
+        view.iter_set = keys;
     }
 
-    fn row_matches_filters(&self, row: &Row) -> bool {
-        for (&field, filter) in &self.filters {
-            let value = row.get(&field).unwrap_or(&Value::Empty);
-            if !filter.matches(value) {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn load_row_at(&mut self, pos: usize) -> Result<(), RecordError> {
-        let key = self.iter_set.get(pos).ok_or(RecordError::EndOfSet)?.clone();
+    fn load_row_at(&self, view: &mut RecordView, pos: usize) -> Result<(), RecordError> {
+        let key = view.iter_set.get(pos).ok_or(RecordError::EndOfSet)?.clone();
         let row = self.rows.get(&key).ok_or(RecordError::NotFound)?;
-        self.current = row.clone();
-        self.x_rec = row.clone();
-        self.iter_pos = Some(pos);
+        view.current = row.clone();
+        view.x_rec = row.clone();
+        view.iter_pos = Some(pos);
         Ok(())
     }
 
     /// `FINDFIRST` — position on the first matching record.
-    pub fn find_first(&mut self) -> Result<bool, RecordError> {
-        self.build_iter_set();
-        if self.iter_set.is_empty() {
-            self.iter_pos = None;
+    pub fn find_first_in(&self, view: &mut RecordView) -> Result<bool, RecordError> {
+        self.build_iter_set(view);
+        if view.iter_set.is_empty() {
+            view.iter_pos = None;
             return Ok(false);
         }
-        self.load_row_at(0)?;
+        self.load_row_at(view, 0)?;
         Ok(true)
     }
 
+    pub fn find_first(&mut self) -> Result<bool, RecordError> {
+        self.with_default_view(|table, view| table.find_first_in(view))
+    }
+
     /// `FINDLAST` — position on the last matching record.
-    pub fn find_last(&mut self) -> Result<bool, RecordError> {
-        self.build_iter_set();
-        let last = self.iter_set.len().saturating_sub(1);
-        if self.iter_set.is_empty() {
-            self.iter_pos = None;
+    pub fn find_last_in(&self, view: &mut RecordView) -> Result<bool, RecordError> {
+        self.build_iter_set(view);
+        let last = view.iter_set.len().saturating_sub(1);
+        if view.iter_set.is_empty() {
+            view.iter_pos = None;
             return Ok(false);
         }
-        self.load_row_at(last)?;
+        self.load_row_at(view, last)?;
         Ok(true)
+    }
+
+    pub fn find_last(&mut self) -> Result<bool, RecordError> {
+        self.with_default_view(|table, view| table.find_last_in(view))
     }
 
     /// `FINDSET` — prepare iteration set and position at first record.
     ///
     /// Returns `false` if the set is empty (no rows match filters).
+    pub fn find_set_in(&self, view: &mut RecordView) -> Result<bool, RecordError> {
+        self.find_first_in(view)
+    }
+
     pub fn find_set(&mut self) -> Result<bool, RecordError> {
-        self.find_first()
+        self.with_default_view(|table, view| table.find_set_in(view))
     }
 
     /// `FIND('-')` / `FIND('+')` — position at first (−) or last (+) record.
-    pub fn find(&mut self, direction: char) -> Result<bool, RecordError> {
+    pub fn find_in(&self, view: &mut RecordView, direction: char) -> Result<bool, RecordError> {
         match direction {
-            '-' => self.find_first(),
-            '+' => self.find_last(),
+            '-' => self.find_first_in(view),
+            '+' => self.find_last_in(view),
             _ => Err(RecordError::InvalidFindDirection(direction)),
         }
+    }
+
+    pub fn find(&mut self, direction: char) -> Result<bool, RecordError> {
+        self.with_default_view(|table, view| table.find_in(view, direction))
     }
 
     /// `NEXT` — advance to the next (or previous) record.
     ///
     /// `steps` is typically 1 (forward) or -1 (backward), matching BC's
     /// `NEXT(steps)` signature.  Returns `Ok(steps_actually_moved)`.
-    pub fn next(&mut self, steps: i32) -> Result<i32, RecordError> {
-        let current_pos = self.iter_pos.ok_or(RecordError::NoCurrentRow)?;
-        if steps == 0 || self.iter_set.is_empty() {
+    pub fn next_in(&self, view: &mut RecordView, steps: i32) -> Result<i32, RecordError> {
+        let current_pos = view.iter_pos.ok_or(RecordError::NoCurrentRow)?;
+        if steps == 0 || view.iter_set.is_empty() {
             return Ok(0);
         }
         // BC moves as far as possible toward the target and returns the number
@@ -435,36 +641,50 @@ impl MockRecord {
         // overshoot. `until Next() = 0` loops behave the same either way,
         // but a batch `Next(N)` that overshoots the end now advances to the
         // boundary and reports the partial move.
-        let last = self.iter_set.len() as i64 - 1;
+        let last = view.iter_set.len() as i64 - 1;
         let target = current_pos as i64 + steps as i64;
         let clamped = target.clamp(0, last);
         let actual = clamped - current_pos as i64;
         if actual == 0 {
             return Ok(0);
         }
-        self.load_row_at(clamped as usize)?;
+        self.load_row_at(view, clamped as usize)?;
         Ok(actual as i32)
     }
 
-    /// `ISEMPTY` — `true` if no rows match the current filters.
-    pub fn is_empty(&self) -> bool {
-        self.rows.values().all(|row| !self.row_matches_filters(row))
+    pub fn next(&mut self, steps: i32) -> Result<i32, RecordError> {
+        self.with_default_view(|table, view| table.next_in(view, steps))
     }
 
-    /// `COUNT` — number of rows matching the current filters.
-    pub fn count(&self) -> usize {
+    /// `ISEMPTY` — `true` if no rows match the view's filters.
+    pub fn is_empty_in(&self, view: &RecordView) -> bool {
         self.rows
             .values()
-            .filter(|row| self.row_matches_filters(row))
+            .all(|row| !row_matches_filters(&view.filters, row))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.is_empty_in(&self.view)
+    }
+
+    /// `COUNT` — number of rows matching the view's filters.
+    pub fn count_in(&self, view: &RecordView) -> usize {
+        self.rows
+            .values()
+            .filter(|row| row_matches_filters(&view.filters, row))
             .count()
     }
 
+    pub fn count(&self) -> usize {
+        self.count_in(&self.view)
+    }
+
     pub fn x_rec(&self) -> &Row {
-        &self.x_rec
+        &self.view.x_rec
     }
 
     pub fn x_rec_field(&self, field: FieldNo) -> Option<&Value> {
-        self.x_rec.get(&field)
+        self.view.x_rec.get(&field)
     }
 
     /// Evaluate a FlowField `CalcFormula` aggregation over this table's rows.
@@ -610,11 +830,14 @@ fn flow_value_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// Textual view of a value for `flow_value_eq` (`Text`/`Code`/`Option` member).
+/// Textual view of a value for `flow_value_eq` (`Text`/`Code`/`Option` member,
+/// plus a `Boolean` bridge so `WHERE(Flag = CONST(true))` matches a Boolean
+/// cell whichever side was parsed as text).
 fn flow_text(v: &Value) -> Option<String> {
     match v {
         Value::Text(s) | Value::Code(s) | Value::Guid(s) => Some(s.clone()),
         Value::Option { member, .. } => Some(member.clone()),
+        Value::Boolean(b) => Some(b.to_string()),
         _ => None,
     }
 }
@@ -1400,5 +1623,76 @@ mod tests {
     fn invalid_find_direction_is_rejected() {
         let mut rec = detail_table();
         assert_eq!(rec.find('?'), Err(RecordError::InvalidFindDirection('?')));
+    }
+
+    #[test]
+    fn delete_all_removes_filtered_rows_in_one_pass() {
+        let mut rec = make_table();
+        for i in 1i64..=10 {
+            insert_row(&mut rec, i, "x");
+        }
+        rec.set_range(1, Value::Integer(1), Value::Integer(4));
+        assert_eq!(rec.delete_all(false), Ok(4));
+        rec.reset();
+        assert_eq!(rec.count(), 6, "only the filtered rows may be deleted");
+        assert_eq!(
+            rec.delete_all(true),
+            Err(RecordError::TriggerExecutionUnsupported("Delete")),
+            "trigger execution stays a live-BC capability"
+        );
+    }
+
+    #[test]
+    fn separate_views_have_independent_filters_and_cursors() {
+        let mut rec = make_table();
+        for i in 1i64..=5 {
+            insert_row(&mut rec, i, "x");
+        }
+        let mut a = rec.new_view();
+        let mut b = rec.new_view();
+        rec.set_range_in(&mut a, 1, Value::Integer(1), Value::Integer(2));
+        rec.set_range_in(&mut b, 1, Value::Integer(4), Value::Integer(5));
+        assert_eq!(rec.count_in(&a), 2);
+        assert_eq!(rec.count_in(&b), 2);
+        assert!(rec.find_first_in(&mut a).unwrap());
+        assert!(rec.find_first_in(&mut b).unwrap());
+        assert_eq!(rec.field_get_in(&a, 1), Some(&Value::Integer(1)));
+        assert_eq!(rec.field_get_in(&b, 1), Some(&Value::Integer(4)));
+        // Advancing B must not disturb A's cursor.
+        assert_eq!(rec.next_in(&mut b, 1).unwrap(), 1);
+        assert_eq!(rec.next_in(&mut a, 1).unwrap(), 1);
+        assert_eq!(rec.field_get_in(&a, 1), Some(&Value::Integer(2)));
+    }
+
+    #[test]
+    fn code_primary_key_is_caseless_and_numeric_class_unifies() {
+        let mut rec = MockRecord::new(1, "CodePk", vec![1]);
+        rec.field_set(1, Value::Code("abc".into()));
+        rec.insert(false).unwrap();
+        rec.get(vec![Value::Code("ABC".into())])
+            .expect("Get('ABC') must find the row stored under 'abc'");
+
+        let mut num = MockRecord::new(2, "NumPk", vec![1]);
+        num.field_set(1, Value::Decimal(dec!(5)));
+        num.insert(false).unwrap();
+        num.get(vec![Value::Integer(5)])
+            .expect("an Integer key value must match a stored Decimal one");
+    }
+
+    #[test]
+    fn unset_cell_matches_typed_zero_filters() {
+        let mut rec = MockRecord::new(3, "Sparse", vec![1]);
+        rec.field_set(1, Value::Integer(1));
+        // Field 2 (Qty) intentionally never set.
+        rec.insert(false).unwrap();
+        rec.set_range(2, Value::Integer(0), Value::Integer(0));
+        assert_eq!(
+            rec.count(),
+            1,
+            "SetRange(Qty, 0) must match a row whose Qty was never assigned"
+        );
+        rec.reset();
+        rec.set_range(2, Value::Integer(1), Value::Integer(9));
+        assert_eq!(rec.count(), 0);
     }
 }

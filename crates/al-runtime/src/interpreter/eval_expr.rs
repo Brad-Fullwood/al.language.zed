@@ -97,9 +97,7 @@ fn eval_expr_inner(
         "time_literal" => eval_time_literal(node, source),
         "string_literal" | "string" | "verbatim_string" => {
             let text = utf8_text(node, source).unwrap_or("");
-            let trimmed = text.trim_start_matches('\'').trim_end_matches('\'');
-            let unescaped = trimmed.replace("''", "'");
-            Eval::Normal(Value::Text(unescaped))
+            Eval::Normal(Value::Text(unescape_al_string(text)))
         }
         // The AL grammar uses `expression` as the binary expression node:
         //   expression = unary_expression (binary_operator unary_expression)*
@@ -136,7 +134,7 @@ fn eval_expr_inner(
                     // Niladic clock builtins may appear without parentheses
                     // (`dt := CurrentDateTime`). Only treated as builtins when
                     // not shadowed by a bound variable of the same name.
-                    None => match niladic_clock_builtin(name) {
+                    None => match niladic_clock_builtin(name, ctx) {
                         Some(v) => Eval::Normal(v),
                         None => Eval::Error(simple_error(&format!("unbound identifier: {name}"))),
                     },
@@ -163,6 +161,20 @@ fn simple_error(message: &str) -> ErrorInfo {
 
 fn utf8_text<'a>(node: Node<'_>, source: &'a [u8]) -> Option<&'a str> {
     node.utf8_text(source).ok()
+}
+
+/// Unescape an AL string literal: strip exactly ONE leading and ONE trailing
+/// quote, then collapse each doubled quote (`''`) to a single one. Stripping
+/// *all* leading/trailing quotes first would corrupt literals that begin or
+/// end with an escaped quote: `''''` is the one-character string `'`, and
+/// `'abc'''` ends with `abc'`.
+fn unescape_al_string(text: &str) -> String {
+    let trimmed = text.trim();
+    let inner = trimmed
+        .strip_prefix('\'')
+        .and_then(|t| t.strip_suffix('\''))
+        .unwrap_or(trimmed);
+    inner.replace("''", "'")
 }
 
 /// Type an integer literal. An `l`/`L` suffix — AL's `BigInteger` literal
@@ -201,13 +213,7 @@ fn eval_literal(node: Node<'_>, source: &[u8]) -> Eval {
             true => Eval::Normal(Value::Boolean(true)),
             false => Eval::Normal(Value::Boolean(false)),
         },
-        "string_literal" => {
-            // Strip leading/trailing single-quote and unescape doubled
-            // single-quotes (AL's escape mechanism).
-            let trimmed = text.trim_start_matches('\'').trim_end_matches('\'');
-            let unescaped = trimmed.replace("''", "'");
-            Eval::Normal(Value::Text(unescaped))
-        }
+        "string_literal" => Eval::Normal(Value::Text(unescape_al_string(text))),
         other => Eval::Error(simple_error(&format!("unknown literal kind: {other}"))),
     }
 }
@@ -413,20 +419,36 @@ fn split_set_members(source: &str) -> Result<Vec<&str>, String> {
 
 /// Parse one set member as a normal AL expression, then evaluate it against the
 /// caller's existing scope and dispatch context.
+///
+/// Parses are memoized in `ctx.expr_fragment_cache` (keyed by the fragment
+/// text): a set literal evaluated inside a loop re-parses each member once,
+/// not once per iteration. `tree_sitter::Tree` clones are cheap (refcounted),
+/// so taking a clone out of the cache avoids borrowing `ctx` across the
+/// evaluation below.
 fn eval_expression_fragment(
     expression: &str,
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    let wrapper = format!(
-        "codeunit 0 __SetExpression {{ procedure __Eval(): Variant begin exit({expression}); end; }}"
-    );
-    let parsed = al_syntax::AlParser::parse_quick(&wrapper);
-    if !parsed.errors.is_empty() {
-        return Eval::Error(simple_error(&format!(
-            "set literal member is not a valid expression: `{expression}`"
-        )));
-    }
+    let cached = ctx.expr_fragment_cache.get(expression).cloned();
+    let (wrapper, tree) = match cached {
+        Some(entry) => entry,
+        None => {
+            let wrapper = format!(
+                "codeunit 0 __SetExpression {{ procedure __Eval(): Variant begin exit({expression}); end; }}"
+            );
+            let parsed = al_syntax::AlParser::parse_quick(&wrapper);
+            if !parsed.errors.is_empty() {
+                return Eval::Error(simple_error(&format!(
+                    "set literal member is not a valid expression: `{expression}`"
+                )));
+            }
+            let entry = (wrapper, parsed.tree);
+            ctx.expr_fragment_cache
+                .insert(expression.to_string(), entry.clone());
+            entry
+        }
+    };
 
     fn find_expression<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
         if node.kind() == "exit_statement" {
@@ -459,7 +481,7 @@ fn eval_expression_fragment(
         None
     }
 
-    let Some(node) = find_expression(parsed.tree.root_node()) else {
+    let Some(node) = find_expression(tree.root_node()) else {
         return Eval::Error(simple_error(
             "set literal member expression could not be recovered",
         ));
@@ -499,9 +521,10 @@ fn eval_postfix(
     // Record field read: `Rec."Field"` (a `member_suffix`, not a call) where the
     // receiver resolves to a bound `Value::Record`.
     if let Some((recv, field)) = records::record_field_access(node, source) {
-        if let Some(Value::Record(rv)) = stack.lookup(&recv) {
-            let table_name = rv.table_name.clone();
-            return records::field_get(&table_name, &field, ctx);
+        if matches!(stack.lookup(&recv), Some(Value::Record(_))) {
+            if let Some((table_name, handle)) = records::record_binding(&recv, stack, ctx) {
+                return records::field_get(&table_name, handle, &field, ctx);
+            }
         }
     }
 
@@ -697,13 +720,18 @@ fn is_leap_year(year: i64) -> bool {
 }
 
 /// Resolve a niladic clock builtin used without parentheses (`Today`,
-/// `Time`, `CurrentDateTime`). Returns `None` for any other identifier.
-fn niladic_clock_builtin(name: &str) -> Option<Value> {
+/// `Time`, `CurrentDateTime`, `WorkDate`). Returns `None` for any other
+/// identifier.
+fn niladic_clock_builtin(name: &str, ctx: &DispatchCtx) -> Option<Value> {
     match name.to_ascii_lowercase().as_str() {
         "today" => Some(Value::Date(crate::interpreter::dispatch::clock_today())),
         "time" => Some(Value::Time(crate::interpreter::dispatch::clock_time())),
         "currentdatetime" => Some(Value::DateTime(
             crate::interpreter::dispatch::clock_current_datetime(),
+        )),
+        "workdate" => Some(Value::Date(
+            ctx.work_date
+                .unwrap_or_else(crate::interpreter::dispatch::clock_today),
         )),
         _ => None,
     }
@@ -764,10 +792,39 @@ fn eval_expression_node(
                 other => return other,
             };
 
-        // Record field assignment: `Rec."Field" := value`. Handled before the
-        // plain-identifier path so the whole record isn't overwritten.
-        if let Some(result) = records::try_field_assign(lhs_node, source, &rhs_val, stack, ctx) {
-            return result;
+        // Record field assignment: `Rec."Field" := value` / `Rec.Amount += 5`.
+        // Handled before the plain-identifier path so the whole record isn't
+        // overwritten. Compound forms load the field's current value and apply
+        // the base operator FIRST — `Rec.Amount += 5` stores `Amount + 5`,
+        // not the raw RHS.
+        if let Some((recv, field)) = records::record_field_access(lhs_node, source) {
+            if matches!(stack.lookup(&recv), Some(Value::Record(_))) {
+                let new_val = match kind {
+                    AssignKind::Plain => rhs_val,
+                    AssignKind::Compound(base_op) => {
+                        let Some((table_name, handle)) = records::record_binding(&recv, stack, ctx)
+                        else {
+                            return Eval::Error(simple_error(&format!(
+                                "record variable '{recv}' is not bound"
+                            )));
+                        };
+                        let current = match records::field_get(&table_name, handle, &field, ctx) {
+                            Eval::Normal(v) => v,
+                            other => return other,
+                        };
+                        match apply_binary(base_op, current, rhs_val) {
+                            Eval::Normal(v) => v,
+                            other => return other,
+                        }
+                    }
+                };
+                return records::try_field_assign(lhs_node, source, &new_val, stack, ctx)
+                    .unwrap_or_else(|| {
+                        Eval::Error(simple_error(&format!(
+                            "record field assignment failed for '{recv}.{field}'"
+                        )))
+                    });
+            }
         }
 
         let lhs_name = extract_identifier_name(lhs_node, source)
@@ -806,11 +863,16 @@ fn eval_expression_node(
         if let Some(slot) = stack.lookup_mut(&lhs_name) {
             // Preserve the slot's declared type (Code caselessness / integer
             // width) rather than adopting the RHS's — see `coerce_into_slot`.
-            *slot = Value::coerce_into_slot(slot, new_val);
-        } else if let Some(frame) = stack.top_mut() {
-            frame.bind(&lhs_name, new_val);
+            match Value::coerce_into_slot(slot, new_val) {
+                Ok(value) => *slot = value,
+                Err(message) => return Eval::Error(simple_error(&message)),
+            }
         } else {
-            return Eval::Error(simple_error("expression: no active scope for assignment"));
+            // AL has no implicit declaration: a typo'd LHS must fail loudly
+            // instead of silently creating a fresh variable.
+            return Eval::Error(simple_error(&format!(
+                "assignment to unbound identifier '{lhs_name}' — variables must be declared"
+            )));
         }
         return Eval::Normal(Value::Empty);
     }
@@ -1154,8 +1216,12 @@ fn classify_numeric(v: &Value) -> Option<Num> {
 }
 
 /// Convert an AL integer-like/whole-decimal offset used by Date/Time
-/// arithmetic. Fractional Decimal offsets are invalid for these operations.
+/// arithmetic. A `Duration` operand contributes its millisecond carrier.
+/// Fractional Decimal offsets are invalid for these operations.
 fn whole_offset(value: &Value) -> Result<i64, ErrorInfo> {
+    if let Value::Duration(ms) = value {
+        return Ok(*ms);
+    }
     match classify_numeric(value) {
         Some(Num::Int { val, .. }) => Ok(val),
         Some(Num::Dec(decimal)) if decimal.fract().is_zero() => decimal
@@ -1175,6 +1241,70 @@ fn whole_offset(value: &Value) -> Result<i64, ErrorInfo> {
 fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Option<Eval> {
     let op = operator.to_ascii_lowercase();
     match (op.as_str(), left, right) {
+        // DateTime difference → Duration (milliseconds).
+        ("-", Value::DateTime(l), Value::DateTime(r)) => {
+            if *l == 0 || *r == 0 {
+                return Some(Eval::Error(simple_error(
+                    "DateTime arithmetic is undefined for the zero DateTime",
+                )));
+            }
+            Some(match l.checked_sub(*r) {
+                Some(ms) => Eval::Normal(Value::Duration(ms)),
+                None => Eval::Error(simple_error("DateTime arithmetic overflow")),
+            })
+        }
+        // DateTime ± Duration/number → DateTime.
+        ("+", Value::DateTime(dt), offset) | ("+", offset, Value::DateTime(dt)) => {
+            if *dt == 0 {
+                return Some(Eval::Error(simple_error(
+                    "DateTime arithmetic is undefined for the zero DateTime",
+                )));
+            }
+            Some(
+                match whole_offset(offset).and_then(|offset| {
+                    dt.checked_add(offset)
+                        .ok_or_else(|| simple_error("DateTime arithmetic overflow"))
+                }) {
+                    Ok(value) => Eval::Normal(Value::DateTime(value)),
+                    Err(error) => Eval::Error(error),
+                },
+            )
+        }
+        ("-", Value::DateTime(dt), offset) => {
+            if *dt == 0 {
+                return Some(Eval::Error(simple_error(
+                    "DateTime arithmetic is undefined for the zero DateTime",
+                )));
+            }
+            Some(
+                match whole_offset(offset).and_then(|offset| {
+                    dt.checked_sub(offset)
+                        .ok_or_else(|| simple_error("DateTime arithmetic overflow"))
+                }) {
+                    Ok(value) => Eval::Normal(Value::DateTime(value)),
+                    Err(error) => Eval::Error(error),
+                },
+            )
+        }
+        // Duration ± Duration/number → Duration.
+        ("+", Value::Duration(l), offset) | ("+", offset, Value::Duration(l)) => Some(
+            match whole_offset(offset).and_then(|offset| {
+                l.checked_add(offset)
+                    .ok_or_else(|| simple_error("Duration arithmetic overflow"))
+            }) {
+                Ok(value) => Eval::Normal(Value::Duration(value)),
+                Err(error) => Eval::Error(error),
+            },
+        ),
+        ("-", Value::Duration(l), offset) => Some(
+            match whole_offset(offset).and_then(|offset| {
+                l.checked_sub(offset)
+                    .ok_or_else(|| simple_error("Duration arithmetic overflow"))
+            }) {
+                Ok(value) => Eval::Normal(Value::Duration(value)),
+                Err(error) => Eval::Error(error),
+            },
+        ),
         ("+", Value::Date(date), offset) | ("+", offset, Value::Date(date)) => {
             if *date == 0 {
                 return Some(Eval::Error(simple_error(
@@ -1238,7 +1368,12 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
                     "Time arithmetic is undefined for 0T",
                 )));
             }
-            Some(checked_int(left.checked_sub(*right), false))
+            // BC: the difference of two Times is a Duration (milliseconds),
+            // not an Integer.
+            Some(match left.checked_sub(*right) {
+                Some(ms) => Eval::Normal(Value::Duration(ms)),
+                None => Eval::Error(simple_error("Time arithmetic overflow")),
+            })
         }
         ("-", Value::Time(time), offset) => {
             if *time == 0 {
@@ -1618,7 +1753,8 @@ mod tests {
         );
         assert_eq!(
             ok(apply_binary("-", Value::Time(2_000), Value::Time(1_250))),
-            Value::Integer(750)
+            Value::Duration(750),
+            "Time - Time is a Duration in BC, not an Integer"
         );
         assert!(err(apply_binary("+", Value::Date(0), Value::Integer(1)))
             .message
@@ -1630,6 +1766,60 @@ mod tests {
         ))
         .message
         .contains("overflow"));
+    }
+
+    #[test]
+    fn datetime_and_duration_arithmetic() {
+        // DateTime - DateTime → Duration.
+        assert_eq!(
+            ok(apply_binary(
+                "-",
+                Value::DateTime(10_000),
+                Value::DateTime(4_000)
+            )),
+            Value::Duration(6_000)
+        );
+        // DateTime ± Duration → DateTime (both operand orders for +).
+        assert_eq!(
+            ok(apply_binary(
+                "+",
+                Value::DateTime(10_000),
+                Value::Duration(500)
+            )),
+            Value::DateTime(10_500)
+        );
+        assert_eq!(
+            ok(apply_binary(
+                "+",
+                Value::Duration(500),
+                Value::DateTime(10_000)
+            )),
+            Value::DateTime(10_500)
+        );
+        assert_eq!(
+            ok(apply_binary(
+                "-",
+                Value::DateTime(10_000),
+                Value::Duration(500)
+            )),
+            Value::DateTime(9_500)
+        );
+        // Duration ± Duration → Duration; Duration ± number too.
+        assert_eq!(
+            ok(apply_binary(
+                "+",
+                Value::Duration(500),
+                Value::Duration(250)
+            )),
+            Value::Duration(750)
+        );
+        assert_eq!(
+            ok(apply_binary("-", Value::Duration(500), Value::Integer(100))),
+            Value::Duration(400)
+        );
+        // Arithmetic on the zero (undefined) DateTime is an error.
+        assert!(apply_binary("+", Value::DateTime(0), Value::Duration(1)).is_error());
+        assert!(apply_binary("-", Value::DateTime(0), Value::DateTime(1)).is_error());
     }
 
     #[test]

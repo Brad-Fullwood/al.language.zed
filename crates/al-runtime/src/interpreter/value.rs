@@ -52,6 +52,26 @@ pub fn al_days_from_ymd(year: i64, month: i64, day: i64) -> i64 {
     days_from_civil(year, month, day) + AL_EPOCH_TO_UNIX_DAYS
 }
 
+/// Proleptic-Gregorian `(year, month, day)` for a days-since-Unix-epoch count.
+/// The exact inverse of [`days_from_civil`] (Howard Hinnant's `civil_from_days`).
+pub fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    (if month <= 2 { y + 1 } else { y }, month, day)
+}
+
+/// `(year, month, day)` for an AL `Date` day carrier (days since 0001-01-01).
+pub fn ymd_from_al_days(days: AlDate) -> (i64, i64, i64) {
+    civil_from_days(days - AL_EPOCH_TO_UNIX_DAYS)
+}
+
 /// One AL runtime value.
 ///
 /// `PartialEq` is implemented manually (below) to mirror the `Ord` total
@@ -302,19 +322,30 @@ impl Value {
     ///
     /// * a `Code` slot uppercases a string RHS and stays caseless `Code`;
     /// * an `Integer`/`BigInteger` slot keeps its width so later arithmetic uses
-    ///   the right overflow trap.
+    ///   the right overflow trap — narrowing an out-of-range value into an
+    ///   `Integer` slot is a runtime error, matching BC's overflow trap;
+    /// * a `Decimal` slot promotes an integer RHS to `Decimal`, so later
+    ///   `div`/`mod` correctly reject the slot as Decimal.
     ///
     /// Any other combination overwrites as-is. Shared by both assignment paths
     /// (`eval_assignment` and the expression-form handler in `eval_expr`).
-    pub(crate) fn coerce_into_slot(slot: &Value, incoming: Value) -> Value {
-        match (slot, &incoming) {
+    pub(crate) fn coerce_into_slot(slot: &Value, incoming: Value) -> Result<Value, String> {
+        Ok(match (slot, &incoming) {
             (Value::Code(_), Value::Text(s) | Value::Code(s)) => Value::Code(s.to_uppercase()),
             (Value::BigInteger(_), Value::Integer(n) | Value::BigInteger(n)) => {
                 Value::BigInteger(*n)
             }
-            (Value::Integer(_), Value::Integer(n) | Value::BigInteger(n)) => Value::Integer(*n),
+            (Value::Integer(_), Value::Integer(n) | Value::BigInteger(n)) => {
+                if !(i32::MIN as i64..=i32::MAX as i64).contains(n) {
+                    return Err(format!("value {n} is outside the Integer range"));
+                }
+                Value::Integer(*n)
+            }
+            (Value::Decimal(_), Value::Integer(n) | Value::BigInteger(n)) => {
+                Value::Decimal(Decimal::from(*n))
+            }
             _ => incoming,
-        }
+        })
     }
 
     /// Default value for the named AL type. Returns `None` if the type

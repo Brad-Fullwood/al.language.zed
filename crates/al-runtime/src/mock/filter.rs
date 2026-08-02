@@ -55,7 +55,10 @@ pub enum FilterAtom {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pattern {
     pub text: String,
-    /// Whether this is a case-sensitive match (prefixed with `@`).
+    /// Whether this is a case-sensitive match. BC filter matching on `Text`
+    /// values is case-sensitive by default; the `@` prefix makes the pattern
+    /// case-INsensitive. (`Code` cells are caseless regardless — see
+    /// [`pattern_matches`].)
     pub case_sensitive: bool,
 }
 
@@ -208,7 +211,9 @@ impl<'a> Parser<'a> {
                         .ok_or(FilterParseError::InvalidRange(first_str, second_str))?;
                     Ok(FilterAtom::Range(lo, hi))
                 } else {
-                    let case_sensitive = first_str.starts_with('@');
+                    // BC: unprefixed patterns match case-sensitively; the `@`
+                    // prefix requests case-INsensitive matching.
+                    let case_sensitive = !first_str.starts_with('@');
                     let text = first_str
                         .strip_prefix('@')
                         .map_or(first_str.clone(), str::to_string);
@@ -223,7 +228,7 @@ impl<'a> Parser<'a> {
 
     fn parse_pattern(&mut self) -> Result<Pattern, FilterParseError> {
         let token = self.read_token()?;
-        let case_sensitive = token.starts_with('@');
+        let case_sensitive = !token.starts_with('@');
         let text = token
             .strip_prefix('@')
             .map_or(token.clone(), str::to_string);
@@ -246,10 +251,12 @@ impl<'a> Parser<'a> {
             return Err(FilterParseError::UnexpectedEnd);
         }
         let mut result = String::new();
+        let mut quoted = false;
         let first = self.peek().unwrap();
 
         if first == '\'' || first == '"' {
             let quote = first;
+            quoted = true;
             self.advance();
             loop {
                 match self.advance() {
@@ -272,7 +279,9 @@ impl<'a> Parser<'a> {
             }
         }
 
-        if result.is_empty() {
+        // A quoted empty string (`''` / `""`) is a legitimate token — it is
+        // BC's idiom for filtering blank values (`<>''`, `SetFilter(F, '''')`).
+        if result.is_empty() && !quoted {
             Err(FilterParseError::UnexpectedEnd)
         } else {
             Ok(result)
@@ -331,8 +340,21 @@ fn atom_matches(atom: &FilterAtom, value: &Value) -> bool {
 }
 
 fn pattern_matches(pat: &Pattern, value: &Value) -> bool {
+    // An unset field is the typed zero value in BC: a numeric pattern matches
+    // it iff the pattern is zero; text patterns match it as the empty string.
+    if matches!(value, Value::Empty) {
+        if let Ok(number) = pat.text.parse::<Decimal>() {
+            return number == Decimal::ZERO;
+        }
+    }
     let text_repr = value_to_filter_string(value);
-    wildcard_match(&pat.text, &text_repr, !pat.case_sensitive)
+    // `Code` (and Guid/Option) cells are caseless in BC regardless of the
+    // pattern's `@` prefix; only `Text` honours the case-sensitive default.
+    let caseless_cell = matches!(
+        value,
+        Value::Code(_) | Value::Guid(_) | Value::Option { .. }
+    );
+    wildcard_match(&pat.text, &text_repr, !pat.case_sensitive || caseless_cell)
 }
 
 fn value_to_filter_string(value: &Value) -> String {
@@ -344,6 +366,8 @@ fn value_to_filter_string(value: &Value) -> String {
         Value::Char(c) => c.to_string(),
         Value::Date(d) => d.to_string(),
         Value::Time(t) => t.to_string(),
+        Value::DateTime(dt) => dt.to_string(),
+        Value::Option { member, .. } => member.clone(),
         _ => String::new(),
     }
 }
@@ -405,7 +429,14 @@ fn cmp_value(value: &Value, ov: &OrderableValue) -> Option<std::cmp::Ordering> {
             Some(a.to_ascii_uppercase().cmp(&b.to_ascii_uppercase()))
         }
         (Value::Text(a), OrderableValue::Text(b)) => Some(a.cmp(b)),
-        (Value::Date(a), OrderableValue::Integer(b)) => Some(a.cmp(b)),
+        (Value::Date(a) | Value::Time(a) | Value::DateTime(a), OrderableValue::Integer(b)) => {
+            Some(a.cmp(b))
+        }
+        // A never-assigned field reads back as `Empty`; BC treats it as the
+        // field's typed zero value, so compare it as 0 / "" against the bound.
+        (Value::Empty, OrderableValue::Integer(b)) => Some(0i64.cmp(b)),
+        (Value::Empty, OrderableValue::Decimal(b)) => Some(Decimal::ZERO.cmp(b)),
+        (Value::Empty, OrderableValue::Text(b)) => Some("".cmp(b.as_str())),
         _ => None,
     }
 }
@@ -432,10 +463,57 @@ mod tests {
 
     #[test]
     fn test_equality_text() {
+        // BC: unprefixed Text patterns are case-SENSITIVE.
         let expr = parse("'Hello'").unwrap();
         assert!(matches(&expr, &text("Hello")));
-        assert!(matches(&expr, &text("hello")));
+        assert!(!matches(&expr, &text("hello")));
         assert!(!matches(&expr, &text("World")));
+    }
+
+    #[test]
+    fn code_cell_is_caseless_even_without_at_prefix() {
+        let expr = parse("'Hello'").unwrap();
+        assert!(
+            matches(&expr, &Value::Code("hello".to_string())),
+            "a Code cell must match caselessly regardless of the pattern prefix"
+        );
+    }
+
+    #[test]
+    fn quoted_empty_string_matches_blank_values() {
+        let expr = parse("''").unwrap();
+        assert!(matches(&expr, &text("")));
+        assert!(!matches(&expr, &text("A")));
+
+        let ne = parse("<>''").unwrap();
+        assert!(matches(&ne, &text("A")));
+        assert!(!matches(&ne, &text("")));
+        assert!(
+            !matches(&ne, &Value::Empty),
+            "<>'' must treat an unset field as blank"
+        );
+    }
+
+    #[test]
+    fn date_typed_values_match_numeric_filters() {
+        // Date carriers are day numbers; both equality and relational filters
+        // must accept them.
+        let day = crate::interpreter::value::al_days_from_ymd(2024, 7, 1);
+        let eq = parse(&day.to_string()).unwrap();
+        assert!(matches(&eq, &Value::Date(day)));
+        let gt = parse(&format!(">{}", day - 1)).unwrap();
+        assert!(matches(&gt, &Value::Date(day)));
+        let range = parse(&format!("{}..{}", day - 1, day + 1)).unwrap();
+        assert!(matches(&range, &Value::Date(day)));
+        assert!(!matches(&range, &Value::Date(day + 5)));
+    }
+
+    #[test]
+    fn empty_cell_compares_as_typed_zero() {
+        assert!(matches(&parse("0").unwrap(), &Value::Empty));
+        assert!(matches(&parse("<=0").unwrap(), &Value::Empty));
+        assert!(!matches(&parse(">0").unwrap(), &Value::Empty));
+        assert!(matches(&parse("''").unwrap(), &Value::Empty));
     }
 
     #[test]
@@ -550,17 +628,22 @@ mod tests {
     }
 
     #[test]
-    fn test_at_case_sensitive() {
+    fn test_at_prefix_is_case_insensitive() {
+        // BC: `@` means case-INsensitive.
         let expr = parse("@Hello").unwrap();
         assert!(matches(&expr, &text("Hello")));
-        assert!(!matches(&expr, &text("hello")));
+        assert!(matches(&expr, &text("hello")));
+        assert!(matches(&expr, &text("HELLO")));
+        assert!(!matches(&expr, &text("World")));
     }
 
     #[test]
-    fn test_default_case_insensitive() {
+    fn test_default_is_case_sensitive() {
+        // BC: unprefixed Text patterns are case-sensitive.
         let expr = parse("hello").unwrap();
-        assert!(matches(&expr, &text("Hello")));
-        assert!(matches(&expr, &text("HELLO")));
+        assert!(matches(&expr, &text("hello")));
+        assert!(!matches(&expr, &text("Hello")));
+        assert!(!matches(&expr, &text("HELLO")));
     }
 
     #[test]
@@ -691,28 +774,35 @@ mod tests {
     }
 
     #[test]
-    fn at_case_sensitive_lower() {
+    fn at_prefix_lower_matches_any_case() {
         let expr = parse("@a").unwrap();
         assert!(matches(&expr, &text("a")), "@a must match literal 'a'");
-        assert!(
-            !matches(&expr, &text("A")),
-            "@a must NOT match uppercase 'A'"
-        );
+        assert!(matches(&expr, &text("A")), "@a must match uppercase 'A'");
         assert!(!matches(&expr, &text("ABCDE")), "@a must NOT match 'ABCDE'");
     }
 
     #[test]
-    fn at_wildcard_case_sensitive() {
+    fn at_wildcard_matches_any_case() {
         let expr = parse("@A*").unwrap();
         assert!(matches(&expr, &text("Apple")), "@A* must match 'Apple'");
         assert!(matches(&expr, &text("ABCDE")), "@A* must match 'ABCDE'");
         assert!(
-            !matches(&expr, &text("apple")),
-            "@A* must NOT match lowercase 'apple'"
+            matches(&expr, &text("apple")),
+            "@A* must match lowercase 'apple' (@ is case-insensitive)"
         );
         assert!(
-            !matches(&expr, &text("abcde")),
-            "@A* must NOT match 'abcde'"
+            !matches(&expr, &text("Banana")),
+            "@A* must NOT match 'Banana'"
+        );
+    }
+
+    #[test]
+    fn unprefixed_wildcard_is_case_sensitive() {
+        let expr = parse("A*").unwrap();
+        assert!(matches(&expr, &text("Apple")));
+        assert!(
+            !matches(&expr, &text("apple")),
+            "unprefixed 'A*' must NOT match lowercase 'apple'"
         );
     }
 
