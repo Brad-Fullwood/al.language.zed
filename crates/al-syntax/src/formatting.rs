@@ -491,6 +491,32 @@ pub fn format_range(
         return Some(Vec::new());
     }
 
+    // When the requested range *starts* inside a blank run whose leading
+    // line(s) the collapser removes, the edit must actually delete those
+    // lines. The usual replacement span `(start, 0)..(end, len)` excludes the
+    // end line's terminating newline, so a removed-only region would emit a
+    // no-op (or even insert a newline). Extend the span through the end
+    // line's newline — `(end + 1, 0)` — so the removed line count is real.
+    // LSP clients clamp an end position past the last line to the document
+    // end, which is exactly the terminating newline when one exists.
+    let starts_in_collapsed_blank = collapse_blank_runs
+        && start > 0
+        && orig_lines[start].trim().is_empty()
+        && orig_lines[start - 1].trim().is_empty();
+    if starts_in_collapsed_blank {
+        let mut new_text = formatted_region.join("\n");
+        if !formatted_region.is_empty() {
+            new_text.push('\n');
+        }
+        return Some(vec![FormatTextEdit {
+            start_line,
+            start_character: 0,
+            end_line: end as u32 + 1,
+            end_character: 0,
+            new_text,
+        }]);
+    }
+
     let mut new_text = formatted_region.join("\n");
     // Append a trailing newline so the replacement bridges into the line that
     // follows the selection. The one exception is the document's final line
@@ -1511,6 +1537,113 @@ end;
         let edits = format_range(input, 2, 4, &opts).unwrap();
         assert_eq!(edits.len(), 1);
         assert!(edits[0].new_text.ends_with('\n'));
+    }
+
+    /// Apply a `FormatTextEdit` to `text` the way an LSP client would:
+    /// replace the byte span addressed by the (line, character) range with
+    /// `new_text`, clamping a position past the last line to the document end.
+    /// Test inputs are ASCII, so UTF-16 columns equal byte columns.
+    fn apply_format_edit(text: &str, edit: &FormatTextEdit) -> String {
+        fn position_offset(text: &str, line: u32, character: u32) -> usize {
+            let mut idx = 0usize;
+            for _ in 0..line {
+                match text[idx..].find('\n') {
+                    Some(n) => idx += n + 1,
+                    None => return text.len(),
+                }
+            }
+            (idx + character as usize).min(text.len())
+        }
+        let start = position_offset(text, edit.start_line, edit.start_character);
+        let end = position_offset(text, edit.end_line, edit.end_character);
+        let mut out = String::with_capacity(text.len() + edit.new_text.len());
+        out.push_str(&text[..start]);
+        out.push_str(&edit.new_text);
+        out.push_str(&text[end..]);
+        out
+    }
+
+    #[test]
+    fn test_format_range_starting_inside_collapsed_blank_run_deletes_line() {
+        // With a collapsing blank-line policy, a range that starts on the
+        // *second* blank line of a double-blank run used to emit "\n" for the
+        // removed line instead of deleting it (a no-op or even growth once
+        // applied). The edit must actually remove the collapsed blank line.
+        let input = "codeunit 50100 Test\n\
+                     {\n\
+                     \x20   procedure A()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     \n\
+                     \n\
+                     \x20   procedure B()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     }\n";
+        let opts = FormatOptions {
+            blank_lines_between_procedures: BlankLinesBetweenProcedures::One,
+            ..Default::default()
+        };
+
+        // Select only line 6 — the second blank of the run.
+        let edits = format_range(input, 6, 6, &opts).unwrap();
+        assert_eq!(edits.len(), 1);
+        let applied = apply_format_edit(input, &edits[0]);
+        let expected = "codeunit 50100 Test\n\
+                        {\n\
+                        \x20   procedure A()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        \n\
+                        \x20   procedure B()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        }\n";
+        assert_eq!(
+            applied, expected,
+            "the collapsed blank line must be deleted, got edit {:?}",
+            edits[0]
+        );
+    }
+
+    #[test]
+    fn test_format_range_starting_in_blank_run_extending_past_it() {
+        // Same setup, but the range continues beyond the blank run: the
+        // collapsed blank must be deleted while the following lines survive.
+        let input = "codeunit 50100 Test\n\
+                     {\n\
+                     \x20   procedure A()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     \n\
+                     \n\
+                     \x20   procedure B()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     }\n";
+        let opts = FormatOptions {
+            blank_lines_between_procedures: BlankLinesBetweenProcedures::One,
+            ..Default::default()
+        };
+
+        let edits = format_range(input, 6, 7, &opts).unwrap();
+        assert_eq!(edits.len(), 1);
+        let applied = apply_format_edit(input, &edits[0]);
+        let expected = "codeunit 50100 Test\n\
+                        {\n\
+                        \x20   procedure A()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        \n\
+                        \x20   procedure B()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        }\n";
+        assert_eq!(
+            applied, expected,
+            "blank collapsed and procedure B kept, got edit {:?}",
+            edits[0]
+        );
     }
 
     #[test]

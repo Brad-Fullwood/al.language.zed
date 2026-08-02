@@ -164,12 +164,52 @@ pub(crate) fn mask_non_code(line: &str, in_block_comment: bool) -> (String, bool
     (out, in_block_comment)
 }
 
+/// Like [`mask_non_code`], but keeps `"…"` quoted identifiers visible.
+///
+/// The label scan in `symbols.rs` needs the *name* of a declaration like
+/// `"My Lbl": Label 'text';` while still masking `'…'` string contents and
+/// comments. The lexer reports both quote forms as string spans, so this
+/// variant distinguishes them by their opening quote (offset-preserving).
+pub(crate) fn mask_non_code_keep_quoted_identifiers(
+    line: &str,
+    in_block_comment: bool,
+) -> (String, bool) {
+    let mut out = String::with_capacity(line.len());
+    let mut scanner = crate::lexical::LineScanner::new(line, in_block_comment);
+    for span in scanner.by_ref() {
+        let keep = span.kind == crate::lexical::SpanKind::Code
+            || (span.kind == crate::lexical::SpanKind::String && span.text.starts_with('"'));
+        if keep {
+            out.push_str(span.text);
+        } else {
+            out.extend(std::iter::repeat_n(' ', span.text.len()));
+        }
+    }
+    let in_block_comment = scanner.ends_in_block_comment();
+    (out, in_block_comment)
+}
+
 fn is_loop_start(lower: &str) -> bool {
     lower.starts_with("for ")
         || lower.starts_with("foreach ")
         || lower.starts_with("while ")
         || lower == "repeat"
         || lower.starts_with("repeat ")
+}
+
+/// True when a non-loop line opens a block closed by a matching `end`: a bare
+/// `begin`, a compound statement whose line ends in `begin` (`if x then
+/// begin`), or a `case … of` header. Lines that also close a block first
+/// (`end else begin`) are net-neutral and excluded. Callers check
+/// [`is_loop_start`] first, so `while x do begin` never reaches this.
+fn opens_block(lower: &str) -> bool {
+    if lower.starts_with("end") {
+        return false;
+    }
+    lower == "begin"
+        || lower.ends_with(" begin")
+        || lower.ends_with("\tbegin")
+        || (lower.starts_with("case ") && (lower.ends_with(" of") || lower.ends_with("\tof")))
 }
 
 /// AL-NL001: FindFirst()/FindLast() inside a loop.
@@ -254,8 +294,12 @@ fn scan_procedure_for_find_in_loop(
             } else {
                 frames.push(LoopFrame::AwaitingBody);
             }
-        } else if lower == "begin" {
+        } else if opens_block(&lower) {
+            line_in_loop = !frames.is_empty();
             match frames.last_mut() {
+                // A compound statement (`if x then begin`, `case x of`, …)
+                // opening as the single-statement body: the whole block is the
+                // loop body, closed by its matching `end`.
                 Some(frame @ LoopFrame::AwaitingBody) => *frame = LoopFrame::Body(1),
                 Some(LoopFrame::Body(depth)) => *depth += 1,
                 // A bare `begin` inside a repeat body or outside any loop
@@ -907,6 +951,152 @@ mod tests {
             diags.iter().filter(|d| d.code == "AL-NL001").count(),
             1,
             "the single-statement body itself is inside the loop: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn findfirst_in_compound_if_begin_body_of_do_loop_is_flagged() {
+        // The single-statement body of `for … do` opens with a compound
+        // statement (`if x then begin`). The first inner `;` used to pop the
+        // AwaitingBody frame prematurely, so the later FindFirst went
+        // unflagged even though it runs on every iteration.
+        let src = "codeunit 50100 Test
+{
+    procedure DoIt()
+    var
+        i: Integer;
+        x: Boolean;
+        y: Integer;
+        Item: Record Item;
+    begin
+        for i := 1 to 3 do
+            if x then begin
+                y := 1;
+                Item.FindFirst();
+            end;
+    end;
+}";
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert_eq!(
+            diags.iter().filter(|d| d.code == "AL-NL001").count(),
+            1,
+            "FindFirst inside the compound if-begin body must be flagged: {diags:?}"
+        );
+        // The compound body's `end;` also terminates the loop statement, so
+        // code after it is back outside the loop (no extra diagnostics above).
+    }
+
+    #[test]
+    fn statement_after_compound_if_begin_body_is_not_in_loop() {
+        let src = "codeunit 50100 Test
+{
+    procedure DoIt()
+    var
+        i: Integer;
+        x: Boolean;
+        y: Integer;
+        Item: Record Item;
+    begin
+        for i := 1 to 3 do
+            if x then begin
+                y := 1;
+            end;
+        Item.FindFirst();
+    end;
+}";
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert!(
+            !diags.iter().any(|d| d.code == "AL-NL001"),
+            "FindFirst after the compound body must not be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn findfirst_in_case_body_of_do_loop_is_flagged() {
+        // `case … of … end;` as the single-statement body: the branch
+        // statements' `;` must not consume the loop's AwaitingBody frame.
+        let src = "codeunit 50100 Test
+{
+    procedure DoIt()
+    var
+        i: Integer;
+        y: Integer;
+        Item: Record Item;
+    begin
+        for i := 1 to 3 do
+            case i of
+                1:
+                    y := 1;
+                2:
+                    Item.FindFirst();
+            end;
+        Item.FindLast();
+    end;
+}";
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert_eq!(
+            diags.iter().filter(|d| d.code == "AL-NL001").count(),
+            1,
+            "only the FindFirst inside the case body is in the loop: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn findfirst_in_repeat_body_of_do_loop_is_flagged() {
+        // `repeat … until …;` as the single-statement body of `for … do`.
+        let src = "codeunit 50100 Test
+{
+    procedure DoIt()
+    var
+        i: Integer;
+        Item: Record Item;
+    begin
+        for i := 1 to 3 do
+            repeat
+                Item.FindFirst();
+            until i = 3;
+        Item.FindLast();
+    end;
+}";
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert_eq!(
+            diags.iter().filter(|d| d.code == "AL-NL001").count(),
+            1,
+            "only the FindFirst inside the repeat body is in the loop: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn nested_if_begin_inside_do_begin_loop_does_not_close_loop_early() {
+        // A nested `if … then begin`'s `end;` inside a `do begin` loop body
+        // must decrement the begin counter, not pop the whole loop frame.
+        let src = "codeunit 50100 Test
+{
+    procedure DoIt()
+    var
+        i: Integer;
+        x: Boolean;
+        y: Integer;
+        Item: Record Item;
+    begin
+        for i := 1 to 3 do begin
+            if x then begin
+                y := 1;
+            end;
+            Item.FindFirst();
+        end;
+    end;
+}";
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert_eq!(
+            diags.iter().filter(|d| d.code == "AL-NL001").count(),
+            1,
+            "FindFirst is still inside the do-begin loop body: {diags:?}"
         );
     }
 

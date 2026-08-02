@@ -166,7 +166,10 @@ impl<'a> TypeResolver<'a> {
         let mut result = Vec::new();
 
         let root = self.tree.root_node();
-        self.add_self_implicit_var(root, &mut result);
+        // Like the globals/source-table lookups below, `this` is scoped to the
+        // object enclosing `position` so it cannot leak across objects in a
+        // multi-object file.
+        self.add_self_implicit_var(object, &mut result);
 
         if let Some(proc) = proc_node {
             self.collect_local_vars(proc, &mut result);
@@ -197,8 +200,10 @@ impl<'a> TypeResolver<'a> {
 
         // Collect dataitem variables from report dataset sections.
         // The tree-sitter grammar parses `dataitem(Name; "Table")` generically
-        // (as metadata_keyword + parenthesized_block), so we use text scanning.
-        self.collect_dataitem_vars(&mut result);
+        // (as metadata_keyword + parenthesized_block), so we use text scanning
+        // restricted to the enclosing object's lines (whole file only when no
+        // enclosing object is known).
+        self.collect_dataitem_vars(object, &mut result);
 
         debug!(
             line = position.line,
@@ -579,7 +584,38 @@ impl<'a> TypeResolver<'a> {
         (type_keyword, subtype)
     }
 
-    fn add_self_implicit_var(&self, _root: Node<'a>, result: &mut Vec<VariableDecl>) {
+    /// Inject the `this` implicit variable for the enclosing object.
+    ///
+    /// Scoped to `object` so `this` from one object cannot leak into a
+    /// sibling object in a multi-object file; only when no enclosing object
+    /// is known does it fall back to the file's first object declaration.
+    fn add_self_implicit_var(&self, object: Option<Node<'a>>, result: &mut Vec<VariableDecl>) {
+        if let Some(obj) = object {
+            let Some(kind_node) = obj.child_by_field_name("kind") else {
+                return;
+            };
+            let mut kind = kind_node.kind().to_string();
+            if kind == "object_keyword" {
+                if let Ok(text) = kind_node.utf8_text(self.source) {
+                    kind = text.to_lowercase();
+                }
+            } else {
+                kind = kind.strip_prefix("kw_").unwrap_or(&kind).to_string();
+            }
+            let Some(name) = super::extract_object_name(obj, self.source) else {
+                return;
+            };
+            result.push(VariableDecl {
+                name: "this".to_string(),
+                type_name: object_kind_to_al_type(&kind),
+                type_subtype: Some(name),
+                is_var: false,
+                scope: VariableScope::SelfImplicit,
+                range: obj.range(),
+            });
+            return;
+        }
+
         let Some(source) = std::str::from_utf8(self.source).ok() else {
             return;
         };
@@ -666,7 +702,48 @@ impl<'a> TypeResolver<'a> {
     fn source_table_of(&self, object: Node<'a>) -> Option<String> {
         let kind_node = object.child_by_field_name("kind")?;
         let kind = kind_node.kind();
-        if kind == "kw_table" || kind == "kw_tableextension" {
+        if kind == "kw_tableextension" {
+            // A tableextension's Rec is the *extended* table, not the
+            // extension's own name: `tableextension 50100 "My Ext" extends
+            // Customer` binds Rec to Customer. The grammar parses the
+            // `extends Customer` clause as an `implements_clause` whose first
+            // child is the `extends` keyword.
+            let mut obj_cursor = object.walk();
+            for c in object.children(&mut obj_cursor) {
+                if c.kind() != "implements_clause" {
+                    continue;
+                }
+                let mut clause_cursor = c.walk();
+                let mut is_extends = false;
+                for clause_child in c.children(&mut clause_cursor) {
+                    if !is_extends {
+                        let Ok(keyword) = clause_child.utf8_text(self.source) else {
+                            break;
+                        };
+                        if !keyword.trim().eq_ignore_ascii_case("extends") {
+                            break;
+                        }
+                        is_extends = true;
+                        continue;
+                    }
+                    if matches!(
+                        clause_child.kind(),
+                        "name" | "identifier" | "quoted_identifier" | "name_or_keyword"
+                    ) {
+                        if let Some(name) = self.node_text_clean(clause_child) {
+                            debug!(
+                                object_kind = kind,
+                                source_table = %name,
+                                "source_table_of: tableextension extends"
+                            );
+                            return Some(name);
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+        if kind == "kw_table" {
             let mut obj_cursor = object.walk();
             for c in object.children(&mut obj_cursor) {
                 match c.kind() {
@@ -728,8 +805,11 @@ impl<'a> TypeResolver<'a> {
     /// Collect dataitem variables from report `dataset` sections.
     ///
     /// Parses `dataitem(VarName; "Table Name")` patterns via text scanning since
-    /// the tree-sitter grammar doesn't have specific dataitem node types.
-    fn collect_dataitem_vars(&self, result: &mut Vec<VariableDecl>) {
+    /// the tree-sitter grammar doesn't have specific dataitem node types. The
+    /// scan is limited to the lines of `object` (the enclosing object) so
+    /// dataitem variables cannot leak across objects in a multi-object file;
+    /// only when no enclosing object is known is the whole file scanned.
+    fn collect_dataitem_vars(&self, object: Option<Node<'a>>, result: &mut Vec<VariableDecl>) {
         let text = match std::str::from_utf8(self.source) {
             Ok(t) => t,
             Err(_) => return,
@@ -763,7 +843,14 @@ impl<'a> TypeResolver<'a> {
             }
         }
 
+        let row_bounds = object.map(|obj| (obj.start_position().row, obj.end_position().row));
+
         for (line_idx, line) in text.lines().enumerate() {
+            if let Some((first_row, last_row)) = row_bounds {
+                if line_idx < first_row || line_idx > last_row {
+                    continue;
+                }
+            }
             let trimmed = line.trim();
             let trimmed_lower = trimmed.to_ascii_lowercase();
             if !trimmed_lower.starts_with("dataitem(") {
@@ -1355,6 +1442,115 @@ codeunit 50101 MyCodeunit
             resolver.resolve_type("CuGlobal", table_pos).is_none(),
             "the codeunit's global must not leak into the table"
         );
+    }
+
+    #[test]
+    fn multi_object_file_scopes_this_and_dataitem_vars_to_the_enclosing_object() {
+        let src = r#"report 50100 FirstReport
+{
+    dataset
+    {
+        dataitem(CustItem; Customer)
+        {
+        }
+    }
+}
+
+codeunit 50101 SecondUnit
+{
+    procedure DoSomething()
+    begin
+    end;
+}"#;
+        let (tree, text) = parse(src);
+        let resolver = TypeResolver::new(&tree, &text);
+
+        // Inside the codeunit's procedure body.
+        let cu_pos = Position {
+            line: 14,
+            character: 4,
+        };
+        assert!(
+            resolver.resolve_type("CustItem", cu_pos).is_none(),
+            "the report's dataitem variable must not leak into the codeunit"
+        );
+        let this_decl = resolver
+            .resolve_type("this", cu_pos)
+            .expect("this resolves inside the codeunit");
+        assert_eq!(this_decl.scope, VariableScope::SelfImplicit);
+        assert_eq!(this_decl.type_name, "Codeunit");
+        assert_eq!(
+            this_decl.type_subtype,
+            Some("SecondUnit".to_string()),
+            "this must name the enclosing object, not the file's first object"
+        );
+
+        // Inside the report both still resolve to the report's own bindings.
+        let report_pos = Position {
+            line: 4,
+            character: 8,
+        };
+        let dataitem = resolver
+            .resolve_type("CustItem", report_pos)
+            .expect("dataitem variable resolves inside its own report");
+        assert_eq!(dataitem.type_name, "Record");
+        assert_eq!(dataitem.type_subtype, Some("Customer".to_string()));
+        let report_this = resolver
+            .resolve_type("this", report_pos)
+            .expect("this resolves inside the report");
+        assert_eq!(report_this.type_subtype, Some("FirstReport".to_string()));
+    }
+
+    #[test]
+    fn rec_in_tableextension_resolves_to_extended_table() {
+        let src = r#"tableextension 50100 "My Ext" extends Customer
+{
+    procedure DoSomething()
+    begin
+        Rec.Name := '';
+    end;
+}"#;
+        let (tree, text) = parse(src);
+        let resolver = TypeResolver::new(&tree, &text);
+
+        let rec = resolver
+            .resolve_type(
+                "Rec",
+                Position {
+                    line: 4,
+                    character: 8,
+                },
+            )
+            .expect("Rec resolves inside the tableextension");
+        assert_eq!(rec.type_name, "Record");
+        assert_eq!(
+            rec.type_subtype,
+            Some("Customer".to_string()),
+            "Rec must bind to the extended table, not the extension's own name"
+        );
+    }
+
+    #[test]
+    fn rec_in_tableextension_with_quoted_extends_target() {
+        let src = r#"tableextension 50101 MyExt2 extends "Sales Header"
+{
+    procedure DoSomething()
+    begin
+    end;
+}"#;
+        let (tree, text) = parse(src);
+        let resolver = TypeResolver::new(&tree, &text);
+
+        let rec = resolver
+            .resolve_type(
+                "Rec",
+                Position {
+                    line: 3,
+                    character: 4,
+                },
+            )
+            .expect("Rec resolves inside the tableextension");
+        assert_eq!(rec.type_subtype, Some("Sales Header".to_string()));
     }
 
     #[test]

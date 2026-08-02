@@ -620,6 +620,59 @@ codeunit 50100 T
     }
 
     #[test]
+    fn var_and_protected_var_blocks_hoist_together_in_source_order() {
+        // An object may legally declare both a `protected var` and a plain
+        // `var` block. Both must hoist above triggers/procedures as a unit,
+        // preserving their relative source order (protected-first here).
+        let input = "\
+codeunit 50100 T
+{
+    procedure Zebra()
+    begin
+    end;
+
+    protected var
+        SharedState: Integer;
+
+    procedure Alpha()
+    begin
+    end;
+
+    var
+        PrivateState: Integer;
+}
+";
+        let out = sort_members(input).expect("should sort");
+        assert_eq!(content_multiset(input), content_multiset(&out), "{out}");
+
+        let pv = out.find("protected var").expect("protected var present");
+        let plain = out.find("\n    var").expect("plain var present") + 1;
+        let alpha = out.find("procedure Alpha").expect("Alpha present");
+        let zebra = out.find("procedure Zebra").expect("Zebra present");
+
+        assert!(
+            pv < plain,
+            "blocks must keep their relative source order (protected first):\n{out}"
+        );
+        assert!(
+            plain < alpha && plain < zebra,
+            "both var blocks must hoist above every procedure:\n{out}"
+        );
+        assert!(
+            out[pv..plain].contains("SharedState: Integer;"),
+            "protected var must keep its declarations:\n{out}"
+        );
+        assert!(
+            out[plain..alpha.min(zebra)].contains("PrivateState: Integer;"),
+            "plain var must keep its declarations:\n{out}"
+        );
+        assert!(
+            alpha < zebra,
+            "procedures still sort alphabetically:\n{out}"
+        );
+    }
+
+    #[test]
     fn internal_local_procedure_is_a_member_start() {
         let input = "\
 codeunit 50100 T
