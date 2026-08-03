@@ -975,16 +975,16 @@ impl SymbolReferenceJson {
     }
 }
 
-/// Merge Option-typed field/parameter candidates into synthetic pseudo-enum
-/// entries, one per field name.
+/// Turn Option-typed field/parameter candidates into synthetic pseudo-enum
+/// entries, one per `(object_kind, object_name, field_name)` candidate.
 ///
-/// Candidates are keyed by `(object_kind, object_name, field_name)` while
-/// collecting, but type resolution looks entries up by *field name* alone, so
-/// same-named candidates from different objects must not become several
-/// same-named entries that resolve arbitrarily. Instead, one entry is emitted
-/// per field name with the deterministic union of every candidate's members
-/// (iteration over a sorted key list keeps the output stable). A real enum of
-/// the same name declared anywhere in the package suppresses the synthetic.
+/// Same-named candidates from different objects deliberately stay separate
+/// entries (they are distinct Option types in AL, and the symbols corpus
+/// contract requires every object's member set to remain visible under the
+/// shared name) — `get_by_name` returns all of them, and it is the
+/// caller's/resolver's job to pick contextually. Iteration over a sorted key
+/// list keeps the output deterministic. A real enum of the same name declared
+/// anywhere in the package suppresses the synthetics.
 fn synthesize_option_enums(
     package_name: &str,
     option_enums: std::collections::HashMap<(ObjectKind, String, String), Vec<String>>,
@@ -994,66 +994,39 @@ fn synthesize_option_enums(
         option_enums.into_iter().collect();
     sorted.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
 
-    let mut merged: std::collections::BTreeMap<String, (String, Vec<EnumValueSymbol>)> =
-        std::collections::BTreeMap::new();
+    let mut entries = Vec::new();
     for ((_obj_kind, _obj_name, field_name), members) in sorted {
-        let folded = field_name.to_lowercase();
-        if existing_enum_names.contains(&folded) {
+        if existing_enum_names.contains(&field_name.to_lowercase()) {
             continue;
         }
-        let (_, values) = merged
-            .entry(folded)
-            .or_insert_with(|| (field_name.clone(), Vec::new()));
-        if values.is_empty() {
-            // First candidate keeps its positional ordinals (empty Option
-            // members consume an ordinal slot in AL but produce no value).
-            values.extend(
-                members
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, member)| !member.is_empty())
-                    .map(|(i, member)| EnumValueSymbol {
-                        ordinal: i as i32,
-                        name: member.clone(),
-                    }),
-            );
-        } else {
-            // Later same-named candidates append their distinct members after
-            // the existing ordinals so completion sees the full union.
-            let mut next = values.iter().map(|v| v.ordinal).max().unwrap_or(-1) + 1;
-            for member in members {
-                if member.is_empty()
-                    || values
-                        .iter()
-                        .any(|existing| existing.name.to_lowercase() == member.to_lowercase())
-                {
-                    continue;
-                }
-                values.push(EnumValueSymbol {
-                    ordinal: next,
-                    name: member,
-                });
-                next += 1;
-            }
+        // Positional ordinals: empty Option members consume an ordinal slot
+        // in AL but produce no value.
+        let enum_values: Vec<EnumValueSymbol> = members
+            .iter()
+            .enumerate()
+            .filter(|(_, member)| !member.is_empty())
+            .map(|(i, member)| EnumValueSymbol {
+                ordinal: i as i32,
+                name: member.clone(),
+            })
+            .collect();
+        if enum_values.is_empty() {
+            continue;
         }
-    }
-
-    merged
-        .into_values()
-        .filter(|(_, values)| !values.is_empty())
-        .map(|(display_name, enum_values)| SymbolEntry {
+        entries.push(SymbolEntry {
             kind: ObjectKind::Enum,
             id: -1,
             // Fabricated from an Option-typed field/parameter so the
             // type resolver can complete its members — not a real AL
             // enum object. Hidden from search and browse results.
             synthetic: true,
-            name: display_name,
+            name: field_name,
             package: package_name.to_string(),
             enum_values,
             ..Default::default()
-        })
-        .collect()
+        });
+    }
+    entries
 }
 
 impl ObjectJson {
@@ -1616,12 +1589,13 @@ mod tests {
             && e.namespace == "Contoso.Sales"));
     }
 
-    /// Same-named Option fields on different objects must collapse into ONE
-    /// synthetic pseudo-enum carrying the union of all members (name-based
-    /// resolution cannot distinguish several same-named entries), and a real
-    /// enum in *any* namespace must suppress the same-named synthetic.
+    /// Same-named Option fields on different objects stay SEPARATE synthetic
+    /// pseudo-enums (they are distinct Option types, and the symbols corpus
+    /// contract requires every object's member set to remain visible under
+    /// the shared name), and a real enum in *any* namespace must suppress the
+    /// same-named synthetics.
     #[test]
-    fn synthetic_option_enums_merge_same_names_and_defer_to_real_enums_package_wide() {
+    fn synthetic_option_enums_stay_per_object_and_defer_to_real_enums_package_wide() {
         let json = r#"{
             "Tables": [
                 { "Id": 1, "Name": "Sales Order", "Fields": [
@@ -1652,20 +1626,19 @@ mod tests {
             .collect();
         assert_eq!(
             status.len(),
-            1,
-            "same-named Option fields must produce exactly one synthetic entry"
+            2,
+            "each object's same-named Option field keeps its own synthetic entry"
         );
-        let members: Vec<&str> = status[0]
-            .enum_values
+        // Entries come out in sorted (kind, object, field) order: "Purchase
+        // Order" precedes "Sales Order". Each keeps its own positional members.
+        let member_sets: Vec<Vec<&str>> = status
             .iter()
-            .map(|v| v.name.as_str())
+            .map(|e| e.enum_values.iter().map(|v| v.name.as_str()).collect())
             .collect();
-        // Candidates merge in sorted (kind, object, field) order: "Purchase
-        // Order" precedes "Sales Order", so its positional members come first.
         assert_eq!(
-            members,
-            vec!["Open", "Closed", "Released"],
-            "the synthetic entry must carry the union of every candidate's members"
+            member_sets,
+            vec![vec!["Open", "Closed"], vec!["Open", "Released"]],
+            "every object's member set must remain visible under the shared name"
         );
 
         assert!(
