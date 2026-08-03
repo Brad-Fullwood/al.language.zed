@@ -358,20 +358,30 @@ mod tests {
     }
 
     #[test]
-    fn malformed_dependency_source_is_an_internal_error_not_an_empty_event_map() {
+    fn malformed_dependency_source_degrades_per_file_instead_of_failing() {
+        // One unparsable embedded .al in a dependency package must not take
+        // down whole-workspace insight: the bad file is skipped (with a
+        // warning at index time) and the event map still builds from
+        // everything that did parse.
         let (workspace, _package) = workspace_with_malformed_dependency_source();
 
         let response = dispatch_event_map(&workspace, 90);
         assert!(
-            response.result.is_none(),
-            "an incomplete graph must never be serialized as an empty result"
+            response.error.is_none(),
+            "a skipped malformed dependency file must not fail the event map: {:?}",
+            response.error
         );
-        let error = response.error.expect("graph failure must be explicit");
-        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
-        assert!(error
-            .message
-            .contains("could not build a complete call graph"));
-        assert!(error.message.contains("did not parse cleanly"));
+        let result = response
+            .result
+            .expect("event map must be produced from the files that parsed");
+        let events = result
+            .get("events")
+            .and_then(|v| v.as_array())
+            .expect("event map result carries an events array");
+        assert!(
+            events.is_empty(),
+            "the skipped file's contents must not fabricate events: {events:?}"
+        );
     }
 
     #[test]
