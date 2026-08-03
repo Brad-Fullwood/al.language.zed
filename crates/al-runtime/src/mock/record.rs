@@ -181,6 +181,20 @@ pub struct RecordView {
     iter_pos: Option<usize>,
 }
 
+impl RecordView {
+    /// Copy another view's row buffer and `xRec` snapshot into this view,
+    /// leaving filters, sort key and cursor untouched.
+    ///
+    /// This is the by-value record parameter rule: BC hands the callee a
+    /// *copy* of the caller's buffer (so unsaved field assignments made before
+    /// the call are visible inside the procedure) while the filters and
+    /// iteration cursor start fresh and independent of the caller's.
+    pub fn copy_buffers_from(&mut self, other: &RecordView) {
+        self.current = other.current.clone();
+        self.x_rec = other.x_rec.clone();
+    }
+}
+
 /// Normalize one primary-key component so key lookup follows BC field
 /// semantics: `Code` keys are caseless (uppercased) and the Integer/Decimal
 /// numeric class unifies (an `Integer` key value matches a stored `Decimal`
@@ -431,6 +445,17 @@ impl MockRecord {
     /// Collects the matching keys once and removes them directly, so deleting
     /// n rows costs one pass over the table instead of the O(n² log n)
     /// find-first-then-delete loop. Returns the number of rows removed.
+    ///
+    /// **Cross-view iteration asymmetry (deliberate).** Unlike
+    /// [`Self::delete_in`], which preserves `iter_pos` so BC's canonical
+    /// `if FindSet then repeat Delete until Next() = 0` loop keeps stepping,
+    /// `DeleteAll` clears *this* view's `iter_set`/`iter_pos` — the whole set
+    /// is gone, so there is nothing left to step through. Other views'
+    /// snapshots are **not** touched: a concurrently iterating record variable
+    /// keeps its `iter_set` and will step over the deleted keys the same way
+    /// it steps over rows removed by `delete_in`. Reaching into every view to
+    /// prune their snapshots would be both expensive and wrong — BC's own
+    /// cursors are likewise snapshots taken at `FindSet` time.
     pub fn delete_all_in(
         &mut self,
         view: &mut RecordView,

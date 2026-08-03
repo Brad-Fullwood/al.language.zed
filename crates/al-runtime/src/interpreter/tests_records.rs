@@ -1617,6 +1617,60 @@ fn by_value_record_argument_does_not_share_the_caller_view() {
 }
 
 #[test]
+fn by_value_record_argument_carries_the_callers_buffer() {
+    // Regression: giving the callee a *fresh* view fixed the shared-filter bug
+    // but handed it an EMPTY buffer. BC passes a record by value as a copy, so
+    // unsaved field assignments made by the caller (no Insert) are visible in
+    // the callee — while its filters/cursor stay independent.
+    let cu = r#"codeunit 50103 "Num Tests"
+{
+    procedure ReadCopiedBuffer(Num: Record "Num"): Decimal
+    begin
+        // The callee's own filter must not leak back to the caller.
+        Num.SetRange("Entry No.", 9, 9);
+        exit(Num."Entry No." + Num.Amount);
+    end;
+
+    procedure ByValuePassesBuffer(): Integer
+    var
+        Num: Record "Num";
+        Copied: Decimal;
+        i: Integer;
+    begin
+        for i := 1 to 10 do begin
+            Num.Init();
+            Num."Entry No." := i;
+            Num.Insert();
+        end;
+        Num.SetRange("Entry No.", 1, 4);
+        // Buffer values that were never written to the table.
+        Num.Init();
+        Num."Entry No." := 42;
+        Num.Amount := 8;
+        Copied := ReadCopiedBuffer(Num);
+        if Copied <> 50 then
+            Error('callee saw buffer %1, expected 50', Copied);
+        if Num."Entry No." <> 42 then
+            Error('the caller buffer must be untouched, got %1', Num."Entry No.");
+        exit(Num.Count());
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Num.al", NUM_TABLE), ("/ws/NumTests.al", cu)],
+        "Num Tests",
+        "ByValuePassesBuffer",
+        vec![],
+    );
+    assert_eq!(
+        ok(r),
+        Value::Integer(4),
+        "the by-value copy carries the caller's buffer, and its SetRange must not touch the \
+         caller's filters"
+    );
+}
+
+#[test]
 fn deleteall_removes_only_filtered_rows() {
     let cu = r#"codeunit 50103 "Num Tests"
 {

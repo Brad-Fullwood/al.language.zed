@@ -139,6 +139,25 @@ mod tests {
         assert_eq!(strip_json_comments(input), input);
     }
 
+    /// A `"` inside a block comment is comment text, not the start of a
+    /// string. If the scanner toggled `in_string` on it, an odd number of
+    /// quotes inside comments would desynchronise the rest of the document —
+    /// every later `//`, `/*` and trailing comma would be misclassified.
+    #[test]
+    fn quotes_inside_block_comments_do_not_desynchronise_string_state() {
+        let input = concat!(
+            "{\n",
+            "  /* the user's \"note\" — one unbalanced \" here */\n",
+            "  \"key\": \"value\", // trailing \" quote in a line comment\n",
+            "}"
+        );
+        let result = strip_json_comments(input);
+        assert!(!result.contains("note"), "block comment must be stripped");
+        assert!(!result.contains("//"), "line comment must be stripped");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["key"], "value");
+    }
+
     #[test]
     fn unterminated_block_comment_consumes_to_end_without_panicking() {
         let input = "{ \"key\": 1 } /* dangling";

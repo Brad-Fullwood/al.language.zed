@@ -203,10 +203,18 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
 
     let mut searched = Vec::new();
     // A malformed `app.json` in the *start* directory is the user's own
-    // project and stays a hard error. A malformed manifest anywhere else on
-    // the walk (an unrelated `$HOME/app.json`, a broken sibling project) must
-    // not hide a perfectly valid project further along the search; those are
-    // recorded and only reported if nothing valid is found.
+    // project and stays a hard error. A malformed manifest elsewhere *inside*
+    // the start directory's subtree (a broken child project) must not hide a
+    // perfectly valid project found later in the walk, so it is recorded and
+    // only reported if nothing valid turns up.
+    //
+    // Manifests **above** the start directory are a different matter: an
+    // unrelated stray `$HOME/app.json` has nothing to do with this workspace.
+    // Deferring its error made discovery answer `InvalidAppJson` where the
+    // truthful answer is `NoProjectFound` — and the workspace's syntax-only
+    // fallback only special-cases `NoProjectFound`, so a junk file in a parent
+    // directory could break opening any non-AL folder. Ancestor failures stay
+    // warn-only.
     let mut deferred_error: Option<DiscoveryError> = None;
     let try_dir = |dir: &Path,
                    deferred_error: &mut Option<DiscoveryError>|
@@ -220,7 +228,9 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
                     %error,
                     "skipping directory with unloadable app.json during project discovery"
                 );
-                deferred_error.get_or_insert(error);
+                if dir.starts_with(&start) {
+                    deferred_error.get_or_insert(error);
+                }
                 Ok(None)
             }
         }
@@ -684,6 +694,25 @@ mod tests {
             find_project(&start2),
             Err(DiscoveryError::InvalidAppJson { .. })
         ));
+    }
+
+    /// A stray malformed `app.json` *above* the start directory (the classic
+    /// `$HOME/app.json`) belongs to no project of ours. When the start
+    /// directory holds no AL project at all, discovery must still report
+    /// `NoProjectFound` — the workspace's syntax-only fallback keys off that
+    /// variant, and reporting `InvalidAppJson` instead made opening any plain
+    /// folder below such a stray file fail outright.
+    #[test]
+    fn find_project_ignores_malformed_ancestor_manifest_when_nothing_is_found() {
+        let tmp = tempdir();
+        std::fs::write(tmp.join("app.json"), "{ not json at all").unwrap();
+        let start = tmp.join("just-some-folder");
+        std::fs::create_dir_all(start.join("src")).unwrap();
+
+        match find_project(&start) {
+            Err(DiscoveryError::NoProjectFound { .. }) => {}
+            other => panic!("expected NoProjectFound, got {other:?}"),
+        }
     }
 
     /// Dangling `.app` symlinks (or symlinks to directories) must be skipped

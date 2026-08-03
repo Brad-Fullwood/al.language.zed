@@ -3,7 +3,7 @@
 //! Provides fast lookup by name, object kind+ID, and substring search
 //! across all loaded packages.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -154,6 +154,62 @@ fn complete_package_batch<T>(
         .into_iter()
         .map(|result| result.expect("failures were checked above"))
         .collect())
+}
+
+/// One `.app` parsed through the disk cache: `(path, package, from_cache)`.
+type CachedPackageLoad = Result<(PathBuf, SymbolPackage, bool), PackageLoadFailure>;
+
+/// Load one `.app`, preferring the on-disk symbol cache and repopulating it on
+/// a miss.
+///
+/// The three cached entry points ([`SymbolIndex::load_packages_cached`],
+/// [`SymbolIndex::load_packages_cached_lenient`] and
+/// [`SymbolIndex::replace_packages_cached`]) had byte-identical copies of this
+/// body and differed only in what they do with the failures afterwards. Keep
+/// the caching/prewarm policy in exactly one place so the three paths cannot
+/// drift apart.
+fn load_package_via_cache(path: &Path, cache: &super::cache::SymbolCache) -> CachedPackageLoad {
+    if let Some(pkg) = cache.load(path) {
+        prewarm_source_index(path);
+        return Ok((path.to_path_buf(), pkg, true));
+    }
+
+    match app_reader::read_app_file(path) {
+        Ok(pkg) => {
+            prewarm_source_index(path);
+            debug!(
+                name = %pkg.name,
+                objects = pkg.objects.len(),
+                path = %path.display(),
+                "Loaded package (cache miss)"
+            );
+            if let Err(error) = cache.save(path, &pkg) {
+                warn!(path = %path.display(), %error, "Failed to save to cache");
+            }
+            Ok((path.to_path_buf(), pkg, false))
+        }
+        Err(error) => Err(PackageLoadFailure {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }),
+    }
+}
+
+/// Parse a whole batch of `.app` files in parallel through the disk cache.
+///
+/// ZIP/JSON decoding is the expensive part and is embarrassingly parallel;
+/// callers apply the results to the shared indexes sequentially, in input
+/// order, so indexing stays deterministic.
+fn load_package_batch_via_cache(
+    paths: &[impl AsRef<Path> + Sync],
+    cache: &super::cache::SymbolCache,
+) -> Vec<CachedPackageLoad> {
+    use rayon::prelude::*;
+
+    paths
+        .par_iter()
+        .map(|path| load_package_via_cache(path.as_ref(), cache))
+        .collect()
 }
 
 fn prewarm_source_index(path: &Path) {
@@ -492,11 +548,18 @@ impl SymbolIndex {
     }
 
     /// Count source representations for every object in one package.
+    ///
+    /// The `.app` path is resolved **once** for the whole package rather than
+    /// per entry: [`Self::app_path`] scans every `app_paths` record with a
+    /// `min_by`, so calling it inside the loop made this O(entries × packages)
+    /// on a workspace with a full BC symbol set. Every entry in the bucket
+    /// shares the package key, so one lookup is also the correct one.
     pub fn package_source_availability(&self, package: &str) -> SourceAvailabilitySummary {
         let mut summary = SourceAvailabilitySummary::default();
+        let app_path = self.app_path(package);
         if let Some(entries) = self.by_package.get(&fold_name(package)) {
             for symbol in entries.value() {
-                summary.record(self.source_availability(symbol));
+                summary.record(source_availability::classify(symbol, app_path.as_deref()));
             }
         }
         summary
@@ -552,40 +615,8 @@ impl SymbolIndex {
         paths: &[impl AsRef<Path> + Sync],
         cache: &super::cache::SymbolCache,
     ) -> Result<Vec<SymbolPackage>, PackageLoadError> {
-        use rayon::prelude::*;
-
         cache.gc_once();
-        let parsed: Vec<_> = paths
-            .par_iter()
-            .map(|path| {
-                let path = path.as_ref();
-
-                if let Some(pkg) = cache.load(path) {
-                    prewarm_source_index(path);
-                    return Ok((path.to_path_buf(), pkg, true));
-                }
-
-                match app_reader::read_app_file(path) {
-                    Ok(pkg) => {
-                        prewarm_source_index(path);
-                        debug!(
-                            name = %pkg.name,
-                            objects = pkg.objects.len(),
-                            "Loaded package (cache miss)"
-                        );
-                        if let Err(e) = cache.save(path, &pkg) {
-                            warn!(path = %path.display(), error = %e, "Failed to save to cache");
-                        }
-                        Ok((path.to_path_buf(), pkg, false))
-                    }
-                    Err(error) => Err(PackageLoadFailure {
-                        path: path.to_path_buf(),
-                        message: error.to_string(),
-                    }),
-                }
-            })
-            .collect();
-        let parsed = complete_package_batch(parsed)?;
+        let parsed = complete_package_batch(load_package_batch_via_cache(paths, cache))?;
 
         let mut results = Vec::with_capacity(parsed.len());
         for (path, pkg, from_cache) in parsed {
@@ -604,34 +635,8 @@ impl SymbolIndex {
         paths: &[impl AsRef<Path> + Sync],
         cache: &super::cache::SymbolCache,
     ) -> (Vec<SymbolPackage>, Vec<PackageLoadFailure>) {
-        use rayon::prelude::*;
-
         cache.gc_once();
-        let parsed: Vec<_> = paths
-            .par_iter()
-            .map(|path| {
-                let path = path.as_ref();
-
-                if let Some(pkg) = cache.load(path) {
-                    prewarm_source_index(path);
-                    return Ok((path.to_path_buf(), pkg, true));
-                }
-
-                match app_reader::read_app_file(path) {
-                    Ok(pkg) => {
-                        prewarm_source_index(path);
-                        if let Err(error) = cache.save(path, &pkg) {
-                            warn!(path = %path.display(), %error, "Failed to save to cache");
-                        }
-                        Ok((path.to_path_buf(), pkg, false))
-                    }
-                    Err(error) => Err(PackageLoadFailure {
-                        path: path.to_path_buf(),
-                        message: error.to_string(),
-                    }),
-                }
-            })
-            .collect();
+        let parsed = load_package_batch_via_cache(paths, cache);
 
         let mut results = Vec::new();
         let mut failures = Vec::new();
@@ -656,33 +661,8 @@ impl SymbolIndex {
         paths: &[impl AsRef<Path> + Sync],
         cache: &super::cache::SymbolCache,
     ) -> Result<Vec<SymbolPackage>, PackageLoadError> {
-        use rayon::prelude::*;
-
         cache.gc_once();
-        let parsed: Vec<_> = paths
-            .par_iter()
-            .map(|path| {
-                let path = path.as_ref();
-                if let Some(pkg) = cache.load(path) {
-                    prewarm_source_index(path);
-                    return Ok((path.to_path_buf(), pkg, true));
-                }
-                match app_reader::read_app_file(path) {
-                    Ok(pkg) => {
-                        prewarm_source_index(path);
-                        if let Err(error) = cache.save(path, &pkg) {
-                            warn!(path = %path.display(), %error, "Failed to save to cache");
-                        }
-                        Ok((path.to_path_buf(), pkg, false))
-                    }
-                    Err(error) => Err(PackageLoadFailure {
-                        path: path.to_path_buf(),
-                        message: error.to_string(),
-                    }),
-                }
-            })
-            .collect();
-        let parsed = complete_package_batch(parsed)?;
+        let parsed = complete_package_batch(load_package_batch_via_cache(paths, cache))?;
 
         self.clear_loaded_packages();
         let mut results = Vec::with_capacity(parsed.len());

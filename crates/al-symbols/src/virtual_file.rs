@@ -166,12 +166,31 @@ fn self_exe_mtime() -> Option<std::time::SystemTime> {
 const MAX_VIRTUAL_FILE_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Run [`gc_cache`] at most once per process, best-effort.
+///
+/// The sweep is dispatched to a detached background thread: it walks every
+/// package directory under the cache root with a `stat` per entry, and the
+/// caller is on the latency path of a user's "go to definition" into package
+/// source. Nothing waits on the result — every deleted entry is regenerated on
+/// demand, so a sweep that is still running (or never finishes because the
+/// process exits first) is harmless.
+///
+/// The `GC_RAN` guard is claimed on the *calling* thread, so concurrent
+/// callers still spawn at most one sweep. Tests exercise [`gc_cache`] directly
+/// rather than going through this wrapper.
 fn gc_cache_once(cache_root: &Path) {
     static GC_RAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if GC_RAN.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    gc_cache(cache_root, MAX_VIRTUAL_FILE_AGE);
+    let cache_root = cache_root.to_path_buf();
+    if let Err(error) = std::thread::Builder::new()
+        .name("al-virtual-file-gc".into())
+        .spawn(move || gc_cache(&cache_root, MAX_VIRTUAL_FILE_AGE))
+    {
+        // Cannot spawn (thread limit reached): skip the sweep entirely rather
+        // than blocking the request that triggered it.
+        tracing::debug!(%error, "virtual file cache GC: could not spawn sweep thread");
+    }
 }
 
 /// Delete stale virtual source files (and leftover temp files) under the

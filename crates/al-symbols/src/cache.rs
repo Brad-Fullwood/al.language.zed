@@ -298,6 +298,15 @@ impl SymbolCache {
     ///
     /// Package loaders call this on their initialization paths; a per-process
     /// guard keeps repeated reloads from rescanning the cache directory.
+    ///
+    /// **The guard is process-wide, not per cache directory.** The static
+    /// `GC_RAN` flag is shared by every `SymbolCache` instance, so the first
+    /// caller wins and a second cache rooted at a *different* directory is
+    /// never garbage-collected in that process. That is deliberate: production
+    /// uses the single [`Self::default_location`] directory, and GC is a
+    /// best-effort housekeeping sweep rather than a correctness requirement.
+    /// Tests (and anything that really does need a second directory swept)
+    /// must call [`Self::gc`] directly.
     pub fn gc_once(&self) {
         static GC_RAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if GC_RAN.swap(true, std::sync::atomic::Ordering::SeqCst) {

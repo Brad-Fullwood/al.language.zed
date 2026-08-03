@@ -315,9 +315,22 @@ fn search_dotnet_tool_store(store: &Path) -> Result<Option<AlToolchain>, Discove
             .then_with(|| b.cmp(a))
     });
 
+    // Tolerate a failing package directory: an incomplete/unreadable AL package
+    // (a half-finished `dotnet tool` install, a truncated payload) must not
+    // abort the scan and hide a complete toolchain in a later, older package
+    // directory. Errors are logged and the walk continues; the first success
+    // still wins immediately.
     for pkg_dir in package_dirs {
-        if let Some(tc) = search_dir_recursive(&pkg_dir)? {
-            return Ok(Some(tc));
+        match search_dir_recursive(&pkg_dir) {
+            Ok(Some(tc)) => return Ok(Some(tc)),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::debug!(
+                    path = %pkg_dir.display(),
+                    %error,
+                    "skipping unusable dotnet tool-store package directory"
+                );
+            }
         }
     }
 
@@ -786,6 +799,45 @@ mod tests {
             .expect("tool-store search failed")
             .expect("expected AL package");
         assert_eq!(tc.alc, leaf.join(ALC_DLL));
+    }
+
+    /// A package directory whose recursive scan fails (an `alc.dll` without
+    /// the companion `code_analysis.dll` — a half-finished install) must not
+    /// abort the whole tool-store walk: the complete toolchain in the next
+    /// package directory still has to be found.
+    #[test]
+    fn search_dotnet_tool_store_skips_failing_package_dir_for_a_later_complete_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join(".store");
+        std::fs::create_dir_all(&store).unwrap();
+
+        // Sorted first (newest): an incomplete package — `alc.dll` present but
+        // `code_analysis.dll` missing, so `search_dir_recursive` returns Err.
+        let broken = store.join(format!(
+            "{DOTNET_TOOL_PACKAGE_PREFIX}.99.0/tools/net8.0/any"
+        ));
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join(ALC_DLL), b"").unwrap();
+
+        // Sorted second (older): a complete toolchain.
+        let good = store.join(format!(
+            "{DOTNET_TOOL_PACKAGE_PREFIX}.17.0/tools/net8.0/any"
+        ));
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(good.join(ALC_DLL), b"").unwrap();
+        std::fs::write(good.join(CODE_ANALYSIS_DLL), b"").unwrap();
+
+        // Sanity: the broken package really does make the per-dir scan fail.
+        assert!(
+            search_dir_recursive(&store.join(format!("{DOTNET_TOOL_PACKAGE_PREFIX}.99.0")))
+                .is_err(),
+            "test setup: the incomplete package dir must produce an error"
+        );
+
+        let tc = search_dotnet_tool_store(&store)
+            .expect("an incomplete package dir must not abort the tool-store scan")
+            .expect("the complete toolchain in the later package dir must be found");
+        assert_eq!(tc.alc, good.join(ALC_DLL));
     }
 
     /// Multiple tool-store package directories matching the AL prefix must be

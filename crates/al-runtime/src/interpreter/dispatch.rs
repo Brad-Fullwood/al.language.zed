@@ -681,12 +681,12 @@ fn dispatch_workspace_procedure(
             // it the caller's buffer but its own filters/cursor. `RecordValue`
             // is `Clone` and carries the caller's view `handle`, so keeping it
             // would alias the caller's view and let the callee's SetRange/Next
-            // corrupt the caller's filters. Reset it so `record_binding` mints
-            // a fresh view on first access; `var` parameters keep the shared
-            // handle (by-reference semantics).
+            // corrupt the caller's filters. Fork a fresh view seeded with the
+            // caller's buffer instead; `var` parameters keep the shared handle
+            // (by-reference semantics).
             if !param.is_var {
                 if let Value::Record(rv) = &mut val {
-                    rv.handle = None;
+                    crate::interpreter::records::fork_record_for_by_value(ctx, rv);
                 }
             }
             // Coerce an integer argument to the parameter's declared width so a
@@ -1892,12 +1892,26 @@ fn builtin_workdate(args: &[Value], ctx: &mut DispatchCtx) -> Eval {
 }
 
 /// Advance the deterministic LCG one step and return 31 usable state bits.
+/// LCG multiplier/increment (Knuth's MMIX constants). A 64-bit state needs a
+/// 64-bit multiplier: the classic 32-bit `214_013` left the high half of the
+/// state near-zero for the first several steps.
+const LCG_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
+const LCG_INCREMENT: u64 = 1_442_695_040_888_963_407;
+
+/// Advance the LCG and return 31 bits taken from the **top** of the state.
+///
+/// A power-of-two-modulus LCG has notoriously short cycles in its low-order
+/// bits (bit *k* repeats with period `2^(k+1)`). `Random(n)` reduces the raw
+/// value modulo `n`, which reads exactly those low bits — so a small `n` used
+/// to ride a very short cycle (`Random(2)` alternating, and so on). Taking the
+/// high bits of the state gives every output bit the full period. The
+/// generator stays fully deterministic: same seed, same sequence.
 fn lcg_step(ctx: &mut DispatchCtx) -> u64 {
     ctx.random_state = ctx
         .random_state
-        .wrapping_mul(214_013)
-        .wrapping_add(2_531_011);
-    (ctx.random_state >> 16) & 0x7FFF_FFFF
+        .wrapping_mul(LCG_MULTIPLIER)
+        .wrapping_add(LCG_INCREMENT);
+    ctx.random_state >> 33
 }
 
 /// Combine two deterministic LCG steps into the next raw value in
@@ -2982,7 +2996,12 @@ mod tests {
             .into_value()
             .is_some());
         assert!(matches!(
-            dispatch_call(None, "Randomize", vec![Value::Integer(1)], &mut b),
+            dispatch_call(
+                None,
+                "Randomize",
+                vec![Value::Integer(DEFAULT_RANDOM_SEED as i64)],
+                &mut b
+            ),
             Eval::Normal(_)
         ));
         let fresh = seq(&mut ctx());
@@ -3020,6 +3039,41 @@ mod tests {
         assert!(
             max_seen > 0x8000,
             "Random({n}) never exceeded 15 bits (max seen {max_seen}); the raw generator is too narrow"
+        );
+    }
+
+    /// `Random(n)` reduces the raw value modulo `n`, so it reads the raw
+    /// value's *low* bits. Taking those straight off the LCG state gave small
+    /// `n` a pathologically short cycle (`Random(2)` strictly alternating).
+    /// The output must be drawn from the state's high bits instead.
+    #[test]
+    fn small_random_does_not_ride_a_short_low_bit_cycle() {
+        let mut ctx = ctx();
+        let draws: Vec<i64> = (0..64)
+            .map(|_| {
+                match ok(dispatch_call(
+                    None,
+                    "Random",
+                    vec![Value::Integer(2)],
+                    &mut ctx,
+                )) {
+                    Value::Integer(v) => v,
+                    other => panic!("Random must return Integer, got {other:?}"),
+                }
+            })
+            .collect();
+        assert!(
+            draws.iter().all(|v| (1..=2).contains(v)),
+            "Random(2) must stay in 1..=2, got {draws:?}"
+        );
+        assert!(
+            draws.contains(&1) && draws.contains(&2),
+            "Random(2) must produce both values, got {draws:?}"
+        );
+        let alternating = draws.windows(2).all(|pair| pair[0] != pair[1]);
+        assert!(
+            !alternating,
+            "Random(2) alternated for 64 draws — the output still rides the LCG's low bit"
         );
     }
 

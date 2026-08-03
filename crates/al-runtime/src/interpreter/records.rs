@@ -180,6 +180,41 @@ pub(crate) fn record_binding(
     Some((table_name, handle))
 }
 
+/// Give a by-value record argument its own view, seeded from the caller's
+/// buffer.
+///
+/// BC passes a record by value as a *copy*: the callee sees the caller's
+/// current row buffer (and `xRec`) — including field assignments made without
+/// an `Insert` — but gets independent filters, sort key and iteration cursor,
+/// so a `SetRange`/`Next` inside the procedure cannot disturb the caller.
+/// Simply clearing the handle produced the independence but lost the buffer;
+/// simply keeping it shared the caller's filters. This mints a fresh handle
+/// and copies only the buffers across.
+///
+/// `var` (by-reference) parameters must keep the caller's handle and never
+/// reach this function.
+pub(crate) fn fork_record_for_by_value(ctx: &mut DispatchCtx, rv: &mut RecordValue) {
+    // No handle means the caller never touched the record: there is no buffer
+    // to copy and the callee will mint its own view on first access.
+    let Some(caller_handle) = rv.handle.take() else {
+        return;
+    };
+    let key = key_for(&rv.table_name);
+    ctx.next_record_handle += 1;
+    let handle = ctx.next_record_handle;
+    let Some(store) = ctx.records.get_mut(&key) else {
+        // The table was never materialized, so there is no view state to copy.
+        // Leave the handle cleared; the callee allocates its own on demand.
+        return;
+    };
+    let mut view = store.record.new_view();
+    if let Some(caller_view) = store.views.get(&caller_handle) {
+        view.copy_buffers_from(caller_view);
+    }
+    store.put_view(handle, view);
+    rv.handle = Some(handle);
+}
+
 /// Locate and parse a workspace table object's metadata by name.
 fn load_table_meta(
     source: &dyn al_types::ProcedureSource,

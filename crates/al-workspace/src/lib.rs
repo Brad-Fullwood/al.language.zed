@@ -52,6 +52,12 @@ struct DependencySourceCache {
     /// `(canonical app path, byte length, modified time)` in stable order.
     fingerprint: DependencyFingerprint,
     index: Arc<FileIndex>,
+    /// Embedded `.al` files this generation had to skip — one that did not
+    /// parse cleanly, or one without an object declaration. Indexing degrades
+    /// per file, so a non-zero count is the only signal that dependency-backed
+    /// navigation is incomplete; it is kept with the generation rather than
+    /// only written to the log.
+    skipped_files: usize,
 }
 
 /// A synchronization failure that makes workspace state unsafe to inspect.
@@ -355,6 +361,20 @@ impl Workspace {
             .map(|(_, index)| index)
     }
 
+    /// How many embedded `.al` files the current dependency-source generation
+    /// had to skip (unparseable or declaration-free).
+    ///
+    /// Building the index degrades per file, so a non-zero count means
+    /// dependency-backed navigation and call-graph edges are incomplete.
+    /// Returns `None` when no generation has been built yet.
+    pub fn dependency_source_skipped_files(&self) -> Result<Option<usize>, DependencySourceError> {
+        let cache = self
+            .dependency_source_index
+            .read()
+            .map_err(|_| WorkspaceStateError::poisoned("dependency_source_index"))?;
+        Ok(cache.as_ref().map(|cache| cache.skipped_files))
+    }
+
     fn get_or_build_dependency_source_generation(
         &self,
     ) -> Result<(DependencyFingerprint, Arc<FileIndex>), DependencySourceError> {
@@ -384,6 +404,7 @@ impl Workspace {
         }
 
         let index = Arc::new(FileIndex::new());
+        let mut skipped_files = 0usize;
         for (app_path, _, _) in &fingerprint {
             let source_index =
                 al_symbols::source_index::get_or_build(app_path).map_err(|source| {
@@ -426,6 +447,7 @@ impl Workspace {
                         details = %details,
                         "dependency source index: skipping embedded AL that does not parse cleanly"
                     );
+                    skipped_files += 1;
                     continue;
                 }
                 if al_syntax::find_object_declaration(&parsed.tree, &source).is_none() {
@@ -434,6 +456,7 @@ impl Workspace {
                         archive_path = %archive_path,
                         "dependency source index: skipping declaration-free embedded AL"
                     );
+                    skipped_files += 1;
                     continue;
                 }
                 index.add_file_with_tree(
@@ -446,12 +469,14 @@ impl Workspace {
         tracing::info!(
             packages = fingerprint.len(),
             source_files = index.len(),
+            skipped_files,
             "dependency AL source index ready"
         );
         let index_for_return = Arc::clone(&index);
         *cache = Some(DependencySourceCache {
             fingerprint: fingerprint.clone(),
             index,
+            skipped_files,
         });
         Ok((fingerprint, index_for_return))
     }
@@ -1307,6 +1332,11 @@ mod workspace_lifecycle_tests {
             1,
             "only the parsable embedded source is indexed"
         );
+        assert_eq!(
+            workspace.dependency_source_skipped_files().unwrap(),
+            Some(1),
+            "the degraded generation must report the file it had to skip"
+        );
 
         // Repairing the package (fingerprint change) picks the file back up.
         std::fs::write(
@@ -1347,6 +1377,11 @@ mod workspace_lifecycle_tests {
                 .index
                 .len(),
             2
+        );
+        assert_eq!(
+            workspace.dependency_source_skipped_files().unwrap(),
+            Some(0),
+            "a repaired package leaves nothing skipped"
         );
     }
 

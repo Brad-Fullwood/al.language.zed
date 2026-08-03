@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use super::index::SymbolIndex;
+use super::index::{fold_name, SymbolIndex};
 use super::model::{ComposedObject, ObjectKind, SymbolEntry};
 
 /// Get a composed view of an object by merging the base with all extensions.
@@ -44,7 +44,9 @@ pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option
         let b_workspace = is_workspace_entry(b);
         b_workspace
             .cmp(&a_workspace)
-            .then_with(|| a.package.to_lowercase().cmp(&b.package.to_lowercase()))
+            // Fold through the index's canonical helper so this tiebreak can
+            // never disagree with the name-keyed maps it mirrors.
+            .then_with(|| fold_name(&a.package).cmp(&fold_name(&b.package)))
             .then_with(|| a.id.cmp(&b.id))
     });
     let base: Arc<SymbolEntry> = candidates.into_iter().next()?;

@@ -149,19 +149,32 @@ fn line_range(text: &str, line_idx: usize, _line: &str) -> Range {
 /// by the formatter and sorter: otherwise an inline comment, a quoted field
 /// name, or a carried block comment can masquerade as executable code.
 pub(crate) fn mask_non_code(line: &str, in_block_comment: bool) -> (String, bool) {
+    mask_line(line, in_block_comment, |span| {
+        span.kind == crate::lexical::SpanKind::Code
+    })
+}
+
+/// Scan `line` with the shared AL lexer and blank out every span `keep`
+/// rejects, replacing it with one ASCII space per source byte.
+///
+/// The per-byte substitution keeps all later byte offsets stable even when a
+/// literal or comment contains multibyte UTF-8. Returns the masked line and
+/// whether the line ends inside an open block comment.
+fn mask_line(
+    line: &str,
+    in_block_comment: bool,
+    keep: impl Fn(&crate::lexical::Span<'_>) -> bool,
+) -> (String, bool) {
     let mut out = String::with_capacity(line.len());
     let mut scanner = crate::lexical::LineScanner::new(line, in_block_comment);
     for span in scanner.by_ref() {
-        if span.kind == crate::lexical::SpanKind::Code {
+        if keep(&span) {
             out.push_str(span.text);
         } else {
-            // One ASCII space per source byte keeps all later byte offsets
-            // stable even when a literal/comment contains multibyte UTF-8.
             out.extend(std::iter::repeat_n(' ', span.text.len()));
         }
     }
-    let in_block_comment = scanner.ends_in_block_comment();
-    (out, in_block_comment)
+    (out, scanner.ends_in_block_comment())
 }
 
 /// Like [`mask_non_code`], but keeps `"…"` quoted identifiers visible.
@@ -174,19 +187,10 @@ pub(crate) fn mask_non_code_keep_quoted_identifiers(
     line: &str,
     in_block_comment: bool,
 ) -> (String, bool) {
-    let mut out = String::with_capacity(line.len());
-    let mut scanner = crate::lexical::LineScanner::new(line, in_block_comment);
-    for span in scanner.by_ref() {
-        let keep = span.kind == crate::lexical::SpanKind::Code
-            || (span.kind == crate::lexical::SpanKind::String && span.text.starts_with('"'));
-        if keep {
-            out.push_str(span.text);
-        } else {
-            out.extend(std::iter::repeat_n(' ', span.text.len()));
-        }
-    }
-    let in_block_comment = scanner.ends_in_block_comment();
-    (out, in_block_comment)
+    mask_line(line, in_block_comment, |span| {
+        span.kind == crate::lexical::SpanKind::Code
+            || (span.kind == crate::lexical::SpanKind::String && span.text.starts_with('"'))
+    })
 }
 
 fn is_loop_start(lower: &str) -> bool {
